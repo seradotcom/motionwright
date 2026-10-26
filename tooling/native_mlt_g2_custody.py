@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Private custody around the single existing MLT verification producer.
 
-This tool fetches admitted source artifacts, transfers an installation receipt,
-and seals selected original evidence. It never installs a module or starts,
-retries, or substitutes a renderer. Only a closed public projection is emitted.
+The established scopes fetch admitted artifacts and seal selected originals.
+A separate, closed Audio scope observes one explicitly admitted live method,
+using the existing runtime installer, process primitives and private cipher.
+No scope retries an uncertain operation; public output remains closed.
 """
 from __future__ import annotations
 
@@ -1468,7 +1469,1571 @@ def audio_source_run(gate, sdk, output, *, env=None):
     # custody. Job SUCCESS is never a substitute for their independent readback.
     return report
 
+
+# Generic process primitives only; none of the startup admission protocol is
+# an Audio authority. All blocking filesystem work belongs in a bounded child.
+AUDIO_LIVE_LAUNCHER_SHA256 = "57e0ffbd7ec02bd2dc0fcb590e7ea286074e661f3c09f37f871cdcb536b9906b"
+AUDIO_LIVE_PROVIDER_PINS = {
+    "tooling/startup_capture_launcher.py": AUDIO_LIVE_LAUNCHER_SHA256,
+    "tooling/ci_foundation_causal.py": "1d31c58aa7d63c927ceb2518282a433e0f728fc125da8978fb635b18cff354c2",
+    "tooling/ci_storage_apply_recovery.py": "9aea9a41d365a36fd1abae86ec5a0974236d62d9781a372eace0578ef2da1520",
+    "tooling/ci_sdk_native_source.py": "65bcda73f16423ebb644a0979bca3a7927f8e7337c124702874bce51adcf8127",
+    "tooling/ci_private_evidence.py": "2671eea354f672353a6b4ea1ac9c43de4b682e96f4dcc9146104a5f8d20a8eee",
+}
+AUDIO_LIVE_PIPE_CAPS = {"stdout": 2 * 1024**2, "stderr": 2 * 1024**2,
+                        "status": 65536, "lifetime": 1, "ready": 16}
+AUDIO_LIVE_BOOTSTRAP = """import os,resource,select,sys,time
+deadline,gate,ready,file_ceiling=map(int,sys.argv[1:5])
+try:
+    if time.monotonic_ns()>=deadline: os._exit(125)
+    if os.write(ready,b'READY\\n')!=6: os._exit(125)
+    retired=ready; ready=-1; os.close(retired)
+    while time.monotonic_ns()<deadline:
+        if select.select([gate],[],[],.01)[0]:
+            token=os.read(gate,2)
+            if token!=b'G': os._exit(125)
+            retired=gate; gate=-1; os.close(retired)
+            if time.monotonic_ns()>=deadline: os._exit(125)
+            if file_ceiling: resource.setrlimit(resource.RLIMIT_FSIZE,(file_ceiling,file_ceiling))
+            os.execve(sys.argv[5],sys.argv[5:],dict(os.environ))
+    os._exit(125)
+finally:
+    for fd in (gate,ready):
+        if fd>=0:
+            try: os.close(fd)
+            except OSError: pass
+    os._exit(125)
+"""
+
+
+def audio_live_read(path, limit):
+    path = Path(path)
+    require(path.is_absolute() and path.resolve(strict=True) == path
+            and not any(parent.is_symlink() for parent in path.parents), "audio-live-canonical-file")
+    before = path.lstat()
+    require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= limit,
+            "audio-live-bounded-single-link-file")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        require(metadata_identity(before) == metadata_identity(opened), "audio-live-file-changed-before-open")
+        data = bytearray()
+        while len(data) <= limit:
+            block = os.read(fd, min(65536, limit + 1 - len(data)))
+            if not block:
+                break
+            data.extend(block)
+        require(len(data) == before.st_size <= limit
+                and metadata_identity(opened) == metadata_identity(os.fstat(fd))
+                == metadata_identity(path.lstat()), "audio-live-file-changed-during-read")
+        return bytes(data)
+    finally:
+        os.close(fd)
+
+
+def audio_live_environment(original, directory):
+    require(type(original) is dict and all(type(k) is str and type(v) is str for k,v in original.items()),
+            "audio-live-environment-types")
+    forbidden = {"BASH_ENV", "ENV", "GCONV_PATH", "LOCPATH", "GLIBC_TUNABLES", "NODE_OPTIONS",
+                 "RUSTC", "RUSTDOC", "RUSTFMT", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
+                 "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "MLT_REPOSITORY", "MLT_DATA", "MLT_PROFILES_PATH"}
+    safe_python = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "PYTHONUNBUFFERED": "1"}
+    bad = [k for k,v in original.items() if v and (k in forbidden or
+           k.startswith(("LD_", "CARGO_ALIAS_", "RUST_TEST_", "SEMWRIGHT_")) or
+           k.startswith("PYTHON") and safe_python.get(k) != v)]
+    require(not bad, "audio-live-inherited-execution-override")
+    root = Path(directory)
+    return {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
+            "HOME": str(root / "home"), "TMPDIR": str(root / "tmp"), "TMP": str(root / "tmp"),
+            "TEMP": str(root / "tmp"), "RUST_BACKTRACE": "0", "CARGO_TERM_COLOR": "never",
+            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "PYTHONUNBUFFERED": "1"}
+
+
+def audio_live_worker(L, function, deadline_ns, *, limit=1048576):
+    """Retain one invocation and its uncertain prefix; never repeat it."""
+    import time
+    handle = None
+    observation = {"status": "UNKNOWN", "automatic_retry": False, "value": None,
+                   "result_prefix": b"", "original_process": None}
+    try:
+        handle = L._spawn_worker(function, deadline_ns)
+        complete = L.observe_worker(handle, deadline_ns, limit=limit)
+        raw = bytes(handle.prefix)
+        observation["result_prefix"] = raw
+        if complete:
+            frame = L.strict_json(raw, limit)
+            require(set(frame) == {"ok", "value"} and frame["ok"] is True,
+                    "audio-live-worker-failed")
+            observation.update(status="OBSERVED", value=frame["value"])
+        else:
+            handle.kill_once(time.monotonic_ns())
+            L.observe_worker(handle, deadline_ns, limit=limit)
+    except BaseException as error:
+        if handle is None and isinstance(getattr(error, "custody", None), L.Child):
+            handle = error.custody
+        observation["error_type"] = type(error).__name__
+        if handle is not None:
+            handle.kill_once(time.monotonic_ns())
+            L.observe_worker(handle, deadline_ns, limit=limit)
+            observation["result_prefix"] = bytes(handle.prefix)
+    finally:
+        if handle is not None:
+            observation["result_prefix"] = bytes(handle.prefix)
+            handle.close()
+            observation["original_process"] = handle.metadata()
+            if handle.errors or time.monotonic_ns() >= deadline_ns:
+                observation["status"] = "UNKNOWN"
+    return observation
+
+
+def audio_live_pidfd(L, pid, *, parent_pid, uid, namespace, ledger):
+    """A retained non-child; owning its fd does not authenticate its target."""
+    before = L._kernel_stamp(pid)
+    item = {"pid": pid, "pidfd": L.OwnedFD(os.pidfd_open(pid), "audio-namespace-role"),
+            "identity": before, "authenticated": False, "exit_ns": None, "signals": [], "errors": []}
+    ledger.append(item)
+    after = L._kernel_stamp(pid)
+    require(L._same_stamp(before, after) and before["parent_pid"] == parent_pid
+            and before["uid"] == uid and os.readlink(f"/proc/{pid}/ns/pid") == namespace,
+            "audio-live-retained-pidfd-target-changed")
+    item["authenticated"] = True
+    return item
+
+
+def audio_live_poll_pidfd(item, now_ns):
+    import select
+    if not item["authenticated"] or item["pidfd"].fd is None or item["exit_ns"] is not None:
+        return
+    poller = select.poll(); poller.register(item["pidfd"].fd, select.POLLIN)
+    for _, mask in poller.poll(0):
+        if mask & (select.POLLNVAL | select.POLLERR):
+            item["errors"].append("PIDFD_UNAVAILABLE")
+        elif mask & (select.POLLIN | select.POLLHUP):
+            item["exit_ns"] = now_ns
+
+
+def audio_live_signal_once(item, now_ns):
+    import signal
+    if not item["authenticated"] or item["signals"] or item["exit_ns"] is not None or item["pidfd"].fd is None:
+        return
+    action = {"signal": int(signal.SIGKILL), "monotonic_ns": now_ns, "outcome": "UNKNOWN"}
+    item["signals"].append(action)
+    try:
+        signal.pidfd_send_signal(item["pidfd"].fd, signal.SIGKILL, None, 0)
+        action["outcome"] = "SENT"
+    except ProcessLookupError:
+        action["outcome"] = "ALREADY_EXITED_OBSERVATION_REQUIRED"
+    except OSError as error:
+        action["error_type"] = type(error).__name__
+
+
+def audio_live_role_record(item):
+    return {key: value for key,value in item.items() if key != "pidfd"} | {
+        "pidfd": item["pidfd"].metadata(), "original_wait": "NOT_OUR_CHILD_NOT_CLAIMED"}
+
+
+def audio_live_proc_children(L, retained):
+    require(retained["authenticated"] and retained["pidfd"].fd is not None,
+            "audio-live-owned-init-query")
+    pid = retained["pid"]
+    before = L._kernel_stamp(pid)
+    fd = os.open(f"/proc/{pid}/task/{pid}/children", os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        raw = os.read(fd, 4097)
+        require(len(raw) <= 4096 and L._same_stamp(before, L._kernel_stamp(pid))
+                and before["start_ticks"] == retained["identity"]["start_ticks"],
+                "audio-live-init-changed-during-child-query")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def audio_live_bwrap_argv(bwrap, python, argv, working, readonly, writable, channels, deadline_ns, *, preparation=False):
+    require(set(channels) == {"status", "lifetime", "block", "gate", "ready"}
+            and all(type(v) is int and v > 2 for v in channels.values())
+            and len(set(channels.values())) == len(channels), "audio-live-channel-roster")
+    require(type(argv) is list and argv and all(type(x) is str and "\0" not in x for x in argv)
+            and all(Path(x).is_absolute() for x in (bwrap, python, working))
+            and type(readonly) is list and readonly and len(set(readonly)) == len(readonly)
+            and type(writable) is list and writable and len(set(writable)) == len(writable),
+            "audio-live-namespace-command")
+    require(type(preparation) is bool, "audio-live-phase-type")
+    result = [bwrap, "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+              "--new-session", "--proc", "/proc", "--dev", "/dev",
+              "--chdir", working, "--json-status-fd", str(channels["status"]),
+              "--sync-fd", str(channels["lifetime"]), "--block-fd", str(channels["block"])]
+    if not preparation:
+        result.append("--unshare-net")
+    for path in readonly:
+        require(type(path) is str and Path(path).is_absolute() and path not in ("/", "/proc", "/run"),
+                "audio-live-readonly-root")
+        result.extend(("--ro-bind", path, path))
+    for path in writable:
+        require(type(path) is str and Path(path).is_absolute() and path not in ("/", "/usr", "/etc", "/proc"),
+                "audio-live-writable-root")
+        result.extend(("--bind", path, path))
+    # EOF of --block-fd is not an authorization; this bootstrap requires G.
+    result.extend(("--", python, "-I", "-B", "-X", "utf8", "-c", AUDIO_LIVE_BOOTSTRAP,
+                   str(deadline_ns), str(channels["gate"]), str(channels["ready"]),
+                   "0" if preparation else str(MAX_FILE), *argv))
+    return result
+
+
+def audio_live_namespace(L, *, bwrap, python, argv, working, readonly, writable, environment,
+                         clock, effect_deadline_ns, uid, gid, expected_executable,
+                         expected_python, expected_bwrap, python_binary, command_binary, preparation=False):
+    """Observe existing Bubblewrap and L handles; no filesystem writes here."""
+    import select
+    import time
+    require(effect_deadline_ns <= clock["work_deadline_ns"] and time.monotonic_ns() < effect_deadline_ns,
+            "audio-live-no-renewed-effect-deadline")
+    streams, owned, roles, monitor = {}, [], [], None
+    init = command = None
+    released = False; executable_seen = False; block_released = False
+    errors, status_rows = [], []
+    result = {"status": "UNKNOWN", "automatic_retry": False, "raw": {}, "roles": [],
+              "deadline_unchanged": True, "clock": dict(clock)}
+    try:
+        for label, cap in AUDIO_LIVE_PIPE_CAPS.items():
+            read, write = L._pipe(); read.label = label + "-read"; write.label = label + "-write"
+            owned.extend((read, write))
+            streams[label] = {"read": read, "write": write, "prefix": bytearray(),
+                              "eof": False, "truncated": False, "cap": cap}
+        block_r, block_w = L._pipe(); owned.extend((block_r, block_w))
+        gate_r, gate_w = L._pipe(); owned.extend((gate_r, gate_w))
+        channels = {"status": streams["status"]["write"].fd, "lifetime": streams["lifetime"]["write"].fd,
+                    "ready": streams["ready"]["write"].fd, "block": block_r.fd, "gate": gate_r.fd}
+        bargv = audio_live_bwrap_argv(bwrap, python, argv, working, readonly, writable, channels,
+                                     effect_deadline_ns, preparation=preparation)
+        keep = tuple([s["write"].fd for s in streams.values()] + [block_r.fd, gate_r.fd])
+        def execute(_):
+            if os.geteuid() == 0:
+                os.setgroups([]); os.setgid(gid); os.setuid(uid)
+            require(os.geteuid() == uid and os.getegid() == gid, "audio-live-process-owner")
+            null = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+            os.dup2(null, 0)
+            if null != 0:
+                os.close(null)
+            os.set_blocking(streams["stdout"]["write"].fd, True)
+            os.set_blocking(streams["stderr"]["write"].fd, True)
+            os.dup2(streams["stdout"]["write"].fd, 1)
+            os.dup2(streams["stderr"]["write"].fd, 2)
+            for label in ("stdout", "stderr"):
+                os.close(streams[label]["write"].fd)
+            for fd in channels.values():
+                os.set_inheritable(fd, True)
+                os.set_blocking(fd, True)
+            os.execve(bwrap, bargv, environment)
+        try:
+            monitor = L._spawn_worker(execute, effect_deadline_ns, keep_fds=keep)
+        except BaseException as error:
+            if isinstance(getattr(error, "custody", None), L.Child):
+                monitor = error.custody
+            raise
+        parent_closes = [s["write"].close() for s in streams.values()]
+        parent_closes.extend((block_r.close(), gate_r.close()))
+        require(all(parent_closes), "audio-live-inherited-fd-close-uncertain")
+        parsed = 0
+        while time.monotonic_ns() < clock["cleanup_deadline_ns"]:
+            now = time.monotonic_ns()
+            if now >= effect_deadline_ns:
+                errors.append("ORIGINAL_EFFECT_CUTOFF_EXCEEDED")
+            for label, stream in streams.items():
+                if stream["eof"]:
+                    continue
+                try:
+                    raw = os.read(stream["read"].fd, 65536)
+                    if raw:
+                        available = max(0, stream["cap"] - len(stream["prefix"]))
+                        stream["prefix"].extend(raw[:available])
+                        stream["truncated"] |= len(raw) > available
+                    else:
+                        stream["eof"] = True
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    errors.append("PIPE_READ_UNCERTAIN:" + label)
+            L._drain_child(monitor, 4096); monitor.poll(now)
+            if streams["lifetime"]["prefix"]:
+                errors.append("LIFETIME_CHANNEL_UNEXPECTED_BYTES")
+            for role in roles:
+                audio_live_poll_pidfd(role, now)
+            raw_status = bytes(streams["status"]["prefix"])
+            while b"\n" in raw_status[parsed:]:
+                end = raw_status.index(b"\n", parsed) + 1
+                row = L.strict_json(raw_status[parsed:end], 65536); parsed = end
+                require(len(status_rows) < 2, "audio-live-extra-bwrap-status")
+                if not status_rows:
+                    require(type(row.get("child-pid")) is int and row["child-pid"] > 1
+                            and set(row) <= {"child-pid", "cgroup-namespace", "ipc-namespace", "mnt-namespace",
+                                             "net-namespace", "pid-namespace", "uts-namespace"}
+                            and {"pid-namespace", "mnt-namespace"} <= set(row)
+                            and all(type(value) is int and value > 0 for value in row.values()),
+                            "audio-live-bwrap-init-status")
+                    ns = "pid:[" + str(row["pid-namespace"]) + "]"
+                    require(ns != os.readlink("/proc/self/ns/pid"), "audio-live-pid-namespace-missing")
+                    init = audio_live_pidfd(L, row["child-pid"], parent_pid=monitor.pid,
+                                           uid=uid, namespace=ns, ledger=roles)
+                    monitor_stamp = L._kernel_stamp(monitor.pid)
+                    require(monitor_stamp["start_ticks"] == monitor.identity["start_ticks"]
+                            and monitor_stamp["parent_pid"] == os.getpid() and monitor_stamp["uid"] == uid
+                            and os.readlink(f"/proc/{monitor.pid}/exe") == bwrap
+                            and metadata_identity(os.stat(f"/proc/{monitor.pid}/exe")) == tuple(expected_bwrap)
+                            and L._proc_bytes(monitor.pid, "cmdline", 65536) ==
+                                b"\0".join(x.encode() for x in bargv) + b"\0",
+                            "audio-live-monitor-exec-identity")
+                    require(os.readlink(f"/proc/{init['pid']}/exe") == bwrap,
+                            "audio-live-init-executable-identity")
+                    require(metadata_identity(os.stat(f"/proc/{init['pid']}/exe")) == tuple(expected_bwrap),
+                            "audio-live-init-executable-changed")
+                    require(os.write(block_w.fd, b"B") == 1 and block_w.close(), "audio-live-block-release")
+                    block_released = True
+                else:
+                    require(set(row) == {"exit-code"} and type(row["exit-code"]) is int
+                            and 0 <= row["exit-code"] <= 255, "audio-live-bwrap-terminal")
+                status_rows.append(row)
+            require(not streams["status"]["eof"] or parsed == len(raw_status),
+                    "audio-live-truncated-status-at-eof")
+            if init is not None and not released and streams["ready"]["eof"]:
+                require(bytes(streams["ready"]["prefix"]) == b"READY\n" and not streams["ready"]["truncated"],
+                        "audio-live-bootstrap-ready-eof")
+                raw_children = audio_live_proc_children(L, init)
+                children = raw_children.split()
+                require(len(children) == 1 and children[0].isdigit(), "audio-live-bootstrap-child-roster")
+                command = audio_live_pidfd(L, int(children[0]), parent_pid=init["pid"], uid=uid,
+                                          namespace="pid:[" + str(status_rows[0]["pid-namespace"]) + "]", ledger=roles)
+                bootstrap_argv = [python, "-I", "-B", "-X", "utf8", "-c", AUDIO_LIVE_BOOTSTRAP,
+                                  str(effect_deadline_ns), str(channels["gate"]), str(channels["ready"]),
+                                  "0" if preparation else str(MAX_FILE), *argv]
+                require(os.readlink(f"/proc/{command['pid']}/exe") == python_binary
+                        and metadata_identity(os.stat(f"/proc/{command['pid']}/exe")) == tuple(expected_python)
+                        and L._proc_bytes(command["pid"], "cmdline", 65536) ==
+                            b"\0".join(x.encode() for x in bootstrap_argv) + b"\0"
+                        and L._same_stamp(command["identity"], L._kernel_stamp(command["pid"])),
+                        "audio-live-bootstrap-identity-before-release")
+                require(time.monotonic_ns() < effect_deadline_ns and not errors and not monitor.errors
+                        and all(not s["truncated"] for s in streams.values()),
+                        "audio-live-no-release-after-uncertainty")
+                require(os.write(gate_w.fd, b"G") == 1, "audio-live-exact-release-byte")
+                released = True
+                require(gate_w.close(), "audio-live-command-gate-close")
+            if command is not None and command["exit_ns"] is None and not executable_seen:
+                try:
+                    executable = os.readlink(f"/proc/{command['pid']}/exe")
+                    if executable == command_binary:
+                        info = os.stat(f"/proc/{command['pid']}/exe")
+                        require(metadata_identity(info) == tuple(expected_executable),
+                                "audio-live-command-executable-changed")
+                        require(L._proc_bytes(command["pid"], "cmdline", 65536) ==
+                                b"\0".join(x.encode() for x in argv) + b"\0", "audio-live-command-argv-changed")
+                        executable_seen = True
+                except FileNotFoundError:
+                    pass
+            now = time.monotonic_ns()
+            if now >= effect_deadline_ns:
+                errors.append("ORIGINAL_EFFECT_CUTOFF_EXCEEDED")
+            trouble = (now >= effect_deadline_ns or errors or monitor.errors or
+                       any(s["truncated"] for s in streams.values()) or any(r["errors"] for r in roles))
+            if trouble:
+                for role in reversed(roles):
+                    audio_live_signal_once(role, now)
+                monitor.kill_once(now)
+                block_w.close(); gate_w.close()
+            if (monitor.wait is not None and monitor.exited_ns is not None and init is not None
+                    and init["exit_ns"] is not None and command is not None and command["exit_ns"] is not None
+                    and all(s["eof"] for s in streams.values())):
+                break
+            select.select([], [], [], min(.01, max(0, (clock["cleanup_deadline_ns"] - time.monotonic_ns()) / 1e9)))
+    except BaseException as error:
+        errors.append(type(error).__name__ + ":" + str(error)[:160])
+    finally:
+        # On every path, stop the retained roles once, drain without retrying
+        # the operation, and retire every fd before reporting its close result.
+        if monitor is not None:
+            now = time.monotonic_ns()
+            incomplete = (monitor.wait is None or monitor.exited_ns is None or monitor.wait_lost
+                          or any(role["exit_ns"] is None for role in roles)
+                          or not all(stream["eof"] for stream in streams.values()))
+            if now >= clock["cleanup_deadline_ns"] or incomplete:
+                errors.append("ORIGINAL_CLOSURE_NOT_OBSERVED")
+            if errors or incomplete:
+                for role in reversed(roles):
+                    audio_live_signal_once(role, now)
+                monitor.kill_once(now)
+            for item in (locals().get("block_w"), locals().get("gate_w")):
+                if item is not None:
+                    item.close()
+            while time.monotonic_ns() < clock["cleanup_deadline_ns"]:
+                now = time.monotonic_ns(); monitor.poll(now)
+                for role in roles:
+                    audio_live_poll_pidfd(role, now)
+                for stream in streams.values():
+                    if stream["eof"] or stream["read"].fd is None:
+                        continue
+                    try:
+                        raw = os.read(stream["read"].fd, 65536)
+                        if not raw:
+                            stream["eof"] = True
+                        else:
+                            available = max(0, stream["cap"] - len(stream["prefix"]))
+                            stream["prefix"].extend(raw[:available]); stream["truncated"] |= len(raw) > available
+                    except BlockingIOError:
+                        pass
+                    except OSError:
+                        errors.append("CLEANUP_PIPE_READ_UNCERTAIN")
+                if monitor.wait is not None and all(r["exit_ns"] is not None for r in roles) and all(s["eof"] for s in streams.values()):
+                    break
+                select.select([], [], [], .01)
+            monitor.close()
+            errors.extend(monitor.errors)
+        close_results = [fd.close() for fd in owned]
+        close_results.extend(role["pidfd"].close() for role in roles)
+        if not all(close_results):
+            errors.append("DESCRIPTOR_CLOSE_UNCERTAIN")
+        finished = time.monotonic_ns()
+        if finished >= clock["cleanup_deadline_ns"]:
+            errors.append("ORIGINAL_CLEANUP_DEADLINE_EXCEEDED")
+        result.update(raw={label: bytes(s["prefix"]) for label,s in streams.items()},
+            roles=[audio_live_role_record(role) for role in roles],
+            monitor=monitor.metadata() if monitor is not None else None,
+            status_rows=status_rows, release_sent=released, namespace_block_released=block_released,
+            complete_before_cleanup_deadline=finished < clock["cleanup_deadline_ns"],
+            finished_ns=finished, namespace_init_authenticated=init is not None and init["authenticated"],
+            namespace_init_exited=init is not None and init["exit_ns"] is not None,
+            command_authenticated_before_release=released and command is not None and command["authenticated"],
+            command_executable_observed=executable_seen,
+            command_exited=command is not None and command["exit_ns"] is not None,
+            monitor_wait_exit_code=monitor.wait["exit_code"] if monitor is not None and monitor.wait else None,
+            bubblewrap_exit_code=status_rows[-1].get("exit-code") if len(status_rows) == 2 else None,
+            sync_eof=streams.get("lifetime", {}).get("eof", False),
+            stdout_eof=streams.get("stdout", {}).get("eof", False),
+            stderr_eof=streams.get("stderr", {}).get("eof", False),
+            status_eof=streams.get("status", {}).get("eof", False),
+            monitor_result_eof=monitor is not None and monitor.eof,
+            monitor_result_truncated=monitor is None or monitor.truncated,
+            monitor_pidfd_exited=monitor is not None and monitor.exited_ns is not None,
+            truncated=any(s["truncated"] for s in streams.values()),
+            forced_cleanup=bool((monitor.signal_attempts if monitor is not None else []) or any(r["signals"] for r in roles)),
+            errors=list(dict.fromkeys(errors)), descriptors=[fd.metadata() for fd in owned])
+    result["status"] = "OBSERVED_NAMESPACE_TERMINAL" if audio_live_namespace_closed(result) else "UNKNOWN_NO_RETRY"
+    return result
+
+
+def audio_live_runtime_contract(value):
+    """Reuse existing runtime/compiler intake; paths never supply authority."""
+    require(type(value) is dict and set(value) == {"schema", "tools", "official_runtime", "compiler",
+            "installation_effect"} and value["schema"] == "motionwright.audio-live-runtime/1"
+            and value["installation_effect"] == "EXISTING_REPAIRED_MODULE_ADMISSION",
+            "audio-live-runtime-contract")
+    roles = {"python", "git", "node", "bash", "rustup", "bwrap", "mount", "gh", "melt", "ffprobe", "ffmpeg"}
+    require(type(value["tools"]) is dict and set(value["tools"]) == roles,
+            "audio-live-runtime-tool-roster")
+    for name, row in value["tools"].items():
+        require(type(row) is dict and set(row) == {"path", "sha256", "version"}
+                and type(row["path"]) is str and row["path"].startswith("/")
+                and 0 < len(row["path"]) <= 512 and "\0" not in row["path"]
+                and type(row["sha256"]) is str and HEX.fullmatch(row["sha256"])
+                and type(row["version"]) is str and 0 < len(row["version"]) <= 8192,
+                "audio-live-runtime-tool-binding:" + name)
+    require(value["tools"]["bwrap"]["version"].strip() == "bubblewrap 0.11.0"
+            and value["tools"]["node"]["version"].startswith("v22.")
+            and value["tools"]["gh"]["path"] == "/usr/bin/gh",
+            "audio-live-runtime-protocol-version")
+    return value
+
+
+def audio_live_paths(gate, output, current, runner_temp):
+    gate, output, runner_temp = map(Path, (gate, output, runner_temp))
+    require(gate.is_absolute() and gate.resolve(strict=True) == gate
+            and runner_temp.is_absolute() and runner_temp.resolve(strict=True) == runner_temp
+            and runner_temp.is_dir() and not any(p.is_symlink() for p in (*gate.parents, *runner_temp.parents))
+            and output == runner_temp / ("mw-audio-live-" + current["run_id"] + "-1")
+            and not output.exists() and not output.is_symlink()
+            and not output.is_relative_to(gate) and not gate.is_relative_to(output),
+            "audio-live-fresh-owned-root-outside-source")
+    return gate, output
+
+
+def audio_live_fingerprint(path):
+    path = Path(path)
+    before = path.lstat()
+    raw = audio_live_read(path, MAX_FILE)
+    return {"path": str(path), "bytes": len(raw), "sha256": sha(raw),
+            "identity": list(metadata_identity(before))}
+
+
+def audio_live_bootstrap_inputs(gate, output, admitted, environment, clock, uid, gid):
+    """Blocking bootstrap in one retained child; no SDK or native effect."""
+    import time
+    runtime = audio_live_runtime_contract(admitted["request"]["runtime"])
+    require(os.geteuid() == 0 and type(uid) is int and type(gid) is int and uid > 0 and gid > 0,
+            "audio-live-privileged-controller-normal-producer-owner")
+    audio_live_paths(gate, output, admitted["context"], environment["RUNNER_TEMP"])
+    selected.audio_live_clock(clock["started_ns"], time.monotonic_ns())
+    audio_live_manifest_bound(admitted["plan"], output)
+    output.mkdir(mode=0o700)
+    os.chown(output, uid, gid)
+    for name in ("control", "evidence", "export", "target", "cargo-home", "rustup-home", "home", "tmp", "volume"):
+        (output / name).mkdir(mode=0o700); os.chown(output / name, uid, gid)
+    (output / "evidence/commands").mkdir(mode=0o700); os.chown(output / "evidence/commands", uid, gid)
+    new_bytes(output / "evidence/request.original.json", json_bytes(admitted["request"]), owner=(uid, gid))
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    require(re.fullmatch(r"[0-9a-f-]{36}", boot), "audio-live-monotonic-boot-binding")
+    new_json(output / "control/clock.json", {**clock, "boot_id": boot, "context": admitted["context"]})
+    for name, digest in AUDIO_LIVE_PROVIDER_PINS.items():
+        require(sha(audio_live_read(gate / name, 1024 * 1024)) == digest,
+                "audio-live-provider-source-changed:" + name)
+    require(runtime["tools"]["bwrap"]["sha256"] == admitted["authority"]["bubblewrap_sha256"]
+            and runtime["tools"]["mount"]["sha256"] == admitted["authority"]["mount_sha256"],
+            "audio-live-authority-runtime-pins")
+    tools = {}
+    for name, descriptor in runtime["tools"].items():
+        actual = audio_live_fingerprint(Path(descriptor["path"]))
+        require(actual["sha256"] == descriptor["sha256"], "audio-live-tool-bytes:" + name)
+        tools[name] = {**actual, "expected_version": descriptor["version"]}
+    require(tools["python"]["path"] == str(Path(sys.executable).resolve(strict=True)),
+            "audio-live-same-observed-interpreter")
+    readonly = [str(path) for path in (Path("/usr"), Path("/bin"), Path("/sbin"), Path("/lib"), Path("/lib64"), Path("/etc")) if path.exists()]
+    readonly.extend([str(gate), str(Path(sys.prefix))])
+    readonly.extend(str(Path(row["path"]).parent) for row in tools.values()
+                    if not Path(row["path"]).is_relative_to(Path("/usr")))
+    readonly = sorted(set(readonly), key=lambda path: (len(Path(path).parts), path))
+    readonly = [path for index,path in enumerate(readonly)
+                if not any(Path(path).is_relative_to(Path(parent)) for parent in readonly[:index])]
+    public_env = {k: environment[k] for k in ("GITHUB_ACTIONS", "CI", "GITHUB_EVENT_NAME", "GITHUB_RUN_ATTEMPT",
+        "GITHUB_RUN_ID", "GITHUB_SHA", "GITHUB_WORKFLOW_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_REPOSITORY",
+        "GITHUB_JOB", "GITHUB_WORKSPACE", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE",
+        "MW_MLT_SCOPE", "MW_EXPECTED_GATE_SHA", "MW_EXPECTED_SDK_SHA") if k in environment}
+    configuration = {"schema": "motionwright.audio-live-worker-input/1", "gate": str(gate),
+        "output": str(output), "clock": clock, "uid": uid, "gid": gid,
+        "request": admitted["request"], "environment": public_env, "tools": tools}
+    raw = json_bytes(configuration)
+    require(len(raw) <= MAX_JSON, "audio-live-worker-configuration-bound")
+    new_bytes(output / "control/worker.json", raw, owner=(uid, gid), mode=0o400)
+    return {"tools": tools, "python_launch": str(Path(sys.executable).absolute()), "readonly_roots": readonly,
+            "configuration_sha256": sha(raw), "root_identity": list(metadata_identity(output.lstat())),
+            "clock": clock, "boot_id": boot, "resource_before": audio_resource_preflight(output)}
+
+
+def audio_live_remaining(clock, ceiling, now_ns, *, phase_deadline=None):
+    require(type(ceiling) is int and 0 < ceiling <= 900 and type(now_ns) is int,
+            "audio-live-command-cap-type")
+    upper = clock["work_deadline_ns"] if phase_deadline is None else phase_deadline
+    require(type(upper) is int and upper <= clock["work_deadline_ns"]
+            and clock["started_ns"] <= now_ns < upper, "audio-live-original-budget-exhausted")
+    remaining = (upper - now_ns) // 1_000_000_000
+    require(remaining > 0, "audio-live-no-command-in-last-fraction")
+    return min(ceiling, remaining)
+
+
+def audio_live_prepare_producers(sdk_gate, barrier, cargo, sdk, environment, logs, context, target):
+    specs = selected.audio_live_binary_specs()
+    prepared = {"collections": {}, "steps": [], "clippy": "NOT_RUN"}
+    clippy = [cargo, "clippy", "--locked", "--jobs", "1", "-p", "semwright-mlt-video-driver",
+              "--features", "test-tools", "--bin", "semwright-mlt-video-driver", "--bin",
+              "semwright-mlt-runtime-runner", "--test", "live", "--", "-D", "warnings"]
+    row = barrier(clippy, sdk, environment, logs, "strict-clippy", 900, context)
+    require(type(row["exit_code"]) is int and row["exit_code"] == 0, "audio-live-strict-clippy-failed")
+    prepared["clippy"] = "PASS"
+    for label, argv in selected.audio_live_producers(cargo):
+        row = barrier(argv, sdk, environment, logs, "producer-" + label, 900, context)
+        raw = sdk_gate.observer.original_stream(logs, row, "stdout")
+        paths = sdk_gate.select_binary_paths(raw, row["exit_code"], sdk, target, specs[label], testing=label == "tests")
+        require(all(Path(path).is_relative_to(target / "debug") for path in paths.values()),
+                "audio-live-producer-left-owned-target")
+        prepared["collections"][label] = {"command": row, "specs": specs[label], "testing": label == "tests"}
+        prepared["steps"].append(label)
+        if label == "normal":
+            require(all(Path(path) == target / "debug" / name for name,path in paths.items()),
+                    "audio-live-normal-bin-location")
+            prepared["normal_prebuild"] = paths
+        if label == "tests":
+            actual_normal = sdk_gate.select_binary_paths(raw, row["exit_code"], sdk, target, specs["normal"], testing=False)
+            require(actual_normal == prepared["normal_prebuild"], "audio-live-cargo-bin-exe-target-changed")
+            prepared["collections"]["normal"] = {"command": row, "specs": specs["normal"], "testing": False}
+    require(prepared["steps"] == ["normal", "tests", "sandbox"], "audio-live-producer-roster-incomplete")
+    barrier.begin_sealing()
+    sealed = sdk_gate.seal_compiled_role(prepared, sdk, target, logs, logs.parent, barrier)
+    barrier.begin_observation()
+    binary = sealed["tests"]["live"]["absolute_path"]
+    rosters = {}
+    for name, extra in (("all", []), ("ignored", ["--ignored"])):
+        row = barrier([binary, "--list", *extra, "--format", "pretty"], sdk, environment,
+                      logs, "list-live-" + name, 30, context)
+        require(not sdk_gate.observer.original_stream(logs, row, "stderr"), "audio-live-list-stderr")
+        rosters[name] = selected.audio_source_list(sdk_gate.observer.original_stream(logs, row, "stdout"),
+                                                    row["exit_code"], "live", ignored_only=name == "ignored")
+    return {"prepared": prepared, "sealed": sealed, "rosters": rosters,
+            "barrier": barrier.phase, "producers_closed": True, "cases_run": 0}
+
+
+def audio_live_source_bundle(gate, sdk, snapshots, destination):
+    """Preserve full original bytes with a closed inner index, without a second crypto format."""
+    content, total = [], 0
+    for label, root in (("gate", gate), ("sdk", sdk)):
+        for path, stamp in sorted(snapshots[label]["files"].items()):
+            raw = audio_live_read(root / path, MAX_FILE)
+            require(sha(raw) == stamp["sha256"] and len(raw) == stamp["bytes"], "audio-live-source-copy-changed")
+            total += len(raw); require(total <= MAX_FILE, "audio-live-source-bundle-overflow")
+            content.append((label + "/" + path, raw))
+    content.append(("source-index.json", json_bytes(snapshots)))
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for name, raw in content:
+            safe_member(name); member = tarfile.TarInfo(name); member.mode = 0o400; member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+    raw = stream.getvalue(); require(len(raw) <= MAX_FILE, "audio-live-source-tar-overflow")
+    new_bytes(destination, raw)
+    return {"bytes": len(raw), "sha256": sha(raw), "members": len(content)}
+
+
+def audio_live_prepare_stage(config_path, expected_sha):
+    """Executed only inside the observed preparation namespace before live release."""
+    import shutil
+    import time
+    import ci_sdk_native_source as sdk_gate
+    observer, store = sdk_gate.observer, sdk_gate.custody
+    raw = audio_live_read(Path(config_path), MAX_JSON)
+    require(sha(raw) == expected_sha, "audio-live-worker-input-changed")
+    config = strict(raw)
+    current = selected.audio_live_context(config["environment"], sys.platform)
+    admitted = selected.audio_live_admit(config["request"], current)
+    require(os.geteuid() == config["uid"] > 0 and os.getegid() == config["gid"] > 0 and os.getppid() == 1,
+            "audio-live-preparation-requires-retained-namespace")
+    clock = selected.audio_live_clock(config["clock"]["started_ns"], time.monotonic_ns())
+    require(clock == config["clock"], "audio-live-worker-clock-changed")
+    gate, root = Path(config["gate"]), Path(config["output"])
+    sdk, evidence, logs = root / "sdk", root / "evidence", root / "evidence/commands"
+    environment = audio_live_environment({}, root)
+    environment.update(CARGO_HOME=str(root / "cargo-home"), RUSTUP_HOME=str(root / "rustup-home"),
+        CARGO_TARGET_DIR=str(root / "target"), RUSTUP_TOOLCHAIN="1.98.1", CARGO_BUILD_JOBS="1",
+        CARGO_INCREMENTAL="0", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
+        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+        GIT_GRAFT_FILE=os.devnull, GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1",
+        GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+    tools = config["tools"]
+    environment["PATH"] = os.pathsep.join(dict.fromkeys([str(Path(x["path"]).parent) for x in tools.values()] + ["/usr/bin", "/bin"]))
+    observations = []
+    report = {"schema": "motionwright.audio-live-preparation/1", "status": "INCOMPLETE", "context": current,
+              "clock": clock, "automatic_retry": False, "commands": observations, "cases_run": 0,
+              "full_sdk_g0": "NOT_CLAIMED", "physical_case": "NOT_RUN"}
+    phase_deadline = min(clock["work_deadline_ns"], clock["started_ns"] + 900 * 1_000_000_000)
+    def call(argv, cwd, env, folder, label, seconds, ctx):
+        cap = audio_live_remaining(clock, seconds, time.monotonic_ns(), phase_deadline=phase_deadline)
+        row = observer.command(argv, cwd, env, folder, label, cap, ctx, (evidence, observations))
+        require(time.monotonic_ns() < phase_deadline, "audio-live-command-returned-after-deadline")
+        return row
+    def checked(argv, label, seconds=45, cwd=gate):
+        row = call(argv, cwd, environment, logs, label, seconds, current)
+        require(type(row["exit_code"]) is int and row["exit_code"] == 0,
+                "audio-live-preparation-command-failed:" + label)
+        return row
+    try:
+        report["resource_before"] = audio_resource_preflight(root)
+        gate_paths = tuple(p for p in audio_input_paths(store, gate, current["source_sha"])
+                           if p.startswith("tooling/") or p in ("SOURCE_LOCK.json", ".github/workflows/native-mlt-sequence-e2e.yml"))
+        gate_before = store.source_snapshot(gate, current["source_sha"], gate_paths)
+        require(all(gate_before["files"][p]["sha256"] == digest for p,digest in AUDIO_LIVE_PROVIDER_PINS.items()),
+                "audio-live-shared-source-pin")
+        for name, descriptor in tools.items():
+            require(audio_live_fingerprint(Path(descriptor["path"])) == {k:descriptor[k] for k in ("path", "bytes", "sha256", "identity")},
+                    "audio-live-runtime-tool-changed:" + name)
+            flag = "-version" if name in {"ffmpeg", "ffprobe"} else "--version"
+            row = checked([descriptor["path"], flag], "tool-" + name)
+            version = observer.original_stream(logs, row, "stdout") + observer.original_stream(logs, row, "stderr")
+            require(version.decode("utf-8").strip() == descriptor["expected_version"].strip(),
+                    "audio-live-runtime-tool-version:" + name)
+        python = str(Path(sys.executable).absolute())
+        checked([python, "-I", "-B", "-X", "utf8", "-c",
+                 "import sys,tomllib,jsonschema,yaml; assert sys.version_info>=(3,12); print('SDK_PREREQUISITES')"],
+                "sdk-prerequisites")
+        git = tools["git"]["path"]
+        checked([git, "init", str(sdk)], "sdk-init")
+        checked([git, "-C", str(sdk), "remote", "add", "origin", "https://github.com/seradotcom/semwright.git"], "sdk-origin")
+        checked([git, "-C", str(sdk), "fetch", "--depth=2", "origin", selected.AUDIO_SOURCE_SHA], "sdk-fetch", 180)
+        checked([git, "-C", str(sdk), "checkout", "--detach", selected.AUDIO_SOURCE_SHA], "sdk-checkout", 60)
+        before = store.source_snapshot(sdk, selected.AUDIO_SOURCE_SHA,
+                                      audio_input_paths(store, sdk, selected.AUDIO_SOURCE_SHA), selected.AUDIO_SOURCE_TREE)
+        require(before["parents"] == [selected.AUDIO_SOURCE_PARENT]
+                and all(before["files"][p]["sha256"] == digest for p,digest in selected.AUDIO_SOURCE_PINS.items()),
+                "audio-live-exact-sdk-source")
+        report["sources"] = {"gate": gate_before, "sdk": before}
+        report["source_bundle"] = audio_live_source_bundle(gate, sdk, report["sources"], evidence / "sources.tar")
+        rustup = tools["rustup"]["path"]
+        checked([rustup, "toolchain", "install", "1.98.1", "--profile", "minimal", "--component", "rustfmt",
+                 "--component", "clippy", "--no-self-update"], "owned-toolchain", 600, sdk)
+        rust_tools = {}
+        for name in ("cargo", "rustc", "rustdoc", "cargo-fmt", "rustfmt", "cargo-clippy", "clippy-driver"):
+            row = checked([rustup, "which", "--toolchain", "1.98.1", name], "rust-path-" + name, cwd=sdk)
+            path = Path(observer.original_stream(logs, row, "stdout").decode().strip())
+            require(path.is_absolute() and path.resolve(strict=True) == path and path.is_relative_to(root / "rustup-home"),
+                    "audio-live-rust-tool-outside-owned-root")
+            version_row = checked([str(path), "-Vv" if name == "rustc" else "--version"], "rust-version-" + name, cwd=sdk)
+            version = observer.original_stream(logs, version_row, "stdout").decode()
+            require(version.strip() and (name != "rustc" or "release: 1.98.1\n" in version
+                    and "host: x86_64-unknown-linux-gnu\n" in version), "audio-live-rust-version")
+            rust_tools[name] = {**audio_live_fingerprint(path), "version": version}
+        environment.update(RUSTC=rust_tools["rustc"]["path"], RUSTDOC=rust_tools["rustdoc"]["path"],
+                           RUSTFMT=rust_tools["rustfmt"]["path"])
+        environment["PATH"] = str(Path(rust_tools["cargo"]["path"]).parent) + os.pathsep + environment["PATH"]
+        checked([python, "-I", "-B", "-X", "utf8", str(sdk / "scripts/verify-oss-hygiene.py")], "sdk-hygiene", 180, sdk)
+        checked([python, "-I", "-B", "-X", "utf8", str(sdk / "scripts/verify-source.py")], "sdk-source", 300, sdk)
+        checked([rust_tools["cargo-fmt"]["path"], "fmt", "--all", "--", "--check"], "sdk-format", 180, sdk)
+        report["sdk_g0"] = "PASS_HYGIENE_SOURCE_FORMAT"
+        barrier = sdk_gate.ProducerBarrier(call, rust_tools["cargo"]["path"])
+        report["producer"] = audio_live_prepare_producers(sdk_gate, barrier, rust_tools["cargo"]["path"],
+                                                         sdk, environment, logs, current, root / "target")
+        require(store.source_snapshot(gate, current["source_sha"], gate_paths) == gate_before
+                and store.source_snapshot(sdk, selected.AUDIO_SOURCE_SHA, tuple(before["files"]), selected.AUDIO_SOURCE_TREE) == before,
+                "audio-live-preparation-source-postcheck")
+        sdk_gate.verify_commands(evidence, observations)
+        report["rust_tools"] = rust_tools
+        report["status"] = "PASS_PREPARATION_ONLY"
+    except (observer.UnknownExecution, store.UnknownObservation) as error:
+        report.update(status="UNKNOWN_NO_RETRY", original_command=getattr(error, "command", None), error=str(error))
+    except BaseException as error:
+        report.update(status="FAIL_PREPARATION", error=type(error).__name__ + ":" + str(error))
+    report["finished_ns"] = time.monotonic_ns()
+    new_json(evidence / "preparation.json", report)
+    # The enclosing original process/namespace terminal remains independently required.
+    return 0 if report["status"] == "PASS_PREPARATION_ONLY" else 2
+
+
+def audio_live_preparation_readback(root, expected_context, clock):
+    raw = audio_live_read(root / "evidence/preparation.json", 8 * 1024**2)
+    # The large source inventory stays in its original; IPC carries only the
+    # already bounded roles needed by the controller.
+    import startup_capture_launcher as L
+    value = L.strict_json(raw, 8 * 1024**2)
+    require(value.get("schema") == "motionwright.audio-live-preparation/1"
+            and value.get("context") == expected_context and value.get("clock") == clock,
+            "audio-live-preparation-original-binding")
+    result = {"status": value.get("status"), "preparation_sha256": sha(raw),
+              "cases_run": value.get("cases_run"), "sdk_g0": value.get("sdk_g0")}
+    if value.get("status") == "PASS_PREPARATION_ONLY":
+        require(value["producer"]["barrier"] == "OBSERVING"
+                and value["producer"]["producers_closed"] is True
+                and value["producer"]["prepared"]["clippy"] == "PASS"
+                and value["cases_run"] == 0, "audio-live-producer-closure-not-sealed")
+        result.update(sealed=value["producer"]["sealed"], rosters=value["producer"]["rosters"])
+        result["kernel_identities"] = {label: {name: list(metadata_identity(Path(binary["absolute_path"]).lstat()))
+            for name,binary in collection.items()} for label,collection in result["sealed"].items()}
+    return result
+
+
+def audio_live_runtime_and_volume(gate, root, admitted, bootstrap, environment, uid, gid):
+    """Only the existing module installer and one newly owned quota mount."""
+    import time
+    import ci_sdk_native_source as sdk_gate
+    clock = bootstrap["clock"]
+    selected.audio_live_clock(clock["started_ns"], time.monotonic_ns())
+    runtime = audio_live_runtime_contract(admitted["request"]["runtime"])
+    dispatch = {"schema": SOURCE_DISPATCH_SCHEMA, "motionwright_sha": admitted["context"]["source_sha"],
+        "semwright_sha": admitted["context"]["semwright_sha"], "official_runtime": runtime["official_runtime"],
+        "compiler": runtime["compiler"], "recipient": admitted["recipient"]}
+    validate_dispatch(json_bytes(dispatch), admitted["context"])
+    intake = root / "evidence/runtime-intake"; intake.mkdir(mode=0o700)
+    official = dispatch["official_runtime"]
+    archive = download_artifact(official["artifact"], "official", intake)
+    raw = zip_member(archive, "distribution/official-runtime-receipt.json", official["receipt_sha256"], MAX_JSON)
+    g2.verify_official_runtime_bindings(strict(raw), official["known_original_module_sha256"], official["known_melt_sha256"])
+    new_bytes(intake / "official-runtime-receipt.json", raw)
+    intake_compiler(dispatch, gate, intake)
+    # This environment authorizes nothing by itself; the exact closed row was
+    # admitted before entering this worker. The original GitHub metadata stays.
+    old_environment = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update({key: environment[key] for key in ("GITHUB_ACTIONS", "CI", "RUNNER_OS", "RUNNER_TEMP")})
+        os.environ["MOTIONWRIGHT_APPROVED_MLT_G2"] = "1"
+        proof = admission.preflight(intake / "original_c_source", intake / "repaired_c_source",
+            intake / "compiled_module", g2.REPAIRED_MODULE_SHA256, intake / "compiler_receipt_path",
+            g2.COMPILER_RECEIPT_SHA256, official["known_original_module_sha256"])
+        installed = Path(environment["RUNNER_TEMP"]) / (root.name + "-installation")
+        selected.audio_live_clock(clock["started_ns"], time.monotonic_ns())
+        receipt = admission.install(proof, intake / "compiled_module", installed)
+    finally:
+        os.environ.clear(); os.environ.update(old_environment)
+    for name in ("installation.json", "original_system_mlt_avformat.so"):
+        new_bytes(intake / name, audio_live_read(installed / name, MAX_FILE))
+    volume = root / "volume"
+    require(volume.resolve(strict=True) == volume and not any(volume.iterdir())
+            and volume.lstat().st_uid == uid, "audio-live-private-mountpoint-not-fresh")
+    plan = admitted["plan"]
+    mount = bootstrap["tools"]["mount"]
+    require(audio_live_fingerprint(Path(mount["path"])) == {k:mount[k] for k in ("path", "bytes", "sha256", "identity")},
+            "audio-live-mount-binary-changed")
+    # Five extra inodes account for the volume, evidence, auxiliary/home/tmp.
+    options = f"nodev,nosuid,mode=0700,uid={uid},gid={gid},size={plan['working_bytes']},nr_inodes={plan['inode_ceiling'] + 5}"
+    logs = root / "evidence/commands"
+    cap = audio_live_remaining(clock, 30, time.monotonic_ns())
+    row = sdk_gate.observer.command([mount["path"], "-t", "tmpfs", "-o", options, "tmpfs", str(volume)],
+        root, {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, logs, "mount-private-evidence", cap, admitted["context"])
+    require(type(row["exit_code"]) is int and row["exit_code"] == 0, "audio-live-private-quota-mount-failed")
+    actual = audio_live_mount_readback(volume, plan, uid, gid)
+    for path in (volume / "evidence", volume / "auxiliary", volume / "auxiliary/home", volume / "auxiliary/tmp"):
+        path.mkdir(mode=0o700); os.chown(path, uid, gid)
+    live_root = volume / "evidence"
+    require(not any(live_root.iterdir()), "audio-live-evidence-root-preused")
+    return {"installation": receipt, "installation_original_root": str(installed), "mount": actual,
+            "evidence_root": str(live_root), "evidence_identity": list(metadata_identity(live_root.lstat())),
+            "auxiliary_root": str(volume / "auxiliary"), "resource_before_live": audio_resource_preflight(root),
+            "cleanup_policy": "RETAIN_MOUNT_AND_ORIGINALS_FOR_INDEPENDENT_RECOVERY"}
+
+
+def audio_live_mount_readback(volume, plan, uid, gid):
+    raw = Path("/proc/self/mountinfo").read_bytes()
+    require(len(raw) <= 1024 * 1024, "audio-live-mountinfo-bound")
+    rows = []
+    for line in raw.decode("utf-8").splitlines():
+        left, delimiter, right = line.partition(" - ")
+        require(delimiter, "audio-live-invalid-mountinfo")
+        fields = left.split(); suffix = right.split()
+        if len(fields) >= 6 and fields[4] == str(volume):
+            rows.append((fields, suffix))
+    require(len(rows) == 1 and rows[0][1][0] == "tmpfs"
+            and {"rw", "nosuid", "nodev"} <= set(rows[0][0][5].split(",")),
+            "audio-live-exact-private-tmpfs-required")
+    info = volume.lstat(); fs = os.statvfs(volume)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid
+            and stat.S_IMODE(info.st_mode) == 0o700
+            and 0 < fs.f_blocks * fs.f_frsize <= plan["working_bytes"]
+            and 0 < fs.f_files <= plan["inode_ceiling"] + 5,
+            "audio-live-kernel-quota-not-observed")
+    return {"mount_id": rows[0][0][0], "device": rows[0][0][2], "root_identity": list(metadata_identity(info)),
+            "filesystem": "tmpfs", "byte_ceiling": fs.f_blocks * fs.f_frsize, "inode_ceiling": fs.f_files,
+            "mountinfo_sha256": sha(raw), "volume": str(volume)}
+
+
+def audio_live_inventory(root, plan):
+    """Inspect the complete working root. Unplanned bytes remain in place."""
+    root = Path(root); before = root.lstat()
+    require(root.is_dir() and root.resolve(strict=True) == root and not root.is_symlink(), "audio-live-original-root-invalid")
+    expected = {item["root"] + "/" + item["path"]: item for item in plan["entries"]}
+    rows, failures, directories, total = {}, [], [], 0
+    expected_directories = set(selected.AUDIO_LIVE_ROOTS)
+    for name in expected:
+        parts = name.split("/")
+        expected_directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+    for current, dirs, files in os.walk(root, followlinks=False):
+        dirs.sort(); files.sort()
+        for name in [*dirs, *files]:
+            path = Path(current) / name; relative_name = path.relative_to(root).as_posix()
+            require(len(rows) + len(directories) < MAX_FILES * 4, "audio-live-namespace-overflow")
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode) and not path.is_symlink():
+                directories.append(relative_name)
+                if relative_name not in expected_directories:
+                    failures.append({"path": relative_name, "status": "UNPLANNED_DIRECTORY"})
+                continue
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                failures.append({"path": relative_name, "status": "NONREGULAR_OR_ALIAS_NOT_OPENED"})
+                continue
+            total += info.st_size
+            row = expected.get(relative_name)
+            status = ("INVENTORIED" if row is not None and info.st_size <= row["max_bytes"] else
+                      "UNPLANNED_OR_OVERFLOW")
+            rows[relative_name] = {"bytes": info.st_size, "identity": list(metadata_identity(info)), "status": status}
+            if status != "INVENTORIED":
+                failures.append({"path": relative_name, "status": status})
+    for name, row in expected.items():
+        if name not in rows:
+            state = "REQUIRED_ABSENT" if row["required"] else "OPTIONAL_ABSENT"
+            if row["required"]:
+                failures.append({"path": name, "status": state})
+            rows[name] = {"status": state}
+    for name in selected.AUDIO_LIVE_ROOTS:
+        if name not in directories:
+            failures.append({"path": name, "status": "REQUIRED_ROOT_ABSENT"})
+    require(metadata_identity(root.lstat()) == metadata_identity(before), "audio-live-root-namespace-changed")
+    if (total > plan["working_bytes"] or len([r for r in rows.values() if "bytes" in r]) > plan["regular_files"]
+            or len(directories) > plan["directories"]):
+        failures.append({"status": "WHOLE_OPERATING_PLAN_EXCEEDED"})
+    return {"root_identity": list(metadata_identity(before)), "rows": rows, "directories": directories,
+            "total_bytes": total, "failures": failures, "complete": not failures,
+            "truncation_or_omission_permitted": False}
+
+
+def audio_live_pack_retention(root, destination, maximum):
+    """One bounded package of every preparation/control original, no cache."""
+    files = []
+    for folder in (root / "evidence", root / "control"):
+        for current, dirs, names in os.walk(folder, followlinks=False):
+            dirs.sort(); names.sort()
+            require(all(not (Path(current) / p).is_symlink() for p in dirs), "audio-live-retention-directory-alias")
+            for name in names:
+                path = Path(current) / name
+                files.append(path)
+                require(len(files) <= MAX_FILES, "audio-live-retention-file-count")
+    stream = io.BytesIO(); inventory = []; total = 0
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for path in sorted(files):
+            raw = audio_live_read(path, MAX_FILE); total += len(raw)
+            require(total <= maximum, "audio-live-retention-byte-reserve-exceeded")
+            name = path.relative_to(root).as_posix(); safe_member(name)
+            member = tarfile.TarInfo(name); member.mode = 0o400; member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+            inventory.append({"path": name, "bytes": len(raw), "sha256": sha(raw)})
+        index = json_bytes({"schema": "motionwright.audio-live-retained-original-index/1", "files": inventory})
+        require(len(index) <= MAX_JSON, "audio-live-retention-index-bound")
+        member = tarfile.TarInfo("retention-index.json"); member.mode = 0o400; member.size = len(index)
+        archive.addfile(member, io.BytesIO(index))
+    raw = stream.getvalue()
+    require(len(raw) <= min(maximum, MAX_FILE), "audio-live-retention-tar-overhead")
+    new_bytes(destination, raw)
+    return {"bytes": len(raw), "sha256": sha(raw), "files": len(inventory)}
+
+
+def audio_live_inner_archive(raw, index_name, *, maximum):
+    """Read retained bytes without extracting paths or trusting a TAR's names."""
+    require(type(raw) is bytes and len(raw) <= maximum <= MAX_FILE, "audio-live-inner-archive-bound")
+    files = {}; total = 0
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        for member in archive:
+            safe_member(member.name)
+            require(member.name not in files and len(files) < MAX_FILES + 1 and member.isreg()
+                    and member.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and not member.pax_headers
+                    and 0 <= member.size <= MAX_FILE, "audio-live-inner-archive-member")
+            stream = archive.extractfile(member)
+            require(stream is not None, "audio-live-inner-archive-unreadable")
+            data = stream.read(member.size + 1)
+            require(len(data) == member.size, "audio-live-inner-archive-short")
+            total += len(data); require(total <= maximum, "audio-live-inner-archive-total")
+            files[member.name] = data
+    require(index_name in files, "audio-live-inner-index-missing")
+    return files
+
+
+def audio_live_preparation_intake(raw, record, expected_context):
+    """Bind the existing producer/source originals before accepting a native PASS."""
+    import hashlib
+    expected = record["retained_preparation"]
+    require(type(expected["bytes"]) is int and len(raw) == expected["bytes"]
+            and sha(raw) == expected["sha256"], "audio-live-retained-preparation-binding")
+    files = audio_live_inner_archive(raw, "retention-index.json", maximum=MAX_FILE)
+    index = strict(files.pop("retention-index.json"))
+    require(index.get("schema") == "motionwright.audio-live-retained-original-index/1"
+            and type(index.get("files")) is list, "audio-live-retained-index-schema")
+    rows = {}
+    for row in index["files"]:
+        require(type(row) is dict and set(row) == {"path", "bytes", "sha256"}
+                and row["path"] not in rows and row["path"] in files
+                and type(row["bytes"]) is int and row["bytes"] == len(files[row["path"]])
+                and row["sha256"] == sha(files[row["path"]]), "audio-live-retained-original-changed")
+        rows[row["path"]] = row
+    require(set(rows) == set(files) and len(rows) == expected["files"], "audio-live-retained-roster")
+    request = strict(files["evidence/request.original.json"])
+    require(sha(json_bytes(request)) == record["request_sha256"], "audio-live-retained-request-changed")
+    if record["native_status"] != "PASS_ONE_EXACT_IGNORED_METHOD":
+        return {"status": "PARTIAL_OR_FAILURE_ORIGINALS_ONLY", "files": len(rows)}
+    import ci_sdk_native_source as sdk_gate
+    import startup_capture_launcher as L
+    report = L.strict_json(files["evidence/preparation.json"], 8 * 1024**2)
+    require(report["context"] == expected_context and report["clock"] == record["clock"]
+            and report["status"] == "PASS_PREPARATION_ONLY" and report["sdk_g0"] == "PASS_HYGIENE_SOURCE_FORMAT"
+            and report["producer"]["prepared"]["clippy"] == "PASS"
+            and report["producer"]["barrier"] == "OBSERVING"
+            and report["producer"]["prepared"]["steps"] == ["normal", "tests", "sandbox"],
+            "audio-live-retained-preparation-not-passed")
+    sources = audio_live_inner_archive(files["evidence/sources.tar"], "source-index.json", maximum=MAX_FILE)
+    source_index = L.strict_json(sources.pop("source-index.json"), 8 * 1024**2)
+    require(source_index == report["sources"] and set(source_index) == {"gate", "sdk"}
+            and source_index["gate"]["sha"] == expected_context["source_sha"]
+            and source_index["sdk"]["sha"] == selected.AUDIO_SOURCE_SHA
+            and source_index["sdk"]["tree"] == selected.AUDIO_SOURCE_TREE
+            and source_index["sdk"]["parents"] == [selected.AUDIO_SOURCE_PARENT],
+            "audio-live-retained-source-context")
+    roster = {}
+    for label,snapshot in source_index.items():
+        for path, identity in snapshot["files"].items():
+            name = label + "/" + path; safe_member(name)
+            require(name in sources and identity["sha256"] == sha(sources[name])
+                    and identity["bytes"] == len(sources[name])
+                    and identity["git_blob_oid"] == hashlib.sha1(b"blob " + str(len(sources[name])).encode()
+                        + b"\0" + sources[name]).hexdigest(), "audio-live-retained-source-blob")
+            roster[name] = identity
+    require(set(roster) == set(sources), "audio-live-retained-source-roster")
+    for path,digest in AUDIO_LIVE_PROVIDER_PINS.items():
+        require(sha(sources["gate/" + path]) == digest, "audio-live-retained-provider-pin")
+    for path,digest in selected.AUDIO_SOURCE_PINS.items():
+        require(sha(sources["sdk/" + path]) == digest, "audio-live-retained-sdk-pin")
+    observations = report["commands"]; commands = {}
+    for item in observations:
+        row = item["command"]; folder = "evidence/" + item["folder"] + "/"
+        receipt_name = folder + Path(item["receipt"]["path"]).name
+        require(receipt_name in files and sha(files[receipt_name]) == item["receipt"]["sha256"]
+                and L.strict_json(files[receipt_name], 8 * 1024**2) == row
+                and row["context"] == expected_context and row["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED"
+                and row["log_custody"] == "VERIFIED_SNAPSHOT" and type(row["exit_code"]) is int and row["exit_code"] == 0,
+                "audio-live-retained-command-identity")
+        for channel in ("stdout", "stderr"):
+            channel_name = folder + row[channel]["path"]
+            require(channel_name in files and len(files[channel_name]) == row[channel]["bytes"]
+                    and sha(files[channel_name]) == row[channel]["sha256"], "audio-live-retained-command-stream")
+        label = Path(receipt_name).name.removesuffix(".command.json")
+        require(label not in commands, "audio-live-duplicate-command-receipt")
+        commands[label] = (row, files[folder + row["stdout"]["path"]], files[folder + row["stderr"]["path"]])
+    sdk = Path(source_index["sdk"]["checkout"])
+    target = Path(report["producer"]["sealed"]["normal"]["semwright-mlt-video-driver"]["absolute_path"]).parent.parent
+    cargo = report["rust_tools"]["cargo"]["path"]
+    specs = selected.audio_live_binary_specs()
+    for label, argv in selected.audio_live_producers(cargo):
+        row, stdout, _ = commands["producer-" + label]
+        require(row["argv"] == argv and row["cwd"] == str(sdk), "audio-live-retained-producer-argv")
+        paths = sdk_gate.select_binary_paths(stdout, row["exit_code"], sdk, target, specs[label], testing=label == "tests")
+        for name, path in paths.items():
+            binary = report["producer"]["sealed"][label][name]
+            original = files["evidence/binaries/" + binary["sha256"]]
+            require(binary["absolute_path"] == path and len(original) == binary["bytes"]
+                    and sha(original) == binary["sha256"], "audio-live-retained-compiled-binary")
+    binary = report["producer"]["sealed"]["tests"]["live"]["absolute_path"]
+    for label,extra in (("all", []), ("ignored", ["--ignored"])):
+        row,stdout,stderr = commands["list-live-" + label]
+        require(row["argv"] == [binary, "--list", *extra, "--format", "pretty"] and not stderr,
+                "audio-live-retained-list-argv")
+        actual = selected.audio_source_list(stdout, row["exit_code"], "live", ignored_only=label == "ignored")
+        require(json_bytes(actual) == json_bytes(report["producer"]["rosters"][label]), "audio-live-retained-list-roster")
+    require(json_bytes(report["producer"]["rosters"]["ignored"]) == json_bytes(record["compiled_ignored_roster"]),
+            "audio-live-retained-ignored-roster-changed")
+    return {"status": "SOURCE_PRODUCER_AND_BINARY_ORIGINALS_BOUND", "files": len(rows),
+            "source_blob_count": len(roster), "native_reexecuted": False}
+
+
+def audio_live_snapshot_readback(raw, *, expected_context, expected_plan, expected_request_sha):
+    """Independent plaintext intake binds the original external plan, not its self-description."""
+    require(type(raw) is bytes and 0 < len(raw) <= MAX_TOTAL + MAX_FILES * 4096,
+            "audio-live-capsule-bound")
+    payload = {}; total = 0
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        for member in archive:
+            safe_member(member.name)
+            require(member.name not in payload and len(payload) <= MAX_FILES
+                    and member.isreg() and member.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                    and not member.pax_headers and 0 <= member.size <= MAX_FILE,
+                    "audio-live-capsule-member")
+            stream = archive.extractfile(member); require(stream is not None, "audio-live-member-unreadable")
+            data = stream.read(member.size + 1); require(len(data) == member.size, "audio-live-member-size")
+            total += len(data); require(total <= MAX_TOTAL + MAX_JSON, "audio-live-capsule-total")
+            payload[member.name] = data
+    manifest = strict(payload.pop("snapshot-manifest.json", b""))
+    require(manifest.get("schema") == "motionwright.ci.private-snapshot/1"
+            and type(manifest.get("selected_originals_complete")) is bool,
+            "audio-live-existing-snapshot-schema")
+    listed = {}
+    for root_name, root in manifest["roots"].items():
+        require(root_name in {"working", "retained"}, "audio-live-capsule-root")
+        for row in root.get("files", []):
+            if "observation" in row:
+                name = row["archive_path"]; observed = row["observation"]
+                require(name not in listed and name in payload and observed["sha256"] == sha(payload[name])
+                        and observed["size"] == len(payload[name]), "audio-live-capsule-original-binding")
+                listed[name] = observed
+    require(set(payload) == set(listed), "audio-live-unlisted-or-missing-payload")
+    record = strict(payload.get("retained/result.json", b""))
+    require(record.get("schema") == "motionwright.audio-live-local-custody/1"
+            and record.get("context") == expected_context
+            and record.get("request_sha256") == expected_request_sha
+            and record.get("operating_plan_sha256") == sha(json_bytes(expected_plan)),
+            "audio-live-external-plan-context-required")
+    plan = selected.audio_live_plan(expected_plan)
+    roster = {"working/evidence/" + row["root"] + "/" + row["path"]: row for row in plan["entries"]}
+    working = {name: data for name,data in payload.items() if name.startswith("working/")}
+    complete = (manifest["selected_originals_complete"] and record.get("inventory_complete") is True
+                and record.get("source_unchanged") is True and record.get("secondary_custody_errors") == [])
+    complete &= all(name in roster and len(data) <= roster[name]["max_bytes"] for name,data in working.items())
+    complete &= all(not row["required"] or name in working for name,row in roster.items())
+    complete &= sum(map(len, working.values())) <= plan["working_bytes"] and len(working) <= plan["regular_files"]
+    require(record.get("selected_originals_complete") is complete,
+            "audio-live-inconsistent-completeness-claim")
+    preparation = audio_live_preparation_intake(payload["retained/preparation.tar"], record, expected_context)
+    require(len(payload["retained/preparation.tar"]) <= plan["retention_bytes"]
+            and preparation["files"] + preparation.get("source_blob_count", 0) + 16 <= plan["retention_files"],
+            "audio-live-retained-original-budget")
+    admitted = None
+    if record.get("native_status") == "PASS_ONE_EXACT_IGNORED_METHOD":
+        require(complete, "audio-live-pass-with-incomplete-originals")
+        native = record["native_observation"]
+        for name, expected in native["raw"].items():
+            original = payload["retained/live." + name + ".original"]
+            require(type(expected["bytes"]) is int and len(original) == expected["bytes"]
+                    and sha(original) == expected["sha256"], "audio-live-process-original-changed")
+        require(payload["retained/live.lifetime.original"] == b""
+                and payload["retained/live.ready.original"] == b"READY\n"
+                and [strict(line) for line in payload["retained/live.status.original"].splitlines()]
+                    == native["status_rows"], "audio-live-process-protocol-originals")
+        terminal = selected.audio_live_terminal(payload["retained/live.stdout.original"], payload["retained/live.stderr.original"],
+                                                native["bubblewrap_exit_code"], record["compiled_ignored_roster"])
+        admitted = selected.audio_live_join(native, terminal)
+    return {"schema": "motionwright.audio-live-offline-intake/1", "context": expected_context,
+            "selected_originals_complete": complete, "native": admitted, "preparation": preparation,
+            "native_status": record.get("native_status"), "automatic_retry": False,
+            "formal_acceptance": False, "human_acceptance": False}
+
+
+def audio_live_manifest_bound(plan, root):
+    """Bound the real shared snapshot schema, including its three stat maps."""
+    maximum = 2**127 - 1
+    metadata = {key: maximum for key in ("device", "inode", "size", "mode", "uid", "gid", "mtime_ns", "ctime_ns")}
+    entries = ["evidence/" + row["root"] + "/" + row["path"] for row in plan["entries"]]
+    roots = {}
+    for label, paths, prefix in (("working", entries, root / "volume"),
+            ("retained", ["x" * 160 + str(i) for i in range(16)], root / "retained")):
+        rows = []
+        for path in paths:
+            require(len(str(prefix / path).encode()) <= 1024, "audio-live-observation-path-bound")
+            rows.append({"archive_path": label + "/" + path, "observation": {
+                "path": str(prefix / path), "sha256": "f" * 64, "size": maximum,
+                "before": metadata, "after": metadata, "namespace_after": metadata}})
+        roots[label] = {"status": "CAPTURED", "files": rows}
+    bound = json_bytes({"schema": "motionwright.ci.private-snapshot/1", "scope": "selected-original-files-at-read-time",
+                       "roots": roots, "selected_originals_complete": False, "complete_owner_state_claimed": False})
+    require(len(bound) <= MAX_JSON, "audio-live-snapshot-manifest-budget-before-effects")
+    return len(bound)
+
+
+def audio_live_retention_footprint(root, plan, preparation):
+    files, size = [], 0
+    for folder in (root / "control", root / "evidence"):
+        for current, directories, names in os.walk(folder, followlinks=False):
+            require(all(not (Path(current) / name).is_symlink() for name in directories),
+                    "audio-live-retention-directory-alias")
+            for name in names:
+                path = Path(current) / name
+                info = path.lstat()
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "audio-live-retention-nonregular")
+                size += info.st_size; files.append(path)
+    # The source TAR does not erase the count of original blobs inside it.
+    source_count = sum(len(preparation["sources"][name]["files"]) for name in ("gate", "sdk"))
+    reserve = 8 * 1024**2  # stdout/stderr maxima, controller records and TAR framing.
+    require(size + reserve <= plan["retention_bytes"]
+            and len(files) + source_count + 16 <= plan["retention_files"],
+            "audio-live-retention-reserve-does-not-cover-actual-inputs")
+    return {"observed_bytes": size, "observed_original_count": len(files) + source_count,
+            "reserved_additional_bytes": reserve, "original_count_not_reduced_by_packaging": True}
+
+
+def audio_live_worker_record(value):
+    result = {key: item for key,item in value.items() if key not in {"result_prefix", "raw"}}
+    if "result_prefix" in value:
+        result["result_prefix"] = {"bytes": len(value["result_prefix"]), "sha256": sha(value["result_prefix"])}
+    if "raw" in value:
+        result["raw"] = {name: {"bytes": len(raw), "sha256": sha(raw)} for name,raw in value["raw"].items()}
+    return result
+
+
+def audio_live_seal(root, admitted, stages, native_status, compiled_roster, clock, uid, gid):
+    """A bounded child retains partial originals, then calls the existing cipher once."""
+    import time
+    import ci_sdk_native_source as sdk_gate
+    require(time.monotonic_ns() < clock["seal_deadline_ns"], "audio-live-no-seal-after-original-deadline")
+    retained = root / "retained"; retained.mkdir(mode=0o700)
+    for label, observation in stages.items():
+        if "raw" in observation:
+            for name, raw in observation["raw"].items():
+                new_bytes(retained / (label + "." + name + ".original"), raw)
+        if "result_prefix" in observation:
+            new_bytes(root / "control" / (label + ".worker-prefix.original"), observation["result_prefix"])
+    source_stable = False; errors = []
+    report_path = root / "evidence/preparation.json"
+    preparation = None
+    if report_path.is_file():
+        import startup_capture_launcher as L
+        preparation = L.strict_json(audio_live_read(report_path, 8 * 1024**2), 8 * 1024**2)
+        if "sources" in preparation:
+            try:
+                store = sdk_gate.custody
+                for snapshot in preparation["sources"].values():
+                    require(store.source_snapshot(Path(snapshot["checkout"]), snapshot["sha"], tuple(snapshot["files"]), snapshot["tree"]) == snapshot,
+                            "audio-live-final-source-changed")
+                if "producer" in preparation:
+                    for collection in preparation["producer"]["sealed"].values():
+                        sdk_gate.verify_binaries(collection, root / "target")
+                config = strict(audio_live_read(root / "control/worker.json", MAX_JSON))
+                for descriptor in config["tools"].values():
+                    require(audio_live_fingerprint(Path(descriptor["path"])) ==
+                            {key:descriptor[key] for key in ("path", "bytes", "sha256", "identity")},
+                            "audio-live-final-runtime-tool-changed")
+                for descriptor in preparation.get("rust_tools", {}).values():
+                    require(audio_live_fingerprint(Path(descriptor["path"])) ==
+                            {key:descriptor[key] for key in ("path", "bytes", "sha256", "identity")},
+                            "audio-live-final-rust-tool-changed")
+                if "runtime" in stages and stages["runtime"].get("status") == "OBSERVED":
+                    installed = stages["runtime"]["value"]["installation"]
+                    require(sha(audio_live_read(Path(installed["installed_path"]), MAX_FILE))
+                            == installed["actual_installed_module_sha256"] == g2.REPAIRED_MODULE_SHA256,
+                            "audio-live-final-installed-module-changed")
+                sdk_gate.verify_commands(root / "evidence", preparation["commands"])
+                source_stable = True
+            except BaseException as error:
+                errors.append(type(error).__name__ + ":" + str(error))
+    inventory = {"complete": False, "failures": [{"status": "LIVE_ROOT_NOT_CREATED"}], "rows": {}}
+    live_root = root / "volume/evidence"
+    if live_root.is_dir():
+        try:
+            inventory = audio_live_inventory(live_root, admitted["plan"])
+            # The auxiliary home/tmp namespace is also retained. Any leaf there
+            # is outside the closed operating plan and prevents completeness.
+            if any(p.is_file() or p.is_symlink() for p in (root / "volume/auxiliary").rglob("*")):
+                inventory["complete"] = False
+                inventory["failures"].append({"status": "UNPLANNED_AUXILIARY_ORIGINALS"})
+        except BaseException as error:
+            errors.append(type(error).__name__ + ":" + str(error))
+            inventory["complete"] = False
+    new_json(root / "control/final-inventory.json", inventory)
+    new_json(root / "control/process-stages.json", {name: audio_live_worker_record(value) for name,value in stages.items()})
+    packed = audio_live_pack_retention(root, retained / "preparation.tar", admitted["plan"]["retention_bytes"])
+    complete = inventory["complete"] and source_stable and not errors
+    # A durable prefix does not become a successful or complete native command.
+    status = native_status if complete else "UNKNOWN_OR_INCOMPLETE_CUSTODY"
+    record = {"schema": "motionwright.audio-live-local-custody/1", "context": admitted["context"], "clock": clock,
+        "request_sha256": sha(json_bytes(admitted["request"])), "operating_plan_sha256": sha(json_bytes(admitted["request"]["plan"])),
+        "native_status": status, "native_observation": audio_live_worker_record(stages.get("live", {})),
+        "compiled_ignored_roster": compiled_roster, "inventory_complete": inventory["complete"],
+        "selected_originals_complete": complete, "source_unchanged": source_stable,
+        "secondary_custody_errors": errors, "retained_preparation": packed,
+        "automatic_retry": False, "provider_graceful_shutdown": "NOT_INFERRED",
+        "global_process_tree_closed": False, "formal_acceptance": False, "human_acceptance": False}
+    new_json(retained / "result.json", record)
+    roots = {"retained": retained}
+    if (root / "volume/evidence").is_dir():
+        roots["working"] = root / "volume"
+    plaintext, snapshot_complete = gather_snapshot(roots, preserve_partial=True)
+    # Validate the actual schema/manifest/payload before encryption. Incomplete
+    # snapshots are preserved but cannot be promoted to the test verdict.
+    if snapshot_complete is not True and complete:
+        raise CustodyRejected("audio-live-snapshot-became-incomplete; originals-retained-no-retry")
+    intake = audio_live_snapshot_readback(plaintext, expected_context=admitted["context"],
+        expected_plan=admitted["request"]["plan"], expected_request_sha=sha(json_bytes(admitted["request"])))
+    envelope = encrypt_snapshot(plaintext, admitted["recipient"], admitted["context"])
+    path = root / "export/originals.mwci"
+    import startup_capture_launcher as L
+    L._write_new(path, envelope)
+    require(audio_live_read(path, MAX_TOTAL + MAX_FILES * 4096 + 8256) == envelope,
+            "audio-live-cipher-readback-changed")
+    public = {"schema": "motionwright.audio-live-public/1", "context": admitted["context"], "clock": clock,
+        "scope": selected.AUDIO_LIVE_SCOPE, "native_status": record["native_status"],
+        "ciphertext_sha256": sha(envelope), "ciphertext_bytes": len(envelope),
+        "recipient_spki_sha256": selected.AUDIO_LIVE_RECIPIENT,
+        "selected_originals_complete": intake["selected_originals_complete"],
+        "source_unchanged": source_stable, "delivery_verified": False,
+        "automatic_retry": False, "human_acceptance": False, "release_authorized": False}
+    owner = (uid, gid)
+    require(all(type(value) is int and value > 0 for value in owner), "audio-live-export-owner")
+    os.chown(path, *owner)
+    new_bytes(root / "export/public.json", json_bytes(public), owner=owner, mode=0o400)
+    require(time.monotonic_ns() < clock["seal_deadline_ns"], "audio-live-seal-returned-after-original-deadline")
+    return public
+
+
+def audio_live_namespace_closed(value):
+    fields = ("deadline_unchanged", "complete_before_cleanup_deadline", "namespace_init_authenticated",
+              "namespace_init_exited", "command_authenticated_before_release", "command_executable_observed",
+              "command_exited", "sync_eof", "stdout_eof", "stderr_eof", "status_eof",
+              "monitor_result_eof", "monitor_pidfd_exited")
+    return (all(value.get(name) is True for name in fields)
+            and type(value.get("monitor_wait_exit_code")) is int
+            and type(value.get("bubblewrap_exit_code")) is int
+            and value["monitor_wait_exit_code"] == value["bubblewrap_exit_code"]
+            and value.get("truncated") is False and value.get("monitor_result_truncated") is False
+            and value.get("forced_cleanup") is False and value.get("errors") == [])
+
+
+def audio_live_ready(gate, root, admitted, prepared, mounted):
+    import ci_sdk_native_source as sdk_gate
+    L = sys.modules.get("startup_capture_launcher")
+    require(L is not None, "audio-live-framework-must-be-loaded-before-original-clock")
+    report = L.strict_json(audio_live_read(root / "evidence/preparation.json", 8 * 1024**2), 8 * 1024**2)
+    require(sha(json_bytes(report)) == prepared["preparation_sha256"], "audio-live-preparation-bytes-changed")
+    require(report["status"] == "PASS_PREPARATION_ONLY" and report["sdk_g0"] == "PASS_HYGIENE_SOURCE_FORMAT",
+            "audio-live-own-sdk-g0-missing")
+    for collection in prepared["sealed"].values():
+        sdk_gate.verify_binaries(collection, root / "target")
+    for snapshot in report["sources"].values():
+        require(sdk_gate.custody.source_snapshot(Path(snapshot["checkout"]), snapshot["sha"], tuple(snapshot["files"]), snapshot["tree"]) == snapshot,
+                "audio-live-source-changed-before-effect")
+    live_root = Path(mounted["evidence_root"])
+    require(live_root == root / "volume/evidence" and not any(live_root.iterdir())
+            and list(metadata_identity(live_root.lstat())) == mounted["evidence_identity"],
+            "audio-live-evidence-root-changed-before-effect")
+    manifest_bound = audio_live_manifest_bound(admitted["plan"], root)
+    footprint = audio_live_retention_footprint(root, admitted["plan"], report)
+    return {"manifest_upper_bytes": manifest_bound, "retention_footprint": footprint,
+            "resource_before_effect": audio_resource_preflight(root),
+            "evidence_identity": mounted["evidence_identity"]}
+
+
+def audio_live_run(gate, output, request_raw, *, started_ns, environment=None, uid=None, gid=None):
+    """A single controller; SDK work is impossible without a reviewed exact row."""
+    import time
+    L = sys.modules.get("startup_capture_launcher")
+    require(L is not None, "audio-live-framework-must-be-loaded-before-original-clock")
+    env = dict(os.environ if environment is None else environment)
+    current = selected.audio_live_context(env, sys.platform)
+    clock = selected.audio_live_clock(started_ns, time.monotonic_ns())
+    require(type(request_raw) is bytes and 0 < len(request_raw) <= 65536, "audio-live-request-byte-bound")
+    request = strict(request_raw)
+    admitted = selected.audio_live_admit(request, current)
+    require(type(uid) is int and type(gid) is int and uid > 0 and gid > 0,
+            "audio-live-explicit-normal-process-owner")
+    # This pure boundary precedes path reads, mkdir, mount, worker creation,
+    # any Cargo and any renderer. An empty catalogue stops here.
+    require(Path(L.__file__).absolute() == Path(gate).absolute() / "tooling/startup_capture_launcher.py",
+            "audio-live-generic-provider-location")
+    gate, root = Path(gate).absolute(), Path(output).absolute()
+    safe_environment = audio_live_environment(env, root)
+    stages, compiled_roster = {}, None
+    native_status = "NOT_RUN"
+    held_root = None
+    result = {"schema": "motionwright.audio-live-controller/1", "context": current, "clock": clock,
+              "status": "UNKNOWN_NO_RETRY", "native_status": native_status, "automatic_retry": False,
+              "whole_tree_closure_after_controller_crash": "NOT_CLAIMED"}
+    def worker(label, operation, deadline):
+        require(label not in stages, "audio-live-operation-cannot-be-replayed")
+        observed = audio_live_worker(L, lambda _: operation(), deadline)
+        stages[label] = observed
+        require(observed["status"] == "OBSERVED", "audio-live-worker-unknown:" + label)
+        return observed["value"]
+    try:
+        bootstrap = worker("bootstrap", lambda: audio_live_bootstrap_inputs(gate, root, admitted, env, clock, uid, gid),
+                           min(clock["work_deadline_ns"], started_ns + 60 * 1_000_000_000))
+        tools = bootstrap["tools"]
+        # The inherited interpreter/crypto setup belongs to the gate bootstrap.
+        # SDK checkout, toolchain provisioning, G0 and every producer are below
+        # the original clock and inside this separate retained namespace.
+        readonly = bootstrap["readonly_roots"]
+        stage_code = ("import sys; sys.path.insert(0,sys.argv[1]); import native_mlt_g2_custody as m; "
+                      "raise SystemExit(m.audio_live_prepare_stage(sys.argv[2],sys.argv[3]))")
+        argv = [bootstrap["python_launch"], "-I", "-B", "-X", "utf8", "-c", stage_code,
+                str(gate / "tooling"), str(root / "control/worker.json"), bootstrap["configuration_sha256"]]
+        preparation_environment = {**safe_environment, **{key: env[key] for key in env if key.startswith("GITHUB_") and "TOKEN" not in key}}
+        prep_observation = audio_live_namespace(L, bwrap=tools["bwrap"]["path"], python=bootstrap["python_launch"],
+            argv=argv, working=str(gate), readonly=readonly, writable=[str(root)], environment=preparation_environment,
+            clock=clock, effect_deadline_ns=started_ns + 900 * 1_000_000_000,
+            uid=uid, gid=gid, expected_executable=tools["python"]["identity"],
+            expected_python=tools["python"]["identity"], expected_bwrap=tools["bwrap"]["identity"],
+            python_binary=tools["python"]["path"], command_binary=tools["python"]["path"], preparation=True)
+        stages["preparation"] = prep_observation
+        prepared = worker("preparation-readback", lambda: audio_live_preparation_readback(root, current, clock), clock["work_deadline_ns"])
+        native_status = "NOT_RUN_PREPARATION_FAILED"
+        require(audio_live_namespace_closed(prep_observation) and prep_observation["bubblewrap_exit_code"] == 0
+                and prepared["status"] == "PASS_PREPARATION_ONLY", "audio-live-preparation-not-admissible")
+        compiled_roster = prepared["rosters"]["ignored"]
+        mounted = worker("runtime", lambda: audio_live_runtime_and_volume(gate, root, admitted, bootstrap, env, uid, gid),
+                         clock["work_deadline_ns"])
+        ready = worker("ready", lambda: audio_live_ready(gate, root, admitted, prepared, mounted), clock["work_deadline_ns"])
+        held_root = L.OwnedFD(os.open(mounted["evidence_root"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC),
+                              "audio-live-evidence-root")
+        require(list(metadata_identity(os.fstat(held_root.fd))) == ready["evidence_identity"],
+                "audio-live-root-identity-before-release")
+        live_environment = audio_live_environment(env, root / "volume/auxiliary")
+        live_environment.update(GITHUB_WORKSPACE=env["GITHUB_WORKSPACE"], CARGO_TARGET_DIR=str(root / "target"),
+            CARGO_HOME=str(root / "cargo-home"), RUSTUP_HOME=str(root / "rustup-home"),
+            SEMWRIGHT_TEST_MLT_VIDEO="1", SEMWRIGHT_TEST_MLT_VIDEO_EVIDENCE_ROOT=mounted["evidence_root"],
+            SEMWRIGHT_TEST_SANDBOX_HELPER=prepared["sealed"]["sandbox"]["semwright-sandbox"]["absolute_path"],
+            SEMWRIGHT_TEST_MELT=tools["melt"]["path"], SEMWRIGHT_TEST_FFPROBE=tools["ffprobe"]["path"],
+            SEMWRIGHT_TEST_FFMPEG=tools["ffmpeg"]["path"], SEMWRIGHT_TEST_BWRAP=tools["bwrap"]["path"])
+        binary = prepared["sealed"]["tests"]["live"]
+        native_status = "UNKNOWN_NO_RETRY"
+        native = audio_live_namespace(L, bwrap=tools["bwrap"]["path"], python=bootstrap["python_launch"],
+            argv=selected.audio_live_argv(binary["absolute_path"]), working=str(root / "sdk"),
+            readonly=[*readonly, str(root / "sdk"), str(root / "target")],
+            writable=[str(root / "volume/evidence"), str(root / "volume/auxiliary")], environment=live_environment,
+            clock=clock, effect_deadline_ns=clock["work_deadline_ns"], uid=uid, gid=gid,
+            expected_executable=prepared["kernel_identities"]["tests"]["live"], expected_python=tools["python"]["identity"],
+            expected_bwrap=tools["bwrap"]["identity"], python_binary=tools["python"]["path"],
+            command_binary=binary["absolute_path"])
+        stages["live"] = native
+        require(list(metadata_identity(os.fstat(held_root.fd)))[:5] == ready["evidence_identity"][:5],
+                "audio-live-root-replaced-after-operation")
+        if audio_live_namespace_closed(native):
+            native_status = "FAIL_RUST_TERMINAL"
+            terminal = selected.audio_live_terminal(native["raw"]["stdout"], native["raw"]["stderr"],
+                                                   native["bubblewrap_exit_code"], compiled_roster)
+            result["native"] = selected.audio_live_join(native, terminal)
+            native_status = terminal["status"]
+    except BaseException as error:
+        result["error"] = type(error).__name__ + ":" + str(error)[:256]
+    finally:
+        if held_root is not None:
+            if not held_root.close():
+                native_status = "UNKNOWN_ROOT_CLOSE_NO_RETRY"
+            result["held_root"] = held_root.metadata()
+        result["native_status"] = native_status
+        if "bootstrap" in stages:
+            sealed = audio_live_worker(L, lambda _: audio_live_seal(root, admitted, stages, native_status, compiled_roster, clock, uid, gid),
+                                       clock["seal_deadline_ns"], limit=MAX_JSON)
+            stages["seal"] = sealed
+            if sealed["status"] == "OBSERVED":
+                result.update(status="LOCAL_CUSTODY_READY_NOT_DELIVERED", public=sealed["value"])
+            else:
+                result.update(status="INCOMPLETE_CUSTODY_NO_RETRY", export_ready=False)
+        result["stages"] = {name: audio_live_worker_record(value) for name,value in stages.items()}
+        result["finished_ns"] = time.monotonic_ns()
+        result["deadline_unchanged"] = True
+        if result["status"] == "LOCAL_CUSTODY_READY_NOT_DELIVERED":
+            persisted = audio_live_worker(L, lambda _: (new_json(root / "control/controller-observed.json", result),
+                                                        {"record_sha256": sha(json_bytes(result))})[1],
+                                           clock["seal_deadline_ns"], limit=MAX_JSON)
+            result["controller_record"] = audio_live_worker_record(persisted)
+            if persisted["status"] != "OBSERVED":
+                result["status"] = "INCOMPLETE_CONTROLLER_RECORD_NO_RETRY"
+    return result
+
+
+def audio_live_delivery_window(root, current, now_ns, boot_id):
+    value = strict(audio_live_read(Path(root) / "control/clock.json", MAX_JSON))
+    clock = {key: value[key] for key in ("started_ns", "work_deadline_ns", "cleanup_deadline_ns", "seal_deadline_ns",
+                                        "upload_deadline_ns", "deadline_ns")}
+    expected = selected.audio_live_clock(clock["started_ns"], clock["started_ns"])
+    require(clock == expected and value["context"] == current and value["boot_id"] == boot_id
+            and type(now_ns) is int and clock["started_ns"] <= now_ns
+            and now_ns + 270 * 1_000_000_000 < clock["deadline_ns"],
+            "audio-live-upload-and-readback-reserve-exhausted")
+    public = strict(audio_live_read(Path(root) / "export/public.json", MAX_JSON))
+    controller = strict(audio_live_read(Path(root) / "control/controller-observed.json", MAX_JSON))
+    require(controller["status"] == "LOCAL_CUSTODY_READY_NOT_DELIVERED" and controller["context"] == current
+            and controller["clock"] == clock and controller["stages"]["seal"]["status"] == "OBSERVED"
+            and controller["stages"]["seal"]["original_process"]["original_wait"]["exit_code"] == 0
+            and controller["stages"]["seal"]["original_process"]["result_eof"] is True
+            and controller["stages"]["seal"]["original_process"]["errors"] == [],
+            "audio-live-seal-original-wait-and-eof-required")
+    require(public["clock"] == clock and public["context"] == current
+            and set(p.name for p in (Path(root) / "export").iterdir()) == {"public.json", "originals.mwci"},
+            "audio-live-export-roster")
+    raw = audio_live_read(Path(root) / "export/originals.mwci", MAX_TOTAL + MAX_FILES * 4096 + 8256)
+    require(sha(raw) == public["ciphertext_sha256"] and len(raw) == public["ciphertext_bytes"],
+            "audio-live-export-original-changed")
+    return public
+
+
+def audio_live_verify_delivery_zip(raw, public, envelope):
+    require(type(raw) is bytes and len(raw) <= MAX_TOTAL + MAX_FILES * 4096 + 1024 * 1024,
+            "audio-live-delivery-zip-bound")
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        rows = archive.infolist()
+        require(len(rows) == 2 and {x.filename for x in rows} == {"public.json", "originals.mwci"}
+                and all(not x.is_dir() and stat.S_IFMT(x.external_attr >> 16) in (0, stat.S_IFREG) for x in rows)
+                and sum(x.file_size for x in rows) <= len(envelope) + MAX_JSON and archive.testzip() is None,
+                "audio-live-delivery-exact-roster")
+        require(archive.read("public.json") == json_bytes(public)
+                and archive.read("originals.mwci") == envelope
+                and sha(envelope) == public["ciphertext_sha256"], "audio-live-delivery-bytes-changed")
+    return {"status": "CIPHERTEXT_DELIVERED_OFFLINE_INTAKE_REQUIRED", "context": public["context"],
+            "ciphertext_sha256": sha(envelope), "zip_sha256": sha(raw), "automatic_retry": False,
+            "decryption_performed": False, "formal_acceptance": False}
+
+
+def audio_live_delivery_readback(root, current, artifact_id, zip_digest):
+    """Same GitHub API/ZIP channel; no new transport or private-key upload."""
+    import resource
+    import time
+    clock = strict(audio_live_read(root / "control/clock.json", MAX_JSON))
+    require(clock["context"] == current and clock["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            and type(artifact_id) is int and artifact_id > 0 and type(zip_digest) is str and HEX.fullmatch(zip_digest),
+            "audio-live-delivery-context")
+    folder = root / "delivery"; folder.mkdir(mode=0o700)
+    def api(route, name, maximum):
+        remaining = (clock["deadline_ns"] - time.monotonic_ns()) / 1_000_000_000
+        require(remaining > 3, "audio-live-delivery-deadline")
+        argv = ["/usr/bin/gh", "api", route]
+        new_json(folder / (name + ".intent.json"), {"argv": argv, "original_deadline_ns": clock["deadline_ns"], "automatic_retry": False})
+        before_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+        try:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (maximum, before_limit[1]))
+            with (folder / (name + ".stdout.original")).open("xb") as out, (folder / (name + ".stderr.original")).open("xb") as err:
+                process = subprocess.run(argv, stdout=out, stderr=err, timeout=min(20, remaining - 2), check=False)
+        finally:
+            resource.setrlimit(resource.RLIMIT_FSIZE, before_limit)
+        new_json(folder / (name + ".terminal.json"), {"exit_code": process.returncode, "automatic_retry": False})
+        require(process.returncode == 0 and time.monotonic_ns() < clock["deadline_ns"], "audio-live-delivery-api-failed")
+        return audio_live_read(folder / (name + ".stdout.original"), maximum)
+    prefix = "repos/" + REPO + "/actions/artifacts/" + str(artifact_id)
+    metadata = strict(api(prefix, "artifact-metadata", MAX_JSON))
+    require(type(metadata.get("id")) is int and metadata.get("id") == artifact_id and metadata.get("expired") is False
+            and type(metadata.get("workflow_run", {}).get("id")) is int
+            and metadata.get("workflow_run", {}).get("id") == int(current["run_id"])
+            and metadata.get("workflow_run", {}).get("head_sha") == current["source_sha"]
+            and metadata.get("digest") == "sha256:" + zip_digest
+            and type(metadata.get("size_in_bytes")) is int
+            and 0 < metadata["size_in_bytes"] <= MAX_TOTAL + MAX_FILES * 4096 + 1024 * 1024,
+            "audio-live-delivery-artifact-identity")
+    raw = api(prefix + "/zip", "artifact-zip", MAX_TOTAL + MAX_FILES * 4096 + 1024 * 1024)
+    require(len(raw) == metadata["size_in_bytes"] and sha(raw) == zip_digest, "audio-live-delivery-zip-identity")
+    public = strict(audio_live_read(root / "export/public.json", MAX_JSON))
+    envelope = audio_live_read(root / "export/originals.mwci", MAX_TOTAL + MAX_FILES * 4096 + 8256)
+    result = audio_live_verify_delivery_zip(raw, public, envelope)
+    require(time.monotonic_ns() < clock["deadline_ns"], "audio-live-delivery-returned-after-H")
+    new_json(folder / "receipt.json", result)
+    return result
+
+
+def audio_live_arguments(argv):
+    class SilentParser(argparse.ArgumentParser):
+        def error(self, message):
+            raise CustodyRejected("audio-live-argument-contract")
+    parser = SilentParser(add_help=False)
+    parser.add_argument("action", choices=("audio-live", "audio-live-window", "audio-live-delivery"))
+    parser.add_argument("--gate", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    for name in ("uid", "gid", "started-ns", "artifact-id"):
+        parser.add_argument("--" + name, type=int)
+    parser.add_argument("--artifact-digest")
+    return parser.parse_args(argv)
+
+
+def audio_live_cli(args, original_started_ns, environment):
+    import time
+    L = sys.modules.get("startup_capture_launcher")
+    require(L is not None, "audio-live-framework-bootstrap-missing")
+    code = 2
+    lines = []
+    deadline = original_started_ns + 1800 * 1_000_000_000
+    try:
+        require(args.gate is not None and args.output is not None, "audio-live-paths-required")
+        if args.action == "audio-live":
+            result = audio_live_run(args.gate, args.output, environment.get("MW_AUDIO_LIVE_REQUEST", "").encode(),
+                                    started_ns=original_started_ns, environment=environment, uid=args.uid, gid=args.gid)
+            ready = result["status"] == "LOCAL_CUSTODY_READY_NOT_DELIVERED"
+            lines = ["started_ns=" + str(original_started_ns), "custody_ready=" + str(ready).lower()]
+            code = 0 if ready else 2
+        else:
+            require(type(args.started_ns) is int and 0 < args.started_ns <= original_started_ns,
+                    "audio-live-original-followup-clock-required")
+            deadline = args.started_ns + 1800 * 1_000_000_000
+            current = selected.audio_live_context(environment, sys.platform)
+            if args.action == "audio-live-window":
+                observed = audio_live_worker(L, lambda _: audio_live_delivery_window(args.output, current,
+                    time.monotonic_ns(), Path("/proc/sys/kernel/random/boot_id").read_text().strip()),
+                    args.started_ns + 1530 * 1_000_000_000, limit=MAX_JSON)
+                ready = observed["status"] == "OBSERVED"
+                lines = ["upload_ready=" + str(ready).lower()]
+                code = 0 if ready else 2
+            else:
+                observed = audio_live_worker(L, lambda _: audio_live_delivery_readback(args.output, current,
+                    args.artifact_id, args.artifact_digest), deadline, limit=MAX_JSON)
+                delivered = observed["status"] == "OBSERVED"
+                lines = ["delivered=" + str(delivered).lower(), "offline_intake_required=true"]
+                code = 0 if delivered else 2
+    except BaseException:
+        lines = ["custody_ready=false", "upload_ready=false", "delivered=false", "automatic_retry=false"]
+    try:
+        os.set_blocking(1, False)
+        L._write_pipe(1, ("\n".join(lines) + "\n").encode(), deadline)
+    except BaseException:
+        code = 2
+    # No Python flush, another attempt, or a new clock after the original H.
+    os._exit(code)
+
 def main(argv=None):
+    import time
+    original_started_ns = time.monotonic_ns()
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens and tokens[0] in {"audio-live", "audio-live-window", "audio-live-delivery"}:
+        try:
+            parsed = audio_live_arguments(tokens)
+        except BaseException:
+            parsed = argparse.Namespace(action="audio-live", gate=None, output=None)
+        return audio_live_cli(parsed, original_started_ns, dict(os.environ))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("prepare", "guard", "handoff", "inputs", "begin", "exit", "seal", "audio-source-g1"))
     parser.add_argument("--uid", type=int)

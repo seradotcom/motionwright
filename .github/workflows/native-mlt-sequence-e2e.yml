@@ -6,7 +6,7 @@ on:
       verification_scope:
         description: Native verification selection
         type: choice
-        options: [normal, source, repaired-g2, film180-g2, audio-source-g0, audio-source-g1]
+        options: [normal, source, repaired-g2, film180-g2, audio-source-g0, audio-source-g1, audio-derive-live-g2]
         default: normal
         required: true
       expected_source_sha:
@@ -16,6 +16,11 @@ on:
       expected_sdk_sha:
         description: "Exact SDK source for the additive audio source G1"
         type: string
+        required: false
+      audio_live_request:
+        description: Closed technical request for the separately reviewed Audio live scope
+        type: string
+        default: ''
         required: false
       g2_admission:
         description: Admitted runtime source artifacts and public recovery key for the selected G2
@@ -95,8 +100,8 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2') && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2')) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'audio-derive-live-g2') && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'audio-derive-live-g2')) }}
 
 defaults:
   run:
@@ -3386,14 +3391,14 @@ jobs:
           retention-days: 14
 
   audio-source:
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'audio-source-g0' || inputs.verification_scope == 'audio-source-g1')) }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'audio-source-g0' || inputs.verification_scope == 'audio-source-g1' || inputs.verification_scope == 'audio-derive-live-g2')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 220
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      MW_MLT_SCOPE: ${{ github.event_name == 'push' && 'audio-source-g0' || inputs.verification_scope }}
+      MW_MLT_SCOPE: ${{ (github.event_name == 'push' || inputs.verification_scope == 'audio-derive-live-g2') && 'audio-source-g0' || inputs.verification_scope }}
       MW_EXPECTED_GATE_SHA: ${{ inputs.expected_source_sha }}
-      MW_EXPECTED_SDK_SHA: ${{ inputs.expected_sdk_sha }}
+      MW_EXPECTED_SDK_SHA: ${{ inputs.verification_scope != 'audio-derive-live-g2' && inputs.expected_sdk_sha || '' }}
       LD_PRELOAD: ''
       LD_LIBRARY_PATH: ''
       LD_AUDIT: ''
@@ -3516,3 +3521,145 @@ jobs:
             ${{ env.MW_AUDIO_ORIGINALS }}
           if-no-files-found: error
           retention-days: 14
+
+  audio-live:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'audio-derive-live-g2' }}
+    needs: audio-source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MW_MLT_SCOPE: audio-derive-live-g2
+      MW_EXPECTED_GATE_SHA: ${{ inputs.expected_source_sha }}
+      MW_EXPECTED_SDK_SHA: ${{ inputs.expected_sdk_sha }}
+      MW_AUDIO_LIVE_REQUEST: ${{ inputs.audio_live_request }}
+      SEMWRIGHT_CHECKOUT: ''
+      LD_PRELOAD: ''
+      LD_LIBRARY_PATH: ''
+      LD_AUDIT: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          path: gate
+          persist-credentials: false
+      - name: Reject unadmitted live requests before bootstrap or SDK setup
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$GITHUB_WORKFLOW_SHA"
+          test "$MW_EXPECTED_GATE_SHA" = "$GITHUB_SHA"
+          test "$MW_EXPECTED_SDK_SHA" = b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6
+          test "$(git -C gate rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -I -B -X utf8 - <<'PY'
+          import ast,json,os
+          from pathlib import Path
+          raw=os.environ["MW_AUDIO_LIVE_REQUEST"]
+          assert 0 < len(raw.encode()) <= 65536
+          request=json.loads(raw)
+          source=Path("gate/tooling/native_mlt_evidence_selection.py").read_text()
+          matches=[n.value for n in ast.parse(source).body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=="AUDIO_LIVE_ADMISSIONS" for t in n.targets)]
+          assert len(matches)==1
+          catalogue=ast.literal_eval(matches[0])
+          assert type(catalogue) is dict and request.get("admission_id") in catalogue, "live authority is not admitted"
+          PY
+      - name: Prepare only the existing gate custody interpreter
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          boot="$RUNNER_TEMP/mw-audio-live-bootstrap-$GITHUB_RUN_ID-1"
+          test ! -e "$boot"
+          mkdir -m 700 "$boot"
+          sudo apt-get update > "$boot/apt-update.stdout" 2> "$boot/apt-update.stderr"
+          sudo apt-get install --no-install-recommends -y python3.12-venv python3-jsonschema python3-yaml \
+            > "$boot/apt-install.stdout" 2> "$boot/apt-install.stderr"
+          python3.12 -m venv --system-site-packages "$boot/python"
+          "$boot/python/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes -r gate/tooling/requirements/mlt-g2-custody.txt \
+            > "$boot/pip.stdout" 2> "$boot/pip.stderr"
+          "$boot/python/bin/python" -m pip check > "$boot/pip-check.txt"
+          echo "MW_AUDIO_LIVE_PYTHON=$boot/python/bin/python" >> "$GITHUB_ENV"
+          echo "MW_AUDIO_LIVE_OUTPUT=$RUNNER_TEMP/mw-audio-live-$GITHUB_RUN_ID-1" >> "$GITHUB_ENV"
+      - name: One original clock for SDK preparation, one ignored method and private custody
+        id: live-controller
+        timeout-minutes: 26
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          set +e
+          reply=$(sudo env -i PATH="$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" CI="$CI" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" GITHUB_WORKFLOW_REF="$GITHUB_WORKFLOW_REF" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_JOB="$GITHUB_JOB" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_OS="$RUNNER_OS" RUNNER_ARCH="$RUNNER_ARCH" RUNNER_TEMP="$RUNNER_TEMP" \
+            MW_MLT_SCOPE="$MW_MLT_SCOPE" MW_EXPECTED_GATE_SHA="$MW_EXPECTED_GATE_SHA" \
+            MW_EXPECTED_SDK_SHA="$MW_EXPECTED_SDK_SHA" MW_AUDIO_LIVE_REQUEST="$MW_AUDIO_LIVE_REQUEST" GH_TOKEN="$GH_TOKEN" \
+            "$MW_AUDIO_LIVE_PYTHON" -I -B -X utf8 -c \
+            'import sys; sys.path.insert(0,sys.argv.pop(1)); import startup_capture_launcher; import native_mlt_g2_custody as m; m.main()' \
+            "$GITHUB_WORKSPACE/gate/tooling" audio-live --gate "$GITHUB_WORKSPACE/gate" \
+            --output "$MW_AUDIO_LIVE_OUTPUT" --uid "$(id -u)" --gid "$(id -g)")
+          result=$?
+          set -e
+          printf '%s\n' "$reply" >> "$GITHUB_OUTPUT"
+          exit "$result"
+      - name: Verify remaining original upload and readback reserve
+        id: live-window
+        if: ${{ !cancelled() && steps.live-controller.outputs.custody_ready == 'true' }}
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          sudo env -i PATH="$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" CI="$CI" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" GITHUB_WORKFLOW_REF="$GITHUB_WORKFLOW_REF" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_JOB="$GITHUB_JOB" RUNNER_OS="$RUNNER_OS" RUNNER_ARCH="$RUNNER_ARCH" \
+            MW_MLT_SCOPE="$MW_MLT_SCOPE" MW_EXPECTED_GATE_SHA="$MW_EXPECTED_GATE_SHA" \
+            MW_EXPECTED_SDK_SHA="$MW_EXPECTED_SDK_SHA" GH_TOKEN="${GH_TOKEN:-}" \
+            "$MW_AUDIO_LIVE_PYTHON" -I -B -X utf8 -c \
+            'import sys; sys.path.insert(0,sys.argv.pop(1)); import startup_capture_launcher; import native_mlt_g2_custody as m; m.main()' \
+            "$GITHUB_WORKSPACE/gate/tooling" audio-live-window --gate "$GITHUB_WORKSPACE/gate" \
+            --output "$MW_AUDIO_LIVE_OUTPUT" --started-ns '${{ steps.live-controller.outputs.started_ns }}' >> "$GITHUB_OUTPUT"
+      - name: Upload only the existing cipher and its closed public projection
+        id: live-upload
+        if: ${{ !cancelled() && steps.live-window.outputs.upload_ready == 'true' }}
+        timeout-minutes: 4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: audio-live-cipher-${{ github.sha }}-${{ github.run_id }}-1
+          path: |
+            ${{ env.MW_AUDIO_LIVE_OUTPUT }}/export/originals.mwci
+            ${{ env.MW_AUDIO_LIVE_OUTPUT }}/export/public.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Read back the same artifact before the original deadline
+        if: ${{ !cancelled() && steps.live-upload.outcome == 'success' }}
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo env -i PATH="$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" CI="$CI" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" GITHUB_WORKFLOW_REF="$GITHUB_WORKFLOW_REF" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_JOB="$GITHUB_JOB" RUNNER_OS="$RUNNER_OS" RUNNER_ARCH="$RUNNER_ARCH" \
+            MW_MLT_SCOPE="$MW_MLT_SCOPE" MW_EXPECTED_GATE_SHA="$MW_EXPECTED_GATE_SHA" \
+            MW_EXPECTED_SDK_SHA="$MW_EXPECTED_SDK_SHA" GH_TOKEN="${GH_TOKEN:-}" \
+            "$MW_AUDIO_LIVE_PYTHON" -I -B -X utf8 -c \
+            'import sys; sys.path.insert(0,sys.argv.pop(1)); import startup_capture_launcher; import native_mlt_g2_custody as m; m.main()' \
+            "$GITHUB_WORKSPACE/gate/tooling" audio-live-delivery --gate "$GITHUB_WORKSPACE/gate" \
+            --output "$MW_AUDIO_LIVE_OUTPUT" --started-ns '${{ steps.live-controller.outputs.started_ns }}' \
+            --artifact-id '${{ steps.live-upload.outputs.artifact-id }}' \
+            --artifact-digest '${{ steps.live-upload.outputs.artifact-digest }}'
+          "$MW_AUDIO_LIVE_PYTHON" -I -B -X utf8 - "$MW_AUDIO_LIVE_OUTPUT/export/public.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          value=json.loads(Path(sys.argv[1]).read_bytes())
+          assert value["native_status"]=="PASS_ONE_EXACT_IGNORED_METHOD"
+          assert value["selected_originals_complete"] is True
+          # A receiver still has to decrypt and apply the external-plan intake.
+          PY

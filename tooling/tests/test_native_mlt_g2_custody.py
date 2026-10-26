@@ -1403,11 +1403,11 @@ class AudioSourceCustodyTests(unittest.TestCase):
 
     def test_audio_workflow_source_profiles_cannot_enter_physical_matrix(self):
         workflow=(Path(__file__).resolve().parents[2]/".github/workflows/native-mlt-sequence-e2e.yml").read_text()
-        self.assertIn("options: [normal, source, repaired-g2, film180-g2, audio-source-g0, audio-source-g1]",workflow)
+        self.assertIn("options: [normal, source, repaired-g2, film180-g2, audio-source-g0, audio-source-g1, audio-derive-live-g2]",workflow)
         guard="inputs.verification_scope == 'normal' || inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2'"
         physical=workflow.split("  native-mlt-sequence:\n",1)[1].split("    runs-on:",1)[0]
         self.assertIn(guard,physical)
-        audio=workflow.split("  audio-source:\n",1)[1]
+        audio=workflow.split("  audio-source:\n",1)[1].split("  audio-live:\n",1)[0]
         self.assertIn("--mode both --require-complete --expected-source",audio)
         self.assertIn("--pattern test_native_mlt_g2_custody.py --pattern test_native_mlt_evidence_selection.py",audio)
         self.assertIn("if: always()",audio)
@@ -1420,6 +1420,376 @@ class AudioSourceCustodyTests(unittest.TestCase):
         self.assertIn("    timeout-minutes: 220\n",audio)
         self.assertGreater(16*60,3*2*150)
         self.assertGreater(172*60,sum(custody.AUDIO_PHASE_SECONDS.values()))
+
+
+
+class AudioLiveCustodyContracts(unittest.TestCase):
+    @staticmethod
+    def fixture_selection():
+        from test_native_mlt_evidence_selection import AudioLiveSelectionContracts
+        return AudioLiveSelectionContracts
+
+    @staticmethod
+    def archive(files):
+        stream=io.BytesIO()
+        with tarfile.open(fileobj=stream,mode="w") as archive:
+            for name,data in files.items():
+                item=tarfile.TarInfo(name);item.size=len(data);item.mode=0o400
+                archive.addfile(item,io.BytesIO(data))
+        return stream.getvalue()
+
+    def test_live_empty_authority_stops_controller_before_worker_paths_or_effects(self):
+        fixture=self.fixture_selection();env=fixture.environment()
+        request={"schema":"motionwright.audio-live-dispatch/1","admission_id":"fixture","gate_sha":"a"*40,
+                 "sdk_sha":selection.AUDIO_SOURCE_SHA,"plan":fixture.plan(),"runtime":{},"recipient_document_base64":""}
+        launcher=types.SimpleNamespace(__file__="/gate/tooling/startup_capture_launcher.py")
+        with mock.patch.dict(sys.modules,{"startup_capture_launcher":launcher}), \
+             mock.patch.object(selection,"AUDIO_LIVE_ADMISSIONS",{}), mock.patch.object(sys,"platform","linux"), \
+             mock.patch("time.monotonic_ns",return_value=10**9),mock.patch.object(custody,"audio_live_worker") as worker, \
+             mock.patch.object(custody,"audio_live_paths") as paths:
+            with self.assertRaisesRegex(ValueError,"unadmitted-request"):
+                custody.audio_live_run("/gate","/out",custody.json_bytes(request),started_ns=10**9,environment=env)
+        worker.assert_not_called();paths.assert_not_called()
+
+    def test_live_environment_discards_credentials_and_rejects_loader_compiler_overrides(self):
+        result=custody.audio_live_environment({"GH_TOKEN":"PRIVATE","GIT_DIR":"/foreign","PATH":"/foreign"},Path("/owned"))
+        self.assertNotIn("GH_TOKEN",result);self.assertNotIn("GIT_DIR",result)
+        self.assertEqual(result["PATH"],"/usr/bin:/bin")
+        for key in ("LD_PRELOAD","PYTHONPATH","BASH_ENV","RUSTC_WRAPPER","CARGO_ALIAS_TEST","SEMWRIGHT_TEST_MELT"):
+            with self.subTest(key=key),self.assertRaisesRegex(ValueError,"override"):
+                custody.audio_live_environment({key:"foreign"},Path("/owned"))
+
+    def test_live_bwrap_arguments_require_second_exact_gate_and_do_not_claim_parent_death_closure(self):
+        patcher=mock.patch.object(custody,"Path",custody.PurePosixPath);patcher.start();self.addCleanup(patcher.stop)
+        channels={"status":10,"lifetime":11,"block":12,"gate":13,"ready":14}
+        result=custody.audio_live_bwrap_argv("/bwrap","/python",["/binary","--exact"],"/sdk",["/usr"],["/owned"],channels,123)
+        self.assertIn("--unshare-pid",result);self.assertIn("--unshare-net",result)
+        self.assertNotIn("--as-pid-1",result);self.assertNotIn("--die-with-parent",result)
+        self.assertIn("--block-fd",result);self.assertIn("--sync-fd",result)
+        self.assertIn("token!=b'G'",custody.AUDIO_LIVE_BOOTSTRAP)
+        prep=custody.audio_live_bwrap_argv("/bwrap","/python",["/binary"],"/sdk",["/usr"],["/owned"],channels,123,preparation=True)
+        self.assertNotIn("--unshare-net",prep)
+        for change in ({"ready":13},{"ready":True},{"ready":0}):
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                custody.audio_live_bwrap_argv("/bwrap","/python",["/binary"],"/sdk",["/usr"],["/owned"],{**channels,**change},123)
+
+    def test_live_phase_caps_reserve_cleanup_and_never_reset_the_clock(self):
+        origin=10**9;clock=selection.audio_live_clock(origin,origin)
+        self.assertEqual(custody.audio_live_remaining(clock,900,origin),900)
+        self.assertEqual(custody.audio_live_remaining(clock,900,origin+1190*10**9),10)
+        self.assertEqual(custody.audio_live_remaining(clock,900,origin+895*10**9,phase_deadline=origin+900*10**9),5)
+        for cap,now in ((901,origin),(True,origin),(900,clock["work_deadline_ns"]),(900,clock["work_deadline_ns"]-1)):
+            with self.subTest(cap=cap,now=now),self.assertRaises(ValueError):custody.audio_live_remaining(clock,cap,now)
+
+    def test_live_worker_unknown_prefix_and_close_uncertainty_are_never_replayed(self):
+        for completed,close_error,finished in ((False,False,12),(True,True,12),(True,False,21)):
+            with self.subTest(completed=completed,close_error=close_error,finished=finished):
+                child=types.SimpleNamespace(prefix=bytearray(b'{"ok":true,"value":{"fixture":1}}'),errors=[],kills=0)
+                def kill(_):child.kills+=1
+                def close():
+                    if close_error:child.errors.append("CLOSE_UNCERTAIN")
+                child.kill_once=kill;child.close=close;child.metadata=lambda:{"fixture":True,"errors":list(child.errors)}
+                observations=[]
+                def observe_again(*args,**kwargs):
+                    observations.append(args)
+                    if not completed and len(observations)==2:child.prefix.extend(b"retained-last-drain")
+                    return completed
+                spawn=mock.Mock(return_value=child);observe=mock.Mock(side_effect=observe_again)
+                L=types.SimpleNamespace(_spawn_worker=spawn,observe_worker=observe,strict_json=lambda raw,limit:json.loads(raw),Child=type(child))
+                with mock.patch("time.monotonic_ns",return_value=finished):
+                    result=custody.audio_live_worker(L,lambda _:self.fail("not executed by source fixture"),20)
+                self.assertEqual(result["status"],"UNKNOWN");self.assertFalse(result["automatic_retry"])
+                self.assertEqual(result["result_prefix"],bytes(child.prefix));spawn.assert_called_once()
+                if not completed:self.assertTrue(result["result_prefix"].endswith(b"retained-last-drain"))
+                self.assertEqual(child.kills,0 if completed else 1)
+                self.assertTrue(all(call.args[1]==20 for call in observe.call_args_list))
+
+    def namespace_fixture(self, fault=None):
+        # Kernel seam only: no fork, PIDFD, signal, filesystem or SDK is executed.
+        state={"now":10,"polls":0,"released":False,"spawn":0,"signals":[],"reads":{}}
+        descriptors={};nextfd=[10]
+        class FD:
+            def __init__(self,fd,label=""):
+                self.fd=fd;self.original=fd;self.label=label;self.retirements=0
+                descriptors[fd]=self
+            def close(self):
+                if self.fd is not None:self.retirements+=1;self.fd=None
+                return True
+            def metadata(self):return {"original_fd":self.original,"retirements":self.retirements}
+        def pipe():
+            if fault=="second-gate-pipe" and nextfd[0]==22:raise OSError("fixture second gate pipe failure")
+            a,b=FD(nextfd[0]),FD(nextfd[0]+1);nextfd[0]+=2;return a,b
+        monitor=types.SimpleNamespace(pid=101,identity={"start_ticks":1},wait=None,wait_lost=False,exited_ns=None,
+                                     errors=[],signal_attempts=[],eof=False,truncated=False)
+        def poll(now):
+            state["polls"]+=1
+            if state["polls"]>=4:
+                monitor.wait={"exit_code":0};monitor.exited_ns=now;monitor.eof=True
+                if fault=="late-read" and state["polls"]>=5:state["now"]=120
+        def kill(now):
+            if monitor.wait is None and not monitor.signal_attempts:monitor.signal_attempts.append(now)
+        monitor.poll=poll;monitor.kill_once=kill;monitor.close=lambda:None
+        monitor.metadata=lambda:{"fixture":True,"original_wait":monitor.wait}
+        def spawn(function,deadline_ns,**kwargs):
+            state["spawn"]+=1
+            closure=dict(zip(function.__code__.co_freevars,(cell.cell_contents for cell in function.__closure__)))
+            state["bargv"]=closure["bargv"]
+            if fault=="clock-jump":state["now"]=250
+            return monitor
+        def stamp(pid):return {"start_ticks":1,"parent_pid":os.getpid() if pid==101 else 101 if pid==202 else 202,"uid":1000}
+        def proc(pid,name,limit):
+            argv=state["bargv"] if pid==101 else (state["bargv"][state["bargv"].index("--")+1:] if not state["released"] else ["/binary"])
+            return b"\0".join(x.encode() for x in argv)+b"\0"
+        L=types.SimpleNamespace(_pipe=pipe,_spawn_worker=spawn,_drain_child=lambda *args:None,
+            strict_json=lambda raw,limit:json.loads(raw),_kernel_stamp=stamp,_same_stamp=lambda a,b:a==b,
+            _proc_bytes=proc,Child=type(monitor))
+        def pidfd(_L,pid,*,parent_pid,uid,namespace,ledger):
+            item={"pid":pid,"pidfd":FD(nextfd[0]),"identity":stamp(pid),"authenticated":True,
+                  "exit_ns":None,"signals":[],"errors":[]};nextfd[0]+=1;ledger.append(item);return item
+        def role_poll(item,now):
+            if state["polls"]>=4:item["exit_ns"]=now
+        def role_signal(item,now):
+            if item["exit_ns"] is None and not item["signals"]:item["signals"].append(now)
+        def read(fd,count):
+            label=descriptors[fd].label.removesuffix("-read");n=state["reads"].get(label,0);state["reads"][label]=n+1
+            if label=="status":
+                if n in (1,2):raise BlockingIOError()
+                return b'{"child-pid":202,"pid-namespace":77,"mnt-namespace":88}\n' if n==0 else b'{"exit-code":0}\n' if n==3 else b''
+            if label=="ready":
+                if n==0:raise BlockingIOError()
+                return b"READY\n" if n==1 else b""
+            if label=="lifetime" and state["polls"]<4:raise BlockingIOError()
+            if label in ("stdout","stderr") and not state["released"]:raise BlockingIOError()
+            return b""
+        def write(fd,data):
+            if data==b"G":
+                self.assertEqual(len([x for x in descriptors.values() if x.label==""]),6)
+                state["released"]=True
+            return len(data)
+        def readlink(path):
+            if path=="/proc/self/ns/pid":return "pid:[1]"
+            if path in ("/proc/101/exe","/proc/202/exe"):return "/bwrap"
+            if path=="/proc/303/exe":return "/binary" if state["released"] else "/python"
+            return "pid:[77]"
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(custody,"Path",custody.PurePosixPath))
+            for name,value in (("audio_live_pidfd",pidfd),("audio_live_poll_pidfd",role_poll),
+                               ("audio_live_signal_once",role_signal),("audio_live_proc_children",lambda *args:b"303"),
+                               ("metadata_identity",lambda info:(1,)*8)):
+                stack.enter_context(mock.patch.object(custody,name,value))
+            stack.enter_context(mock.patch("time.monotonic_ns",side_effect=lambda:state["now"]))
+            stack.enter_context(mock.patch("select.select",return_value=([],[],[])))
+            stack.enter_context(mock.patch.object(os,"read",side_effect=read))
+            stack.enter_context(mock.patch.object(os,"write",side_effect=write))
+            stack.enter_context(mock.patch.object(os,"readlink",side_effect=readlink))
+            stack.enter_context(mock.patch.object(os,"stat",return_value=object()))
+            result=custody.audio_live_namespace(L,bwrap="/bwrap",python="/python",argv=["/binary"],working="/sdk",
+                readonly=["/usr"],writable=["/owned"],environment={},clock={"work_deadline_ns":100,"cleanup_deadline_ns":200},
+                effect_deadline_ns=100,uid=1000,gid=1000,expected_executable=(1,)*8,expected_python=(1,)*8,
+                expected_bwrap=(1,)*8,python_binary="/python",command_binary="/binary")
+        self.assertEqual(state["spawn"],0 if fault=="second-gate-pipe" else 1)
+        self.assertTrue(all(item.retirements==1 for item in descriptors.values()))
+        return result,monitor,state
+
+    def test_live_namespace_releases_only_after_both_retained_identities_and_ready_eof(self):
+        result,monitor,state=self.namespace_fixture()
+        self.assertTrue(state["released"])
+        self.assertTrue(custody.audio_live_namespace_closed(result))
+        self.assertEqual([row["original_wait"] for row in result["roles"]],["NOT_OUR_CHILD_NOT_CLAIMED"]*2)
+        self.assertEqual(monitor.wait,{"exit_code":0})
+        self.assertEqual(result["errors"],[])
+
+    def test_live_namespace_fresh_cutoff_preserves_known_exit_but_rejects_late_closure(self):
+        result,monitor,_=self.namespace_fixture("late-read")
+        self.assertEqual(monitor.wait,{"exit_code":0})
+        self.assertIn("ORIGINAL_EFFECT_CUTOFF_EXCEEDED",result["errors"])
+        self.assertFalse(result["forced_cleanup"])
+        self.assertFalse(custody.audio_live_namespace_closed(result))
+        terminal={"status":"PASS_ONE_EXACT_IGNORED_METHOD"}
+        with self.assertRaises(ValueError):selection.audio_live_join(result,terminal)
+
+    def test_live_namespace_clock_jump_stops_retained_monitor_once_without_reacquisition(self):
+        result,monitor,state=self.namespace_fixture("clock-jump")
+        self.assertFalse(state["released"])
+        self.assertEqual(monitor.signal_attempts,[250])
+        self.assertIsNone(monitor.wait)
+        self.assertIn("ORIGINAL_CLOSURE_NOT_OBSERVED",result["errors"])
+        self.assertIn("ORIGINAL_CLEANUP_DEADLINE_EXCEEDED",result["errors"])
+        self.assertFalse(custody.audio_live_namespace_closed(result))
+        failed,monitor,state=self.namespace_fixture("second-gate-pipe")
+        self.assertEqual(state["spawn"],0);self.assertFalse(state["released"])
+        self.assertTrue(any("second gate pipe failure" in error for error in failed["errors"]))
+        self.assertTrue(all(row["retirements"]==1 for row in failed["descriptors"]))
+
+    def test_live_manifest_cap_rejects_many_small_files_before_snapshot_or_cipher(self):
+        fixture=self.fixture_selection();plan=selection.audio_live_plan(fixture.plan())
+        self.assertLess(custody.audio_live_manifest_bound(plan,Path("/owned")),custody.MAX_JSON)
+        plan["entries"]=[dict(plan["entries"][0],path="small-"+str(i)) for i in range(1735)]
+        with mock.patch.object(custody,"gather_snapshot") as gather,mock.patch.object(custody,"encrypt_snapshot") as encrypt:
+            with self.assertRaisesRegex(ValueError,"manifest-budget-before-effects"):
+                custody.audio_live_manifest_bound(plan,Path("/owned"))
+        gather.assert_not_called();encrypt.assert_not_called()
+
+    def test_live_retained_index_rejects_consistent_outer_hash_with_missing_changed_or_extra_inner(self):
+        request={"schema":"source-fixture"};rawrequest=custody.json_bytes(request)
+        files={"evidence/request.original.json":rawrequest}
+        index={"schema":"motionwright.audio-live-retained-original-index/1","files":[
+            {"path":name,"bytes":len(data),"sha256":custody.sha(data)} for name,data in files.items()]}
+        files["retention-index.json"]=custody.json_bytes(index)
+        raw=self.archive(files)
+        record={"retained_preparation":{"bytes":len(raw),"sha256":custody.sha(raw),"files":1},
+                "request_sha256":custody.sha(rawrequest),"native_status":"UNKNOWN_NO_RETRY"}
+        self.assertEqual(custody.audio_live_preparation_intake(raw,record,{})["status"],"PARTIAL_OR_FAILURE_ORIGINALS_ONLY")
+        for action in ("missing","changed","extra"):
+            changed=dict(files)
+            if action=="missing":del changed["evidence/request.original.json"]
+            elif action=="changed":changed["evidence/request.original.json"]+=b" "
+            else:changed["extra.original"]=b"unlisted"
+            altered=self.archive(changed);forged=copy.deepcopy(record)
+            forged["retained_preparation"].update(bytes=len(altered),sha256=custody.sha(altered))
+            with self.subTest(action=action),self.assertRaises(ValueError):custody.audio_live_preparation_intake(altered,forged,{})
+
+    def test_live_delivery_zip_rejects_plaintext_extra_wrong_bytes_or_changed_cipher(self):
+        envelope=b"fixture ciphertext";public={"context":{},"ciphertext_bytes":len(envelope),"ciphertext_sha256":custody.sha(envelope)}
+        def zipped(files):
+            out=io.BytesIO()
+            with zipfile.ZipFile(out,"w") as archive:
+                for name,data in files.items():archive.writestr(name,data)
+            return out.getvalue()
+        good={"originals.mwci":envelope,"public.json":custody.json_bytes(public)}
+        self.assertEqual(custody.audio_live_verify_delivery_zip(zipped(good),public,envelope)["status"],
+                         "CIPHERTEXT_DELIVERED_OFFLINE_INTAKE_REQUIRED")
+        for files in ({**good,"knowledge.txt":b"private"},{**good,"originals.mwci":b"different"},
+                      {"public.json":custody.json_bytes(public)}):
+            with self.subTest(files=files),self.assertRaises(ValueError):custody.audio_live_verify_delivery_zip(zipped(files),public,envelope)
+
+    def test_live_new_job_preserves_g1_budgets_and_keeps_admission_before_bootstrap(self):
+        workflow=(Path(__file__).resolve().parents[2]/".github/workflows/native-mlt-sequence-e2e.yml").read_text()
+        job=workflow.split("  audio-live:\n",1)[1]
+        self.assertIn("needs: audio-source",job)
+        self.assertIn("timeout-minutes: 45",job)
+        self.assertLess(job.index("AUDIO_LIVE_ADMISSIONS"),job.index("sudo apt-get"))
+        self.assertLess(job.index("AUDIO_LIVE_ADMISSIONS"),job.index("audio-live --gate"))
+        self.assertEqual(job.count("import startup_capture_launcher; import native_mlt_g2_custody"),3)
+        self.assertEqual(job.count("sudo env -i"),3)
+        self.assertIn("export/originals.mwci",job);self.assertIn("export/public.json",job)
+        self.assertNotIn("/evidence/**",job);self.assertNotIn("--die-with-parent",job)
+        self.assertIn("--started-ns",job)
+
+    def producer_fixture(self, failure=None):
+        import ci_sdk_native_source as sdk_gate
+        manager=tempfile.TemporaryDirectory();self.addCleanup(manager.cleanup)
+        root=Path(manager.name).resolve();sdk=root/"sdk";target=root/"target";logs=root/"evidence/commands"
+        sdk.mkdir();(target/"debug/deps").mkdir(parents=True);logs.mkdir(parents=True)
+        specs=selection.audio_live_binary_specs();paths={};raws={};calls=[]
+        for label,collection in specs.items():
+            paths[label]={}
+            for spec in collection:
+                path=target/"debug"/("deps/live-fixture" if label=="tests" else spec["name"])
+                path.write_bytes((label+":"+spec["name"]).encode())
+                paths[label][spec["name"]]=str(path)
+        def artifact(label,spec):
+            return {"reason":"compiler-artifact","executable":paths[label][spec["name"]],
+                "profile":{"test":label=="tests"},"features":["test-tools"] if label!="sandbox" else [],
+                "manifest_path":str(sdk/("crates/"+spec["crate"]+"/Cargo.toml")),
+                "target":{"name":spec["name"],"kind":[spec["kind"]],"src_path":str(sdk/spec["source"])}}
+        for label,collection in specs.items():
+            rows=[artifact(label,spec) for spec in collection]
+            if label=="tests":rows=[artifact("normal",spec) for spec in specs["normal"]]+rows
+            if failure=="duplicate-json" and label=="tests":rows.append(copy.deepcopy(rows[-1]))
+            rows.append({"reason":"build-finished","success":True})
+            raws["producer-"+label]=b"".join(custody.json_bytes(row) for row in rows)
+        for label,ignored in (("all",False),("ignored",True)):
+            names=(selection.AUDIO_LIVE_CASE,) if ignored else (*selection.AUDIO_SOURCE_ROSTERS["live"],selection.AUDIO_LIVE_CASE)
+            raws["list-live-"+label]=( "".join(name+": test\n" for name in names)+"\n"+str(len(names))+
+                (" test" if len(names)==1 else " tests")+", 0 benchmarks\n").encode()
+        def delegate(argv,cwd,env,folder,label,timeout,context):
+            calls.append((label,argv))
+            if failure=="unknown" and label=="producer-tests":raise RuntimeError("UNKNOWN_ORIGINAL_NO_RETRY")
+            return {"argv":argv,"label":label,"exit_code":101 if failure=="clippy" and label=="strict-clippy" else 0}
+        barrier=sdk_gate.ProducerBarrier(delegate,"cargo-fixture")
+        def invoke():
+            with mock.patch.object(sdk_gate.observer,"original_stream",side_effect=lambda folder,row,channel:raws[row["label"]] if channel=="stdout" else b""):
+                return custody.audio_live_prepare_producers(sdk_gate,barrier,"cargo-fixture",sdk,{},logs,{},target)
+        return invoke,calls,barrier
+
+    def test_live_actual_cargo_json_sealing_lists_and_late_producer_barrier(self):
+        invoke,calls,barrier=self.producer_fixture();value=invoke()
+        self.assertEqual([label for label,_ in calls],["strict-clippy","producer-normal","producer-tests","producer-sandbox","list-live-all","list-live-ignored"])
+        self.assertEqual(value["barrier"],"OBSERVING")
+        self.assertEqual(len(value["sealed"]["normal"]),4)
+        self.assertEqual(value["rosters"]["ignored"]["all"],(selection.AUDIO_LIVE_CASE,))
+        before=len(calls)
+        with self.assertRaisesRegex(ValueError,"producer attempted after sealing"):
+            barrier(["cargo-fixture","build"],None,None,None,"late",900,{})
+        self.assertEqual(len(calls),before)
+
+    def test_live_failed_unknown_or_duplicate_producer_never_reaches_list_or_case(self):
+        for fault in ("clippy","unknown","duplicate-json"):
+            with self.subTest(fault=fault):
+                invoke,calls,barrier=self.producer_fixture(fault)
+                with self.assertRaises((ValueError,RuntimeError)):invoke()
+                self.assertFalse(any(label.startswith("list-") for label,_ in calls))
+                self.assertFalse(any("--exact" in argv for _,argv in calls))
+                self.assertEqual(len([label for label,_ in calls if label=="producer-tests"]),0 if fault=="clippy" else 1)
+                self.assertEqual(barrier.phase,"PREPARING")
+
+    @unittest.skipUnless(sys.platform=="linux" and hasattr(os,"pidfd_open"),"Linux original PIDFD fixture required")
+    def test_live_actual_owned_worker_stalled_fsync_retains_prefix_and_original_wait(self):
+        import signal
+        import time
+        import startup_capture_launcher as launcher
+        started=time.monotonic_ns();deadline=started+3*10**9
+        def blocked(fd):
+            os.write(fd,b"source-fixture-before-fsync")
+            def stalled(_):
+                while True:time.sleep(10)
+            with mock.patch.object(os,"fsync",side_effect=stalled):os.fsync(fd)
+        observed=custody.audio_live_worker(launcher,blocked,deadline,limit=4096)
+        self.assertEqual(observed["status"],"UNKNOWN")
+        self.assertEqual(observed["result_prefix"],b"source-fixture-before-fsync")
+        original=observed["original_process"]
+        self.assertEqual(original["original_wait"]["exit_code"],-signal.SIGKILL)
+        self.assertTrue(original["result_eof"])
+        self.assertEqual(len(original["signals"]),1)
+        self.assertEqual(original["signals"][0]["transport"],"RETAINED_PIDFD")
+        self.assertFalse(original["process_tree_closed"])
+        self.assertLess(time.monotonic_ns(),deadline)
+        print("AUDIO_LIVE_SOURCE_FIXTURE_ORIGINAL="+json.dumps({"original_process":original,
+            "prefix_base64":base64.b64encode(observed["result_prefix"]).decode(),"automatic_retry":False},sort_keys=True))
+
+    def test_live_whole_inventory_preserves_extra_bytes_and_bilateral_absence(self):
+        plan=selection.audio_live_plan(self.fixture_selection().plan())
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve()
+            for name in selection.AUDIO_LIVE_ROOTS:(root/name).mkdir()
+            original=root/"records/fixture.original";original.write_bytes(b"original")
+            value=custody.audio_live_inventory(root,plan)
+            self.assertTrue(value["complete"])
+            self.assertEqual(value["rows"]["media/fixture.original"]["status"],"OPTIONAL_ABSENT")
+            required=copy.deepcopy(plan);required["entries"][0]["required"]=True
+            self.assertFalse(custody.audio_live_inventory(root,required)["complete"])
+            extra=root/"records/unplanned.original";extra.write_bytes(b"never truncate or omit")
+            value=custody.audio_live_inventory(root,plan)
+            self.assertFalse(value["complete"]);self.assertIn("records/unplanned.original",value["rows"])
+            self.assertEqual(extra.read_bytes(),b"never truncate or omit")
+            extra.unlink();(root/"scratch").rmdir()
+            self.assertIn({"path":"scratch","status":"REQUIRED_ROOT_ABSENT"},custody.audio_live_inventory(root,plan)["failures"])
+
+    def test_live_pidfd_authentication_failure_keeps_handle_in_close_ledger(self):
+        fd=types.SimpleNamespace(fd=42,metadata=lambda:{"original_fd":42})
+        before={"start_ticks":1,"parent_pid":10,"uid":1000}
+        after={**before,"start_ticks":2}
+        L=types.SimpleNamespace(_kernel_stamp=mock.Mock(side_effect=[before,after]),
+            _same_stamp=lambda a,b:a==b,OwnedFD=lambda value,label:fd)
+        ledger=[]
+        with mock.patch.object(os,"pidfd_open",return_value=42,create=True) as acquire:
+            with self.assertRaisesRegex(ValueError,"retained-pidfd-target-changed"):
+                custody.audio_live_pidfd(L,20,parent_pid=10,uid=1000,namespace="pid:[7]",ledger=ledger)
+        acquire.assert_called_once_with(20)
+        self.assertEqual(len(ledger),1);self.assertIs(ledger[0]["pidfd"],fd)
+        self.assertFalse(ledger[0]["authenticated"]);self.assertEqual(ledger[0]["signals"],[])
+
 
 if __name__ == "__main__":
     unittest.main()

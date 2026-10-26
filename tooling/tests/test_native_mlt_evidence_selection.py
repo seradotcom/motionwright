@@ -1348,3 +1348,143 @@ class AudioSourceSelectionTests(unittest.TestCase):
                 mlt.audio_source_context({**env,key:value},"linux")
 
 if __name__=="__main__":unittest.main()
+
+
+class AudioLiveSelectionContracts(unittest.TestCase):
+    """Source fixtures only; a synthetic row grants no runtime authority."""
+    @staticmethod
+    def plan():
+        return {"schema":"motionwright.audio-live-operating-plan/1", "sdk_sha":mlt.AUDIO_SOURCE_SHA,
+            "sdk_tree":mlt.AUDIO_SOURCE_TREE, "case":mlt.AUDIO_LIVE_CASE, "working_bytes":32*1024**2,
+            "regular_files":8, "directories":8, "retention_bytes":64*1024**2, "retention_files":3000,
+            "source_contract_sha256":"e"*64, "runtime_sha256":"f"*64,
+            "entries":[{"root":root,"path":"fixture.original","role":"source-fixture","kind":"original",
+                        "max_bytes":4096,"required":False} for root in mlt.AUDIO_LIVE_ROOTS]}
+
+    @staticmethod
+    def environment():
+        return {"GITHUB_ACTIONS":"true","CI":"true","GITHUB_EVENT_NAME":"workflow_dispatch",
+            "GITHUB_RUN_ATTEMPT":"1","GITHUB_RUN_ID":"123","RUNNER_OS":"Linux","RUNNER_ARCH":"X64",
+            "GITHUB_JOB":"audio-live","MW_MLT_SCOPE":mlt.AUDIO_LIVE_SCOPE,
+            "GITHUB_SHA":"a"*40,"GITHUB_WORKFLOW_SHA":"a"*40,"MW_EXPECTED_GATE_SHA":"a"*40,
+            "MW_EXPECTED_SDK_SHA":mlt.AUDIO_SOURCE_SHA,"GITHUB_REPOSITORY":"seradotcom/motionwright",
+            "GITHUB_WORKFLOW_REF":"seradotcom/motionwright/.github/workflows/native-mlt-sequence-e2e.yml@refs/heads/fixture"}
+
+    @staticmethod
+    def terminal():
+        return ("running 1 test\ntest "+mlt.AUDIO_LIVE_CASE+" ... ok\n\ntest result: ok. 1 passed; 0 failed; "
+            "0 ignored; 0 measured; "+str(len(mlt.AUDIO_SOURCE_ROSTERS["live"]))+" filtered out; finished in 0.01s\n").encode()
+
+    @staticmethod
+    def closure():
+        value={name:True for name in ("deadline_unchanged","complete_before_cleanup_deadline",
+            "namespace_init_authenticated","namespace_init_exited","command_authenticated_before_release",
+            "command_executable_observed","command_exited","sync_eof","stdout_eof","stderr_eof","status_eof",
+            "monitor_result_eof","monitor_pidfd_exited")}
+        return dict(value,monitor_wait_exit_code=0,bubblewrap_exit_code=0,monitor_result_truncated=False,
+                    truncated=False,forced_cleanup=False,errors=[])
+
+    def test_live_admission_empty_catalogue_rejects_before_any_source_or_process(self):
+        current=mlt.audio_live_context(self.environment(),"linux")
+        request={"schema":"motionwright.audio-live-dispatch/1","admission_id":"fixture","gate_sha":"a"*40,
+                 "sdk_sha":mlt.AUDIO_SOURCE_SHA,"plan":self.plan(),"runtime":{},"recipient_document_base64":""}
+        with mock.patch.object(mlt,"AUDIO_LIVE_ADMISSIONS",{}), mock.patch.object(Path,"open") as opened:
+            with self.assertRaisesRegex(ValueError,"unadmitted-request"):
+                mlt.audio_live_admit(request,current)
+        opened.assert_not_called()
+
+    def test_live_context_rejects_g1_foreign_source_attempt_platform_and_job(self):
+        self.assertEqual(mlt.audio_live_context(self.environment(),"linux")["semwright_sha"],mlt.AUDIO_SOURCE_SHA)
+        changes=({"MW_MLT_SCOPE":"audio-source-g1"},{"GITHUB_SHA":"b"*40},{"GITHUB_RUN_ATTEMPT":"2"},
+                 {"RUNNER_OS":"Windows"},{"GITHUB_JOB":"audio-source"},{"GITHUB_RUN_ID":"0"})
+        for change in changes:
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                mlt.audio_live_context({**self.environment(),**change},"linux")
+        with self.assertRaises(ValueError):mlt.audio_live_context(self.environment(),"win32")
+
+    def test_live_whole_plan_caps_do_not_drop_or_truncate_owner_originals(self):
+        value=mlt.audio_live_plan(self.plan())
+        self.assertEqual(value["inode_ceiling"],17)
+        self.assertEqual(value["selected_max_files"],3008)
+        for change in ({"working_bytes":2*1024**3},{"regular_files":50000},{"retention_files":True},
+                       {"working_bytes":1},{"retention_bytes":0},{"directories":7}):
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                mlt.audio_live_plan({**self.plan(),**change})
+
+    def test_live_plan_rejects_duplicate_alias_type_and_understated_roster(self):
+        bad=[]
+        value=self.plan();value["entries"][1]=copy.deepcopy(value["entries"][0]);bad.append(value)
+        for change in ({"path":"../escape"},{"path":"a//b"},{"max_bytes":True},{"required":1},
+                       {"kind":["original"]},{"root":"foreign"}):
+            value=self.plan();value["entries"][0].update(change);bad.append(value)
+        value=self.plan();value["entries"].pop();bad.append(value)
+        for value in bad:
+            with self.subTest(value=value),self.assertRaises(ValueError):mlt.audio_live_plan(value)
+
+    def test_live_clock_is_one_origin_with_reserved_cleanup_and_custody(self):
+        origin=10**9;clock=mlt.audio_live_clock(origin,origin+10)
+        self.assertEqual(clock,{"started_ns":origin,"work_deadline_ns":origin+1200*10**9,
+            "cleanup_deadline_ns":origin+1320*10**9,"seal_deadline_ns":origin+1500*10**9,
+            "upload_deadline_ns":origin+1770*10**9,"deadline_ns":origin+1800*10**9})
+        self.assertEqual(mlt.audio_live_clock(origin,origin+1199*10**9),clock)
+        for start,now in ((True,origin),(origin,True),(origin,origin-1),(origin,clock["work_deadline_ns"])):
+            with self.subTest(start=start,now=now),self.assertRaises(ValueError):mlt.audio_live_clock(start,now)
+
+    def test_live_three_producers_prebuild_all_four_bins_in_one_owned_target(self):
+        specs=mlt.audio_live_binary_specs(); commands=mlt.audio_live_producers("/tool/cargo")
+        self.assertEqual(tuple(specs),("normal","tests","sandbox"))
+        self.assertEqual(specs["normal"],mlt.audio_source_normal_specs())
+        self.assertEqual(len(specs["normal"]),4)
+        self.assertEqual([label for label,_ in commands],["normal","tests","sandbox"])
+        for _,argv in commands:
+            self.assertIn("--locked",argv);self.assertEqual(argv[argv.index("--jobs")+1],"1")
+            self.assertEqual(argv[-1],"--message-format=json")
+            self.assertNotIn("--ignored",argv)
+        self.assertIn("test-tools",commands[0][1]);self.assertIn("test-tools",commands[1][1])
+        self.assertIn("--no-run",commands[1][1]);self.assertNotIn("test-tools",commands[2][1])
+        self.assertEqual(specs["sandbox"][0]["source"],"crates/plugin-host/src/semwright-sandbox.rs")
+        self.assertEqual(mlt.audio_live_argv("/owned/live"),["/owned/live",mlt.AUDIO_LIVE_CASE,"--exact","--ignored","--nocapture","--test-threads=1"])
+
+    def test_live_terminal_requires_one_actual_ignored_method_and_complete_footer(self):
+        roster={"all":(mlt.AUDIO_LIVE_CASE,),"ignored_only":True}
+        self.assertEqual(mlt.audio_live_terminal(self.terminal(),b"",0,roster)["unique_methods"],1)
+        variants=(self.terminal().replace(b"1 passed",b"0 passed"),self.terminal()+self.terminal(),
+                  self.terminal().replace(mlt.AUDIO_LIVE_CASE.encode(),b"another_case"),self.terminal().split(b"test result:")[0])
+        for raw in variants:
+            with self.subTest(raw=raw),self.assertRaises(ValueError):mlt.audio_live_terminal(raw,b"",0,roster)
+        for code in (101,True,None):
+            with self.subTest(code=code),self.assertRaises(ValueError):mlt.audio_live_terminal(self.terminal(),b"",code,roster)
+        with self.assertRaises(ValueError):mlt.audio_live_terminal(self.terminal(),b"thread worker panicked at fixture\n",0,roster)
+
+    def test_live_join_rejects_monitor_only_late_cutoff_open_pipes_or_forced_cleanup(self):
+        terminal=mlt.audio_live_terminal(self.terminal(),b"",0,{"all":(mlt.AUDIO_LIVE_CASE,),"ignored_only":True})
+        value=mlt.audio_live_join(self.closure(),terminal)
+        self.assertFalse(value["grandchild_wait_claimed"])
+        self.assertFalse(value["provider_shutdown_inferred_from_namespace_exit"])
+        for change in ({"namespace_init_exited":False},{"sync_eof":False},{"stdout_eof":False},
+            {"monitor_result_eof":False},{"command_executable_observed":False},{"complete_before_cleanup_deadline":False},
+            {"forced_cleanup":True},{"monitor_wait_exit_code":True},{"errors":["ORIGINAL_EFFECT_CUTOFF_EXCEEDED"]}):
+            with self.subTest(change=change),self.assertRaises(ValueError):mlt.audio_live_join({**self.closure(),**change},terminal)
+
+    def test_live_reviewed_row_fixture_requires_independent_plan_runtime_and_recipient_bytes(self):
+        import base64,json
+        encode=lambda value:(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False)+"\n").encode()
+        runtime={"source_fixture_only":True};plan=self.plan();plan["runtime_sha256"]=mlt.sha(encode(runtime))
+        recipient=encode({"sha256":mlt.AUDIO_LIVE_RECIPIENT,"spki_der_base64":"SOURCE_FIXTURE_NOT_A_KEY"})
+        request={"schema":"motionwright.audio-live-dispatch/1","admission_id":"fixture","gate_sha":"a"*40,
+            "sdk_sha":mlt.AUDIO_SOURCE_SHA,"plan":plan,"runtime":runtime,"recipient_document_base64":base64.b64encode(recipient).decode()}
+        row={"sdk_sha":mlt.AUDIO_SOURCE_SHA,"request_id":"fixture","plan_sha256":mlt.sha(encode(plan)),
+            "runtime_sha256":mlt.sha(encode(runtime)),"recipient_sha256":mlt.AUDIO_LIVE_RECIPIENT,
+            "recipient_document_sha256":mlt.sha(recipient),"bubblewrap_version":"bubblewrap 0.11.0",
+            "bubblewrap_sha256":"b"*64,"bubblewrap_protocol_source_sha256":mlt.AUDIO_BWRAP_SOURCE,
+            "mount_sha256":"c"*64,"private_tmpfs_effect":"EXCLUSIVE_ATTEMPT_MOUNT_RETAIN_UNTIL_RECOVERY",
+            "seconds":dict(mlt.AUDIO_LIVE_SECONDS),"no_retry":True}
+        current=mlt.audio_live_context(self.environment(),"linux")
+        with mock.patch.object(mlt,"AUDIO_LIVE_ADMISSIONS",{"fixture":row}), \
+             mock.patch.object(mlt,"AUDIO_LIVE_RECIPIENT_DOCUMENT",mlt.sha(recipient)):
+            result=mlt.audio_live_admit(request,current)
+            self.assertTrue(result["one_invocation_only"]);self.assertFalse(result["global_server_side_nonce_claimed"])
+            for field,value in (("plan",{**plan,"working_bytes":plan["working_bytes"]+4096}),
+                    ("runtime",{"source_fixture_only":False}),("recipient_document_base64",base64.b64encode(recipient+b" ").decode()),
+                    ("sdk_sha","0"*40)):
+                with self.subTest(field=field),self.assertRaises(ValueError):mlt.audio_live_admit({**request,field:value},current)

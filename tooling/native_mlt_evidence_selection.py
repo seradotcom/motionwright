@@ -1968,3 +1968,247 @@ def audio_source_complete(results, rosters):
     return {"unique_selected_tests": 184, "selected_omissions": 0,
             "physical_ignored_tests_not_selected": [AUDIO_PHYSICAL_CASE],
             "physical_audio": "NOT_RUN", "full_sdk_g1": "NOT_RUN", "release_authorized": False}
+
+
+# The live scope is independently admitted. Source G1 and older MLT/Film
+# receipts cannot enable it. No production row has been admitted.
+AUDIO_LIVE_SCOPE = "audio-derive-live-g2"
+AUDIO_LIVE_ADMISSIONS = {}
+AUDIO_LIVE_ROOTS = ("binaries", "project", "media", "output", "runtime", "scratch", "state", "records")
+AUDIO_LIVE_CASE = "real_mlt_video_driver_runs_inside_sandbox"
+AUDIO_LIVE_SECONDS = {"work": 1200, "cleanup": 120, "custody": 480}
+AUDIO_LIVE_MAX_BYTES = 512 * 1024**2
+AUDIO_LIVE_MAX_FILES = 4096
+AUDIO_LIVE_RECIPIENT = "1ca6d673bd8c5ea4d0378310b25c254452c19504d7e784ab94b8a8d2d1115921"
+AUDIO_LIVE_RECIPIENT_DOCUMENT = "c3204ef97fb30495e1a40f373fe75da47eb0e0cb155fbe3539e4cdf0b6b3811a"
+AUDIO_BWRAP_SOURCE = "7e972f6193fe48ff046033be85c5d8988102978ac6176ba19ff9e02e0594f741"
+
+
+def audio_live_clock(started_ns, now_ns):
+    require(type(started_ns) is int and type(now_ns) is int and 0 < started_ns <= now_ns,
+            "audio-live-original-clock")
+    ns = 1_000_000_000
+    result = {"started_ns": started_ns, "work_deadline_ns": started_ns + 1200 * ns,
+              "cleanup_deadline_ns": started_ns + 1320 * ns,
+              "seal_deadline_ns": started_ns + 1500 * ns,
+              "upload_deadline_ns": started_ns + 1770 * ns,
+              "deadline_ns": started_ns + 1800 * ns}
+    require(now_ns < result["work_deadline_ns"], "audio-live-work-window-expired")
+    return result
+
+
+def audio_live_context(env, platform):
+    require(type(env) is dict and platform == "linux"
+            and env.get("GITHUB_ACTIONS") == "true" and env.get("CI") == "true"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("GITHUB_RUN_ATTEMPT") == "1"
+            and env.get("RUNNER_OS") == "Linux" and env.get("RUNNER_ARCH") == "X64"
+            and env.get("GITHUB_JOB") == "audio-live"
+            and env.get("MW_MLT_SCOPE") == AUDIO_LIVE_SCOPE,
+            "audio-live-closed-disposable-context")
+    source = env.get("GITHUB_SHA", "")
+    require(type(source) is str and re.fullmatch(r"[0-9a-f]{40}", source)
+            and env.get("GITHUB_WORKFLOW_SHA") == source
+            and env.get("MW_EXPECTED_GATE_SHA") == source
+            and env.get("MW_EXPECTED_SDK_SHA") == AUDIO_SOURCE_SHA
+            and env.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
+            and env.get("GITHUB_WORKFLOW_REF", "").startswith(
+                "seradotcom/motionwright/.github/workflows/native-mlt-sequence-e2e.yml@")
+            and re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", "")),
+            "audio-live-real-source-and-run")
+    return {"source_sha": source, "semwright_sha": AUDIO_SOURCE_SHA,
+            "run_id": env["GITHUB_RUN_ID"], "run_attempt": "1"}
+
+
+def audio_live_plan(value):
+    """A whole operating plan, not a selector which drops files to fit a TAR."""
+    require(type(value) is dict and set(value) == {
+        "schema", "sdk_sha", "sdk_tree", "case", "working_bytes", "regular_files",
+        "directories", "entries", "retention_bytes", "retention_files",
+        "source_contract_sha256", "runtime_sha256"}
+        and value["schema"] == "motionwright.audio-live-operating-plan/1"
+        and value["sdk_sha"] == AUDIO_SOURCE_SHA and value["sdk_tree"] == AUDIO_SOURCE_TREE
+        and value["case"] == AUDIO_LIVE_CASE, "audio-live-operating-plan-identity")
+    require(all(type(value[k]) is str and re.fullmatch(r"[0-9a-f]{64}", value[k])
+                for k in ("source_contract_sha256", "runtime_sha256")),
+            "audio-live-operating-plan-source-bindings")
+    require(type(value["retention_bytes"]) is int and 16 * 1024**2 <= value["retention_bytes"] <= 256 * 1024**2
+            and type(value["retention_files"]) is int and 32 <= value["retention_files"] < AUDIO_LIVE_MAX_FILES
+            and type(value["working_bytes"]) is int
+            and 0 < value["working_bytes"] <= AUDIO_LIVE_MAX_BYTES - value["retention_bytes"]
+            and type(value["regular_files"]) is int
+            and 0 < value["regular_files"] <= AUDIO_LIVE_MAX_FILES - value["retention_files"]
+            and type(value["directories"]) is int and 8 <= value["directories"] <= 4096,
+            "audio-live-whole-plan-exceeds-existing-capsule")
+    entries = value["entries"]
+    require(type(entries) is list and len(entries) == value["regular_files"],
+            "audio-live-file-budget-must-cover-entire-roster")
+    seen, roots, total, directories = set(), set(), 0, set()
+    for row in entries:
+        require(type(row) is dict and set(row) == {
+            "root", "path", "role", "kind", "max_bytes", "required"},
+            "audio-live-original-row-shape")
+        require(type(row["root"]) is str and row["root"] in AUDIO_LIVE_ROOTS
+                and type(row["path"]) is str and 0 < len(row["path"]) <= 200
+                and re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", row["path"])
+                and all(part not in (".", "..") for part in row["path"].split("/"))
+                and type(row["role"]) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,95}", row["role"])
+                and type(row["kind"]) is str and row["kind"] in {"original", "typed-json-original"}
+                and type(row["required"]) is bool
+                and type(row["max_bytes"]) is int and 0 < row["max_bytes"] <= 256 * 1024**2,
+                "audio-live-original-row-fields")
+        key = row["root"] + "/" + row["path"]
+        require(key not in seen, "audio-live-duplicate-original")
+        require(not any(key.startswith(old + "/") or old.startswith(key + "/") for old in seen),
+                "audio-live-file-directory-alias")
+        seen.add(key); roots.add(row["root"]); total += ((row["max_bytes"] + 4095) // 4096) * 4096
+        parts = key.split("/")
+        directories.update("/".join(parts[:i]) for i in range(1, len(parts)))
+    require(roots == set(AUDIO_LIVE_ROOTS) and total <= value["working_bytes"]
+            and len(directories) <= value["directories"],
+            "audio-live-incomplete-root-or-understated-plan")
+    # tmpfs inodes include the root, all planned directories and regular files.
+    return {**value, "inode_ceiling": 1 + value["directories"] + value["regular_files"],
+            "selected_max_bytes": value["working_bytes"] + value["retention_bytes"],
+            "selected_max_files": value["regular_files"] + value["retention_files"]}
+
+
+def audio_live_admit(value, current):
+    """Pure admission precedes any filesystem, subprocess or privileged effect."""
+    require(type(value) is dict and set(value) == {
+        "schema", "admission_id", "gate_sha", "sdk_sha", "plan", "runtime", "recipient_document_base64"}
+        and value["schema"] == "motionwright.audio-live-dispatch/1"
+        and type(value["admission_id"]) is str
+        and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value["admission_id"])
+        and value["gate_sha"] == current["source_sha"]
+        and value["sdk_sha"] == current["semwright_sha"] == AUDIO_SOURCE_SHA,
+            "audio-live-dispatch-identity")
+    row = AUDIO_LIVE_ADMISSIONS.get(value["admission_id"])
+    require(type(row) is dict, "audio-live-unadmitted-request")
+    require(set(row) == {"sdk_sha", "request_id", "plan_sha256", "runtime_sha256",
+        "recipient_sha256", "recipient_document_sha256", "bubblewrap_version",
+        "bubblewrap_sha256", "bubblewrap_protocol_source_sha256", "mount_sha256",
+        "private_tmpfs_effect", "seconds", "no_retry"}
+        and row["sdk_sha"] == AUDIO_SOURCE_SHA and row["request_id"] == value["admission_id"]
+        and row["seconds"] == AUDIO_LIVE_SECONDS and row["no_retry"] is True
+        and row["private_tmpfs_effect"] == "EXCLUSIVE_ATTEMPT_MOUNT_RETAIN_UNTIL_RECOVERY"
+        and row["bubblewrap_protocol_source_sha256"] == AUDIO_BWRAP_SOURCE
+        and row["bubblewrap_version"] == "bubblewrap 0.11.0"
+        and row["recipient_sha256"] == AUDIO_LIVE_RECIPIENT
+        and row["recipient_document_sha256"] == AUDIO_LIVE_RECIPIENT_DOCUMENT,
+            "audio-live-authority-does-not-cover-exact-effect")
+    import base64
+    import json
+    canonical = lambda item: (json.dumps(item, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=True, allow_nan=False) + "\n").encode()
+    encoded = value["recipient_document_base64"]
+    require(type(encoded) is str and 0 < len(encoded) <= 4096, "audio-live-recipient-document-size")
+    recipient_raw = base64.b64decode(encoded, validate=True)
+    require(base64.b64encode(recipient_raw).decode() == encoded
+            and sha(recipient_raw) == AUDIO_LIVE_RECIPIENT_DOCUMENT,
+            "audio-live-recipient-original-document")
+    def unique(pairs):
+        result = {}
+        for key, item in pairs:
+            require(key not in result, "audio-live-recipient-duplicate")
+            result[key] = item
+        return result
+    recipient = json.loads(recipient_raw, object_pairs_hook=unique)
+    plan = audio_live_plan(value["plan"])
+    require(sha(canonical(value["plan"])) == row["plan_sha256"]
+            and sha(canonical(value["runtime"])) == row["runtime_sha256"]
+            == value["plan"]["runtime_sha256"]
+            and type(recipient) is dict
+            and set(recipient) == {"spki_der_base64", "sha256"}
+            and recipient.get("sha256") == AUDIO_LIVE_RECIPIENT,
+            "audio-live-independent-plan-runtime-recipient-binding")
+    require(all(type(row[k]) is str and re.fullmatch(r"[0-9a-f]{64}", row[k])
+        for k in ("plan_sha256", "runtime_sha256", "bubblewrap_sha256", "mount_sha256")),
+            "audio-live-runtime-binary-pins")
+    return {"context": dict(current), "request": value, "authority": dict(row), "plan": plan,
+            "recipient": recipient, "one_invocation_only": True,
+            "global_server_side_nonce_claimed": False}
+
+
+def audio_live_binary_specs():
+    # Cargo builds every feature-enabled binary for the selected integration.
+    # Retain the fake tools as compiled artifacts; this scope never runs them.
+    normal = audio_source_normal_specs()
+    live = next(spec for spec in audio_source_specs() if spec["name"] == "live")
+    sandbox = {"name": "semwright-sandbox", "kind": "bin", "source": "crates/plugin-host/src/semwright-sandbox.rs",
+               "crate": "plugin-host", "package": "semwright-plugin-host",
+               "prefixes": None, "allow_empty": True}
+    return {"normal": normal, "tests": (live,), "sandbox": (sandbox,)}
+
+
+def audio_live_producers(cargo):
+    # All three close before sealing/listing. No cache hit supplies a verdict.
+    return (
+        ("normal", [cargo, "build", "--locked", "--jobs", "1", "-p", "semwright-mlt-video-driver", "--features", "test-tools",
+          "--bins", "--message-format=json"]),
+        ("tests", [cargo, "test", "--locked", "--jobs", "1", "-p", "semwright-mlt-video-driver",
+          "--features", "test-tools", "--test", "live", "--no-run", "--message-format=json"]),
+        ("sandbox", [cargo, "build", "--locked", "--jobs", "1", "-p", "semwright-plugin-host",
+          "--bin", "semwright-sandbox", "--message-format=json"]),
+    )
+
+
+def audio_live_argv(binary):
+    require(type(binary) is str and binary.startswith("/") and "\0" not in binary,
+            "audio-live-absolute-sealed-binary")
+    return [binary, AUDIO_LIVE_CASE, "--exact", "--ignored", "--nocapture", "--test-threads=1"]
+
+
+def audio_live_terminal(stdout, stderr, exit_code, roster):
+    """One actual ignored method; three scenarios never become three tests."""
+    require(type(stdout) is bytes and type(stderr) is bytes and type(exit_code) is int,
+            "audio-live-original-terminal-types")
+    require(type(roster) is dict and tuple(roster.get("all", ())) == (AUDIO_LIVE_CASE,)
+            and roster.get("ignored_only") is True, "audio-live-real-ignored-roster")
+    text = stdout.decode("utf-8").replace("\r\n", "\n")
+    errors = stderr.decode("utf-8").replace("\r\n", "\n")
+    require(exit_code == 0 and not re.search(r"(?m)^thread .* panicked", text + "\n" + errors),
+            "audio-live-failed-or-panicked")
+    cases = re.findall(r"(?m)^test ([A-Za-z_][A-Za-z_0-9:]*) \.\.\. (ok|FAILED|ignored)$", text)
+    footers = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                         r"(\d+) measured; (\d+) filtered out; finished in ([0-9.]+)s$", text)
+    require(cases == [(AUDIO_LIVE_CASE, "ok")] and len(footers) == 1
+            and footers[0][:5] == ("ok", "1", "0", "0", "0")
+            and int(footers[0][5]) == len(AUDIO_SOURCE_ROSTERS["live"])
+            and re.findall(r"(?m)^running (\d+) test(?:s)?$", text) == ["1"],
+            "audio-live-missing-duplicate-or-foreign-libtest-terminal")
+    require(not re.search(r"(?m)^(?:test result:|running \d+ test|test \S+ \.\.\.)", errors),
+            "audio-live-terminal-in-wrong-stream")
+    return {"status": "PASS_ONE_EXACT_IGNORED_METHOD", "name": AUDIO_LIVE_CASE,
+            "unique_methods": 1, "scenarios_are_not_independent_tests": True,
+            "stdout_sha256": sha(stdout), "stderr_sha256": sha(stderr),
+            "provider_shutdown_inferred_from_namespace_exit": False,
+            "human_acceptance": False, "release_authorized": False}
+
+
+def audio_live_join(observation, terminal):
+    require(type(observation) is dict and type(terminal) is dict
+            and terminal.get("status") == "PASS_ONE_EXACT_IGNORED_METHOD",
+            "audio-live-method-terminal-required")
+    require(observation.get("deadline_unchanged") is True
+            and observation.get("complete_before_cleanup_deadline") is True
+            and observation.get("namespace_init_authenticated") is True
+            and observation.get("namespace_init_exited") is True
+            and observation.get("command_authenticated_before_release") is True
+            and observation.get("command_executable_observed") is True
+            and observation.get("command_exited") is True
+            and observation.get("monitor_wait_exit_code") == 0
+            and type(observation.get("monitor_wait_exit_code")) is int
+            and observation.get("bubblewrap_exit_code") == 0
+            and type(observation.get("bubblewrap_exit_code")) is int
+            and observation.get("sync_eof") is True
+            and observation.get("stdout_eof") is True and observation.get("stderr_eof") is True
+            and observation.get("status_eof") is True
+            and observation.get("monitor_result_eof") is True
+            and observation.get("monitor_result_truncated") is False
+            and observation.get("monitor_pidfd_exited") is True
+            and observation.get("truncated") is False
+            and observation.get("forced_cleanup") is False
+            and observation.get("errors") == [], "audio-live-unknown-or-incomplete-family-custody")
+    return {**terminal, "namespace_and_original_stream_closure": "OBSERVED",
+            "grandchild_wait_claimed": False, "automatic_retry": False}
