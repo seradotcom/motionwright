@@ -93,6 +93,46 @@ impl ObservedRna {
     }
 }
 
+// Relation names are display observations, not identities. The SDK returns an
+// empty string for anonymous RNA structs (including the captured cycles
+// pointer); collection elements may also be unnamed. Root/name selectors and
+// Input::NativeName retain their separate nonempty identity requirements.
+fn observe_product_relation_items<'a>(
+    epoch: &mut ProductReadEpoch,
+    generation: u64,
+    items: impl Iterator<Item = &'a Value>,
+) -> NativeResult<Vec<ObservedRna>> {
+    epoch.observe(generation)?;
+    let mut references = BTreeSet::new();
+    let mut indices = BTreeSet::new();
+    items
+        .map(|item| {
+            let reference = native_string(item, "ref")?.to_owned();
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| backend("Blender relation omitted its observed name string"))?
+                .to_owned();
+            let rna_type = native_string(item, "rna_type")?.to_owned();
+            let index = item
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| backend("Blender relation omitted its observed index"))?;
+            epoch.reference(&reference, generation)?;
+            if !references.insert(reference.clone()) || !indices.insert(index) {
+                return Err(backend("Blender relation contains duplicate observations"));
+            }
+            Ok(ObservedRna {
+                reference,
+                native_name: name,
+                rna_type: Some(rna_type),
+                index: Some(index),
+                generation,
+            })
+        })
+        .collect()
+}
+
 impl<R: OriginalPhaseScope, P, J: OriginalCallJournal> OriginalSession<'_, R, P, J> {
     async fn product_root(
         &mut self,
@@ -119,31 +159,7 @@ impl<R: OriginalPhaseScope, P, J: OriginalCallJournal> OriginalSession<'_, R, P,
     ) -> NativeResult<Vec<ObservedRna>> {
         epoch.reference(&parent.reference, parent.generation)?;
         let (generation, pages) = self.relations(&parent.reference, property).await?;
-        epoch.observe(generation)?;
-        let mut references = BTreeSet::new();
-        let mut indices = BTreeSet::new();
-        Self::page_items(&pages)
-            .map(|item| {
-                let reference = native_string(item, "ref")?.to_owned();
-                let name = native_string(item, "name")?.to_owned();
-                let rna_type = native_string(item, "rna_type")?.to_owned();
-                let index = item
-                    .get("index")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| backend("Blender relation omitted its observed index"))?;
-                epoch.reference(&reference, generation)?;
-                if !references.insert(reference.clone()) || !indices.insert(index) {
-                    return Err(backend("Blender relation contains duplicate observations"));
-                }
-                Ok(ObservedRna {
-                    reference,
-                    native_name: name,
-                    rna_type: Some(rna_type),
-                    index: Some(index),
-                    generation,
-                })
-            })
-            .collect()
+        observe_product_relation_items(epoch, generation, Self::page_items(&pages))
     }
 
     async fn product_only_relation(
@@ -4279,6 +4295,181 @@ mod editable_cycle_tests {
         let mut only_one_field = source;
         only_one_field.annotation = "EDITABLE\nFINISH".into();
         assert_eq!(edited, only_one_field);
+    }
+
+    fn captured_cycles_relation() -> Value {
+        // Exact decoded SDK value extracted from authenticated run40412161293
+        // cycle evidence /journal/create/calls/91/native_result/result/data.
+        // This fixture is a derived encoding, not fabricated native execution.
+        let bytes = include_bytes!("../../tests/fixtures/blender-cycles-relation-40412161293.json");
+        assert_eq!(
+            hex::encode(Sha256::digest(bytes)),
+            "db710306903d3454c45cf0ee6038c6df202afb011ce40f424cca01fc29782d03"
+        );
+        serde_json::from_slice(bytes).unwrap()
+    }
+
+    #[test]
+    fn product_captured_cycles_anonymous_relation_binds_to_observed_setter() {
+        let page = captured_cycles_relation();
+        assert_eq!(page["relation"], "cycles");
+        let generation = native_generation(&page).unwrap();
+        assert_eq!(generation, 17);
+        let mut epoch = ProductReadEpoch::default();
+        epoch
+            .reference("blender-rna/v1/scenes/U2NlbmU@17", generation)
+            .unwrap();
+        let rows = observe_product_relation_items(
+            &mut epoch,
+            generation,
+            page["items"].as_array().unwrap().iter(),
+        )
+        .unwrap();
+        let [row] = rows.as_slice() else {
+            panic!("original reply is a singleton");
+        };
+        assert!(row.native_name.is_empty());
+        assert_eq!(row.reference, page["items"][0]["ref"].as_str().unwrap());
+        assert_eq!(row.rna_type.as_deref(), Some("CyclesRenderSettings"));
+        assert_eq!(row.index, Some(0));
+        assert_eq!(row.generation, generation);
+        assert_eq!(epoch.generation, Some(generation));
+        let (projection, _) = fixture_spec();
+        let step = projection
+            .before_create
+            .iter()
+            .find(|step| {
+                step.required_bindings()
+                    .into_iter()
+                    .any(|binding| binding == &Binding::Cycles)
+            })
+            .unwrap();
+        let call = step
+            .bind(|binding| (binding == &Binding::Cycles).then(|| row.projection_reference()))
+            .unwrap();
+        assert_eq!(call.operation, "driver.blender.semantic.property.set");
+        assert_eq!(call.input["ref"], page["items"][0]["ref"]);
+        assert_eq!(call.input["property"], "seed");
+        assert_eq!(call.input["value"], 73);
+        assert!(!call.input.as_object().unwrap().contains_key("name"));
+    }
+
+    #[test]
+    fn product_relation_name_remains_required_and_typed() {
+        let page = captured_cycles_relation();
+        let original = page["items"][0].clone();
+        for malformed in [
+            None,
+            Some(Value::Null),
+            Some(json!(0)),
+            Some(json!(true)),
+            Some(json!([])),
+            Some(json!({})),
+        ] {
+            let mut item = original.clone();
+            if let Some(value) = malformed {
+                item["name"] = value;
+            } else {
+                item.as_object_mut().unwrap().remove("name");
+            }
+            let items = [item];
+            let error =
+                observe_product_relation_items(&mut ProductReadEpoch::default(), 17, items.iter())
+                    .unwrap_err();
+            assert_eq!(error.code, ErrorCode::BackendFailed);
+            assert_eq!(
+                error.message,
+                "Blender relation omitted its observed name string"
+            );
+        }
+        assert_eq!(page["items"][0], original);
+    }
+
+    #[test]
+    fn product_relation_epoch_reference_shape_and_uniqueness_remain_enforced() {
+        let page = captured_cycles_relation();
+        let original = page["items"][0].clone();
+        for (key, replacement) in [
+            ("ref", Value::Null),
+            ("ref", json!("")),
+            ("ref", json!("foreign/v1/scenes/U2NlbmU@17")),
+            ("ref", json!("blender-rna/v1/scenes/U2NlbmU@16")),
+            ("rna_type", Value::Null),
+            ("rna_type", json!("")),
+            ("rna_type", json!(7)),
+            ("index", Value::Null),
+            ("index", json!(-1)),
+            ("index", json!(0.5)),
+            ("index", json!("0")),
+        ] {
+            let mut item = original.clone();
+            item[key] = replacement;
+            assert!(observe_product_relation_items(
+                &mut ProductReadEpoch::default(), 17, [item].iter(),
+            ).is_err(), "{key}");
+        }
+        for generation in [0, (i32::MAX as u64) + 1] {
+            assert!(
+                observe_product_relation_items(
+                    &mut ProductReadEpoch::default(),
+                    generation,
+                    [original.clone()].iter(),
+                )
+                .is_err()
+            );
+        }
+        let mut epoch = ProductReadEpoch::default();
+        epoch
+            .reference("blender-rna/v1/scenes/U2NlbmU@18", 18)
+            .unwrap();
+        let error =
+            observe_product_relation_items(&mut epoch, 17, [original.clone()].iter()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert_eq!(epoch.generation, Some(18));
+        let mut duplicate_reference = original.clone();
+        duplicate_reference["index"] = json!(1);
+        let mut duplicate_index = original.clone();
+        duplicate_index["ref"] = json!("blender-rna/v1/scenes/U2NlbmU/W1sicCIsInJlbmRlciJdXQ@17");
+        for other in [duplicate_reference, duplicate_index] {
+            let error = observe_product_relation_items(
+                &mut ProductReadEpoch::default(),
+                17,
+                [original.clone(), other].iter(),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.message,
+                "Blender relation contains duplicate observations"
+            );
+        }
+        assert_eq!(page["items"][0], original);
+    }
+
+    #[test]
+    fn product_anonymous_relation_cannot_supply_a_required_native_name() {
+        let page = captured_cycles_relation();
+        let rows = observe_product_relation_items(
+            &mut ProductReadEpoch::default(),
+            17,
+            page["items"].as_array().unwrap().iter(),
+        )
+        .unwrap();
+        let [row] = rows.as_slice() else {
+            panic!("original reply is a singleton");
+        };
+        // The real closed projection's named assignment remains strict.
+        let (projection, _) = fixture_spec();
+        let assignment = projection
+            .after_create
+            .iter()
+            .find(|step| step.operation() == "driver.blender.material.assign")
+            .unwrap();
+        assert!(
+            assignment
+                .bind(|_| Some(row.projection_reference()))
+                .is_err()
+        );
+        assert!(native_string(&page["items"][0], "name").is_err());
     }
 }
 
