@@ -1916,6 +1916,369 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
+# Additive partial technical oracles. Historical all184 and Studio68 stay separate.
+# A listed title is not an execution or a contractual/human acceptance decision.
+PARTIAL_ORACLE_SCOPE = "criterion-partials"
+PARTIAL_ORACLE_SELECTIONS = (('criterion-graph', 'semantic-graph-service.spec.ts', ('Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing',)), ('criterion-visual', 'visual-language-draft-service.spec.ts', ('pending visual name and palette survive a real project style-lock revision', 'visual input survives a real process restart and remains editable after a second reopen', 'an empty motion-duration input stays raw and cannot silently become a saved zero', 'ten real peer revisions preserve pending visual choices and every unrelated saved decision')), ('criterion-caption', 'caption-continuity-service.spec.ts', ('fourteen authored revisions retain multi-frame caption spans, output variants and exact sidecars through portable reopen',)))
+PARTIAL_ORACLE_CATALOG_SHA256 = '5ca7cbefa715272fc540b528d711f20ee2e5aed233d9a10cdad413669225d683'
+PARTIAL_ORACLE_TIMEOUTS = {"criterion-graph": 300, "criterion-visual": 600, "criterion-caption": 300}
+PARTIAL_ORACLE_VISUAL_SOURCE_PATHS = (
+    "apps/studio/src/VisualLanguageEditor.tsx",
+    "apps/studio/src/visualLanguageDraft.ts",
+    "apps/studio/src/CanvasWorkspace.tsx",
+    "apps/studio/src/App.tsx",
+    "apps/studio/src/CompositionStudy.tsx",
+    "apps/studio/src/ExpandedStudy.tsx",
+    "apps/studio/src/canvasInheritedInk.ts",
+    "apps/studio/src/CameraReframeWorkbench.tsx",
+    "apps/studio/src/CreativePatchWorkbench.tsx",
+    "apps/studio/src/ProceduralFieldWorkbench.tsx",
+    "apps/studio/src/ProductStageWorkbench.tsx",
+    "apps/studio/src/ProductionDesignWorkspace.tsx",
+)
+PARTIAL_ORACLE_SOURCE_PATHS = (*tuple("apps/studio/tests/" + row[1] for row in PARTIAL_ORACLE_SELECTIONS),
+                               *PARTIAL_ORACLE_VISUAL_SOURCE_PATHS)
+
+
+def partial_oracle_selections():
+    rows = PARTIAL_ORACLE_SELECTIONS
+    require(isinstance(rows, tuple) and len(rows) == 3
+            and tuple((label, filename, len(titles)) for label, filename, titles in rows) == (
+                ("criterion-graph", "semantic-graph-service.spec.ts", 1),
+                ("criterion-visual", "visual-language-draft-service.spec.ts", 4),
+                ("criterion-caption", "caption-continuity-service.spec.ts", 1))
+            and all(isinstance(titles, tuple) and all(isinstance(title, str) and title for title in titles)
+                    for _, _, titles in rows)
+            and len({(filename, title) for _, filename, titles in rows for title in titles}) == 6
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == PARTIAL_ORACLE_CATALOG_SHA256,
+            "partial technical oracle catalogue differs")
+    return rows
+
+
+def partial_oracle_discovery(document, filename, titles):
+    """Exact current list-only inventory, with no execution or skip credit."""
+    require((filename, titles) in {(name, names) for _, name, names in partial_oracle_selections()},
+            "unknown partial technical oracle file selection")
+    require(isinstance(document, dict) and document.get("errors") == [], "partial oracle discovery errors")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(key)) is int for key in ("expected", "skipped", "unexpected", "flaky"))
+            and stats.get("expected") == 0 and stats.get("skipped") == len(titles)
+            and stats.get("unexpected") == 0 and stats.get("flaky") == 0,
+            "partial oracle discovery must contain only list results")
+    expected = {(filename, title) for title in titles}
+    found = []
+    for pair, case in browser_result_identities(document):
+        require(pair in expected and pair not in found and case.get("expectedStatus") == "passed"
+                and case.get("results") == [], "partial oracle discovery identity, skip or result differs")
+        found.append(pair)
+    require(set(found) == expected and len(found) == len(titles), "partial oracle discovered inventory differs")
+    return {"status": "LISTED_NOT_EXECUTED", "listed": len(found), "selected": len(found),
+            "execution_results": 0, "identities": [[name, title] for name, title in found]}
+
+
+def partial_stored_oracle(value):
+    """Validate the original ScopedChangeService oracle without replaying SQLite."""
+    require(isinstance(value, dict) and set(value) == {
+        "schemaVersion", "observedAt", "project", "journal", "journalAfterRevisionExclusive", "journalComplete"}
+        and type(value.get("schemaVersion")) is int and value["schemaVersion"] == 1
+        and type(value.get("journalAfterRevisionExclusive")) is int
+        and value["journalAfterRevisionExclusive"] == 0 and value.get("journalComplete") is True,
+        "partial stored oracle schema or completeness differs")
+    observed = value.get("observedAt")
+    require(isinstance(observed, str) and re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", observed) is not None,
+        "partial stored oracle observation time missing")
+    datetime.fromisoformat(observed.replace("Z", "+00:00"))
+    project, journal = value.get("project"), value.get("journal")
+    require(isinstance(project, dict)
+            and all(isinstance(project.get(key), str) and project[key]
+                    for key in ("id", "generation", "active_branch"))
+            and type(project.get("revision")) is int and 0 <= project["revision"] <= 9007199254740991
+            and isinstance(journal, list) and len(journal) == project["revision"],
+            "partial stored Project identity or complete journal differs")
+    for revision, event in enumerate(journal, 1):
+        require(isinstance(event, dict) and type(event.get("revision")) is int
+                and event["revision"] == revision and isinstance(event.get("change"), dict)
+                and isinstance(event["change"].get("type"), str) and event["change"]["type"]
+                and isinstance(event.get("created_at"), str) and event["created_at"],
+                "partial stored journal is incomplete or unordered")
+    # Each call to observeStoredProject records a fresh timestamp. Compare the
+    # complete semantic observation, retaining (not normalizing) both originals.
+    return {key: value[key] for key in (
+        "schemaVersion", "project", "journal", "journalAfterRevisionExclusive", "journalComplete")}
+
+
+def partial_closed_store(root, inventory, prefix, source_directory, database_name, participants, preparation_count):
+    manifest = archive_json(root, inventory, prefix + "/manifest.json")
+    oracle = archive_json(root, inventory, prefix + "/oracle.json")
+    outcome = archive_json(root, inventory, prefix + "-outcomes.json")
+    require(isinstance(manifest, dict) and type(manifest.get("schemaVersion")) is int
+            and manifest["schemaVersion"] == 1 and isinstance(outcome, dict)
+            and type(outcome.get("schemaVersion")) is int and outcome["schemaVersion"] == 1
+            and outcome.get("errors") == [] and outcome.get("capture") == manifest
+            and outcome.get("oracle") == oracle, "partial finalizer original differs")
+    partial_stored_oracle(oracle)
+    require(manifest.get("sourceDirectory") == str(source_directory)
+            and manifest.get("snapshotDirectory") == str(root / prefix / "store")
+            and manifest.get("databaseRelativePath") == database_name,
+            "partial captured source directory or database differs")
+    preparation, closures = outcome.get("preparation"), outcome.get("closures")
+    require(isinstance(preparation, list) and len(preparation) == preparation_count
+            and all(isinstance(row, dict) and type(row.get("index")) is int and row["index"] == index
+                    and row.get("status") == "fulfilled" and "error" not in row
+                    for index, row in enumerate(preparation)), "partial preparation differs")
+    lifecycle = manifest.get("lifecycle")
+    require(isinstance(closures, list) and len(closures) == participants
+            and all(isinstance(row, dict) and row.get("status") == "fulfilled"
+                    and "error" not in row and row.get("taints") == [] for row in closures)
+            and [{key: row.get(key) for key in ("databasePath", "exits", "taints")}
+                 for row in closures] == lifecycle, "partial closures differ from captured lifecycle")
+    require(isinstance(lifecycle, list) and len(lifecycle) == participants,
+            "partial lifecycle participant inventory differs")
+    for row in lifecycle:
+        exits = row.get("exits")
+        require(row.get("databasePath") == str(source_directory / database_name)
+                and row.get("taints") == [] and isinstance(exits, list) and exits
+                and all(isinstance(item, dict) and type(item.get("processId")) is int
+                        and item["processId"] > 0 and type(item.get("code")) is int and item["code"] == 0
+                        and item.get("signal") is None and isinstance(item.get("observedAt"), str)
+                        and item["observedAt"] for item in exits), "partial original lifecycle is unclosed")
+    return manifest, oracle, outcome
+
+
+def partial_graph_original(original, oracle):
+    project = oracle["project"]
+    require(isinstance(original, dict) and set(original) == {
+        "scope", "initialRevision", "finalRevision", "graph", "review", "events", "excludes"}
+        and original.get("scope") == "Actual App + StudioService + SQLite only"
+        and original.get("excludes") == ["native rendered output", "provider parity", "installed app", "human craft approval"],
+        "partial Graph original family differs")
+    initial, final = original.get("initialRevision"), original.get("finalRevision")
+    require(type(initial) is int and initial >= 0 and type(final) is int
+            and final == project["revision"] == initial + 4,
+            "partial Graph revision differs from stored Project")
+    expected = ["upsert_semantic_graph", "add_review", "resolve_review", "upsert_semantic_graph"]
+    require(original.get("events") == expected
+            == [event["change"]["type"] for event in oracle["journal"] if event["revision"] > initial],
+            "partial Graph events differ from full stored journal")
+    graph, review = original.get("graph"), original.get("review")
+    design, reviews = project.get("production_design"), project.get("reviews")
+    graphs = design.get("semantic_graphs") if isinstance(design, dict) else None
+    require(isinstance(graph, dict) and isinstance(review, dict)
+            and all(isinstance(item.get("id"), str) and item["id"] for item in (graph, review))
+            and isinstance(graphs, list) and all(isinstance(item, dict) for item in graphs)
+            and isinstance(reviews, list) and all(isinstance(item, dict) for item in reviews)
+            and [item for item in graphs if item.get("id") == graph["id"]] == [graph]
+            and [item for item in reviews if item.get("id") == review["id"]] == [review],
+            "partial Graph or review differs from its unique stored object")
+    authorship, anchor = graph.get("authorship"), review.get("anchor")
+    snapshot = authorship.get("source_snapshot") if isinstance(authorship, dict) else None
+    require(isinstance(snapshot, dict) and snapshot.get("project_id") == project["id"]
+            and snapshot.get("generation") == project["generation"]
+            and snapshot.get("branch_id") == project["active_branch"]
+            and type(snapshot.get("revision")) is int and initial <= snapshot["revision"] < final
+            and isinstance(anchor, dict) and anchor.get("resource") == "graph:" + graph["id"]
+            and anchor.get("branch_id") == project["active_branch"]
+            and type(anchor.get("revision")) is int and anchor["revision"] == initial + 1
+            and review.get("status") == "needs_recheck", "partial Graph Project or anchored review differs")
+
+
+def partial_visual_original(original, title, oracle, outcome, manifest, binary, source):
+    require(isinstance(original, dict)
+            and original.get("schema") == "motionwright.visual-language-service-evidence/1"
+            and original.get("fixture") == "synthetic_authored_content" and original.get("test") == title
+            and original.get("case_result") == "completed" and "failure" in original
+            and original["failure"] is None and original.get("cleanupErrors") == []
+            and original.get("evidence_scope") == "real_service_sqlite_cas_and_browser_visual_input_continuity"
+            and original.get("excludes") == ["installed_tauri", "native_realization", "font_rights_acceptance", "human_acceptance"],
+            "partial Visual original family, case or failure differs")
+    files = source["files"]
+    expected_ui = []
+    for name in PARTIAL_ORACLE_VISUAL_SOURCE_PATHS:
+        item = files.get(name)
+        require(isinstance(item, dict) and isinstance(item.get("sha256"), str)
+                and re.fullmatch("[0-9a-f]{64}", item["sha256"]) is not None,
+                "partial Visual observed UI source missing")
+        expected_ui.append({"path": name, "sha256": item["sha256"]})
+    ui = original.get("ui_sources")
+    spec = files.get("apps/studio/tests/visual-language-draft-service.spec.ts", {})
+    require(isinstance(spec, dict) and isinstance(spec.get("sha256"), str)
+            and re.fullmatch("[0-9a-f]{64}", spec["sha256"]) is not None,
+            "partial Visual observed test source missing")
+    require(isinstance(ui, dict) and ui.get("unchanged_during_case") is True
+            and ui.get("start") == ui.get("end") == expected_ui
+            and original.get("test_source_sha256") == spec.get("sha256")
+            and original.get("inspected_source_sha256") == expected_ui[0]["sha256"],
+            "partial Visual original sources differ from observed source")
+    require(original.get("runner_sha256") == binary["sha256"],
+            "partial Visual original runner differs from retained binary")
+    require(original.get("finalization") == outcome,
+            "partial Visual finalization differs from original outcome")
+    semantic = partial_stored_oracle(oracle)
+    initial = partial_stored_oracle(original.get("initialOracle"))
+    checkpoints = original.get("checkpoints")
+    require(isinstance(checkpoints, list) and len(checkpoints) >= 2
+            and all(isinstance(row, dict) and isinstance(row.get("label"), str) and row["label"] for row in checkpoints)
+            and checkpoints[0]["label"] == "initial complete oracle before interaction"
+            and checkpoints[-1]["label"] == "observed final state before every process closes",
+            "partial Visual checkpoint inventory differs")
+    observed = [partial_stored_oracle(row.get("oracle")) for row in checkpoints]
+    require(observed[0] == initial and observed[-1] == semantic,
+            "partial Visual final checkpoint differs from closed oracle")
+    revisions = []
+    for checkpoint in observed:
+        project = checkpoint["project"]
+        require(all(project[key] == semantic["project"][key] for key in ("id", "generation", "active_branch"))
+                and project["revision"] <= semantic["project"]["revision"]
+                and checkpoint["journal"] == semantic["journal"][:project["revision"]],
+                "partial Visual checkpoint Project or journal differs")
+        revisions.append(project["revision"])
+    require(revisions == sorted(revisions), "partial Visual checkpoint revisions are unordered")
+    participants = 2 if title == "ten real peer revisions preserve pending visual choices and every unrelated saved decision" else 1
+    services = original.get("services")
+    require(isinstance(services, list) and len(services) == participants
+            and all(isinstance(item, dict) for item in services)
+            and [{"databasePath": item.get("databasePath"), "exits": item.get("processExits"),
+                  "taints": item.get("lifecycleTaints")} for item in services] == manifest["lifecycle"],
+            "partial Visual services differ from original captured lifecycle")
+
+
+def partial_caption_original(original, observations):
+    require(isinstance(original, dict)
+            and original.get("schema") == "motionwright.caption-continuity-test/1"
+            and original.get("scope") == "real_studio_service_sqlite_cas_and_shared_desktop_caption_export"
+            and original.get("excludes") == ["installed_tauri", "native_burn_in_pixels", "human_acceptance"]
+            and original.get("status") == "passed" and original.get("errors") == [],
+            "partial Caption original family, status or errors differ")
+    stores, services = original.get("stores"), original.get("services")
+    values = original.get("observations")
+    require(isinstance(stores, list) and len(stores) == 2 and isinstance(services, list) and len(services) == 2
+            and isinstance(values, dict), "partial Caption two-store original is incomplete")
+    projects = []
+    for index, (manifest, oracle, outcome, binary) in enumerate(observations):
+        store, service = stores[index], services[index]
+        require(isinstance(store, dict) and set(store) == {"oracles", "finalization"}
+                and isinstance(store.get("oracles"), list) and len(store["oracles"]) == 1
+                and partial_stored_oracle(store["oracles"][0]) == partial_stored_oracle(oracle)
+                and store.get("finalization") == outcome,
+                "partial Caption store or finalization differs from original outcome")
+        require(isinstance(service, dict) and service.get("binary") == binary["path"]
+                and [{"databasePath": service.get("database"), "exits": service.get("exits"),
+                      "taints": service.get("taints")}] == manifest["lifecycle"],
+                "partial Caption service binary or lifecycle differs")
+        projects.append(oracle["project"])
+    require(values.get("original") == projects[0] and values.get("final") == projects[1],
+            "partial Caption observations differ from ordered stored Projects")
+    first, final = projects
+    imported, descriptor = values.get("imported"), values.get("source")
+    require(first["id"] == final["id"] and first["generation"] != final["generation"]
+            and first["revision"] == 14 and final["revision"] == 15
+            and isinstance(imported, dict) and imported.get("id") == final["id"]
+            and imported.get("generation") == final["generation"]
+            and imported.get("active_branch") == final["active_branch"]
+            and type(imported.get("revision")) is int and imported["revision"] == 14
+            and all(key in first and key in imported and first[key] == imported[key]
+                    for key in ("audio", "deliverables", "scenes"))
+            and isinstance(descriptor, dict) and descriptor.get("project_id") == first["id"]
+            and descriptor.get("generation") == first["generation"]
+            and type(descriptor.get("revision")) is int and descriptor["revision"] == first["revision"],
+            "partial Caption original/imported Project identity or revision differs")
+
+
+def partial_oracle_store_bindings(root, inventory, selections, captures, binary, source):
+    """Join the six current spec originals to seven separately retained stores."""
+    require(isinstance(binary, dict) and isinstance(binary.get("path"), str)
+            and Path(binary["path"]).is_absolute() and type(binary.get("bytes")) is int and binary["bytes"] > 0
+            and isinstance(binary.get("sha256"), str) and re.fullmatch("[0-9a-f]{64}", binary["sha256"]) is not None
+            and isinstance(source, dict) and isinstance(source.get("files"), dict),
+            "partial retained binary or source binding missing")
+    layout = {
+        "criterion-graph": ("graph-real-source-review-reopen", (("closed-graph-store", "store", "semantic-graph.sqlite3"),)),
+        "criterion-visual": ("visual-language-real-service-evidence", (("closed-store", "service", "studio.sqlite3"),)),
+        "criterion-caption": ("caption-continuity-evidence", (("closed-store-0", "original", "studio.sqlite3"),
+                                                              ("closed-store-1", "reimported", "studio.sqlite3"))),
+    }
+    required = partial_oracle_selections()
+    require([row.get("label") for row in selections] == [row[0] for row in required],
+            "partial store selection differs")
+    known = {row["manifest"] for row in captures}
+    require(len(known) == len(captures), "partial captured store inventory repeats a manifest")
+    used, case_roots, bindings = set(), set(), []
+    for selection, (label, filename, titles) in zip(selections, required):
+        document = archive_json(root, inventory, "e/" + label + ".json")
+        validate_browser_execution(document, filename, titles)
+        attachment_name, stores = layout[label]
+        for pair, case in browser_result_identities(document):
+            attachments = case["results"][0].get("attachments", [])
+            found = [row for row in attachments if row.get("name") == attachment_name]
+            require(len(found) == 1 and found[0].get("contentType") == "application/json",
+                    "partial case original attachment missing or duplicate")
+            relative = archive_member_name(Path(found[0].get("path", "")).relative_to(root).as_posix())
+            parts = relative.split("/")
+            require(parts[:2] == ["e", label + "-test-results"], "partial case attachment outside output")
+            if len(parts) == 5 and parts[3] == "attachments":
+                require(re.fullmatch(re.escape(attachment_name) + r"-[0-9a-f]{40}\.json", parts[4]) is not None,
+                        "partial reporter attachment name differs")
+                original_name = "/".join((*parts[:3], attachment_name + ".json"))
+            else:
+                require(len(parts) == 4 and parts[3] == attachment_name + ".json",
+                        "partial original attachment name differs")
+                original_name = relative
+            attached = archive_json(root, inventory, relative)
+            original = archive_json(root, inventory, original_name)
+            require(attached == original and all(inventory["entries"][relative][key]
+                    == inventory["entries"][original_name][key] for key in ("bytes", "sha256")),
+                    "partial reporter copy differs from original")
+            require(isinstance(original, dict), "partial case original must be a JSON object")
+            case_root = original_name.rsplit("/", 1)[0]
+            require(case_root not in case_roots, "partial cases share an original output root")
+            case_roots.add(case_root)
+            manifests, observations = [], []
+            participants = 2 if label == "criterion-visual" and pair[1] == titles[-1] else 1
+            for store, source_name, database_name in stores:
+                prefix = case_root + "/" + store
+                manifest_name = prefix + "/manifest.json"
+                require(manifest_name in known and manifest_name not in used,
+                        "partial case closed store missing or shared")
+                used.add(manifest_name)
+                manifest, oracle, outcome = partial_closed_store(
+                    root, inventory, prefix, root / case_root / source_name, database_name,
+                    participants, 1 if label == "criterion-graph" else 0)
+                observations.append((manifest, oracle, outcome, binary))
+                manifests.append(manifest_name)
+            if label == "criterion-graph":
+                partial_graph_original(original, observations[0][1])
+            elif label == "criterion-visual":
+                manifest, oracle, outcome, _ = observations[0]
+                partial_visual_original(original, pair[1], oracle, outcome, manifest, binary, source)
+            else:
+                partial_caption_original(original, observations)
+            bindings.append({"label": label, "file": pair[0], "title": pair[1],
+                             "original_evidence": original_name, "manifests": manifests,
+                             "original_content_join": "EXPLICIT_CURRENT_SPEC_PROJECT_JOURNAL_LIFECYCLE",
+                             "technical_scope": "ORIGINAL_CASE_AND_CLOSED_STORES; NO_ARCHIVE_REOPEN",
+                             "criterion_acceptance": "NOT_ASSESSED"})
+    require(len(bindings) == 6 and len(used) == 7 and used == known,
+            "partial case/store inventory differs")
+    return bindings
+
+
+def partial_oracle_list_order(discovered, selections):
+    require(isinstance(discovered, list) and isinstance(selections, list)
+            and len(discovered) == len(selections) == 3, "partial discovery/execution inventory differs")
+    finishes, starts = [], []
+    for rows, key, times in ((discovered, "finished_utc", finishes), (selections, "started_utc", starts)):
+        for row in rows:
+            value = row.get("command", {}).get(key)
+            require(isinstance(value, str), "partial original command time missing")
+            observed = datetime.fromisoformat(value)
+            require(observed.tzinfo is not None and observed.utcoffset() is not None,
+                    "partial original command time must include timezone")
+            times.append(observed)
+    require(max(finishes) <= min(starts), "partial oracle execution preceded a required list")
+
+
 def is_browser_scope(selection):
     return isinstance(selection, str) and selection in BROWSER_SCOPES
 
@@ -1925,6 +2288,8 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if is_browser_scope(selection):
         return browser_selections(selection)
+    if selection == PARTIAL_ORACLE_SCOPE:
+        return partial_oracle_selections()
     require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
             and len(PROJECT_AUTHORING_SELECTIONS) == 19
             and sum(len(row[2]) for row in PROJECT_AUTHORING_SELECTIONS) == 136
@@ -1962,6 +2327,16 @@ def selected_selections(selection):
 def selection_plan(selection):
     chosen = selected_selections(selection)
     labels = {row[0] for row in chosen}
+    if selection == PARTIAL_ORACLE_SCOPE:
+        return {"requested": selection, "scope": "EXPLICIT_PARTIAL_TECHNICAL_SERVICE_ORACLES",
+                "required": [{"label": label, "file": filename, "titles": list(titles)}
+                             for label, filename, titles in chosen],
+                "not_selected": [{"label": label, "file": filename, "titles": list(titles),
+                                  "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                                 for label, filename, titles in SELECTIONS],
+                "required_tests": 6, "full_default_tests": 184,
+                "discovery_required_before_execution": True, "execution_platform": "Linux",
+                "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
     if is_browser_scope(selection):
         selected, excluded = browser_discovery_inventory(selection)
         return {
@@ -2051,7 +2426,8 @@ def write_new(path, value):
 
 
 def source_observation(repo, selection=None):
-    require(selection is None or is_browser_scope(selection), "unknown source observation scope")
+    require(selection is None or is_browser_scope(selection) or selection == PARTIAL_ORACLE_SCOPE,
+            "unknown source observation scope")
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], cwd=repo, timeout=30).decode().strip()
 
@@ -2192,6 +2568,9 @@ def source_observation(repo, selection=None):
         paths = tuple(dict.fromkeys((*paths, *BROWSER_SOURCE_PATHS)))
     if selection == "workflow-preview-browser":
         paths = tuple(dict.fromkeys((*paths, *WORKFLOW_PREVIEW_SOURCE_PATHS)))
+    if selection == PARTIAL_ORACLE_SCOPE:
+        partial_oracle_selections()
+        paths = tuple(dict.fromkeys((*paths, *PARTIAL_ORACLE_SOURCE_PATHS)))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -2683,6 +3062,25 @@ def archive_closed_bindings(root, inventory, source):
                 and build.get("cwd") == str(repo)
                 and build.get("selected_environment") == service_environment_binding(target),
                 "service build invocation differs")
+    if plan["requested"] == PARTIAL_ORACLE_SCOPE:
+        discovered = receipt.get("partial_discovery")
+        require(isinstance(discovered, list) and [row.get("label") for row in discovered]
+                == [row[0] for row in required], "partial oracle discovery roster is incomplete")
+        for observed, (label, filename, titles) in zip(discovered, required):
+            command = observed.get("command", {})
+            command_closed(command, label + "-discovery")
+            environment = service_environment_binding(target, root / "e", label, binary_path)
+            environment["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(root / "e" / (label + "-discovery.json"))
+            require(command.get("argv") == service_command(node, cli, root / "e", (label, filename, titles), listing=True)
+                    and command.get("cwd") == cwd and command.get("selected_environment") == environment,
+                    "partial oracle discovery invocation differs")
+            original = inventory["entries"].get("e/" + label + "-discovery.json", {})
+            require(observed.get("status") == "LISTED_NOT_EXECUTED"
+                    and observed.get("original_report") == {key: original.get(key) for key in ("bytes", "sha256")}
+                    and observed.get("verified") == partial_oracle_discovery(
+                        archive_json(root, inventory, "e/" + label + "-discovery.json"), filename, titles),
+                    "partial oracle discovery original differs")
+        partial_oracle_list_order(discovered, selections)
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
@@ -2704,7 +3102,7 @@ def archive_closed_bindings(root, inventory, source):
         require(selection.get("status") == "PASS" and selection.get("expected_tests") == len(titles)
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
                 "archive report binding differs")
-        verify = validate_browser_execution if browser_mode else validate_report
+        verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
         require(selection.get("verified") == verify(
             archive_json(root, inventory, "e/" + label + ".json"), filename, titles),
             "archive original selected results differ")
@@ -2776,6 +3174,9 @@ def archive_closed_bindings(root, inventory, source):
                          "evidence_scope": manifest.get("evidenceScope")})
     result = {"receipt": {k: inventory["entries"]["e/receipt.json"][k] for k in ("bytes", "sha256")},
               "selection_plan": plan, "captures": captures}
+    if plan["requested"] == PARTIAL_ORACLE_SCOPE:
+        result["partial_oracle_cases"] = partial_oracle_store_bindings(
+            root, inventory, selections, captures, receipt["service_binary"], source)
     if any(row["label"] in {item[0] for item in CREATIVE_PRODUCTION_SELECTIONS} for row in selections):
         result["creative_production_cases"] = creative_production_store_bindings(
             root, inventory, selections, captures, binary_path)
@@ -2919,7 +3320,8 @@ def retain_closed_archive(repo, root):
             raise UnknownObservation("original execution is UNKNOWN; no source commands or archive copy",
                                      original_receipt.get("unsealed_command", {}))
         commands = [original_receipt.get("build", {}), original_receipt.get("discovery", {}).get("command", {}),
-                    *(row.get("command", {}) for row in original_receipt.get("selections", []))]
+                    *(row.get("command", {}) for row in original_receipt.get("selections", [])),
+                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", []))]
         for command in commands:
             if execution_unknown(command):
                 raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
@@ -2929,7 +3331,7 @@ def retain_closed_archive(repo, root):
                 and archive_json(root, before, receipt_name) == original_receipt,
                 "original receipt changed before archive admission")
         selected = original_receipt.get("selection_plan", {}).get("requested")
-        source_mode = selected if is_browser_scope(selected) else None
+        source_mode = selected if is_browser_scope(selected) or selected == PARTIAL_ORACLE_SCOPE else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -3114,8 +3516,18 @@ def service_environment_binding(target, output=None, label=None, binary=None):
             "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
 
 
-def service_command(node, cli, output, selection):
+def service_command(node, cli, output, selection, *, listing=False):
     label, filename, _titles = selection
+    require(type(listing) is bool, "service list flag must be boolean")
+    if label in {row[0] for row in PARTIAL_ORACLE_SELECTIONS}:
+        require(selection in partial_oracle_selections(), "unknown partial oracle selection")
+        pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title)))
+                                      for title in _titles) + ")$"
+        return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+                "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json",
+                "--output=" + str(output / (label + "-test-results")), "--grep", pattern,
+                *(["--list"] if listing else [])]
+    require(listing is False, "list-only service mode is reserved for its closed partial scope")
     argv = [node, str(cli), "test", "tests/" + filename, "--project=chromium",
             "--workers=1", "--retries=0", "--reporter=json",
             "--output=" + str(output / (label + "-test-results"))]
@@ -3480,11 +3892,14 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
+    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
     args = parser.parse_args()
     if is_browser_scope(args.selection):
         return run_browser_selection(args.repo, args.output, args.target, args.selection)
     selections = selected_selections(args.selection)
+    partial_mode = args.selection == PARTIAL_ORACLE_SCOPE
+    require(not partial_mode or sys.platform.startswith("linux"),
+            "partial service verification requires its owned POSIX process boundary")
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
     require(repo.is_dir(), "repository missing")
     require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
@@ -3495,7 +3910,7 @@ def main():
               "selection_plan": selection_plan(args.selection),
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
     try:
-        before = source_observation(repo)
+        before = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
         report["source_before"] = before
         write_new(output / "source-before.json", before)
         cargo, node = shutil.which("cargo"), shutil.which("node")
@@ -3520,19 +3935,43 @@ def main():
         shutil.copyfile(binary, retained_binary)
         report["retained_service_binary"] = {"path": retained_binary.name, **digest(retained_binary)}
         require(digest(retained_binary) == digest(binary), "retained service binary differs")
-        require(source_observation(repo) == before, "source changed during service compilation")
+        require((source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo)) == before, "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
+        if partial_mode:
+            report["partial_discovery"] = []
+            # Admit every current list before any selected test body is launched.
+            for label, filename, titles in selections:
+                stores = output / (label + "-stores")
+                stores.mkdir()
+                discovery_env = dict(env)
+                discovery_env.update(service_environment_binding(target, output, label, binary))
+                discovery_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + "-discovery.json"))
+                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True),
+                                  repo / "apps/studio", discovery_env, output, label + "-discovery", 60)
+                observed = {"label": label, "command": command, "status": "FAIL"}
+                report["partial_discovery"].append(observed)
+                require_observed_command(command)
+                require(command["exit_code"] == 0, "partial oracle discovery process failed")
+                original, document = browser_report_original(output / (label + "-discovery.json"))
+                observed.update(original_report=original,
+                                verified=partial_oracle_discovery(document, filename, titles),
+                                status="LISTED_NOT_EXECUTED")
+            require(source_observation(repo, PARTIAL_ORACLE_SCOPE) == before,
+                    "source changed during partial oracle listing")
+            require(digest(binary) == {key: report["service_binary"][key] for key in ("bytes", "sha256")}
+                    and digest(cli) == report["playwright_cli"], "partial oracle input changed during listing")
         for label, filename, titles in selections:
             case_env = dict(env)
             stores = output / (label + "-stores")
-            stores.mkdir()
+            if not partial_mode:
+                stores.mkdir()
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
             argv = service_command(node, cli, output, (label, filename, titles))
             command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              SELECTION_TIMEOUTS[label])
+                              PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
             selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(selection)
             require_observed_command(command)
@@ -3541,14 +3980,15 @@ def main():
                 selection["original_report"] = digest(result_path)
                 require(result_path.stat().st_size <= 64 * 1024 * 1024, "report exceeds bound")
                 document = json.loads(result_path.read_bytes())
-                selection["verified"] = validate_report(document, filename, titles)
+                verifier = validate_browser_execution if partial_mode else validate_report
+                selection["verified"] = verifier(document, filename, titles)
                 require(command["exit_code"] == 0, "selected process did not exit zero")
                 selection["status"] = "PASS"
             except Exception as error:
                 selection["error"] = str(error)
             if command["exit_code"] is None:
                 break
-        report["source_after"] = source_observation(repo)
+        report["source_after"] = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
         require(report["source_after"] == before, "source changed during browser execution")
         require(digest(binary) == {k: report["service_binary"][k] for k in ("bytes", "sha256")},
                 "service executable changed")
@@ -4742,6 +5182,46 @@ def studio68_reader_argv(python, reader, root, original, binary):
             "--backend-source-sha", STUDIO68_SOURCE, "--rpc-timeout-seconds", "10"]
 
 
+def studio68_record_execution_attempt(receipt, output, argv, cwd):
+    """Persist selection intent before dispatch; it is not evidence of a spawned process."""
+    state = receipt["service_case_observation"]
+    require(state["launch_attempted"] is False and receipt["service_cases"] == "NOT_RUN",
+            "Studio68 execution was already attempted")
+    intent = {"schema": "motionwright.studio68-playwright-attempt/1", "context": receipt["context"],
+              "argv": list(argv), "cwd": str(cwd), "selected_cases": len(STUDIO68_CASES),
+              "selected_ids": [row[4] for row in STUDIO68_CASES],
+              "meaning": "INTENT_BEFORE_CHILD; PROCESS_AND_CASE_START_NOT_YET_OBSERVED",
+              "retry_authorized": False}
+    path = output / "playwright-execution-attempt.json"
+    write_new(path, intent)
+    raw, identity = studio68_original(path, 2 * 1024 * 1024)
+    require(json.loads(raw) == intent, "Studio68 pre-dispatch selection intent changed")
+    state.update(launch_attempted=True, attempt_original={"path": path.name, **identity})
+    receipt["service_cases"] = "ATTEMPTED_NOT_VALIDATED"
+
+
+def studio68_record_execution_process(receipt, commands):
+    """Preserve an observed command/PID without converting a selected roster to started cases."""
+    state = receipt["service_case_observation"]
+    rows = [row for row in commands if isinstance(row, dict) and row.get("label") == "playwright-execution"]
+    if not rows:
+        return
+    row = rows[-1]
+    original = row.get("retained_command") if isinstance(row.get("retained_command"), dict) else row
+    state["command_observation"] = {
+        "record_status": row.get("status"), "observation": original.get("observation"),
+        "exit_code": original.get("exit_code"), "diagnostic_custody": original.get("diagnostic_custody"),
+        "owned_group_after_wait": original.get("owned_group_after_wait"),
+        "escaped_descendants": original.get("escaped_descendants"),
+    }
+    pid = original.get("pid")
+    if type(pid) is int and pid > 0:
+        state["process_start_observed"] = True
+        state["process_identity"] = {"pid": pid, "started_utc": original.get("started_utc"),
+                                     "process_boundary": original.get("process_boundary")}
+
+
+
 def studio68_main(arguments):
     import time
     started_ns = time.monotonic_ns()  # One origin before any controlled IO.
@@ -4769,6 +5249,10 @@ def studio68_main(arguments):
     receipt = {"schema": "motionwright.studio68-execution/1", "context": context,
                "started_mono_ns": started_ns, "deadline_mono_ns": clock.deadline_ns,
                "commands": commands, "status": "PREPARING", "service_cases": "NOT_RUN",
+               "service_case_observation": {"selected_cases": 68, "launch_attempted": False,
+                   "process_start_observed": False, "process_identity": None,
+                   "individual_case_start": "NOT_OBSERVED", "playwright_validated_cases": 0,
+                   "closed_readback_validated_cases": 0},
                "retry_authorized": False, "human_acceptance": "NOT_GRANTED",
                "process_boundary": "OWNED_POSIX_SESSION_GROUP", "escaped_descendants": "NOT_OBSERVED"}
     exit_code = 1
@@ -4846,7 +5330,14 @@ def studio68_main(arguments):
             current_env = dict(pw_env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(reporter))
             args_pw = studio68_playwright_argv(tools["node"], cli, output / "results", listing=listing)
             # No Cargo producer remains reachable through this barrier phase.
-            result, _ = barrier(args_pw, "playwright-" + label, cap, clock.phase(cap), studio, current_env)
+            selected_phase = clock.phase(cap)
+            if not listing:
+                studio68_record_execution_attempt(receipt, output, args_pw, studio)
+            try:
+                result, _ = barrier(args_pw, "playwright-" + label, cap, selected_phase, studio, current_env)
+            finally:
+                if not listing:
+                    studio68_record_execution_process(receipt, commands)
             raw, originals[label] = studio68_original(reporter, 64 * 1024 * 1024)
             document = json.loads(raw)
             require(document.get("config", {}).get("argv") == args_pw, "Studio68 reporter argv differs from observed launch")
@@ -4854,6 +5345,10 @@ def studio68_main(arguments):
                     and Path(document["config"].get("configFile", "")).resolve(strict=True) == studio / "playwright.config.ts",
                     "Studio68 reporter source roots changed")
             receipt[label] = studio68_roster(document, executed=not listing)
+            if not listing:
+                receipt["service_case_observation"]["playwright_validated_cases"] = 68
+                receipt["service_case_observation"]["individual_case_start"] = "OBSERVED_IN_ORIGINAL_EXECUTION_REPORT"
+                receipt["service_cases"] = "PLAYWRIGHT_VERIFIED_READBACK_PENDING"
             require(studio68_original(Path(binary["retained"]["path"]), 256 * 1024 * 1024)[1] ==
                     {k: binary["retained"][k] for k in ("bytes", "sha256")}, "Studio68 executed service binary changed")
         require(receipt["list"]["ids"] == receipt["execution"]["ids"], "Studio68 list/execution IDs differ")
@@ -4903,6 +5398,7 @@ def studio68_main(arguments):
                         "Studio68 final original stream readback differs")
         retention_phase.remaining(1)
         clock.remaining(1, reserve=0)
+        receipt["service_case_observation"]["closed_readback_validated_cases"] = 68
         receipt.update(status="PASS_STUDIO68_REAL_SERVICE_CLOSED_READBACK", service_cases=68,
                        scope="Five exact F278 service specs and closed Project/journal readback; no installed/native/human acceptance")
         exit_code = 0

@@ -895,7 +895,7 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
         self.assertEqual(len(choices), len(set(choices)))
-        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
+        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
         service_job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
         self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'"])
@@ -3987,6 +3987,942 @@ class Studio68LinuxOriginals(unittest.TestCase):
             with self.assertRaises(OSError):
                 gate.os.fstat(opened[0])
         self.assertLess(time.monotonic() - started, 2)
+
+class PartialCriterionServiceSelectionTests(unittest.TestCase):
+    """Synthetic selector/custody controls; no Node, Rust or service is executed."""
+
+    @staticmethod
+    def document(filename, titles, *, listing=False):
+        specs = []
+        for title in titles:
+            specs.append({"title": title, "file": filename, "tags": [], "ok": True,
+                          "tests": [{"projectId": "chromium", "projectName": "chromium",
+                                     "expectedStatus": "passed", "status": "expected",
+                                     "results": [] if listing else [{"status": "passed", "retry": 0,
+                                                                      "errors": [], "attachments": []}]}]})
+        return {"errors": [], "stats": {"expected": 0 if listing else len(titles),
+                                        "skipped": len(titles) if listing else 0,
+                                        "unexpected": 0, "flaky": 0},
+                "suites": [{"title": filename, "specs": specs, "suites": []}]}
+
+    def test_closed_six_preserves_historical_all_and_studio68_scope(self):
+        rows = gate.selected_selections("criterion-partials")
+        self.assertEqual([(label, name, len(titles)) for label, name, titles in rows], [
+            ("criterion-graph", "semantic-graph-service.spec.ts", 1),
+            ("criterion-visual", "visual-language-draft-service.spec.ts", 4),
+            ("criterion-caption", "caption-continuity-service.spec.ts", 1)])
+        self.assertEqual(sum(len(titles) for _, _, titles in rows), 6)
+        self.assertEqual(gate.selected_selections("all"), gate.SELECTIONS)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 184)
+        plan = gate.selection_plan("criterion-partials")
+        self.assertEqual(plan["required_tests"], 6)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 184)
+        self.assertTrue(plan["discovery_required_before_execution"])
+        self.assertEqual(plan["execution_platform"], "Linux")
+        self.assertFalse(plan["formal_acceptance"])
+        self.assertEqual(plan["criterion_acceptance"], "NOT_ASSESSED")
+        self.assertEqual(gate.PARTIAL_ORACLE_TIMEOUTS, {
+            "criterion-graph": 300, "criterion-visual": 600, "criterion-caption": 300})
+
+    def test_catalogue_missing_duplicate_and_renamed_title_are_rejected(self):
+        rows = gate.PARTIAL_ORACLE_SELECTIONS
+        changes = [rows[:-1], (rows[0], rows[0], rows[2]),
+                   (rows[0], (rows[1][0], rows[1][1], (*rows[1][2][:-1], "another title")), rows[2])]
+        for changed in changes:
+            with self.subTest(changed=changed), mock.patch.object(gate, "PARTIAL_ORACLE_SELECTIONS", changed):
+                with self.assertRaises(ValueError):
+                    gate.selected_selections("criterion-partials")
+
+    def test_exact_full_identity_grep_lists_and_executes_the_same_six_without_retry(self):
+        for selection in gate.partial_oracle_selections():
+            label, filename, titles = selection
+            argv = gate.service_command("node", Path("cli.js"), Path("out"), selection)
+            listed = gate.service_command("node", Path("cli.js"), Path("out"), selection, listing=True)
+            self.assertEqual(listed, [*argv, "--list"])
+            for flag in ("--project=chromium", "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only"):
+                self.assertIn(flag, argv)
+            pattern = argv[argv.index("--grep") + 1]
+            for title in titles:
+                actual = " ".join(("chromium", filename, title))
+                self.assertIsNotNone(re.fullmatch(pattern, actual))
+                for altered in ("prefix " + actual, actual + " suffix", actual.replace("chromium", "firefox", 1),
+                                actual.replace(filename, "foreign.spec.ts", 1)):
+                    self.assertIsNone(re.fullmatch(pattern, altered))
+            with self.assertRaises(ValueError):
+                gate.service_command("node", Path("cli.js"), Path("out"), (label, filename, ("foreign",)))
+            with self.assertRaises(ValueError):
+                gate.service_command("node", Path("cli.js"), Path("out"), selection, listing=1)
+
+    def test_discovery_is_closed_unexecuted_and_rejects_skips_results_foreign_or_missing_ids(self):
+        for _, filename, titles in gate.partial_oracle_selections():
+            doc = self.document(filename, titles, listing=True)
+            self.assertEqual(gate.partial_oracle_discovery(doc, filename, titles)["status"], "LISTED_NOT_EXECUTED")
+            self.assertEqual(gate.partial_oracle_discovery(doc, filename, titles)["execution_results"], 0)
+            for mutation in ("missing", "duplicate", "foreign", "skip", "executed", "wrong-project", "boolean-count"):
+                with self.subTest(file=filename, mutation=mutation):
+                    bad = copy.deepcopy(doc)
+                    specs = bad["suites"][0]["specs"]
+                    case = specs[0]["tests"][0]
+                    if mutation == "missing": specs.pop()
+                    elif mutation == "duplicate": specs.append(copy.deepcopy(specs[0]))
+                    elif mutation == "foreign": specs[0]["title"] = "foreign"
+                    elif mutation == "skip": case["expectedStatus"] = "skipped"
+                    elif mutation == "executed": case["results"] = [{"status": "passed", "retry": 0, "errors": []}]
+                    elif mutation == "wrong-project": case["projectName"] = "firefox"
+                    else: bad["stats"]["expected"] = False
+                    with self.assertRaises(ValueError):
+                        gate.partial_oracle_discovery(bad, filename, titles)
+
+    def test_execution_requires_every_original_identity_with_zero_skips_or_retries(self):
+        for _, filename, titles in gate.partial_oracle_selections():
+            good = self.document(filename, titles)
+            self.assertEqual(gate.validate_browser_execution(good, filename, titles)["passed"], len(titles))
+            for mutation in ("missing", "duplicate", "retry", "skip", "ancestor", "project", "result-error"):
+                with self.subTest(file=filename, mutation=mutation):
+                    bad = copy.deepcopy(good)
+                    specs = bad["suites"][0]["specs"]
+                    case = specs[0]["tests"][0]
+                    if mutation == "missing": specs.pop()
+                    elif mutation == "duplicate": specs.append(copy.deepcopy(specs[0]))
+                    elif mutation == "retry": case["results"][0]["retry"] = 1
+                    elif mutation == "skip": case["expectedStatus"] = "skipped"
+                    elif mutation == "ancestor": bad["suites"][0]["title"] = "foreign describe"
+                    elif mutation == "project": case["projectName"] = "foreign"
+                    else: case["results"][0]["errors"] = [{"message": "original failure"}]
+                    with self.assertRaises(ValueError):
+                        gate.validate_browser_execution(bad, filename, titles)
+
+    def test_source_observation_adds_exact_three_specs_and_rejects_changed_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="partial-source-control-") as directory:
+            repo = Path(directory)
+            initializing = [True]
+
+            def git(argv, *, cwd, timeout):
+                self.assertEqual(Path(cwd), repo)
+                self.assertEqual(timeout, 30)
+                if argv == ["git", "rev-parse", "HEAD"]: return b"a" * 40
+                if argv == ["git", "rev-parse", "HEAD^{tree}"]: return b"b" * 40
+                if argv == ["git", "diff", "--name-only", "HEAD", "--"]: return b""
+                self.assertEqual(argv[:2], ["git", "show"])
+                name = argv[2].split(":", 1)[1]
+                raw = ("synthetic frozen source: " + name + "\n").encode()
+                if initializing[0]:
+                    path = repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(raw)
+                return raw
+
+            with mock.patch.object(gate.subprocess, "check_output", side_effect=git), \
+                    mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                old = gate.source_observation(repo)
+                current = gate.source_observation(repo, "criterion-partials")
+                initializing[0] = False
+                expected = {"apps/studio/tests/" + row[1] for row in gate.partial_oracle_selections()}
+                expected |= set(gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS)
+                self.assertEqual(set(current["files"]) - set(old["files"]), expected - set(old["files"]))
+                self.assertTrue(expected <= set(current["files"]))
+                for name in sorted(expected):
+                    path = repo / name
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(original + b"changed")
+                        with self.subTest(path=name), self.assertRaisesRegex(ValueError, "source differs from Git"):
+                            gate.source_observation(repo, "criterion-partials")
+                    finally:
+                        path.write_bytes(original)
+
+    def run_fixture(self, directory, *, unknown_label=None, bad_list=False):
+        root = Path(directory)
+        repo, output, target = root / "g", root / "v/e", root / "v/t"
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        cli.parent.mkdir(parents=True)
+        cli.write_bytes(b"synthetic CLI; never executed")
+        for name in ("cargo", "node"):
+            (repo / name).write_bytes(b"synthetic tool; never executed")
+        source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "only"}}
+        calls = []
+        rows = {row[0]: row for row in gate.partial_oracle_selections()}
+
+        def execute(argv, cwd, env, destination, label, timeout):
+            calls.append(label)
+            command = {"argv": argv, "cwd": str(cwd), "exit_code": 0,
+                       **synthetic_process_fields(env), "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+            if label == unknown_label:
+                command.update(observation="UNKNOWN_PROCESS_NO_RETRY", exit_code=None,
+                               diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+                return command
+            if label == "build":
+                binary = target / "debug/examples/studio_review_session"
+                if gate.os.name == "nt": binary = binary.with_suffix(".exe")
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"synthetic executable fixture; never executed")
+                self.assertEqual(timeout, 1200)
+            else:
+                listing = label.endswith("-discovery")
+                selected = label.removesuffix("-discovery")
+                _, filename, titles = rows[selected]
+                self.assertEqual(timeout, 60 if listing else gate.PARTIAL_ORACLE_TIMEOUTS[selected])
+                self.assertEqual("--list" in argv, listing)
+                value = self.document(filename, titles, listing=listing)
+                if bad_list and listing:
+                    value["suites"][0]["specs"].pop()
+                Path(env["PLAYWRIGHT_JSON_OUTPUT_FILE"]).write_text(json.dumps(value), encoding="utf-8")
+            return command
+
+        argv = ["ci_canvas_service.py", "--repo", str(repo), "--output", str(output), "--target", str(target),
+                "--selection", "criterion-partials"]
+        with mock.patch("sys.argv", argv), mock.patch("sys.stdout", new=io.StringIO()), \
+                mock.patch.object(gate.sys, "platform", "linux"), \
+                mock.patch.object(gate, "source_observation", return_value=source) as query, \
+                mock.patch.object(gate.shutil, "which", side_effect=lambda name: str(repo / name)), \
+                mock.patch.object(gate, "execute", side_effect=execute):
+            code = gate.main()
+        return code, json.loads((output / "receipt.json").read_bytes()), calls, query.call_count
+
+    def test_all_three_current_lists_precede_every_test_body_on_the_real_main_path(self):
+        with tempfile.TemporaryDirectory(prefix="partial-main-control-") as directory:
+            code, receipt, calls, source_queries = self.run_fixture(directory)
+        labels = [row[0] for row in gate.partial_oracle_selections()]
+        self.assertEqual(calls, ["build", *(label + "-discovery" for label in labels), *labels])
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual(receipt["status"], "PASS")
+        self.assertEqual(source_queries, 4)
+        self.assertEqual(sum(row["expected_tests"] for row in receipt["selections"]), 6)
+        self.assertEqual([row["verified"]["execution_results"] for row in receipt["partial_discovery"]], [0, 0, 0])
+
+    def test_unknown_or_changed_list_stops_before_test_bodies_and_unknown_postqueries(self):
+        labels = [row[0] + "-discovery" for row in gate.partial_oracle_selections()]
+        for index, label in enumerate(labels):
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix="partial-unknown-control-") as directory:
+                code, receipt, calls, source_queries = self.run_fixture(directory, unknown_label=label)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["status"], "UNKNOWN")
+            self.assertEqual(calls, ["build", *labels[:index + 1]])
+            self.assertEqual(source_queries, 2)
+            self.assertNotIn("source_after", receipt)
+            self.assertEqual(receipt["selections"], [])
+        with tempfile.TemporaryDirectory(prefix="partial-bad-list-control-") as directory:
+            code, receipt, calls, _ = self.run_fixture(directory, bad_list=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "FAIL")
+        self.assertEqual(calls, ["build", labels[0]])
+        self.assertEqual(receipt["selections"], [])
+
+    def store_fixture(self, directory):
+        return partial_case_store_fixture(self, directory)
+
+    def test_six_case_attachments_require_seven_distinct_original_closed_stores(self):
+        with tempfile.TemporaryDirectory(prefix="partial-store-control-") as directory:
+            root, inventory, values, selections, captures = self.store_fixture(directory)
+            with mock.patch.object(gate, "archive_json", side_effect=lambda _root, _inventory, name: values[name]):
+                actual = gate.partial_oracle_store_bindings(root, inventory, selections, captures, **partial_fixture_bindings(root))
+                self.assertEqual(len(actual), 6)
+                self.assertEqual(sum(len(row["manifests"]) for row in actual), 7)
+                self.assertTrue(all(row["criterion_acceptance"] == "NOT_ASSESSED" for row in actual))
+            for mutation in ("missing", "shared", "outcome", "taint", "incomplete-journal", "missing-attachment"):
+                with self.subTest(mutation=mutation):
+                    changed = copy.deepcopy(values)
+                    changed_captures = copy.deepcopy(captures)
+                    first = captures[0]["manifest"]
+                    prefix = first.removesuffix("/manifest.json")
+                    if mutation == "missing": changed_captures.pop(0)
+                    elif mutation == "shared":
+                        visual = changed["e/criterion-visual.json"]["suites"][0]["specs"]
+                        visual[1]["tests"][0]["results"][0]["attachments"] = copy.deepcopy(
+                            visual[0]["tests"][0]["results"][0]["attachments"])
+                    elif mutation == "outcome": changed[prefix + "-outcomes.json"]["errors"] = ["original failure"]
+                    elif mutation == "taint": changed[prefix + "-outcomes.json"]["closures"][0]["taints"] = ["uncertain"]
+                    elif mutation == "incomplete-journal": changed[prefix + "/oracle.json"]["journalComplete"] = False
+                    else: changed["e/criterion-graph.json"]["suites"][0]["specs"][0]["tests"][0]["results"][0]["attachments"] = []
+                    with mock.patch.object(gate, "archive_json", side_effect=lambda _r, _i, name: changed[name]):
+                        with self.assertRaises(ValueError):
+                            gate.partial_oracle_store_bindings(root, inventory, selections, changed_captures, **partial_fixture_bindings(root))
+
+    def test_unknown_discovery_is_quarantined_before_archive_or_source_access(self):
+        with tempfile.TemporaryDirectory(prefix="partial-quarantine-control-") as directory:
+            root, _, _ = ClosedStudioArchiveTests().fixture(directory)
+            path = root / "e/receipt.json"
+            value = json.loads(path.read_bytes())
+            uncertain = {"observation": "UNKNOWN_PROCESS_NO_RETRY", "pid": 123,
+                         "diagnostic_custody": "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"}
+            value["partial_discovery"] = [{"label": "criterion-graph", "command": uncertain}]
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with mock.patch.object(gate, "archive_inventory") as inventory, \
+                    mock.patch.object(gate, "source_observation") as source, \
+                    mock.patch.object(gate, "write_closed_tar") as copy_tar:
+                actual = gate.retain_closed_archive(root.parent / "g", root)
+            self.assertEqual(actual["status"], "UNKNOWN")
+            self.assertEqual(actual["unsealed_command"], uncertain)
+            inventory.assert_not_called()
+            source.assert_not_called()
+            copy_tar.assert_not_called()
+
+    def test_archive_order_requires_last_list_closed_before_first_execution(self):
+        lists = [{"command": {"finished_utc": "2026-10-26T12:00:0" + str(index) + "+00:00"}}
+                 for index in (1, 2, 3)]
+        runs = [{"command": {"started_utc": "2026-10-26T12:00:0" + str(index) + "+00:00"}}
+                for index in (3, 4, 5)]
+        gate.partial_oracle_list_order(lists, runs)
+        for mutation in ("last-list-late", "first-test-early", "missing-list", "missing-execution", "naive", "missing-time"):
+            with self.subTest(mutation=mutation):
+                left, right = copy.deepcopy(lists), copy.deepcopy(runs)
+                if mutation == "last-list-late": left[-1]["command"]["finished_utc"] = "2026-10-26T12:00:04+00:00"
+                elif mutation == "first-test-early": right[0]["command"]["started_utc"] = "2026-10-26T12:00:02+00:00"
+                elif mutation == "missing-list": left.pop()
+                elif mutation == "missing-execution": right.pop()
+                elif mutation == "naive": left[-1]["command"]["finished_utc"] = "2026-10-26T12:00:03"
+                else: right[0]["command"].clear()
+                with self.assertRaises(ValueError):
+                    gate.partial_oracle_list_order(left, right)
+
+    def test_workflow_routes_only_the_new_choice_through_the_existing_manual_g0_service_job(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
+        raw = path.read_bytes()
+        added = b"options: [studio-service-68, criterion-partials, creative-production,"
+        old = b"options: [studio-service-68, creative-production,"
+        self.assertEqual(raw.count(added), 1)
+        reverted = raw.replace(added, old, 1)
+        self.assertEqual(gate.hashlib.sha256(reverted).hexdigest(),
+                         "9962a222faa52eeacb24f886b4e8fe3240ad08e0830252f809a54284015a914b")
+        self.assertIn(b"default: authoring-drafts", raw)
+        self.assertIn(b"if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'\n    needs: g0", raw)
+        self.assertIn(b"REQUESTED_SELECTION: ${{ matrix.selection }}", raw)
+        self.assertIn(b'--target ../v/t --output ../v/e --selection "$REQUESTED_SELECTION"', raw)
+        self.assertIn(b"runs-on: ubuntu-24.04", raw)
+        self.assertEqual(raw.count(b"criterion-partials"), 1)
+        for changed in (reverted + b" ", reverted.replace(b"default: authoring-drafts", b"default: all", 1),
+                        reverted.replace(b"needs: g0", b"needs: []", 1)):
+            self.assertNotEqual(gate.hashlib.sha256(changed).hexdigest(),
+                                "9962a222faa52eeacb24f886b4e8fe3240ad08e0830252f809a54284015a914b")
+
+
+
+def partial_fixture_bindings(root):
+    """Inert parser identities; no service executable or product result."""
+    files = {name: {"bytes": 1, "sha256": gate.hashlib.sha256(name.encode()).hexdigest()}
+             for name in (*gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS,
+                          "apps/studio/tests/visual-language-draft-service.spec.ts")}
+    return {"binary": {"path": str(root / "t/debug/examples/studio_review_session"),
+                        "bytes": 19, "sha256": "b" * 64}, "source": {"files": files}}
+
+
+def partial_case_store_fixture(test, directory):
+    """Synthetic documents use the existing TS schemas and independent JSON copies."""
+    root = Path(directory)
+    values, entries, captures, selections = {}, {}, [], []
+    context = partial_fixture_bindings(root)
+    stamp = "2026-10-26T12:00:00.001Z"
+
+    def oracle(project, kinds=None, observed=stamp):
+        kinds = kinds or ["synthetic_fixture_change"] * project["revision"]
+        return {"schemaVersion": 1, "observedAt": observed, "project": copy.deepcopy(project),
+                "journal": [{"revision": index, "change": {"type": kind}, "created_at": stamp}
+                            for index, kind in enumerate(kinds, 1)],
+                "journalAfterRevisionExclusive": 0, "journalComplete": True}
+
+    def retain_store(case_root, name, source_name, database_name, project_oracle, count=1, preparation=0, restarts=1):
+        prefix = case_root + "/" + name
+        directory = root / case_root / source_name
+        lifecycle = [{"databasePath": str(directory / database_name),
+                      "exits": [{"processId": 2300 + index * 10 + lifetime, "code": 0,
+                                 "signal": None, "observedAt": stamp} for lifetime in range(restarts)],
+                      "taints": []} for index in range(count)]
+        manifest = {"schemaVersion": 1, "capturedAt": stamp, "sourceDirectory": str(directory),
+                    "snapshotDirectory": str(root / prefix / "store"), "databaseRelativePath": database_name,
+                    "lifecycle": lifecycle, "entries": [{"path": "", "kind": "directory"}],
+                    "sourceBeforeSha256": "a" * 64, "sourceAfterSha256": "a" * 64,
+                    "snapshotSha256": "a" * 64,
+                    "evidenceScope": "synthetic parser fixture; no SQLite or product execution"}
+        outcome = {"schemaVersion": 1, "errors": [],
+                   "preparation": [{"index": index, "status": "fulfilled"} for index in range(preparation)],
+                   "closures": [{"status": "fulfilled", **copy.deepcopy(row)} for row in lifecycle],
+                   "capture": copy.deepcopy(manifest), "oracle": copy.deepcopy(project_oracle)}
+        values[prefix + "/manifest.json"] = copy.deepcopy(manifest)
+        values[prefix + "/oracle.json"] = copy.deepcopy(project_oracle)
+        values[prefix + "-outcomes.json"] = copy.deepcopy(outcome)
+        captures.append({"manifest": prefix + "/manifest.json"})
+        return manifest, outcome
+
+    index = 0
+    for label, filename, titles in gate.partial_oracle_selections():
+        document = test.document(filename, titles)
+        for spec in document["suites"][0]["specs"]:
+            index += 1
+            title = spec["title"]
+            case_root = "e/" + label + "-test-results/case-" + str(index)
+            project = {"schema_version": 1, "id": "fixture-project-" + str(index),
+                       "generation": "fixture-generation-" + str(index), "active_branch": "fixture-main",
+                       "revision": 3, "audio": {"transcript": []}, "deliverables": [], "scenes": []}
+            if label == "criterion-graph":
+                attachment = "graph-real-source-review-reopen"
+                project["revision"] = 7
+                graph = {"id": "fixture-graph", "scene_id": "fixture-scene",
+                         "content": {"kind": "causal_diagram", "vertices": [{"id": "v1", "label": "Revised declared intervention"}], "edges": []},
+                         "authorship": {"source_snapshot": {"project_id": project["id"],
+                            "generation": project["generation"], "branch_id": project["active_branch"], "revision": 6}}}
+                review = {"id": "fixture-review", "status": "needs_recheck",
+                          "anchor": {"resource": "graph:fixture-graph", "branch_id": "fixture-main", "revision": 4}}
+                project.update(production_design={"semantic_graphs": [copy.deepcopy(graph)]}, reviews=[copy.deepcopy(review)])
+                events = ["upsert_semantic_graph", "add_review", "resolve_review", "upsert_semantic_graph"]
+                observed = oracle(project, ["synthetic_fixture_change"] * 3 + events)
+                retain_store(case_root, "closed-graph-store", "store", "semantic-graph.sqlite3", observed,
+                             preparation=1, restarts=2)
+                original = {"scope": "Actual App + StudioService + SQLite only", "initialRevision": 3,
+                            "finalRevision": 7, "graph": graph, "review": review, "events": events,
+                            "excludes": ["native rendered output", "provider parity", "installed app", "human craft approval"]}
+            elif label == "criterion-visual":
+                attachment = "visual-language-real-service-evidence"
+                count = 2 if title == titles[-1] else 1
+                project["revision"] = 13 if count == 2 else 3
+                project["visual_language"] = {"name": "fixture-visual-" + str(index)}
+                observed = oracle(project)
+                initial = copy.deepcopy(project)
+                initial["revision"] = 2
+                initial_oracle = oracle(initial)
+                final_checkpoint = copy.deepcopy(observed)
+                final_checkpoint["observedAt"] = "2026-10-26T12:00:00.002Z"
+                manifest, outcome = retain_store(case_root, "closed-store", "service", "studio.sqlite3", observed,
+                                                count=count, restarts=2 if title == titles[1] else 1)
+                ui = [{"path": name, "sha256": context["source"]["files"][name]["sha256"]}
+                      for name in gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS]
+                original = {"schema": "motionwright.visual-language-service-evidence/1",
+                            "fixture": "synthetic_authored_content", "test": title,
+                            "case_result": "completed", "failure": None, "cleanupErrors": [],
+                            "evidence_scope": "real_service_sqlite_cas_and_browser_visual_input_continuity",
+                            "excludes": ["installed_tauri", "native_realization", "font_rights_acceptance", "human_acceptance"],
+                            "ui_sources": {"start": copy.deepcopy(ui), "end": copy.deepcopy(ui), "unchanged_during_case": True},
+                            "test_source_sha256": context["source"]["files"]["apps/studio/tests/visual-language-draft-service.spec.ts"]["sha256"],
+                            "inspected_source_sha256": ui[0]["sha256"], "runner_sha256": context["binary"]["sha256"],
+                            "initialOracle": initial_oracle,
+                            "checkpoints": [{"label": "initial complete oracle before interaction", "oracle": copy.deepcopy(initial_oracle)},
+                                            {"label": "observed final state before every process closes", "oracle": final_checkpoint}],
+                            "finalization": outcome, "archive": {"synthetic": "not used as store admission"},
+                            "services": [{"databasePath": row["databasePath"], "processExits": copy.deepcopy(row["exits"]),
+                                          "lifecycleTaints": [], "stderr": "", "transcript": []} for row in manifest["lifecycle"]]}
+            else:
+                attachment = "caption-continuity-evidence"
+                project["revision"] = 14
+                project["audio"] = {"transcript": [{"id": "fixture-segment", "text": "fixture-original"}]}
+                final = copy.deepcopy(project)
+                final["generation"] = "fixture-imported-generation"
+                final["revision"] = 15
+                final["audio"]["transcript"][0]["text"] = "fixture-edited-after-import"
+                imported = copy.deepcopy(project)
+                imported["generation"] = final["generation"]
+                stores, services = [], []
+                for store_index, (source_name, current) in enumerate((("original", project), ("reimported", final))):
+                    observed = oracle(current)
+                    manifest, outcome = retain_store(case_root, "closed-store-" + str(store_index), source_name,
+                                                     "studio.sqlite3", observed, restarts=2 if store_index == 0 else 1)
+                    earlier = copy.deepcopy(observed)
+                    earlier["observedAt"] = "2026-10-26T12:00:00.000Z"
+                    stores.append({"oracles": [earlier], "finalization": outcome})
+                    services.append({"binary": context["binary"]["path"], "database": manifest["lifecycle"][0]["databasePath"],
+                                     "exits": copy.deepcopy(manifest["lifecycle"][0]["exits"]), "taints": [], "stderr": "", "transcript": []})
+                original = {"schema": "motionwright.caption-continuity-test/1",
+                            "scope": "real_studio_service_sqlite_cas_and_shared_desktop_caption_export",
+                            "excludes": ["installed_tauri", "native_burn_in_pixels", "human_acceptance"],
+                            "status": "passed", "errors": [], "stores": stores, "services": services,
+                            "observations": {"source": {"project_id": project["id"], "generation": project["generation"], "revision": 14},
+                                             "original": project, "imported": imported, "final": final}}
+            name = case_root + "/" + attachment + ".json"
+            values[name] = original
+            entries[name] = {"kind": "file", "bytes": 7, "sha256": "f" * 64}
+            spec["tests"][0]["results"][0]["attachments"] = [
+                {"name": attachment, "contentType": "application/json", "path": str(root / name)}]
+        values["e/" + label + ".json"] = document
+        selections.append({"label": label})
+    return root, {"entries": entries}, values, selections, captures
+
+
+class PartialOriginalContentJoinTests(unittest.TestCase):
+    """Real JSON reads of inert original-shaped files, never a service execution."""
+
+    def fixture(self, directory):
+        return partial_case_store_fixture(PartialCriterionServiceSelectionTests(), directory)
+
+    def original_name(self, values, label, case_index=0):
+        prefix = "e/" + label + "-test-results/"
+        names = [name for name in values if name.startswith(prefix) and name.count("/") == 3
+                 and not name.endswith("-outcomes.json")]
+        return sorted(names)[case_index]
+
+    def read_retained(self, root, values, selections, captures, context=None):
+        inventory = {"entries": {}, "identities": {}}
+        for name, value in values.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = (json.dumps(value, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+            path.write_bytes(raw)
+            inventory["entries"][name] = {"kind": "file", "bytes": len(raw), "sha256": gate.hashlib.sha256(raw).hexdigest()}
+            inventory["identities"][name] = gate.archive_identity(path.stat())
+        return gate.partial_oracle_store_bindings(root, inventory, selections, captures,
+                                                 **(context or partial_fixture_bindings(root)))
+
+    def assert_rejected(self, mutation, message, context_mutation=None):
+        with tempfile.TemporaryDirectory(prefix="partial-original-causal-") as directory:
+            root, _, values, selections, captures = self.fixture(directory)
+            context = partial_fixture_bindings(root)
+            mutation(values, captures)
+            if context_mutation:
+                context_mutation(context)
+            with self.assertRaisesRegex(ValueError, message):
+                self.read_retained(root, values, selections, captures, context)
+
+    def test_original_schemas_join_six_cases_seven_stores_with_distinct_observation_times(self):
+        with tempfile.TemporaryDirectory(prefix="partial-original-positive-") as directory:
+            root, _, values, selections, captures = self.fixture(directory)
+            result = self.read_retained(root, values, selections, captures)
+            self.assertEqual(len(result), 6)
+            self.assertEqual(sum(len(row["manifests"]) for row in result), 7)
+            self.assertTrue(all(row["criterion_acceptance"] == "NOT_ASSESSED" for row in result))
+            self.assertTrue(all(row["original_content_join"] == "EXPLICIT_CURRENT_SPEC_PROJECT_JOURNAL_LIFECYCLE" for row in result))
+            visual = values[self.original_name(values, "criterion-visual")]
+            self.assertNotEqual(visual["checkpoints"][-1]["oracle"]["observedAt"], visual["finalization"]["oracle"]["observedAt"])
+            caption = values[self.original_name(values, "criterion-caption")]
+            self.assertNotEqual(caption["stores"][0]["oracles"][0]["observedAt"], caption["stores"][0]["finalization"]["oracle"]["observedAt"])
+
+    def test_null_or_scalar_originals_reject_after_every_retained_hash_is_recomputed(self):
+        for label in ("criterion-graph", "criterion-visual", "criterion-caption"):
+            for malformed in (None, [], "original", True, 1):
+                with self.subTest(label=label, value=malformed):
+                    self.assert_rejected(lambda values, _captures: values.__setitem__(
+                        self.original_name(values, label), malformed), "partial case original must be a JSON object")
+
+    def test_wrong_families_and_cross_case_original_swaps_reject_with_consistent_stores(self):
+        for label in ("criterion-graph", "criterion-visual", "criterion-caption"):
+            with self.subTest(label=label):
+                other = "criterion-caption" if label != "criterion-caption" else "criterion-visual"
+                self.assert_rejected(lambda values, _captures: values.__setitem__(self.original_name(values, label),
+                    copy.deepcopy(values[self.original_name(values, other)])), "partial (Graph|Visual|Caption) original family")
+        def swap_visual(values, _captures):
+            first, second = (self.original_name(values, "criterion-visual", index) for index in (0, 1))
+            title = values[first]["test"]
+            values[first] = copy.deepcopy(values[second])
+            values[first]["test"] = title
+        self.assert_rejected(swap_visual, "partial Visual finalization differs")
+
+    def test_graph_revisions_and_journal_segment_are_bound_to_original_events(self):
+        for field, value in (("initialRevision", 2), ("initialRevision", True), ("finalRevision", 8),
+                             ("events", ["upsert_semantic_graph"] * 4)):
+            with self.subTest(field=field, value=value):
+                self.assert_rejected(lambda values, _captures: values[self.original_name(values, "criterion-graph")].__setitem__(field, value),
+                                     "partial Graph (revision|events)")
+        def changed_journal(values, captures):
+            prefix = captures[0]["manifest"].removesuffix("/manifest.json")
+            values[prefix + "/oracle.json"]["journal"][-1]["change"]["type"] = "rename_project"
+            values[prefix + "-outcomes.json"]["oracle"] = copy.deepcopy(values[prefix + "/oracle.json"])
+        self.assert_rejected(changed_journal, "partial Graph events")
+
+    def test_graph_unique_saved_objects_and_project_anchor_cannot_be_relabelled(self):
+        for field in ("graph", "review"):
+            with self.subTest(field=field):
+                self.assert_rejected(lambda values, _captures: values[self.original_name(values, "criterion-graph")][field].__setitem__("id", "foreign"),
+                                     "partial Graph or review differs")
+        for mutation in ("duplicate-graph", "duplicate-review", "project", "generation", "branch", "anchor", "status"):
+            def change(values, captures):
+                name = self.original_name(values, "criterion-graph")
+                prefix = captures[0]["manifest"].removesuffix("/manifest.json")
+                project = values[prefix + "/oracle.json"]["project"]
+                if mutation == "duplicate-graph": project["production_design"]["semantic_graphs"].append(copy.deepcopy(project["production_design"]["semantic_graphs"][0]))
+                elif mutation == "duplicate-review": project["reviews"].append(copy.deepcopy(project["reviews"][0]))
+                elif mutation in ("project", "generation", "branch"):
+                    project[{"project": "id", "generation": "generation", "branch": "active_branch"}[mutation]] = "foreign"
+                elif mutation == "anchor":
+                    project["reviews"][0]["anchor"]["resource"] = "graph:foreign"
+                    values[name]["review"] = copy.deepcopy(project["reviews"][0])
+                else:
+                    project["reviews"][0]["status"] = "resolved"
+                    values[name]["review"] = copy.deepcopy(project["reviews"][0])
+                values[prefix + "-outcomes.json"]["oracle"] = copy.deepcopy(values[prefix + "/oracle.json"])
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial Graph (or review|Project or anchored review)")
+
+    def test_visual_status_title_failure_cleanup_and_source_originals_are_required(self):
+        for field, value in (("case_result", "failed"), ("test", "foreign case"), ("failure", "failed"),
+                             ("cleanupErrors", ["close failed"]), ("schema", "motionwright.caption-continuity-test/1")):
+            with self.subTest(field=field):
+                self.assert_rejected(lambda values, _captures: values[self.original_name(values, "criterion-visual")].__setitem__(field, value),
+                                     "partial Visual original family")
+        for mutation in ("flag", "changed", "both-changed", "missing-path", "test-source", "inspected-source"):
+            def change(values, _captures):
+                value = values[self.original_name(values, "criterion-visual")]
+                if mutation == "flag": value["ui_sources"]["unchanged_during_case"] = False
+                elif mutation in ("changed", "both-changed"):
+                    value["ui_sources"]["end"][0]["sha256"] = "c" * 64
+                    if mutation == "both-changed": value["ui_sources"]["start"][0]["sha256"] = "c" * 64
+                elif mutation == "missing-path":
+                    value["ui_sources"]["start"].pop(); value["ui_sources"]["end"].pop()
+                else: value["test_source_sha256" if mutation == "test-source" else "inspected_source_sha256"] = "c" * 64
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial Visual original sources differ")
+
+    def test_visual_runner_and_independently_observed_ui_source_bindings_cannot_be_substituted(self):
+        self.assert_rejected(lambda values, _captures: values[self.original_name(values, "criterion-visual")].__setitem__("runner_sha256", "c" * 64),
+                             "partial Visual original runner differs")
+        self.assert_rejected(lambda _values, _captures: None, "partial Visual original runner differs",
+                             lambda context: context["binary"].__setitem__("sha256", "c" * 64))
+        self.assert_rejected(lambda _values, _captures: None, "partial Visual original sources differ",
+                             lambda context: context["source"]["files"][gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS[0]].__setitem__("sha256", "c" * 64))
+        self.assert_rejected(lambda _values, _captures: None, "partial Visual observed UI source missing",
+                             lambda context: context["source"]["files"].pop(gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS[-1]))
+
+    def test_visual_final_checkpoint_project_journal_and_exact_finalization_are_required(self):
+        for mutation in ("finalization", "final-project", "final-journal", "initial-project", "last-label", "empty"):
+            def change(values, _captures):
+                value = values[self.original_name(values, "criterion-visual")]
+                if mutation == "finalization": value["finalization"]["errors"] = ["failed"]
+                elif mutation == "final-project": value["checkpoints"][-1]["oracle"]["project"]["id"] = "foreign"
+                elif mutation == "final-journal": value["checkpoints"][-1]["oracle"]["journal"][-1]["change"]["type"] = "foreign"
+                elif mutation == "initial-project":
+                    value["initialOracle"]["project"]["generation"] = "foreign"
+                    value["checkpoints"][0]["oracle"] = copy.deepcopy(value["initialOracle"])
+                elif mutation == "last-label": value["checkpoints"][-1]["label"] = "unrelated observation"
+                else: value["checkpoints"] = []
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial Visual (finalization|final checkpoint|checkpoint)")
+
+    def test_visual_peer_count_database_exits_and_taints_match_the_original_lifecycle(self):
+        for mutation in ("peer-count", "database", "exits", "taints"):
+            def change(values, _captures):
+                value = values[self.original_name(values, "criterion-visual", 3)]
+                if mutation == "peer-count": value["services"].pop()
+                elif mutation == "database": value["services"][0]["databasePath"] = "foreign.sqlite3"
+                elif mutation == "exits": value["services"][0]["processExits"][0]["code"] = 1
+                else: value["services"][0]["lifecycleTaints"] = ["uncertain"]
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial Visual services differ")
+
+    def test_caption_status_two_stores_order_and_finalizations_cannot_be_fabricated(self):
+        for mutation in ("status", "errors", "one-store", "three-stores", "swap", "finalization", "empty-oracles"):
+            def change(values, _captures):
+                value = values[self.original_name(values, "criterion-caption")]
+                if mutation == "status": value["status"] = "failed"
+                elif mutation == "errors": value["errors"] = ["failure"]
+                elif mutation == "one-store": value["stores"].pop()
+                elif mutation == "three-stores": value["stores"].append(copy.deepcopy(value["stores"][0]))
+                elif mutation == "swap": value["stores"].reverse()
+                elif mutation == "finalization": value["stores"][0]["finalization"]["oracle"]["project"]["id"] = "foreign"
+                else: value["stores"][0]["oracles"] = []
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial Caption (original family|two-store|store or finalization)")
+
+    def test_caption_original_final_imported_projects_and_revisions_are_bound(self):
+        for mutation in ("original", "final", "swap", "imported-id", "imported-generation", "imported-revision", "descriptor", "same-generation"):
+            def change(values, captures):
+                value = values[self.original_name(values, "criterion-caption")]
+                observations = value["observations"]
+                if mutation in ("original", "final"): observations[mutation]["id"] = "foreign"
+                elif mutation == "swap": observations["original"], observations["final"] = observations["final"], observations["original"]
+                elif mutation.startswith("imported-"):
+                    key = mutation.removeprefix("imported-")
+                    observations["imported"][key] = True if key == "revision" else "foreign"
+                elif mutation == "descriptor": observations["source"]["generation"] = "foreign"
+                else:
+                    old = observations["original"]["generation"]
+                    prefix = captures[-1]["manifest"].removesuffix("/manifest.json")
+                    values[prefix + "/oracle.json"]["project"]["generation"] = old
+                    values[prefix + "-outcomes.json"]["oracle"] = copy.deepcopy(values[prefix + "/oracle.json"])
+                    value["stores"][1]["oracles"][0]["project"]["generation"] = old
+                    value["stores"][1]["finalization"] = copy.deepcopy(values[prefix + "-outcomes.json"])
+                    observations["final"]["generation"] = old
+                    observations["imported"]["generation"] = old
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial Caption (observations|original/imported Project)")
+
+    def test_caption_binary_database_exits_and_taints_are_original_and_ordered(self):
+        for key, value in (("binary", "foreign-binary"), ("database", "foreign.sqlite3"), ("exits", []), ("taints", ["uncertain"])):
+            for index in (0, 1):
+                with self.subTest(key=key, index=index):
+                    self.assert_rejected(lambda values, _captures: values[self.original_name(values, "criterion-caption")]["services"][index].__setitem__(key, value),
+                                         "partial Caption service binary or lifecycle differs")
+
+    def test_consistent_foreign_store_paths_and_incomplete_oracles_reject_before_join(self):
+        for mutation in ("source", "database", "snapshot", "preparation", "journal-gap", "revision-bool", "lifecycle", "duplicate-manifest"):
+            def change(values, captures):
+                prefix = captures[0]["manifest"].removesuffix("/manifest.json")
+                manifest, outcome = values[prefix + "/manifest.json"], values[prefix + "-outcomes.json"]
+                if mutation in ("source", "database", "snapshot"):
+                    manifest[{"source": "sourceDirectory", "database": "databaseRelativePath", "snapshot": "snapshotDirectory"}[mutation]] = "foreign"
+                    outcome["capture"] = copy.deepcopy(manifest)
+                elif mutation == "preparation": outcome["preparation"] = []
+                elif mutation in ("journal-gap", "revision-bool"):
+                    observed = values[prefix + "/oracle.json"]
+                    if mutation == "journal-gap": observed["journal"][0]["revision"] = 2
+                    else: observed["project"]["revision"] = True
+                    outcome["oracle"] = copy.deepcopy(observed)
+                elif mutation == "lifecycle":
+                    manifest["lifecycle"][0]["exits"] = []
+                    outcome["capture"] = copy.deepcopy(manifest)
+                    outcome["closures"][0]["exits"] = []
+                else: captures.append(copy.deepcopy(captures[0]))
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(change, "partial (captured source|preparation|stored|original lifecycle|captured store inventory)")
+
+    def test_archive_passes_the_retained_binary_and_observed_sources_to_the_explicit_join(self):
+        import ast
+        tree = ast.parse(PATH.read_text(encoding="utf-8"))
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "archive_closed_bindings")
+        calls = [node for node in ast.walk(method) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == "partial_oracle_store_bindings"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([ast.unparse(value) for value in calls[0].args],
+                         ["root", "inventory", "selections", "captures", "receipt['service_binary']", "source"])
+        self.assertFalse(calls[0].keywords)
+        expected = ("VisualLanguageEditor.tsx", "visualLanguageDraft.ts", "CanvasWorkspace.tsx", "App.tsx",
+                    "CompositionStudy.tsx", "ExpandedStudy.tsx", "canvasInheritedInk.ts", "CameraReframeWorkbench.tsx",
+                    "CreativePatchWorkbench.tsx", "ProceduralFieldWorkbench.tsx", "ProductStageWorkbench.tsx", "ProductionDesignWorkspace.tsx")
+        self.assertEqual(gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS, tuple("apps/studio/src/" + name for name in expected))
+        self.assertEqual(len(gate.PARTIAL_ORACLE_SOURCE_PATHS), 15)
+        self.assertEqual(set(gate.PARTIAL_ORACLE_SOURCE_PATHS),
+                         set(gate.PARTIAL_ORACLE_VISUAL_SOURCE_PATHS) | {"apps/studio/tests/" + row[1] for row in gate.partial_oracle_selections()})
+
+
+
+class Studio68PartialStateTests(unittest.TestCase):
+    """Synthetic orchestration only; no SDK, Node, service or browser process."""
+
+    def main_fixture(self, failure=None):
+        import contextlib
+        import types
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            product, repository, root = parent / "product", parent / "gate", parent / "evidence-root"
+            studio = product / "apps/studio"
+            (studio / "tests").mkdir(parents=True)
+            # The real main reads these original lock bytes before the explicit
+            # dependency-closure seam; no Cargo or dependency is executed here.
+            (product / "Cargo.lock").write_bytes(b"# Inert source fixture\nversion = 4\n")
+            cli = studio / "node_modules/@playwright/test/cli.js"
+            cli.parent.mkdir(parents=True)
+            cli.write_bytes(b"fixture CLI; never executed")
+            (studio / "playwright.config.ts").write_bytes(b"fixture config")
+            helper = repository / "tooling/ci_canvas_service.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(b"fixture helper identity")
+            reader = repository / "tooling/service_readback/service_archive_readback_r3.py"
+            reader.parent.mkdir()
+            reader.write_bytes(b"fixture independent reader; never executed")
+            pins = {reader.relative_to(repository).as_posix(): gate.digest(reader)["sha256"]}
+            env = {**studio68_environment_fixture(), "RUNNER_TEMP": str(parent)}
+            gate_before = {"sha": env["GITHUB_SHA"], "tree": "2" * 40,
+                           "files": {key: {"sha256": value} for key, value in pins.items()}}
+            product_before = {"sha": gate.STUDIO68_SOURCE, "tree": gate.STUDIO68_TREE,
+                              "files": {key: {"sha256": value} for key, value in gate.STUDIO68_PRODUCT_PINS.items()}}
+            tools = {key: str(parent / key) for key in
+                     ("cargo", "rustc", "rustdoc", "rustfmt", "cc", "ar", "node", "npm", "python")}
+            closure = {"sources": {"sdk": {"snapshot": {"tree": "3" * 40}}}}
+            calls, intents = [], []
+
+            class FixtureBarrier:
+                def __init__(self, invoke, cargo):
+                    self.invoke = invoke
+
+                def __call__(self, *args):
+                    return self.invoke(*args)
+
+                def begin_sealing(self):
+                    pass
+
+                def begin_observation(self):
+                    pass
+
+            sdk = mock.Mock()
+            sdk.ProducerBarrier.side_effect = FixtureBarrier
+            binary = {}
+
+            def seal(_stdout, exit_code, _product, selected_root, _sdk):
+                self.assertEqual(exit_code, 0)
+                path = selected_root / "evidence/executed-service"
+                path.write_bytes(b"inert selected service binary")
+                binary.update(retained={"path": str(path), **gate.digest(path)}, producer_original={"fixture": True})
+                return binary
+
+            def snapshot(path, _sha, _git, **_kwargs):
+                return copy.deepcopy(gate_before if path == repository else product_before)
+
+            def fake_execute(argv, cwd, command_env, output, label, timeout):
+                calls.append(label)
+                self.assertIn(type(timeout), (int, float))
+                self.assertGreater(timeout, 0)
+                if label == "playwright-execution":
+                    intent_path = output / "playwright-execution-attempt.json"
+                    self.assertTrue(intent_path.is_file(), "selection intent must precede the child call")
+                    intent = json.loads(intent_path.read_bytes())
+                    self.assertEqual(intent["argv"], argv)
+                    self.assertEqual(intent["cwd"], str(studio))
+                    self.assertEqual(intent["selected_cases"], 68)
+                    self.assertEqual(intent["selected_ids"], [row[4] for row in gate.STUDIO68_CASES])
+                    self.assertFalse(intent["retry_authorized"])
+                    intents.append(intent)
+                stdout = b"{}" if label == "resolved-dependencies" else b"synthetic retained original\n"
+                stderr = b""
+                result = {**synthetic_process_fields(command_env), "pid": 321,
+                          "argv": list(argv), "cwd": str(cwd), "started_utc": "2026-10-26T12:00:00+00:00",
+                          "finished_utc": "2026-10-26T12:00:01+00:00", "exit_code": 0,
+                          "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED", "cleanup_errors": []}
+                timeout_here = (failure == "playwright-timeout" and label == "playwright-execution"
+                                or failure == "readback-timeout" and label == "independent-readback")
+                if timeout_here:
+                    result.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
+                                  diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+                elif label in ("playwright-list", "playwright-execution"):
+                    document = studio68_report_fixture(executed=label == "playwright-execution")
+                    document["config"].update(argv=list(argv), rootDir=str(studio / "tests"),
+                                              configFile=str(studio / "playwright.config.ts"))
+                    if failure == "invalid-execution-report" and label == "playwright-execution":
+                        document["stats"]["expected"] = 67
+                    gate.write_new(Path(command_env["PLAYWRIGHT_JSON_OUTPUT_FILE"]), document)
+                elif label == "independent-readback":
+                    target = output / "readback"
+                    target.mkdir()
+                    sealed = target / "sealed-playwright-results.zip"
+                    sealed.write_bytes(b"synthetic archive for final-state wiring")
+                    archive = {"archive": str(sealed), "archiveSha256": gate.digest(sealed)["sha256"],
+                               "treeSha256": "4" * 64}
+                    gate.write_new(target / "readback-report.json", {"status": "READBACK_VERIFIED",
+                        "cases": [], "archive": archive})
+                    (target / "execution-observations.jsonl").write_bytes(b"{}\n")
+                    gate.write_new(target / "seal-manifest.json", {
+                        "schema": "motionwright.playwright-results-seal/1", **archive,
+                        "sourceDirectory": str(output / "results")})
+                    if failure == "readback-nonzero":
+                        result["exit_code"] = 23
+                for name, raw in (("stdout", stdout), ("stderr", stderr)):
+                    path = output / (label + "." + name + ".log")
+                    path.write_bytes(raw)
+                    result[name] = gate.digest(path)
+                gate.write_new(output / (label + ".command.json"), result)
+                return result
+
+            actual_original = gate.studio68_original
+            def retained_original(path, cap):
+                raw, identity = actual_original(path, cap)
+                if failure == "intent-readback" and path.name == "playwright-execution-attempt.json":
+                    return b"{}", identity
+                return raw, identity
+
+            actual_read_text = Path.read_text
+            def read_text(path, *args, **kwargs):
+                if path.as_posix() == "/proc/meminfo":
+                    return "MemAvailable:       8388608 kB\n"
+                return actual_read_text(path, *args, **kwargs)
+
+            with contextlib.ExitStack() as stack:
+                for patch in (
+                    mock.patch.dict(gate.os.environ, env, clear=True),
+                    mock.patch.object(gate.sys, "platform", "linux"),
+                    mock.patch.object(gate, "__file__", str(helper)),
+                    mock.patch.object(gate, "STUDIO68_READER_PINS", pins),
+                    mock.patch.object(gate, "studio68_load_helpers", return_value=sdk),
+                    mock.patch.object(gate, "studio68_snapshot", side_effect=snapshot),
+                    mock.patch.object(gate, "studio68_tools", return_value=(tools, {})),
+                    mock.patch.object(gate, "studio68_product_g0", return_value={"fixture": "SOURCE_ONLY"}),
+                    mock.patch.object(gate.shutil, "disk_usage", return_value=types.SimpleNamespace(free=24 * 1024**3)),
+                    mock.patch.object(Path, "read_text", autospec=True, side_effect=read_text),
+                    mock.patch.object(gate, "studio68_dependency_closure", return_value=closure),
+                    mock.patch.object(gate, "studio68_npm_inventory", return_value={"files": {}}),
+                    mock.patch.object(gate, "studio68_seal_binary", side_effect=seal),
+                    mock.patch.object(gate, "studio68_verify_dependencies"),
+                    mock.patch.object(gate, "studio68_verify_tools"),
+                    mock.patch.object(gate, "studio68_readback_admission", return_value={"fixture": "READBACK_WIRING"}),
+                    mock.patch.object(gate, "studio68_readback_journal", return_value={"records": 206}),
+                    mock.patch.object(gate, "studio68_original", side_effect=retained_original),
+                    mock.patch.object(gate, "execute", side_effect=fake_execute),
+                ):
+                    stack.enter_context(patch)
+                code = gate.studio68_main(["--gate-repo", str(repository), "--product-repo", str(product),
+                    "--product-source", gate.STUDIO68_SOURCE, "--root", str(root)])
+            receipt = json.loads((root / "evidence/STUDIO68_RESULT.json").read_bytes())
+            # A setup refusal cannot satisfy a later failure/timeout oracle.
+            self.assertIn("playwright-list", calls, receipt)
+            self.assertIn("list", receipt, receipt)
+            return code, receipt, calls, intents
+
+    def test_original_success_separates_intent_process_report_and_closed_readback_counts(self):
+        code, receipt, calls, intents = self.main_fixture()
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt["status"], "PASS_STUDIO68_REAL_SERVICE_CLOSED_READBACK")
+        self.assertEqual(receipt["service_cases"], 68)
+        state = receipt["service_case_observation"]
+        self.assertTrue(state["launch_attempted"])
+        self.assertTrue(state["process_start_observed"])
+        self.assertEqual(state["process_identity"]["pid"], 321)
+        self.assertEqual(state["playwright_validated_cases"], 68)
+        self.assertEqual(state["closed_readback_validated_cases"], 68)
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(calls.count("playwright-execution"), 1)
+
+    def test_post_playwright_readback_failure_retains_attempt_without_final_case_credit(self):
+        code, receipt, calls, intents = self.main_fixture("readback-nonzero")
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "FAIL_OR_PREPARATION_REJECTED")
+        self.assertEqual(receipt["service_cases"], "PLAYWRIGHT_VERIFIED_READBACK_PENDING")
+        state = receipt["service_case_observation"]
+        self.assertTrue(state["launch_attempted"])
+        self.assertTrue(state["process_start_observed"])
+        self.assertEqual(state["playwright_validated_cases"], 68)
+        self.assertEqual(state["closed_readback_validated_cases"], 0)
+        self.assertEqual(state["command_observation"]["exit_code"], 0)
+        self.assertEqual(receipt["commands"][-1]["exit_code"], 23)
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(calls.count("playwright-execution"), 1)
+
+    def test_post_playwright_readback_timeout_keeps_unknown_and_original_execution_facts(self):
+        code, receipt, calls, _intents = self.main_fixture("readback-timeout")
+        self.assertEqual(code, 124)
+        self.assertEqual(receipt["status"], "UNKNOWN_NO_RETRY")
+        self.assertFalse(receipt["retry_authorized"])
+        self.assertEqual(receipt["service_cases"], "PLAYWRIGHT_VERIFIED_READBACK_PENDING")
+        state = receipt["service_case_observation"]
+        self.assertTrue(state["process_start_observed"])
+        self.assertEqual(state["playwright_validated_cases"], 68)
+        self.assertEqual(state["closed_readback_validated_cases"], 0)
+        self.assertEqual(state["command_observation"]["exit_code"], 0)
+        self.assertEqual(calls[-1], "independent-readback")
+        self.assertEqual(calls.count("playwright-execution"), 1)
+
+    def test_playwright_timeout_retains_selected_attempt_pid_and_zero_validated_counts(self):
+        code, receipt, calls, intents = self.main_fixture("playwright-timeout")
+        self.assertEqual(code, 124)
+        self.assertEqual(receipt["status"], "UNKNOWN_NO_RETRY")
+        self.assertEqual(receipt["service_cases"], "ATTEMPTED_NOT_VALIDATED")
+        state = receipt["service_case_observation"]
+        self.assertTrue(state["launch_attempted"])
+        self.assertTrue(state["process_start_observed"])
+        self.assertEqual(state["individual_case_start"], "NOT_OBSERVED")
+        self.assertEqual((state["playwright_validated_cases"], state["closed_readback_validated_cases"]), (0, 0))
+        self.assertEqual(state["command_observation"]["observation"], "UNKNOWN_TIMEOUT_NO_RETRY")
+        self.assertIsNone(state["command_observation"]["exit_code"])
+        self.assertEqual(calls[-1], "playwright-execution")
+        self.assertEqual(len(intents), 1)
+
+    def test_invalid_playwright_report_cannot_erase_known_attempt_or_validate_the_roster(self):
+        code, receipt, calls, _intents = self.main_fixture("invalid-execution-report")
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["service_cases"], "ATTEMPTED_NOT_VALIDATED")
+        state = receipt["service_case_observation"]
+        self.assertTrue(state["launch_attempted"])
+        self.assertTrue(state["process_start_observed"])
+        self.assertEqual(state["command_observation"]["exit_code"], 0)
+        self.assertEqual((state["playwright_validated_cases"], state["closed_readback_validated_cases"]), (0, 0))
+        self.assertNotIn("independent-readback", calls)
+
+    def test_failed_intent_readback_stops_before_execution_without_inventing_a_process(self):
+        code, receipt, calls, intents = self.main_fixture("intent-readback")
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["error"], "ValueError: Studio68 pre-dispatch selection intent changed")
+        self.assertEqual(calls[-1], "playwright-list")
+        self.assertEqual(receipt["service_cases"], "NOT_RUN")
+        state = receipt["service_case_observation"]
+        self.assertFalse(state["launch_attempted"])
+        self.assertFalse(state["process_start_observed"])
+        self.assertIsNone(state["process_identity"])
+        self.assertEqual((state["playwright_validated_cases"], state["closed_readback_validated_cases"]), (0, 0))
+        self.assertNotIn("playwright-execution", calls)
+        self.assertEqual(intents, [])
+
+
 
 if __name__ == "__main__":
     unittest.main()
