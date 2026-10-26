@@ -24,7 +24,7 @@ on:
         description: Exact separately reviewed SDK source; no pin update or fallback
         type: string
         required: false
-        default: da05d8e4a02fd5acc70d3c37f108b02bca761481
+        default: 8e8a2f4d91d0d573dc31be439844b99e3ec1d48a
 
 permissions:
   contents: read

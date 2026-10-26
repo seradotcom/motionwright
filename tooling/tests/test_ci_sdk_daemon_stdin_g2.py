@@ -115,8 +115,15 @@ class RequestAndSourceControls(unittest.TestCase):
             gate.admit_request(env)
 
     def test_exact_manual_first_attempt_has_separate_source_identities(self):
+        self.assertEqual((gate.SDK_SHA, gate.SDK_TREE, gate.SDK_PARENT),
+                         ("8e8a2f4d91d0d573dc31be439844b99e3ec1d48a",
+                          "2994fc0ccef7c6a9762bcb1181ae95b322d8db4b",
+                          "4dee8069fecf6a31cfc5e0c4bb8c3c5a9ce11950"))
+        workflow = (Path(__file__).resolve().parents[2] / gate.WORKFLOW).read_text(encoding="utf-8")
+        self.assertIn("        default: 8e8a2f4d91d0d573dc31be439844b99e3ec1d48a\n", workflow)
         context = gate.execution_context(environment(), "linux")
         self.assertEqual(context["sdk_source_sha"], gate.SDK_SHA)
+        self.assertEqual(context["sdk_source_tree"], gate.SDK_TREE)
         self.assertNotEqual(context["sdk_source_sha"], context["GITHUB_SHA"])
         self.assertEqual(context["GITHUB_RUN_ATTEMPT"], "1")
 
