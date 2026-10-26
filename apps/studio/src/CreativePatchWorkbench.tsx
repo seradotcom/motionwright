@@ -8,9 +8,9 @@ import { nativeRepairDraftIsCurrent } from "./nativeReviewRepair";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import {
   continueDraftManually, createScopedDraft, decodeScopedDraft, DRAFT_STORAGE_PREFIX, draftEditorDirty,
-  draftPatch, encodeScopedDraft, keepCurrentDraftValue, queueDraftEdit, rebaseScopedDraft,
+  draftPatch, draftTransformInput, draftTransformInvalidFields, encodeScopedDraft, keepCurrentDraftValue, queueDraftEdit, rebaseScopedDraft,
   removeDraftEdit, retainUnqueuedInputs, reviewedChangeWasCommitted, scopedDraftConflicts, scopedDraftHasWork, scopedDraftScope,
-  scopedReviewKey, selectDraftNode, unqueuedInputCount,
+  scopedReviewKey, selectDraftNode, unqueuedInputCount, updateDraftTransformInput,
 } from "./scopedChangeDraft";
 import type { ReviewedScopedChange, ScopedChangeDraft } from "./scopedChangeDraft";
 import type { CanvasNode, Change, DeliverableProfile, Project, Scene } from "./types";
@@ -74,6 +74,9 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const hasTargetSource = Boolean(node && draft.editor.source?.id === node.id);
   const targetEditingDisabled = lockedUi || !hasTargetSource;
   const conflicts = scopedDraftConflicts(draft, scene);
+  const invalidTransformFields = draftTransformInvalidFields(draft);
+  const transformInputError = draft.editor.kind === "transform" && invalidTransformFields.length
+    ? `Complete ${invalidTransformFields.join(", ")} with a finite number before adding this transform.` : null;
 
   const invalidate = () => {
     epoch.current += 1;
@@ -148,7 +151,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   }, [scene, preview]);
   const sourceUnchanged = nativeSource !== null && !draftEditorDirty(draft);
   const queue = () => {
-    if (!hasTargetSource || !node || draftStale || sourceUnchanged || lockedUi || (nativeSource && node.id !== nativeSource.targetNodeId)) return;
+    if (!hasTargetSource || !node || draftStale || sourceUnchanged || transformInputError || lockedUi || (nativeSource && node.id !== nativeSource.targetNodeId)) return;
     try { update(queueDraftEdit(draft)); }
     catch (reason) { setError(message(reason)); }
   };
@@ -260,9 +263,12 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
         {draft.editor.kind === "text" ? <label className="production-field"><span>Replacement text</span><textarea aria-label="Patch replacement text" rows={4} value={draft.editor.text} disabled={targetEditingDisabled}
           onChange={event => update({ ...draft, editor: { ...draft.editor, text: event.target.value } })}/></label>
           : <div className="production-transform-grid">{(["x", "y", "width", "height", "rotation_deg", "opacity"] as const).map(field => <label className="production-field" key={field}><span>{field.replace("_deg", " (deg)")}</span>
-            <input aria-label={`Patch ${field}`} type="number" step={field === "opacity" ? .01 : 1} value={draft.editor.transform[field]} disabled={targetEditingDisabled}
-              onChange={event => update({ ...draft, editor: { ...draft.editor, transform: { ...draft.editor.transform, [field]: Number(event.target.value) } } })}/></label>)}</div>}
-        <button className="secondary-button" disabled={!hasTargetSource || !node || draftStale || sourceUnchanged || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
+            <input aria-label={`Patch ${field}`} type="text" inputMode="decimal" value={draftTransformInput(draft, field)} disabled={targetEditingDisabled}
+              aria-invalid={invalidTransformFields.includes(field) || undefined}
+              aria-describedby={invalidTransformFields.includes(field) ? "scoped-transform-error" : undefined}
+              onChange={event => update(updateDraftTransformInput(draft, field, event.target.value))}/></label>)}</div>}
+        {transformInputError && <p className="production-error" role="status" id="scoped-transform-error">{transformInputError}</p>}
+        <button className="secondary-button" disabled={!hasTargetSource || !node || draftStale || sourceUnchanged || transformInputError !== null || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
         <label className="production-field"><span>Visible reason for this change</span><textarea aria-label="Patch rationale" rows={3} placeholder="What is wrong, where is it visible, and why does this edit help?" value={draft.rationale} disabled={lockedUi}
           onChange={event => update({ ...draft, rationale: event.target.value })}/></label>
       </section>
