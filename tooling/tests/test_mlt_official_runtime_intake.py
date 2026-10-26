@@ -2,12 +2,15 @@
 import copy
 from contextlib import contextmanager
 import datetime as dt
+import errno
 import hashlib
 import io
 import json
 import lzma
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -792,6 +795,268 @@ class BinaryReadbackTests(unittest.TestCase):
             self.assertEqual(receipt["size"], len(raw))
             self.assertEqual(receipt["before"], receipt["after"])
             self.assertEqual(receipt["after"], receipt["namespace_after"])
+
+    def test_regular_capture_preserves_empty_original_and_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "empty-original.bin"
+            path.write_bytes(b"")
+            observed, receipt = intake.capture_regular(path, 0)
+            self.assertEqual(observed, b"")
+            self.assertEqual(receipt["path"], str(path))
+            self.assertEqual(receipt["size"], 0)
+            self.assertEqual(receipt["sha256"], hashlib.sha256(b"").hexdigest())
+            self.assertEqual(receipt["before"], receipt["after"])
+            self.assertEqual(receipt["before"], receipt["namespace_after"])
+            actual = path.lstat()
+            self.assertTrue(intake.stat.S_ISREG(actual.st_mode))
+            for key, attr in (("device", "st_dev"), ("inode", "st_ino"),
+                              ("size", "st_size"), ("mode", "st_mode"),
+                              ("uid", "st_uid"), ("gid", "st_gid"),
+                              ("mtime_ns", "st_mtime_ns"), ("ctime_ns", "st_ctime_ns")):
+                self.assertEqual(receipt["before"][key], getattr(actual, attr))
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "mkfifo"),
+                         "Linux FIFO open regression with an external child deadline")
+    def test_regular_capture_replaced_fifo_is_rejected_without_writer_or_blocking_open(self):
+        # The child calls the actual helper once. Its parent owns the deadline,
+        # so a regression in os.open cannot strand a reader thread in this suite.
+        child_source = r'''
+import errno
+import importlib.util
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+from unittest import mock
+
+spec = importlib.util.spec_from_file_location("capture_regular_under_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+path = Path(sys.argv[2])
+assert stat.S_ISREG(path.lstat().st_mode)
+real_is_symlink = Path.is_symlink
+real_close = os.close
+leaf_checks = 0
+
+def check_then_replace(candidate):
+    global leaf_checks
+    if candidate != path:
+        return real_is_symlink(candidate)
+    leaf_checks += 1
+    assert leaf_checks == 1
+    assert stat.S_ISREG(candidate.lstat().st_mode)
+    was_symlink = real_is_symlink(candidate)
+    assert not was_symlink
+    candidate.unlink()
+    os.mkfifo(candidate, 0o600)
+    assert stat.S_ISFIFO(candidate.lstat().st_mode)
+    return was_symlink
+
+with mock.patch.object(Path, "is_symlink", check_then_replace), \
+        mock.patch.object(module.os, "read", side_effect=AssertionError("nonregular read")) as reader, \
+        mock.patch.object(module.os, "close", wraps=real_close) as closer:
+    try:
+        module.capture_regular(path, 64)
+    except module.IntakeError as error:
+        assert str(error) == "input is not a bounded regular file"
+    else:
+        raise AssertionError("FIFO was admitted as an original file")
+    reader.assert_not_called()
+    assert closer.call_count == 1
+    closed_fd = closer.call_args.args[0]
+
+try:
+    os.fstat(closed_fd)
+except OSError as error:
+    assert error.errno == errno.EBADF
+else:
+    raise AssertionError("rejected FIFO descriptor was not closed")
+assert leaf_checks == 1
+assert stat.S_ISFIFO(path.lstat().st_mode)
+print(json.dumps({"pid": os.getpid(), "leaf_checks": leaf_checks,
+                  "capture_calls": leaf_checks, "rejection": "bounded_regular",
+                  "read_calls": reader.call_count, "close_calls": closer.call_count},
+                 sort_keys=True), flush=True)
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "replaced-original.bin"
+            path.write_bytes(b"observed ordinary original")
+            child = subprocess.Popen(
+                [sys.executable, "-I", "-c", child_source,
+                 str(Path(intake.__file__).resolve(strict=True)), str(path)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = child.communicate(timeout=5)
+            except BaseException as primary:
+                # Keep the supervision failure primary. Kill and reap this same
+                # inert child; do not start another capture or FIFO writer.
+                try:
+                    child.kill()
+                except BaseException as secondary:
+                    if hasattr(primary, "add_note"):
+                        primary.add_note("FIFO test child kill failed: " + repr(secondary))
+                try:
+                    child.communicate(timeout=5)
+                except BaseException as secondary:
+                    if hasattr(primary, "add_note"):
+                        primary.add_note("FIFO test child reap unconfirmed: " + repr(secondary))
+                raise
+            self.assertEqual(child.returncode, 0, (child.pid, stdout, stderr))
+            self.assertEqual(stderr, b"")
+            self.assertEqual(json.loads(stdout), {
+                "pid": child.pid, "leaf_checks": 1, "capture_calls": 1,
+                "rejection": "bounded_regular", "read_calls": 0, "close_calls": 1,
+            })
+            self.assertTrue(intake.stat.S_ISFIFO(path.lstat().st_mode))
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "O_NOFOLLOW"),
+                         "Linux O_NOFOLLOW rejects a substituted leaf symlink")
+    def test_regular_capture_replaced_symlink_is_rejected_before_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = root / "replaced-original.bin"
+            target = root / "other-original.bin"
+            original = b"other original must not be followed"
+            path.write_bytes(b"observed ordinary original")
+            target.write_bytes(original)
+            real_is_symlink = Path.is_symlink
+            leaf_checks = 0
+
+            def check_then_replace(candidate):
+                nonlocal leaf_checks
+                if candidate != path:
+                    return real_is_symlink(candidate)
+                leaf_checks += 1
+                self.assertEqual(leaf_checks, 1)
+                self.assertTrue(intake.stat.S_ISREG(candidate.lstat().st_mode))
+                was_symlink = real_is_symlink(candidate)
+                self.assertFalse(was_symlink)
+                candidate.unlink()
+                candidate.symlink_to(target)
+                return was_symlink
+
+            with mock.patch.object(Path, "is_symlink", check_then_replace), \
+                    mock.patch.object(intake.os, "read",
+                                      side_effect=AssertionError("symlink target read")) as reader:
+                with self.assertRaises(OSError) as caught:
+                    intake.capture_regular(path, 64)
+                reader.assert_not_called()
+            self.assertEqual(caught.exception.errno, errno.ELOOP)
+            self.assertEqual(leaf_checks, 1)
+            self.assertTrue(path.is_symlink())
+            self.assertEqual(target.read_bytes(), original)
+
+
+    def test_regular_capture_read_primary_survives_close_failure(self):
+        for primary in (OSError(errno.EIO, "original read failed"),
+                        KeyboardInterrupt("original read interrupted"),
+                        SystemExit("original read stopped")):
+            with self.subTest(primary=type(primary).__name__), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary).resolve() / "original.bin"
+                path.write_bytes(b"original bytes")
+                real_close = os.close
+                secondary = OSError(errno.EIO, "secondary close failed")
+
+                def close_then_fail(fd):
+                    real_close(fd)
+                    raise secondary
+
+                caught = None
+                with mock.patch.object(intake.os, "read", side_effect=primary) as reader, \
+                        mock.patch.object(intake.os, "close", side_effect=close_then_fail) as closer:
+                    try:
+                        intake.capture_regular(path, 64)
+                    except BaseException as error:
+                        caught = error
+                    self.assertIs(caught, primary)
+                    self.assertEqual(reader.call_count, 1)
+                    self.assertEqual(closer.call_count, 1)
+                    fd = closer.call_args.args[0]
+                self.assertEqual(primary.__notes__, ["capture_regular close failed: " + repr(secondary)])
+                with self.assertRaises(OSError) as closed:
+                    os.fstat(fd)
+                self.assertEqual(closed.exception.errno, errno.EBADF)
+
+    def test_regular_capture_fstat_primary_survives_close_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "original.bin"
+            path.write_bytes(b"original bytes")
+            primary = OSError(errno.EIO, "original metadata failed")
+            secondary = OSError(errno.EIO, "secondary close failed")
+            real_close = os.close
+
+            def close_then_fail(fd):
+                real_close(fd)
+                raise secondary
+
+            with mock.patch.object(intake.os, "fstat", side_effect=primary) as metadata, \
+                    mock.patch.object(intake.os, "read", side_effect=AssertionError("read after metadata error")) as reader, \
+                    mock.patch.object(intake.os, "close", side_effect=close_then_fail) as closer:
+                with self.assertRaises(OSError) as caught:
+                    intake.capture_regular(path, 64)
+                self.assertIs(caught.exception, primary)
+                self.assertEqual(metadata.call_count, 1)
+                reader.assert_not_called()
+                self.assertEqual(closer.call_count, 1)
+                fd = closer.call_args.args[0]
+            self.assertEqual(primary.__notes__, ["capture_regular close failed: " + repr(secondary)])
+            with self.assertRaises(OSError) as closed:
+                os.fstat(fd)
+            self.assertEqual(closed.exception.errno, errno.EBADF)
+
+    def test_regular_capture_close_failure_after_valid_read_returns_no_original(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "original.bin"
+            raw = b"valid original\r\n\x1a\x00tail"
+            path.write_bytes(raw)
+            secondary = OSError(errno.EIO, "close failed after read")
+            real_close = os.close
+
+            def close_then_fail(fd):
+                real_close(fd)
+                raise secondary
+
+            with mock.patch.object(intake.os, "close", side_effect=close_then_fail) as closer:
+                with self.assertRaises(OSError) as caught:
+                    intake.capture_regular(path, len(raw))
+                self.assertIs(caught.exception, secondary)
+                self.assertEqual(closer.call_count, 1)
+                fd = closer.call_args.args[0]
+            self.assertEqual(path.read_bytes(), raw)
+            with self.assertRaises(OSError) as closed:
+                os.fstat(fd)
+            self.assertEqual(closed.exception.errno, errno.EBADF)
+
+    def test_regular_capture_close_diagnostic_failure_keeps_original_error(self):
+        class Primary(OSError):
+            def add_note(self, _note):
+                raise RuntimeError("secondary note persistence failed")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "original.bin"
+            path.write_bytes(b"original bytes")
+            primary = Primary(errno.EIO, "original read failed")
+            secondary = OSError(errno.EIO, "secondary close failed")
+            real_close = os.close
+
+            def close_then_fail(fd):
+                real_close(fd)
+                raise secondary
+
+            with mock.patch.object(intake.os, "read", side_effect=primary) as reader, \
+                    mock.patch.object(intake.os, "close", side_effect=close_then_fail) as closer:
+                with self.assertRaises(Primary) as caught:
+                    intake.capture_regular(path, 64)
+                self.assertIs(caught.exception, primary)
+                self.assertEqual(reader.call_count, 1)
+                self.assertEqual(closer.call_count, 1)
+                fd = closer.call_args.args[0]
+            with self.assertRaises(OSError) as closed:
+                os.fstat(fd)
+            self.assertEqual(closed.exception.errno, errno.EBADF)
+
 
 if __name__ == "__main__":
     unittest.main()

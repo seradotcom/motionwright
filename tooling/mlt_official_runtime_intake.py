@@ -86,8 +86,11 @@ def capture_regular(path, limit):
     """Read one stable handle and preserve observed metadata, without granting trust."""
     path = Path(path)
     require(not path.is_symlink(), "symlink input")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    # A substituted FIFO must reach fstat without waiting for a writer.
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     fd = os.open(path, flags)
+    primary = None
     try:
         before = os.fstat(fd)
         require(stat.S_ISREG(before.st_mode) and 0 <= before.st_size <= limit,
@@ -115,8 +118,21 @@ def capture_regular(path, limit):
         return data, {"path": str(path), "sha256": digest(data), "size": len(data),
                       "before": observations[0], "after": observations[1],
                       "namespace_after": observations[2]}
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except BaseException as close_error:
+            if primary is None:
+                raise
+            # The descriptor may already be closed. Never retry close or let
+            # its secondary failure replace the original read/cancel error.
+            try:
+                primary.add_note("capture_regular close failed: " + repr(close_error))
+            except BaseException:
+                pass
 
 
 def read_regular(path, limit):
