@@ -2,6 +2,7 @@ import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import SceneInspector from "./SceneInspector";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import { resolveTimelineSelection, timelineSelectionScope, type TimelineSelection } from "./timelineSelection";
+import { timelineMarkerTime } from "./timelineMarkerTime";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
 import { graphReviewAnchor, graphSame } from "./semanticGraph";
@@ -119,7 +120,7 @@ import type {
   Scene,
   SourceFrameWindow,
 } from "./types";
-import { rationalSeconds, seconds } from "./types";
+import { seconds } from "./types";
 import {
   DEFAULT_EDITOR_RATE,
   formatEditorTimecode as formatTime,
@@ -1495,7 +1496,7 @@ function Timeline({
             className="button compact"
             onClick={() => commit({
               type: "add_marker",
-              at: rationalSeconds(playhead),
+              at: timelineMarkerTime(playhead, rate),
               label: "Marker " + (project.markers.length + 1),
             })}
           >

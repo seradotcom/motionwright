@@ -139,6 +139,62 @@ test("copy-only scene beat edits retain exact fractional frame times in SQLite a
       expect(await observe("new service process and actual App reload")).toEqual(saved);
       expect(await service.history(baseline.id, baseline.revision)).toEqual(journal);
       expect(applied(service)).toHaveLength(applyCount + 2);
+
+      // Continue through the actual profile and timeline controls. A fractional
+      // frame marker must survive service persistence just like the beat above.
+      await button(page, "Deliver").click();
+      await button(page, "New profile").click();
+      await page.getByLabel("Profile name").fill("Exact marker NTSC");
+      await page.getByLabel("Frame rate", { exact: true }).selectOption("30000/1001");
+      await button(page, "Save profile").click();
+      await revision(page, saved.revision + 1);
+      const beforeMarker = await observe("NTSC profile created before marker authoring");
+      expect(beforeMarker.deliverables.find(profile => profile.name === "Exact marker NTSC")?.frame_rate)
+        .toEqual(r("30000", "1001"));
+      await page.getByLabel("Editor preview timebase").selectOption({ label: "Exact marker NTSC · 29.97 fps NDF" });
+      await button(page, "Timeline").click();
+      const zeroScene = beforeMarker.scenes.find(scene => scene.start.num === "0");
+      if (!zeroScene) throw new Error("The observed service project has no scene at zero for the frame-step check.");
+      await page.locator(".timeline-clip").filter({ has: page.getByText(zeroScene.name, { exact: true }) }).click();
+      const timecode = page.locator(".timeline-header .timecode");
+      await expect(timecode).toHaveText("00:00:00");
+      await button(page, "Step forward one frame").click();
+      await expect(timecode).toHaveText("00:00:01");
+      const markerApplyCount = applied(service).length;
+      await button(page, "Marker").click();
+      await revision(page, beforeMarker.revision + 1);
+      const withMarker = await observe("first NTSC frame marker committed through actual App and service");
+      const newMarkers = withMarker.markers.filter(marker => !beforeMarker.markers.some(prior => prior.id === marker.id));
+      expect(newMarkers).toHaveLength(1);
+      expect(withMarker.markers).toHaveLength(beforeMarker.markers.length + 1);
+      const marker = newMarkers[0];
+      expect(marker.at).toEqual(r("1001", "30000"));
+      expect(withMarker.scenes).toEqual(beforeMarker.scenes);
+      const markerJournal = await service.history(baseline.id, beforeMarker.revision);
+      expect(markerJournal.map(event => event.change)).toEqual([
+        { type: "add_marker", at: r("1001", "30000"), label: marker.label },
+      ]);
+      expect(applied(service)).toHaveLength(markerApplyCount + 1);
+
+      await button(page, "Step forward one frame").click();
+      await expect(timecode).toHaveText("00:00:02");
+      const markerButton = button(page, "Marker: " + marker.label);
+      await markerButton.click();
+      await expect(markerButton).toHaveAttribute("aria-pressed", "true");
+      await expect(timecode).toHaveText("00:00:01");
+      await revision(page, withMarker.revision);
+      expect(await observe("saved marker selection returned to its frame without a project edit")).toEqual(withMarker);
+      expect(applied(service)).toHaveLength(markerApplyCount + 1);
+
+      await service.close(); await service.start(); await page.reload();
+      await revision(page, withMarker.revision);
+      await page.getByLabel("Editor preview timebase").selectOption({ label: "Exact marker NTSC · 29.97 fps NDF" });
+      await markerButton.click();
+      await expect(timecode).toHaveText("00:00:01");
+      await expect(markerButton).toHaveAttribute("aria-pressed", "true");
+      expect(await observe("exact marker after SQLite close, new process and actual App reload")).toEqual(withMarker);
+      expect(await service.history(baseline.id, beforeMarker.revision)).toEqual(markerJournal);
+      expect(applied(service)).toHaveLength(markerApplyCount + 1);
     });
 });
 
