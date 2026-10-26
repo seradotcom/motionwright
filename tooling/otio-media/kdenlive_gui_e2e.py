@@ -45,6 +45,7 @@ MAX_OTIO = 2 * 1024 * 1024
 SOURCE_PATHS = (
     "SOURCE_LOCK.json", ".github/workflows/v05-otio-real-media.yml",
     "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
+    "tooling/manim_native_readback.py",
     "tooling/requirements/mlt-g2-custody.txt",
     "tooling/otio-media/kdenlive_gui_actions.py",
     "tooling/otio-media/kdenlive_gui_e2e.py",

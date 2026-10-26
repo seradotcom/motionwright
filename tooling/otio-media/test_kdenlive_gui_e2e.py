@@ -767,6 +767,96 @@ class NativeSourceBindingTests(unittest.TestCase):
                 runner.source_snapshot("a" * 40)
         fake.assert_called_once()
 
+    def test_complete_source_inventory_binds_shared_executor_original(self):
+        import ci_private_evidence as real_custody
+        source_sha = "a" * 40
+        executor = "tooling/manim_native_readback.py"
+        paths = tuple(runner.SOURCE_PATHS)
+        self.assertIn(executor, paths)
+        self.assertEqual(len(paths), len(set(paths)))
+        originals = {relative: ("source inventory original: " + relative + "\n").encode("utf-8")
+                     for relative in paths}
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(runner, "custody", real_custody):
+            root = Path(temporary).resolve()
+            for relative, raw in originals.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+
+            def git_original(argv, **kwargs):
+                if argv == ["git", "-C", str(root), "rev-parse", "HEAD"]:
+                    self.assertEqual(kwargs, {"check": True, "capture_output": True,
+                                              "text": True, "timeout": 20})
+                    return SimpleNamespace(stdout=source_sha + "\n")
+                self.assertEqual(argv[:4], ["git", "-C", str(root), "show"])
+                self.assertEqual(len(argv), 5)
+                self.assertEqual(kwargs, {"check": True, "capture_output": True, "timeout": 20})
+                self.assertTrue(argv[4].startswith(source_sha + ":"))
+                relative = argv[4][len(source_sha) + 1:]
+                self.assertIn(relative, originals)
+                return SimpleNamespace(stdout=originals[relative])
+
+            with patch.object(runner, "ROOT", root), \
+                 patch.object(runner.subprocess, "run", side_effect=git_original) as command:
+                observed = runner.source_snapshot(source_sha)
+            self.assertEqual(observed, {
+                "checkout": source_sha,
+                "files": {relative: {"bytes": len(raw), "sha256": runner.custody.sha(raw)}
+                          for relative, raw in originals.items()},
+            })
+            self.assertEqual([entry.args[0] for entry in command.call_args_list],
+                             [["git", "-C", str(root), "rev-parse", "HEAD"]] +
+                             [["git", "-C", str(root), "show", source_sha + ":" + relative]
+                              for relative in paths])
+            self.assertEqual({relative: (root / relative).read_bytes() for relative in paths}, originals)
+
+    def test_only_shared_executor_mutation_rejects_complete_source_inventory(self):
+        import ci_private_evidence as real_custody
+        source_sha = "a" * 40
+        executor = "tooling/manim_native_readback.py"
+        paths = tuple(runner.SOURCE_PATHS)
+        self.assertIn(executor, paths)
+        originals = {relative: ("source inventory original: " + relative + "\n").encode("utf-8")
+                     for relative in paths}
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(runner, "custody", real_custody):
+            root = Path(temporary).resolve()
+            for relative, raw in originals.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            (root / executor).write_bytes(originals[executor] + b"# changed shared executor\n")
+            self.assertEqual([relative for relative in paths
+                              if (root / relative).read_bytes() != originals[relative]], [executor])
+
+            def git_original(argv, **kwargs):
+                if argv == ["git", "-C", str(root), "rev-parse", "HEAD"]:
+                    self.assertEqual(kwargs, {"check": True, "capture_output": True,
+                                              "text": True, "timeout": 20})
+                    return SimpleNamespace(stdout=source_sha + "\n")
+                self.assertEqual(argv[:4], ["git", "-C", str(root), "show"])
+                self.assertEqual(len(argv), 5)
+                self.assertEqual(kwargs, {"check": True, "capture_output": True, "timeout": 20})
+                self.assertTrue(argv[4].startswith(source_sha + ":"))
+                relative = argv[4][len(source_sha) + 1:]
+                self.assertIn(relative, originals)
+                return SimpleNamespace(stdout=originals[relative])
+
+            with patch.object(runner, "ROOT", root), \
+                 patch.object(runner.subprocess, "run", side_effect=git_original) as command:
+                with self.assertRaisesRegex(
+                        actions.GuiRejected,
+                        r"native_gui_source_differs_from_exact_git_blob:tooling/manim_native_readback\.py"):
+                    runner.source_snapshot(source_sha)
+            visited = paths[:paths.index(executor) + 1]
+            self.assertEqual([entry.args[0] for entry in command.call_args_list],
+                             [["git", "-C", str(root), "rev-parse", "HEAD"]] +
+                             [["git", "-C", str(root), "show", source_sha + ":" + relative]
+                              for relative in visited])
+            self.assertEqual([relative for relative in paths
+                              if (root / relative).read_bytes() != originals[relative]], [executor])
+
 
 class DistributionExtractionContracts(unittest.TestCase):
     def extract(self, terminal=0, *, unknown=False, preexisting=False):

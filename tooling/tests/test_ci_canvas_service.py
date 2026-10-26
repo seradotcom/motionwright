@@ -895,10 +895,10 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
         self.assertEqual(len(choices), len(set(choices)))
-        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
+        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, gate.CAMERA_EIGHT_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
         service_job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
-        self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'"])
+        self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend'"])
         self.assertIn("--selection \"$REQUESTED_SELECTION\"", service_job)
 
     def source_fixture(self, repo):
@@ -1652,7 +1652,7 @@ class BrowserContractSelectionTests(unittest.TestCase):
         self.assertIn("branches: ['verify/studio-service-*']", workflow)
         job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         self.assertEqual(re.findall(r"^    if: (.+)$", job, re.MULTILINE),
-                         ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'"])
+                         ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend'"])
         self.assertGreaterEqual(job.count("!contains(fromJSON('[\"browser-contracts\",\"creative-production-browser\",\"review-browser\",\"workflow-preview-browser\"]'), matrix.selection)"), 2)
         self.assertIn("matrix.selection == 'browser-contracts' && 240", job)
         self.assertIn('tooling/ci_canvas_service.py archive --repo . --evidence ../v', job)
@@ -4277,7 +4277,7 @@ class PartialCriterionServiceSelectionTests(unittest.TestCase):
 
     def test_workflow_routes_only_the_new_choice_through_the_existing_manual_g0_service_job(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
-        raw = path.read_bytes()
+        raw = window_previous_workflow(camera_previous_workflow(path.read_bytes()))
         added = b"options: [studio-service-68, criterion-partials, creative-production,"
         old = b"options: [studio-service-68, creative-production,"
         self.assertEqual(raw.count(added), 1)
@@ -4922,6 +4922,1377 @@ class Studio68PartialStateTests(unittest.TestCase):
         self.assertNotIn("playwright-execution", calls)
         self.assertEqual(intents, [])
 
+
+
+
+WINDOW_REVIEWED_WORKFLOW_SHA256 = 'a475af801e0df8228f51fe2b034c19d274b84b70b3c79c4612fd534062bc8f75'
+WINDOW_WORKFLOW_REVERT_PAIRS = (("    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && "
+  "inputs.selection != 'window-frontend'\n"
+  '    needs: g0',
+  "    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'\n    needs: g0"),
+ ('      - name: Retain original unit report, command receipts and actual build output\n'
+  "        if: always() && inputs.selection != 'window-frontend'\n",
+  '      - name: Retain original unit report, command receipts and actual build output\n        if: always()\n'),
+ ('      - name: Observe exact Window55 and complete saved-font195 units and production build\n'
+  "        if: inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 17\n'
+  '        env:\n'
+  "          CI: 'true'\n"
+  "          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n"
+  "          NODE_OPTIONS: '--max-old-space-size=384'\n"
+  '          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n'
+  '        run: |\n'
+  '          set -euo pipefail\n'
+  '          python -B -I tooling/ci_canvas_service.py unit-build --repo . \\\n'
+  '            --output ../v/e/window-unit-build --selection window-frontend\n'
+  '      - name: Install locked Chromium and retain frontend tool identities\n'
+  "        if: inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 10\n'
+  '        env:\n'
+  "          CI: 'true'\n"
+  "          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n"
+  "          NODE_OPTIONS: '--max-old-space-size=384'\n"
+  '          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n'
+  '        run: |\n'
+  '          set -euo pipefail\n'
+  '          test ! -e ../v/tools\n'
+  '          mkdir ../v/tools\n'
+  '          node --version > ../v/tools/node.txt\n'
+  '          npm --version > ../v/tools/npm.txt\n'
+  '          python --version > ../v/tools/python.txt\n'
+  '          node apps/studio/node_modules/@playwright/test/cli.js install --with-deps chromium\n'
+  '      - name: List and observe the six exact synthetic Window browser contracts\n'
+  "        if: inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 10\n'
+  '        env:\n'
+  "          CI: 'true'\n"
+  "          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n"
+  "          NODE_OPTIONS: '--max-old-space-size=384'\n"
+  '          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n'
+  '        run: |\n'
+  '          set -euo pipefail\n'
+  '          python -B -I tooling/ci_canvas_service.py --repo . \\\n'
+  '            --target ../v/t --output ../v/e --selection window-frontend\n'
+  '      - name: Close original Window unit build and browser evidence into the existing TAR\n'
+  '        id: window-archive\n'
+  "        if: success() && inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 5\n'
+  '        env:\n'
+  "          CI: 'true'\n"
+  "          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n"
+  "          NODE_OPTIONS: '--max-old-space-size=384'\n"
+  '          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n'
+  '        run: |\n'
+  '          set -euo pipefail\n'
+  '          python -B -I tooling/ci_canvas_service.py archive --repo . --evidence ../v\n'
+  '      - name: Retain Window original evidence and closed archive or incomplete diagnostics\n'
+  "        if: always() && inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 5\n'
+  '        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n'
+  '        with:\n'
+  '          name: studio-window-frontend-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
+  '          path: |\n'
+  '            v/e\n'
+  '            v/tools\n'
+  '            v/retained\n'
+  '          include-hidden-files: true\n'
+  '          if-no-files-found: warn\n'
+  '          retention-days: 14\n'
+  '      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8\n'
+  '        if: contains(fromJSON(\'["workflow-preview-browser","branch-claim"]\'), inputs.selection)\n',
+  '      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8\n'
+  '        if: contains(fromJSON(\'["workflow-preview-browser","branch-claim"]\'), inputs.selection)\n'),
+ ('      - name: Verify security probe, selected exact Vitest assertions and build\n'
+  "        if: inputs.selection != 'window-frontend'\n"
+  '        env:\n',
+  '      - name: Verify security probe, selected exact Vitest assertions and build\n        env:\n'),
+ ('      - name: Bind Window source and hosted resource inputs before dependencies\n'
+  "        if: inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 2\n'
+  '        env:\n'
+  "          CI: 'true'\n"
+  "          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n"
+  "          NODE_OPTIONS: '--max-old-space-size=384'\n"
+  '          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n'
+  '        run: |\n'
+  '          set -euo pipefail\n'
+  '          python -B -I tooling/ci_canvas_service.py window-preflight --repo .\n'
+  '      - name: Install locked Window frontend dependencies\n'
+  "        if: inputs.selection == 'window-frontend'\n"
+  '        timeout-minutes: 10\n'
+  '        env:\n'
+  "          CI: 'true'\n"
+  "          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n"
+  "          NODE_OPTIONS: '--max-old-space-size=384'\n"
+  '          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n'
+  '        working-directory: g/apps/studio\n'
+  '        run: |\n'
+  '          set -euo pipefail\n'
+  '          npm ci --no-audit --no-fund\n'
+  '      - name: Install locked unit and build dependencies\n'
+  "        if: inputs.selection != 'window-frontend'\n"
+  '        working-directory: g/apps/studio\n',
+  '      - name: Install locked unit and build dependencies\n        working-directory: g/apps/studio\n'),
+ ("timeout-minutes: ${{ inputs.selection == 'window-frontend' && 75 || inputs.selection == 'branch-claim' && 105 "
+  "|| inputs.selection == 'workflow-preview-browser' && 75 || 30 }}",
+  "timeout-minutes: ${{ inputs.selection == 'branch-claim' && 105 || inputs.selection == "
+  "'workflow-preview-browser' && 75 || 30 }}"),
+ ('fromJSON(\'["all","creative-production","creative-production-browser","production-design","creative-workbench","review","workflow-preview-browser","branch-claim","window-frontend"]\')',
+  'fromJSON(\'["all","creative-production","creative-production-browser","production-design","creative-workbench","review","workflow-preview-browser","branch-claim"]\')'),
+ ("name: ${{ inputs.selection == 'window-frontend' && 'Window and saved-font units (250), build and six Chromium "
+  "contracts' || inputs.selection == 'branch-claim' && 'Branch and Claim units",
+  "name: ${{ inputs.selection == 'branch-claim' && 'Branch and Claim units"),
+ ('options: [studio-service-68, criterion-partials, window-frontend, creative-production,',
+  'options: [studio-service-68, criterion-partials, creative-production,'))
+
+def window_previous_workflow(raw):
+    for added, previous in WINDOW_WORKFLOW_REVERT_PAIRS:
+        added_bytes, previous_bytes = added.encode(), previous.encode()
+        if raw.count(added_bytes) != 1:
+            raise ValueError("Window workflow addition is not the exact reviewed delta")
+        raw = raw.replace(added_bytes, previous_bytes, 1)
+    if gate.hashlib.sha256(raw).hexdigest() != "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b":
+        raise ValueError("an existing workflow byte changed outside the Window addition")
+    return raw
+
+
+
+class WindowFrontendSelectionTests(unittest.TestCase):
+    """Closed source controls with inert files; no Node, browser or service."""
+
+    def profile(self):
+        return {"schema": "motionwright.window-frontend-source-profile/1", "source_commit": "c" * 40,
+                "source_tree": "d" * 40, "product_paths": dict(gate.WINDOW_FRONTEND_PRODUCT_PINS),
+                "runner": "ubuntu-24.04", "node_heap_mib": 384, "build_node_heap_mib": 1024,
+                "minimum_available_memory_bytes": 4 * 1024**3}
+
+    def environment(self):
+        return {"GITHUB_REPOSITORY": "seradotcom/motionwright", "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch", "RUNNER_OS": "Linux",
+                "ImageOS": "ubuntu24", "ImageVersion": "20261023.fixture", "GITHUB_RUN_ID": "123456",
+                "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "creative-unit-build", "GITHUB_SHA": WindowBaseObjectSourceTests.gate_source_sha(),
+                "CI": "true", "MOTIONWRIGHT_CANDIDATE_BUILD": "0", "NODE_OPTIONS": "--max-old-space-size=384"}
+
+    def resources(self, *, phase="unit"):
+        heap = 1024 if phase == "build" else 384
+        environment = {**self.environment(), "NODE_OPTIONS": "--max-old-space-size=" + str(heap)}
+        return {"environment": environment, "observed": {
+            "phase": phase, "available_memory_bytes": 8 * 1024**3, "minimum_available_memory_bytes": 4 * 1024**3,
+            "node_options": environment["NODE_OPTIONS"], "workers": 1, "retries": 0, "repeat_each": 1,
+            "runner_os": "Linux", "image_os": "ubuntu24", "image_version": "20261023.fixture",
+            "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}}
+
+    def document(self, studio):
+        rows = gate.window_frontend_inventory()
+        result = {"success": True, "numTotalTests": 250, "numPassedTests": 250,
+                  "numTotalTestSuites": 42, "numPassedTestSuites": 42,
+                  "numFailedTests": 0, "numPendingTests": 0, "numTodoTests": 0,
+                  "numFailedTestSuites": 0, "numPendingTestSuites": 0, "testResults": []}
+        for filename, names in rows:
+            assertions = []
+            for full in names:
+                # Nested group count is not the number of source files.  The
+                # source catalogue binds the complete joined Vitest identity.
+                parts = full.split(" ", 2)
+                parents, title = parts[:2], parts[2]
+                assertions.append({"ancestorTitles": parents, "title": title, "fullName": full,
+                                   "status": "passed", "failureMessages": []})
+            result["testResults"].append({"name": str(studio / filename), "status": "passed", "message": "",
+                                          "assertionResults": assertions})
+        return result
+
+    def fixture(self, directory, *, failure=None, browser=False):
+        repo, root = Path(directory).resolve() / "g", Path(directory).resolve() / "v"
+        studio = repo / "apps/studio"
+        output = root / "e/window-unit-build"
+        tools = root / "tools"
+        base = WindowBaseObjectSourceTests().prepare_fixture(directory)
+        self.assertEqual(base["code"], 0, base["receipt"])
+        for name in ("node", "npm", "python"):
+            (tools / (name + ".txt")).write_bytes(b"inert tool observation\n")
+        cli = studio / "node_modules/vitest/vitest.mjs"
+        cli.parent.mkdir(parents=True); cli.write_bytes(b"inert Vitest CLI")
+        browser_cli = studio / "node_modules/@playwright/test/cli.js"
+        browser_cli.parent.mkdir(parents=True); browser_cli.write_bytes(b"inert Playwright CLI")
+        probe = repo / "tooling/vite_editor_security_probe.mjs"
+        probe.parent.mkdir(parents=True); probe.write_bytes(b"inert security probe")
+        node, npm = repo / "node", repo / "npm"
+        node.write_bytes(b"inert Node"); npm.write_bytes(b"inert npm")
+        source = {**base["source"], "files": {"fixture": "source observation seam"}}
+        calls = []
+        browser_fixture = BrowserContractSelectionTests()
+
+        def which(name):
+            self.assertIn(name, ("node", "npm"), "this frontend route must not resolve Cargo")
+            return str(repo / name)
+
+        def execute(argv, cwd, env, destination, label, timeout):
+            self.assertEqual(cwd, studio)
+            self.assertEqual(env["NODE_OPTIONS"], "--max-old-space-size=" + str(1024 if label == "build" else 384))
+            self.assertNotIn("MOTIONWRIGHT_SERVICE_TEST_BIN", env)
+            self.assertNotIn("MOTIONWRIGHT_SERVICE_TEST_TMPDIR", env)
+            self.assertFalse((root / "t").exists())
+            calls.append((label, list(argv), timeout))
+            index = len(calls)
+            if label == "vitest":
+                self.assertEqual(argv[2:10], ["run", *(path for path, _names in gate.window_frontend_inventory())])
+                self.assertIn("--maxWorkers=1", argv); self.assertIn("--no-file-parallelism", argv)
+                value = self.document(studio)
+                if failure == "invalid-units":
+                    value["testResults"][-1]["assertionResults"].pop()
+                gate.write_new(destination / "vitest.json", value)
+            elif label == "build":
+                dist = studio / "dist"
+                dist.mkdir(); (dist / "index.html").write_bytes(b"inert index")
+                (dist / "main.js").write_bytes(b"inert bundle")
+            elif label == "browser-discovery":
+                value = browser_fixture.discovery_document(gate.WINDOW_FRONTEND_SCOPE)
+                if failure == "foreign-list":
+                    value["suites"][0]["specs"][0]["title"] += " foreign"
+                gate.write_new(Path(env["PLAYWRIGHT_JSON_OUTPUT_FILE"]), value)
+            elif label == "browser-window-frontend":
+                _label, filename, titles = gate.WINDOW_FRONTEND_BROWSER_SELECTION
+                value = browser_fixture.executed_document(filename, titles, gate.WINDOW_FRONTEND_SCOPE)
+                gate.write_new(Path(env["PLAYWRIGHT_JSON_OUTPUT_FILE"]), value)
+            command = {"argv": list(argv), "cwd": str(cwd), "exit_code": 0,
+                       "started_utc": f"2026-10-26T12:00:{index * 2:02d}+00:00",
+                       "finished_utc": f"2026-10-26T12:00:{index * 2 + 1:02d}+00:00",
+                       **synthetic_process_fields(env), "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+            if failure == "probe-failure" and label == "security-probe":
+                command["exit_code"] = 23
+            if ((failure == "unit-unknown" and label == "vitest")
+                    or (failure == "browser-unknown" and label == "browser-window-frontend")
+                    or (failure == "list-unknown" and label == "browser-discovery")):
+                command.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
+                               diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+            for stream in ("stdout", "stderr"):
+                path = destination / (label + "." + stream + ".log")
+                path.write_bytes(b"inert retained original\n")
+                command[stream] = gate.digest(path)
+            gate.write_new(destination / (label + ".command.json"), command)
+            return command
+
+        with mock.patch.dict(gate.os.environ, self.environment(), clear=True), \
+                mock.patch.object(gate, "window_frontend_environment", side_effect=self.resources), \
+                mock.patch.object(gate, "source_observation", return_value=source) as source_query, \
+                mock.patch.object(gate.shutil, "which", side_effect=which), \
+                mock.patch.object(gate, "execute", side_effect=execute), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            unit_code = gate.run_creative_production_units(repo, output, gate.WINDOW_FRONTEND_SCOPE)
+            unit_receipt = json.loads((output / "receipt.json").read_bytes())
+            unit_source_queries = source_query.call_count
+            browser_code, browser_receipt = None, None
+            if browser and unit_code == 0:
+                browser_code = gate.run_browser_selection(repo, root / "e", root / "t", gate.WINDOW_FRONTEND_SCOPE)
+                browser_receipt = json.loads((root / "e/receipt.json").read_bytes())
+            source_queries = source_query.call_count
+        return {"repo": repo, "root": root, "source": source, "calls": calls, "unit_code": unit_code,
+                "unit_receipt": unit_receipt, "unit_source_queries": unit_source_queries,
+                "browser_code": browser_code, "browser_receipt": browser_receipt,
+                "source_queries": source_queries}
+
+    def test_exact_fiftyfive_and_complete_delivery195_catalogues_do_not_replace_legacy_scopes(self):
+        rows = gate.window_frontend_inventory()
+        self.assertEqual([len(names) for _, names in rows], [9, 3, 19, 15, 5, 4, 195])
+        self.assertEqual(sum(len(names) for _, names in rows), 250)
+        self.assertEqual(gate.WINDOW_DELIVERY_UNIT_CATALOG_SHA256,
+                         "75a718d5f483403191850e99510f12bc369ca1490a4a9b204647d1775b47d683")
+        self.assertEqual(sum(name.startswith("saved Film font source selection at the existing API boundary ")
+                             for name in rows[-1][1]), 13)
+        self.assertEqual(gate.selection_plan("all")["required_tests"], 184)
+        self.assertEqual(gate.selection_plan("browser-contracts")["required_tests"], 206)
+        self.assertEqual(gate.selection_plan(gate.PARTIAL_ORACLE_SCOPE)["required_tests"], 6)
+        self.assertEqual(len(gate.STUDIO68_CASES), 68)
+        self.assertEqual(gate.window_frontend_profile()["source_commit"], "085d12a947d4b15bd74d131e007fe908e925106f")
+        self.assertEqual(gate.window_frontend_profile()["source_tree"], "882e0ba3cec60ec5dfda911314d47c6620ff73ec")
+        self.assertEqual(sum(len(names) for _, names in gate.selected_unit_inventory("review")), 72)
+        self.assertEqual(sum(len(names) for _, names in gate.selected_unit_inventory("creative-production")), 67)
+        self.assertEqual(gate.selection_plan(gate.WINDOW_FRONTEND_SCOPE)["required_tests"], 6)
+
+    def test_catalogue_omission_duplicate_renaming_or_font_only_subset_is_rejected(self):
+        original = gate.WINDOW_DELIVERY_UNIT_FULL_NAMES
+        for changed in (original[:-1], (*original[:-1], original[0]), (*original[:-1], original[-1] + " foreign"),
+                        tuple(name for name in original if name.startswith("saved Film font source"))):
+            with self.subTest(length=len(changed)), mock.patch.object(gate, "WINDOW_DELIVERY_UNIT_FULL_NAMES", changed), \
+                    self.assertRaises(ValueError):
+                gate.window_frontend_inventory()
+
+    def test_complete_unit_report_accepts_nested_describe_groups_without_counting_them_as_files(self):
+        studio = Path("synthetic/studio")
+        value = self.document(studio)
+        result = gate.validate_creative_production_units(value, studio, gate.WINDOW_FRONTEND_SCOPE)
+        self.assertEqual((result["passed"], result["files"], result["delivery_complete_file"]), (250, 7, 195))
+        self.assertEqual(result["window_original_cohort"], 55)
+        self.assertFalse(result["formal_acceptance"])
+        self.assertEqual(value["numTotalTestSuites"], 42)
+
+    def test_unit_report_rejects_foreign_missing_duplicate_skipped_retried_and_false_counter_cases(self):
+        studio = Path("synthetic/studio")
+        for mutation in ("missing-file", "duplicate-file", "foreign-file", "missing-case", "duplicate-case", "foreign-case",
+                         "hierarchy", "skip", "retry", "failure", "global", "bool-count", "font-only"):
+            value = self.document(studio)
+            suites = value["testResults"]; cases = suites[-1]["assertionResults"]; first = cases[0]
+            if mutation == "missing-file": suites.pop()
+            elif mutation == "duplicate-file": suites[-1] = copy.deepcopy(suites[0])
+            elif mutation == "foreign-file": suites[-1]["name"] += ".foreign"
+            elif mutation == "missing-case": cases.pop()
+            elif mutation == "duplicate-case": cases[-1] = copy.deepcopy(first)
+            elif mutation == "foreign-case": first["fullName"] += " foreign"
+            elif mutation == "hierarchy": first["ancestorTitles"] = ["foreign"]
+            elif mutation == "skip": first["status"] = "pending"
+            elif mutation == "retry": first["retryCount"] = 1
+            elif mutation == "failure": first["failureMessages"] = ["actual failure"]
+            elif mutation == "global": value["unhandledErrors"] = ["global failure"]
+            elif mutation == "bool-count": value["numPassedTests"] = True
+            else: suites[-1]["assertionResults"] = cases[-13:]
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_window_frontend_units(value, studio)
+
+    def test_missing_designated_profile_stops_before_source_io_or_any_process(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(gate, "WINDOW_FRONTEND_REVIEWED_PROFILE", None), \
+                mock.patch.object(gate, "source_observation") as source, \
+                mock.patch.object(gate, "execute") as execute, self.assertRaisesRegex(ValueError, "not designated"):
+            gate.run_creative_production_units(Path(directory), Path(directory) / "absent", gate.WINDOW_FRONTEND_SCOPE)
+        source.assert_not_called(); execute.assert_not_called()
+
+    def test_hosted_context_refuses_local_foreign_retry_heap_and_memory_before_launch(self):
+        profile, original = self.profile(), self.environment()
+        with mock.patch.object(gate, "WINDOW_FRONTEND_REVIEWED_PROFILE", profile), \
+                mock.patch.object(gate.sys, "platform", "linux"), \
+                mock.patch.object(Path, "read_text", return_value="MemAvailable: 8388608 kB\n"), \
+                mock.patch.dict(gate.os.environ, original, clear=True):
+            observed = gate.window_frontend_environment()
+            self.assertEqual(observed["observed"]["available_memory_bytes"], 8 * 1024**3)
+            self.assertIn("NOT_CONTINUOUS", observed["observed"]["boundary"])
+            for phase, heap in (("unit", 384), ("build", 1024), ("browser", 384)):
+                value = gate.window_frontend_environment(phase=phase)
+                self.assertEqual(value["observed"]["phase"], phase)
+                self.assertEqual(value["environment"]["NODE_OPTIONS"], "--max-old-space-size=" + str(heap))
+                self.assertEqual(value["observed"]["node_options"], value["environment"]["NODE_OPTIONS"])
+                self.assertEqual(gate.os.environ["NODE_OPTIONS"], "--max-old-space-size=384")
+            for phase in (None, True, "foreign"):
+                with self.subTest(phase=phase), self.assertRaisesRegex(ValueError, "resource phase"):
+                    gate.window_frontend_environment(phase=phase)
+            with mock.patch.object(gate, "WINDOW_FRONTEND_REVIEWED_PROFILE", {**profile, "build_node_heap_mib": 384}), self.assertRaises(ValueError):
+                gate.window_frontend_environment(phase="build")
+            for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_EVENT_NAME", "push"),
+                               ("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_JOB", "real-service"),
+                               ("GITHUB_SHA", "short"), ("ImageOS", "ubuntu26"),
+                               ("NODE_OPTIONS", "--max-old-space-size=4096"), ("NODE_OPTIONS", "--max-old-space-size=1024"),
+                               ("MOTIONWRIGHT_CANDIDATE_BUILD", "1")):
+                with self.subTest(key=key), mock.patch.dict(gate.os.environ, {key: value}), self.assertRaises(ValueError):
+                    gate.window_frontend_environment()
+            with mock.patch.object(Path, "read_text", return_value="MemAvailable: 4194303 kB\n"), self.assertRaises(ValueError):
+                gate.window_frontend_environment()
+
+    def test_source_profile_binds_actual_gate_separately_and_refuses_foreign_product_delta(self):
+        repo = Path("/synthetic/repo")
+        original = gate.WINDOW_FRONTEND_PRODUCT_PINS
+        raw = {path: ("synthetic product " + path).encode() for path, _sha in original}
+        pins = tuple((path, gate.hashlib.sha256(data).hexdigest()) for path, data in raw.items())
+        profile = {**self.profile(), "product_paths": dict(pins)}
+        observation = {"checkout": "a" * 40, "tree": "b" * 40,
+                       "files": {path: {"sha256": sha} for path, sha in (*pins, *gate.WINDOW_FRONTEND_DEPENDENCY_PINS)}}
+        changed = [gate.WINDOW_FRONTEND_GATE_PATHS[0]]
+        calls = []
+        def git(argv, *, cwd, timeout):
+            self.assertEqual(cwd, repo); self.assertEqual(timeout, 30); calls.append(argv)
+            if argv[1] == "rev-parse": return b"d" * 40 + b"\n"
+            if argv[1] == "diff": return b"\0".join(path.encode() for path in changed) + b"\0"
+            self.assertEqual(argv[:2], ["git", "show"])
+            self.assertTrue(argv[2].startswith("c" * 40 + ":"))
+            return raw[argv[2].split(":", 1)[1]]
+        with mock.patch.object(gate, "WINDOW_FRONTEND_PRODUCT_PINS", pins), \
+                mock.patch.object(gate, "WINDOW_FRONTEND_REVIEWED_PROFILE", profile), \
+                mock.patch.object(gate.subprocess, "check_output", side_effect=git):
+            result = gate.window_frontend_source_binding(repo, observation)
+            self.assertEqual(result["executed_source"]["commit"], "a" * 40)
+            self.assertEqual(result["nominated_input"]["commit"], "c" * 40)
+            self.assertFalse(result["result_transfer"])
+            changed[:] = ["apps/studio/src/api.ts"]
+            calls.clear()
+            with self.assertRaisesRegex(ValueError, "outside its verification paths"):
+                gate.window_frontend_source_binding(repo, observation)
+            self.assertFalse(any(argv[1] == "show" for argv in calls))
+
+    def test_six_browser_identities_use_exact_current_listing_and_one_original_execution(self):
+        label, filename, titles = gate.WINDOW_FRONTEND_BROWSER_SELECTION
+        self.assertEqual((label, filename, len(titles)), ("browser-window-frontend", "native-preview.spec.ts", 6))
+        fixture = BrowserContractSelectionTests()
+        document = fixture.discovery_document(gate.WINDOW_FRONTEND_SCOPE)
+        result = gate.validate_browser_discovery(document, gate.WINDOW_FRONTEND_SCOPE)
+        self.assertEqual(result["selected"], 6)
+        for selection in (None, gate.WINDOW_FRONTEND_BROWSER_SELECTION):
+            argv = gate.browser_command("node", Path("cli"), Path("out"), selection, scope=gate.WINDOW_FRONTEND_SCOPE)
+            pattern = re.compile(argv[argv.index("--grep") + 1])
+            for title in titles:
+                identity = " ".join(gate.browser_full_title_path(filename, title))
+                self.assertIsNotNone(pattern.fullmatch(identity))
+                self.assertIsNone(pattern.fullmatch(identity + " foreign"))
+            self.assertIn("--workers=1", argv); self.assertIn("--retries=0", argv)
+            self.assertIn("--repeat-each=1", argv); self.assertIn("--forbid-only", argv)
+            self.assertEqual("--list" in argv, selection is None)
+        executed = fixture.executed_document(filename, titles, gate.WINDOW_FRONTEND_SCOPE)
+        self.assertEqual(gate.validate_browser_execution(executed, filename, titles)["passed"], 6)
+        for mutation in ("missing", "foreign", "retry"):
+            value = copy.deepcopy(executed)
+            specs = value["suites"][0]["specs"]
+            if mutation == "missing": specs.pop()
+            elif mutation == "foreign": specs[0]["title"] += " foreign"
+            else: specs[0]["tests"][0]["results"][0]["retry"] = 1
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_browser_execution(value, filename, titles)
+
+    def test_real_unit_runner_keeps_all_250_ids_build_originals_and_phase_source_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.fixture(directory)
+            receipt = item["unit_receipt"]
+            self.assertEqual(item["unit_code"], 0, receipt)
+            self.assertEqual(receipt["vitest"]["passed"], 250)
+            self.assertEqual([row[0] for row in item["calls"]], ["security-probe", "vitest", "build"])
+            self.assertEqual([row[2] for row in item["calls"]], [60, 300, 600])
+            self.assertEqual(receipt["phase_source_after"], [item["source"]] * 3)
+            self.assertEqual(len(receipt["frontend_resource_observations"]), 4)
+            self.assertEqual([(row["phase"], row["node_options"]) for row in receipt["frontend_resource_observations"]],
+                             [("unit", "--max-old-space-size=384")] * 3 + [("build", "--max-old-space-size=1024")])
+            self.assertEqual(receipt["service_runtime"], "NOT_RUN")
+            with mock.patch.dict(gate.os.environ, self.environment(), clear=True):
+                admitted = gate.window_frontend_unit_admission(item["repo"], item["root"] / "e/window-unit-build", item["source"])
+            self.assertEqual(admitted["units"]["passed"], 250)
+
+    def test_failed_or_unknown_unit_phase_never_reaches_build_or_subsequent_source_commands(self):
+        for failure, labels, state in (("probe-failure", ["security-probe"], "FAIL"),
+                                       ("invalid-units", ["security-probe", "vitest"], "FAIL"),
+                                       ("unit-unknown", ["security-probe", "vitest"], "UNKNOWN")):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                item = self.fixture(directory, failure=failure, browser=True)
+                self.assertEqual(item["unit_code"], 1)
+                self.assertEqual(item["unit_receipt"]["status"], state)
+                self.assertEqual([row[0] for row in item["calls"]], labels)
+                self.assertIsNone(item["browser_code"])
+                if state == "UNKNOWN":
+                    self.assertNotIn("source_after", item["unit_receipt"])
+                    self.assertEqual(item["unit_source_queries"], 2)
+
+    def test_browser_and_existing_archive_join_original_units_build_list_and_six_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.fixture(directory, browser=True)
+            receipt = item["browser_receipt"]
+            self.assertEqual(item["browser_code"], 0, receipt)
+            self.assertEqual([row[0] for row in item["calls"]],
+                             ["security-probe", "vitest", "build", "browser-discovery", "browser-window-frontend"])
+            self.assertEqual(receipt["service_build"], "NOT_RUN")
+            self.assertEqual(receipt["phase_source_after"], [item["source"], item["source"]])
+            self.assertFalse((item["root"] / "t").exists())
+            inventory = gate.archive_inventory(item["root"])
+            with mock.patch.dict(gate.os.environ, self.environment(), clear=True):
+                bound = gate.archive_closed_bindings(item["root"], inventory, item["source"])
+            self.assertEqual(bound["window_units"]["units"]["passed"], 250)
+            self.assertEqual(bound["captures"], [])
+            self.assertEqual(bound["service_runtime"], "NOT_RUN")
+
+    def test_browser_unknown_or_foreign_current_list_stops_cases_and_post_source_queries(self):
+        for failure, extra, state in (("foreign-list", ["browser-discovery"], "FAIL"),
+                                       ("list-unknown", ["browser-discovery"], "UNKNOWN"),
+                                       ("browser-unknown", ["browser-discovery", "browser-window-frontend"], "UNKNOWN")):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                item = self.fixture(directory, failure=failure, browser=True)
+                self.assertEqual(item["browser_code"], 1)
+                self.assertEqual(item["browser_receipt"]["status"], state)
+                self.assertEqual([row[0] for row in item["calls"]][3:], extra)
+                if state == "UNKNOWN":
+                    self.assertNotIn("source_after", item["browser_receipt"])
+                    self.assertEqual(item["source_queries"] - item["unit_source_queries"],
+                                     2 if failure == "browser-unknown" else 1)
+
+    def test_original_unit_build_admission_rejects_changed_commands_streams_context_or_complete_files(self):
+        for mutation in ("stream", "receipt", "argv", "unit-report", "build-extra", "build-changed", "foreign-run", "source",
+                         "build-heap", "unit-heap", "phase"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                item = self.fixture(directory)
+                self.assertEqual(item["unit_code"], 0, item["unit_receipt"])
+                original = item["root"] / "e/window-unit-build"
+                receipt = json.loads((original / "receipt.json").read_bytes())
+                if mutation == "stream": (original / "vitest.stdout.log").write_bytes(b"changed")
+                elif mutation == "receipt": receipt["vitest"]["passed"] = 249
+                elif mutation == "argv": receipt["commands"][1]["argv"].append("--retry=1")
+                elif mutation == "unit-report":
+                    value = json.loads((original / "vitest.json").read_bytes()); value["testResults"].pop()
+                    (original / "vitest.json").write_text(json.dumps(value))
+                elif mutation == "build-extra": (original / "production-build/foreign.js").write_bytes(b"extra")
+                elif mutation == "build-changed": (item["repo"] / "apps/studio/dist/main.js").write_bytes(b"changed")
+                elif mutation == "foreign-run": receipt["run_id"] = "987654"
+                elif mutation == "build-heap": receipt["frontend_resource_observations"][-1]["node_options"] = "--max-old-space-size=384"
+                elif mutation == "unit-heap": receipt["frontend_resource_observations"][1]["node_options"] = "--max-old-space-size=1024"
+                elif mutation == "phase": receipt["frontend_resource_observations"][-1]["phase"] = "unit"
+                else: receipt["source_after"]["checkout"] = "e" * 40
+                (original / "receipt.json").write_text(json.dumps(receipt))
+                with mock.patch.dict(gate.os.environ, self.environment(), clear=True), self.assertRaises((ValueError, gate.UnknownObservation)):
+                    gate.window_frontend_unit_admission(item["repo"], original, item["source"])
+
+    def test_archive_rejects_unit_inventory_change_and_browser_start_before_build_closed(self):
+        for mutation in ("inventory", "order"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                item = self.fixture(directory, browser=True)
+                self.assertEqual(item["browser_code"], 0, item["browser_receipt"])
+                inventory = gate.archive_inventory(item["root"])
+                receipt = copy.deepcopy(item["browser_receipt"])
+                if mutation == "inventory":
+                    inventory["entries"]["e/window-unit-build/vitest.json"]["sha256"] = "f" * 64
+                else:
+                    receipt["discovery"]["command"]["started_utc"] = "2026-10-26T12:00:00+00:00"
+                with mock.patch.dict(gate.os.environ, self.environment(), clear=True), self.assertRaises(ValueError):
+                    gate.window_frontend_archive_units(item["root"], inventory, item["source"], receipt)
+
+    def test_workflow_addition_uses_only_existing_manual_job_and_closed_preflight_before_dependencies(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
+        raw = camera_previous_workflow(path.read_bytes())
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), WINDOW_REVIEWED_WORKFLOW_SHA256)
+        previous = window_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(previous).hexdigest(),
+                         "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b")
+        for changed in (raw + b" ", raw.replace(b"default: authoring-drafts", b"default: window-frontend", 1),
+                        raw.replace(b"needs: g0", b"needs: []", 1)):
+            with self.assertRaises(ValueError):
+                window_previous_workflow(changed)
+        value = raw.decode()
+        self.assertIn("default: authoring-drafts", value)
+        self.assertEqual(re.findall(r"^  ([a-z][a-z0-9_-]*):$", value, re.M),
+                         ["push", "workflow_dispatch", "run", "g0", "creative-unit-build", "real-service", "studio-service-68"])
+        unit = value.split("  creative-unit-build:\n", 1)[1].split("  real-service:\n", 1)[0]
+        self.assertLess(unit.index("window-preflight --repo ."), unit.index("Install locked Window frontend dependencies"))
+        self.assertLess(unit.index("--output ../v/e/window-unit-build"), unit.index("List and observe the six exact"))
+        self.assertIn("--target ../v/t --output ../v/e --selection window-frontend", unit)
+        self.assertIn("ci_canvas_service.py archive --repo . --evidence ../v", unit)
+        self.assertIn("inputs.selection == 'window-frontend' && 75", unit)
+        real = value.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
+        self.assertIn("inputs.selection != 'window-frontend'", real)
+
+
+
+CAMERA_WORKFLOW_REVERT_PAIRS = (("      - name: Bind the eight Camera inputs and resources before dependencies\n        if: matrix.selection == 'camera-with-v2'\n        timeout-minutes: 2\n        run: |\n          set -euo pipefail\n          python -B -I tooling/ci_canvas_service.py camera-preflight --repo . \\\n            --target ../v/t --output ../v/tools/camera-preflight.json\n      - name: Install locked Studio dependencies and Chromium\n", '      - name: Install locked Studio dependencies and Chromium\n'), ("          ref: ${{ github.sha }}\n          fetch-depth: ${{ matrix.selection == 'camera-with-v2' && 2 || 1 }}\n          persist-credentials: false\n", '          ref: ${{ github.sha }}\n          persist-credentials: false\n'), ("timeout-minutes: ${{ matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120", "timeout-minutes: ${{ matrix.selection == 'branch-claim' && 120"), ('options: [studio-service-68, criterion-partials, window-frontend, camera-with-v2,', 'options: [studio-service-68, criterion-partials, window-frontend,'))
+
+def camera_previous_workflow(raw):
+    raw = window_base_previous_workflow(raw)
+    for added, previous in CAMERA_WORKFLOW_REVERT_PAIRS:
+        if raw.count(added.encode()) != 1:
+            raise ValueError("Camera workflow addition is not the exact reviewed delta")
+        raw = raw.replace(added.encode(), previous.encode(), 1)
+    if gate.hashlib.sha256(raw).hexdigest() != WINDOW_REVIEWED_WORKFLOW_SHA256:
+        raise ValueError("an existing workflow byte changed outside the Camera addition")
+    return raw
+
+class CameraEightSourceTests(unittest.TestCase):
+    """Inert source controls; all product/process/Git observations are explicit seams."""
+
+    @staticmethod
+    def profile():
+        return {"schema": "motionwright.camera-eight-runtime-profile/1",
+                "source_commit": "c" * 40, "source_tree": "d" * 40,
+                "product_paths": dict(gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS), "runner": "ubuntu-24.04",
+                "minimum_available_memory_bytes": 4 * 1024**3, "minimum_target_free_bytes": 18 * 1024**3,
+                "cargo_jobs": 1, "job_seconds": 5400}
+
+    @staticmethod
+    def environment(repo):
+        return {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_JOB": "real-service",
+                "RUNNER_OS": "Linux", "ImageOS": "ubuntu24", "ImageVersion": "synthetic-image-1",
+                "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_SHA": "a" * 40,
+                "GITHUB_WORKSPACE": str(repo.parent)}
+
+    @staticmethod
+    def resources(phase):
+        return {"phase": phase, "available_memory_bytes": 4 * 1024**3, "target_free_bytes": 18 * 1024**3,
+                "minimum_available_memory_bytes": 4 * 1024**3, "minimum_target_free_bytes": 18 * 1024**3,
+                "cargo_jobs": 1, "run_id": "12345", "run_attempt": "1", "job": "real-service",
+                "executed_source": "a" * 40, "image_os": "ubuntu24", "image_version": "synthetic-image-1",
+                "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}
+
+    @staticmethod
+    def document(filename, titles, *, listing=False):
+        value = PartialCriterionServiceSelectionTests.document(filename, titles, listing=listing)
+        for index, spec in enumerate(value["suites"][0]["specs"], 1):
+            spec.update(id=gate.hashlib.sha256((filename + "\0" + spec["title"]).encode()).hexdigest(), line=index, column=1)
+            spec["tests"][0].update(timeout=120000, annotations=[])
+        return value
+
+    def test_eight_exact_historical_source_titles_and_four_inputs_match_the_git_fixtures(self):
+        repo = PATH.parents[1]
+        for name, expected in gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS:
+            raw = (repo / name).read_bytes()
+            self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), expected, name)
+        camera = (repo / "apps/studio/tests/camera-reframe-service.spec.ts").read_text(encoding="utf-8")
+        literal = re.findall(r'\btest\("([^"\n]+)"', camera)
+        self.assertEqual(literal, [*gate.CAMERA_TITLES[:2], *gate.CAMERA_TITLES[4:]])
+        self.assertEqual(camera.count('for (const operation of ["upsert", "detach"] as const)'), 1)
+        self.assertEqual(camera.count('test(`a peer ${operation} with identical saved Camera values cannot acknowledge the held original`'), 1)
+        v2 = (repo / "apps/studio/tests/camera-reframe-v2-service.spec.ts").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'\btest\("([^"\n]+)"', v2), list(gate.CAMERA_EIGHT_SELECTIONS[1][2]))
+        self.assertEqual(len(gate.selected_selections("camera")[0][2]), 7)
+        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 184)
+        self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["required_tests"], 8)
+        self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["not_selected"],
+                         [{"label": label, "file": name, "titles": list(titles), "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                          for label, name, titles in gate.SELECTIONS if label != "camera"])
+
+    def test_catalogue_and_full_title_commands_reject_omission_duplication_renaming_and_retry(self):
+        rows = gate.camera_eight_selections()
+        for selection in rows:
+            label, filename, titles = selection
+            argv = gate.service_command("node", Path("cli.js"), Path("output"), selection, scope=gate.CAMERA_EIGHT_SCOPE)
+            self.assertEqual(gate.service_command("node", Path("cli.js"), Path("output"), selection,
+                                                 listing=True, scope=gate.CAMERA_EIGHT_SCOPE), [*argv, "--list"])
+            for flag in ("--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--project=chromium"):
+                self.assertIn(flag, argv)
+            pattern = argv[argv.index("--grep") + 1]
+            for title in titles:
+                exact = " ".join(("chromium", filename, title))
+                self.assertIsNotNone(re.fullmatch(pattern, exact))
+                for altered in (exact + " suffix", "prefix " + exact, exact.replace("chromium", "firefox", 1)):
+                    self.assertIsNone(re.fullmatch(pattern, altered))
+        for changed in (rows[:-1], (rows[0], rows[0]), (rows[0], (rows[1][0], rows[1][1], ("renamed",)))):
+            with self.subTest(changed=changed), mock.patch.object(gate, "CAMERA_EIGHT_SELECTIONS", changed), self.assertRaises(ValueError):
+                gate.camera_eight_selections()
+        with self.assertRaises(ValueError):
+            gate.service_command("node", Path("cli"), Path("out"), rows[1], scope="foreign")
+        with self.assertRaises(ValueError):
+            gate.service_command("node", Path("cli"), Path("out"), rows[1], listing=1, scope=gate.CAMERA_EIGHT_SCOPE)
+        self.assertEqual(gate.CAMERA_EIGHT_TIMEOUTS, {"camera": 1200, "camera-v2": 300})
+
+    def test_absent_or_foreign_profile_refuses_before_source_files_git_or_child_queries(self):
+        good = self.profile()
+        for changed in (None, {}, {**good, "source_commit": gate.CAMERA_EIGHT_HISTORICAL_SOURCE}, {**good, "cargo_jobs": True},
+                        {**good, "minimum_target_free_bytes": 0}, {**good, "job_seconds": 6000}):
+            with self.subTest(profile=changed), mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", changed), \
+                    mock.patch.object(gate.subprocess, "check_output") as git, mock.patch.object(gate, "digest") as read, \
+                    mock.patch.object(gate, "execute") as child, self.assertRaises(ValueError):
+                gate.source_observation(Path("not-read"), gate.CAMERA_EIGHT_SCOPE)
+            git.assert_not_called(); read.assert_not_called(); child.assert_not_called()
+        with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", good):
+            self.assertEqual(gate.camera_eight_profile(), good)
+
+    def test_source_binding_refuses_foreign_tree_input_or_product_delta_before_launch(self):
+        with tempfile.TemporaryDirectory(prefix="camera-source-binding-") as directory:
+            repo = Path(directory)
+            originals = {name: ("synthetic original " + name).encode() for name, _ in gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS}
+            pins = tuple((name, gate.hashlib.sha256(raw).hexdigest()) for name, raw in originals.items())
+            observed = {"checkout": "a" * 40, "tree": "b" * 40,
+                        "files": {name: {"bytes": len(raw), "sha256": digest} for (name, digest), raw in zip(pins, originals.values())}}
+            mutation = [None]
+            def query(argv, **kwargs):
+                self.assertEqual(kwargs, {"cwd": repo, "timeout": 30})
+                if argv[1] == "rev-parse":
+                    return ("f" * 40 if mutation[0] == "tree" else self.profile()["source_tree"]).encode()
+                if argv[1] == "diff":
+                    return b"apps/studio/src/App.tsx\0" if mutation[0] == "product" else b"tooling/ci_canvas_service.py\0"
+                self.assertEqual(argv[:2], ["git", "show"])
+                name = argv[2].split(":", 1)[1]
+                return originals[name] + (b"changed" if mutation[0] == "original" else b"")
+            with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", {**self.profile(), "product_paths": dict(pins)}), \
+                    mock.patch.object(gate.subprocess, "check_output", side_effect=query), \
+                    mock.patch.object(gate, "execute") as child:
+                self.assertEqual(gate.camera_eight_source_binding(repo, observed)["executed_source"],
+                                 {"commit": "a" * 40, "tree": "b" * 40})
+                for kind in ("tree", "product", "original", "working"):
+                    mutation[0] = kind
+                    changed = copy.deepcopy(observed)
+                    if kind == "working": changed["files"][pins[0][0]]["sha256"] = "f" * 64
+                    with self.subTest(kind=kind), self.assertRaises(ValueError):
+                        gate.camera_eight_source_binding(repo, changed)
+                child.assert_not_called()
+
+    def test_resource_context_and_byte_below_limits_refuse_without_any_child(self):
+        with tempfile.TemporaryDirectory(prefix="camera-resources-") as directory:
+            repo = Path(directory) / "g"
+            target = repo.parent / "v/t"
+            environment = self.environment(repo)
+            with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", self.profile()), \
+                    mock.patch.object(gate.sys, "platform", "linux"), \
+                    mock.patch.object(Path, "read_text", return_value="MemAvailable: 4194304 kB\n"), \
+                    mock.patch.object(gate.shutil, "disk_usage", return_value=mock.Mock(free=18 * 1024**3)), \
+                    mock.patch.object(gate, "execute") as child:
+                with mock.patch.dict(gate.os.environ, environment, clear=True):
+                    value = gate.camera_eight_resources(repo, target, phase="build")
+                    self.assertEqual(value, self.resources("build"))
+                    with mock.patch.object(gate.shutil, "disk_usage", return_value=mock.Mock(free=18 * 1024**3 - 1)), self.assertRaises(ValueError):
+                        gate.camera_eight_resources(repo, target, phase="build")
+                    with mock.patch.object(Path, "read_text", return_value="MemAvailable: 4194303 kB\n"), self.assertRaises(ValueError):
+                        gate.camera_eight_resources(repo, target, phase="build")
+                for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_JOB", "g0"), ("GITHUB_RUN_ATTEMPT", "2"),
+                                   ("GITHUB_SHA", "foreign"), ("GITHUB_EVENT_NAME", "push"), ("ImageOS", "ubuntu22")):
+                    with self.subTest(key=key), mock.patch.dict(gate.os.environ, {**environment, key: value}, clear=True), self.assertRaises(ValueError):
+                        gate.camera_eight_resources(repo, target, phase="build")
+                child.assert_not_called()
+
+    def test_lists_have_eight_named_unexecuted_identities_and_reject_skips_or_results(self):
+        observed = []
+        for _, filename, titles in gate.camera_eight_selections():
+            document = self.document(filename, titles, listing=True)
+            accepted = gate.camera_eight_report(document, filename, titles, listing=True)
+            self.assertEqual((accepted["listed"], accepted["executed"]), (len(titles), 0))
+            observed.extend(accepted["identities"])
+            for mutation in ("missing", "foreign", "duplicate-id", "skip", "executed", "bool", "timeout", "ancestor"):
+                changed = copy.deepcopy(document)
+                spec = changed["suites"][0]["specs"][0]
+                if mutation == "missing": changed["suites"][0]["specs"].pop()
+                elif mutation == "foreign": spec["title"] = "foreign"
+                elif mutation == "duplicate-id":
+                    if len(titles) > 1: changed["suites"][0]["specs"][1]["id"] = spec["id"]
+                    else: spec["id"] = ""
+                elif mutation == "skip": spec["tests"][0]["annotations"] = [{"type": "skip"}]
+                elif mutation == "executed": spec["tests"][0]["results"] = [{"status": "passed"}]
+                elif mutation == "bool": changed["stats"]["expected"] = False
+                elif mutation == "timeout": spec["tests"][0]["timeout"] = 1
+                else: changed["suites"][0]["title"] = "foreign describe"
+                with self.subTest(filename=filename, mutation=mutation), self.assertRaises(ValueError):
+                    gate.camera_eight_report(changed, filename, titles, listing=True)
+        self.assertEqual(len(observed), 8)
+        self.assertEqual(len({row["id"] for row in observed}), 8)
+
+    def test_execution_must_match_its_original_list_with_zero_retries_and_no_relabeling(self):
+        for _, filename, titles in gate.camera_eight_selections():
+            original = gate.camera_eight_report(self.document(filename, titles, listing=True), filename, titles, listing=True)
+            document = self.document(filename, titles)
+            self.assertEqual(gate.camera_eight_report(document, filename, titles, listing=False, expected=original)["executed"], len(titles))
+            for mutation in ("id", "line", "retry", "bool-retry", "skip", "error", "missing-list"):
+                changed = copy.deepcopy(document)
+                spec = changed["suites"][0]["specs"][0]
+                if mutation == "id": spec["id"] = "foreign-id"
+                elif mutation == "line": spec["line"] += 1
+                elif mutation == "retry": spec["tests"][0]["results"][0]["retry"] = 1
+                elif mutation == "bool-retry": spec["tests"][0]["results"][0]["retry"] = False
+                elif mutation == "skip": spec["tests"][0]["expectedStatus"] = "skipped"
+                elif mutation == "error": spec["tests"][0]["results"][0]["errors"] = [{"message": "original failure"}]
+                with self.subTest(filename=filename, mutation=mutation), self.assertRaises(ValueError):
+                    gate.camera_eight_report(changed, filename, titles, listing=False,
+                                             expected=None if mutation == "missing-list" else original)
+
+    def run_fixture(self, directory, *, failure=None):
+        root = Path(directory)
+        repo, output, target = root / "g", root / "v/e", root / "v/t"
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        cli.parent.mkdir(parents=True)
+        cli.write_bytes(b"inert CLI source fixture; never executed")
+        for tool in ("cargo", "node"): (repo / tool).write_bytes(("inert " + tool).encode())
+        tools = root / "v/tools"
+        tools.mkdir(parents=True)
+        source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "not product evidence"}}
+        gate.write_new(tools / "camera-preflight.json", {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+                       "resources": self.resources("preflight"), "execution": "NOT_RUN", "formal_acceptance": False})
+        calls, intents = [], []
+        rows = {row[0]: row for row in gate.camera_eight_selections()}
+        write_original = gate.write_new
+        def write(path, value):
+            write_original(path, value)
+            if path.name.endswith("-intent.json"):
+                intents.append(copy.deepcopy(value))
+                if failure == "intent":
+                    changed = copy.deepcopy(value); changed["label"] = "foreign"
+                    path.write_text(json.dumps(changed), encoding="utf-8")
+        def execute(argv, cwd, env, destination, label, timeout):
+            calls.append((label, list(argv), timeout))
+            command = {"argv": list(argv), "cwd": str(cwd), "exit_code": 0, **synthetic_process_fields(env),
+                       "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+            if failure in (label + "-unknown", label + "-raised"):
+                command.update(observation="UNKNOWN_PROCESS_NO_RETRY", exit_code=None,
+                               diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+                if failure.endswith("-raised"): raise gate.UnknownObservation("synthetic original unknown", command)
+                return command
+            if label == "build":
+                binary = target / "debug/examples/studio_review_session"
+                if gate.os.name == "nt": binary = binary.with_suffix(".exe")
+                binary.parent.mkdir(parents=True); binary.write_bytes(b"inert binary; never executed")
+            else:
+                listing = label.endswith("-discovery")
+                _, filename, titles = rows[label.removesuffix("-discovery")]
+                document = self.document(filename, titles, listing=listing)
+                if failure == "bad-list" and listing: document["suites"][0]["specs"].pop()
+                if failure == "duplicate-list-id" and label == "camera-v2-discovery":
+                    camera = self.document(rows["camera"][1], rows["camera"][2], listing=True)
+                    document["suites"][0]["specs"][0]["id"] = camera["suites"][0]["specs"][0]["id"]
+                if failure == "postreadback" and label == "camera": document = None
+                Path(env["PLAYWRIGHT_JSON_OUTPUT_FILE"]).write_text(json.dumps(document), encoding="utf-8")
+            return command
+        argv = ["ci_canvas_service.py", "--repo", str(repo), "--output", str(output), "--target", str(target),
+                "--selection", gate.CAMERA_EIGHT_SCOPE]
+        with mock.patch("sys.argv", argv), mock.patch("sys.stdout", new=io.StringIO()), \
+                mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", self.profile()), \
+                mock.patch.object(gate.sys, "platform", "linux"), \
+                mock.patch.dict(gate.os.environ, self.environment(repo), clear=True), \
+                mock.patch.object(gate, "source_observation", return_value=source) as source_queries, \
+                mock.patch.object(gate, "camera_eight_resources", side_effect=lambda _r, _t, *, phase: self.resources(phase)), \
+                mock.patch.object(gate.shutil, "which", side_effect=lambda name: str(repo / name)), \
+                mock.patch.object(gate, "write_new", side_effect=write), \
+                mock.patch.object(gate, "execute", side_effect=execute), \
+                mock.patch.object(gate.subprocess, "Popen", side_effect=AssertionError("no real process permitted")):
+            code = gate.main()
+        return code, json.loads((output / "receipt.json").read_bytes()), calls, intents, source_queries.call_count
+
+    def test_real_main_builds_once_lists_both_before_bodies_and_validates_seven_plus_one(self):
+        with tempfile.TemporaryDirectory(prefix="camera-main-") as directory:
+            code, receipt, calls, intents, queries = self.run_fixture(directory)
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery", "camera", "camera-v2"])
+        self.assertEqual([row[2] for row in calls], [1200, 60, 60, 1200, 300])
+        self.assertEqual(calls[0][1][-2:], ["--jobs", "1"])
+        self.assertEqual([row["expected_cases"] for row in intents], [7, 1])
+        self.assertEqual(queries, 4)
+        self.assertEqual(receipt["camera_execution"], {"selected_cases": 8, "launch_requested_cases": 8,
+                         "selected_cases_in_started_processes": 8, "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                         "retry": "FORBIDDEN", "formal_acceptance": False})
+        self.assertEqual([row["verified"]["executed"] for row in receipt["camera_discovery"]], [0, 0])
+
+    def test_missing_or_unknown_lists_stop_before_any_case_and_unknown_postqueries(self):
+        for failure in ("bad-list", "duplicate-list-id", "camera-discovery-unknown", "camera-v2-discovery-unknown"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="camera-list-failure-") as directory:
+                code, receipt, calls, intents, queries = self.run_fixture(directory, failure=failure)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["selections"], [])
+            self.assertEqual(intents, [])
+            self.assertEqual(queries, 2)
+            self.assertNotIn("source_after", receipt)
+            self.assertEqual([row[0] for row in calls], ["build", "camera-discovery"] +
+                             (["camera-v2-discovery"] if failure.startswith("camera-v2") or failure == "duplicate-list-id" else []))
+            self.assertEqual(receipt["status"], "FAIL" if failure in ("bad-list", "duplicate-list-id") else "UNKNOWN")
+
+    def test_unknown_original_case_keeps_started_pid_without_retry_or_later_queries(self):
+        for failure in ("camera-unknown", "camera-raised"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="camera-original-unknown-") as directory:
+                code, receipt, calls, intents, queries = self.run_fixture(directory, failure=failure)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["status"], "UNKNOWN")
+            self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery", "camera"])
+            self.assertEqual(queries, 3)
+            self.assertNotIn("source_after", receipt)
+            self.assertEqual(receipt["selections"][0]["original_pid"], 123)
+            self.assertIsNone(receipt["selections"][0]["original_exit"])
+            self.assertEqual(receipt["camera_execution"]["selected_cases_in_started_processes"], 7)
+            self.assertEqual(receipt["camera_execution"]["validated_cases"], 0)
+            self.assertEqual(receipt["camera_execution"]["state"], "UNKNOWN")
+            self.assertEqual(len(intents), 1)
+
+    def test_postexecution_readback_failure_preserves_attempt_and_original_exit(self):
+        with tempfile.TemporaryDirectory(prefix="camera-original-readback-") as directory:
+            code, receipt, calls, intents, queries = self.run_fixture(directory, failure="postreadback")
+        self.assertEqual(code, 1)
+        self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery", "camera"])
+        self.assertEqual(receipt["selections"][0]["error"], "Camera original report errors")
+        self.assertEqual(receipt["selections"][0]["original_exit"], 0)
+        self.assertEqual(receipt["camera_execution"]["state"], "ATTEMPTED_NOT_VALIDATED")
+        self.assertEqual(receipt["camera_execution"]["selected_cases_in_started_processes"], 7)
+        self.assertEqual(receipt["camera_execution"]["validated_cases"], 0)
+        self.assertEqual(queries, 3)
+        self.assertEqual(len(intents), 1)
+
+    def test_changed_retained_intent_refuses_after_lists_before_selected_launch(self):
+        with tempfile.TemporaryDirectory(prefix="camera-intent-original-") as directory:
+            code, receipt, calls, intents, queries = self.run_fixture(directory, failure="intent")
+        self.assertEqual(code, 1)
+        self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery"])
+        self.assertEqual(receipt["error"], "Camera pre-dispatch selection intent changed")
+        self.assertEqual(receipt["camera_execution"]["selected_cases_in_started_processes"], 0)
+        self.assertEqual(receipt["camera_execution"]["launch_requested_cases"], 0)
+        self.assertFalse(receipt["selections"][0]["attempted"])
+        self.assertEqual(queries, 3)
+        self.assertEqual(len(intents), 1)
+
+    def archive_fixture(self, directory):
+        root, source, _store = ClosedStudioArchiveTests().fixture(directory)
+        output, repo, target = root / "e", root.parent / "g", root / "t"
+        gate.shutil.rmtree(output / "case")  # Only the inert predecessor fixture in this temporary directory.
+        for path in output.glob("ink.*"): path.unlink()
+        receipt = json.loads((output / "receipt.json").read_bytes())
+        receipt.update(selection_plan=gate.selection_plan(gate.CAMERA_EIGHT_SCOPE), selections=[], camera_discovery=[],
+                       run_id="12345", run_attempt="1", job="real-service",
+                       camera_resource_observations=[self.resources(phase) for phase in (
+                           "build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2")],
+                       camera_execution={"selected_cases": 8, "launch_requested_cases": 8, "selected_cases_in_started_processes": 8,
+                                         "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                                         "retry": "FORBIDDEN", "formal_acceptance": False})
+        def save(name, value):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            return gate.digest(path)
+        save("tools/camera-preflight.json", {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+             "resources": self.resources("preflight"), "execution": "NOT_RUN", "formal_acceptance": False})
+        receipt["camera_preflight"] = gate.digest(root / "tools/camera-preflight.json")
+        receipt["build"]["argv"].extend(["--jobs", "1"])
+        receipt["build"].update(started_utc="2026-10-26T13:00:00+00:00", finished_utc="2026-10-26T13:00:01+00:00")
+        save("e/build.command.json", receipt["build"])
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        binary = Path(receipt["service_binary"]["path"])
+        for index, selection in enumerate(gate.camera_eight_selections()):
+            label, filename, titles = selection
+            listed = None
+            for listing in (True, False):
+                observed_label = label + "-discovery" if listing else label
+                environment = gate.service_environment_binding(target, output, label, binary)
+                environment["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (observed_label + ".json"))
+                argv = gate.service_command(receipt["node"]["path"], cli, output, selection,
+                                            listing=listing, scope=gate.CAMERA_EIGHT_SCOPE)
+                stamp = 2 + index if listing else 4 + index
+                command = {"argv": argv, "cwd": str(repo / "apps/studio"), **synthetic_process_fields(environment),
+                           "exit_code": 0, "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED",
+                           "started_utc": "2026-10-26T13:00:0" + str(stamp) + "+00:00",
+                           "finished_utc": "2026-10-26T13:00:0" + str(stamp) + ".500000+00:00"}
+                for stream in ("stdout", "stderr"):
+                    path = output / (observed_label + "." + stream + ".log")
+                    path.write_bytes(b"synthetic original; no command execution\n")
+                    command[stream] = gate.digest(path)
+                save("e/" + observed_label + ".command.json", command)
+                document = self.document(filename, titles, listing=listing)
+                identity = save("e/" + observed_label + ".json", document)
+                verified = gate.camera_eight_report(document, filename, titles, listing=listing, expected=listed)
+                row = {"label": label, "command": command, "original_report": identity, "verified": verified,
+                       "status": "LISTED_NOT_EXECUTED" if listing else "PASS"}
+                if listing:
+                    listed = verified
+                    receipt["camera_discovery"].append(row)
+                else:
+                    intent = gate.camera_eight_intent(label, titles, argv, repo / "apps/studio", source, receipt["service_binary"])
+                    row.update(expected_tests=len(titles), intent=save("e/" + label + "-intent.json", intent),
+                               launch_requested=True, attempted=True, original_pid=123, original_exit=0, validated_cases=len(titles))
+                    receipt["selections"].append(row)
+        for index, (label, title, database, participants) in enumerate(gate.CAMERA_EIGHT_DATABASES):
+            case = output / (label + "-test-results") / ("inert-case-" + str(index))
+            store = case / "closed-camera-store/store"
+            store.mkdir(parents=True)
+            database_path = store / database
+            database_path.write_bytes(("inert SQLite byte fixture " + str(index)).encode())
+            entries = [{"path": "", "kind": "directory"}, {"path": database, "kind": "file",
+                       "sizeBytes": database_path.stat().st_size, "sha256": gate.digest(database_path)["sha256"]}]
+            aggregate = gate.hashlib.sha256(json.dumps(entries, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            lifecycle = [{"databasePath": str(case / "store" / database), "taints": [],
+                          "exits": [{"processId": 2000 + index * 10 + participant, "code": 0, "signal": None,
+                                     "observedAt": "2026-10-26T13:00:06.000Z"}]} for participant in range(participants)]
+            manifest = {"schemaVersion": 1, "entries": entries, "sourceDirectory": str(case / "store"),
+                        "snapshotDirectory": str(store), "databaseRelativePath": database,
+                        "sourceBeforeSha256": aggregate, "sourceAfterSha256": aggregate, "snapshotSha256": aggregate,
+                        "lifecycle": lifecycle, "evidenceScope": "synthetic parser fixture; no SQLite or service execution"}
+            oracle = {"schemaVersion": 1, "observedAt": "2026-10-26T13:00:06.000Z",
+                      "project": {"id": "inert-project-" + str(index), "generation": "fixture-generation",
+                                  "active_branch": "fixture-branch", "revision": 0},
+                      "journal": [], "journalAfterRevisionExclusive": 0, "journalComplete": True}
+            outcome = {"schemaVersion": 1, "errors": [], "capture": copy.deepcopy(manifest), "oracle": copy.deepcopy(oracle),
+                       "preparation": [{"index": 0, "status": "fulfilled"}],
+                       "closures": [{"status": "fulfilled", **copy.deepcopy(row)} for row in lifecycle]}
+            prefix = case.relative_to(root).as_posix() + "/closed-camera-store"
+            save(prefix + "/manifest.json", manifest)
+            save(prefix + "/oracle.json", oracle)
+            save(prefix + "-outcomes.json", outcome)
+        save("e/receipt.json", receipt)
+        return root, source, receipt, save
+
+    def test_complete_archive_binds_one_build_two_lists_eight_original_stores_and_attempts(self):
+        with tempfile.TemporaryDirectory(prefix="camera-eight-originals-") as directory:
+            root, source, _receipt, _save = self.archive_fixture(directory)
+            with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                result = gate.archive_closed_bindings(root, gate.archive_inventory(root), source)
+            self.assertEqual(len(result["captures"]), 8)
+            self.assertEqual(len(result["camera_eight_cases"]), 8)
+            self.assertEqual({row["database"] for row in result["camera_eight_cases"]},
+                             {row[2] for row in gate.CAMERA_EIGHT_DATABASES})
+            self.assertTrue(all(row["independent_archive_reopen"] is False and row["additional_oracle_reexecution"] is False
+                                for row in result["camera_eight_cases"]))
+
+    def test_coherent_archive_changes_reject_late_list_foreign_id_attempt_source_and_store(self):
+        for mutation in ("late-list", "naive-list-time", "cross-list-id", "foreign-execution-id", "intent", "attempt", "source", "resource",
+                         "build-jobs", "missing-store", "unclosed", "oracle-null", "oracle-incomplete"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix="camera-forged-originals-") as directory:
+                root, source, receipt, save = self.archive_fixture(directory)
+                first = receipt["selections"][0]
+                if mutation == "late-list":
+                    command = receipt["camera_discovery"][-1]["command"]
+                    command["finished_utc"] = "2026-10-26T13:00:09+00:00"
+                    save("e/camera-v2-discovery.command.json", command)
+                elif mutation == "naive-list-time":
+                    command = receipt["camera_discovery"][-1]["command"]
+                    command["finished_utc"] = "2026-10-26T13:00:03"
+                    save("e/camera-v2-discovery.command.json", command)
+                elif mutation == "cross-list-id":
+                    duplicate = receipt["camera_discovery"][0]["verified"]["identities"][0]["id"]
+                    for row, label in ((receipt["camera_discovery"][1], "camera-v2-discovery"), (receipt["selections"][1], "camera-v2")):
+                        document = json.loads((root / ("e/" + label + ".json")).read_bytes())
+                        document["suites"][0]["specs"][0]["id"] = duplicate
+                        row["original_report"] = save("e/" + label + ".json", document)
+                        row["verified"]["identities"][0]["id"] = duplicate
+                elif mutation == "foreign-execution-id":
+                    document = json.loads((root / "e/camera.json").read_bytes())
+                    document["suites"][0]["specs"][0]["id"] = "foreign-source-original-id"
+                    first["original_report"] = save("e/camera.json", document)
+                    first["verified"]["identities"][0]["id"] = "foreign-source-original-id"
+                elif mutation == "intent":
+                    intent = json.loads((root / "e/camera-intent.json").read_bytes()); intent["source_commit"] = "f" * 40
+                    first["intent"] = save("e/camera-intent.json", intent)
+                elif mutation == "attempt": first["original_pid"] = 999
+                elif mutation == "source":
+                    preflight = json.loads((root / "tools/camera-preflight.json").read_bytes())
+                    preflight["source"]["checkout"] = "f" * 40
+                    receipt["camera_preflight"] = save("tools/camera-preflight.json", preflight)
+                elif mutation == "resource": receipt["camera_resource_observations"][-1]["target_free_bytes"] = 18 * 1024**3 - 1
+                elif mutation == "build-jobs":
+                    receipt["build"]["argv"][-1] = "2"; save("e/build.command.json", receipt["build"])
+                else:
+                    prefix = "e/camera-test-results/inert-case-0/closed-camera-store"
+                    if mutation == "missing-store": (root / prefix / "manifest.json").unlink()
+                    elif mutation == "unclosed":
+                        manifest = json.loads((root / prefix / "manifest.json").read_bytes())
+                        outcome = json.loads((root / (prefix + "-outcomes.json")).read_bytes())
+                        manifest["lifecycle"][0]["exits"][0]["code"] = 1
+                        outcome["capture"] = copy.deepcopy(manifest)
+                        outcome["closures"][0]["exits"][0]["code"] = 1
+                        save(prefix + "/manifest.json", manifest); save(prefix + "-outcomes.json", outcome)
+                    else:
+                        oracle = json.loads((root / prefix / "oracle.json").read_bytes())
+                        oracle = None if mutation == "oracle-null" else {**oracle, "journalComplete": False}
+                        outcome = json.loads((root / (prefix + "-outcomes.json")).read_bytes()); outcome["oracle"] = oracle
+                        save(prefix + "/oracle.json", oracle); save(prefix + "-outcomes.json", outcome)
+                save("e/receipt.json", receipt)
+                with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}), self.assertRaises(ValueError):
+                    gate.archive_closed_bindings(root, gate.archive_inventory(root), source)
+
+    def test_unknown_camera_list_quarantines_archive_before_source_copy_or_traversal(self):
+        with tempfile.TemporaryDirectory(prefix="camera-archive-unknown-") as directory:
+            root, _, _ = ClosedStudioArchiveTests().fixture(directory)
+            receipt_path = root / "e/receipt.json"
+            receipt = json.loads(receipt_path.read_bytes())
+            uncertain = {"pid": 123, "observation": "UNKNOWN_PROCESS_NO_RETRY",
+                         "diagnostic_custody": "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"}
+            receipt["camera_discovery"] = [{"label": "camera-v2", "command": uncertain}]
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with mock.patch.object(gate, "archive_inventory") as inventory, \
+                    mock.patch.object(gate, "source_observation") as source, mock.patch.object(gate, "write_closed_tar") as tar:
+                result = gate.retain_closed_archive(root.parent / "g", root)
+            self.assertEqual(result["status"], "UNKNOWN")
+            self.assertEqual(result["unsealed_command"], uncertain)
+            inventory.assert_not_called(); source.assert_not_called(); tar.assert_not_called()
+
+    def test_preflight_retains_exact_source_resource_original_without_service_execution(self):
+        with tempfile.TemporaryDirectory(prefix="camera-preflight-") as directory:
+            repo, target, output = Path(directory) / "g", Path(directory) / "v/t", Path(directory) / "v/tools/camera-preflight.json"
+            repo.mkdir(); output.parent.mkdir(parents=True)
+            source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"fixture": "not product evidence"}}
+            with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", self.profile()), \
+                    mock.patch.object(gate, "source_observation", return_value=source) as queried, \
+                    mock.patch.object(gate, "camera_eight_resources", return_value=self.resources("preflight")), \
+                    mock.patch.object(gate, "execute") as child, mock.patch("sys.stdout", new=io.StringIO()):
+                argv = ["--repo", str(repo), "--target", str(target), "--output", str(output)]
+                self.assertEqual(gate.camera_eight_preflight(argv), 0)
+                original = json.loads(output.read_bytes())
+                self.assertEqual(original["source"], source)
+                self.assertEqual(original["resources"], self.resources("preflight"))
+                self.assertEqual(original["execution"], "NOT_RUN")
+                queried.assert_called_once_with(repo.resolve(), gate.CAMERA_EIGHT_SCOPE)
+                with self.assertRaisesRegex(ValueError, "fresh original"):
+                    gate.camera_eight_preflight(argv)
+                child.assert_not_called()
+
+    def test_workflow_only_adds_camera_choice_ninety_minutes_source_depth_and_closed_preflight(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
+        raw = path.read_bytes()
+        previous = camera_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), WINDOW_REVIEWED_WORKFLOW_SHA256)
+        self.assertEqual(gate.hashlib.sha256(window_previous_workflow(previous)).hexdigest(),
+                         "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b")
+        value = raw.decode()
+        self.assertEqual(re.findall(r"^  ([a-z][a-z0-9_-]*):$", value, re.M),
+                         ["push", "workflow_dispatch", "run", "g0", "creative-unit-build", "real-service", "studio-service-68"])
+        self.assertIn("default: authoring-drafts", value)
+        real = value.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend'", real)
+        self.assertIn("needs: g0", real)
+        self.assertIn("matrix.selection == 'camera-with-v2' && 90", real)
+        self.assertIn("fetch-depth: ${{ matrix.selection == 'camera-with-v2' && 2 || 1 }}", real)
+        self.assertLess(real.index("camera-preflight --repo ."), real.index("Install locked Studio dependencies and Chromium"))
+        self.assertIn("--target ../v/t --output ../v/tools/camera-preflight.json", real)
+        self.assertEqual(real.count('ci_canvas_service.py --repo .'), 1)
+        for changed in (raw + b" ", raw.replace(b"needs: g0", b"needs: []", 1),
+                        raw.replace(b"default: authoring-drafts", b"default: camera-with-v2", 1)):
+            with self.assertRaises(ValueError): camera_previous_workflow(changed)
+
+
+WINDOW_BASE_WORKFLOW_REVERT_PAIRS = (("      - name: Observe the exact single-parent Window base in this same job\n        if: inputs.selection == 'window-frontend'\n        timeout-minutes: 2\n        env:\n          CI: 'true'\n          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n          NODE_OPTIONS: '--max-old-space-size=384'\n          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n        run: |\n          set -euo pipefail\n          python -B -I tooling/ci_canvas_service.py window-base --repo . \\\n            --output ../v/tools/window-base\n      - name: Bind Window source and hosted resource inputs before dependencies\n", '      - name: Bind Window source and hosted resource inputs before dependencies\n'), ('          test -d ../v/tools/window-base\n          test ! -e ../v/tools/node.txt\n          test ! -e ../v/tools/npm.txt\n          test ! -e ../v/tools/python.txt\n          node --version > ../v/tools/node.txt\n', '          test ! -e ../v/tools\n          mkdir ../v/tools\n          node --version > ../v/tools/node.txt\n'), ("          ref: ${{ github.sha }}\n          fetch-depth: ${{ inputs.selection == 'window-frontend' && 2 || 1 }}\n          persist-credentials: false\n", '          ref: ${{ github.sha }}\n          persist-credentials: false\n'))
+
+
+def window_base_previous_workflow(raw):
+    for added, previous in WINDOW_BASE_WORKFLOW_REVERT_PAIRS:
+        if raw.count(added.encode()) != 1:
+            raise ValueError("Window base acquisition is not the exact reviewed delta")
+        raw = raw.replace(added.encode(), previous.encode(), 1)
+    if gate.hashlib.sha256(raw).hexdigest() != "73fdf63b5b5a7f75c8545dd770e64863d97dc24fe93c722fed24e88aef9a3c36":
+        raise ValueError("an existing workflow byte changed outside base acquisition")
+    return raw
+
+
+class WindowBaseObjectSourceTests(unittest.TestCase):
+    """Real source functions with explicit inert Git/process observation seams."""
+
+    @staticmethod
+    def original_commit(parents=None):
+        parents = [gate.window_frontend_profile()["source_commit"]] if parents is None else parents
+        return ("tree " + "b" * 40 + "\n" + "".join("parent " + parent + "\n" for parent in parents)
+                + "author Inert Fixture <fixture@example.invalid> 1 +0000\n"
+                + "committer Inert Fixture <fixture@example.invalid> 1 +0000\n\n"
+                + "Source-control fixture; no Git command is executed.\n").encode()
+
+    @staticmethod
+    def gate_source_sha():
+        raw = WindowBaseObjectSourceTests.original_commit()
+        return gate.hashlib.sha1(b"commit " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+    def prepare_fixture(self, directory, failure=None):
+        root = Path(directory).resolve()
+        repo, evidence = root / "g", root / "v"
+        repo.mkdir(parents=True, exist_ok=True)
+        evidence.mkdir(exist_ok=True)
+        tool = root / "inert-git"
+        tool.write_bytes(b"inert Git identity; never executable")
+        fixture = WindowFrontendSelectionTests()
+        environment = {**fixture.environment(), "GITHUB_WORKSPACE": str(root)}
+        profile = gate.window_frontend_profile()
+        parents = [profile["source_commit"]]
+        if failure == "wrong-parent": parents = ["e" * 40]
+        elif failure == "merge-parent": parents.append("f" * 40)
+        raw_commit = self.original_commit(parents)
+        gate_sha = gate.hashlib.sha1(b"commit " + str(len(raw_commit)).encode() + b"\0" + raw_commit).hexdigest()
+        environment["GITHUB_SHA"] = gate_sha
+        resources = {**fixture.resources(), "environment": dict(environment)}
+        for key in gate.PROCESS_ENVIRONMENT_KEYS:
+            resources["environment"].pop(key, None)
+        profile = gate.window_frontend_profile()
+        source = {"checkout": gate_sha, "tree": "b" * 40}
+        calls = []
+
+        def execute(argv, cwd, env, output, label, timeout):
+            index = len(calls)
+            self.assertEqual(cwd, repo)
+            self.assertEqual((label, timeout), gate.WINDOW_FRONTEND_BASE_CAPS[index])
+            self.assertEqual(argv, gate.window_frontend_base_commands(str(tool))[index])
+            self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+            self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+            self.assertNotIn("MOTIONWRIGHT_SERVICE_TEST_BIN", env)
+            calls.append(label)
+            stdout = b""
+            if label in ("head-before", "head-after"):
+                commit = "e" * 40 if ((failure == "foreign-head" and label == "head-before")
+                        or (failure == "head-changed" and label == "head-after")) else source["checkout"]
+                stdout = (commit + "\n" + source["tree"] + "\n").encode()
+            elif label == "head-commit":
+                stdout = raw_commit + (b"corruption" if failure == "commit-bytes" else b"")
+            elif label == "base-object":
+                commit = "f" * 40 if failure == "foreign-base" else profile["source_commit"]
+                tree = "e" * 40 if failure == "foreign-tree" else profile["source_tree"]
+                stdout = (commit + "\n" + tree + "\n").encode()
+                if failure == "malformed-base":
+                    stdout += b"third unadmitted line\n"
+            command = {"argv": list(argv), "cwd": str(cwd), "exit_code": 0,
+                "started_utc": f"2026-10-26T12:00:00.{index * 2:06d}+00:00",
+                "finished_utc": f"2026-10-26T12:00:00.{index * 2 + 1:06d}+00:00",
+                **synthetic_process_fields(env), "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+            if failure == "parent-missing" and label == "base-object":
+                command["exit_code"] = 128
+            if failure == "parent-unknown" and label == "base-object":
+                command.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
+                    diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+            for stream, raw in (("stdout", stdout), ("stderr", b"inert retained Git stderr\n")):
+                path = output / (label + "." + stream + ".log")
+                path.write_bytes(raw)
+                command[stream] = gate.digest(path)
+            gate.write_new(output / (label + ".command.json"), command)
+            return command
+
+        output = evidence / "tools/window-base"
+        with mock.patch.dict(gate.os.environ, environment, clear=True), \
+                mock.patch.object(gate, "window_frontend_environment", return_value=resources), \
+                mock.patch.object(gate.shutil, "which", return_value=str(tool)), \
+                mock.patch.object(gate, "execute", side_effect=execute):
+            code, receipt = gate.window_frontend_prepare_base(repo, output)
+        return {"repo": repo, "root": evidence, "output": output, "source": source,
+                "environment": environment, "resources": resources, "tool": tool,
+                "code": code, "receipt": receipt, "calls": calls}
+
+    def test_current_085d_fourteen_pins_and_complete_catalogues_are_source_data_only(self):
+        root = Path(__file__).resolve().parents[2]
+        self.assertEqual(gate.window_frontend_profile()["source_commit"], "085d12a947d4b15bd74d131e007fe908e925106f")
+        self.assertEqual(gate.window_frontend_profile()["source_tree"], "882e0ba3cec60ec5dfda911314d47c6620ff73ec")
+        pins = (*gate.WINDOW_FRONTEND_PRODUCT_PINS, *gate.WINDOW_FRONTEND_DEPENDENCY_PINS)
+        self.assertEqual(len(pins), 14)
+        for name, expected in pins:
+            self.assertEqual(gate.hashlib.sha256((root / name).read_bytes()).hexdigest(), expected, name)
+        self.assertEqual([len(names) for _, names in gate.window_frontend_inventory()], [9, 3, 19, 15, 5, 4, 195])
+        self.assertEqual(len(gate.WINDOW_FRONTEND_BROWSER_SELECTION[2]), 6)
+        self.assertIsNone(gate.CAMERA_EIGHT_REVIEWED_PROFILE)
+        self.assertEqual(len(gate.STUDIO68_CASES), 68)
+        self.assertEqual(gate.WINDOW_FRONTEND_GATE_PATHS, (
+            "tooling/ci_canvas_service.py", "tooling/tests/test_ci_canvas_service.py",
+            ".github/workflows/studio-service-verification.yml"))
+
+    def test_same_job_parent_observation_never_fetches_or_checkouts_and_retains_all_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.prepare_fixture(directory)
+            self.assertEqual(item["code"], 0, item["receipt"])
+            self.assertEqual(item["calls"], [name for name, _cap in gate.WINDOW_FRONTEND_BASE_CAPS])
+            commands = [row["command"]["argv"] for row in item["receipt"]["commands"]]
+            self.assertFalse(any(part in argv for argv in commands for part in ("fetch", "checkout", "reset", "switch")))
+            self.assertEqual(commands[1][-3:], ["cat-file", "commit", "HEAD"])
+            self.assertEqual(commands[2][-2:], ["HEAD^1^{commit}", "HEAD^1^{tree}"])
+            self.assertEqual(item["receipt"]["base_acquisition"], "SAME_JOB_CHECKOUT_DEPTH_2_DIRECT_SINGLE_PARENT")
+            self.assertEqual(item["receipt"]["frontend_execution"], "NOT_RUN")
+            self.assertFalse(item["receipt"]["result_transfer"])
+            self.assertEqual(len(list(item["output"].iterdir())), 13)
+            with mock.patch.dict(gate.os.environ, item["environment"], clear=True):
+                admitted = gate.window_frontend_base_originals(item["repo"], item["output"], item["receipt"], item["source"])
+            self.assertEqual(admitted["executed_source"]["commit"], item["source"]["checkout"])
+            self.assertEqual(admitted["nominated_input"]["commit"], "085d12a947d4b15bd74d131e007fe908e925106f")
+
+    def test_foreign_checkout_refuses_before_parent_query_without_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.prepare_fixture(directory, "foreign-head")
+            self.assertEqual(item["code"], 1)
+            self.assertEqual(item["calls"], ["head-before"])
+            self.assertIn("foreign checkout", item["receipt"]["error"])
+            self.assertNotIn("admission", item["receipt"])
+
+    def test_missing_parent_object_stops_without_fetch_or_retry_and_keeps_exit128(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.prepare_fixture(directory, "parent-missing")
+            self.assertEqual(item["code"], 1)
+            self.assertEqual(item["calls"], ["head-before", "head-commit", "base-object"])
+            self.assertEqual(item["receipt"]["commands"][-1]["command"]["exit_code"], 128)
+            self.assertIn("Window base Git command failed: base-object", item["receipt"]["error"])
+            self.assertNotIn("admission", item["receipt"])
+
+    def test_unknown_parent_query_stays_unknown_without_later_git_or_source_queries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.prepare_fixture(directory, "parent-unknown")
+            self.assertEqual(item["code"], 124)
+            self.assertEqual(item["receipt"]["status"], "UNKNOWN_NO_RETRY")
+            self.assertEqual(item["calls"], ["head-before", "head-commit", "base-object"])
+            self.assertIsNone(item["receipt"]["uncertain_command"]["exit_code"])
+            self.assertNotIn("admission", item["receipt"])
+
+    def test_wrong_commit_tree_extra_output_and_changed_head_never_write_success(self):
+        for failure in ("foreign-base", "foreign-tree", "malformed-base", "head-changed", "wrong-parent", "merge-parent", "commit-bytes"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                item = self.prepare_fixture(directory, failure)
+                self.assertEqual(item["code"], 1, item["receipt"])
+                self.assertEqual(item["receipt"]["status"], "PREPARATION_REJECTED")
+                self.assertEqual(item["calls"], [name for name, _cap in gate.WINDOW_FRONTEND_BASE_CAPS])
+                message = {"foreign-base": "original parent commit/tree",
+                           "foreign-tree": "original parent commit/tree",
+                           "malformed-base": "Git commit/tree stdout is not exact",
+                           "head-changed": "changed the executed checkout",
+                           "wrong-parent": "ordinary single-parent child",
+                           "merge-parent": "ordinary single-parent child",
+                           "commit-bytes": "original commit bytes do not identify"}[failure]
+                self.assertIn(message, item["receipt"]["error"])
+                self.assertNotIn("admission", item["receipt"])
+                self.assertEqual(json.loads((item["output"] / "receipt.json").read_bytes()), item["receipt"])
+
+    def test_context_path_and_inherited_git_overrides_refuse_before_any_child(self):
+        for mutation in ("repository", "workspace", "output", "git-override", "existing-tools"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); repo = root / "g"; evidence = root / "v"
+                repo.mkdir(); evidence.mkdir(); output = evidence / "tools/window-base"
+                fixture = WindowFrontendSelectionTests()
+                env = {**fixture.environment(), "GITHUB_WORKSPACE": str(root)}
+                resources = {**fixture.resources(), "environment": dict(env)}
+                if mutation == "repository": env["GITHUB_REPOSITORY"] = "foreign/repo"
+                elif mutation == "workspace": env["GITHUB_WORKSPACE"] = str(root / "foreign")
+                elif mutation == "output": output = evidence / "arbitrary"
+                elif mutation == "git-override": resources["environment"]["GIT_CONFIG_COUNT"] = "1"
+                else: output.parent.mkdir()
+                with mock.patch.dict(gate.os.environ, env, clear=True), \
+                        mock.patch.object(gate, "window_frontend_environment", return_value=resources), \
+                        mock.patch.object(gate, "execute") as execute, self.assertRaises(ValueError):
+                    gate.window_frontend_prepare_base(repo, output)
+                execute.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_reader_rejects_consistent_foreign_streams_context_or_command_custody(self):
+        for mutation in ("source", "run", "attempt", "job", "cap-bool", "argv", "stream", "order", "exit-bool"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                item = self.prepare_fixture(directory)
+                self.assertEqual(item["code"], 0, item["receipt"])
+                receipt = copy.deepcopy(item["receipt"])
+                row = receipt["commands"][2]
+                if mutation == "source": receipt["executed_source"]["tree"] = "f" * 40
+                elif mutation == "run": receipt["context"]["GITHUB_RUN_ID"] = "999999"
+                elif mutation == "attempt": receipt["context"]["GITHUB_RUN_ATTEMPT"] = "2"
+                elif mutation == "job": receipt["context"]["GITHUB_JOB"] = "real-service"
+                elif mutation == "cap-bool": row["cap_seconds"] = True
+                elif mutation == "argv": row["command"]["argv"][3] = "f" * 40 + "^{commit}"
+                elif mutation == "order": row["command"]["started_utc"] = "2026-10-25T12:00:00+00:00"
+                elif mutation == "exit-bool": row["command"]["exit_code"] = False
+                else:
+                    path = item["output"] / "base-object.stdout.log"
+                    path.write_bytes(("f" * 40 + "\n" + "e" * 40 + "\n").encode())
+                    row["command"]["stdout"] = gate.digest(path)
+                (item["output"] / "base-object.command.json").write_text(json.dumps(row["command"]))
+                with mock.patch.dict(gate.os.environ, item["environment"], clear=True), \
+                        self.assertRaises((ValueError, gate.UnknownObservation)):
+                    gate.window_frontend_base_originals(item["repo"], item["output"], receipt, item["source"])
+
+    def test_archive_requires_complete_base_originals_before_frontend_started(self):
+        for mutation in (None, "extra", "missing", "late"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                item = self.prepare_fixture(directory)
+                unit = item["root"] / "e/window-unit-build"
+                unit.mkdir(parents=True)
+                start = "2026-10-26T11:59:59+00:00" if mutation == "late" else "2026-10-26T12:00:02+00:00"
+                gate.write_new(unit / "receipt.json", {"commands": [{"started_utc": start}]})
+                if mutation == "extra": (item["output"] / "extra.bin").write_bytes(b"extra")
+                elif mutation == "missing": (item["output"] / "head-after.stderr.log").unlink()
+                inventory = gate.archive_inventory(item["root"])
+                with mock.patch.dict(gate.os.environ, item["environment"], clear=True):
+                    if mutation:
+                        with self.assertRaises((ValueError, OSError)):
+                            gate.window_frontend_base_archive(item["root"], inventory, item["source"])
+                    else:
+                        result = gate.window_frontend_base_archive(item["root"], inventory, item["source"])
+                        self.assertEqual(result["commands"], 4)
+
+    def test_preflight_binds_base_readback_to_actual_source_without_frontend_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = self.prepare_fixture(directory)
+            for changed in (False, True):
+                source = dict(item["source"])
+                if changed: source["tree"] = "e" * 40
+                with mock.patch.dict(gate.os.environ, item["environment"], clear=True), \
+                        mock.patch.object(gate, "window_frontend_environment", return_value=item["resources"]), \
+                        mock.patch.object(gate, "source_observation", return_value=source) as observed, \
+                        mock.patch.object(gate, "execute") as execute, mock.patch("sys.stdout", new=io.StringIO()):
+                    if changed:
+                        with self.assertRaisesRegex(ValueError, "actual source observation"):
+                            gate.window_frontend_preflight_main(["--repo", str(item["repo"])])
+                    else:
+                        self.assertEqual(gate.window_frontend_preflight_main(["--repo", str(item["repo"])]), 0)
+                    observed.assert_called_once_with(item["repo"], gate.WINDOW_FRONTEND_SCOPE)
+                    execute.assert_not_called()
+
+    def test_same_workflow_base_step_is_before_dependencies_and_preserves_old_bytes(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
+        raw = path.read_bytes()
+        previous = window_base_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(previous).hexdigest(),
+                         "73fdf63b5b5a7f75c8545dd770e64863d97dc24fe93c722fed24e88aef9a3c36")
+        unit = raw.decode().split("  creative-unit-build:\n", 1)[1].split("  real-service:\n", 1)[0]
+        self.assertLess(unit.index("window-base --repo ."), unit.index("window-preflight --repo ."))
+        self.assertLess(unit.index("window-preflight --repo ."), unit.index("npm ci --no-audit"))
+        self.assertIn("--output ../v/tools/window-base", unit)
+        self.assertIn("inputs.selection == 'window-frontend' && 75", unit)
+        self.assertIn("timeout-minutes: 2", unit)
+        self.assertIn("fetch-depth: ${{ inputs.selection == 'window-frontend' && 2 || 1 }}", unit)
+        self.assertIn("persist-credentials: false", unit)
+        self.assertIn("test -d ../v/tools/window-base", unit)
+        self.assertIn("v/tools", unit)
+        self.assertEqual(raw.count(b"window-base --repo ."), 1)
+        for changed in (raw + b" ", raw.replace(b"needs: g0", b"needs: []", 1),
+                        raw.replace(b"default: authoring-drafts", b"default: window-frontend", 1),
+                        raw.replace(b"fetch-depth: ${{ inputs.selection == 'window-frontend' && 2 || 1 }}", b"fetch-depth: 1", 1)):
+            with self.assertRaises(ValueError):
+                window_base_previous_workflow(changed)
 
 
 if __name__ == "__main__":
