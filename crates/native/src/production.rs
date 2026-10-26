@@ -403,6 +403,15 @@ fn sha256_file(path: &Path) -> NativeResult<String> {
 }
 
 fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeResult<PathBuf> {
+    output_artifact_path_with_minimum(root, relative, 1, max_bytes)
+}
+
+fn output_artifact_path_with_minimum(
+    root: &Path,
+    relative: &str,
+    minimum_bytes: u64,
+    max_bytes: u64,
+) -> NativeResult<PathBuf> {
     if relative.is_empty()
         || relative.len() > 4096
         || relative.contains('\0')
@@ -465,37 +474,396 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
     }
     let metadata = fs::metadata(&candidate)
         .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact is unavailable"))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
+    if !metadata.is_file() || metadata.len() < minimum_bytes || metadata.len() > max_bytes {
         return Err(invalid("Production artifact is not a bounded regular file"));
     }
     Ok(candidate)
 }
 
-/// Read immutable production bytes only after a bounded owner-root and SHA-256
-/// check. This function is not exposed as an arbitrary-path desktop command:
-/// its callers must first obtain a scoped, server-issued media grant.
+fn same_artifact_snapshot(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    if !left.is_file()
+        || !right.is_file()
+        || is_link_or_reparse(left)
+        || is_link_or_reparse(right)
+        || left.len() != right.len()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev()
+            && left.ino() == right.ino()
+            && left.nlink() == right.nlink()
+            && left.mode() == right.mode()
+            && left.mtime() == right.mtime()
+            && left.mtime_nsec() == right.mtime_nsec()
+            && left.ctime() == right.ctime()
+            && left.ctime_nsec() == right.ctime_nsec()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // These are the metadata available at this existing boundary, not a
+        // claim of a Windows file-ID or retained handles for every ancestor.
+        left.file_attributes() == right.file_attributes()
+            && left.creation_time() == right.creation_time()
+            && left.last_write_time() == right.last_write_time()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Private opening step for the common bounded production file capture. The flags
+/// prevent a substituted leaf FIFO from waiting for a writer on Unix and avoid
+/// following a substituted leaf link/reparse point. They do not isolate every
+/// ancestor and do not bound ordinary filesystem wall time.
+fn open_verified_artifact_input(
+    path: &Path,
+    before: &fs::Metadata,
+) -> NativeResult<(fs::File, fs::Metadata)> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(any(unix, windows)))]
+    return Err(Error::new(
+        ErrorCode::Unsupported,
+        "Verified native artifact opening is unavailable on this platform",
+    ));
+    let file = options.open(path).map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production artifact cannot be opened",
+        )
+    })?;
+    let opened = file.metadata().map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production artifact handle metadata is unavailable",
+        )
+    })?;
+    if !same_artifact_snapshot(before, &opened) {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Production artifact changed before its verified handle was opened",
+        ));
+    }
+    Ok((file, opened))
+}
+
+/// Bytes and their descriptor observed by one bounded retained-file read.
+///
+/// This value does not verify an external pin or grant access to its source.
+/// Callers must independently admit the root and retain any required owner
+/// authority. It describes the captured bytes, not a future state of the path.
+#[derive(Debug)]
+pub struct CapturedProductionFile {
+    bytes: Vec<u8>,
+    descriptor: motionwright_storage::BlobDescriptor,
+}
+
+impl CapturedProductionFile {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn descriptor(&self) -> &motionwright_storage::BlobDescriptor {
+        &self.descriptor
+    }
+
+    pub fn into_parts(self) -> (Vec<u8>, motionwright_storage::BlobDescriptor) {
+        (self.bytes, self.descriptor)
+    }
+}
+
+/// Observe an existing regular file within a root already admitted by the caller.
+///
+/// The same retained descriptor, bounded read and before/after/path checks used
+/// for verified production artifacts apply here. The returned SHA-256 and count
+/// describe these bytes; they are not an expected pin, a grant, a continuous
+/// ancestor-isolation claim or a filesystem wall-time bound. A zero-byte file
+/// may be observed, but absence never becomes an empty capture.
+pub fn capture_production_file(
+    root: &Path,
+    relative: &str,
+    max_bytes: u64,
+) -> NativeResult<CapturedProductionFile> {
+    capture_production_file_with_bounds(root, relative, 0, None, max_bytes)
+}
+
+/// Read immutable production bytes only after the existing owner-root and grant
+/// checks. The common bounded capture is followed by the exact expected SHA-256.
+/// This wrapper preserves its nonempty artifact contract. It is not an
+/// arbitrary-path desktop command or continuous ancestor-isolation claim.
 pub fn read_verified_production_artifact(
     root: &Path,
     relative: &str,
     expected_sha256: &str,
     max_bytes: u64,
 ) -> NativeResult<Vec<u8>> {
+    read_verified_production_bytes(root, relative, expected_sha256, 1, None, max_bytes)
+}
+
+fn read_verified_production_bytes(
+    root: &Path,
+    relative: &str,
+    expected_sha256: &str,
+    minimum_bytes: u64,
+    expected_bytes: Option<u64>,
+    max_bytes: u64,
+) -> NativeResult<Vec<u8>> {
+    // Validate external expectations before any source IO, as in the existing
+    // verified artifact and exact-count original-custody wrappers.
+    if expected_bytes.is_some_and(|bytes| bytes < minimum_bytes || bytes > max_bytes) {
+        return Err(invalid(
+            "Production original byte count exceeds its closed budget",
+        ));
+    }
     if !is_sha256(expected_sha256) {
         return Err(invalid("Production artifact digest is malformed"));
     }
-    let path = output_artifact_path(root, relative, max_bytes)?;
-    let bytes = fs::read(path)
+    let captured = capture_production_file_with_bounds(
+        root,
+        relative,
+        minimum_bytes,
+        expected_bytes,
+        max_bytes,
+    )?;
+    if captured.descriptor.sha256 != expected_sha256 {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Production artifact no longer matches its verified original",
+        ));
+    }
+    Ok(captured.into_parts().0)
+}
+
+fn capture_production_file_with_bounds(
+    root: &Path,
+    relative: &str,
+    minimum_bytes: u64,
+    expected_bytes: Option<u64>,
+    max_bytes: u64,
+) -> NativeResult<CapturedProductionFile> {
+    let read_limit = max_bytes
+        .checked_add(1)
+        .filter(|limit| max_bytes > 0 && *limit <= isize::MAX as u64)
+        .ok_or_else(|| invalid("Production artifact read budget is invalid or overflows"))?;
+    let path = output_artifact_path_with_minimum(root, relative, minimum_bytes, max_bytes)?;
+    let before = safe_metadata(&path)?;
+    if !before.is_file()
+        || is_link_or_reparse(&before)
+        || before.len() < minimum_bytes
+        || before.len() > max_bytes
+        || expected_bytes.is_some_and(|bytes| before.len() != bytes)
+    {
+        return Err(invalid("Production artifact is not a bounded regular file"));
+    }
+    let (mut file, opened) = open_verified_artifact_input(&path, &before)?;
+    let capacity = usize::try_from(before.len())
+        .map_err(|_| invalid("Production artifact byte count overflows memory addressing"))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(capacity).map_err(|_| {
+        Error::new(
+            ErrorCode::ResourceExhausted,
+            "Production artifact read allocation failed",
+        )
+    })?;
+    Read::by_ref(&mut file)
+        .take(read_limit)
+        .read_to_end(&mut bytes)
         .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact cannot be read"))?;
-    if bytes.is_empty()
+    // A read failure returns above as the primary error. Successful reads must
+    // still match the opened descriptor and current owner-root resolution.
+    let after = file.metadata().map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production artifact handle cannot be rechecked",
+        )
+    })?;
+    let resolved_after =
+        output_artifact_path_with_minimum(root, relative, minimum_bytes, max_bytes)?;
+    let current = safe_metadata(&resolved_after)?;
+    if resolved_after != path
+        || !same_artifact_snapshot(&before, &after)
+        || !same_artifact_snapshot(&opened, &after)
+        || !same_artifact_snapshot(&after, &current)
+        || (bytes.len() as u64) < minimum_bytes
+        || expected_bytes.is_some_and(|expected| bytes.len() as u64 != expected)
         || bytes.len() as u64 > max_bytes
-        || hex::encode(Sha256::digest(&bytes)) != expected_sha256
+        || bytes.len() as u64 != before.len()
     {
         return Err(Error::new(
             ErrorCode::StaleReference,
-            "Production artifact no longer matches its verified digest",
+            "Production file changed during its bounded capture",
         ));
     }
-    Ok(bytes)
+    let descriptor = motionwright_storage::BlobDescriptor {
+        sha256: hex::encode(Sha256::digest(&bytes)),
+        size_bytes: bytes.len() as u64,
+    };
+    Ok(CapturedProductionFile { bytes, descriptor })
+}
+
+#[cfg(test)]
+mod retained_file_capture_tests {
+    use super::*;
+
+    #[test]
+    fn capture_observes_the_same_original_bytes_count_and_digest_without_an_external_pin() {
+        let root = tempfile::tempdir().unwrap();
+        let original = b"original bounded source bytes";
+        fs::write(root.path().join("original.bin"), original).unwrap();
+        let captured =
+            capture_production_file(root.path(), "original.bin", original.len() as u64).unwrap();
+        assert_eq!(captured.bytes(), original);
+        assert_eq!(captured.descriptor().size_bytes, original.len() as u64);
+        assert_eq!(
+            captured.descriptor().sha256,
+            hex::encode(Sha256::digest(original))
+        );
+        let (retained, descriptor) = captured.into_parts();
+        assert_eq!(retained, original);
+        assert_eq!(descriptor.size_bytes, retained.len() as u64);
+        assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(&retained)));
+        assert!(
+            read_verified_production_artifact(
+                root.path(),
+                "original.bin",
+                &"00".repeat(32),
+                original.len() as u64
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn capture_of_an_empty_file_does_not_admit_a_missing_file_or_empty_verified_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("empty.stdout"), b"").unwrap();
+        let captured = capture_production_file(root.path(), "empty.stdout", 1).unwrap();
+        let empty_sha = hex::encode(Sha256::digest(b""));
+        assert!(captured.bytes().is_empty());
+        assert_eq!(captured.descriptor().size_bytes, 0);
+        assert_eq!(captured.descriptor().sha256, empty_sha);
+        assert!(capture_production_file(root.path(), "missing.stdout", 1).is_err());
+        assert!(
+            read_verified_production_artifact(root.path(), "empty.stdout", &empty_sha, 1).is_err()
+        );
+        assert_eq!(
+            read_verified_production_bytes(root.path(), "empty.stdout", &empty_sha, 0, Some(0), 1)
+                .unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(
+            read_verified_production_bytes(root.path(), "empty.stdout", &empty_sha, 0, Some(1), 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn capture_retains_its_bytes_when_the_source_path_changes_after_the_observation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("original.bin");
+        fs::write(&path, b"prior").unwrap();
+        let captured = capture_production_file(root.path(), "original.bin", 5).unwrap();
+        let observed_sha = captured.descriptor().sha256.clone();
+        // Same length, different bytes. The old capture must not lazily resolve
+        // its path, and its observed pin must reject the later source.
+        fs::write(&path, b"later").unwrap();
+        assert_eq!(captured.bytes(), b"prior");
+        assert_eq!(captured.descriptor().size_bytes, 5);
+        assert_eq!(
+            captured.descriptor().sha256,
+            hex::encode(Sha256::digest(b"prior"))
+        );
+        assert!(
+            read_verified_production_artifact(root.path(), "original.bin", &observed_sha, 5)
+                .is_err()
+        );
+        let later = capture_production_file(root.path(), "original.bin", 5).unwrap();
+        assert_eq!(later.bytes(), b"later");
+        assert_ne!(later.descriptor().sha256, captured.descriptor().sha256);
+    }
+
+    #[test]
+    fn capture_keeps_closed_budgets_and_the_verified_wrappers_reject_invalid_pins_before_io() {
+        let root = tempfile::tempdir().unwrap();
+        for limit in [0, u64::MAX] {
+            let error = capture_production_file(root.path(), "missing.bin", limit).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgument);
+        }
+        let error =
+            read_verified_production_artifact(root.path(), "missing.bin", "not-a-digest", 4)
+                .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        let error = read_verified_production_bytes(
+            root.path(),
+            "missing.bin",
+            &"00".repeat(32),
+            0,
+            Some(5),
+            4,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        fs::write(root.path().join("original.bin"), b"1234").unwrap();
+        assert!(capture_production_file(root.path(), "original.bin", 3).is_err());
+        assert!(capture_production_file(root.path(), "../original.bin", 4).is_err());
+        assert!(capture_production_file(root.path(), "nested/../original.bin", 4).is_err());
+        let captured = capture_production_file(root.path(), "original.bin", 4).unwrap();
+        assert_eq!(captured.descriptor().size_bytes, 4);
+        assert!(
+            read_verified_production_bytes(
+                root.path(),
+                "original.bin",
+                &captured.descriptor().sha256,
+                0,
+                Some(3),
+                4
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initial_capture_uses_the_same_rejection_of_leaf_and_owner_directory_links() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("original.bin"), b"original").unwrap();
+        symlink(
+            root.path().join("original.bin"),
+            root.path().join("alias.bin"),
+        )
+        .unwrap();
+        assert!(capture_production_file(root.path(), "alias.bin", 8).is_err());
+        fs::create_dir(root.path().join("owner")).unwrap();
+        fs::write(root.path().join("owner/original.bin"), b"original").unwrap();
+        fs::rename(
+            root.path().join("owner"),
+            root.path().join("retained-owner"),
+        )
+        .unwrap();
+        symlink(
+            root.path().join("retained-owner"),
+            root.path().join("owner"),
+        )
+        .unwrap();
+        assert!(capture_production_file(&root.path().join("owner"), "original.bin", 8).is_err());
+    }
 }
 
 fn verify_output_artifact(
@@ -6800,5 +7168,176 @@ os._exit(0)
             assert!(graph.start_value(command).is_err());
             assert!(editable.start_value(command).is_err());
         }
+    }
+
+    #[test]
+    fn verified_artifact_reader_keeps_exact_bytes_and_rejects_hash_and_budget_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"original bounded native bytes";
+        fs::write(temp.path().join("original.bin"), bytes).unwrap();
+        let digest = hex::encode(Sha256::digest(bytes));
+        assert_eq!(
+            read_verified_production_artifact(
+                temp.path(),
+                "original.bin",
+                &digest,
+                bytes.len() as u64
+            )
+            .unwrap(),
+            bytes
+        );
+        for limit in [0, bytes.len() as u64 - 1, u64::MAX] {
+            assert!(
+                read_verified_production_artifact(temp.path(), "original.bin", &digest, limit)
+                    .is_err()
+            );
+        }
+        assert!(
+            read_verified_production_artifact(temp.path(), "original.bin", &"00".repeat(32), 1024)
+                .is_err()
+        );
+        fs::write(
+            temp.path().join("original.bin"),
+            b"changed bounded native bytes!",
+        )
+        .unwrap();
+        assert!(
+            read_verified_production_artifact(temp.path(), "original.bin", &digest, 1024).is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_artifact_open_rejects_replacement_growth_links_and_owner_path_changes() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("original.bin");
+        let bytes = b"same-sized original bytes";
+        fs::write(&path, bytes).unwrap();
+        let before = safe_metadata(&path).unwrap();
+        fs::rename(&path, temp.path().join("retained-original.bin")).unwrap();
+        fs::write(&path, bytes).unwrap();
+        // The replacement has the same contents and length; device/inode must
+        // still reject it against the observed original metadata.
+        assert!(open_verified_artifact_input(&path, &before).is_err());
+        let before_growth = safe_metadata(&path).unwrap();
+        fs::write(&path, b"a longer substituted source than the original").unwrap();
+        assert!(open_verified_artifact_input(&path, &before_growth).is_err());
+        fs::remove_file(&path).unwrap();
+        symlink(temp.path().join("retained-original.bin"), &path).unwrap();
+        assert!(open_verified_artifact_input(&path, &before).is_err());
+        let digest = hex::encode(Sha256::digest(bytes));
+        assert!(
+            read_verified_production_artifact(temp.path(), "original.bin", &digest, 1024).is_err()
+        );
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(temp.path().join("owner")).unwrap();
+        fs::write(temp.path().join("owner/original.bin"), bytes).unwrap();
+        fs::rename(
+            temp.path().join("owner"),
+            temp.path().join("retained-owner"),
+        )
+        .unwrap();
+        symlink(
+            temp.path().join("retained-owner"),
+            temp.path().join("owner"),
+        )
+        .unwrap();
+        assert!(
+            read_verified_production_artifact(
+                &temp.path().join("owner"),
+                "original.bin",
+                &digest,
+                1024
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_artifact_fifo_substitution_is_rejected_under_an_external_deadline() {
+        use std::os::unix::ffi::OsStrExt;
+        const CHILD_ENV: &str = "MOTIONWRIGHT_VERIFIED_ARTIFACT_FIFO_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD_ENV) {
+            let path = PathBuf::from(directory).join("original.bin");
+            let before = safe_metadata(&path).unwrap();
+            assert!(before.is_file());
+            fs::remove_file(&path).unwrap();
+            let raw = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+            // No writer exists. The old plain open would wait indefinitely.
+            assert!(open_verified_artifact_input(&path, &before).is_err());
+            println!("verified-artifact-fifo-rejected-before-read");
+            return;
+        }
+        struct OwnedChild(Option<std::process::Child>);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                if let Some(child) = self.0.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("original.bin"), b"original").unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","production::tests::verified_artifact_fifo_substitution_is_rejected_under_an_external_deadline","--nocapture"])
+            .env(CHILD_ENV,temp.path()).stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let mut owned = OwnedChild(Some(child));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut deadline_exceeded = false;
+        loop {
+            if owned.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                deadline_exceeded = true;
+                owned.0.as_mut().unwrap().kill().unwrap();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let status = owned.0.as_mut().unwrap().wait().unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        owned
+            .0
+            .as_mut()
+            .unwrap()
+            .stdout
+            .take()
+            .unwrap()
+            .take(64 * 1024)
+            .read_to_end(&mut stdout)
+            .unwrap();
+        owned
+            .0
+            .as_mut()
+            .unwrap()
+            .stderr
+            .take()
+            .unwrap()
+            .take(64 * 1024)
+            .read_to_end(&mut stderr)
+            .unwrap();
+        // Keep ownership through wait and both reads; panic still runs cleanup.
+        drop(owned.0.take());
+        assert!(
+            !deadline_exceeded,
+            "substituted FIFO blocked the artifact opener; child terminated; stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            status.success(),
+            "artifact opener child failed: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&stdout)
+                .contains("verified-artifact-fifo-rejected-before-read")
+        );
     }
 }
