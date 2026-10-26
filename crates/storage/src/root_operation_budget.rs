@@ -211,10 +211,8 @@ fn validate_writer_fences(conn: &Connection, version: u32) -> Result<()> {
                     "SELECT type,sql FROM sqlite_master
                      WHERE name=?1 COLLATE NOCASE LIMIT 2",
                 )?;
-                let rows = stmt
-                    .query_map([&name], |row| Ok((row.get(0)?, row.get(1)?)))?
-                    .collect::<rusqlite::Result<_>>()?;
-                rows
+                stmt.query_map([&name], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?
             };
             match actual.as_slice() {
                 [] if version < 6 => (),
@@ -222,10 +220,7 @@ fn validate_writer_fences(conn: &Connection, version: u32) -> Result<()> {
                     if version >= 6
                         && kind == "trigger"
                         && crate::normalized_schema_sql(sql)
-                            == crate::normalized_schema_sql(&writer_fence_ddl(table, event)) =>
-                {
-                    ()
-                }
+                            == crate::normalized_schema_sql(&writer_fence_ddl(table, event)) => {}
                 _ => {
                     return Err(StorageError::InvalidBackup(
                         "schema6 connection writer fence absent, changed or reserved".into(),
@@ -350,10 +345,8 @@ pub(crate) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
             let mut stmt = conn.prepare(
                 "SELECT type,sql FROM sqlite_master WHERE name=?1 COLLATE NOCASE LIMIT 2",
             )?;
-            let rows = stmt
-                .query_map([name], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            rows
+            stmt.query_map([name], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
         };
         match actual.as_slice() {
             [] if version < 6 => (),
@@ -361,10 +354,7 @@ pub(crate) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
                 if version >= 6
                     && observed_kind == kind
                     && crate::normalized_schema_sql(sql)
-                        == crate::normalized_schema_sql(canonical) =>
-            {
-                ()
-            }
+                        == crate::normalized_schema_sql(canonical) => {}
             _ => {
                 return Err(StorageError::InvalidBackup(
                     "operation budget schema is absent, incompatible or reserved".into(),
@@ -621,20 +611,19 @@ impl Store {
                     },
                 )
                 .optional()?;
-            if let (Some(previous), Some(done)) = (saved, history.last()) {
-                if previous.0 == input.root_id.to_string()
-                    && previous.1 == intent.request_sha256
-                    && previous.2 == intent.command
-                    && previous.3 == revision
-                    && previous.4 == intent.generation.to_string()
-                    && previous.5 == [a, m, f, b]
-                    && done.stage == "completed"
-                    && done.generation == intent.generation
-                    && done.revision == intent.revision
-                {
-                    tx.commit()?;
-                    return Ok(RootDispatchBudgetOutcome::AlreadyCompleted(done.clone()));
-                }
+            if let (Some(previous), Some(done)) = (saved, history.last())
+                && previous.0 == input.root_id.to_string()
+                && previous.1 == intent.request_sha256
+                && previous.2 == intent.command
+                && previous.3 == revision
+                && previous.4 == intent.generation.to_string()
+                && previous.5 == [a, m, f, b]
+                && done.stage == "completed"
+                && done.generation == intent.generation
+                && done.revision == intent.revision
+            {
+                tx.commit()?;
+                return Ok(RootDispatchBudgetOutcome::AlreadyCompleted(done.clone()));
             }
             // Retain UNKNOWN/dispatching/failed, never restart a mutating effect.
             return Err(StorageError::RequestReuse);
