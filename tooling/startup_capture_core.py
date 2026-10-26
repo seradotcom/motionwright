@@ -364,13 +364,13 @@ def _run_supervisor(argv, env, out_fd, err_fd, status_fd, ack_fd, budget, mirror
             except BaseException:
                 os._exit(126)
         for fd in (ready_w, gate_r):
-            os.close(fd)
             opened.remove(fd)
+            os.close(fd)
         os.close(out_fd)
         os.close(err_fd)
         _wait_byte(ready_r, b"R", budget.operation_ns)
-        os.close(ready_r)
         opened.remove(ready_r)
+        os.close(ready_r)
         cli = proc_identity(cli_pid)
         cli["parent_start_ticks"] = own["start_ticks"]
         if cli["parent_pid"] != own["pid"] or cli["session_id"] != cli_pid:
@@ -383,12 +383,13 @@ def _run_supervisor(argv, env, out_fd, err_fd, status_fd, ack_fd, budget, mirror
         if time.monotonic_ns() >= budget.operation_ns:
             raise CaptureError("pre-exec inherited deadline expired")
         os.write(gate_w, b"G")
-        os.close(gate_w)
         opened.remove(gate_w)
+        os.close(gate_w)
     except BaseException as exc:
         errors.append(f"launch:{type(exc).__name__}:{exc}")
     finally:
-        for fd in opened:
+        for fd in tuple(opened):
+            opened.remove(fd)
             try:
                 os.close(fd)
             except OSError:
@@ -477,10 +478,12 @@ class SupervisorHandle:
         if self.ack_fd < 0 or self.aborted:
             return
         # EOF is an authenticated failure signal for this exclusive pipe.
-        # Closing once is idempotent and cannot block behind a full pipe.
-        os.close(self.ack_fd)
+        # Consume ownership before close: an error may already have released
+        # the number. The exception remains uncertain; it never proves closure.
+        ack_fd = self.ack_fd
         self.ack_fd = -1
         self.aborted = True
+        os.close(ack_fd)
 
 
 def start_supervisor(argv, env, out_fd, err_fd, budget, *, mirror_fd=None, protected_fds=()):
@@ -525,10 +528,10 @@ def start_supervisor(argv, env, out_fd, err_fd, budget, *, mirror_fd=None, prote
     parent_owned = set(created)
     pidfd = None
     try:
-        os.close(status_w)
         parent_owned.remove(status_w)
-        os.close(ack_r)
+        os.close(status_w)
         parent_owned.remove(ack_r)
+        os.close(ack_r)
         os.set_blocking(status_r, False)
         os.set_blocking(ack_w, False)
         pidfd = os.pidfd_open(pid)
@@ -543,11 +546,11 @@ def start_supervisor(argv, env, out_fd, err_fd, budget, *, mirror_fd=None, prote
         for fd in (ack_w, ack_r, status_w):
             if fd not in parent_owned:
                 continue
+            parent_owned.discard(fd)
             try:
                 os.close(fd)
             except OSError:
                 pass
-            parent_owned.discard(fd)
         raise SupervisorStartError(f"supervisor binding unavailable:{type(exc).__name__}",
                                    pid, status_r, pidfd) from exc
     return SupervisorHandle(pid, identity["start_ticks"], pidfd, status_r, ack_w)
@@ -776,12 +779,13 @@ def start_writer(directory, originals):
             os._exit(125)
     writer_end_open = True
     try:
-        os.close(result_w)
         writer_end_open = False
+        os.close(result_w)
         os.set_blocking(result_r, False)
         pidfd = os.pidfd_open(pid)
     except BaseException as exc:
         if writer_end_open:
+            writer_end_open = False
             try:
                 os.close(result_w)
             except OSError:

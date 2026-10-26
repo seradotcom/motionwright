@@ -1,5 +1,7 @@
 """Portable custody controls and real Linux observer-subtree kernel tests."""
 import copy
+from contextlib import ExitStack
+import errno
 import hashlib
 import importlib.util
 import io
@@ -225,6 +227,205 @@ def transcript():
 
 
 class PortableCustodyTests(unittest.TestCase):
+    def test_abort_close_error_consumes_ack_ownership_without_retry(self):
+        handle = core.SupervisorHandle(700, 50, 70, 10, 13)
+        original = OSError(errno.EINTR, "injected uncertain ACK close")
+        attempts = []
+
+        def close(fd):
+            attempts.append(fd)
+            if attempts != [13]:
+                raise AssertionError("reused ACK descriptor was closed again")
+            raise original
+
+        with mock.patch.object(core.os, "close", side_effect=close), \
+             mock.patch.object(core.os, "write") as write:
+            with self.assertRaises(OSError) as caught:
+                handle.abort()
+            self.assertIs(caught.exception, original)
+            handle.abort()
+            self.assertEqual(attempts, [13])
+            self.assertEqual(handle.ack_fd, -1)
+            self.assertTrue(handle.aborted)
+            self.assertEqual((handle.pid, handle.start_ticks, handle.pidfd, handle.status_fd),
+                             (700, 50, 70, 10))
+            with self.assertRaises(core.CaptureError):
+                handle.admit_exec()
+            write.assert_not_called()
+
+    def _assert_parent_close_error_retains_child(self, failed_fd):
+        budget = core.Budget(time.monotonic_ns())
+        original = OSError(errno.EINTR, "injected uncertain parent pipe close")
+        attempts = []
+
+        def close(fd):
+            attempts.append(fd)
+            if attempts.count(fd) > 1:
+                raise AssertionError("reused parent pipe descriptor was closed again")
+            if fd == failed_fd:
+                raise original
+
+        with mock.patch.object(core, "_linux"), \
+             mock.patch.object(core.os, "pipe", side_effect=[(10, 11), (12, 13)]), \
+             mock.patch.object(core.os, "fork", create=True, return_value=700) as fork, \
+             mock.patch.object(core.os, "close", side_effect=close), \
+             mock.patch.object(core.os, "set_blocking", create=True) as blocking, \
+             mock.patch.object(core.os, "pidfd_open", create=True) as pidfd, \
+             mock.patch.object(core, "proc_identity") as identity, \
+             mock.patch.object(core, "_run_supervisor") as child, \
+             mock.patch.object(core.os, "write") as write:
+            with self.assertRaises(core.SupervisorStartError) as caught:
+                core.start_supervisor(["never-executed-fixture"], {}, 20, 21, budget)
+            self.assertIs(caught.exception.__cause__, original)
+            self.assertEqual(caught.exception.pid, 700)
+            self.assertEqual(caught.exception.status_fd, 10)
+            self.assertIsNone(caught.exception.pidfd)
+            self.assertFalse(caught.exception.process_tree_closed)
+            self.assertEqual(set(attempts), {11, 12, 13})
+            self.assertEqual(len(attempts), 3)
+            fork.assert_called_once_with()
+            blocking.assert_not_called()
+            pidfd.assert_not_called()
+            identity.assert_not_called()
+            child.assert_not_called()
+            write.assert_not_called()
+
+    def test_parent_status_writer_close_error_is_not_retried(self):
+        self._assert_parent_close_error_retains_child(11)
+
+    def test_parent_ack_reader_close_error_is_not_retried(self):
+        self._assert_parent_close_error_retains_child(12)
+
+    def test_retained_pidfd_reusing_retired_pipe_number_is_not_closed(self):
+        budget = core.Budget(time.monotonic_ns())
+        original = OSError("injected post-pidfd identity error")
+        events = []
+
+        def acquire(pid):
+            events.append(("pidfd", pid, 11))
+            return 11
+
+        with mock.patch.object(core, "_linux"), \
+             mock.patch.object(core.os, "pipe", side_effect=[(10, 11), (12, 13)]), \
+             mock.patch.object(core.os, "fork", create=True, return_value=700) as fork, \
+             mock.patch.object(core.os, "close", side_effect=lambda fd: events.append(("close", fd))), \
+             mock.patch.object(core.os, "set_blocking", create=True), \
+             mock.patch.object(core.os, "pidfd_open", create=True, side_effect=acquire), \
+             mock.patch.object(core, "proc_identity", side_effect=original), \
+             mock.patch.object(core, "_run_supervisor") as child, \
+             mock.patch.object(core.os, "write") as write:
+            with self.assertRaises(core.SupervisorStartError) as caught:
+                core.start_supervisor(["never-executed-fixture"], {}, 20, 21, budget)
+            self.assertIs(caught.exception.__cause__, original)
+            self.assertEqual((caught.exception.pid, caught.exception.status_fd, caught.exception.pidfd),
+                             (700, 10, 11))
+            self.assertFalse(caught.exception.process_tree_closed)
+            self.assertEqual(events, [("close", 11), ("close", 12),
+                                      ("pidfd", 700, 11), ("close", 13)])
+            fork.assert_called_once_with()
+            child.assert_not_called()
+            write.assert_not_called()
+
+    def test_writer_result_writer_close_error_is_not_retried(self):
+        original = OSError(errno.EINTR, "injected uncertain writer pipe close")
+        attempts = []
+
+        def close(fd):
+            attempts.append(fd)
+            if attempts != [11]:
+                raise AssertionError("reused writer pipe descriptor was closed again")
+            raise original
+
+        with mock.patch.object(core, "_linux"), \
+             mock.patch.object(core.os, "pipe", return_value=(10, 11)), \
+             mock.patch.object(core.os, "fork", create=True, return_value=700) as fork, \
+             mock.patch.object(core.os, "close", side_effect=close), \
+             mock.patch.object(core.os, "set_blocking", create=True) as blocking, \
+             mock.patch.object(core.os, "pidfd_open", create=True) as pidfd, \
+             mock.patch.object(core, "_persist") as persist:
+            with self.assertRaises(core.WriterStartError) as caught:
+                core.start_writer("never-opened-fixture", {name: b"x" for name in core.ORIGINAL_LIMITS})
+            self.assertIs(caught.exception.__cause__, original)
+            self.assertEqual((caught.exception.pid, caught.exception.status_fd, caught.exception.pidfd),
+                             (700, 10, None))
+            self.assertFalse(caught.exception.process_tree_closed)
+            self.assertEqual(attempts, [11])
+            fork.assert_called_once_with()
+            blocking.assert_not_called()
+            pidfd.assert_not_called()
+            persist.assert_not_called()
+
+    def _assert_supervisor_close_error_not_retried(self, failed_fd):
+        # Exercise the real launch/cleanup code, stopping before its kernel wait
+        # phase. All pipes/forks/closes/writes and identity reads are intercepted.
+        class ReachedWaitPhase(Exception):
+            pass
+
+        budget = core.Budget(time.monotonic_ns())
+        attempts = []
+        own = {"pid": 700, "start_ticks": 50, "parent_pid": 1,
+               "session_id": 700, "process_group_id": 700}
+        cli = {"pid": 701, "start_ticks": 51, "parent_pid": 700,
+               "session_id": 701, "process_group_id": 701}
+
+        def close(fd):
+            attempts.append(fd)
+            if attempts.count(fd) > 1:
+                raise AssertionError("reused supervisor pipe descriptor was closed again")
+            if fd == failed_fd:
+                raise OSError(errno.EINTR, "injected uncertain supervisor close")
+
+        def stop(fd, value):
+            if (fd, value) == (31, False):
+                return  # Initial nonblocking setup of the synthetic status fd.
+            self.assertEqual((fd, value), (30, False))
+            raise ReachedWaitPhase()
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(core, "_subreaper"))
+            stack.enter_context(mock.patch.object(core.os, "getpid", return_value=700))
+            stack.enter_context(mock.patch.object(core, "proc_identity", side_effect=[own, cli]))
+            stack.enter_context(mock.patch.object(core.Path, "read_bytes", return_value=b"fixture-source"))
+            stack.enter_context(mock.patch.object(core.os, "pipe", side_effect=[(10, 11), (12, 13)]))
+            fork = stack.enter_context(mock.patch.object(core.os, "fork", create=True, return_value=701))
+            stack.enter_context(mock.patch.object(core.os, "close", side_effect=close))
+            stack.enter_context(mock.patch.object(core, "_wait_byte"))
+            stack.enter_context(mock.patch.object(core, "_write_record"))
+            write = stack.enter_context(mock.patch.object(core.os, "write", return_value=1))
+            stack.enter_context(mock.patch.object(core.os, "set_blocking", create=True, side_effect=stop))
+            waitid = stack.enter_context(mock.patch.object(core.os, "waitid", create=True))
+            waitpid = stack.enter_context(mock.patch.object(core.os, "waitpid", create=True))
+            kill = stack.enter_context(mock.patch.object(core.os, "kill", create=True))
+            pidfd_signal = stack.enter_context(mock.patch.object(core.signal, "pidfd_send_signal", create=True))
+            exit_process = stack.enter_context(mock.patch.object(core.os, "_exit"))
+            with self.assertRaises(ReachedWaitPhase):
+                core._run_supervisor(["never-executed-fixture"], {}, 20, 21, 31, 30, budget)
+            expected = {10, 11, 12, 13} | ({20, 21} if failed_fd in (10, 13) else set())
+            self.assertEqual(set(attempts), expected)
+            self.assertEqual(len(attempts), len(expected))
+            fork.assert_called_once_with()
+            waitid.assert_not_called()
+            waitpid.assert_not_called()
+            kill.assert_not_called()
+            pidfd_signal.assert_not_called()
+            exit_process.assert_not_called()
+            if failed_fd == 13:
+                write.assert_called_once_with(13, b"G")
+            else:
+                write.assert_not_called()
+
+    def test_supervisor_ready_writer_close_error_is_not_retried(self):
+        self._assert_supervisor_close_error_not_retried(11)
+
+    def test_supervisor_gate_reader_close_error_is_not_retried(self):
+        self._assert_supervisor_close_error_not_retried(12)
+
+    def test_supervisor_ready_reader_close_error_is_not_retried(self):
+        self._assert_supervisor_close_error_not_retried(10)
+
+    def test_supervisor_gate_writer_close_error_is_not_retried(self):
+        self._assert_supervisor_close_error_not_retried(13)
+
     def test_procfs_coherence_positive_uses_same_kernel_identity(self):
         raw = proc_snapshot()
         status = b"Pid:\t5\nPPid:\t1\nNSpid:\t5\n"
