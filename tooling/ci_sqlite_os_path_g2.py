@@ -284,7 +284,13 @@ def reviewed_source_identity(repo: Path, sha: str, manifest_sha256: str) -> dict
         blob = git_query(repo, "cat-file", "blob", oid.decode())
         require(hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\0" + blob).hexdigest()
                 == oid.decode(), "Git blob oid differs")
-        require(ordinary_bytes(repo / rel) == blob, "working source differs from Git blob")
+        working = ordinary_bytes(repo / rel)
+        if working != blob:
+            raise VerificationError("working source differs from Git blob: " + json.dumps({
+                "path": rel,
+                "expected_bytes": len(blob), "expected_sha256": digest(blob),
+                "observed_bytes": len(working), "observed_sha256": digest(working),
+            }, sort_keys=True))
         if rel in manifest["product_pins"]:
             require(digest(blob) == manifest["product_pins"][rel],
                     "reviewed source pin differs")
