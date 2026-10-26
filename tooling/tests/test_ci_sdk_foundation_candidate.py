@@ -1327,6 +1327,7 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
 
     def test_capacity_workflow_observes_before_closed_admission_and_retains_originals(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
+        text = restore_transport_workflow(text)
         job = workflow_jobs(text)[gate.HOSTED_SCOPE]
         capacity = job.index("      - name: Observe standard hosted capacity without SDK execution\n")
         admission = job.index("      - name: Admit exact hosted gate and reject uncomposed private transport\n")
@@ -1385,6 +1386,877 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
         self.assertNotIn("RUNNER_ENVIRONMENT:", block)
         self.assertNotIn("git reset", job)
 
+
+
+HOSTED_TRANSPORT_WORKFLOW_BLOCK_SHA256 = 'fe5800bff0afa1e711a235dbbf528733308ca68335b0498ea91e209e81b06ca4'
+HOSTED_TRANSPORT_INPUT_FIXTURE = '      sdk_foundation_transport:\n        description: Closed public transport review and recipient input (not authority)\n        required: false\n        type: string\n        default: ""\n'
+HOSTED_PUBLIC_RECIPIENT_FIXTURE = b'{"sha256":"1ca6d673bd8c5ea4d0378310b25c254452c19504d7e784ab94b8a8d2d1115921","spki_der_base64":"MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAuBV28ghryANKaknGk4Hupo7Cri2hdksBVE02t4BFn/87PGxvTEs+t6ZIsSUcP7LE8OXQK6EuobNPwSCM5l92TZLKtX7IgtCxRntdBjlsk0eGZHKa87kdakq9WiSRaNzLkUYuBYjvPlqBkhfPQW3ijlc37hdLCc574VDHAq/GCmLuJWJz7YfOi325CRkiPcIdFiZ0QMNnONZjXZagWNPyps0GPXOjrvqMeQ4DV2i3gTn8lUn99IpLQvncRmvyPTG//nId+G0B9rqmuD2bG9pQs1L2irS81Zb38w9CnvK8F+3XVXBRh23FgwC/e51iukw70CDEbNSF4kylSbOJlO0vlY0zLiR+R0eUIQQl3M7o7kLN4Lc4E6jKUWprZREaIr8/jcC/g6e49X+n7OjdHcECv1xJ8BeGu9MpFu45uyyXaD+G16JpyNN9ez0omv/6FZsB3MfnJ88ehOkH0I0ohDb/yKNm4CgSInGU0BJiS95XK4ar58vAzVHEsUJqj91pE8tFAgMBAAE="}\n'
+
+
+def restore_transport_workflow(text):
+    """Reverse only these named transport additions, preserving the historical oracle."""
+    if text.count(HOSTED_TRANSPORT_INPUT_FIXTURE) != 1:
+        raise AssertionError("closed transport input is missing, duplicated or changed")
+    text = text.replace(HOSTED_TRANSPORT_INPUT_FIXTURE, "", 1)
+    prefix, job = text.split("\n  sdk-foundation-windows-g1:\n", 1)
+    begin = job.index("      # BEGIN Foundation ciphertext transport preparation\n")
+    end_marker = "      # END Foundation ciphertext transport preparation\n"
+    end = job.index(end_marker, begin) + len(end_marker)
+    block = job[begin:end]
+    if hashlib.sha256(block.encode()).hexdigest() != HOSTED_TRANSPORT_WORKFLOW_BLOCK_SHA256:
+        raise AssertionError("known ciphertext controller/upload addition differs")
+    old_comment = ("      # No private source is fetched or published by this proposal. The exact\n"
+                   "      # input transport and private output custody must be composed into a new\n"
+                   "      # reviewed gate base before the controller's explicit blocker is replaced.\n"
+                   "      # Do not insert a boolean bypass, map E:, or clear actual Actions identity.\n")
+    job = job[:begin] + old_comment + job[end:]
+    replacements = (
+        ("    timeout-minutes: 135\n    permissions:\n      contents: read\n      actions: read\n", "    timeout-minutes: 135\n"),
+        ("      SDK_FOUNDATION_TRANSPORT: ${{ inputs.sdk_foundation_transport }}\n", ""),
+        ("      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n        timeout-minutes: 2\n",
+         "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n"),
+        ("      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065\n        timeout-minutes: 3\n",
+         "      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065\n"),
+        ("      - name: Admit exact hosted gate and bound public transport input\n        id: foundation_admission\n        timeout-minutes: 2\n        shell: pwsh\n",
+         "      - name: Admit exact hosted gate and reject uncomposed private transport\n        shell: pwsh\n"),
+        ("      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n        if: always()\n        timeout-minutes: 1\n",
+         "      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n        if: always()\n"),
+    )
+    for current, prior in replacements:
+        if job.count(current) != 1:
+            raise AssertionError("explicit hosted transport delta is missing, duplicated or changed")
+        job = job.replace(current, prior, 1)
+    result = prefix + "\n  sdk-foundation-windows-g1:\n" + job
+    if hashlib.sha256(result.encode()).hexdigest() != "6e72f2bb01e79fc180b1f1eb9c34165585237ec3dc28815f0a719f6907a5bed4":
+        raise AssertionError("transport changed another historical workflow byte")
+    return result
+
+
+class SDKFoundationPrivateTransportTests(unittest.TestCase):
+    """Source controls; the crypto module is a call-recording fixture, not a new cipher."""
+    def setUp(self):
+        import io
+        import tarfile
+        self.io, self.tarfile = io, tarfile
+        temporary = tempfile.TemporaryDirectory(prefix="foundation-private-transport-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.evidence = self.root / "evidence"; self.evidence.mkdir()
+        self.private = self.root / "private"; self.private.mkdir()
+        self.outgoing = self.root / "outgoing"; self.outgoing.mkdir()
+        source_case = SDKFoundationHostedTests()
+        source_case.setUp(); self.addCleanup(source_case.doCleanups)
+        source_case.auth["max_total_seconds"] = 7200
+        self.auth, self.context = source_case.auth, source_case.context()
+        self.crypto = Mock()
+        self.crypto.public_key.return_value = "synthetic-call-only-public-key"
+        self.crypto.gather_snapshot.side_effect = self.fixture_snapshot
+        self.crypto.encrypt_snapshot.side_effect = lambda raw, recipient, aad: b"SYNTHETIC-CIPHER:" + hashlib.sha256(raw).digest()
+        self.crypto.new_bytes.side_effect = self.write_bytes
+        self.crypto.new_json.side_effect = lambda path, value: self.write_bytes(path, gate.transport_json(value))
+        self.recipient = {"sha256": gate.HOSTED_TRANSPORT_SPKI_SHA256, "spki_der_base64": "SOURCE-CONTROL-NOT-A-REAL-KEY"}
+        self.started = {"schema": gate.SCHEMA, "context": self.context,
+                        "original_started_monotonic_ns": 1000000000,
+                        "original_deadline_monotonic_ns": 7201000000000, "budget_seconds": 7200}
+
+    def write_bytes(self, path, data):
+        with path.open("xb") as stream: stream.write(data)
+        self.assertEqual(path.read_bytes(), data)
+
+    def fixture_snapshot(self, roots, *, preserve_partial):
+        self.assertTrue(preserve_partial)
+        self.assertEqual(set(roots), {"files"})
+        rows = [("files/" + path.relative_to(roots["files"]).as_posix(), path.read_bytes())
+                for path in sorted(roots["files"].rglob("*")) if path.is_file()]
+        metadata = {"schema": "motionwright.ci.private-snapshot/1", "selected_originals_complete": True,
+                    "complete_owner_state_claimed": False, "roots": {}}
+        rows.append(("snapshot-manifest.json", gate.transport_json(metadata)))
+        stream = self.io.BytesIO()
+        with self.tarfile.open(fileobj=stream, mode="w") as archive:
+            for name, data in rows:
+                member = self.tarfile.TarInfo(name); member.size = len(data)
+                archive.addfile(member, self.io.BytesIO(data))
+        return stream.getvalue(), True
+
+    def existing_snapshot_functions(self):
+        """Load only the exact regular-file/snapshot AST; no cryptography backend."""
+        root = Path(gate.__file__).resolve().parents[1]
+        scope = {"Path": Path, "os": gate.os, "stat": gate.stat, "io": self.io,
+                 "tarfile": self.tarfile, "re": re, "json": json, "hashlib": hashlib,
+                 "require": gate.require, "digest": lambda raw: hashlib.sha256(raw).hexdigest(),
+                 "MAX_FILE": 256 * 1024**2, "MAX_TOTAL": 512 * 1024**2, "MAX_FILES": 4096}
+        selections = (("tooling/mlt_official_runtime_intake.py", ("capture_regular",)),
+                      ("tooling/ci_private_evidence.py", ("json_bytes", "metadata_identity", "snapshot_member", "regular", "gather_snapshot")))
+        for path, names in selections:
+            raw = (root / path).read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), gate.HOSTED_TRANSPORT_PINS[path])
+            tree = ast.parse(raw)
+            nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+            self.assertEqual({node.name for node in nodes}, set(names))
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), str(root / path), "exec"), scope)
+        return scope["gather_snapshot"]
+
+    def row(self, path="started.json", data=b"retained original", role="run-started"):
+        return {"path": path, "role": role, "state": "PRESENT", "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest()}
+
+    def seal_fixture(self):
+        data = b"retained original"
+        (self.evidence / "started.json").write_bytes(data)
+        rows = [self.row(data=data)]
+        return gate.transport_seal_parts(self.evidence, self.private, self.outgoing, rows,
+            self.context, self.recipient, self.crypto, lambda: 1)
+
+    def descriptor(self, number=101):
+        return {"artifact_id": number, "run_id": 12345, "run_attempt": 1,
+                "source_sha": "c" * 40, "zip_bytes": 100, "zip_sha256": format(number, "064x")}
+
+    def uploaded(self, sealed):
+        return {row["id"]: {"descriptor": self.descriptor(101 + i), "member": row["id"] + ".bin",
+                "ciphertext_bytes": row["ciphertext_bytes"], "ciphertext_sha256": row["ciphertext_sha256"]}
+                for i, row in enumerate(sealed["parts"])}
+
+    def test_private_transport_recipe_keeps_exact_five_sources_thirteen_configs_and_no_authority(self):
+        value = gate.hosted_transport_recipe()
+        self.assertEqual(len(value["sources"]), 5)
+        self.assertEqual({row["sha"] for row in value["sources"]},
+                         {gate.FIXED["sha"], *gate.HOSTED_CAUSAL_SHAS.values()})
+        self.assertEqual(len(value["compiled_configurations"]), 13)
+        self.assertEqual(sum(row["role"] == "fixed" for row in value["compiled_configurations"]), 9)
+        self.assertEqual(value["recipient_public_sha256"], "c3204ef97fb30495e1a40f373fe75da47eb0e0cb155fbe3539e4cdf0b6b3811a")
+        self.assertEqual(value["recipient_spki_sha256"], "1ca6d673bd8c5ea4d0378310b25c254452c19504d7e784ab94b8a8d2d1115921")
+        self.assertFalse(value["sdk_execution_authorized"])
+        self.assertFalse(value["upload_confirmed"])
+        self.assertEqual(value["whole_build_growth"], "UNADMITTED_NO_COMPARABLE_BASIS")
+        self.assertEqual(gate.HOSTED_TRANSPORT_CIPHER_MAX, 256 * 1024**2)
+        self.assertEqual(gate.HOSTED_TRANSPORT_TOTAL_MAX, 512 * 1024**2)
+
+    def test_private_transport_no_empty_or_populated_catalogue_can_replace_technical_bootstrap(self):
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {}), patch.object(gate.Path, "resolve") as resolve:
+            with self.assertRaisesRegex(ValueError, "authority is not reviewed"):
+                gate.transport_entry("data", "remote", {})
+            resolve.assert_not_called()
+        with patch.object(gate, "request_context", return_value=self.context), \
+                patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": self.auth}), \
+                patch.object(gate.Path, "resolve") as resolve:
+            with self.assertRaisesRegex(ValueError, "BLOCKED_PRIVATE_TRANSPORT_UNCOMPOSED"):
+                gate.run(gate.HOSTED_MODE, gate.FIXED["sha"], "remote", self.root, {}, self.root / "run", environment={})
+            resolve.assert_not_called()
+
+    def test_private_transport_review_is_exact_and_bound_to_fixed_recipient_recipe_and_growth(self):
+        value = {"schema": gate.HOSTED_TRANSPORT_REVIEW_SCHEMA, "purpose": gate.HOSTED_FULL_PURPOSE,
+                 "gate_base_sha": self.auth["binding"]["gate_base_sha"],
+                 "recipe_sha256": hashlib.sha256(gate.transport_json(gate.hosted_transport_recipe())).hexdigest(),
+                 "recipient_public_sha256": gate.HOSTED_TRANSPORT_RECIPIENT_SHA256,
+                 "recipient_spki_sha256": gate.HOSTED_TRANSPORT_SPKI_SHA256,
+                 "cold_growth_basis_sha256": self.auth["binding"]["cold_growth"]["basis_sha256"]}
+        raw = gate.transport_json(value); digest = hashlib.sha256(raw).hexdigest()
+        self.auth["binding"]["private_transport"]["review_sha256"] = digest
+        context = {**self.context, "private_transport_review_sha256": digest}
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": self.auth}):
+            self.assertEqual(gate.transport_review(raw, context), value)
+            for changed in (raw + b"\n", gate.transport_json({**value, "recipient_spki_sha256": "f" * 64}),
+                            gate.transport_json({**value, "cold_growth_basis_sha256": "f" * 64})):
+                with self.subTest(raw=changed[:40]), self.assertRaises(ValueError):
+                    gate.transport_review(changed, context)
+            with self.assertRaises(ValueError): gate.transport_review(raw, {**context, "product_source_sha": "f" * 40})
+
+    def test_private_transport_rows_reject_aliases_types_oversize_and_unselected_plaintext(self):
+        row = self.row()
+        self.assertEqual(gate.transport_rows([row]), [row])
+        for changed in ({**row, "bytes": True}, {**row, "bytes": gate.HOSTED_TRANSPORT_PAYLOAD_MAX + 1},
+                        {**row, "path": "../started.json"}, {**row, "path": "target/binary"},
+                        {**row, "path": "lease.json"}, {**row, "path": "controller/../started.json"},
+                        {**row, "role": "compiled-binary"}, {**row, "state": "UNKNOWN"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError): gate.transport_rows([changed])
+        with self.assertRaises(ValueError): gate.transport_rows([row, row])
+        missing = {**row, "state": "MISSING", "bytes": None, "sha256": None}
+        self.assertEqual(gate.transport_rows([missing]), [missing])
+
+    def test_private_transport_partition_has_fifteen_bound_parts_without_fragmenting_binaries(self):
+        binaries = [{"path": "binaries/" + format(i, "064x"), "role": "compiled-binary", "state": "PRESENT",
+                     "bytes": 5, "sha256": format(i, "064x")} for i in range(1, 14)]
+        ordinary = [self.row("commands/case-" + str(i) + ".stdout.log", b"1234", "command-original") for i in range(2)]
+        with patch.object(gate, "HOSTED_TRANSPORT_PAYLOAD_MAX", 5), patch.object(gate, "HOSTED_TRANSPORT_TOTAL_MAX", 100):
+            plan = gate.transport_partition_plan(binaries + ordinary)
+            self.assertEqual(len(plan["parts"]), 15)
+            self.assertTrue(all(len(part["paths"]) == 1 for part in plan["parts"]))
+            self.assertEqual(len({path for part in plan["parts"] for path in part["paths"]}), 15)
+            self.assertEqual(gate.HOSTED_TRANSPORT_DATA_PARTS + 1, 16)
+            self.assertEqual(gate.transport_unpack_roster(gate.transport_pack_roster(plan)), plan)
+            with self.assertRaisesRegex(ValueError, "data partition budget exhausted"):
+                gate.transport_partition_plan(binaries + ordinary + [self.row("commands/extra.stdout.log", b"1234", "command-original")])
+            extra = {**binaries[-1], "path": "binaries/" + "f" * 64, "sha256": "f" * 64}
+            with self.assertRaises(ValueError): gate.transport_partition_plan(binaries + [extra])
+        # The old payload-only split put all1735 small blobs into one manifest.
+        # Exercise the real pinned gather_snapshot and its three physical maps.
+        gather = self.existing_snapshot_functions()
+        bulk = self.root / "bulk"; originals = bulk / "originals"; originals.mkdir(parents=True)
+        source_rows = []
+        for number in range(1735):
+            data = ("source-fixture-" + str(number)).encode()
+            digest = hashlib.sha256(data).hexdigest()
+            (originals / digest).write_bytes(data)
+            source_rows.append(self.row("sources/" + digest, data, "source-original"))
+        raw, complete = gather({"files": bulk}, preserve_partial=True)
+        self.assertTrue(complete)
+        with self.assertRaisesRegex(ValueError, "actual snapshot manifest"):
+            gate.transport_snapshot_manifest(raw, gate.HOSTED_TRANSPORT_INDEX_MAX)
+        self.crypto.gather_snapshot.side_effect = lambda *_args, **_kwargs: (raw, True)
+        with self.assertRaisesRegex(ValueError, "actual snapshot manifest"):
+            self.seal_fixture()
+        self.crypto.encrypt_snapshot.assert_not_called()
+        plan = gate.transport_partition_plan(source_rows)
+        self.assertGreater(len(plan["parts"]), 1)
+        self.assertLessEqual(len(plan["parts"]), 15)
+        self.assertEqual(sum(len(part["paths"]) for part in plan["parts"]), 1735)
+        for part in plan["parts"]:
+            target = self.root / ("bounded-" + part["id"]); staged = target / "originals"; staged.mkdir(parents=True)
+            for path in part["paths"]:
+                (originals / path.split("/", 1)[1]).rename(staged / path.split("/", 1)[1])
+                gate.transport_manifest_path(staged / path.split("/", 1)[1])
+                gate.transport_manifest_identity((staged / path.split("/", 1)[1]).lstat())
+            bounded, complete = gather({"files": target}, preserve_partial=True)
+            self.assertTrue(complete)
+            self.assertLessEqual(part["snapshot_manifest_bytes_bound"], 512 * 1024)
+            self.assertTrue(gate.transport_snapshot_manifest(bounded, part["snapshot_manifest_bytes_bound"])["selected_originals_complete"])
+        with self.assertRaises(ValueError): gate.transport_manifest_path("x" * 321)
+        with self.assertRaises(ValueError): gate.transport_manifest_path("\\" * 161)
+
+    def test_private_transport_packed_roster_is_lossless_and_rejects_foreign_assignments(self):
+        plan = gate.transport_partition_plan([self.row(), {**self.row("controller/stderr.original", b"", "controller-original")}])
+        packed = gate.transport_pack_roster(plan)
+        self.assertEqual(gate.transport_unpack_roster(packed), plan)
+        for mutation in (packed + [packed[0]], [[True, *packed[0][1:]], *packed[1:]],
+                         [[*packed[0][:-1], 16], *packed[1:]], [[*packed[0][:-1], 0], *packed[1:]], list(reversed(packed))):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): gate.transport_unpack_roster(mutation)
+        # Out-of-range uploader slots fail before gate queries, crypto or writes.
+        for slot in ("00", "16", "17", True):
+            originals = [(b"review", {}), (b"recipient", {}), (gate.transport_json(self.started), {})]
+            with self.subTest(slot=slot), patch.object(gate, "request_context", return_value=self.context), \
+                    patch.object(gate, "hosted_private_root", return_value=self.private), \
+                    patch.object(gate, "transport_original", side_effect=originals), \
+                    patch.object(gate, "transport_review"), patch.object(gate, "transport_recipient", return_value=self.recipient), \
+                    patch.object(gate, "verify_hosted_gate") as verify, patch.object(gate, "transport_primitives") as primitives, \
+                    patch.object(gate.custody, "write_new") as write:
+                with self.assertRaisesRegex(ValueError, "unknown ciphertext upload slot"):
+                    gate.transport_entry("upload-data-check", "remote", {"FOUNDATION_UPLOAD_SLOT": slot})
+                verify.assert_not_called(); primitives.assert_not_called(); write.assert_not_called()
+
+    def test_private_transport_reserve_is_inside_original_H_and_cannot_start_late_or_renew(self):
+        self.assertEqual(sum(n for _, n in gate.HOSTED_TRANSPORT_PHASES), 1800)
+        latest = self.started["original_deadline_monotonic_ns"] - 1800 * 10**9
+        self.assertEqual(gate.transport_clock(self.started, self.context, "seal-data", latest)["remaining_reserved_seconds"], 1800)
+        with self.assertRaises(ValueError): gate.transport_clock(self.started, self.context, "seal-data", latest + 1)
+        for changed in ({**self.started, "original_started_monotonic_ns": True},
+                        {**self.started, "original_deadline_monotonic_ns": self.started["original_deadline_monotonic_ns"] + 1},
+                        {**self.started, "budget_seconds": 7201}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError): gate.transport_clock(changed, self.context, "seal-data", latest)
+        clock = Mock(return_value=latest)
+        remaining = gate.transport_phase_remaining(self.started, "seal-data", clock)
+        self.assertEqual(remaining(300), 300)
+        clock.return_value += 300 * 10**9
+        with self.assertRaises(ValueError): remaining(1)
+        entry = gate.transport_clock(self.started, self.context, "data-uploads", latest + 300 * 10**9)
+        later = entry["observed_monotonic_ns"] + 60 * 10**9
+        self.assertEqual(gate.transport_resume_phase(self.started, self.context, "data-uploads", entry, later), entry)
+        self.assertEqual(gate.transport_phase_remaining(self.started, "data-uploads", lambda: later,
+                         phase_started_ns=entry["observed_monotonic_ns"])(1080), 1020)
+        with self.assertRaises(ValueError):
+            gate.transport_resume_phase(self.started, self.context, "data-uploads", entry,
+                                        entry["phase_deadline_monotonic_ns"])
+        with self.assertRaises(ValueError):
+            gate.transport_resume_phase(self.started, self.context, "data-uploads",
+                                        {**entry, "phase_deadline_monotonic_ns": entry["phase_deadline_monotonic_ns"] + 1}, later)
+
+    def test_private_transport_inventory_preserves_missing_role_guards_and_rejects_unselected_files(self):
+        (self.evidence / "started.json").write_bytes(b"started")
+        rows = gate.transport_inventory(self.evidence)
+        self.assertEqual(len(rows), 15)
+        self.assertEqual(sum(row["state"] == "MISSING" for row in rows), 14)
+        (self.evidence / "private-lease.json").write_bytes(b"not selected")
+        with self.assertRaisesRegex(ValueError, "unselected evidence file"):
+            gate.transport_inventory(self.evidence)
+
+    def test_private_transport_seals_once_with_existing_primitives_and_only_ciphertext_outgoing(self):
+        before = b"retained original"
+        plan, sealed = self.seal_fixture()
+        self.assertEqual((self.evidence / "started.json").read_bytes(), before)
+        self.assertEqual(self.crypto.gather_snapshot.call_count, 1)
+        self.assertEqual(self.crypto.encrypt_snapshot.call_count, 1)
+        self.assertEqual(self.crypto.encrypt_snapshot.call_args.args[2], gate.transport_aad(self.context))
+        self.assertEqual(set(gate.transport_aad(self.context)), {"source_sha", "semwright_sha", "run_id", "run_attempt"})
+        self.assertEqual([path.name for path in self.outgoing.iterdir()], ["part-01.bin"])
+        self.assertFalse(sealed["foundation_result_admitted"])
+        self.assertFalse(sealed["upload_confirmed"])
+        self.assertEqual(plan["parts"][0]["paths"], ["started.json"])
+
+    def test_private_transport_capture_error_retains_original_terminal_without_second_snapshot(self):
+        (self.evidence / "started.json").write_bytes(b"retained original")
+        self.crypto.gather_snapshot.side_effect = OSError("owned original capture failed")
+        with self.assertRaises(OSError):
+            gate.transport_seal_parts(self.evidence, self.private, self.outgoing, [self.row()],
+                self.context, self.recipient, self.crypto, lambda: 1)
+        self.crypto.gather_snapshot.assert_called_once()
+        self.crypto.encrypt_snapshot.assert_not_called()
+        original = json.loads((self.private / "parts.original.json").read_bytes())
+        self.assertEqual(original["status"], "UNKNOWN_SEAL_CUSTODY_NO_RETRY")
+        self.assertTrue(original["originals_retained_in_place"])
+        self.assertFalse(original["foundation_result_admitted"])
+
+    def test_private_transport_index_binds_every_artifact_and_excludes_its_own_descriptor(self):
+        plan, sealed = self.seal_fixture()
+        uploaded = self.uploaded(sealed)
+        index = gate.transport_index(plan, sealed, uploaded, self.context)
+        rebound, records = gate.transport_index_records(index)
+        self.assertEqual(rebound, plan)
+        self.assertEqual(records[0]["descriptor"], self.descriptor())
+        self.assertEqual(index["index_own_descriptor"], "EXTERNAL_ONLY")
+        self.assertNotIn("index_sha256", index)
+        self.assertFalse(index["source_result_admitted"])
+        for changed in ({}, {**uploaded, "part-16": uploaded["part-01"]}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                gate.transport_index(plan, sealed, changed, self.context)
+        changed = copy.deepcopy(uploaded); changed["part-01"]["ciphertext_sha256"] = "f" * 64
+        with self.assertRaises(ValueError): gate.transport_index(plan, sealed, changed, self.context)
+        changed = copy.deepcopy(index); changed["data_parts"][0]["copy_failed_rows"] = [True]
+        with self.assertRaises(ValueError): gate.transport_index_records(changed)
+
+    def test_private_transport_partial_snapshot_cannot_become_a_complete_roster_by_sealing(self):
+        original_snapshot = self.crypto.gather_snapshot.side_effect
+        def partial(*args, **kwargs):
+            raw, _ = original_snapshot(*args, **kwargs)
+            stream = self.io.BytesIO()
+            with self.tarfile.open(fileobj=self.io.BytesIO(raw), mode="r:") as old, \
+                    self.tarfile.open(fileobj=stream, mode="w") as new:
+                for member in old.getmembers():
+                    data = old.extractfile(member).read()
+                    if member.name == "snapshot-manifest.json":
+                        value = json.loads(data); value["selected_originals_complete"] = False
+                        data = gate.transport_json(value); member.size = len(data)
+                    new.addfile(member, self.io.BytesIO(data))
+            return stream.getvalue(), False
+        self.crypto.gather_snapshot.side_effect = partial
+        plan, sealed = self.seal_fixture()
+        self.assertEqual(sealed["status"], "SEALED_INCOMPLETE_ORIGINALS_NO_RESULT_ADMISSION")
+        index = gate.transport_index(plan, sealed, self.uploaded(sealed), self.context)
+        self.assertFalse(index["data_parts"][0]["snapshot_complete"])
+        self.assertFalse(index["source_result_admitted"])
+
+    def test_private_transport_zip_readback_requires_actual_run_job_and_exact_cipher_member(self):
+        import zipfile
+        stream = self.io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive: archive.writestr("part-01.bin", b"cipher fixture")
+        raw = stream.getvalue()
+        descriptor = {**self.descriptor(), "zip_bytes": len(raw), "zip_sha256": hashlib.sha256(raw).hexdigest()}
+        run = {"id": 12345, "run_attempt": 1, "head_sha": "c" * 40, "repository": {"full_name": "example/repo"},
+               "path": gate.WORKFLOW, "event": "workflow_dispatch"}
+        job = {"id": 201, "run_id": 12345, "head_sha": "c" * 40, "name": gate.HOSTED_SCOPE}
+        artifact = {"id": 101, "expired": False, "size_in_bytes": len(raw), "digest": "sha256:" + descriptor["zip_sha256"],
+                    "workflow_run": {"id": 12345, "head_sha": "c" * 40}}
+        value = gate.transport_artifact_readback(descriptor, self.context, run, job, artifact, raw)
+        self.assertEqual(value["ciphertext"], b"cipher fixture")
+        self.assertFalse(value["producer_result_admitted"])
+        for other_run, other_job, other_artifact, other_raw in (
+                ({**run, "run_attempt": 2}, job, artifact, raw), (run, {**job, "name": "other"}, artifact, raw),
+                (run, job, {**artifact, "expired": True}, raw), (run, job, artifact, raw + b"changed")):
+            with self.subTest(run=other_run), self.assertRaises(ValueError):
+                gate.transport_artifact_readback(descriptor, self.context, other_run, other_job, other_artifact, other_raw)
+        with self.assertRaises(ValueError): gate.transport_descriptor({**descriptor, "artifact_id": True}, self.context)
+
+    def test_private_transport_recovery_rechecks_tar_hashes_and_rejects_omitted_complete_member(self):
+        plan, sealed = self.seal_fixture()
+        directory = self.private / "part-01/payload"
+        raw, _ = self.fixture_snapshot({"files": directory}, preserve_partial=True)
+        record = sealed["parts"][0]
+        record["plaintext_sha256"] = hashlib.sha256(raw).hexdigest(); record["plaintext_bytes"] = len(raw)
+        result = gate.transport_snapshot_readback(raw, record, plan)
+        self.assertEqual(result["originals"], {"started.json": b"retained original"})
+        self.assertFalse(result["foundation_result_admitted"])
+        with self.assertRaises(ValueError): gate.transport_snapshot_readback(raw + b"x", record, plan)
+        altered = copy.deepcopy(record); altered["staged"][0]["sha256"] = "f" * 64
+        with self.assertRaises(ValueError): gate.transport_snapshot_readback(raw, altered, plan)
+
+    def test_private_transport_reader_cannot_attribute_unknown_or_foreign_terminal_to_foundation(self):
+        minimal = {"started.json": gate.transport_json(self.started),
+                   "receipt.json": gate.transport_json({"schema": gate.SCHEMA,
+                    "context": {**self.context, "gate_source_sha": "c" * 40}, "status": "UNKNOWN_NO_RETRY"})}
+        with self.assertRaisesRegex(ValueError, "Foundation terminal is incomplete"):
+            gate.transport_foundation_readback(minimal, self.context, {})
+        with self.assertRaises(ValueError):
+            gate.transport_foundation_readback({}, self.context, {})
+
+    def test_private_transport_reused_data_artifact_or_wrong_recipient_is_rejected(self):
+        (self.evidence / "started.json").write_bytes(b"retained original")
+        binary = b"one synthetic compiled executable"; digest = hashlib.sha256(binary).hexdigest()
+        (self.evidence / "binaries").mkdir(); (self.evidence / "binaries" / digest).write_bytes(binary)
+        another = b"second intact executable"; second_digest = hashlib.sha256(another).hexdigest()
+        (self.evidence / "binaries" / second_digest).write_bytes(another)
+        rows = [self.row(), self.row("binaries/" + digest, binary, "compiled-binary"),
+                self.row("binaries/" + second_digest, another, "compiled-binary")]
+        plan, sealed = gate.transport_seal_parts(self.evidence, self.private, self.outgoing, rows,
+            self.context, self.recipient, self.crypto, lambda: 1)
+        uploaded = self.uploaded(sealed)
+        uploaded["part-02"]["descriptor"]["artifact_id"] = uploaded["part-01"]["descriptor"]["artifact_id"]
+        with self.assertRaisesRegex(ValueError, "reused"):
+            gate.transport_index(plan, sealed, uploaded, self.context)
+        primitive = Mock(MAGIC=b"MWCISEAL1\n")
+        primitive.strict.side_effect = gate.custody.strict_json
+        primitive.json_bytes.side_effect = gate.transport_json
+        header = gate.transport_json({"context": gate.transport_aad(self.context),
+                                      "recipient_spki_sha256": "f" * 64})
+        raw = primitive.MAGIC + len(header).to_bytes(4, "big") + header + b"x" * 32
+        with self.assertRaisesRegex(ValueError, "exact recipient"):
+            gate.transport_cipher_header(raw, self.context, primitive)
+        self.crypto.decrypt_snapshot.assert_not_called()
+
+    def test_private_transport_workflow_uses_only_the_existing_bounded_ciphertext_upload_surface(self):
+        text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
+        job = workflow_jobs(text)[gate.HOSTED_SCOPE]
+        self.assertIn("timeout-minutes: 135", job)
+        begin = job.index("      # BEGIN Foundation ciphertext transport preparation\n")
+        end_marker = "      # END Foundation ciphertext transport preparation\n"
+        end = job.index(end_marker, begin) + len(end_marker)
+        block = job[begin:end]
+        self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), HOSTED_TRANSPORT_WORKFLOW_BLOCK_SHA256)
+        self.assertEqual(block.count("uses: actions/upload-artifact@" + gate.HOSTED_TRANSPORT_UPLOAD_ACTION), 16)
+        self.assertEqual(block.count("timeout-minutes: 1\n"), 32)
+        for number in range(1, 16):
+            name = str(number).zfill(2)
+            self.assertEqual(block.count("id: foundation_upload_" + name + "\n"), 1)
+            self.assertEqual(block.count("id: foundation_guard_" + name + "\n"), 1)
+            self.assertIn("steps.foundation_guard_" + name + ".outputs.ready == 'true'", block)
+            self.assertIn("/outgoing/part-" + name + ".bin\n", block)
+            self.assertIn("FOUNDATION_ARTIFACT_" + name + ": ${{ steps.foundation_upload_" + name + ".outputs.artifact-id }}", block)
+        self.assertLess(block.index("id: foundation_upload_15"), block.index("id: foundation_index\n"))
+        self.assertLess(block.index("id: foundation_index\n"), block.index("id: foundation_index_upload\n"))
+        self.assertNotIn("--execute", block)
+        paths = re.findall(r"(?m)^          path: (.+)$", block)
+        self.assertEqual(len(paths), 16)
+        self.assertNotIn("foundation_upload_16", block)
+        self.assertNotIn("foundation_upload_17", block)
+        self.assertTrue(all("/outgoing/" in path and path.endswith(".bin") for path in paths))
+        self.assertNotIn("private_key", block)
+        self.assertIn("--hosted-controller", block)
+        self.assertNotIn("--transport-action dependencies", block)
+        self.assertEqual(gate.transport_dependency_argv(Path("python"), Path("gate"))[-5:],
+                         ["--only-binary=:all:", "--require-hashes", "--no-deps", "-r", str(Path("gate") / gate.HOSTED_TRANSPORT_REQUIREMENTS)])
+        self.assertTrue(all("steps.foundation_admission.outcome == 'success'" in line
+                            or "steps.foundation_guard_" in line or "steps.foundation_index_guard.outputs.ready" in line
+                            for line in block.splitlines() if "if: " in line))
+        # Checkout2 + Python3 + capacity3 + admission2 + original H120 + public upload1.
+        self.assertLessEqual(2 + 3 + 3 + 2 + 120 + 1, 135)
+        self.assertEqual(sum(cap for _, cap in gate.HOSTED_TRANSPORT_PHASES), 1800)
+
+    def test_private_transport_requirements_are_exact_windows_wheels_and_dependencies_unchanged(self):
+        root = Path(gate.__file__).resolve().parents[1]
+        raw = (root / gate.HOSTED_TRANSPORT_REQUIREMENTS).read_bytes()
+        self.assertEqual(len(raw), 933)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), "82b7c9a4741d26411cdd6a0732cebeffd081cfad5f51ef4a75585aa7d38f162f")
+        self.assertEqual([line.split()[0] for line in raw.decode().splitlines() if line and not line.startswith("#")],
+                         ["cryptography==50.0.2", "cffi==2.1.1", "pycparser==2.23", "jsonschema==4.26.0", "PyYAML==6.0.3",
+                          "attrs==26.1.0", "jsonschema-specifications==2025.9.1", "referencing==0.37.0", "rpds-py==2026.9.1"])
+        self.assertEqual(len(gate.HOSTED_PYTHON_DEPENDENCIES), 9)
+        tools = {"node": {"absolute_path": "C:/image-resolved-node/node.exe", "version": "v22.23.4\n"},
+                 **{name: {"absolute_path": "C:/mingw64/bin/" + name + ".exe"} for name in ("gcc", "g++", "ar", "as", "ld")}}
+        observed = gate.hosted_image_tool_roots(tools)
+        self.assertFalse(observed["node_installation_path_inferred_from_MSI"])
+        for name, field, value in (("node", "absolute_path", "D:/unselected/node.exe"),
+                                   ("node", "version", "v24.22.1\n"), ("gcc", "absolute_path", "C:/mingw32/bin/gcc.exe")):
+            changed = copy.deepcopy(tools); changed[name][field] = value
+            with self.subTest(name=name), self.assertRaises(ValueError): gate.hosted_image_tool_roots(changed)
+        self.assertEqual(gate.HOSTED_TRANSPORT_PINS["tooling/ci_private_evidence.py"],
+                         "2671eea354f672353a6b4ea1ac9c43de4b682e96f4dcc9146104a5f8d20a8eee")
+        self.assertEqual(gate.HOSTED_TRANSPORT_PINS["tooling/mlt_official_runtime_intake.py"],
+                         "a5c8843db38e48060f34e73afdcaf59341cac0ee88ddd6e13cbf85dadbfb770f")
+
+
+
+class SDKFoundationHostedCompositionTests(unittest.TestCase):
+    """Actual composition functions with explicit command/kernel fixtures; no SDK launch."""
+    def setUp(self):
+        existing = SDKFoundationHostedTests(); existing.setUp(); self.addCleanup(existing.doCleanups)
+        self.root, self.repo, self.env, self.auth = existing.root, existing.repo, existing.env, existing.auth
+        self.auth["max_total_seconds"] = 7200
+        (self.root / "verification").mkdir()
+        self.context = existing.context()
+
+    def qualification(self):
+        value = copy.deepcopy(self.auth)
+        value["purpose"] = gate.HOSTED_QUALIFICATION_PURPOSE
+        value["binding"]["private_transport"].update(source_shas=[gate.FIXED["sha"]], incoming="OWNER_COMPOSED_FIXED_CHECKOUT")
+        value["binding"]["cold_growth"].update(source_shas=[gate.FIXED["sha"]], compiled_configurations=1,
+                                               bytes=dict(gate.HOSTED_QUALIFICATION_CEILINGS))
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": value}):
+            context = gate.request_context(self.env, gate.HOSTED_MODE, gate.FIXED["sha"], "remote", "win32")
+        return value, context
+
+    def public_input(self, auth, context):
+        import base64
+        value = {"schema": gate.HOSTED_TRANSPORT_REVIEW_SCHEMA, "purpose": gate.hosted_purpose(context),
+                 "gate_base_sha": auth["binding"]["gate_base_sha"],
+                 "recipe_sha256": hashlib.sha256(gate.transport_json(gate.hosted_transport_recipe(gate.hosted_purpose(context)))).hexdigest(),
+                 "recipient_public_sha256": gate.HOSTED_TRANSPORT_RECIPIENT_SHA256,
+                 "recipient_spki_sha256": gate.HOSTED_TRANSPORT_SPKI_SHA256,
+                 "cold_growth_basis_sha256": auth["binding"]["cold_growth"]["basis_sha256"]}
+        review = gate.transport_json(value)
+        digest = hashlib.sha256(review).hexdigest()
+        auth["binding"]["private_transport"]["review_sha256"] = digest
+        context["private_transport_review_sha256"] = digest
+        recipient = HOSTED_PUBLIC_RECIPIENT_FIXTURE
+        raw = gate.transport_json({"schema": gate.HOSTED_INPUT_SCHEMA,
+            "review_base64": base64.b64encode(review).decode(), "recipient_base64": base64.b64encode(recipient).decode()})
+        return raw, review, recipient
+
+    def test_public_input_binds_exact_R_recipient_and_purpose_without_self_authority(self):
+        auth, context = self.qualification()
+        raw, review, recipient = self.public_input(auth, context)
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": auth}):
+            parsed = gate.hosted_transport_input(raw, context)
+            self.assertEqual(parsed["originals"], {"review": review, "recipient": recipient})
+            self.assertEqual(parsed["input_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertFalse(parsed["human_acknowledgement"])
+            changed = json.loads(raw); changed["lease"] = {"self_issued": True}
+            for bad in (gate.transport_json(changed), raw + b"x", b"{}", b"x" * 8193):
+                with self.subTest(raw=bad[:32]), self.assertRaises(ValueError): gate.hosted_transport_input(bad, context)
+            changed = json.loads(raw); changed["recipient_base64"] += "\n"
+            with self.assertRaises(ValueError): gate.hosted_transport_input(gate.transport_json(changed), context)
+            with self.assertRaises(ValueError): gate.hosted_transport_input(raw, {**context, "purpose": gate.HOSTED_FULL_PURPOSE})
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {}), patch.object(gate, "hosted_private_root") as paths:
+            with self.assertRaises(ValueError): gate.hosted_transport_input(raw, context)
+            paths.assert_not_called()
+
+    def test_qualification_authority_is_exact_one_source_and_chosen_ceiling_not_full_growth(self):
+        auth, context = self.qualification()
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": auth}):
+            self.assertEqual(gate.authority("remote", gate.HOSTED_MODE, gate.FIXED["sha"]), auth)
+        self.assertEqual(gate.hosted_profiles(context["purpose"]), [("fixed", gate.FIXED)])
+        self.assertEqual(sum(gate.HOSTED_QUALIFICATION_CEILINGS.values()), 68987912192)
+        self.assertEqual(gate.HOSTED_QUALIFICATION_FREE, 88315265024)
+        self.assertEqual(gate.HOSTED_QUALIFICATION_CUSTODY_BYTES, 4 * 1024**3)
+        value = gate.hosted_transport_recipe(context["purpose"])
+        self.assertEqual(len(value["sources"]), 1); self.assertEqual(len(value["compiled_configurations"]), 1)
+        self.assertFalse(value["chosen_ceilings_are_measured_growth"])
+        self.assertFalse(value["test_or_list_execution_selected"])
+        for key, bad in (("purpose", "arbitrary-subset"), ("max_total_seconds", 7199)):
+            changed = copy.deepcopy(auth); changed[key] = bad
+            with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": changed}), self.assertRaises(ValueError):
+                gate.authority("remote", gate.HOSTED_MODE, gate.FIXED["sha"])
+        for mutation in ("count", "ceiling", "source"):
+            changed = copy.deepcopy(auth)
+            growth = changed["binding"]["cold_growth"]
+            if mutation == "count": growth["compiled_configurations"] = True
+            elif mutation == "ceiling": growth["bytes"]["targets"] += 1
+            else: growth["source_shas"] = ["f" * 40]
+            with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": changed}), self.assertRaises(ValueError):
+                gate.authority("remote", gate.HOSTED_MODE, gate.FIXED["sha"])
+
+    def test_hosted_work_budget_inherits_t0_and_protects_custody_before_all_producers(self):
+        first = 1_000_000_000
+        original = gate.hosted_clock(self.context, first, first)
+        now = Mock(return_value=first + 5399 * 10**9)
+        budget = gate.HostedWorkBudget(original, self.context, now)
+        self.assertEqual(budget.started, first)
+        self.assertEqual(budget.original_deadline, first + 7200 * 10**9)
+        self.assertEqual(budget.remaining(900), 1)
+        now.return_value += 10**9
+        with self.assertRaises(ValueError): budget.remaining(1)
+        with self.assertRaises(ValueError): gate.HostedWorkBudget(original, self.context, now)
+        for key in ("original_started_monotonic_ns", "work_deadline_monotonic_ns", "custody_reserved_seconds"):
+            changed = dict(original); changed[key] = True
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                gate.HostedWorkBudget(changed, self.context, lambda: first)
+
+    def test_original_hosted_clock_is_created_before_private_preparation_and_one_worker(self):
+        # Closed source order, paired with the executable clock and incoming
+        # controls below. No controller is launched by this source assertion.
+        text = Path(gate.__file__).read_text()
+        tree = ast.parse(text)
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "hosted_controller")
+        source = ast.get_source_segment(text, node)
+        self.assertLess(source.index('original = Budget('), source.index('root.mkdir('))
+        self.assertLess(source.index('HostedWorkBudget(clock, context)'), source.index('hosted_fetch_sources('))
+        self.assertLess(source.index('hosted_prepare_custody_python('), source.index('hosted_fetch_sources('))
+        self.assertLess(source.index('hosted_load_bootstrap('), source.index('"--hosted-worker"'))
+        self.assertEqual(source.count('"--hosted-worker"'), 1)
+        self.assertIn('child_environment.pop(name, None)', source)
+        self.assertIn('"GH_TOKEN", "GITHUB_TOKEN"', source)
+        calls = []
+        preparation = self.root / "python-preparation"; preparation.mkdir()
+        python = preparation / "toolchain/custody-python/Scripts/python.exe"
+        def call(argv, cwd, environment, logs, label, timeout, context):
+            calls.append((argv, label, timeout))
+            if label == "custody-python":
+                self.assertNotIn("--system-site-packages", argv)
+                python.parent.mkdir(parents=True); python.write_bytes(b"nonexecuted owned interpreter fixture")
+            return {"exit_code": 0, "label": label}
+        def capability(*_args):
+            return gate.transport_json({"status": "EXISTING_CUSTODY_IMPORTS_AND_RECIPIENT_OBSERVED",
+                "context": self.context, "source_pins": dict(gate.HOSTED_TRANSPORT_PINS),
+                "recipient_sha256": gate.HOSTED_TRANSPORT_RECIPIENT_SHA256, "private_key_loaded": False,
+                "python": gate.custody.fingerprint(python, preparation)})
+        with patch.object(gate.observer, "original_stream", side_effect=capability):
+            selected, _, _, _ = gate.hosted_prepare_custody_python(preparation, Path(gate.__file__).resolve().parents[1],
+                self.context, gate.Budget(600), call, {})
+        self.assertEqual(selected, python)
+        self.assertEqual([(label, cap) for _, label, cap in calls],
+                         [("custody-python", 120), ("transport-dependencies", 120), ("custody-capability", 45)])
+        self.assertEqual(calls[1][0], gate.transport_dependency_argv(python, Path(gate.__file__).resolve().parents[1]))
+        self.assertIn('python_executable=python', source)
+
+    def test_incoming_sources_are_once_only_fixed_git_commands_and_keep_original_budget(self):
+        auth, context = self.qualification()
+        root = gate.hosted_private_root(self.env, context); root.mkdir()
+        (root / "bootstrap").mkdir(); (root / "bootstrap/commands").mkdir(); (root / "checkouts").mkdir()
+        executable = self.root / "git-fixture"; executable.write_bytes(b"explicit intercepted Git tool")
+        calls = []
+        def call(argv, cwd, env, output, label, timeout, frame):
+            calls.append((argv, label, timeout, frame))
+            if label.endswith("-init"): Path(argv[-1]).mkdir()
+            return {"exit_code": 0}
+        def snapshot(checkout, profile):
+            return {"sha": profile["sha"], "tree": profile["tree"], "checkout": str(checkout), "files": {}}
+        budget = gate.Budget(600)
+        with patch.object(gate.shutil, "which", return_value=str(executable)), \
+                patch.object(gate, "full_snapshot", side_effect=snapshot):
+            rows = gate.hosted_fetch_sources(root, self.repo, context, budget, call, {})
+            self.assertEqual(set(rows), {"fixed"})
+            self.assertEqual([c[1] for c in calls], ["incoming-fixed-init", "incoming-fixed-fetch", "incoming-fixed-checkout"])
+            self.assertEqual([c[2] for c in calls], [45, 180, 45])
+            self.assertIn(gate.HOSTED_PUBLIC_SOURCE_REPOSITORY, calls[1][0])
+            self.assertEqual(calls[1][0][-1], gate.FIXED["sha"])
+            self.assertIn("core.autocrlf=false", calls[2][0])
+            with self.assertRaisesRegex(ValueError, "no fetch retry"):
+                gate.hosted_fetch_sources(root, self.repo, context, budget, call, {})
+            self.assertEqual(len(calls), 3)
+        self.assertEqual(len(gate.hosted_source_plan(root)), 5)
+        self.assertEqual(len(gate.hosted_source_plan(root, gate.HOSTED_QUALIFICATION_PURPOSE)), 1)
+
+    def test_incoming_unknown_stops_without_checkout_snapshot_or_retry(self):
+        auth, context = self.qualification()
+        root = self.root / "unknown-incoming"; root.mkdir(); (root / "bootstrap").mkdir(); (root / "checkouts").mkdir()
+        executable = self.root / "git-fixture"; executable.write_bytes(b"intercepted")
+        uncertain = {"observation": "UNKNOWN_TIMEOUT_NO_RETRY"}
+        call = Mock(side_effect=gate.observer.UnknownExecution("uncertain", uncertain))
+        with patch.object(gate.shutil, "which", return_value=str(executable)), patch.object(gate, "full_snapshot") as source:
+            with self.assertRaises(gate.observer.UnknownExecution):
+                gate.hosted_fetch_sources(root, self.repo, context, gate.Budget(600), call, {})
+            call.assert_called_once(); source.assert_not_called()
+
+    def qualification_fixture(self):
+        auth, context = self.qualification()
+        logs = self.root / "qualification-logs"; logs.mkdir()
+        target = self.root / "qualification-target"; target.mkdir()
+        binary_path = target / "compiled-fixture"; binary_path.write_bytes(b"not executable SDK")
+        binary = {"absolute_path": str(binary_path), **gate.custody.fingerprint(binary_path, target)}
+        state = {"id": "fixed", "causal": None, "repo": self.repo, "source": {}, "env": {},
+                 "logs": logs, "context": context, "target": target}
+        report = {"context": context, "sdk_g0": {}, "binaries": {}, "rosters": {}, "groups": [], "causals": []}
+        return state, report, binary
+
+    def test_qualification_real_barrier_runs_G0_then_one_compile_then_seal_without_observation(self):
+        state, report, binary = self.qualification_fixture()
+        order = []
+        def call(argv, cwd, env, logs, label, timeout, frame):
+            order.append(("compile", argv, timeout)); return {"exit_code": 0, "argv": argv}
+        def seal(prepared, repo, target, logs, evidence, barrier):
+            self.assertEqual(barrier.phase, "SEALING"); order.append(("seal",))
+            return {"driver-sdk": {gate.TARGETS["driver-sdk"]["name"]: binary}}
+        with patch.object(gate, "sdk_g0", side_effect=lambda *args: order.append(("sdk-g0",))), \
+                patch.object(gate.observer, "original_stream", return_value=b"intercepted Cargo JSON"), \
+                patch.object(gate, "compiled_paths"), patch.object(gate, "source_unchanged"), patch.object(gate, "verify_tools"), \
+                patch.object(gate.producer, "seal_compiled_role", side_effect=seal), \
+                patch.object(gate.producer, "verify_binaries"), patch.object(gate, "list_role") as listed:
+            gate.execute_qualification([state], {"cargo": {"absolute_path": "observed-cargo"}}, self.root,
+                                       gate.Budget(600), call, report)
+            listed.assert_not_called()
+        self.assertEqual([row[0] for row in order], ["sdk-g0", "compile", "seal"])
+        self.assertEqual(order[1][1], ["observed-cargo", "test", "--locked", "-p", "semwright-driver-sdk", "--lib", "--no-run", "--message-format=json"])
+        self.assertEqual(order[1][2], 900)
+        self.assertEqual(report["producer_barrier"], "ONE_SELECTED_PRODUCER_SEALED_NO_OBSERVATION")
+        record = json.loads((state["logs"] / "compiled-rosters.json").read_bytes())
+        self.assertFalse(record["listed"]); self.assertEqual(record["test_methods_executed"], 0)
+        self.assertEqual(report["qualification"]["full_thirteen_configuration_growth"], "NOT_ADMITTED")
+
+    def test_qualification_G0_failure_and_UNKNOWN_compile_prevent_seal_and_methods(self):
+        state, report, _ = self.qualification_fixture()
+        call = Mock()
+        with patch.object(gate, "sdk_g0", side_effect=ValueError("actual source G0 fails")), \
+                patch.object(gate.producer, "seal_compiled_role") as seal:
+            with self.assertRaises(ValueError):
+                gate.execute_qualification([state], {"cargo": {"absolute_path": "cargo"}}, self.root, gate.Budget(600), call, report)
+            call.assert_not_called(); seal.assert_not_called()
+        uncertain = {"observation": "UNKNOWN_TIMEOUT_NO_RETRY", "exit_code": None}
+        call = Mock(side_effect=gate.observer.UnknownExecution("original", uncertain))
+        with patch.object(gate, "sdk_g0"), patch.object(gate.producer, "seal_compiled_role") as seal, patch.object(gate, "list_role") as listed:
+            with self.assertRaises(gate.observer.UnknownExecution):
+                gate.execute_qualification([state], {"cargo": {"absolute_path": "cargo"}}, self.root, gate.Budget(600), call, report)
+            call.assert_called_once(); seal.assert_not_called(); listed.assert_not_called()
+        self.assertEqual(report["groups"], []); self.assertEqual(report["causals"], [])
+
+    def test_component_measurement_uses_disjoint_paths_real_volume_and_reserved_ceilings(self):
+        _, context = self.qualification()
+        original_clock = gate.hosted_clock(context, gate.time.monotonic_ns())
+        def admit(value, phase="initial", origin=None):
+            return gate.qualification_measurement(value, context, expected_phase=phase,
+                                                  original_clock=original_clock, origin=origin)
+        root = self.root / "owned"; root.mkdir()
+        image = self.root / "image"; image.mkdir()
+        paths = {"checkouts/fixed/Cargo.toml": "source_checkouts", "toolchain/rustup/tool": "toolchain",
+                 "execution/cargo-home/download": "cargo_downloads", "execution/targets/fixed/binary": "targets",
+                 "execution/evidence/binaries/retained": "sealed_binary_originals",
+                 "execution/evidence/sources/retained": "source_transport", "bootstrap/commands/log": "temporary_and_logs"}
+        for name, component in paths.items():
+            file = root / name; file.parent.mkdir(parents=True, exist_ok=True); file.write_bytes(b"abc")
+            self.assertEqual(gate.hosted_component_name(name), component)
+        def volume(anchor):
+            work = str(anchor) == str(root)
+            return {"mount_path": "D:\\" if work else "C:\\", "volume_guid_path": "work" if work else "image",
+                    "caller_available_bytes": 100 * 1024**3 if work else 30 * 1024**3}
+        with patch.object(gate, "capacity_volume", side_effect=volume):
+            value = gate.hosted_component_snapshot(root, context, original_clock["work_deadline_monotonic_ns"],
+                                                  phase="initial", environment={"USERPROFILE": str(image)})
+        self.assertEqual(value["component_logical_bytes"], {key: 3 for key in paths.values()})
+        self.assertEqual(admit(value), value)
+        self.assertEqual(value["custody_bytes_reserved"], 4 * 1024**3)
+        self.assertFalse(value["component_physical_quotas"]); self.assertFalse(value["continuous_peak_observed"])
+        self.assertFalse(value["full_foundation_growth_admitted"])
+        changed = copy.deepcopy(value); changed["component_logical_bytes"]["temporary_and_logs"] = 2 * 1024**3 + 1
+        with self.assertRaises(ValueError): admit(changed)
+        changed = copy.deepcopy(value); changed["component_file_counts"]["targets"] = True
+        with self.assertRaises(ValueError): admit(changed)
+        changed = copy.deepcopy(value); changed["work_volume"]["caller_available_bytes"] = 88315265023
+        with self.assertRaises(ValueError): admit(changed)
+        changed = copy.deepcopy(value); changed["image_volume"]["caller_available_bytes"] = 18 * 1024**3 - 1
+        with self.assertRaises(ValueError): admit(changed)
+        relabelled = copy.deepcopy(value)
+        relabelled["phase"] = "work"
+        relabelled["work_volume"]["caller_available_bytes"] = 30 * 1024**3
+        with self.assertRaisesRegex(ValueError, "relabelled"):
+            admit(relabelled)
+        work = {**copy.deepcopy(value), "phase": "work", "observed_monotonic_ns": value["observed_monotonic_ns"] + 1}
+        self.assertEqual(admit(work, "work", value), work)
+        for sample, origin in ((work, relabelled),
+                               ({**work, "original_deadline_monotonic_ns": work["original_deadline_monotonic_ns"] + 1}, value),
+                               ({**work, "observed_shared_volume_delta_bytes": 1}, value)):
+            with self.subTest(sample=sample["phase"]), self.assertRaises(ValueError):
+                admit(sample, "work", origin)
+        custody = {**work, "phase": "custody", "original_deadline_monotonic_ns": original_clock["original_deadline_monotonic_ns"]}
+        self.assertEqual(admit(custody, "custody", value), custody)
+        with self.assertRaises(ValueError): admit(work, "custody", value)
+
+    def test_qualification_intake_cannot_promote_partial_or_foreign_resource_measurement(self):
+        _, context = self.qualification()
+        original_clock = gate.hosted_clock(context, gate.time.monotonic_ns())
+        for value in ({}, {"schema": "motionwright.sdk-foundation-owned-footprint/1", "context": context,
+                           "full_foundation_growth_admitted": True}):
+            with self.assertRaises(ValueError): gate.qualification_measurement(
+                value, context, expected_phase="initial", original_clock=original_clock)
+        with self.assertRaises(ValueError): gate.transport_partition_plan(
+            [{"path": gate.CAUSALS[0]["id"] + "/sdk-g0.json", "role": "sdk-g0", "state": "MISSING",
+              "bytes": None, "sha256": None}], gate.HOSTED_QUALIFICATION_PURPOSE)
+
+    def test_bootstrap_digest_is_checked_before_any_source_or_tool_readback(self):
+        root = gate.hosted_private_root(self.env, self.context); root.mkdir(); (root / "bootstrap").mkdir()
+        (root / "bootstrap/technical-ready.original.json").write_bytes(b"{}\n")
+        with patch.object(gate, "source_unchanged") as source, patch.object(gate, "verify_tools") as tools, \
+                patch.object(gate, "verify_hosted_gate") as verify:
+            with self.assertRaisesRegex(ValueError, "bootstrap original differs"):
+                gate.hosted_load_bootstrap(root, "f" * 64, self.context, self.env)
+            source.assert_not_called(); tools.assert_not_called(); verify.assert_not_called()
+
+    def bootstrap_fixture(self):
+        auth, context = self.qualification()
+        public, review, recipient = self.public_input(auth, context)
+        root = gate.hosted_private_root(self.env, context); root.mkdir()
+        logs = root / "bootstrap/commands"; logs.mkdir(parents=True)
+        (root / "checkouts").mkdir()
+        clock = gate.hosted_clock(context, gate.time.monotonic_ns())
+        for name, raw in (("input.original.json", public), ("review.original.json", review),
+                          ("recipient-public.original.json", recipient), ("clock.original.json", gate.transport_json(clock))):
+            (root / name).write_bytes(raw)
+        sources = {}
+        for role, profile, checkout in gate.hosted_source_plan(root, context["purpose"]):
+            checkout.mkdir()
+            raw = gate.transport_json({"sha": profile["sha"], "tree": profile["tree"], "checkout": str(checkout), "files": {}})
+            (root / "bootstrap" / (role + "-source.json")).write_bytes(raw)
+            sources[role] = {"checkout": str(checkout), "sha": profile["sha"], "tree": profile["tree"],
+                            "listing_sha256": profile["listing"], "snapshot_bytes": len(raw),
+                            "snapshot_sha256": hashlib.sha256(raw).hexdigest()}
+        python = root / "toolchain/custody-python/Scripts/python.exe"
+        python.parent.mkdir(parents=True); python.write_bytes(b"explicit nonexecutable interpreter fixture")
+        tools = {}
+        for name in ("cargo", "rustc", "rustdoc", "cargo-fmt", "rustfmt", "rustup", "python", "git", "node", "bash", "gcc", "g++", "ar", "as", "ld"):
+            tools[name] = {"absolute_path": str(python), "fingerprint": gate.custody.fingerprint(python, python.parent),
+                           "version": "explicit intercepted version"}
+        def command(label, raw=b"explicit command stdout"):
+            out, err = logs / (label + ".stdout.log"), logs / (label + ".stderr.log")
+            out.write_bytes(raw); err.write_bytes(b"")
+            row = {"context": context, "argv": ["explicit-intercepted-tool", label], "exit_code": 0,
+                   "observation": "DIRECT_PROCESS_EXIT_OBSERVED", "log_custody": "VERIFIED_SNAPSHOT",
+                   "stdout": gate.custody.fingerprint(out, logs), "stderr": gate.custody.fingerprint(err, logs)}
+            (logs / (label + ".command.json")).write_bytes(gate.transport_json(row))
+            return row
+        jobs = gate.transport_json({"total_count": 1, "jobs": [{"id": 201, "run_id": 12345, "head_sha": "c" * 40,
+              "name": "sdk-foundation-g0", "status": "completed", "conclusion": "success"}]})
+        api = command("gate-source-job", jobs)
+        prerequisites = {"status": "OBSERVED_EXISTING_PREREQUISITES", "tools": tools,
+            "image_tools": {"fixture": "explicit image tool location seam"},
+            "worker_python": gate.custody.fingerprint(python, root), "worker_python_path": str(python)}
+        for key, label in (("python_command", "sdk-prerequisites"), ("dependency_command", "transport-dependencies"),
+                           ("custody_capability_command", "custody-capability"), ("toolchain_command", "owned-toolchain")):
+            prerequisites[key] = command(label)
+        admission = {"status": "EXPLICIT_KERNEL_AND_GIT_SEAM_FIXTURE"}
+        ack = {"schema": gate.HOSTED_BOOTSTRAP_SCHEMA, "kind": "TECHNICAL_INPUT_AND_CUSTODY_READY",
+               "context": context, "clock": clock, "input_sha256": hashlib.sha256(public).hexdigest(),
+               "review_sha256": hashlib.sha256(review).hexdigest(), "recipient_sha256": gate.HOSTED_TRANSPORT_RECIPIENT_SHA256,
+               "gate_admission": admission, "gate_g0": {"conclusion": "success", "source_sha": "c" * 40,
+                   "job_id": 201, "command": api, "api_original_sha256": hashlib.sha256(jobs).hexdigest()},
+               "sources": sources, "crypto_sources": dict(gate.HOSTED_TRANSPORT_PINS), "prerequisites": prerequisites,
+               "human_acknowledgement": False, "lease_authority": False, "sdk_started": False, "automatic_retry": False}
+        raw = gate.transport_json(ack)
+        path = root / "bootstrap/technical-ready.original.json"; path.write_bytes(raw)
+        return auth, context, root, path, ack, admission
+
+    def test_technical_bootstrap_reads_actual_bound_sources_streams_and_same_clock_before_worker(self):
+        auth, context, root, path, ack, admission = self.bootstrap_fixture()
+        expected = hashlib.sha256(path.read_bytes()).hexdigest()
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": auth}), \
+                patch.object(gate, "verify_hosted_gate", return_value=admission), patch.object(gate, "source_unchanged") as sources, \
+                patch.object(gate, "hosted_image_tool_roots", return_value=ack["prerequisites"]["image_tools"]):
+            value = gate.hosted_load_bootstrap(root, expected, context, self.env)
+            self.assertEqual(value["sdk"], root / "checkouts/fixed")
+            self.assertEqual(value["baselines"], {})
+            self.assertEqual(value["budget"].started, ack["clock"]["original_started_monotonic_ns"])
+            self.assertEqual(value["budget"].original_deadline, ack["clock"]["original_deadline_monotonic_ns"])
+            sources.assert_called_once()
+            self.assertFalse(value["ack"]["human_acknowledgement"])
+            self.assertFalse(value["ack"]["lease_authority"])
+            self.assertFalse(value["ack"]["sdk_started"])
+            # A successful receipt does not authorize a new row or another SDK source.
+            with patch.object(gate, "REVIEWED_AUTHORITIES", {}), self.assertRaises(ValueError):
+                gate.hosted_load_bootstrap(root, expected, context, self.env)
+
+    def test_technical_bootstrap_rejects_consistent_foreign_source_unknown_stream_and_renewed_clock(self):
+        auth, context, root, path, original, admission = self.bootstrap_fixture()
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": auth}), \
+                patch.object(gate, "verify_hosted_gate", return_value=admission), patch.object(gate, "source_unchanged"), \
+                patch.object(gate, "hosted_image_tool_roots", return_value=original["prerequisites"]["image_tools"]):
+            for mutation in ("source", "clock", "human"):
+                changed = copy.deepcopy(original)
+                if mutation == "source": changed["sources"]["fixed"]["sha"] = "f" * 40
+                elif mutation == "clock": changed["clock"]["work_deadline_monotonic_ns"] += 10**9
+                else: changed["human_acknowledgement"] = True
+                raw = gate.transport_json(changed); path.write_bytes(raw)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    gate.hosted_load_bootstrap(root, hashlib.sha256(raw).hexdigest(), context, self.env)
+            changed = copy.deepcopy(original)
+            changed["prerequisites"]["python_command"]["observation"] = "UNKNOWN_TIMEOUT_NO_RETRY"
+            row = changed["prerequisites"]["python_command"]
+            (root / "bootstrap/commands/sdk-prerequisites.command.json").write_bytes(gate.transport_json(row))
+            raw = gate.transport_json(changed); path.write_bytes(raw)
+            with self.assertRaisesRegex(ValueError, "uncertain"):
+                gate.hosted_load_bootstrap(root, hashlib.sha256(raw).hexdigest(), context, self.env)
 
 if __name__ == "__main__":
     unittest.main()

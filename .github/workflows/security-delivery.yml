@@ -91,6 +91,11 @@ on:
         required: false
         type: string
         default: ""
+      sdk_foundation_transport:
+        description: Closed public transport review and recipient input (not authority)
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -1041,14 +1046,19 @@ jobs:
     needs: sdk-foundation-g0
     runs-on: windows-2025
     timeout-minutes: 135
+    permissions:
+      contents: read
+      actions: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUTF8: "1"
       SDK_FOUNDATION_SCOPE: ${{ inputs.verification_scope }}
       SDK_FOUNDATION_SOURCE: ${{ inputs.sdk_foundation_source_sha }}
       SDK_FOUNDATION_AUTHORITY: ${{ inputs.sdk_foundation_authority }}
+      SDK_FOUNDATION_TRANSPORT: ${{ inputs.sdk_foundation_transport }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        timeout-minutes: 2
         env:
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: core.autocrlf
@@ -1058,6 +1068,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        timeout-minutes: 3
         with:
           python-version: "3.13"
       - name: Observe standard hosted capacity without SDK execution
@@ -1072,7 +1083,9 @@ jobs:
             1> (Join-Path $public 'capacity-stdout.log') 2> (Join-Path $public 'capacity-stderr.log')
           $actualExit = $LASTEXITCODE
           if ($actualExit -ne 0) { throw "Capacity observation incomplete with actual child exit $actualExit" }
-      - name: Admit exact hosted gate and reject uncomposed private transport
+      - name: Admit exact hosted gate and bound public transport input
+        id: foundation_admission
+        timeout-minutes: 2
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1084,12 +1097,548 @@ jobs:
             1> (Join-Path $public 'stdout.log') 2> (Join-Path $public 'stderr.log')
           $actualExit = $LASTEXITCODE
           if ($actualExit -ne 0) { throw "Hosted source admission rejected with actual child exit $actualExit" }
-      # No private source is fetched or published by this proposal. The exact
-      # input transport and private output custody must be composed into a new
-      # reviewed gate base before the controller's explicit blocker is replaced.
-      # Do not insert a boolean bypass, map E:, or clear actual Actions identity.
+      # BEGIN Foundation ciphertext transport preparation
+      # Authority remains an exact reviewed catalogue row. The controller starts
+      # one H7200 clock before SDK preparation and reserves its last1800s for custody.
+      # Upload guards share that original clock; failure never enables another producer.
+      - name: Run the closed hosted controller with original work and custody budgets
+        if: steps.foundation_admission.outcome == 'success'
+        id: foundation_controller
+        timeout-minutes: 120
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $logs = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-controller-' + $env:GITHUB_RUN_ID + '-1')
+          if (Test-Path -LiteralPath $logs) { throw 'Original controller namespace already exists' }
+          New-Item -ItemType Directory -Path $logs | Out-Null
+          & python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --source-sha $env:SDK_FOUNDATION_SOURCE --authority $env:SDK_FOUNDATION_AUTHORITY --hosted-controller `
+            1> (Join-Path $logs 'stdout.original') 2> (Join-Path $logs 'stderr.original')
+          $actualExit = $LASTEXITCODE
+          if ($null -eq $actualExit) { throw 'Original controller exit is unknown' }
+          $terminal = @{schema='motionwright.sdk-foundation-technical-bootstrap/1';run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;source_sha=$env:GITHUB_SHA;exit_code=[int]$actualExit}
+          $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($terminal | ConvertTo-Json -Compress) + "`n")
+          $stream = [IO.File]::Open((Join-Path $logs 'exit.original.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+          try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
+          if ($actualExit -ne 0) { throw "Original controller failed or is uncertain with exit $actualExit; preserve prefixes without retry" }
+      - name: Seal retained private originals into bounded ciphertext parts
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_controller.outputs.custody_ready == 'true'
+        id: foundation_parts
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action preflight `
+            1> (Join-Path $private 'transport-preflight.stdout.original') 2> (Join-Path $private 'transport-preflight.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original transport reserve or review is unavailable' }
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action data `
+            1> (Join-Path $private 'transport-data.stdout.original') 2> (Join-Path $private 'transport-data.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Private capture incomplete; retain known ciphertext parts without retry or result credit' }
+      - name: Check original budget and ciphertext for part 01
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_01 == 'ready'
+        id: foundation_guard_01
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "01"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-01.stdout.original') 2> (Join-Path $private 'upload-01.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 01
+        if: always() && steps.foundation_guard_01.outputs.ready == 'true'
+        id: foundation_upload_01
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-01
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-01.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 02
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_02 == 'ready'
+        id: foundation_guard_02
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "02"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-02.stdout.original') 2> (Join-Path $private 'upload-02.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 02
+        if: always() && steps.foundation_guard_02.outputs.ready == 'true'
+        id: foundation_upload_02
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-02
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-02.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 03
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_03 == 'ready'
+        id: foundation_guard_03
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "03"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-03.stdout.original') 2> (Join-Path $private 'upload-03.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 03
+        if: always() && steps.foundation_guard_03.outputs.ready == 'true'
+        id: foundation_upload_03
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-03
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-03.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 04
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_04 == 'ready'
+        id: foundation_guard_04
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "04"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-04.stdout.original') 2> (Join-Path $private 'upload-04.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 04
+        if: always() && steps.foundation_guard_04.outputs.ready == 'true'
+        id: foundation_upload_04
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-04
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-04.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 05
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_05 == 'ready'
+        id: foundation_guard_05
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "05"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-05.stdout.original') 2> (Join-Path $private 'upload-05.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 05
+        if: always() && steps.foundation_guard_05.outputs.ready == 'true'
+        id: foundation_upload_05
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-05
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-05.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 06
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_06 == 'ready'
+        id: foundation_guard_06
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "06"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-06.stdout.original') 2> (Join-Path $private 'upload-06.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 06
+        if: always() && steps.foundation_guard_06.outputs.ready == 'true'
+        id: foundation_upload_06
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-06
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-06.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 07
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_07 == 'ready'
+        id: foundation_guard_07
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "07"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-07.stdout.original') 2> (Join-Path $private 'upload-07.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 07
+        if: always() && steps.foundation_guard_07.outputs.ready == 'true'
+        id: foundation_upload_07
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-07
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-07.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 08
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_08 == 'ready'
+        id: foundation_guard_08
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "08"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-08.stdout.original') 2> (Join-Path $private 'upload-08.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 08
+        if: always() && steps.foundation_guard_08.outputs.ready == 'true'
+        id: foundation_upload_08
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-08
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-08.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 09
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_09 == 'ready'
+        id: foundation_guard_09
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "09"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-09.stdout.original') 2> (Join-Path $private 'upload-09.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 09
+        if: always() && steps.foundation_guard_09.outputs.ready == 'true'
+        id: foundation_upload_09
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-09
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-09.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 10
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_10 == 'ready'
+        id: foundation_guard_10
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "10"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-10.stdout.original') 2> (Join-Path $private 'upload-10.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 10
+        if: always() && steps.foundation_guard_10.outputs.ready == 'true'
+        id: foundation_upload_10
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-10
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-10.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 11
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_11 == 'ready'
+        id: foundation_guard_11
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "11"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-11.stdout.original') 2> (Join-Path $private 'upload-11.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 11
+        if: always() && steps.foundation_guard_11.outputs.ready == 'true'
+        id: foundation_upload_11
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-11
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-11.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 12
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_12 == 'ready'
+        id: foundation_guard_12
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "12"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-12.stdout.original') 2> (Join-Path $private 'upload-12.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 12
+        if: always() && steps.foundation_guard_12.outputs.ready == 'true'
+        id: foundation_upload_12
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-12
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-12.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 13
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_13 == 'ready'
+        id: foundation_guard_13
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "13"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-13.stdout.original') 2> (Join-Path $private 'upload-13.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 13
+        if: always() && steps.foundation_guard_13.outputs.ready == 'true'
+        id: foundation_upload_13
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-13
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-13.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 14
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_14 == 'ready'
+        id: foundation_guard_14
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "14"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-14.stdout.original') 2> (Join-Path $private 'upload-14.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 14
+        if: always() && steps.foundation_guard_14.outputs.ready == 'true'
+        id: foundation_upload_14
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-14
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-14.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Check original budget and ciphertext for part 15
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outputs.part_15 == 'ready'
+        id: foundation_guard_15
+        timeout-minutes: 1
+        shell: pwsh
+        env:
+          FOUNDATION_UPLOAD_SLOT: "15"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-data-check `
+            1> (Join-Path $private 'upload-15.stdout.original') 2> (Join-Path $private 'upload-15.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original data upload guard rejected; no retry' }
+      - name: Upload opaque Foundation part 15
+        if: always() && steps.foundation_guard_15.outputs.ready == 'true'
+        id: foundation_upload_15
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-15
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/part-15.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Bind data artifacts and seal the private index last
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_parts.outcome == 'success'
+        id: foundation_index
+        timeout-minutes: 3
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOUNDATION_ARTIFACT_01: ${{ steps.foundation_upload_01.outputs.artifact-id }}
+          FOUNDATION_DIGEST_01: ${{ steps.foundation_upload_01.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_02: ${{ steps.foundation_upload_02.outputs.artifact-id }}
+          FOUNDATION_DIGEST_02: ${{ steps.foundation_upload_02.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_03: ${{ steps.foundation_upload_03.outputs.artifact-id }}
+          FOUNDATION_DIGEST_03: ${{ steps.foundation_upload_03.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_04: ${{ steps.foundation_upload_04.outputs.artifact-id }}
+          FOUNDATION_DIGEST_04: ${{ steps.foundation_upload_04.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_05: ${{ steps.foundation_upload_05.outputs.artifact-id }}
+          FOUNDATION_DIGEST_05: ${{ steps.foundation_upload_05.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_06: ${{ steps.foundation_upload_06.outputs.artifact-id }}
+          FOUNDATION_DIGEST_06: ${{ steps.foundation_upload_06.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_07: ${{ steps.foundation_upload_07.outputs.artifact-id }}
+          FOUNDATION_DIGEST_07: ${{ steps.foundation_upload_07.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_08: ${{ steps.foundation_upload_08.outputs.artifact-id }}
+          FOUNDATION_DIGEST_08: ${{ steps.foundation_upload_08.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_09: ${{ steps.foundation_upload_09.outputs.artifact-id }}
+          FOUNDATION_DIGEST_09: ${{ steps.foundation_upload_09.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_10: ${{ steps.foundation_upload_10.outputs.artifact-id }}
+          FOUNDATION_DIGEST_10: ${{ steps.foundation_upload_10.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_11: ${{ steps.foundation_upload_11.outputs.artifact-id }}
+          FOUNDATION_DIGEST_11: ${{ steps.foundation_upload_11.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_12: ${{ steps.foundation_upload_12.outputs.artifact-id }}
+          FOUNDATION_DIGEST_12: ${{ steps.foundation_upload_12.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_13: ${{ steps.foundation_upload_13.outputs.artifact-id }}
+          FOUNDATION_DIGEST_13: ${{ steps.foundation_upload_13.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_14: ${{ steps.foundation_upload_14.outputs.artifact-id }}
+          FOUNDATION_DIGEST_14: ${{ steps.foundation_upload_14.outputs.artifact-digest }}
+          FOUNDATION_ARTIFACT_15: ${{ steps.foundation_upload_15.outputs.artifact-id }}
+          FOUNDATION_DIGEST_15: ${{ steps.foundation_upload_15.outputs.artifact-digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action index `
+            1> (Join-Path $private 'transport-index.stdout.original') 2> (Join-Path $private 'transport-index.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Private index remains unadmitted; preserve data parts without retry' }
+      - name: Check original index upload budget and ciphertext
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_index.outcome == 'success'
+        id: foundation_index_guard
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action upload-index-check `
+            1> (Join-Path $private 'upload-index.stdout.original') 2> (Join-Path $private 'upload-index.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Original index upload guard rejected; no retry' }
+      - name: Upload the opaque private index after all data parts
+        if: always() && steps.foundation_index_guard.outputs.ready == 'true'
+        id: foundation_index_upload
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: foundation-cipher-${{ github.run_id }}-${{ github.run_attempt }}-index
+          path: verification/foundation-private-${{ github.run_id }}-1/outgoing/private-index.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Publish only the bounded opaque index descriptor
+        if: always() && steps.foundation_admission.outcome == 'success' && steps.foundation_index_upload.outcome == 'success'
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOUNDATION_INDEX_ARTIFACT: ${{ steps.foundation_index_upload.outputs.artifact-id }}
+          FOUNDATION_INDEX_DIGEST: ${{ steps.foundation_index_upload.outputs.artifact-digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $private = Join-Path $env:GITHUB_WORKSPACE ('verification/foundation-private-' + $env:GITHUB_RUN_ID + '-1')
+          $python = Join-Path $private 'toolchain/custody-python/Scripts/python.exe'
+          & $python -I -B -X utf8 gate/tooling/ci_sdk_foundation_candidate.py --mode windows-hosted-g1 `
+            --authority $env:SDK_FOUNDATION_AUTHORITY --transport-action descriptor `
+            2> (Join-Path $private 'transport-descriptor.stderr.original')
+          if ($LASTEXITCODE -ne 0) { throw 'Opaque index descriptor was not completely observed; no retry' }
+      # END Foundation ciphertext transport preparation
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
+        timeout-minutes: 1
         with:
           name: sdk-foundation-hosted-admission-${{ github.run_id }}-${{ github.run_attempt }}
           path: verification/sdk-foundation-hosted-admission

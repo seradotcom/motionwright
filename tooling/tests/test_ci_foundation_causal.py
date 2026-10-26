@@ -532,6 +532,11 @@ class FoundationCausalTests(unittest.TestCase):
             "        required: false\n"
             "        type: string\n"
             '        default: ""\n'
+            '      sdk_foundation_transport:\n'
+            '        description: Closed public transport review and recipient input (not authority)\n'
+            '        required: false\n'
+            '        type: string\n'
+            '        default: ""\n'
         )
         self.assertEqual(original.count(sdk_inputs), 1)
         original = original.replace(sdk_inputs, "", 1)
