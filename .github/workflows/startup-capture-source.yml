@@ -8,6 +8,8 @@ on:
       - "tooling/tests/test_startup_capture_core.py"
       - "tooling/startup_capture_collector.py"
       - "tooling/tests/test_startup_capture_collector.py"
+      - "tooling/startup_capture_launcher.py"
+      - "tooling/tests/test_startup_capture_launcher.py"
       - "tooling/startup_capture_outer.py"
       - "tooling/tests/test_startup_capture_outer.py"
       - ".github/workflows/startup-capture-source.yml"
@@ -27,6 +29,21 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      PYTHONNOUSERSITE: "1"
+      # Establish loader isolation before any Python/launcher process is loaded.
+      LD_PRELOAD: ""
+      LD_LIBRARY_PATH: ""
+      LD_AUDIT: ""
+      PYTHONHOME: ""
+      PYTHONPATH: ""
+      PYTHONSTARTUP: ""
+      PYTHONINSPECT: ""
+      BASH_ENV: ""
+      ENV: ""
+      CDPATH: ""
+      GCONV_PATH: ""
+      LOCPATH: ""
+      GLIBC_TUNABLES: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -54,23 +71,36 @@ jobs:
           assert source == os.environ["GITHUB_SHA"]
           paths = ("tooling/startup_capture_core.py", "tooling/tests/test_startup_capture_core.py",
                    "tooling/startup_capture_collector.py", "tooling/tests/test_startup_capture_collector.py",
+                   "tooling/startup_capture_launcher.py", "tooling/tests/test_startup_capture_launcher.py",
                    "tooling/startup_capture_outer.py", "tooling/tests/test_startup_capture_outer.py",
                    ".github/workflows/startup-capture-source.yml", "tooling/ci_test_runner.py")
           files = {name: {"bytes": (root/name).stat().st_size,
                           "sha256": hashlib.sha256((root/name).read_bytes()).hexdigest()}
                    for name in paths}
+          workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
+          workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
+          workflow_prefix = os.environ["GITHUB_REPOSITORY"] + "/"
+          assert workflow_ref.startswith(workflow_prefix)
+          workflow_path = workflow_ref[len(workflow_prefix):].split("@", 1)[0]
+          assert workflow_path == ".github/workflows/startup-capture-source.yml"
+          workflow_raw = subprocess.check_output(["git", "show", workflow_sha + ":" + workflow_path], cwd=root)
+          assert workflow_raw == (root/workflow_path).read_bytes()
+          (output/"executed-workflow.git.original").write_bytes(workflow_raw)
           context = {"schema": "motionwright.startup-capture-source-context/1", "source_sha": source,
                      "source_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip(),
+                     "workflow_sha": workflow_sha, "workflow_ref": workflow_ref,
+                     "workflow_path": workflow_path, "workflow_sha256": hashlib.sha256(workflow_raw).hexdigest(),
                      "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                      "job": os.environ["GITHUB_JOB"], "python": sys.version, "files": files,
-                     "scope": "Source controls, five-pipe fixture custody and real Linux kernel fixtures only",
+                     "scope": "Source controls, synthetic acyclic admission pairs, five-pipe custody and real Linux kernel fixtures only",
                      "installed_application_executed": False, "formal_acceptance": False}
           (output/"context-before.json").write_text(json.dumps(context, indent=2)+"\n")
-          for name in paths[:6]:
+          for name in paths[:8]:
               ast.parse((root/name).read_bytes(), filename=name)
           commands = (
               ("whitespace", ["git", "diff", "--check", "HEAD^", "HEAD"]),
               ("source-policy", [sys.executable, "-B", "tooling/source_policy.py"]),
+              ("public-surface-policy", [sys.executable, "-B", "tooling/public_surface_policy.py"]),
               ("acceptance-policy", [sys.executable, "-B", "tooling/acceptance_policy.py"]),
               ("creative-policy", [sys.executable, "-B", "tooling/creative_status_policy.py"]),
           )
@@ -126,13 +156,24 @@ jobs:
             --pattern test_ci_job_plan.py \
             --mode both --expected-source "$GITHUB_SHA" \
             --report "$CAPTURE_EVIDENCE/g0-contracts/receipt.json" --require-complete
-      - name: Exercise bounded capture and actual Linux process closure
+      - name: Exercise acyclic admission and bounded Linux capture fixtures
         shell: bash
         run: |
-          python3 -I -B tooling/ci_test_runner.py \
+          # Source fixtures construct their own closed W/M pair. This workflow
+          # does not provide a real admission manifest or run an installed app.
+          env -i PATH="$PATH" HOME="$HOME" LANG="${LANG:-C.UTF-8}" \
+            TMPDIR="$TMPDIR" TMP="$TMPDIR" TEMP="$TMPDIR" \
+            PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" GITHUB_WORKFLOW_REF="$GITHUB_WORKFLOW_REF" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_JOB="$GITHUB_JOB" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_SERVER_URL="$GITHUB_SERVER_URL" \
+            python3 -I -B tooling/ci_test_runner.py \
             --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
             --pattern test_startup_capture_core.py \
             --pattern test_startup_capture_collector.py \
+            --pattern test_startup_capture_launcher.py \
             --pattern test_startup_capture_outer.py \
             --mode both --expected-source "$GITHUB_SHA" \
             --report "$CAPTURE_EVIDENCE/kernel-controls/receipt.json" --require-complete

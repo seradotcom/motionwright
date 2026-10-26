@@ -43,6 +43,101 @@ def stamp(pid, parent, *, start=None, group=None, session=None):
             "uid": 1000, "state": "R"}
 
 
+def fixture_environment():
+    # Fixture children receive a closed environment too; this is not an
+    # assertion that the test runner's initial native loader was observed.
+    keys = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
+            "TZ", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME")
+    return outer._child_environment({key: os.environ[key] for key in keys if key in os.environ})
+
+
+def admission_fixture(now):
+    """A verifier-return fixture, never a launcher/installed admission."""
+    paths = {role: str(outer.HERE / name) for role, name in {
+        "launcher": "startup_capture_launcher.py", "outer": "startup_capture_outer.py",
+        "core": "startup_capture_core.py", "collector": "startup_capture_collector.py",
+        "bootstrap": "fixture-owner.py", "observer": "fixture-observer.py"}.items()}
+    digests = {"launcher": outer.LAUNCHER_SHA256, "outer": "a" * 64,
+        "core": outer.CORE_SHA256, "collector": outer.COLLECTOR_SHA256,
+        "observer": outer.OBSERVER_SHA256, "bootstrap": "e" * 64}
+    source = lambda role: {"path": paths[role], "sha256": digests[role]}
+    plan = {"status": "A1_ADMITTED_INDEPENDENT_STARTUP",
+        "observer_status": "ADMITTED_NEW_READONLY_OBSERVATION",
+        "operation_id": "b3d1a2dc-b0fd-462f-8a9c-fb063f128bdf",
+        "session_capture_reference": "source-fixture-reference",
+        "parent": str(outer.HERE / "fixture-private-parent"),
+        "start_mono_ns": now - 20,
+        "sources": {"bootstrap": source("bootstrap"), "observer": source("observer"),
+                    "observer_subtree_core": source("core")}}
+    verified = {"manifest": {"scope": "source-fixture", "sources": {
+        role: {"path": "tooling/" + Path(path).name, "sha256": digests[role]}
+        for role, path in paths.items()}}, "sources": {role: source(role) for role in paths},
+        "environment": {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        "started_ns": now - 20, "operation_ns": now - 20 + 24 * outer.NS,
+        "join_ns": now - 20 + 26 * outer.NS, "cleanup_ns": now - 20 + 32 * outer.NS,
+        "custody_ns": now - 20 + 40 * outer.NS,
+        "provenance": {"source_only_fixture": True, "human_review_authenticated": False}}
+    return plan, verified
+
+
+def bound_context_fixture(now):
+    """Real L/O schema composition; kernel/Git inputs remain explicit fixtures."""
+    launcher = outer.launcher_api
+    plan, view = admission_fixture(now)
+    actual_outer_sha = hashlib.sha256(OUTER_FILE.read_bytes()).hexdigest()
+    view["manifest"]["sources"]["outer"]["sha256"] = actual_outer_sha
+    view["sources"]["outer"]["sha256"] = actual_outer_sha
+    bootstrap = ("REVIEWED_OUTER_SOURCES = frozenset({" + repr(actual_outer_sha) + "})\n").encode()
+    bootstrap_sha = hashlib.sha256(bootstrap).hexdigest()
+    view["manifest"]["sources"]["bootstrap"]["sha256"] = bootstrap_sha
+    view["sources"]["bootstrap"]["sha256"] = bootstrap_sha
+    plan["sources"]["bootstrap"]["sha256"] = bootstrap_sha
+    template = json.loads(json.dumps(plan))
+    template.pop("start_mono_ns")
+    raw_template = launcher.canonical(template)
+    manifest = {"schema": launcher.MANIFEST_SCHEMA, "scope": "source-fixture",
+        "budgets_seconds": dict(launcher.SECONDS), "sources": view["manifest"]["sources"],
+        "plan": {"path": "tooling/fixtures/startup-capture/fixture-plan.json",
+                 "sha256": hashlib.sha256(raw_template).hexdigest()}, "required_environment": []}
+    raw_manifest = launcher.canonical(manifest)
+    repo = outer.HERE.parent
+    raw_workflow = ("name: source-fixture\non: workflow_dispatch\njobs:\n  fixture:\n"
+        "    runs-on: ubuntu-latest\n    env:\n"
+        '      STARTUP_CAPTURE_MANIFEST_PATH: "' + launcher.MANIFEST_PATH + '"\n'
+        '      STARTUP_CAPTURE_MANIFEST_SHA256: "' + hashlib.sha256(raw_manifest).hexdigest() + '"\n'
+        '      STARTUP_CAPTURE_LAUNCHER_PATH: "' + launcher.LAUNCHER_PATH + '"\n'
+        '      STARTUP_CAPTURE_LAUNCHER_SHA256: "' + outer.LAUNCHER_SHA256 + '"\n'
+        "    steps:\n      - run: true\n").encode()
+    workflow = {"repository": "fixture/repository", "source_sha": "1" * 40,
+        "workflow_sha": "1" * 40, "workflow_ref": "fixture/repository/.github/workflows/startup-capture-source.yml@fixture",
+        "path": ".github/workflows/startup-capture-source.yml", "sha256": hashlib.sha256(raw_workflow).hexdigest(),
+        "run_id": "1", "run_attempt": "1", "job": "fixture",
+        "original_base64": outer.base64.b64encode(raw_workflow).decode()}
+    def binding(role, pid, parent):
+        result = {key: value for key, value in stamp(pid, parent).items() if key != "state"}
+        result.update(source=view["sources"][role], executable={"path": str(Path(sys.executable).resolve()),
+            "sha256": hashlib.sha256(b"fixture executable").hexdigest()},
+            cmdline_sha256=hashlib.sha256(b"fixture-only process argv\0").hexdigest())
+        return result
+    data = {"schema": launcher.SCHEMA, "repo": str(repo), "started_ns": now - 20,
+        "deadlines": launcher.original_deadlines(now - 20),
+        "launcher": binding("launcher", 90, 80), "outer": binding("outer", 100, 90),
+        "workflow": workflow,
+        "manifest": {"path": str(repo / launcher.MANIFEST_PATH),
+            "sha256": hashlib.sha256(raw_manifest).hexdigest(), "value": manifest,
+            "original_base64": outer.base64.b64encode(raw_manifest).decode()},
+        "plan_template": {"path": str(repo / manifest["plan"]["path"]),
+            "sha256": hashlib.sha256(raw_template).hexdigest(), "value": template},
+        "plan_sha256": hashlib.sha256(launcher.canonical(plan)).hexdigest(),
+        "environment": launcher.allowlisted_environment({"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}),
+        "transport": {"fd": 19, "identity": [1, 2, stat.S_IFIFO]}}
+    raw = launcher.canonical(data)
+    context = launcher.LaunchContext(data, hashlib.sha256(raw).hexdigest(), data["transport"]["identity"], raw)
+    original_inputs = {key: data[key] for key in ("workflow", "manifest", "plan_template")}
+    original_inputs["plan"] = plan
+    return plan, context, original_inputs, bootstrap
+
+
 class FakeCollector:
     def __init__(self, now, originals):
         self.originals = originals
@@ -198,11 +293,14 @@ class PortableOuterTests(unittest.TestCase):
         self.assertEqual(close.call_count, 2)
 
     def test_foreign_plan_hash_cannot_self_admit_a_bootstrap(self):
-        plan = {"status": "A1_ADMITTED_INDEPENDENT_STARTUP", "observer_status": "ADMITTED_NEW_READONLY_OBSERVATION",
-                "sources": {"bootstrap": {"path": str(HERE / "forged.py"), "sha256": "d" * 64}}}
-        with mock.patch.object(outer, "_source_bytes") as reader:
-            with self.assertRaisesRegex(outer.OuterError, "exact reviewed A2"):
-                outer.require_owner_admission(plan, "a" * 64)
+        plan, context, _, _ = bound_context_fixture(self.now)
+        plan["sources"]["bootstrap"]["sha256"] = "d" * 64
+        with mock.patch.object(outer.launcher_api, "_verify_kernel_binding") as kernel, \
+             mock.patch.object(outer, "_source_bytes") as reader:
+            with self.assertRaisesRegex(outer.OuterError, "foreign plan"):
+                outer.require_owner_admission(plan, context.data["manifest"]["value"]["sources"]["outer"]["sha256"],
+                    launch_context=context)
+        kernel.assert_not_called()
         reader.assert_not_called()
 
     def test_missing_launch_digest_is_rejected_before_any_process(self):
@@ -216,11 +314,11 @@ class PortableOuterTests(unittest.TestCase):
         read.assert_not_called()
 
     def test_exact_owner_empty_allowlist_does_not_admit(self):
-        plan = {"status": "A1_ADMITTED_INDEPENDENT_STARTUP", "observer_status": "ADMITTED_NEW_READONLY_OBSERVATION",
-                "sources": {"bootstrap": {"path": str(HERE / "owner.py"), "sha256": outer.A2_CONSUMER_SHA256}}}
-        with mock.patch.object(outer, "_source_bytes", return_value=b"REVIEWED_OUTER_SOURCES = frozenset()\n"):
+        plan, verified = admission_fixture(self.now)
+        with mock.patch.object(outer.launcher_api, "verify_child_launch_context", return_value=verified), \
+             mock.patch.object(outer, "_source_bytes", return_value=b"REVIEWED_OUTER_SOURCES = frozenset()\n"):
             with self.assertRaisesRegex(outer.OuterError, "not been admitted"):
-                outer.require_owner_admission(plan, "a" * 64)
+                outer.require_owner_admission(plan, "a" * 64, launch_context=object())
 
     def test_allowlist_expression_is_not_executed(self):
         with self.assertRaises(outer.OuterError):
@@ -476,6 +574,285 @@ class PortableOuterTests(unittest.TestCase):
         numeric.assert_not_called()
 
 
+class AcyclicOuterTests(unittest.TestCase):
+    def setUp(self):
+        PortableOuterTests.setUp(self)
+
+    def assembler(self):
+        return PortableOuterTests.assembler(self)
+
+    def test_missing_or_self_asserted_context_never_reads_bootstrap(self):
+        plan, _ = admission_fixture(self.now)
+        for context in (None, {}, {"verified": True, "manifest_sha256": "e" * 64}):
+            with self.subTest(context=context), mock.patch.object(outer, "_source_bytes") as reader:
+                with self.assertRaises(outer.OuterError):
+                    outer.require_owner_admission(plan, "a" * 64, launch_context=context)
+            reader.assert_not_called()
+
+    def test_verified_manifest_and_owner_allowlist_are_both_required(self):
+        plan, verified = admission_fixture(self.now)
+        raw = ("REVIEWED_OUTER_SOURCES = frozenset({" + repr("a" * 64) + "})\n").encode()
+        context = object()
+        with mock.patch.object(outer.launcher_api, "verify_child_launch_context", return_value=verified) as verify, \
+             mock.patch.object(outer, "_source_bytes", return_value=raw) as reader:
+            result = outer.require_owner_admission(plan, "a" * 64, launch_context=context)
+        self.assertEqual(result, raw)
+        verify.assert_called_once_with(context, "a" * 64, plan,
+            expected_launcher_sha256=outer.LAUNCHER_SHA256)
+        reader.assert_called_once_with(Path(verified["sources"]["bootstrap"]["path"]), "e" * 64)
+
+    def test_frozen_l_o_api_composition_uses_real_manifest_descriptors(self):
+        plan, context, originals, raw = bound_context_fixture(self.now)
+        actual_outer_sha = context.data["manifest"]["value"]["sources"]["outer"]["sha256"]
+        # The actual L verifier and O admission run together. Kernel/Git IO are
+        # explicit fixture seams; this is not a physical parent/process proof.
+        with mock.patch.object(outer.launcher_api, "_verify_kernel_binding") as kernel, \
+             mock.patch.object(outer.launcher_api, "_admission_bytes", return_value=originals) as git, \
+             mock.patch.object(os, "getpid", return_value=100), \
+             mock.patch.object(os, "getppid", return_value=90, create=True), \
+             mock.patch.dict(os.environ, context.data["environment"], clear=True), \
+             mock.patch.object(outer, "_source_bytes", return_value=raw) as reader:
+            self.assertEqual(outer.require_owner_admission(plan, actual_outer_sha,
+                launch_context=context), raw)
+        self.assertEqual(kernel.call_args_list, [
+            mock.call(context.data["launcher"], 90, source_sha=outer.LAUNCHER_SHA256),
+            mock.call(context.data["outer"], 100, source_sha=actual_outer_sha)])
+        git.assert_called_once_with(Path(context.data["repo"]), context.data["workflow"], context.data["started_ns"])
+        reader.assert_called_once_with(Path(plan["sources"]["bootstrap"]["path"]), hashlib.sha256(raw).hexdigest())
+        self.assertIs(type(context), outer.launcher_api.LaunchContext)
+
+    def test_manifest_cannot_replace_loaded_source_or_bootstrap_path(self):
+        for change in ("launcher", "core", "collector", "observer", "bootstrap-path", "loaded-path"):
+            plan, verified = admission_fixture(self.now)
+            if change == "bootstrap-path":
+                plan["sources"]["bootstrap"]["path"] = str(HERE / "foreign.py")
+            elif change == "loaded-path":
+                verified["sources"]["core"]["path"] = str(HERE / "foreign-core.py")
+            else:
+                verified["manifest"]["sources"][change]["sha256"] = "f" * 64
+            with self.subTest(change=change), \
+                 mock.patch.object(outer.launcher_api, "verify_child_launch_context", return_value=verified), \
+                 mock.patch.object(outer, "_source_bytes") as reader:
+                with self.assertRaises(outer.OuterError):
+                    outer.require_owner_admission(plan, "a" * 64, launch_context=object())
+            reader.assert_not_called()
+
+    def test_unbound_run_rejects_before_source_reads_or_directory_effects(self):
+        plan, _ = admission_fixture(self.now)
+        with mock.patch.object(outer, "_source_bytes") as read, \
+             mock.patch.object(Path, "mkdir") as mkdir, \
+             mock.patch.object(subprocess, "Popen") as start:
+            with self.assertRaisesRegex(outer.OuterError, "launch context"):
+                outer.run_admitted(plan)
+        read.assert_not_called()
+        mkdir.assert_not_called()
+        start.assert_not_called()
+
+    def test_cli_missing_clock_rejects_before_context_or_plan_read(self):
+        with mock.patch.object(sys, "argv", [str(OUTER_FILE), "--plan", str(HERE / "unused.json"),
+                                           "--launch-context-fd", "19"]), \
+             mock.patch.object(outer.launcher_api, "read_launch_context") as context, \
+             mock.patch.object(outer, "_source_bytes") as reader, \
+             mock.patch.object(os, "write") as write:
+            with self.assertRaisesRegex(outer.OuterError, "invalid inherited invocation"):
+                outer.main()
+        context.assert_not_called()
+        reader.assert_not_called()
+        write.assert_not_called()
+
+    def test_cli_late_clock_does_not_touch_inherited_descriptor_or_plan(self):
+        with mock.patch.object(sys, "argv", [str(OUTER_FILE), "--plan", str(HERE / "unused.json"),
+                "--launch-context-fd", "19", "--started-ns", str(self.now - 24 * outer.NS)]), \
+             mock.patch.object(outer, "_source_bytes") as reader, \
+             mock.patch.object(os, "read") as read, mock.patch.object(os, "close") as close:
+            with self.assertRaises(RuntimeError):
+                outer.main()
+        reader.assert_not_called()
+        read.assert_not_called()
+        close.assert_not_called()
+
+    def test_original_budget_has_exact_d_j_c_and_external_h(self):
+        _, verified = admission_fixture(self.now)
+        budget, custody = outer._inherited_budget(verified)
+        self.assertEqual(budget.started_ns, verified["started_ns"])
+        self.assertEqual(budget.operation_ns - budget.started_ns, 24 * outer.NS)
+        self.assertEqual(budget.join_ns - budget.started_ns, 26 * outer.NS)
+        self.assertEqual(budget.cleanup_ns - budget.started_ns, 32 * outer.NS)
+        self.assertEqual(custody - budget.started_ns, 40 * outer.NS)
+
+    def test_missing_boolean_future_late_or_changed_clock_prevents_effects(self):
+        for field, value in (("started_ns", None), ("started_ns", True),
+                ("started_ns", self.now + 1), ("started_ns", self.now - 24 * outer.NS),
+                ("operation_ns", True), ("join_ns", self.now + 27 * outer.NS),
+                ("cleanup_ns", self.now + 33 * outer.NS), ("custody_ns", self.now + 41 * outer.NS)):
+            plan, verified = admission_fixture(self.now)
+            if value is None:
+                verified.pop(field)
+            else:
+                verified[field] = value
+            if field == "started_ns" and type(value) is int and value == self.now - 24 * outer.NS:
+                for key, seconds in (("operation_ns", 24), ("join_ns", 26),
+                                      ("cleanup_ns", 32), ("custody_ns", 40)):
+                    verified[key] = value + seconds * outer.NS
+            with self.subTest(field=field, value=value), \
+                 mock.patch.object(outer, "_source_bytes", return_value=b"fixture-only source"), \
+                 mock.patch.object(outer, "_owner_admission", return_value=(b"fixture", verified)), \
+                 mock.patch.object(core, "_read_proc_bound") as proc, \
+                 mock.patch.object(Path, "mkdir") as mkdir, \
+                 mock.patch.object(outer, "_write_new") as write, \
+                 mock.patch.object(subprocess, "Popen") as start:
+                with self.assertRaises((outer.OuterError, core.CaptureError, KeyError)):
+                    outer.run_admitted(plan, launch_context=object())
+            proc.assert_not_called()
+            mkdir.assert_not_called()
+            write.assert_not_called()
+            start.assert_not_called()
+
+    def test_preparation_returning_after_d_cannot_start_next_write_or_child(self):
+        plan, _ = admission_fixture(self.now)
+        obj = self.assembler()
+        obj.launch = mock.Mock()
+        obj.log_descriptors = []
+        writes = []
+        def stalled_write(path, raw):
+            writes.append((path, raw))
+            self.now = obj.budget.operation_ns + 1
+        with mock.patch.object(outer, "_source_bytes", return_value=b"fixture executable"), \
+             mock.patch.object(os, "readlink", return_value=str(Path(sys.executable).resolve())), \
+             mock.patch.object(outer, "_write_new", side_effect=stalled_write), \
+             mock.patch.object(os, "open") as opened:
+            with self.assertRaisesRegex(outer.OuterError, "original operation deadline"):
+                outer._launch_prepared_owner(obj, plan, OUTER_FILE.resolve(), b"fixture\0",
+                    HERE / "fixture-outer", child_environment={"PATH": "/usr/bin:/bin"})
+        self.assertEqual(len(writes), 1)
+        intent = json.loads(writes[0][1])
+        self.assertEqual(intent["deadline_mono_ns"], obj.budget.cleanup_ns)
+        self.assertEqual(obj.budget.join_ns - obj.budget.started_ns, 26 * outer.NS)
+        obj.launch.assert_not_called()
+        opened.assert_not_called()
+
+    def test_missing_environment_cannot_inherit_the_parent(self):
+        obj = self.assembler()
+        obj.launch_attempted = False
+        with mock.patch.object(outer, "_source_bytes") as reader, \
+             mock.patch.object(subprocess, "Popen") as start:
+            with self.assertRaisesRegex(outer.OuterError, "explicit allowlisted"):
+                obj.launch([sys.executable, "-I", "-B", str(OUTER_FILE)], source_sha256="b" * 64)
+        self.assertFalse(obj.launch_attempted)
+        reader.assert_not_called()
+        start.assert_not_called()
+
+    def test_loader_python_and_shell_overrides_reject_before_source_or_exec(self):
+        for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "PYTHONHOME", "BASH_ENV", "ENV"):
+            obj = self.assembler()
+            obj.launch_attempted = False
+            with self.subTest(key=key), mock.patch.object(outer, "_source_bytes") as reader, \
+                 mock.patch.object(subprocess, "Popen") as start:
+                with self.assertRaisesRegex(outer.OuterError, "environment refused"):
+                    obj.launch([sys.executable, "-I", "-B", str(OUTER_FILE)], source_sha256="b" * 64,
+                        env={"PATH": "/usr/bin:/bin", key: "foreign-injected-value"})
+            reader.assert_not_called()
+            start.assert_not_called()
+            self.assertFalse(obj.launch_attempted)
+
+    def test_effective_child_environment_preserves_session_and_drops_unlisted_values(self):
+        obj = self.assembler()
+        obj.launch_attempted = False
+        obj.pipes.child = {"fixture": outer.OwnedDescriptor(81, "fixture-only-child-copy")}
+        obj.pipes.close_child_copies = mock.Mock(return_value=[])
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(HERE / "private-home"),
+               "XDG_CONFIG_HOME": str(HERE / "private-config"), "DISPLAY": ":42",
+               "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(HERE / "private-bus"),
+               "UNLISTED_SECRET": "must-not-reach-child"}
+        child = types.SimpleNamespace(pid=200, returncode=None)
+        with mock.patch.object(outer, "_source_bytes", return_value=b"fixture source"), \
+             mock.patch.object(obj, "_retain"), \
+             mock.patch.object(subprocess, "Popen", return_value=child) as start:
+            self.assertIs(obj.launch([sys.executable, "-I", "-B", str(OUTER_FILE)],
+                source_sha256="b" * 64, env=env), child)
+        actual = start.call_args.kwargs["env"]
+        self.assertNotIn("UNLISTED_SECRET", actual)
+        for key in ("HOME", "XDG_CONFIG_HOME", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+            self.assertEqual(actual[key], env[key])
+        self.assertEqual(actual, outer.launcher_api.allowlisted_environment(env))
+        self.assertEqual(actual, outer._child_environment(actual))
+        self.assertEqual(start.call_args.kwargs["pass_fds"], (81,))
+
+    @contextmanager
+    def output_pipe(self):
+        with mock.patch.object(outer, "_pipe_identity", return_value=([1, 2, stat.S_IFIFO], os.O_WRONLY)), \
+             mock.patch.object(os, "set_blocking", create=True) as blocking:
+            yield blocking
+
+    def test_bounded_output_preserves_full_bytes_and_never_claims_durability(self):
+        document = {"phase_original_base64": "YWJj", "phase_durable": False, "value": "x" * 80}
+        chunks = []
+        def partial_write(fd, raw):
+            chunks.append(raw[:7])
+            return len(chunks[-1])
+        with self.output_pipe() as blocking, mock.patch.object(os, "write", side_effect=partial_write):
+            receipt = outer._emit_bounded_document(document, custody_ns=self.now + 100, fd=19)
+        raw = b"".join(chunks)
+        self.assertEqual(json.loads(raw), document)
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertEqual(receipt, {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "durable": False})
+        blocking.assert_called_once_with(19, False)
+
+    def test_output_backpressure_cannot_renew_h_after_scheduler_pause(self):
+        deadline = self.now + 10
+        def pause(*args):
+            self.now = deadline + 1
+            return ([], [], [])
+        with self.output_pipe(), mock.patch.object(os, "write", side_effect=BlockingIOError()) as write, \
+             mock.patch.object(outer.select, "select", side_effect=pause) as selected:
+            with self.assertRaisesRegex(outer.OuterError, "original H"):
+                outer._emit_bounded_document({"fixture": True}, custody_ns=deadline, fd=19)
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(selected.call_count, 1)
+
+    def test_output_completed_after_h_is_not_success(self):
+        deadline = self.now + 10
+        def late_write(fd, raw):
+            self.now = deadline + 1
+            return len(raw)
+        with self.output_pipe(), mock.patch.object(os, "write", side_effect=late_write) as write:
+            with self.assertRaisesRegex(outer.OuterError, "after original H"):
+                outer._emit_bounded_document({"fixture": True}, custody_ns=deadline, fd=19)
+        write.assert_called_once()
+
+    def test_expired_or_oversize_output_never_touches_descriptor(self):
+        for document, deadline in (({"fixture": True}, self.now),
+                                   ({"fixture": "x" * outer.OUTPUT_LIMIT}, self.now + 10)):
+            with self.subTest(deadline=deadline), mock.patch.object(outer, "_pipe_identity") as identity, \
+                 mock.patch.object(os, "set_blocking", create=True) as blocking, \
+                 mock.patch.object(os, "write") as write:
+                with self.assertRaises(outer.OuterError):
+                    outer._emit_bounded_document(document, custody_ns=deadline, fd=19)
+            identity.assert_not_called()
+            blocking.assert_not_called()
+            write.assert_not_called()
+
+    def test_output_descriptor_direction_and_uncertain_write_fail_closed(self):
+        with mock.patch.object(outer, "_pipe_identity", return_value=([1, 2, stat.S_IFIFO], os.O_RDONLY)), \
+             mock.patch.object(os, "write") as write:
+            with self.assertRaisesRegex(outer.OuterError, "writable pipe"):
+                outer._emit_bounded_document({"fixture": True}, custody_ns=self.now + 10, fd=19)
+        write.assert_not_called()
+        with self.output_pipe(), mock.patch.object(os, "write", side_effect=OSError(5, "uncertain")) as write:
+            with self.assertRaises(OSError):
+                outer._emit_bounded_document({"fixture": True}, custody_ns=self.now + 10, fd=19)
+        write.assert_called_once()
+
+    def test_final_error_backpressure_has_one_attempt_and_no_wait(self):
+        with self.output_pipe() as blocking, \
+             mock.patch.object(os, "write", side_effect=BlockingIOError()) as write, \
+             mock.patch.object(outer.select, "select") as selected:
+            self.assertIsNone(outer._best_effort_error(outer.OuterError("fixture failure")))
+        blocking.assert_called_once_with(2, False)
+        write.assert_called_once()
+        selected.assert_not_called()
+
+
 class FixtureParser:
     """Test-only role parser, explicitly not the private Observer65 consumer."""
     MAX_SUPERVISOR_LINE = 1024
@@ -618,7 +995,7 @@ def fixture_consumer(plan, plan_path):
         emit("ENTER", "observer-supervisor-start", fixture_only=True)
         try:
             handle = core.start_supervisor([sys.executable, "-I", "-B", str(Path(__file__).resolve()),
-                "--fixture-cli", str(plan_path)], dict(os.environ), endpoints["observer_stdout"].fd,
+                "--fixture-cli", str(plan_path)], fixture_environment(), endpoints["observer_stdout"].fd,
                 endpoints["observer_stderr"].fd, budget, mirror_fd=endpoints["observer_subtree_status"].fd,
                 protected_fds=(endpoints["phase"].fd, endpoints["capture_result"].fd))
         except core.RetainedChildError as error:
@@ -750,7 +1127,7 @@ class LinuxOuterTests(unittest.TestCase):
                 stdio.append(outer.OwnedDescriptor(fd, "fixture-consumer-log:" + name))
             obj.launch([sys.executable, "-I", "-B", str(actual_source), "--fixture-consumer", str(plan_path)],
                 source_sha256=hashlib.sha256(actual_source.read_bytes()).hexdigest(),
-                stdout=stdio[0].fd, stderr=stdio[1].fd, env=dict(os.environ))
+                stdout=stdio[0].fd, stderr=stdio[1].fd, env=fixture_environment())
             while time.monotonic_ns() < budget.cleanup_ns:
                 obj.step()
                 if all(role in obj.processes and obj.processes[role].authenticated for role in ("supervisor", "cli")):

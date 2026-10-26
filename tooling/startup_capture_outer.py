@@ -1,8 +1,9 @@
 """Five-pipe outer custody for the existing bounded startup capture interfaces.
 
-This supplies infrastructure, not installed-run admission. The owner consumer
-and observer remain separate exact-source inputs. No old operation is replayed,
-no source allowlist is edited, and no product or human verdict is issued here.
+The stable launcher authenticates the workflow-to-manifest source binding and
+supplies the original clock and child environment. This module retains the
+five-channel owner interface; it does not create installed-run admission or a
+product or human verdict. An old operation is never replayed here.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ import uuid
 CORE_SHA256 = "509d7fc1756064764ab1970806ad63ef70d4b161ea1343bedd711e1a4d3f3468"
 COLLECTOR_SHA256 = "9db88b0342a445074490c07a94baf40bdb34483cfe9cc8712a818ceee0eb7875"
 OBSERVER_SHA256 = "0ab7b0ceb993eac9a62e459382dbd5453f7582f28e0ebf9c2a67e76ec83093d0"
-A2_CONSUMER_SHA256 = "30e99bddcbc4e818a1454eca39ef0d21f4f74dab0c207c8806e252311196142c"
+LAUNCHER_SHA256 = "57e0ffbd7ec02bd2dc0fcb590e7ea286074e661f3c09f37f871cdcb536b9906b"
 CAPTURE_SCHEMA = "motionwright.private.a2-observer-capture-proposal/1"
 PHASE_SCHEMA = "motionwright.private.independent-startup-phase/1"
 CHANNEL_NAMES = ("phase", "observer_stdout", "observer_stderr", "capture_result",
@@ -38,6 +39,7 @@ ORIGINAL_CHANNELS = {"cli.stdout.original": "observer_stdout",
 MAX_PROCESSES = 128
 MAX_PROC_ENTRIES = 4096
 NS = 1_000_000_000
+OUTPUT_LIMIT = 2 * 1024 * 1024
 
 
 class OuterError(RuntimeError):
@@ -105,6 +107,18 @@ finally:
         sys.modules.pop("startup_capture_core", None)
     else:
         sys.modules["startup_capture_core"] = _previous_core
+
+launcher_api = _load_exact("_a6_outer_launcher_" + LAUNCHER_SHA256,
+                          HERE / "startup_capture_launcher.py", LAUNCHER_SHA256,
+                          limit=262144)
+
+
+def _child_environment(environment):
+    require(type(environment) is dict, "explicit allowlisted child environment required")
+    try:
+        return launcher_api.allowlisted_environment(environment)
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+        raise OuterError("child environment refused:" + str(error)[:160]) from error
 
 
 def _load_observer_parser(path):
@@ -367,13 +381,14 @@ class OuterAssembler:
                 "isolated Python source command required")
         require(type(source_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", source_sha256),
                 "launch requires an exact source digest")
+        child_env = _child_environment(env)
         require(Path(command[0]).resolve(strict=True) == Path(sys.executable).resolve(strict=True),
                 "current interpreter required")
         _source_bytes(Path(command[3]), source_sha256)
         require(time.monotonic_ns() < self.budget.operation_ns, "no launch after original D")
         self.launch_attempted = True
         try:
-            self.child = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+            self.child = subprocess.Popen(command, env=child_env, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL if stdout is None else stdout,
                 stderr=subprocess.DEVNULL if stderr is None else stderr,
                 close_fds=True, pass_fds=tuple(item.fd for item in self.pipes.child.values()),
@@ -847,18 +862,70 @@ def _reviewed_outer_sources(raw):
     return frozenset(entries)
 
 
-def require_owner_admission(plan, outer_sha):
+def _owner_admission(plan, outer_sha, launch_context):
+    require(launch_context is not None, "verified inherited launch context required")
+    require(type(plan) is dict, "exact owner plan object required")
     require(plan.get("status") == "A1_ADMITTED_INDEPENDENT_STARTUP" and
             plan.get("observer_status") == "ADMITTED_NEW_READONLY_OBSERVATION",
             "A1 exact operation admission required")
+    try:
+        verified = launcher_api.verify_child_launch_context(
+            launch_context, outer_sha, plan, expected_launcher_sha256=LAUNCHER_SHA256)
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+        raise OuterError("inherited launcher admission refused:" + str(error)[:200]) from error
+    manifest = verified["manifest"]
+    require(all(manifest["sources"][role]["sha256"] == expected for role, expected in
+                (("launcher", LAUNCHER_SHA256), ("outer", outer_sha),
+                 ("core", CORE_SHA256), ("collector", COLLECTOR_SHA256),
+                 ("observer", OBSERVER_SHA256))),
+            "verified manifest differs from loaded capture sources")
+    require(all(Path(verified["sources"][role]["path"]) == HERE / filename and
+                verified["sources"][role]["sha256"] == manifest["sources"][role]["sha256"]
+                for role, filename in
+                (("launcher", "startup_capture_launcher.py"),
+                 ("outer", "startup_capture_outer.py"),
+                 ("core", "startup_capture_core.py"),
+                 ("collector", "startup_capture_collector.py"))),
+            "verified capture source path differs from loaded source")
     item = plan["sources"]["bootstrap"]
-    require(item.get("sha256") == A2_CONSUMER_SHA256, "exact reviewed A2 consumer required")
-    raw = _source_bytes(Path(item["path"]), A2_CONSUMER_SHA256)
+    expected_bootstrap = manifest["sources"]["bootstrap"]["sha256"]
+    require(item.get("sha256") == expected_bootstrap and
+            verified["sources"]["bootstrap"]["sha256"] == expected_bootstrap and
+            Path(item["path"]) == Path(verified["sources"]["bootstrap"]["path"]),
+            "exact reviewed A2 consumer required")
+    raw = _source_bytes(Path(item["path"]), expected_bootstrap)
     require(outer_sha in _reviewed_outer_sources(raw), "outer source has not been admitted by the owner")
     require(plan["sources"]["observer"]["sha256"] == OBSERVER_SHA256 and
             plan["sources"]["observer_subtree_core"]["sha256"] == CORE_SHA256,
             "exact owner parser/core required")
-    return raw
+    return raw, verified
+
+
+def require_owner_admission(plan, outer_sha, *, launch_context=None):
+    """Read the admitted consumer only after the inherited launch is verified.
+
+    The caller's plan cannot choose its own source identity. The manifest is
+    authenticated through the stable launcher and original workflow binding;
+    the consumer still must contain this exact outer in its literal allowlist.
+    """
+    return _owner_admission(plan, outer_sha, launch_context)[0]
+
+
+def _inherited_budget(verified):
+    started = verified["started_ns"]
+    require(type(started) is int and 0 < started <= time.monotonic_ns(),
+            "mandatory original monotonic clock required")
+    budget = core.Budget(started)
+    expected = {"operation_ns": budget.operation_ns, "join_ns": budget.join_ns,
+                "cleanup_ns": budget.cleanup_ns, "custody_ns": started + 40 * NS}
+    require(all(type(verified[key]) is int and verified[key] == value
+                for key, value in expected.items()), "original D/J/C/H cannot change")
+    require(time.monotonic_ns() < budget.operation_ns, "original operation clock expired before effects")
+    return budget, expected["custody_ns"]
+
+
+def _before_operation(budget):
+    require(time.monotonic_ns() < budget.operation_ns, "original operation deadline before next effect")
 
 
 def _write_new(path, raw):
@@ -868,11 +935,14 @@ def _write_new(path, raw):
         os.fsync(output.fileno())
 
 
-def run_admitted(plan):
-    """Concrete future A2 seam; the current empty owner allowlist rejects it."""
+def run_admitted(plan, *, launch_context=None):
+    """Consume an externally authenticated launch without renewing its clock."""
+    require(launch_context is not None, "verified inherited launch context required")
     source_path = Path(__file__).resolve()
     source_raw = _source_bytes(source_path)
-    require_owner_admission(plan, sha256(source_raw))
+    _, verified = _owner_admission(plan, sha256(source_raw), launch_context)
+    budget, custody_ns = _inherited_budget(verified)
+    child_environment = _child_environment(verified["environment"])
     argv_raw = core._read_proc_bound("/proc/self/cmdline", 65536)
     argv = argv_raw.rstrip(b"\0").split(b"\0")
     require(len(argv) >= 4 and argv[1:4] == [b"-I", b"-B", os.fsencode(source_path)],
@@ -884,16 +954,17 @@ def run_admitted(plan):
     operation_id = plan["operation_id"]
     require(str(uuid.UUID(operation_id)) == operation_id, "canonical operation ID required")
     capture = parent / ("a2-capture-" + operation_id)
+    _before_operation(budget)
     capture.mkdir(mode=0o700)
     outer_root = parent / ("a6-outer-" + operation_id)
+    _before_operation(budget)
     outer_root.mkdir(mode=0o700)
-    # A supplied original clock is inherited, never silently renewed.
-    started = plan.get("start_mono_ns", time.monotonic_ns())
-    budget = core.Budget(started)
+    _before_operation(budget)
     assembler = OuterAssembler(capture, operation_id, "a6-outer-" + operation_id, budget,
         observer_source=plan["sources"]["observer"]["path"])
     try:
-        _launch_prepared_owner(assembler, plan, source_path, argv_raw, outer_root)
+        _launch_prepared_owner(assembler, plan, source_path, argv_raw, outer_root,
+                               child_environment=child_environment)
     except BaseException as error:
         assembler._error("owner assembly/launch unresolved:" + type(error).__name__ + ":" + str(error)[:160])
     if assembler.child is not None:
@@ -903,11 +974,17 @@ def run_admitted(plan):
             assembler._error("prelaunch descriptor close uncertain")
         assembler.finalized = True
         result = assembler.snapshot()
+    result["launcher_provenance"] = verified["provenance"]
+    result["admission_scope"] = verified["manifest"]["scope"]
+    result["custody_deadline_ns"] = custody_ns
+    result["phase_durable"] = False
     return result, assembler.collector.phase_original()
 
 
-def _launch_prepared_owner(assembler, plan, source_path, argv_raw, outer_root):
+def _launch_prepared_owner(assembler, plan, source_path, argv_raw, outer_root, *, child_environment):
     budget, capture, operation_id = assembler.budget, assembler.directory, assembler.operation_id
+    child_environment = _child_environment(child_environment)
+    _before_operation(budget)
     spec = dict(plan)
     spec.update(start_mono_ns=budget.started_ns, channels=assembler.pipes.channels, capture_directory=str(capture))
     executable = Path(os.readlink("/proc/self/exe"))
@@ -920,6 +997,7 @@ def _launch_prepared_owner(assembler, plan, source_path, argv_raw, outer_root):
         "observer_subtree_core": spec["sources"]["observer_subtree_core"]}
     receipt_raw = (json.dumps(receipt, sort_keys=True) + "\n").encode()
     receipt_path = outer_root / "outer-intent.json"
+    _before_operation(budget)
     _write_new(receipt_path, receipt_raw)
     spec["external_parent"] = {"status": "A1_EXTERNAL_BOOTSTRAP_WATCHDOG_ADMITTED",
         "source": {"path": str(source_path), "sha256": assembler.source_sha256},
@@ -928,39 +1006,99 @@ def _launch_prepared_owner(assembler, plan, source_path, argv_raw, outer_root):
         "executable": {"path": str(executable), "sha256": sha256(executable_raw), "bytes": len(executable_raw)},
         "cmdline_sha256": sha256(argv_raw), "receipt": {"path": str(receipt_path), "sha256": sha256(receipt_raw)}}
     spec_path = outer_root / "consumer-plan.json"
+    _before_operation(budget)
     _write_new(spec_path, (json.dumps(spec, sort_keys=True) + "\n").encode())
     logs = []
     try:
         for name in ("stdout", "stderr"):
+            _before_operation(budget)
             fd = os.open(outer_root / ("consumer." + name + ".original"),
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             logs.append(OwnedDescriptor(fd, "consumer-log:" + name))
             assembler.log_descriptors.append(logs[-1])
         assembler.launch([str(executable), "-I", "-B", spec["sources"]["bootstrap"]["path"],
                           "--plan", str(spec_path)], source_sha256=spec["sources"]["bootstrap"]["sha256"],
-                         env=dict(os.environ), stdout=logs[0].fd, stderr=logs[1].fd)
+                         env=child_environment, stdout=logs[0].fd, stderr=logs[1].fd)
     finally:
         for item in logs:
             if not item.close():
                 assembler._error("consumer log descriptor close uncertain")
 
 
+def _emit_bounded_document(document, *, custody_ns, fd=1):
+    """Transport one report without filesystem work or a renewed deadline.
+
+    External launcher custody, including actual wait/EOF and independent
+    persistence/readback, is still required. A written prefix is not durability.
+    """
+    require(type(custody_ns) is int and time.monotonic_ns() < custody_ns,
+            "original external custody deadline expired")
+    raw = (json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+    require(len(raw) <= OUTPUT_LIMIT, "outer result exceeds bounded transport")
+    _, access = _pipe_identity(fd)
+    require(access == os.O_WRONLY, "outer result requires the launcher's writable pipe")
+    os.set_blocking(fd, False)
+    offset = 0
+    while offset < len(raw):
+        require(time.monotonic_ns() < custody_ns, "outer result transport reached original H")
+        try:
+            written = os.write(fd, raw[offset:offset + 65536])
+        except BlockingIOError:
+            remaining = max(0, (custody_ns - time.monotonic_ns()) / NS)
+            select.select([], [fd], [], min(.01, remaining))
+            continue
+        require(type(written) is int and 0 < written <= min(65536, len(raw) - offset),
+                "outer result write incomplete")
+        offset += written
+        require(time.monotonic_ns() < custody_ns, "outer result completed after original H")
+    return {"bytes": len(raw), "sha256": sha256(raw), "durable": False}
+
+
+def _best_effort_error(error):
+    """One nonblocking diagnostic attempt; never a flush or a replay."""
+    raw = (json.dumps({"status": "REFUSED_OR_UNKNOWN", "reason": str(error)[:256],
+        "automatic_retry": False, "installed_result": "NOT_RUN",
+        "formal_acceptance": False}, sort_keys=True) + "\n").encode()
+    try:
+        _, access = _pipe_identity(2)
+        if access != os.O_WRONLY:
+            return
+        os.set_blocking(2, False)
+        os.write(2, raw)
+    except (RuntimeError, OSError, ValueError, ImportError):
+        pass
+
+
+class _InvocationParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise OuterError("invalid inherited invocation:" + str(message)[:200])
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    # Direct/help invocations have no authenticated clock or output custody;
+    # argparse must not introduce a blocking print/exit path for them.
+    parser = _InvocationParser(description=__doc__, add_help=False)
     parser.add_argument("--plan", type=Path, required=True)
+    parser.add_argument("--launch-context-fd", type=int, required=True)
+    parser.add_argument("--started-ns", type=int, required=True)
     args = parser.parse_args()
+    # The stable reader validates the mandatory original clock before touching
+    # the inherited descriptor, and consumes its ownership exactly once.
+    context = launcher_api.read_launch_context(args.launch_context_fd, started_ns=args.started_ns)
     plan = core.decode_frame(_source_bytes(args.plan.resolve(), limit=131072), eof=True, limit=131072)
-    result, phase = run_admitted(plan)
+    result, phase = run_admitted(plan, launch_context=context)
     result["phase_original_base64"] = base64.b64encode(phase).decode("ascii")
     result["phase_durable"] = False
-    print(json.dumps(result, sort_keys=True))
+    _emit_bounded_document(result, custody_ns=result["custody_deadline_ns"])
     return 0 if result["status"] == "CAPTURE_CUSTODY_COMPLETE" else 2
 
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
-    except (OuterError, core.CaptureError, OSError, ValueError, KeyError) as error:
-        print(json.dumps({"status": "REFUSED_OR_UNKNOWN", "reason": str(error)[:256],
-            "automatic_retry": False, "installed_result": "NOT_RUN", "formal_acceptance": False}))
-        raise SystemExit(2)
+        exit_code = main()
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+        _best_effort_error(error)
+        exit_code = 2
+    # All report bytes use the explicit bounded transport. Interpreter shutdown
+    # must not introduce a buffered flush after the fixed external deadline.
+    os._exit(exit_code)
