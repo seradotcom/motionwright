@@ -1078,7 +1078,7 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
         self.output_parent = self.root / "verification/sdk-foundation-hosted-admission"
         self.output_parent.mkdir(parents=True)
         self.env = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
-                    "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": "win25", "ImageVersion": "20261001.1",
+                    "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": "win25-vs2026", "ImageVersion": "20261001.1",
                     "GITHUB_EVENT_NAME": "workflow_dispatch", "SDK_FOUNDATION_SCOPE": gate.HOSTED_SCOPE,
                     "GITHUB_JOB": gate.HOSTED_SCOPE, "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
                     "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REPOSITORY": "example/repo",
@@ -1318,9 +1318,50 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
         self.assertNotIn("--execute", job)
         self.assertIn("if: always()", job)
         self.assertIn("path: verification/sdk-foundation-hosted-admission", job)
-        restored = text.replace(block, "", 1)
+        checkout_config = ('        env:\n          GIT_CONFIG_COUNT: "1"\n'
+                           '          GIT_CONFIG_KEY_0: core.autocrlf\n          GIT_CONFIG_VALUE_0: "false"\n')
+        self.assertEqual(job.count(checkout_config), 1)
+        restored = text.replace(block, "", 1).replace(checkout_config, "", 1)
         self.assertEqual(hashlib.sha256(restored.encode()).hexdigest(),
                          "2acac408724007c100f99506d1e24a73cbab55cc84ef427957bbb8271c741086")
+
+    def test_capacity_observed_windows2025_image_is_exact_and_old_alias_rejected(self):
+        self.assertEqual(gate.HOSTED_IMAGE_OS, "win25-vs2026")
+        with patch.object(gate.sys, "platform", "win32"):
+            context = gate.capacity_context(self.env)
+            self.assertEqual(context["image_os"], "win25-vs2026")
+            self.assertFalse(context["sdk_execution_authorized"])
+            for image in ("win25", "win22", "win25-vs2026-other", "", "win25-vs2026\n"):
+                with self.subTest(image=image), self.assertRaisesRegex(ValueError, "actual standard hosted job"):
+                    gate.capacity_context({**self.env, "ImageOS": image})
+
+    def test_capacity_rejection_reports_only_bounded_public_provenance_keys(self):
+        environment = {**self.env, "ImageOS": "other" + "x" * 500,
+                       "SECRET_UNRELATED": "NEVER-PRINT-THIS-SECRET"}
+        with patch.object(gate.sys, "platform", "win32"):
+            with self.assertRaises(ValueError) as caught:
+                gate.capacity_context(environment)
+        message = str(caught.exception)
+        self.assertNotIn("SECRET_UNRELATED", message)
+        self.assertNotIn("NEVER-PRINT-THIS-SECRET", message)
+        data = json.loads(message.split(": ", 1)[1])
+        self.assertEqual(set(data["observed"]), set(data["expected"]))
+        self.assertEqual(len(data["observed"]["ImageOS"]), 128)
+        self.assertEqual(data["expected"]["ImageOS"], "win25-vs2026")
+
+    def test_hosted_checkout_preserves_exact_git_bytes_before_capacity_snapshot(self):
+        text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
+        job = workflow_jobs(text)[gate.HOSTED_SCOPE]
+        checkout = job.index("      - uses: actions/checkout@")
+        setup = job.index("      - uses: actions/setup-python@")
+        block = job[checkout:setup]
+        self.assertIn('GIT_CONFIG_COUNT: "1"', block)
+        self.assertIn("GIT_CONFIG_KEY_0: core.autocrlf", block)
+        self.assertIn('GIT_CONFIG_VALUE_0: "false"', block)
+        self.assertNotIn("ImageOS:", block)
+        self.assertNotIn("GITHUB_SHA:", block)
+        self.assertNotIn("RUNNER_ENVIRONMENT:", block)
+        self.assertNotIn("git reset", job)
 
 
 if __name__ == "__main__":

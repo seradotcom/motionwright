@@ -40,7 +40,7 @@ RUST = "1.98.1"
 HOSTED_MODE = "windows-hosted-g1"
 HOSTED_SCOPE = "sdk-foundation-windows-g1"
 HOSTED_RUNNER = "windows-2025"
-HOSTED_IMAGE_OS = "win25"
+HOSTED_IMAGE_OS = "win25-vs2026"
 HOSTED_RUST = RUST + "-x86_64-pc-windows-gnu"
 MODES = ("windows-g1", "linux-g2", HOSTED_MODE)
 SCOPES = ("sdk-foundation-source-controls", "sdk-foundation-linux-two", HOSTED_SCOPE)
@@ -1324,13 +1324,15 @@ CAPACITY_MEMORY_SCRIPT = (
 
 def capacity_context(environment):
     """Read-only hosted observation does not consult or grant SDK authority."""
-    require(sys.platform == "win32" and environment.get("GITHUB_ACTIONS") == "true"
-            and environment.get("RUNNER_OS") == "Windows" and environment.get("RUNNER_ARCH") == "X64"
-            and environment.get("RUNNER_ENVIRONMENT") == "github-hosted"
-            and environment.get("ImageOS") == HOSTED_IMAGE_OS
-            and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and environment.get("SDK_FOUNDATION_SCOPE") == HOSTED_SCOPE
-            and environment.get("GITHUB_JOB") == HOSTED_SCOPE, "capacity observation needs the actual standard hosted job")
+    expected = {"sys.platform": "win32", "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
+                "RUNNER_ARCH": "X64", "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": HOSTED_IMAGE_OS,
+                "GITHUB_EVENT_NAME": "workflow_dispatch", "SDK_FOUNDATION_SCOPE": HOSTED_SCOPE,
+                "GITHUB_JOB": HOSTED_SCOPE}
+    observed = {key: sys.platform if key == "sys.platform" else environment.get(key, "") for key in expected}
+    # Diagnose only the closed public provenance keys. Never dump the inherited environment.
+    diagnostic = {key: value[:128] if type(value) is str else "<non-string>" for key, value in observed.items()}
+    require(observed == expected, "capacity observation needs the actual standard hosted job: "
+            + json.dumps({"observed": diagnostic, "expected": expected}, sort_keys=True))
     keys = ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA", "GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF",
             "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_EVENT_NAME")
     github = {key: environment.get(key, "") for key in keys}
