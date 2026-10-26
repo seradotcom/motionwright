@@ -72,8 +72,8 @@ fn field<'a>(value: &'a serde_json::Value, pointer: &str) -> GraphResult<&'a str
 #[cfg(unix)]
 fn original(path: &Path, limit: u64) -> GraphResult<Vec<u8>> {
     use std::os::unix::fs::MetadataExt;
-    if limit == 0 || limit > MAX_SOURCE_BUNDLE_BYTES_V2 as u64 {
-        return Err("Graph original exceeds the fixed source carrier budget".into());
+    if limit != REPORT_MAX && limit != MAX_SOURCE_BUNDLE_BYTES_V2 as u64 {
+        return Err("Graph original exceeds the fixed original byte budget".into());
     }
     let before = std::fs::symlink_metadata(path)?;
     if !path.is_absolute()
@@ -1008,6 +1008,36 @@ mod tests {
         );
         assert_eq!(object(&report).unwrap(), value);
         assert_eq!(value["native_authority"], json!(false));
+
+        let bounded = root.join("bounded-original.bin");
+        let bytes = vec![b'x'; MAX_SOURCE_BUNDLE_BYTES_V2 + 1];
+        std::fs::write(&bounded, &bytes).unwrap();
+        assert_eq!(
+            original(&bounded, MAX_SOURCE_BUNDLE_BYTES_V2 as u64)
+                .unwrap_err()
+                .to_string(),
+            "Graph original is not a bounded canonical regular file"
+        );
+        assert_eq!(original(&bounded, REPORT_MAX).unwrap(), bytes);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&bounded)
+            .unwrap()
+            .set_len(REPORT_MAX + 1)
+            .unwrap();
+        assert_eq!(
+            original(&bounded, REPORT_MAX).unwrap_err().to_string(),
+            "Graph original is not a bounded canonical regular file"
+        );
+
+        let absent = root.join("absent-original.bin");
+        for limit in [0, 1, MAX_SOURCE_BUNDLE_BYTES_V2 as u64 + 1, REPORT_MAX + 1] {
+            assert_eq!(
+                original(&absent, limit).unwrap_err().to_string(),
+                "Graph original exceeds the fixed original byte budget"
+            );
+        }
+        assert!(!absent.exists());
     }
 
     #[test]
