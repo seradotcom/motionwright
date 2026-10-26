@@ -1410,7 +1410,17 @@ class AudioSourceCustodyTests(unittest.TestCase):
         audio=workflow.split("  audio-source:\n",1)[1]
         self.assertIn("--mode both --require-complete --expected-source",audio)
         self.assertIn("--pattern test_native_mlt_g2_custody.py --pattern test_native_mlt_evidence_selection.py",audio)
-        self.assertIn("if: always()",audio)
+        retention = audio.split("      - name: Retain source originals for this exact attempt\n", 1)[1]
+        # Failed source controls still retain their originals, but an admission
+        # failure cannot upload an uninitialized path or an unrelated directory.
+        self.assertIn(
+            "if: ${{ always() && env.MW_AUDIO_CONTROLS != '' && env.MW_AUDIO_ORIGINALS != '' }}",
+            retention,
+        )
+        self.assertNotIn("success()", retention)
+        self.assertIn("${{ env.MW_AUDIO_CONTROLS }}/*.json", retention)
+        self.assertIn("${{ env.MW_AUDIO_ORIGINALS }}", retention)
+        self.assertIn("if-no-files-found: error", retention)
         self.assertIn("ref: "+selection.AUDIO_SOURCE_SHA,audio)
         self.assertNotIn("--ignored --nocapture",audio)
         import re
