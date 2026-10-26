@@ -23,7 +23,7 @@ from cross_app_public_artifact import (
 
 SCHEMA = "motionwright.v01-native-mlt-public-evidence/1"
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
-MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4"}
+MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4", "hybrid-av"}
 VALID_STATUS = {"success", "failure", "cancelled", "skipped"}
 NO_CLEANUP = "not_requested_requires_foreground_broker_consent"
 SCOPES = {
@@ -90,6 +90,7 @@ class MltModeContract:
 # Active consumers only. A future 60-frame / 96000-sample OriginalMix fixture
 # needs its own reviewed source identity and native consumer before admission.
 MODE_CONTRACTS = {
+    "hybrid-av": MltModeContract(180, (60,60,60), width=1920, height=1080, scene_count=3),
     "pcm": MltModeContract(33, (32, 1)),
     "video-only": MltModeContract(33, (32, 1)),
     "final-mp4": MltModeContract(
@@ -404,8 +405,91 @@ def verify_private_source(root: Path, mode: str, source_sha: str,
     return admitted
 
 
+
+
+
+HYBRID_PUBLIC_FIELDS = {
+    "schema","motionwright_sha","semwright_sha","project_sha256","master_sha256","visual_sha256",
+    "source_wave_sha256","source_audio_kind","width","height","fps_num","fps_den","frame_count","source_segment_frames",
+    "source_renderers","original_PNG_frames_bound","original_PNG_decoder_invocations","exact_original_PNG_reuses",
+    "native_cut_and_content_screen","source_audio_content_screen","source_vs_output_differences_retained",
+    "visual_exact_clock_observed","master_exact_clock_observed","pixel_observation_sha256","audio_observation_sha256",
+    "original_source_reopened_unchanged","live_MLT_module_observed","native_effect_retried",
+    "packet_PTS_and_AAC_priming_verified","Host_receiver_closure_proved","physical_acceptance","human_approval",
+    "media_publication_permission_inferred",
+}
+
+
+def validate_hybrid_public_source(source, *, source_sha, semwright_sha):
+    require(type(source) is dict and set(source)==HYBRID_PUBLIC_FIELDS
+            and source["schema"]=="motionwright.native.hybrid-public-source/1"
+            and source["motionwright_sha"]==source_sha and source["semwright_sha"]==semwright_sha
+            and source["source_audio_kind"]=="first_party_synthetic_Film180_source",
+            "hybrid_public_source_identity")
+    for key in ("project_sha256","master_sha256","visual_sha256","source_wave_sha256",
+                "pixel_observation_sha256","audio_observation_sha256"):
+        require(type(source[key]) is str and re.fullmatch(r"[0-9a-f]{64}",source[key]) is not None,
+                "hybrid_public_source_digest")
+    for key,value in {"width":1920,"height":1080,"fps_num":30,"fps_den":1,"frame_count":180,
+                      "original_PNG_frames_bound":540}.items():
+        require(type(source[key]) is int and source[key]==value,"hybrid_public_original_clock")
+    require(source["source_segment_frames"]==[60,60,60]
+            and source["source_renderers"]==["motion_canvas","manim_static","motion_canvas"]
+            and type(source["original_PNG_decoder_invocations"]) is int
+            and 1<=source["original_PNG_decoder_invocations"]<=540
+            and type(source["exact_original_PNG_reuses"]) is int and source["exact_original_PNG_reuses"]>=0
+            and source["original_PNG_decoder_invocations"]+source["exact_original_PNG_reuses"]==540,
+            "hybrid_public_original_frame_coverage")
+    require(source["native_cut_and_content_screen"]==source["source_audio_content_screen"]=="PASS"
+            and all(source[k] is True for k in ("source_vs_output_differences_retained","original_source_reopened_unchanged","live_MLT_module_observed"))
+            and all(type(source[k]) is bool for k in ("visual_exact_clock_observed","master_exact_clock_observed"))
+            and all(source[k] is False for k in ("native_effect_retried","packet_PTS_and_AAC_priming_verified",
+                "Host_receiver_closure_proved","physical_acceptance","human_approval","media_publication_permission_inferred")),
+            "hybrid_public_scope_escalation")
+    return source
+
+
+def publish_hybrid_observation(root,output,source_sha,semwright_sha,job_status):
+    """Publish only this closed summary. Original audio/media/errors stay private."""
+    require(job_status in VALID_STATUS and bool(SHA40.fullmatch(source_sha))
+            and bool(SHA40.fullmatch(semwright_sha)),"hybrid_public_context")
+    require(not output.exists(),"public_artifact_already_exists")
+    src,dst=root.resolve(),output.resolve()
+    require(src!=dst and src not in dst.parents and dst not in src.parents,"public_root_overlaps_private_source")
+    source=None
+    if job_status=="success":
+        source=validate_hybrid_public_source(strict_object(read_bounded(root,"hybrid-public-source.json",16384)),
+                                            source_sha=source_sha,semwright_sha=semwright_sha)
+        for name,key in (("hybrid-pixel-observation.json","pixel_observation_sha256"),
+                         ("hybrid-audio-content.json","audio_observation_sha256")):
+            require(file_sha(read_bounded(root,name,16*1024*1024))==source[key],"hybrid_public_private_observation_changed")
+    receipt={"schema":"motionwright.native.hybrid-public-evidence/1","mode":"hybrid-av",
+        "motionwright_source_sha":source_sha,"semwright_source_pin":semwright_sha,
+        "ci_native_mlt_evidence":"READBACK_OBSERVED" if source is not None else "NOT_VERIFIED",
+        "native_video_frames":180 if source is not None else None,
+        "retained_source_audio":None,
+        "source_audio_kind":None if source is None else source["source_audio_kind"],
+        "real_voice_acceptance_claimed":False,
+        "frame_count_scope":"three_original_60frame_native_contributions",
+        "native_cut_and_content_screen":None if source is None else source["native_cut_and_content_screen"],
+        "source_audio_content_screen":None if source is None else source["source_audio_content_screen"],
+        "visual_exact_clock_observed":None if source is None else source["visual_exact_clock_observed"],
+        "master_exact_clock_observed":None if source is None else source["master_exact_clock_observed"],
+        "source_vs_output_differences_retained":source is not None,
+        "packet_PTS_and_AAC_priming_verified":False,"Host_receiver_closure_proved":False,
+        "physical_acceptance":False,"human_approval":False,"v01_release_authorized":False,
+        "source_audio_or_media_uploaded":False,"private_errors_or_original_receipts_uploaded":False,
+        "native_mutations_replayed_by_publisher":False,"included_files":[]}
+    output.mkdir(parents=True,exist_ok=False)
+    with (output/"public-evidence.json").open("x",encoding="utf-8") as stream:
+        json.dump(receipt,stream,sort_keys=True,indent=2);stream.write("\n")
+    return receipt
+
+
 def publish_mlt(root: Path, output: Path, mode: str, source_sha: str,
                 semwright_sha: str, job_status: str) -> dict:
+    if mode == "hybrid-av":
+        return publish_hybrid_observation(root,output,source_sha,semwright_sha,job_status)
     require(mode in MODES, "invalid_mlt_mode")
     require(job_status in VALID_STATUS, "invalid_ci_job_status")
     require(bool(SHA40.fullmatch(source_sha))

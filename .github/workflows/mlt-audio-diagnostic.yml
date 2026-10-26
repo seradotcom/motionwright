@@ -10,6 +10,11 @@ on:
         options:
           - observer-source
           - official-runtime-intake
+          - intake-source
+      expected_source_sha:
+        description: Exact source commit required by intake-source only
+        required: false
+        type: string
       repaired_only_source_g1:
         description: 'Build exact uninstrumented repaired-only MLT ELF; never install or render'
         required: false
@@ -41,7 +46,7 @@ defaults:
     shell: bash
 jobs:
   observer-source:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'official-runtime-intake' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'observer-source' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -240,8 +245,8 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
-          expected={"tooling/mlt_official_runtime_intake.py":"a5c8843db38e48060f34e73afdcaf59341cac0ee88ddd6e13cbf85dadbfb770f",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"069950086384e0351208f4f34473ffb7f148d3a5745bd5df7e4ed6439cc7c345"}
+          expected={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
@@ -255,7 +260,7 @@ jobs:
           for row in receipt["steps"]:
               counts=row["counts"]
               assert row["exit_code"]==0 and row["status"]=="PASS"
-              assert counts["tests_run"]==counts["passed"]==67
+              assert counts["tests_run"]==counts["passed"]==74
               assert counts["terminal_status"]=="OK"
               assert all(counts[key]==0 for key in (
                   "errors","failures","skipped","expected_failures","unexpected_successes"))
@@ -1591,23 +1596,45 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   official-runtime-intake:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'official-runtime-intake' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'observer-source' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       MW_REQUESTED_REPAIRED_ONLY: ${{ inputs.repaired_only_source_g1 }}
+      MW_INTAKE_SCOPE: ${{ inputs.verification_scope }}
+      MW_EXPECTED_INTAKE_SOURCE_SHA: ${{ inputs.expected_source_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - name: Prepare official distribution source custody
+        timeout-minutes: 2
         run: |
           set -euo pipefail
-          test "$MW_REQUESTED_REPAIRED_ONLY" != 'true'
+          python3 -B -I -S - <<'PY_REQUEST'
+          import json,os,re
+          scope=os.environ.get("MW_INTAKE_SCOPE","")
+          if scope not in {"official-runtime-intake","intake-source"}:
+              raise SystemExit("unknown intake selection")
+          if os.environ.get("MW_REQUESTED_REPAIRED_ONLY") == "true":
+              raise SystemExit("intake selection cannot authorize compilation")
+          if scope == "intake-source":
+              source=os.environ.get("GITHUB_SHA","")
+              if (not re.fullmatch(r"[0-9a-f]{40}",source)
+                      or os.environ.get("GITHUB_WORKFLOW_SHA") != source
+                      or os.environ.get("MW_EXPECTED_INTAKE_SOURCE_SHA") != source
+                      or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                      or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+                      or os.environ.get("MW_REQUESTED_REPAIRED_ONLY") != "false"):
+                  raise SystemExit("intake-source requires exact first-attempt workflow context")
+          print(json.dumps({"scope":scope,"source_only":scope=="intake-source"},sort_keys=True))
+          PY_REQUEST
           work="$RUNNER_TEMP/mw-mlt-official-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir "$work"
-          mkdir "$work/public" "$work/control"
+          mkdir "$work/public" "$work/control" "$work/tmp"
+          echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
           echo "MW_OFFICIAL_WORK=$work" >> "$GITHUB_ENV"
           echo "MW_MLT_INTAKE_G0_PUBLIC=$work/public" >> "$GITHUB_ENV"
           cat > "$work/control/check-source.py" <<'PY'
@@ -1631,8 +1658,8 @@ jobs:
           require(not git("status","--porcelain=v1","--untracked-files=all"),"checkout changed")
           require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
                   "ignored checkout files")
-          pins={"tooling/mlt_official_runtime_intake.py":"a5c8843db38e48060f34e73afdcaf59341cac0ee88ddd6e13cbf85dadbfb770f",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"069950086384e0351208f4f34473ffb7f148d3a5745bd5df7e4ed6439cc7c345"}
+          pins={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
           workflow=".github/workflows/mlt-audio-diagnostic.yml"
           runner="tooling/ci_test_runner.py"
           sources={}
@@ -1662,20 +1689,28 @@ jobs:
           source_tree="$(git --no-replace-objects rev-parse 'HEAD^{tree}')"
           echo "MW_OFFICIAL_SOURCE_TREE=$source_tree" >> "$GITHUB_ENV"
       - name: Verify signed distribution intake source contracts (G0)
+        timeout-minutes: 4
         run: |
           set -euo pipefail
+          set +e
           python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
-            --pattern test_mlt_official_runtime_intake.py --mode both \
+            --pattern test_mlt_official_runtime_intake.py --mode both --timeout 60 \
             --expected-source "$GITHUB_SHA" --require-complete \
-            --report "$MW_MLT_INTAKE_G0_PUBLIC/official-runtime-contracts.json"
+            --report "$MW_MLT_INTAKE_G0_PUBLIC/official-runtime-contracts.json" \
+            > "$MW_MLT_INTAKE_G0_PUBLIC/contract-runner.stdout.log" \
+            2> "$MW_MLT_INTAKE_G0_PUBLIC/contract-runner.stderr.log"
+          runner_exit=$?
+          printf '{"exit_code":%s}\n' "$runner_exit" > "$MW_MLT_INTAKE_G0_PUBLIC/contract-runner-exit.json"
+          set -e
+          if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           python3 -B -I -S - <<'PY'
           import hashlib,json,os,pathlib
           public=pathlib.Path(os.environ["MW_MLT_INTAKE_G0_PUBLIC"])
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
-          expected={"tooling/mlt_official_runtime_intake.py":"a5c8843db38e48060f34e73afdcaf59341cac0ee88ddd6e13cbf85dadbfb770f",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"069950086384e0351208f4f34473ffb7f148d3a5745bd5df7e4ed6439cc7c345"}
+          expected={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
@@ -1689,26 +1724,36 @@ jobs:
           for row in receipt["steps"]:
               counts=row["counts"]
               assert row["exit_code"]==0 and row["status"]=="PASS"
-              assert counts["tests_run"]==counts["passed"]==67
+              assert counts["tests_run"]==counts["passed"]==74
               assert counts["terminal_status"]=="OK"
               assert all(counts[key]==0 for key in (
                   "errors","failures","skipped","expected_failures","unexpected_successes"))
               for kind in ("stdout","stderr"):
                   assert sha(public/row[kind]["file"])==row[kind]["sha256"]
           PY
+      - name: Check source and public surface for the isolated intake controls
+        if: ${{ !cancelled() && inputs.verification_scope == 'intake-source' }}
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python3 -B -E -s tooling/source_policy.py > "$MW_OFFICIAL_WORK/public/source-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/source-policy.stderr.log"
+          python3 -B -E -s tooling/public_surface_policy.py > "$MW_OFFICIAL_WORK/public/public-surface-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/public-surface-policy.stderr.log"
       - name: Check source and acceptance policies
+        if: ${{ inputs.verification_scope == 'official-runtime-intake' }}
         run: |
           set -euo pipefail
           python3 -B tooling/source_policy.py > "$MW_OFFICIAL_WORK/public/source-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/source-policy.stderr.log"
           python3 -B tooling/acceptance_policy.py > "$MW_OFFICIAL_WORK/public/acceptance-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/acceptance-policy.stderr.log"
           python3 -B tooling/creative_status_policy.py > "$MW_OFFICIAL_WORK/public/creative-status-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/creative-status-policy.stderr.log"
       - name: Authenticate official runtime files without installing or loading them
+        if: ${{ inputs.verification_scope == 'official-runtime-intake' }}
         run: |
           set -euo pipefail
           python3 -B tooling/mlt_official_runtime_intake.py \
             --output "$MW_OFFICIAL_WORK/public/distribution" \
             --source-sha "$GITHUB_SHA" --source-tree "$MW_OFFICIAL_SOURCE_TREE"
       - name: Confirm unchanged source and inventory-only evidence
+        if: ${{ inputs.verification_scope == 'official-runtime-intake' }}
         run: |
           set -euo pipefail
           python3 -B -I -S "$MW_OFFICIAL_WORK/control/check-source.py" > "$MW_OFFICIAL_WORK/public/source-inputs-after.json"
@@ -1739,8 +1784,16 @@ jobs:
                             "package_installation":"NOT_RUN","native_execution":"NOT_RUN",
                             "physical_AAC_master":"NOT_RUN"}))
           PY
+      - name: Confirm unchanged source after the isolated intake controls
+        if: ${{ always() && inputs.verification_scope == 'intake-source' && env.MW_OFFICIAL_WORK != '' }}
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          python3 -B -I -S "$MW_OFFICIAL_WORK/control/check-source.py" > "$MW_OFFICIAL_WORK/public/source-inputs-after.json"
+          cmp "$MW_OFFICIAL_WORK/public/source-inputs.json" "$MW_OFFICIAL_WORK/public/source-inputs-after.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
+        if: ${{ always() && (inputs.verification_scope == 'official-runtime-intake' || (inputs.verification_scope == 'intake-source' && env.MW_OFFICIAL_WORK != '')) }}
+        timeout-minutes: 2
         with:
           name: mlt-official-runtime-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.MW_OFFICIAL_WORK }}/public

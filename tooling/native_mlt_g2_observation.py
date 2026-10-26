@@ -936,6 +936,196 @@ def verify_runtime_inputs(data: dict, *, source_sha: str, semwright_sha: str) ->
     return closure, alias_observation
 
 
+
+
+
+HYBRID_INPUT_SCHEMA = "motionwright.native.hybrid-g2-inputs/1"
+HYBRID_INPUT_KEYS = RUNTIME_INPUT_KEYS | {
+    "schema","original_wav_path","original_wav_sha256","private_evidence_dir","source_bindings",
+    "original_film180_source_dir","source_producer_binary_sha256",
+}
+HYBRID_SOURCE_PATHS = {
+    "tooling/native_evidence_projection.py","tooling/native_mlt_sequence_e2e.py",
+    "tooling/native_mlt_g2_observation.py","tooling/native_mlt_public_artifact.py",
+    "tooling/native_mlt_caption_pixels.py","tooling/native_direct_mediated_parity.py",
+    "tooling/native_motion_canvas_roundtrip.py","tooling/manim_native_readback.py",
+    "tooling/native_pcm_source_fidelity.py","tooling/native_manim_e2e.py",
+    "tooling/native_mlt_loaded_module.py","tooling/native_mlt_runtime_admission.py",
+    "tooling/native_av_failure_guard.py",
+    "tooling/native_film180_original_g2.py","crates/native/examples/native-film180-e2e.rs",
+    "tooling/ci_private_evidence.py","tooling/mlt_official_runtime_intake.py",
+}
+
+
+def hybrid_source_wave(raw, expected_sha):
+    from native_pcm_source_fidelity import _source_wave
+    require(type(expected_sha) is str and re.fullmatch(r"[0-9a-f]{64}",expected_sha) is not None
+            and type(raw) is bytes and sha(raw)==expected_sha,"hybrid_original_wave_digest")
+    count,_pcm=_source_wave(raw)
+    require(count==288000,"hybrid_original_wave_requires_six_seconds_stereo48k_pcm16")
+    return {"schema":"motionwright.native.hybrid-original-wave/1","sha256":expected_sha,
+            "bytes":len(raw),"sample_frames":count,"sample_rate":48000,"channels":2,
+            "bits_per_sample":16,"generated_by_this_caller":False,"human_sound_approval":False,
+            "source_rights_or_publication_permission_inferred":False}
+
+
+def hybrid_film180_original_provenance(originals,wave_proof,*,binary_path,binary_sha256):
+    """Consume the existing FilmAttempt's source-only originals, never rerun it."""
+    intent=strict_object(originals["source.seed.intent.json"])
+    terminal=strict_object(originals["source.seed.terminal.json"])
+    seed=strict_object(originals["source.seed.stdout"])
+    project=strict_object(originals["original-project.json"])
+    custody=strict_object(originals["firstparty-source-custody.json"])
+    argv=intent.get("argv")
+    require(type(argv) is list and len(argv)==5 and argv[0]==str(binary_path) and argv[1]=="seed"
+            and all(type(value) is str and Path(value).is_absolute() for value in argv[2:])
+            and terminal.get("argv")==argv and intent.get("timeout_seconds")==40
+            and terminal.get("timeout_seconds")==40
+            and intent.get("automatic_retry") is False and intent.get("native_renderer_command") is False,
+            "hybrid_original_Film180_source_command_identity")
+    require(type(terminal.get("exit_code")) is int and terminal["exit_code"]==0
+            and terminal.get("deadline_exceeded") is False and terminal.get("error_class") is None
+            and terminal.get("error") is None and terminal.get("automatic_retry") is False
+            and terminal.get("native_terminal_inferred_from_exit") is False,
+            "hybrid_original_Film180_source_terminal_incomplete")
+    for name in ("stdout","stderr"):
+        body=originals["source.seed."+name]
+        require(type(body) is bytes and terminal.get(name+"_sha256")==sha(body)
+                and type(terminal.get(name+"_bytes")) is int and terminal[name+"_bytes"]==len(body),
+                "hybrid_original_Film180_source_stream_changed")
+    require(originals["source.seed.stderr"]==b""
+            and seed.get("schema")=="motionwright.native.film180.synthetic-source/1"
+            and seed.get("frame_count")==180 and seed.get("scene_boundary_frame")==90
+            and seed.get("saved_reopen") is True and seed.get("source_only") is True
+            and seed.get("native_render_performed") is False and seed.get("human_approval") is False
+            and seed.get("synthetic_WAV_sha256")==wave_proof["sha256"]
+            and type(seed.get("revision")) is int and seed["revision"]>0
+            and type(seed.get("project_id")) is str and bool(seed["project_id"])
+            and type(seed.get("generation")) is str and bool(seed["generation"])
+            and all(project.get(k)==seed.get(k) for k in ("generation","revision"))
+            and project.get("id")==seed.get("project_id"),
+            "hybrid_original_Film180_source_receipt_changed")
+    require(type(custody) is dict and set(custody)=={
+                "origin","sha256","bytes","pcm_frames","sample_rate","channels","sample_width",
+                "historical_reference_WAV_reused","native_effect_started"}
+            and custody["origin"]=="CURRENT_CANONICAL_FILM180_SOURCE"
+            and custody["sha256"]==wave_proof["sha256"] and custody["bytes"]==wave_proof["bytes"]
+            and (custody["pcm_frames"],custody["sample_rate"],custody["channels"],custody["sample_width"])
+                ==(288000,48000,2,2)
+            and custody["historical_reference_WAV_reused"] is False and custody["native_effect_started"] is False
+            and wave_proof["sha256"]!=REFERENCE_WAV_SHA256,
+            "hybrid_original_Film180_wave_custody_changed")
+    voices=project.get("audio",{}).get("voice_tracks")
+    require(type(voices) is list and len(voices)==1
+            and voices[0].get("source_sha256")==wave_proof["sha256"],
+            "hybrid_original_Film180_project_wave_binding")
+    return {"schema":"motionwright.native.hybrid-source-provenance/1",
+        "kind":"first_party_synthetic_Film180_source",
+        "producer":"native-film180-e2e seed","current_producer_binary_sha256":binary_sha256,
+        "producer_source":"crates/native/examples/native-film180-e2e.rs",
+        "source_only_originals_retained":True,"native_renderer_executed_by_source_command":False,
+        "source_project_id":seed["project_id"],"source_generation":seed["generation"],
+        "source_revision":seed["revision"],"original_WAV_sha256":wave_proof["sha256"],
+        "original_WAV_bytes":wave_proof["bytes"],
+        "retained_files":{name:{"sha256":sha(raw),"bytes":len(raw)} for name,raw in originals.items()},
+        "real_voice_or_VOiCES_fixture":False,"human_sound_approval":False,
+        "source_transcript_or_alignment_imported_into_hybrid":False,
+        "source_operation_replayed":False,"bytes_resampled_or_trimmed":False,
+        "producer_binary_at_execution_proved_by_these_JSON_files":False}
+
+
+HYBRID_MASTER_PROBE_INPUT_LIMIT = 32 * 1024 * 1024
+HYBRID_MASTER_PROBE_BINDING_SCHEMA = "motionwright.native.hybrid-master-probe-binding/1"
+
+
+def _hybrid_private_master_identity(session):
+    """Select the already retained original; this is no mount or read grant."""
+    result = session.native_result
+    require(getattr(session, "hybrid", False) and type(result) is dict
+            and result.get("schema") == "motionwright.native.hybrid-av-summary/1",
+            "hybrid_probe_without_original_native_result")
+    expected_sha = result.get("master_artifact_sha256")
+    expected_bytes = result.get("master_artifact_bytes")
+    require(type(expected_sha) is str and re.fullmatch(r"[0-9a-f]{64}", expected_sha) is not None
+            and session.master_sha == expected_sha
+            and type(expected_bytes) is int and 0 < expected_bytes <= HYBRID_MASTER_PROBE_INPUT_LIMIT,
+            "hybrid_probe_original_master_identity_or_stdin_budget")
+    path = session.evidence_dir / "original-native-master.mp4"
+    require(path.is_absolute(), "hybrid_probe_private_master_path")
+    return path, expected_sha, expected_bytes
+
+
+def hybrid_master_probe_input(session, master):
+    """One common held-file capture; its bytes become this probe's stdin."""
+    from ci_private_evidence import regular
+    path, expected_sha, expected_bytes = _hybrid_private_master_identity(session)
+    require(Path(master) == path, "hybrid_probe_must_use_retained_private_master")
+    raw, observed = regular(path, HYBRID_MASTER_PROBE_INPUT_LIMIT)
+    require(type(raw) is bytes and len(raw) == expected_bytes
+            and type(observed) is dict and observed.get("path") == str(path)
+            and observed.get("sha256") == expected_sha
+            and type(observed.get("size")) is int and observed["size"] == expected_bytes,
+            "hybrid_probe_retained_private_master_changed")
+    return raw, observed
+
+
+def require_hybrid_master_probe_binding(session, binding):
+    """Qualify one observed read/pipe/output chain, without reopening a path."""
+    path, expected_sha, expected_bytes = _hybrid_private_master_identity(session)
+    require(type(binding) is dict and set(binding) == {
+        "schema", "original", "transport", "argv_input", "stdin_sha256", "stdin_bytes",
+        "stdout_sha256", "stdout_bytes", "terminal", "Host_output_reopened_by_probe",
+    } and binding.get("schema") == HYBRID_MASTER_PROBE_BINDING_SCHEMA,
+        "hybrid_probe_binding_shape")
+    original = binding["original"]
+    require(type(original) is dict and original.get("path") == str(path)
+            and original.get("sha256") == expected_sha
+            and type(original.get("size")) is int and original["size"] == expected_bytes
+            and type(original.get("before")) is dict
+            and original["before"] == original.get("after") == original.get("namespace_after"),
+            "hybrid_probe_binding_original")
+    require(binding["transport"] == "stdin" and binding["argv_input"] == "pipe:0"
+            and binding["Host_output_reopened_by_probe"] is False
+            and binding["stdin_sha256"] == expected_sha
+            and type(binding["stdin_bytes"]) is int and binding["stdin_bytes"] == expected_bytes
+            and type(binding["stdout_sha256"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}", binding["stdout_sha256"]) is not None
+            and type(binding["stdout_bytes"]) is int and binding["stdout_bytes"] > 0,
+            "hybrid_probe_binding_pipe_or_output")
+    terminal = binding["terminal"]
+    require(type(terminal) is dict and type(terminal.get("exit_code")) is int
+            and terminal["exit_code"] == 0 and terminal.get("stdin_complete") is True
+            and terminal.get("pipes_closed") is True and terminal.get("whole_process_completed") is True
+            and terminal.get("timed_out") is False and terminal.get("output_budget_exceeded") is False
+            and terminal.get("pipe_errors") == []
+            and type(terminal.get("stdout_bytes")) is int
+            and terminal["stdout_bytes"] == binding["stdout_bytes"],
+            "hybrid_probe_binding_incomplete_terminal")
+
+
+def hybrid_master_probe_binding(session, original, capture, produced):
+    """Called only after the SAME executor returns, never from an error prefix."""
+    require(type(capture) is dict and capture.get("state") == "TERMINAL_OBSERVED"
+            and type(produced) is bytes and type(capture.get("stdout")) is bytes
+            and capture["stdout"] == produced and type(capture.get("stderr")) is bytes
+            and type(capture.get("terminal")) is dict,
+            "hybrid_probe_output_not_from_original_capture")
+    terminal = capture["terminal"]
+    require(type(terminal.get("stderr_bytes")) is int
+            and terminal["stderr_bytes"] == len(capture["stderr"])
+            and terminal.get("stderr_sha256") == sha(capture["stderr"]),
+            "hybrid_probe_stderr_capture_changed")
+    binding = {
+        "schema": HYBRID_MASTER_PROBE_BINDING_SCHEMA,
+        "original": original, "transport": "stdin", "argv_input": "pipe:0",
+        "stdin_sha256": capture.get("stdin_sha256"), "stdin_bytes": capture.get("stdin_bytes"),
+        "stdout_sha256": sha(produced), "stdout_bytes": len(produced),
+        "terminal": dict(terminal), "Host_output_reopened_by_probe": False,
+    }
+    require_hybrid_master_probe_binding(session, binding)
+    return binding
+
+
 class G2Session:
     def __init__(self, inputs: dict, evidence_dir: Path, wav: bytes, provenance: dict):
         self.inputs = inputs
@@ -994,6 +1184,11 @@ class G2Session:
         return session
 
     def seed_environment(self, env: dict) -> dict:
+        if getattr(self,"hybrid",False):
+            require(env.get("MOTIONWRIGHT_MLT_MODE")=="hybrid-av"
+                    and not any(k in env for k in ("MOTIONWRIGHT_MLT_ORIGINAL_WAV","MOTIONWRIGHT_MLT_ORIGINAL_WAV_SHA256")),
+                    "hybrid_source_must_not_relabel_legacy_environment")
+            return dict(env)
         return {
             **env,
             "MOTIONWRIGHT_MLT_ORIGINAL_WAV": str(self.evidence_dir / "original-source.wav"),
@@ -1153,7 +1348,7 @@ class G2Session:
         new_bytes(self.evidence_dir / "original-master-packets.json", raw)
         observed = strict_object(raw)
         require(type(observed.get("packets")) is list
-                and 0 < len(observed["packets"]) <= 128
+                and 0 < len(observed["packets"]) <= (512 if getattr(self,"hybrid",False) else 128)
                 and type(observed.get("streams")) is list
                 and len(observed["streams"]) == 1,
                 "g2_packet_document_shape")
@@ -1221,19 +1416,233 @@ class G2Session:
             "g2_physical_AV_master_acceptance": False,
         }
 
+
+
+    @classmethod
+    def prepare_hybrid(cls,path,*,source_sha,semwright_sha,source_root):
+        import native_evidence_projection as core
+        from ci_private_evidence import regular
+        from native_mlt_caption_pixels import HYBRID_PIXEL_CONTRACT
+        runner=admission.disposable_linux_runner()
+        data=strict_object(admission.checked_bytes(path,128*1024))
+        require(set(data)==HYBRID_INPUT_KEYS and data["schema"]==HYBRID_INPUT_SCHEMA,"hybrid_inputs_schema")
+        closure,alias=verify_runtime_inputs({key:data[key] for key in RUNTIME_INPUT_KEYS},
+                                          source_sha=source_sha,semwright_sha=semwright_sha)
+        require(type(data["source_bindings"]) is list
+                and HYBRID_SOURCE_PATHS <= {row.get("path") for row in data["source_bindings"] if type(row) is dict},
+                "hybrid_source_closure_incomplete")
+        source_binding=core.verify_source_bindings(source_root,source_sha,data["source_bindings"])
+        source=Path(data["original_wav_path"])
+        source_dir=Path(data["original_film180_source_dir"])
+        binary=Path(source_root)/"target/debug/examples/native-film180-e2e"
+        require(source_dir.is_absolute() and source==source_dir/"firstparty-source.wav",
+                "hybrid_original_Film180_wave_path")
+        require(type(data["source_producer_binary_sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}",data["source_producer_binary_sha256"]) is not None
+                and sha(admission.checked_bytes(binary,256*1024*1024))==data["source_producer_binary_sha256"],
+                "hybrid_original_Film180_producer_binary_changed")
+        handles=core.RootHandles({"producer":str(source_dir)})
+        primary=None
+        try:
+            raw,identity=handles.read("producer",core.member_path(source.name),288000*4+65536)
+            provenance=hybrid_source_wave(raw,data["original_wav_sha256"])
+            require(len(raw)==1152044,"hybrid_original_Film180_wave_exact_size")
+            originals={}
+            for name,limit in (("source.seed.intent.json",16384),("source.seed.terminal.json",32768),
+                               ("original-project.json",16*1024*1024),("firstparty-source-custody.json",16384)):
+                originals[name]=handles.read("producer",core.member_path(name),limit)[0]
+            # Core deliberately excludes process streams. Reuse the SAME private
+            # reader as FilmAttempt, with its FIFO-safe common implementation;
+            # never rename the streams or weaken the Core exclusion policy.
+            stream_identities={}
+            for name in ("source.seed.stdout","source.seed.stderr"):
+                originals[name],stream_identities[name]=regular(source_dir/name,1048576)
+            source_provenance=hybrid_film180_original_provenance(originals,provenance,
+                binary_path=binary,binary_sha256=data["source_producer_binary_sha256"])
+            intent=strict_object(originals["source.seed.intent.json"])
+            require(intent["argv"][4]==str(source_dir/"original-project.json"),
+                    "hybrid_original_Film180_project_output_path")
+            require(handles.stable_roots(),"hybrid_original_wave_root_changed")
+        except BaseException as error:
+            primary=error
+            raise
+        finally:
+            try:handles.close()
+            except BaseException:
+                if primary is None:raise
+        private=Path(data["private_evidence_dir"])
+        require(private.is_absolute() and private.parent==runner
+                and not private.exists() and not private.is_symlink(),"hybrid_private_directory_not_fresh")
+        private.mkdir(mode=0o700)
+        session=cls(data,private,raw,provenance)
+        session.hybrid=True
+        session.hybrid_capture_labels=set()
+        session.melt_alias_observation=alias
+        new_bytes(private/"original-source.wav",raw)
+        source_target=private/"source-producer-originals"
+        source_target.mkdir(mode=0o700)
+        for name,body in originals.items():new_bytes(source_target/name,body)
+        new_json(private/"source-producer-provenance.json",source_provenance)
+        new_json(private/"hybrid-input-custody.json",{
+            "schema":"motionwright.native.hybrid-input-custody/1",
+            "motionwright_sha":source_sha,"semwright_sha":semwright_sha,
+            "run_id":data["run_id"],"run_attempt":data["run_attempt"],
+            "source_compiler":closure,"source_binding":source_binding,
+            "original_wave":provenance,"original_wave_held_identity":identity,
+            "original_wave_provenance":source_provenance,
+            "original_source_stream_private_reader_observations":stream_identities,
+            "pixel_policy_before_native_effects":HYBRID_PIXEL_CONTRACT,
+            "master_probe_input_transport":"stdin",
+            "master_probe_input_limit_bytes":HYBRID_MASTER_PROBE_INPUT_LIMIT,
+            "MP4_nonseekable_pipe_compatibility_assessed":False,
+            "fixed_frame_count":180,"fixed_source_segment_frames":[60,60,60],
+            "native_effect_started":False,"automatic_retry":False,
+            "packet_budget":512,"packet_PTS_or_AAC_priming_acceptance":False,
+            "Host_receiver_closure_proved":False,
+        })
+        return session
+
+    def retain_hybrid_capture(self,label,capture):
+        """Original read-only decoder/probe capture, inside this existing owner."""
+        require(getattr(self,"hybrid",False) and type(label) is str
+                and re.fullmatch(r"hybrid-[a-z0-9-]{1,60}",label) is not None
+                and label not in self.hybrid_capture_labels and len(self.hybrid_capture_labels)<544,
+                "hybrid_original_capture_identity")
+        self.hybrid_capture_labels.add(label)
+        require(type(capture) is dict,"hybrid_original_capture_type")
+        directory=self.evidence_dir/"hybrid-readonly-originals"
+        if not directory.exists():directory.mkdir(mode=0o700)
+        terminal={key:value for key,value in capture.items() if key not in ("stdout","stderr")}
+        terminal.update(schema="motionwright.native.hybrid-readonly-capture/1",label=label,
+                        native_effect_invoked=False,automatic_retry=False,
+                        streams_are_supervisor_initialized_if_not_terminal=True)
+        failures=[]
+        for stream,maximum in (("stdout",1920*1080*4),("stderr",65536)):
+            if stream not in capture:
+                continue
+            body=capture[stream]
+            if type(body) is not bytes or len(body)>maximum:
+                failures.append(ValueError("hybrid_original_readonly_stream_budget"))
+                continue
+            record={"sha256":sha(body),"bytes":len(body),"retained":False,
+                    "pipe_bytes_observed":capture.get("state")=="TERMINAL_OBSERVED"}
+            terminal[stream]=record
+            try:
+                new_bytes(directory/(label+"."+stream+".bin"),body)
+                record["retained"]=True
+            except BaseException as error:failures.append(error)
+        terminal["custody_errors"]=[bounded_error(error) for error in failures]
+        try:
+            require(len((json.dumps(terminal,sort_keys=True,indent=2)+"\n").encode())<=32768,
+                    "hybrid_original_readonly_terminal_budget")
+            new_json(directory/(label+".terminal.json"),terminal)
+        except BaseException as error:failures.append(error)
+        if failures:
+            self.observer_error_details[label+"-custody"]=bounded_error(failures[0])
+            try:self.secondary(label+"-custody")
+            except BaseException:pass
+            raise failures[0]
+
+    def inspect_hybrid_pcm(self,pcm,*,master_input):
+        from native_pcm_source_fidelity import inspect_source_pcm16_stereo_content
+        require(getattr(self,"hybrid",False) and self.native_result is not None
+                and self.master_sha is not None,"hybrid_PCM_without_original_master")
+        require_hybrid_master_probe_binding(self,master_input)
+        require(type(pcm) is bytes and len(pcm)==master_input["stdout_bytes"]
+                and sha(pcm)==master_input["stdout_sha256"],"hybrid_PCM_differs_from_bound_probe_output")
+        new_bytes(self.evidence_dir/"original-master-decoded.s16le",pcm)
+        original_sha=self.provenance["sha256"]
+        try:
+            witness=inspect_source_pcm16_stereo_content(self.original_wav,pcm,
+                original_wav_sha256=original_sha,decoded_pcm_sha256=sha(pcm))
+        except BaseException as primary:
+            try:new_json(self.evidence_dir/"hybrid-source-content-error.json",{
+                "original_wav_sha256":original_sha,"decoded_pcm_sha256":sha(pcm),
+                "error":bounded_error(primary),"native_operation_retried":False,
+                "source_start_offset_frames_assumed":0,"packet_PTS_and_AAC_priming_verified":False})
+            except BaseException:
+                try:self.secondary("hybrid_PCM_error_custody")
+                except BaseException:pass
+            raise
+        self.pcm_proof={"schema":"motionwright.native.hybrid-source-content/1",
+            "master_sha256":self.master_sha,"original_wav_sha256":original_sha,
+            "decoder_input":master_input,
+            "decoded_pcm_sha256":sha(pcm),"oracles":{"full_source_content":{"state":"PASS","witness":witness}},
+            "historical_33frame_fixture_used":False,"source_start_offset_frames_assumed":0,
+            "packet_PTS_and_AAC_priming_verified":False,"physical_AV_master_acceptance":False,"human_acceptance":False}
+        new_json(self.evidence_dir/"source-content.json",self.pcm_proof)
+        return self.pcm_proof
+
+    def complete_hybrid(self,pixels):
+        require(getattr(self,"hybrid",False) and self.native_result is not None
+                and self.native_result.get("schema")=="motionwright.native.hybrid-av-summary/1"
+                and self.native_result.get("frame_count")==180
+                and self.live_proof is not None and self.packet_observation is not None
+                and self.pcm_proof is not None and not self.secondary_failures,
+                "hybrid_original_evidence_chain_incomplete")
+        require_hybrid_master_probe_binding(self,self.packet_observation.get("decoder_input"))
+        require_hybrid_master_probe_binding(self,self.pcm_proof.get("decoder_input"))
+        require(self.packet_observation["decoder_input"]["stdout_sha256"]
+                == self.packet_observation["ffprobe_document_sha256"]
+                and self.pcm_proof["decoder_input"]["stdout_sha256"]
+                == self.pcm_proof["decoded_pcm_sha256"],"hybrid_original_probe_output_chain_changed")
+        require(type(pixels) is dict and pixels.get("schema")=="motionwright.native.hybrid-pixel-observation/1"
+                and pixels.get("frame_count")==180 and pixels.get("original_PNG_frames_bound")==540
+                and pixels.get("fixed_cut_and_content_screen")=="PASS"
+                and pixels.get("master_sha256")==self.master_sha
+                and all(row["state"]=="PASS" for row in self.pcm_proof["oracles"].values()),
+                "hybrid_original_pixel_and_audio_screen_incomplete")
+        require(sha(admission.checked_bytes(admission.INSTALLED,admission.MAX_ELF_BYTES))==REPAIRED_MODULE_SHA256
+                and verified_installed_melt_alias(self.inputs["known_melt_sha256"])==self.melt_alias_observation,
+                "hybrid_runtime_changed_after_original_effect")
+        self.completed=True
+        return {"schema":"motionwright.native.hybrid-g2-observation/1",
+            "original_source_wav_sha256":self.provenance["sha256"],
+            "master_sha256":self.master_sha,"source_content_screen":"PASS",
+            "original_live_module_witness_retained":True,"original_PNG_frames_bound":540,
+            "frame_count":180,"source_segment_frames":[60,60,60],
+            "packet_document_sha256":self.packet_observation["ffprobe_document_sha256"],
+            "packet_PTS_and_AAC_priming_verified":False,"physical_acceptance":False,
+            "human_approval":False,"Host_receiver_closure_proved":False}
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, error, traceback):
-        self.retain_observer_diagnostic()
+        hybrid = getattr(self, "hybrid", False)
+        primary = self.native_error if self.native_error is not None else error
+        primary_traceback = self.native_traceback if self.native_error is not None else traceback
+        custody_error = None
+        custody_stage = None
+        try:
+            self.retain_observer_diagnostic()
+        except BaseException as diagnostic_error:
+            if not hybrid:
+                raise
+            custody_error, custody_stage = diagnostic_error, "observer_diagnostic"
+            try:
+                # Keep any original diagnostic_custody record already emitted
+                # by the collector if its secondary notification then failed.
+                self.observer_error_details["observer_diagnostic_exit_failure"] = bounded_error(diagnostic_error)
+                self.secondary("observer_diagnostic_custody")
+            except BaseException:
+                pass
         cleanup_error = None
         if self.observer is not None:
             try:
                 self.observer.close()
-            except Exception as close_error:
+            except BaseException as close_error:
+                if not hybrid and not isinstance(close_error, Exception):
+                    raise
                 cleanup_error = close_error
-                self.observer_error_details["observer_descriptor_close"] = bounded_error(close_error)
-                self.secondary("observer_descriptor_close")
+                if hybrid and custody_error is None:
+                    custody_error, custody_stage = close_error, "observer_descriptor_close"
+                try:
+                    self.observer_error_details["observer_descriptor_close"] = bounded_error(close_error)
+                    self.secondary("observer_descriptor_close")
+                except BaseException:
+                    if not hybrid:
+                        raise
         try:
             new_json(self.evidence_dir / "final-custody.json", {
                 "schema": "motionwright.native.mlt-g2-custody/1",
@@ -1254,6 +1663,7 @@ class G2Session:
                 "post_native_error_type": None if error is None else type(error).__name__,
                 "source_content_and_live_module_verified": (
                     self.completed and error is None and not self.secondary_failures
+                    and (not hybrid or (primary is None and custody_error is None))
                 ),
                 "original_source": self.provenance,
                 "native_operation_retried": False,
@@ -1261,10 +1671,43 @@ class G2Session:
                 "physical_AV_master_acceptance": False,
                 "human_acceptance": False,
             })
-        except Exception:
-            self.secondary("final_custody")
-            if error is None:
+        except BaseException as final_error:
+            if not hybrid and not isinstance(final_error, Exception):
+                raise
+            if hybrid and custody_error is None:
+                custody_error, custody_stage = final_error, "final_custody"
+            try:
+                self.secondary("final_custody")
+            except BaseException:
+                if not hybrid:
+                    raise
+            if error is None and not hybrid:
                 failure = G2Unverified("g2_final_custody_failed")
+                failure.native_result = self.native_result
+                raise failure
+        if hybrid:
+            if primary is not None:
+                if self.native_result is not None:
+                    try:
+                        primary.motionwright_native_result = self.native_result
+                    except BaseException:
+                        pass
+                if primary is error:
+                    return False
+                raise primary.with_traceback(primary_traceback)
+            if custody_error is not None:
+                if not isinstance(custody_error, Exception):
+                    raise custody_error
+                code = {
+                    "observer_diagnostic": "g2_original_observer_diagnostic_failed",
+                    "observer_descriptor_close": "g2_original_consumer_descriptor_cleanup_failed",
+                    "final_custody": "g2_final_custody_failed",
+                }[custody_stage]
+                failure = G2Unverified(code)
+                failure.native_result = self.native_result
+                raise failure from custody_error
+            if self.secondary_failures:
+                failure = G2Unverified("g2_hybrid_exit_custody_incomplete")
                 failure.native_result = self.native_result
                 raise failure
         if self.native_error is not None and error is not self.native_error:

@@ -41,7 +41,8 @@ RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
 MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
-if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4"}:
+HYBRID = MODE == "hybrid-av"
+if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4", "hybrid-av"}:
     raise SystemExit("Only closed native MLT smoke modes are accepted")
 CONTRACT = mode_contract(MODE)
 VIDEO_ONLY = MODE in {"video-only", "final-mp4", "captioned-mp4"}
@@ -108,6 +109,8 @@ def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
     no application runtime, local backend or user-controlled filters.
     Temp disk output ensures even a hostile decoder cannot grow Python RAM.
     """
+    if mode == "hybrid-av":
+        return _inspect_hybrid_original_audio(master,ffmpeg,env,mode=mode,g2=g2)
     if mode not in {"final-mp4", "captioned-mp4"}:
         raise AssertionError("Legacy stereo decoder admits only its measured-voice fixture")
     contract = mode_contract(mode)
@@ -133,9 +136,71 @@ def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
             g2.inspect_pcm(pcm)
         return inspect_decoded_ci_stereo(pcm, mode=mode)
 
+def _inspect_hybrid_original_audio(master: Path, ffmpeg: Path, env: dict,
+                                          *, mode: str = "hybrid-av", g2=None) -> dict:
+    """Decode the retained private master bytes through the existing executor."""
+    from manim_native_readback import run_bounded
+    from native_mlt_loaded_module import _verified_binary
+    from native_mlt_g2_observation import hybrid_master_probe_input, hybrid_master_probe_binding
+    if mode!="hybrid-av" or g2 is None or not getattr(g2,"hybrid",False):
+        raise AssertionError("Hybrid PCM decode requires its existing original G2 owner")
+    contract=mode_contract(mode)
+    argv=[str(ffmpeg),"-nostdin","-v","error","-i","pipe:0",
+          "-map","0:a:0","-acodec","pcm_s16le","-ac","2","-ar","48000","-f","s16le","-"]
+    capture={}; primary=None; original=None; binding=None; binary_sha=None
+    try:
+        master_bytes,original=hybrid_master_probe_input(g2,master)
+        binary_sha=digest(ffmpeg)
+        with _verified_binary(ffmpeg,binary_sha,768*1024*1024):
+            pcm,_terminal=run_bounded(argv,(contract.pcm_frames+1024)*4,45,
+                                      input_bytes=master_bytes,capture=capture)
+        binding=hybrid_master_probe_binding(g2,original,capture,pcm)
+    except BaseException as error:
+        primary=error
+        raise
+    finally:
+        capture["argv"]=argv
+        if binary_sha is not None:capture["expected_executable_sha256"]=binary_sha
+        if original is not None:capture["original_private_master"]=original
+        if binding is not None:capture["master_probe_binding"]=binding
+        try:g2.retain_hybrid_capture("hybrid-original-audio-decode",capture)
+        except BaseException:
+            if primary is None:raise
+    if len(pcm)%4 or not contract.pcm_frames*4 <= len(pcm) <= (contract.pcm_frames+1024)*4:
+        raise AssertionError("Decoded source speaker PCM exceeded the AV clock budget")
+    return g2.inspect_hybrid_pcm(pcm,master_input=binding)
+
+
 
 def retain_native_master_packets(master: Path, ffprobe: Path, env: dict, g2) -> None:
     """Keep the one original packet document without granting clock acceptance."""
+
+    if getattr(g2,"hybrid",False):
+        from manim_native_readback import run_bounded
+        from native_mlt_loaded_module import _verified_binary
+        from native_mlt_g2_observation import hybrid_master_probe_input, hybrid_master_probe_binding
+        argv=[str(ffprobe),"-v","error","-select_streams","a:0","-show_streams","-show_packets","-of","json","pipe:0"]
+        capture={}; primary=None; original=None; binding=None; binary_sha=None
+        try:
+            master_bytes,original=hybrid_master_probe_input(g2,master)
+            binary_sha=digest(ffprobe)
+            with _verified_binary(ffprobe,binary_sha,768*1024*1024):
+                raw,_terminal=run_bounded(argv,1048576,45,input_bytes=master_bytes,capture=capture)
+            binding=hybrid_master_probe_binding(g2,original,capture,raw)
+        except BaseException as error:
+            primary=error
+            raise
+        finally:
+            capture["argv"]=argv
+            if binary_sha is not None:capture["expected_executable_sha256"]=binary_sha
+            if original is not None:capture["original_private_master"]=original
+            if binding is not None:capture["master_probe_binding"]=binding
+            try:g2.retain_hybrid_capture("hybrid-original-packet-probe",capture)
+            except BaseException:
+                if primary is None:raise
+        g2.retain_packet_document(raw)
+        g2.packet_observation["decoder_input"]=binding
+        return
     try:
         with tempfile.TemporaryFile() as output:
             observed = subprocess.run(
@@ -361,9 +426,166 @@ def native_owner_workspace(g2=None):
                 raise
 
 
+
+
+
+def run_hybrid_original_json(argv, *, env, evidence, label, timeout):
+    """Capture via the existing first-party supervisor; never launch a second call."""
+    from native_mlt_g2_observation import new_bytes,new_json,bounded_error
+    if (type(argv) is not list or type(label) is not str or label not in ("hybrid-seed","hybrid-assemble")
+            or not argv or argv[0] != str(MW_BIN)
+            or (label=="hybrid-seed" and (len(argv)!=7 or argv[1]!="seed-hybrid" or timeout!=60))
+            or (label=="hybrid-assemble" and (len(argv)!=6 or argv[1]!="assemble-hybrid" or timeout!=2100))):
+        raise AssertionError("hybrid_original_command_identity")
+    new_json(evidence/(label+".intent.json"),{
+        "argv":argv,"timeout_seconds":timeout,"automatic_retry":False,
+        "source_only_Service_command":label=="hybrid-seed",
+        "native_owner_command":label=="hybrid-assemble",
+    })
+    captures=[]
+    def retain(record):
+        if captures or type(record) is not dict or record.get("argv") != argv or record.get("timeout_seconds") != timeout:
+            raise AssertionError("hybrid_original_command_capture_identity")
+        captures.append(record)
+        terminal={k:v for k,v in record.items() if k not in ("stdout","stderr")}
+        terminal.update(schema="motionwright.native.hybrid-original-command/1",label=label,
+                        raw_error_is_private=True,native_terminal_inferred_from_exit=False)
+        errors=[]
+        for stream in ("stdout","stderr"):
+            body=record.get(stream)
+            if type(body) is not bytes or len(body)>1024*1024:
+                errors.append(ValueError("hybrid_original_command_stream_budget"))
+                continue
+            terminal[stream]={"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body),"retained":False}
+            try:
+                new_bytes(evidence/(label+"."+stream+".bin"),body)
+                terminal[stream]["retained"]=True
+            except BaseException as error:errors.append(error)
+        terminal["custody_errors"]=[bounded_error(e) for e in errors]
+        try:new_json(evidence/(label+".terminal.json"),terminal)
+        except BaseException as error:errors.append(error)
+        if errors:raise errors[0]
+    result=run_sanitized_json(argv,env=env,timeout=timeout,capture=retain)
+    if len(captures)!=1:
+        raise AssertionError("hybrid_original_command_capture_absent")
+    return result
+
+
+def hybrid_manim_manifest(paths,ffmpeg,ffprobe):
+    """Same admitted Manim driver/runner contract, on the existing owner session."""
+    import native_manim_e2e as manim
+    from native_mlt_g2_observation import new_json
+    if (manim.PIN != PIN or manim.FFMPEG != ffmpeg or manim.FFPROBE != ffprobe
+            or any(not path.exists() for path in (manim.MW_DRIVER,manim.MW_RUNNER,manim.PYTHON,
+                manim.MANIM_RUNTIME/"runtime.json",manim.MANIM_RUNTIME/"site-packages"))):
+        raise AssertionError("hybrid_MCE_MLT_Manim_runtime_inputs_are_not_the_same_pinned_tools")
+    runtime_evidence=EVIDENCE/"manim-runtime-originals"
+    runtime_evidence.mkdir(mode=0o700)
+    inventory=manim.retain_runtime_inventory(runtime_evidence)
+    driver=paths["bin"]/"motionwright-manim-community-driver"
+    runner=paths["bin"]/"motionwright-manim-runner"
+    shutil.copyfile(manim.MW_DRIVER,driver); driver.chmod(0o700)
+    shutil.copyfile(manim.MW_RUNNER,runner); runner.chmod(0o700)
+    manifest={
+        "manifest_version":1,"protocol":8,"id":"manim-community","version":"0.1.0",
+        "publisher":"motionwright","executable":str(driver),"sha256":digest(driver),
+        "application":{"desktop_id":None,"process_names":["motionwright-manim-runner","python3","ffmpeg"],
+                       "supported_versions":[f"Manim Community {manim.MANIM_VERSION}"]},
+        "transport":"stdio_v1",
+        "mounts":[{"root":"manim-runtime","read_only":True},{"root":"manim-work","read_only":False},
+                  {"root":"manim-output","read_only":False},{"root":"fontconfig","read_only":True}],
+        "system_config":[],"secrets":[],
+        "tools":[{"root":"manim-runner-root","name":"manim-runner","sha256":digest(runner),
+                  "mounts":["manim-runtime","manim-work","manim-output","fontconfig"],"dependencies":["python3","ffmpeg"]},
+                 {"root":"python-root","name":"python3","sha256":digest(manim.PYTHON),"mounts":[],"dependencies":[]},
+                 {"root":"ffmpeg-root","name":"ffmpeg","sha256":digest(ffmpeg),"mounts":[],"dependencies":[]}],
+        "network":False,"loopback_port":None,
+        "resources":{"open_files":512,"processes":256,"cpu_seconds":300,"operation_cpu_seconds":0,
+                     "address_space_bytes":4294967296,"file_size_bytes":1073741824},
+        "request_timeout_ms":300000,
+        "interfaces":{"dynamic_capabilities":False,"cooperative_cancellation":True,"events":False,
+                      "health":True,"progress":False,"artifacts":False,"native_refs":False,"host_tools":True},
+    }
+    target=paths["config"]/"manim-driver.json"
+    write_private_json(target,manifest)
+    new_json(EVIDENCE/"hybrid-manim-provider-binding.json",{
+        "driver_sha256":digest(driver),"runner_sha256":digest(runner),"python_sha256":digest(manim.PYTHON),
+        "runtime_inventory_sha256":inventory,"native_manim_source_profile":"static-v2",
+        "same_owner_Broker_session":True,"physical_provider_probe_still_required":True,
+    })
+    return target,[("manim-runtime",manim.MANIM_RUNTIME,False),("manim-work",paths["manim-work"],True),
+                   ("manim-output",paths["output"],True),("manim-runner-root",runner,False),
+                   ("python-root",manim.PYTHON,False)]
+
+
+def finish_hybrid_original(paths,result,ffmpeg,ffprobe,env,g2):
+    from native_mlt_g2_observation import new_json
+    from native_mlt_caption_pixels import inspect_original_hybrid_pixels
+    if (g2 is None or not getattr(g2,"hybrid",False) or type(result) is not dict
+            or result.get("schema")!="motionwright.native.hybrid-av-summary/1"):
+        raise AssertionError("hybrid_original_result_scope")
+    original=paths["output"]/result["master_artifact_path"]
+    g2.retain_master(original,result["master_artifact_sha256"],result["master_artifact_bytes"])
+    # All originals exist before this independent reader starts. It cannot
+    # redispatch a renderer, native import or mux, including after readback fails.
+    pixels=inspect_original_hybrid_pixels(paths["output"],EVIDENCE/"native-hybrid",result,
+        ffmpeg=ffmpeg,executable_sha256=digest(ffmpeg),retain_decode=g2.retain_hybrid_capture)
+    new_json(EVIDENCE/"hybrid-pixel-observation.json",pixels)
+    private_master=g2.evidence_dir/"original-native-master.mp4"
+    retain_native_master_packets(private_master,ffprobe,env,g2)
+    audio=inspect_native_master_decoded_content(private_master,ffmpeg,env,mode="hybrid-av",g2=g2)
+    new_json(EVIDENCE/"hybrid-audio-content.json",audio)
+    completed=g2.complete_hybrid(pixels)
+    receipt={
+        "schema":"motionwright.native.hybrid-public-source/1","motionwright_sha":GITHUB_SHA,"semwright_sha":PIN,
+        "project_sha256":result["project_sha256"],"master_sha256":result["master_artifact_sha256"],
+        "visual_sha256":result["visual_artifact_sha256"],"source_wave_sha256":g2.provenance["sha256"],
+        "source_audio_kind":"first_party_synthetic_Film180_source",
+        "width":1920,"height":1080,"fps_num":30,"fps_den":1,"frame_count":180,"source_segment_frames":[60,60,60],
+        "source_renderers":["motion_canvas","manim_static","motion_canvas"],
+        "original_PNG_frames_bound":pixels["original_PNG_frames_bound"],
+        "original_PNG_decoder_invocations":pixels["original_PNG_decoder_invocations"],
+        "exact_original_PNG_reuses":pixels["equal_original_PNG_frames_reused"],
+        "native_cut_and_content_screen":pixels["fixed_cut_and_content_screen"],"source_audio_content_screen":"PASS",
+        "source_vs_output_differences_retained":True,
+        "visual_exact_clock_observed":pixels["visual_exact_clock_observed"],
+        "master_exact_clock_observed":pixels["master_exact_clock_observed"],
+        "pixel_observation_sha256":digest(EVIDENCE/"hybrid-pixel-observation.json"),
+        "audio_observation_sha256":digest(EVIDENCE/"hybrid-audio-content.json"),
+        "original_source_reopened_unchanged":True,"live_MLT_module_observed":True,
+        "native_effect_retried":False,"packet_PTS_and_AAC_priming_verified":False,
+        "Host_receiver_closure_proved":False,"physical_acceptance":False,"human_approval":False,
+        "media_publication_permission_inferred":False,
+    }
+    new_json(EVIDENCE/"hybrid-public-source.json",receipt)
+    new_json(EVIDENCE/"hybrid-g2-observation.json",completed)
+    return {"native_hybrid_original_observation":"RETAINED","motionwright_sha":GITHUB_SHA,"semwright_sha":PIN,
+            "frame_count":180,"evidence":"private-g2-producer","physical_acceptance":False,"human_approval":False}
+
+
+def close_native_owner(daemon,log_stream):
+    """Same existing termination/waits; closing a process proves no Host receipt."""
+    primary=None
+    try:
+        if daemon.poll() is None:
+            pid=daemon.pid
+            daemon.terminate()
+            try:daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(pid,signal.SIGKILL)
+                daemon.wait(timeout=5)
+    except BaseException as error:primary=error
+    try:log_stream.close()
+    except BaseException as error:
+        if primary is None:primary=error
+    if primary is not None:raise primary
+
+
 def main(g2=None):
     global EVIDENCE
     exact_inputs()
+    if HYBRID and (g2 is None or not getattr(g2,"hybrid",False)):
+        raise AssertionError("hybrid_requires_its_fresh_original_G2_contract")
     if g2 is not None:
         observed = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
         if observed != GITHUB_SHA:
@@ -394,6 +616,9 @@ def main(g2=None):
             path = root / name
             path.mkdir(mode=0o700)
             paths[name] = path
+        if HYBRID:
+            paths["manim-work"] = root / "manim-work"
+            paths["manim-work"].mkdir(mode=0o700)
 
         env = {
             key: value
@@ -414,11 +639,16 @@ def main(g2=None):
         elif any(key in env for key in ("MOTIONWRIGHT_MLT_ORIGINAL_WAV", "MOTIONWRIGHT_MLT_ORIGINAL_WAV_SHA256")):
             raise AssertionError("An original WAV requires the explicit G2 input envelope")
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seed_argv=[str(MW_BIN),"seed",str(database)]
-        seeded=(run_original_seed(seed_argv,env=env,evidence=EVIDENCE,
-                    current={"source_sha":GITHUB_SHA,"semwright_sha":PIN,
-                        "run_id":g2.inputs["run_id"],"run_attempt":g2.inputs["run_attempt"]})
-                if g2 is not None else run_json(seed_argv,env=env))
+        if HYBRID:
+            seed_argv=[str(MW_BIN),"seed-hybrid",str(database),str(g2.evidence_dir/"original-source.wav"),
+                       g2.provenance["sha256"],str(g2.provenance["bytes"]),str(EVIDENCE/"hybrid-source.original.json")]
+            seeded=run_hybrid_original_json(seed_argv,env=env,evidence=EVIDENCE,label="hybrid-seed",timeout=60)
+        else:
+            seed_argv=[str(MW_BIN),"seed",str(database)]
+            seeded=(run_original_seed(seed_argv,env=env,evidence=EVIDENCE,
+                        current={"source_sha":GITHUB_SHA,"semwright_sha":PIN,
+                            "run_id":g2.inputs["run_id"],"run_attempt":g2.inputs["run_attempt"]})
+                    if g2 is not None else run_json(seed_argv,env=env))
         if ((seeded["width"], seeded["height"]) != (CONTRACT.width, CONTRACT.height)
             or (seeded["fps_num"], seeded["fps_den"]) != (CONTRACT.fps_num, CONTRACT.fps_den)
             or seeded["scene_count"] != CONTRACT.scene_count
@@ -592,15 +822,19 @@ def main(g2=None):
             ("ffprobe-root", ffprobe, False),
             ("ffmpeg-root", ffmpeg, False),
         ]
+        driver_manifests=[manifest_path,mlt_manifest_path]
+        if HYBRID:
+            manim_manifest,manim_grants=hybrid_manim_manifest(paths,ffmpeg,ffprobe)
+            driver_manifests.append(manim_manifest)
+            grants.extend(manim_grants)
         config_lines = [
-            "drivers = [" + ", ".join(
-                json.dumps(str(path)) for path in [manifest_path, mlt_manifest_path]
-            ) + "]",
+            "drivers = [" + ", ".join(json.dumps(str(path)) for path in driver_manifests) + "]",
             "driver_network = false",
             "",
             "[policy]",
-            'profile = "observe"',
-            'allow = ["driver:motion-canvas", "driver:mlt-video"]',
+            'profile = "workspace"' if HYBRID else 'profile = "observe"',
+            ('allow = ["driver:motion-canvas", "driver:mlt-video", "driver:manim-community"]'
+             if HYBRID else 'allow = ["driver:motion-canvas", "driver:mlt-video"]'),
         ]
         for name, path, write in grants:
             config_lines.extend(
@@ -636,6 +870,7 @@ def main(g2=None):
             start_new_session=True,
         )
 
+        primary_owner_error = None
         try:
             wait_for_socket(daemon, socket, daemon_log)
             discovered = run_json(
@@ -700,6 +935,20 @@ def main(g2=None):
                         f"pinned MLT capability has unexpected provider: "
                         f"{capability_name}: {provenance}"
                     )
+            if HYBRID:
+                for command,provider in [
+                    ("driver.manim-community.doctor","driver:manim-community"),
+                    ("driver.manim-community.static.render.start","driver:manim-community"),
+                    ("driver.manim-community.render.status","driver:manim-community"),
+                    ("driver.manim-community.render.result","driver:manim-community"),
+                    ("driver.mlt-video.av.mux","driver:mlt-video"),
+                ]:
+                    described=run_json([str(SW_BINS/"semwright"),"--socket",str(socket),"--session-file",str(session),
+                                        "--json","capabilities","describe",command],env=env)
+                    payload=described.get("data",{})
+                    if (payload.get("capability",{}).get("name")!=command
+                            or payload.get("provenance",{}).get("provider")!=provider):
+                        raise AssertionError("hybrid_existing_provider_not_provisioned")
             if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
                 raise AssertionError("Semwright did not create a private persistent session ticket")
 
@@ -719,6 +968,10 @@ def main(g2=None):
 
             try:
                 def assemble_original():
+                    if HYBRID:
+                        return run_hybrid_original_json(
+                            [str(MW_BIN),"assemble-hybrid",str(database),str(connection_path),seeded["project_sha256"],
+                             str(EVIDENCE/"native-hybrid")],env=env,evidence=EVIDENCE,label="hybrid-assemble",timeout=2100)
                     return run_json(
                         [
                             str(MW_BIN), "assemble", str(database), str(connection_path),
@@ -731,6 +984,8 @@ def main(g2=None):
                     if g2 is not None else assemble_original()
                 )
             except (AssertionError, subprocess.TimeoutExpired):
+                if HYBRID:
+                    raise  # The existing G2 session retained this original; do not replace it with a diagnostic.
                 # The pinned renderer's raw failure receipt contains a local
                 # stack and owner paths: NEVER print or upload that receipt.
                 # Persist only a fixed vocabulary derived before the owner's
@@ -742,6 +997,8 @@ def main(g2=None):
                     pass  # Never replace the original native failure.
                 print(json.dumps(safe, sort_keys=True), file=sys.stderr)
                 raise
+            if HYBRID:
+                return finish_hybrid_original(paths,result,ffmpeg,ffprobe,env,g2)
             if result.get("native_mlt_multisegment_e2e") != "PASS":
                 raise AssertionError("Real source-bound MLT timeline was not successful: " + repr(result))
 
@@ -1026,16 +1283,19 @@ def main(g2=None):
                     **master_check,
                 },
             )
+        except BaseException as error:
+            primary_owner_error=error
+            raise
         finally:
-            if daemon.poll() is None:
-                pid = daemon.pid
-                daemon.terminate()
-                try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pid, signal.SIGKILL)
-                    daemon.wait(timeout=5)
-            log_stream.close()
+            try:close_native_owner(daemon,log_stream)
+            except BaseException as cleanup:
+                if g2 is not None:
+                    try:
+                        from native_mlt_g2_observation import bounded_error
+                        g2.observer_error_details["existing_owner_close"]=bounded_error(cleanup)
+                        g2.secondary("existing_owner_close")
+                    except BaseException:pass
+                if primary_owner_error is None:raise
 
     summary = {
         "native_mlt_multisegment_e2e": "PASS",
@@ -1073,9 +1333,18 @@ def run_g2_with_frozen_expectation(session):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--g2-inputs", type=Path)
+    selected=parser.add_mutually_exclusive_group()
+    selected.add_argument("--g2-inputs", type=Path)
+    selected.add_argument("--hybrid-inputs", type=Path)
     args = parser.parse_args()
-    if args.g2_inputs is None:
+    if args.hybrid_inputs is not None:
+        if not HYBRID:
+            raise SystemExit("--hybrid-inputs requires MOTIONWRIGHT_MLT_MODE=hybrid-av")
+        from native_mlt_g2_observation import G2Session
+        with G2Session.prepare_hybrid(args.hybrid_inputs,source_sha=GITHUB_SHA,semwright_sha=PIN,source_root=ROOT) as session:
+            summary=main(session)
+        print(json.dumps(summary,sort_keys=True))
+    elif args.g2_inputs is None:
         main()
     else:
         from native_mlt_g2_observation import G2Session
