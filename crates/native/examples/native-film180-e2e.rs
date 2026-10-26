@@ -2788,6 +2788,27 @@ mod stdin_readback {
             false
         }
     }
+    // This is the same custody reader's open/fstat boundary. Do not delegate
+    // its private-file checks to a bytes-only observation, or substitute a
+    // path metadata check for the metadata of this actual open descriptor.
+    fn open_original_input(path: &Path, named: &Metadata) -> FixtureResult<(File, Metadata)> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // A FIFO substituted after the initial regular-file check must
+            // not wait for a writer. No symlink leaf is followed either.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options.open(path)?;
+        let opened = file.metadata()?;
+        if !opened.is_file() || !unchanged(named, &opened) {
+            return Err("custody file changed before reading".into());
+        }
+        Ok((file, opened))
+    }
+
     fn read_original(path: &Path, limit: usize, private: bool) -> FixtureResult<Vec<u8>> {
         #[cfg(not(unix))]
         let _ = private;
@@ -2807,11 +2828,7 @@ mod stdin_readback {
                 return Err("original custody file is not private and singly linked".into());
             }
         }
-        let mut file = File::open(path)?;
-        let before = file.metadata()?;
-        if !unchanged(&named, &before) {
-            return Err("custody file changed before reading".into());
-        }
+        let (mut file, before) = open_original_input(path, &named)?;
         let mut bytes = Vec::with_capacity(limit.min(META));
         Read::by_ref(&mut file)
             .take(limit as u64 + 1)
@@ -3816,6 +3833,112 @@ mod stdin_readback {
             let mut capture = record();
             capture.terminal = None;
             assert!(select_record(&[capture], &declaration(), PARENT, SESSION, None).is_err());
+        }
+
+        #[cfg(unix)]
+        struct OriginalInputRoot(PathBuf);
+
+        #[cfg(unix)]
+        impl OriginalInputRoot {
+            fn new() -> Self {
+                use std::os::unix::fs::DirBuilderExt;
+                let path = std::env::temp_dir().join(format!(
+                    "motionwright-stdin-original-{}",
+                    uuid::Uuid::now_v7()
+                ));
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700).create(&path).unwrap();
+                Self(fs::canonicalize(path).unwrap())
+            }
+
+            fn original(&self, name: &str, bytes: &[u8]) -> PathBuf {
+                let path = self.0.join(name);
+                new_bytes(&path, bytes).unwrap();
+                path
+            }
+        }
+
+        #[cfg(unix)]
+        impl Drop for OriginalInputRoot {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn original_reader_preserves_private_bytes_empty_presence_and_the_bound() {
+            let root = OriginalInputRoot::new();
+            let original = root.original("capture.stdin", RAW);
+            assert_eq!(read_bounded(&original, RAW.len()).unwrap(), RAW);
+            assert!(read_bounded(&original, RAW.len() - 1).is_err());
+            let empty = root.original("empty.stdout", b"");
+            assert_eq!(read_bounded(&empty, 16).unwrap(), b"");
+            assert!(read_bounded(&root.0.join("absent.stdout"), 16).is_err());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn original_reader_keeps_private_mode_and_single_link_requirements() {
+            use std::os::unix::fs::PermissionsExt;
+            let root = OriginalInputRoot::new();
+            let original = root.original("capture.stdin", RAW);
+            fs::set_permissions(&original, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read_bounded(&original, RAW.len()).is_err());
+            // Public source inputs remain distinct from private Host custody.
+            assert_eq!(read_source(&original, RAW.len()).unwrap(), RAW);
+            fs::set_permissions(&original, fs::Permissions::from_mode(0o600)).unwrap();
+            let alias = root.0.join("another-name.stdin");
+            fs::hard_link(&original, &alias).unwrap();
+            assert!(read_bounded(&original, RAW.len()).is_err());
+            assert!(read_source(&original, RAW.len()).is_err());
+            fs::remove_file(alias).unwrap();
+            assert_eq!(read_bounded(&original, RAW.len()).unwrap(), RAW);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn original_reader_rejects_replaced_regular_and_symlink_after_metadata() {
+            use std::os::unix::fs::symlink;
+            let root = OriginalInputRoot::new();
+            let original = root.original("capture.stdin", RAW);
+            let named = fs::symlink_metadata(&original).unwrap();
+            let held_name = root.0.join("held-original.stdin");
+            fs::rename(&original, &held_name).unwrap();
+            root.original("capture.stdin", RAW);
+            // Equal bytes/length do not authorize a different opened inode.
+            assert!(open_original_input(&original, &named).is_err());
+            fs::remove_file(&original).unwrap();
+            symlink(&held_name, &original).unwrap();
+            assert!(open_original_input(&original, &named).is_err());
+            assert!(read_source(&original, RAW.len()).is_err());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn original_reader_rejects_fifo_replacement_without_a_writer() {
+            use std::ffi::CString;
+            use std::os::fd::AsRawFd;
+            use std::os::unix::ffi::OsStrExt;
+            let root = OriginalInputRoot::new();
+            let original = root.original("capture.stdin", RAW);
+            let named = fs::symlink_metadata(&original).unwrap();
+            // Verify the same opener's descriptor flags before introducing a
+            // FIFO. A regression removing nonblocking admission fails here
+            // without entering a potentially blocking open in this control.
+            let (opened, observed) = open_original_input(&original, &named).unwrap();
+            assert!(unchanged(&named, &observed));
+            let flags = unsafe { libc::fcntl(opened.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_ne!(flags & libc::O_NONBLOCK, 0);
+            drop(opened);
+            fs::remove_file(&original).unwrap();
+            let name = CString::new(original.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            // This deliberately reuses the real regular-file metadata from
+            // before substitution. The reader must reject the actual FIFO FD
+            // before reading; no writer, process, native call or retry exists.
+            assert!(open_original_input(&original, &named).is_err());
         }
     }
 }

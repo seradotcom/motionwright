@@ -1,5 +1,8 @@
 import copy
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -216,6 +219,164 @@ class FixedTextOwnerCloseContracts(unittest.TestCase):
                 attempt.secondary("ordinary")
         self.assertIs(raised.exception, original)
         self.assertEqual(attempt.secondary_failures, ["ordinary"])
+
+
+class FixedTextFixtureSelectionContracts(unittest.TestCase):
+    """Exercise selection/aggregation with inert producer boundary doubles."""
+
+    def exercise(self, selected=None, *, fixture_count=12, native_error=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            attempt = runner.FilmAttempt({}, root)
+            attempt.melt_alias_observation = {"synthetic": True}
+            native_sha = "b" * 64
+            def original(name):
+                return {"path": str(root / name), "bytes": 1, "sha256": "c" * 64}
+            spec = {
+                "arm": "GREEN", "template_film": original("template.original.json"),
+                "managed_project": original("managed.original.json"),
+                "caption_source": original("caption.original.txt"),
+                "common_sources": original("common.original.json"),
+                "compiler_binary_sha256": native_sha,
+                "runtime": {"native_source_sha256": {"RED": "a" * 64, "GREEN": native_sha}},
+            }
+            terminal = {"schema": "motionwright-fixedtxt-film-fixture-set/4",
+                "status": "AUTHORED_FILM_FIXTURES_WRITTEN", "fixture_count": fixture_count,
+                "fixtures": [{"key": key} for key in runner.FIXED_TEXT_KEYS],
+                "compiler": {"runtime_source_sha256": native_sha}}
+            component = root / "inert-component-no-process"
+            decoder = root / "inert-decoder-no-process"
+            project_files = {"semwright-motion.json": b"synthetic source boundary"}
+            visits = []
+
+            def one_case(child, actual_spec, actual_files, actual_component, actual_decoder, fixture_root, key):
+                self.assertIs(actual_spec, spec)
+                self.assertIs(actual_files, project_files)
+                self.assertEqual(actual_component, component)
+                self.assertEqual(actual_decoder, decoder)
+                self.assertEqual(fixture_root, root / "canonical-fixture-set")
+                self.assertIs(child.inputs, attempt.inputs)
+                visits.append(key)
+                child.native_commands[key + ".render"] = "ERROR_OR_UNKNOWN"
+                if native_error is not None:
+                    raise native_error
+                child.confirm_native(key + ".render")
+                child.completed_stages[key] = {"synthetic_boundary": True}
+                child.completed = True
+
+            def read_original(value, limit):
+                self.assertGreater(limit, 0)
+                return b'{"files":[]}' if value is spec["common_sources"] else b"unchanged synthetic input"
+
+            output = io.StringIO()
+            caught = None
+            with patch.object(runner.FilmAttempt, "prepare", return_value=attempt), \
+                    patch.object(runner, "checked_plan", return_value={"synthetic": True}), \
+                    patch.object(runner, "fixed_cycle_inputs", return_value=(spec, project_files, component, decoder)), \
+                    patch.object(runner, "fixed_component", return_value=terminal) as produce, \
+                    patch.object(runner, "fixed_one_case", side_effect=one_case), \
+                    patch.object(runner, "digest", return_value=native_sha), \
+                    patch.object(runner, "fixed_original", side_effect=read_original), \
+                    redirect_stdout(output):
+                try:
+                    runner.execute_fixed_text_v4(root / "runtime-input.json", root / "cycle-input.json",
+                                                 selected_fixture=selected)
+                except BaseException as error:
+                    caught = error
+            final = json.loads((root / "final-custody.json").read_text())
+            cycle_path = root / "fixed-text-cycle.observation.json"
+            cycle = json.loads(cycle_path.read_text()) if cycle_path.exists() else None
+            stdout = json.loads(output.getvalue()) if output.getvalue() else None
+            call = produce.call_args
+            self.assertEqual(produce.call_count, 1, "the original twelve-fixture producer must be called once")
+            self.assertEqual(call.args[1], "fixed.source-fixtures")
+            self.assertEqual(call.args[4], ["--fixtures", spec["template_film"]["path"],
+                "--managed-project", spec["managed_project"]["path"],
+                "--caption-source", spec["caption_source"]["path"], "--output", str(root / "canonical-fixture-set")])
+            return {"error": caught, "visits": visits, "final": final, "cycle": cycle,
+                    "stdout": stdout, "attempt": attempt}
+
+    def test_default_selection_preserves_all_twelve_fixtures_and_48_decodes(self):
+        actual = self.exercise()
+        self.assertIsNone(actual["error"])
+        self.assertEqual(actual["visits"], list(runner.FIXED_TEXT_KEYS))
+        self.assertEqual(actual["final"]["expected_fixtures"], list(runner.FIXED_TEXT_KEYS))
+        self.assertEqual(actual["final"]["native_terminal"], "SUCCESS_REPORTED")
+        self.assertEqual(actual["cycle"]["fixture_count"], 12)
+        self.assertEqual(actual["cycle"]["native_render_start_count"], 12)
+        self.assertEqual(actual["cycle"]["selected_decode_count"], 48)
+        self.assertEqual(actual["stdout"]["native_renders"], 12)
+        self.assertEqual(actual["stdout"]["selected_decodes"], 48)
+        self.assertEqual(actual["cycle"]["pair_pixel_verdict"], "NOT_EVALUATED")
+
+    def test_each_closed_single_fixture_has_only_its_original_samples_and_terminal_scope(self):
+        for key in runner.FIXED_TEXT_KEYS:
+            with self.subTest(fixture=key):
+                actual = self.exercise(key)
+                self.assertIsNone(actual["error"])
+                self.assertEqual(actual["visits"], [key])
+                self.assertEqual(actual["final"]["expected_fixtures"], [key])
+                self.assertEqual(set(actual["final"]["native_command_terminals"]), {key + ".render"})
+                self.assertEqual(actual["final"]["native_terminal"], "SUCCESS_REPORTED")
+                self.assertEqual(actual["cycle"]["fixture_count"], 1)
+                self.assertEqual(actual["cycle"]["native_render_start_count"], 1)
+                self.assertEqual(actual["cycle"]["selected_decode_count"], len(runner.fixed_samples(key)))
+                self.assertEqual(actual["stdout"]["native_renders"], 1)
+                self.assertEqual(actual["stdout"]["selected_decodes"], len(runner.fixed_samples(key)))
+                self.assertFalse(actual["final"]["formal_acceptance"])
+                self.assertFalse(actual["final"]["native_operation_retried"])
+
+    def test_invalid_fixture_is_rejected_before_attempt_preparation_or_native_call(self):
+        for value in ["", "fixed-causal ", "FIXED-CAUSAL", "fixed-causal\n", "../fixed-causal", True, ["fixed-causal"], {}]:
+            with self.subTest(value=value), patch.object(runner.FilmAttempt, "prepare") as prepare, \
+                    patch.object(runner, "fixed_one_case") as native:
+                with self.assertRaises(runner.Film180G2Rejected):
+                    runner.execute_fixed_text_v4(Path("unused-runtime"), Path("unused-cycle"), selected_fixture=value)
+                prepare.assert_not_called()
+                native.assert_not_called()
+
+    def test_single_fixture_still_requires_the_complete_twelve_fixture_source_set(self):
+        actual = self.exercise("fixed-camera-scene", fixture_count=1)
+        self.assertIsInstance(actual["error"], runner.Film180G2Rejected)
+        self.assertEqual(actual["visits"], [])
+        self.assertEqual(actual["final"]["expected_fixtures"], ["fixed-camera-scene"])
+        self.assertEqual(actual["final"]["native_terminal"], "NOT_STARTED")
+        self.assertEqual(actual["final"]["native_command_terminals"], {})
+        self.assertIsNone(actual["cycle"])
+        self.assertIsNone(actual["stdout"])
+
+    def test_selected_unknown_preserves_the_original_error_and_never_visits_another_fixture(self):
+        original = RuntimeError("synthetic UNKNOWN; no native process")
+        actual = self.exercise("fixed-counter-captions", native_error=original)
+        self.assertIs(actual["error"], original)
+        self.assertEqual(actual["visits"], ["fixed-counter-captions"])
+        self.assertEqual(actual["final"]["expected_fixtures"], ["fixed-counter-captions"])
+        self.assertEqual(actual["final"]["native_command_terminals"], {"fixed-counter-captions.render": "ERROR_OR_UNKNOWN"})
+        self.assertEqual(actual["final"]["native_terminal"], "ERROR_OR_UNKNOWN")
+        self.assertFalse(actual["final"]["original_sources_and_selected_decodes_observed"])
+        self.assertFalse(actual["final"]["native_operation_retried"])
+        self.assertIsNone(actual["cycle"])
+        self.assertIsNone(actual["stdout"])
+
+    def test_cli_requires_fixed_inputs_for_a_closed_fixture_and_keeps_ordinary_defaults(self):
+        base = ["--g2-inputs", "original-runtime.json"]
+        ordinary = runner.parse_cli(base)
+        self.assertIsNone(ordinary.fixed_text_v4_inputs)
+        self.assertIsNone(ordinary.fixed_text_v4_fixture)
+        full = runner.parse_cli(base + ["--fixed-text-v4-inputs", "original-cycle.json"])
+        self.assertIsNone(full.fixed_text_v4_fixture)
+        single = runner.parse_cli(base + ["--fixed-text-v4-inputs", "original-cycle.json",
+                                         "--fixed-text-v4-fixture", "fixed-causal"])
+        self.assertEqual(single.fixed_text_v4_fixture, "fixed-causal")
+        for argv in [base + ["--fixed-text-v4-fixture", "fixed-causal"],
+                     base + ["--fixed-text-v4-inputs", "original-cycle.json", "--fixed-text-v4-fixture", "foreign"]]:
+            with self.subTest(argv=argv), patch.object(runner.FilmAttempt, "prepare") as prepare, \
+                    patch.object(runner, "fixed_one_case") as native, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    runner.parse_cli(argv)
+                self.assertEqual(raised.exception.code, 2)
+                prepare.assert_not_called()
+                native.assert_not_called()
 
 
 if __name__ == "__main__":

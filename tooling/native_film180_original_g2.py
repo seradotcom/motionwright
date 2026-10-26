@@ -1452,6 +1452,15 @@ def fixed_json(raw):
     return observed.strict_object(raw)
 
 
+def fixed_selected_fixture_keys(value):
+    # This selects work inside the existing attempt. It grants no execution
+    # authority and does not change the complete canonical source baseline.
+    if value is None:
+        return FIXED_TEXT_KEYS
+    require(type(value) is str and value in FIXED_TEXT_KEYS, "FixedTxt_fixture_selection")
+    return (value,)
+
+
 def fixed_samples(key):
     if key == "fixed-counter-captions":
         return (0, 29, 30, 45, 119, 120, 179)
@@ -1864,15 +1873,17 @@ def fixed_owner_close(daemon, source, evidence, attempt, original_identity):
     require(valid, "FixedTxt_actual_original_receiver_close_incomplete_or_losses")
 
 
-def execute_fixed_text_v4(input_path, fixed_input_path):
+def execute_fixed_text_v4(input_path, fixed_input_path, *, selected_fixture=None):
+    selected_keys = fixed_selected_fixture_keys(selected_fixture)
+    selected_decode_count = sum(len(fixed_samples(key)) for key in selected_keys)
     attempt = FilmAttempt.prepare(input_path)
-    attempt.fixed_text_v4 = {"arm": None, "fixtures": list(FIXED_TEXT_KEYS)}
+    attempt.fixed_text_v4 = {"arm": None, "fixtures": list(selected_keys)}
     original_error = None
     try:
         plan = checked_plan(attempt)
         write_private_json(attempt.evidence_dir / "source-plan.json", plan)
         spec, project_files, component, decoder = fixed_cycle_inputs(fixed_input_path, attempt)
-        attempt.fixed_text_v4 = {"arm": spec["arm"], "fixtures": list(FIXED_TEXT_KEYS)}
+        attempt.fixed_text_v4 = {"arm": spec["arm"], "fixtures": list(selected_keys)}
         fixture_root = attempt.evidence_dir / "canonical-fixture-set"
         terminal = fixed_component(attempt, "fixed.source-fixtures", component, spec["compiler_binary_sha256"],
             ["--fixtures", spec["template_film"]["path"], "--managed-project", spec["managed_project"]["path"],
@@ -1882,7 +1893,7 @@ def execute_fixed_text_v4(input_path, fixed_input_path):
                 and [row["key"] for row in terminal["fixtures"]] == list(FIXED_TEXT_KEYS)
                 and terminal["compiler"]["runtime_source_sha256"] == spec["runtime"]["native_source_sha256"][spec["arm"]],
                 "FixedTxt_current_canonical_twelve_fixture_component")
-        for key in FIXED_TEXT_KEYS:
+        for key in selected_keys:
             directory = attempt.evidence_dir / key
             directory.mkdir(mode=0o700)
             child = FilmAttempt(attempt.inputs, directory)
@@ -1916,8 +1927,8 @@ def execute_fixed_text_v4(input_path, fixed_input_path):
             fixed_original(spec[field], bound)
         write_private_json(attempt.evidence_dir / "fixed-text-cycle.observation.json", {
             "schema": "motionwright.native.fixed-text-cycle/4", "arm": spec["arm"], "source_sha": RUN_SHA, "semwright_sha": PIN,
-            "fixture_count": 12, "native_render_start_count": len(attempt.native_commands),
-            "render_frame_count_each": 180, "selected_decode_count": 48,
+            "fixture_count": len(selected_keys), "native_render_start_count": len(attempt.native_commands),
+            "render_frame_count_each": 180, "selected_decode_count": selected_decode_count,
             "template_film_original_sha256": spec["template_film"]["sha256"],
             "managed_project_original_sha256": spec["managed_project"]["sha256"],
             "caption_source_original_sha256": spec["caption_source"]["sha256"],
@@ -1940,22 +1951,31 @@ def execute_fixed_text_v4(input_path, fixed_input_path):
     if original_error is not None:
         raise original_error[0].with_traceback(original_error[1])
     require(attempt.completed and not attempt.secondary_failures, "FixedTxt_cycle_custody_incomplete")
-    print(json.dumps({"fixed_text_v4": "SUCCESS_REPORTED", "arm": spec["arm"], "native_renders": 12,
-                      "frames_each": 180, "selected_decodes": 48, "pair_pixel_verdict": "NOT_EVALUATED",
+    print(json.dumps({"fixed_text_v4": "SUCCESS_REPORTED", "arm": spec["arm"], "native_renders": len(selected_keys),
+                      "frames_each": 180, "selected_decodes": selected_decode_count, "pair_pixel_verdict": "NOT_EVALUATED",
                       "formal_acceptance": False, "private_evidence_seal": "PENDING_WORKFLOW_CUSTODY",
                       "automatic_retry": False}, sort_keys=True))
 
 
+def parse_cli(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--g2-inputs", type=Path, required=True)
+    parser.add_argument("--fixed-text-v4-inputs", type=Path)
+    parser.add_argument("--fixed-text-v4-fixture", choices=FIXED_TEXT_KEYS)
+    arguments = parser.parse_args(argv)
+    if arguments.fixed_text_v4_fixture is not None and arguments.fixed_text_v4_inputs is None:
+        parser.error("--fixed-text-v4-fixture requires --fixed-text-v4-inputs")
+    return arguments
+
+
 if __name__ == "__main__":
     try:
-        parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument("--g2-inputs", type=Path, required=True)
-        parser.add_argument("--fixed-text-v4-inputs", type=Path)
-        arguments = parser.parse_args()
+        arguments = parse_cli()
         if arguments.fixed_text_v4_inputs is None:
             execute(arguments.g2_inputs)
         else:
-            execute_fixed_text_v4(arguments.g2_inputs, arguments.fixed_text_v4_inputs)
+            execute_fixed_text_v4(arguments.g2_inputs, arguments.fixed_text_v4_inputs,
+                                  selected_fixture=arguments.fixed_text_v4_fixture)
     except NativeCommandFailure as error:
         # Closed vocabulary only, never stderr, tickets, paths or input media.
         print(json.dumps({
