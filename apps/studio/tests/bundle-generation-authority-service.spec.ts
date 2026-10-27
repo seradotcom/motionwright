@@ -59,7 +59,7 @@ test("an imported bundle rejects source generation and grants while a fresh Stud
     const oldGeneration = await target.rawRequest({ command: "apply_change", args: { request: originalRequest } });
     expect(oldGeneration.ok).toBe(false);
     if (oldGeneration.ok) throw new Error("The imported project accepted the source generation.");
-    expect(String(oldGeneration.error)).toMatch(/generation/i);
+    expect(oldGeneration.error).toBe("Effect grant scope is stale; refresh the project before retrying.");
     expect((await target.observeStoredProject(imported)).journal).toEqual(importedOracle.journal);
     const oldGrant = await target.rawRequest({ command: "apply_change", args: {
       request: { ...originalRequest, generation: imported.generation },
