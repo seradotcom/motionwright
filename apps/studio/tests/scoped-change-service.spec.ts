@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { CreativePatch } from "../src/creativeProduction";
@@ -49,6 +50,7 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], pro
 
 test("Studio previews, commits, reopens, undoes and redoes against the real persisted service", async ({ page }, testInfo) => {
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
+  let peer: ScopedChangeService | undefined;
   let final: Project | undefined;
   try {
     const boot = await service.fixtureBootstrap();
@@ -128,20 +130,46 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");
     await expectPendingInputs();
 
+    // A token issued by the old process must not become authority in the new
+    // process, even when its persisted project/revision is still current.
+    const previousProcessId = service.transcript.at(-1)?.processId;
+    expect(previousProcessId).toBeGreaterThan(0);
+    const retiredRequestId = randomUUID();
+    const retiredGrant = await service.grant("project_edit", committed, retiredRequestId);
+    const retiredRequest = {
+      project_id: committed.id, generation: committed.generation, revision: committed.revision,
+      request_id: retiredRequestId, effect_grant: retiredGrant.token,
+      change: { type: "update_canvas_text", scene_id: scene.id, node_id: target.id,
+        text: "A retired process cannot authorize this replacement." },
+    };
     await service.close();
     await service.start();
     await page.reload();
     await openProposal(page, scene.id);
     expect(await service.project(initial.id)).toEqual(committed);
+    expect(service.transcript.at(-1)?.processId).toBeGreaterThan(0);
+    expect(service.transcript.at(-1)?.processId).not.toBe(previousProcessId);
+    const retiredResult = await service.rawRequest({ command: "apply_change", args: { request: retiredRequest } });
+    expect(retiredResult.ok).toBe(false);
+    if (retiredResult.ok) throw new Error("A grant from the previous process was accepted after restart.");
+    expect(String(retiredResult.error)).toMatch(/grant/i);
+    expect(await service.project(initial.id)).toEqual(committed);
+    expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
     await expect(page.getByLabel("Patch replacement text")).toHaveValue(pendingText);
     await expect(button(page, "Apply as one revision")).toBeDisabled();
     await expectPendingInputs();
 
-    // A later author's style decision is real persisted input, outside the
-    // first proposal. Undo/redo must conserve it and the pending editor input.
+    // The compatible style decision comes from a separate actual process and
+    // grant registry sharing only SQLite/CAS. Undo/redo must preserve it.
+    const activeProcessId = service.transcript.at(-1)?.processId;
+    peer = await service.peer();
+    expect(peer.transcript.at(-1)?.processId).toBeGreaterThan(0);
+    expect(peer.transcript.at(-1)?.processId).not.toBe(activeProcessId);
+    expect(await peer.project(initial.id)).toEqual(committed);
     const currentTarget = committed.scenes.find(item => item.id === scene.id)!.nodes.find(item => item.id === target.id)!;
     const style = { ...currentTarget.style, fill: "#D9A46E" };
-    const styled = await service.apply(committed, { type: "update_canvas_style", scene_id: scene.id, node_id: target.id, style });
+    const styled = await peer.apply(committed, { type: "update_canvas_style", scene_id: scene.id, node_id: target.id, style });
+    expect(await service.project(initial.id)).toEqual(styled);
     await page.reload();
     await openProposal(page, scene.id);
     await expect(page.locator(".production-patch")).toContainText("Your proposal is kept");
@@ -206,9 +234,11 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");
     expect(await service.project(initial.id)).toEqual(final);
     expect(await service.history(initial.id, initial.revision)).toEqual(journal);
+    expect(await peer.project(initial.id)).toEqual(final);
+    expect(await peer.history(initial.id, initial.revision)).toEqual(journal);
     await page.screenshot({ path: testInfo.outputPath("real-service-completed-editable-project.png"), fullPage: true });
   } finally {
-    await evidence(testInfo, [service], final, [() => page.close()]);
+    await evidence(testInfo, peer ? [service, peer] : [service], final, [() => page.close()]);
   }
 });
 
