@@ -3,15 +3,15 @@ import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import { planContentDigest } from "./creativeProduction";
 import type { NativeCapsule } from "./creativeProduction";
-import type { Change, Project, ProjectEvent } from "./types";
+import type { CanvasNode, Change, Project, ProjectEvent, SceneBoundary, SceneBoundarySource } from "./types";
 import {
-  acknowledgeProductionDraft, assertProductionOrigins, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
+  acknowledgeProductionDraft, assertProductionOrigins, boundaryFilmOptionsFromRawInput, boundaryFromRawInput, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
   encodeProductionCopy, encodeProductionFile, inspectProductionOutcome, prepareProductionSubmission, productionConflict,
-  productionCopyKey, productionHasInput, productionHasWork, productionLabel, productionOutcomeMatches, productionPointerKey, productionPreparationMatches, productionScope, productionValue,
+  productionCopyKey, productionDraftValue, productionHasInput, productionHasWork, productionLabel, productionOutcomeMatches, productionPointerKey, productionPreparationMatches, productionScope, productionValue,
   productionUnconfirmed, readProductionCopies, readProductionRecoveryPointer, recoverProductionAfterReadFailure, reconcileProductionDraft, releaseProductionOutcome, resolveProductionDraft,
   retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy, PRODUCTION_RECOVERY_PREFIX, MAX_PRODUCTION_COPY_BYTES, MAX_PRODUCTION_RECOVERY_BYTES,
 } from "./productionDesignDraft";
-import type { ProductionCustody, ProductionDraft, ProductionInput, ProductionStorage, ProductionTarget } from "./productionDesignDraft";
+import type { ProductionBoundaryInput, ProductionCustody, ProductionDraft, ProductionInput, ProductionStorage, ProductionTarget } from "./productionDesignDraft";
 
 const id = "00000000-0000-4000-8000-000000000001", writer = "00000000-0000-4000-8000-000000000002", fork = "00000000-0000-4000-8000-000000000003";
 type SourceInput = { kind: "source"; assetId: string; renderer: string; version: string };
@@ -665,5 +665,218 @@ describe("Production confirmation preserves actual raw bytes and full custody ch
     pointers.removeItem(productionPointerKey(prepared.draft.scope));
     expect(() => writeProductionCopy(store, pointers, prepared.draft, owner)).toThrow(/pointer/i);
     expect(store.getItem(productionCopyKey(prepared.draft.scope, writer))).toBe(raw);
+  });
+});
+
+describe("Scene boundary authoring through existing Production custody", () => {
+  const boundaryId = "00000000-0000-4000-8000-000000000010";
+  const predecessorId = "00000000-0000-4000-8000-000000000011";
+  const endpoint = { nodes: [], camera: { center_x: 0, center_y: 0, zoom: 1, rotation_deg: 0, safe_margin: 0.05 }, assets: [] };
+  const boundaryTarget = (project: Project, selected: string | null = null): ProductionTarget =>
+    ({ kind: "boundary", sceneId: project.scenes[0].id, boundaryId: selected });
+  const inputOf = (draft: ProductionDraft) => draft.input as ProductionBoundaryInput;
+  const editBoundary = (draft: ProductionDraft, patch: Partial<ProductionBoundaryInput>) => editProductionDraft(draft, { ...inputOf(draft), ...patch });
+  function context(project: Project): SceneBoundarySource {
+    // Unit comparison fixture only: the integration lane obtains this object from StudioService.
+    return { project_id: project.id, generation: project.generation, branch_id: project.active_branch, authored_revision: project.revision,
+      deliverable_profile_id: project.deliverables[0].id, dependencies_sha256: "a".repeat(64),
+      film_options: { frame_rate: { num: 24, den: 1 }, font_family: "Inter", mono_font_family: "JetBrains Mono", role: "mechanism", archetype: "diagram_build" } };
+  }
+  function bindFixture(draft: ProductionDraft, boundSource: SceneBoundarySource): ProductionDraft {
+    return editBoundary(draft, { boundSource, profileId: boundSource.deliverable_profile_id,
+      frameRateNum: String(boundSource.film_options.frame_rate.num), frameRateDen: String(boundSource.film_options.frame_rate.den),
+      fontFamily: boundSource.film_options.font_family, monoFontFamily: boundSource.film_options.mono_font_family,
+      role: boundSource.film_options.role, archetype: boundSource.film_options.archetype });
+  }
+  function receiptFor(project: Project, change: Change): Project {
+    // A unit oracle for the draft coordinator, not an emulated service or native result.
+    const receipt = structuredClone(project), current = receipt.production_design!.scene_boundaries ?? [];
+    if (change.type === "upsert_scene_boundary") receipt.production_design!.scene_boundaries = [
+      ...current.filter(boundary => boundary.id !== change.boundary.id), structuredClone(change.boundary)];
+    else if (change.type === "remove_scene_boundary") receipt.production_design!.scene_boundaries = current.filter(boundary => boundary.id !== change.boundary_id);
+    else throw new Error("Expected a scene boundary Change.");
+    receipt.revision++; return receipt;
+  }
+  async function savedBoundary(bound = false) {
+    const project = source(); let draft = createProductionDraft(project, boundaryTarget(project));
+    draft = bound ? bindFixture(draft, context(project)) : editBoundary(draft, { entryJson: JSON.stringify(endpoint) });
+    const prepared = await prepareProductionSubmission(draft, project, id);
+    const receipt = receiptFor(project, prepared.change);
+    return { project, draft, prepared, receipt, acknowledged: acknowledgeProductionDraft(prepared.draft, id, receipt) };
+  }
+  const copy = (draft: ProductionDraft) => encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: draft.scope, writerId: writer, updatedAt: 1, draft });
+
+  it("keeps legacy five-element scopes unchanged and scopes each boundary by a sixth explicit selector", () => {
+    const project = source();
+    for (const selected of [target(project, "hero"), target(project, "plan"), sourceTarget(project)]) {
+      expect(JSON.parse(productionScope(project, selected))).toEqual([project.id, project.generation, project.active_branch, selected.kind,
+        selected.kind === "plan" ? null : selected.sceneId]);
+    }
+    const fresh = productionScope(project, boundaryTarget(project));
+    expect(JSON.parse(fresh)).toEqual([project.id, project.generation, project.active_branch, "boundary", project.scenes[0].id, null]);
+    expect(productionScope(project, boundaryTarget(project, boundaryId))).not.toBe(fresh);
+    for (const field of ["id", "generation", "active_branch"] as const)
+      expect(productionScope({ ...project, [field]: project[field] + "-other" }, boundaryTarget(project))).not.toBe(fresh);
+    expect(productionScope(project, { kind: "boundary", sceneId: project.scenes[1].id, boundaryId: null })).not.toBe(fresh);
+    expect(readProductionRecoveryPointer(new MemoryStorage(), fresh, { observed: false, expectedPointer: null }).observed).toBe(true);
+    expect(() => readProductionRecoveryPointer(new MemoryStorage(), JSON.stringify([...JSON.parse(fresh), "extra"]), { observed: false, expectedPointer: null })).toThrow();
+  });
+  it("creates one declaration UUID and retains it through read, reset, preparation and ACK without changing scope", async () => {
+    const project = source(), initial = createProductionDraft(project, boundaryTarget(project)), stable = inputOf(initial).boundaryId;
+    expect(stable).toMatch(/^[0-9a-f-]{36}$/i);
+    const observed = reconcileProductionDraft(initial, { ...project, revision: project.revision + 1 });
+    expect(inputOf(observed).boundaryId).toBe(stable);
+    expect(inputOf(resolveProductionDraft(initial, project, "saved")).boundaryId).toBe(stable);
+    const draft = editBoundary(initial, { entryJson: JSON.stringify(endpoint) });
+    const first = await prepareProductionSubmission(draft, project, id), second = await prepareProductionSubmission(draft, project, fork);
+    expect(inputOf(first.draft).boundaryId).toBe(stable); expect(first.change).toEqual(second.change);
+    const receipt = receiptFor(project, first.change), acknowledged = acknowledgeProductionDraft(first.draft, id, receipt);
+    expect(acknowledged.scope).toBe(initial.scope); expect(acknowledged.target).toEqual(initial.target);
+    expect(productionDraftValue(acknowledged, receipt)).toEqual(first.draft.pending?.value);
+    expect(productionConflict(acknowledged, receipt)).toBe(false);
+    expect(inputOf(reconcileProductionDraft(acknowledged, { ...receipt, revision: receipt.revision + 1 })).boundaryId).toBe(stable);
+    expect(() => editBoundary(draft, { boundaryId })).toThrow(/separate explicit/i);
+  });
+  it("recovers every incomplete numeric, option and JSON string exactly without inventing a source", async () => {
+    const project = source(), draft = editBoundary(createProductionDraft(project, boundaryTarget(project)), {
+      profileId: " unselected ", frameRateNum: "1e", frameRateDen: "-", fontFamily: "  ", monoFontFamily: " mono\n",
+      role: "not chosen", archetype: "", predecessorBoundaryId: "partial-id", appearancesJson: " [ { ", entryJson: "{\n", exitJson: " null " });
+    const recovered = decodeProductionCopy(copy(draft), draft.scope, writer).draft;
+    expect(recovered.input).toEqual(draft.input); expect(JSON.parse(encodeProductionFile(draft)).draft.input).toEqual(draft.input);
+    expect(inputOf(recovered).boundSource).toBeNull(); expect(inputOf(recovered).boundPredecessor).toBeNull();
+    await expect(prepareProductionSubmission(recovered, project, id)).rejects.toThrow();
+    expect(recovered.input).toEqual(draft.input);
+    expect(() => boundaryFilmOptionsFromRawInput(inputOf(draft))).toThrow(/complete positive/i);
+  });
+  it("retains unsourced authoring fields after a persisted incomplete draft and subsequent peer revision", async () => {
+    const project = source(), draft = editBoundary(createProductionDraft(project, boundaryTarget(project)), {
+      profileId: "author has not selected a profile", frameRateNum: "1e", fontFamily: "  desired family  ", role: "pending" });
+    const prepared = await prepareProductionSubmission(draft, project, id);
+    expect(prepared.change.type).toBe("upsert_scene_boundary");
+    if (prepared.change.type !== "upsert_scene_boundary") throw new Error("Missing boundary submission.");
+    expect(prepared.change.boundary.definition).toEqual({ kind: "draft_incomplete", source: null, entry: null, exit: null });
+    const receipt = receiptFor(project, prepared.change), acknowledged = acknowledgeProductionDraft(prepared.draft, id, receipt);
+    expect(acknowledged.input).toEqual(draft.input); expect(acknowledged.intent).toBe(true);
+    const peer = { ...receipt, revision: receipt.revision + 1 };
+    expect(reconcileProductionDraft(acknowledged, peer)).toBe(acknowledged);
+    expect(inputOf(resolveProductionDraft(acknowledged, peer, "draft")).frameRateNum).toBe("1e");
+  });
+  it("requires complete explicit endpoints and a bound source rather than promoting a draft to readiness", async () => {
+    const project = source(), draft = createProductionDraft(project, boundaryTarget(project));
+    const explicit = editBoundary(draft, { definitionKind: "explicit", entryJson: JSON.stringify(endpoint), exitJson: JSON.stringify(endpoint) });
+    await expect(prepareProductionSubmission(explicit, project, id)).rejects.toThrow();
+    const bound = bindFixture(explicit, context(project)), prepared = await prepareProductionSubmission(bound, project, id);
+    expect(prepared.change.type).toBe("upsert_scene_boundary");
+    expect(copy(prepared.draft)).not.toContain("effect_grant");
+    expect(() => boundaryFromRawInput({ ...inputOf(bound), entryJson: '{"nodes":[],"assets":[]}' }, project.scenes[0].id)).toThrow(/camera/i);
+  });
+  it("keeps an unchanged stale or foreign source during edits but rejects a changed source without a current explicit bind", async () => {
+    const { receipt, acknowledged } = await savedBoundary(true), previous = productionDraftValue(acknowledged, receipt) as SceneBoundary;
+    const stale = structuredClone(receipt); stale.production_design!.scene_boundaries![0].definition.source!.generation = writer;
+    const draft = createProductionDraft(stale, boundaryTarget(stale, previous.id));
+    const edited = editBoundary(draft, { entryJson: JSON.stringify(endpoint) });
+    const prepared = await prepareProductionSubmission(edited, stale, fork);
+    expect((prepared.draft.pending!.value as SceneBoundary).definition.source).toEqual(stale.production_design!.scene_boundaries![0].definition.source);
+    const changed = editBoundary(edited, { boundSource: { ...inputOf(edited).boundSource!, dependencies_sha256: "b".repeat(64) } });
+    await expect(prepareProductionSubmission(changed, stale, fork)).rejects.toThrow(/pre-change/i);
+    expect(inputOf(changed).boundSource?.generation).toBe(writer);
+  });
+  for (const field of ["profileId", "frameRateNum", "frameRateDen", "fontFamily", "monoFontFamily", "role", "archetype"] as const) {
+    it(`preserves changed ${field} and the earlier source while requiring an explicit rebind`, async () => {
+      const project = source(), bound = bindFixture(createProductionDraft(project, boundaryTarget(project)), context(project));
+      const changed = editBoundary(bound, { [field]: field === "frameRateNum" ? "30" : field === "frameRateDen" ? "2" : "changed author input" });
+      await expect(prepareProductionSubmission(changed, project, id)).rejects.toThrow();
+      expect(inputOf(changed).boundSource).toEqual(inputOf(bound).boundSource);
+      expect(decodeProductionCopy(copy(changed), changed.scope, writer).draft.input).toEqual(changed.input);
+    });
+  }
+  it("preserves a partial predecessor declaration without substituting a guessed scene or exit digest", async () => {
+    const project = source(), previous: SceneBoundary = { version: 1, id: boundaryId, scene_id: project.scenes[0].id,
+      input: { kind: "predecessor", scene_id: project.scenes[1].id, boundary_id: null, exit_sha256: "c".repeat(64), appearances: [] },
+      definition: { kind: "draft_incomplete", source: null, entry: null, exit: null } };
+    project.production_design!.scene_boundaries = [previous];
+    const draft = editBoundary(createProductionDraft(project, boundaryTarget(project, boundaryId)), { entryJson: JSON.stringify(endpoint) });
+    expect(inputOf(draft).inputKind).toBe("predecessor"); expect(inputOf(draft).boundPredecessor).toBeNull();
+    const prepared = await prepareProductionSubmission(draft, project, id);
+    expect((prepared.draft.pending!.value as SceneBoundary).input).toEqual(previous.input);
+    expect(decodeProductionCopy(copy(prepared.draft), prepared.draft.scope, writer).draft.pending?.value).toEqual(prepared.draft.pending?.value);
+    const changed = boundaryFromRawInput({ ...inputOf(draft), predecessorBoundaryId: predecessorId }, project.scenes[0].id, previous);
+    expect(changed.input).toEqual({ kind: "predecessor", scene_id: null, boundary_id: predecessorId, exit_sha256: null, appearances: [] });
+  });
+  it("does not reuse bound predecessor context after the author selects another declaration", async () => {
+    const project = source(), draft = editBoundary(createProductionDraft(project, boundaryTarget(project)), {
+      inputKind: "predecessor", predecessorBoundaryId: predecessorId,
+      boundPredecessor: { scene_id: project.scenes[1].id, boundary_id: boundaryId, exit_sha256: "d".repeat(64) } });
+    await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/predecessor/i);
+    expect(decodeProductionCopy(copy(draft), draft.scope, writer).draft.input).toEqual(draft.input);
+  });
+  it("requires full Project equality through asynchronous preparation, including unselected scenes and assets", () => {
+    const project = source(), draft = createProductionDraft(project, boundaryTarget(project));
+    expect(productionPreparationMatches(draft, project, draft, structuredClone(project))).toBe(true);
+    for (const change of [(p: Project) => { p.brief.objective += " peer"; }, (p: Project) => { p.scenes[1].name += " peer"; },
+      (p: Project) => { p.assets[0].content_sha256 = "f".repeat(64); }]) {
+      const changed = structuredClone(project); change(changed);
+      expect(productionPreparationMatches(draft, project, draft, changed)).toBe(false);
+    }
+  });
+  it("keeps later invalid input and another writer's raw bytes when the original reply arrives", async () => {
+    const project = source(), bound = bindFixture(createProductionDraft(project, boundaryTarget(project)), context(project));
+    const prepared = await prepareProductionSubmission(bound, project, id), later = editBoundary(prepared.draft, { frameRateNum: "1e", entryJson: "{ later" });
+    const store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+    writeProductionCopy(store, pointers, prepared.draft, owner); const original = owner.expectedRaw!;
+    const acknowledged = acknowledgeProductionDraft(later, id, receiptFor(project, prepared.change));
+    expect(acknowledged.input).toEqual(later.input); expect(acknowledged.pending).toBeNull(); expect(acknowledged.intent).toBe(true);
+    writeProductionCopy(store, pointers, acknowledged, { writerId: fork, expectedRaw: null, expectedPointer: writer });
+    expect(store.getItem(productionCopyKey(prepared.draft.scope, writer))).toBe(original);
+    expect(decodeProductionCopy(original, prepared.draft.scope, writer).draft.pending?.outcome).toBe("UNKNOWN");
+  });
+  it("retains UNKNOWN after observing matching history and rejects a same-revision dependency change during review", async () => {
+    const { project, prepared, receipt } = await savedBoundary();
+    const review = await inspectProductionOutcome(prepared.draft, receipt, { readProject: async () => receipt,
+      readHistory: async () => journal(receipt, prepared.change) });
+    expect(review.matchingValueRevisions).toEqual([receipt.revision]); expect(productionUnconfirmed(prepared.draft)).toBe(true);
+    expect(reconcileProductionDraft(prepared.draft, receipt)).toBe(prepared.draft);
+    await expect(prepareProductionSubmission(prepared.draft, project, fork)).rejects.toThrow(/unconfirmed/i);
+    let reads = 0;
+    const changed = structuredClone(receipt); changed.brief.objective += " peer";
+    await expect(inspectProductionOutcome(prepared.draft, receipt, { readProject: async () => ++reads === 1 ? receipt : changed,
+      readHistory: async () => journal(receipt, prepared.change) })).rejects.toThrow(/changed during/i);
+  });
+  it("removes only the selected declaration, preserves editable nodes and durably blocks accidental identity reuse", async () => {
+    const { receipt, acknowledged } = await savedBoundary(true), existingId = inputOf(acknowledged).boundaryId;
+    const draft = editBoundary(acknowledged, { entryJson: "{ unfinished local edit" });
+    const prepared = await prepareProductionSubmission(draft, receipt, fork, "remove");
+    expect(prepared.change).toEqual({ type: "remove_scene_boundary", boundary_id: existingId });
+    const recoveredPending = decodeProductionCopy(copy(prepared.draft), prepared.draft.scope, writer).draft;
+    expect(recoveredPending.pending?.operation).toBe("remove"); expect(recoveredPending.pending?.value).toBeNull();
+    expect(recoveredPending.pending?.nodesBefore).toEqual(receipt.scenes[0].nodes);
+    const later = editBoundary(prepared.draft, { exitJson: "{ later input while removal is pending" });
+    const removed = receiptFor(receipt, prepared.change), wrong = structuredClone(removed);
+    wrong.scenes[0].nodes.push({ id: writer } as CanvasNode);
+    expect(() => acknowledgeProductionDraft(prepared.draft, fork, wrong)).toThrow(/preserve/i);
+    const done = acknowledgeProductionDraft(later, fork, removed), recovered = decodeProductionCopy(copy(done), done.scope, writer).draft;
+    expect(done.scope).toBe(draft.scope); expect(done.input).toEqual(later.input); expect(done.removedBoundaryId).toBe(existingId);
+    await expect(prepareProductionSubmission(recovered, removed, id)).rejects.toThrow(/removed/i);
+    expect(inputOf(createProductionDraft(removed, boundaryTarget(removed))).boundaryId).not.toBe(existingId);
+    const review = await inspectProductionOutcome(prepared.draft, removed, { readProject: async () => removed, readHistory: async () => journal(removed, prepared.change) });
+    expect(releaseProductionOutcome(prepared.draft, removed, review).removedBoundaryId).toBe(existingId);
+  });
+  it("rejects forged pending values and authority fields while leaving the complete original copy intact", async () => {
+    const { prepared } = await savedBoundary(), raw = copy(prepared.draft), corrupted = JSON.parse(raw);
+    corrupted.draft.pending.value.scene_id = fork;
+    expect(() => decodeProductionCopy(JSON.stringify(corrupted), prepared.draft.scope, writer)).toThrow(/snapshot/i);
+    const project = source(), bound = bindFixture(createProductionDraft(project, boundaryTarget(project)), context(project)), authority = JSON.parse(copy(bound));
+    authority.draft.input.boundSource.effect_grant = "untrusted";
+    expect(() => decodeProductionCopy(JSON.stringify(authority), bound.scope, writer)).toThrow();
+    expect(decodeProductionCopy(raw, prepared.draft.scope, writer).draft.pending?.value).toEqual(prepared.draft.pending?.value);
+  });
+  it("rejects oversized recovery without truncating endpoint input and refuses boundary operations on legacy targets", async () => {
+    const project = source(), draft = editBoundary(createProductionDraft(project, boundaryTarget(project)), { entryJson: "x".repeat(MAX_PRODUCTION_COPY_BYTES + 1) });
+    expect(() => copy(draft)).toThrow(/1 MiB/i); expect(inputOf(draft).entryJson.length).toBe(MAX_PRODUCTION_COPY_BYTES + 1);
+    const plan = createProductionDraft(project, { kind: "plan" });
+    await expect(prepareProductionSubmission(plan, project, id, "remove")).rejects.toThrow(/Only a scene boundary/i);
+    const boundary = createProductionDraft(project, boundaryTarget(project));
+    for (const operation of ["approve", "detach"] as const)
+      await expect(prepareProductionSubmission(boundary, project, id, operation)).rejects.toThrow(/only an explicit save or removal/i);
   });
 });

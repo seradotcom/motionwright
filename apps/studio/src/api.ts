@@ -8,7 +8,8 @@ import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeU
 import { proposeCanvasReparent } from "./canvasWorkspaceDraft";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
-import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
+import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit,
+  parseSceneBoundaryContextRequest, parseSceneBoundaryAuthoringContext } from "./creativeProduction";
 import { savedDeliveryRecipe, validateDeliveryRecipe } from "./deliveryRecipe";
 import { acceptNativeWindowReceipt, createNativeWindowIntent, type NativeWindowIntent, type NativeWindowReceipt } from "./nativeWindowPreview";
 import { validateBrandGovernance } from "./brandGovernance";
@@ -59,6 +60,8 @@ import type {
   PortableBundlePlan,
   Project,
   ProjectEvent,
+  SceneBoundaryContextRequest,
+  SceneBoundaryAuthoringContext,
   ProductionJobProjection,
   OwnerMotionStatusObservation,
   ProductionJobsHistoryCursor,
@@ -665,6 +668,16 @@ export async function workflowAction(
   return assertWorkflowResponse(result, payload);
 }
 
+/** Capture the exact author-selected source through the existing read-only service command. */
+export async function sceneBoundaryAuthoringContext(request: SceneBoundaryContextRequest): Promise<SceneBoundaryAuthoringContext> {
+  if (!isTauri()) throw new Error("Scene boundary authoring context requires the actual StudioService desktop runtime.");
+  // Snapshot the exact seven-key request before awaiting; neither caller edits
+  // nor a response for another scene/profile may silently replace this source.
+  const selected = parseSceneBoundaryContextRequest(request);
+  const response = await invoke<unknown>("scene_boundary_authoring_context", { request: selected });
+  return parseSceneBoundaryAuthoringContext(response, selected);
+}
+
 /** Audit only already-imported project-bound blobs on demand. The WebView
  * passes no arbitrary file paths and receives no owner filesystem paths.
  */
@@ -1181,6 +1194,8 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
 
   if (change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph")
     throw new Error("Semantic Graph saving requires the actual StudioService and matching native consumer.");
+  if (change.type === "upsert_scene_boundary" || change.type === "remove_scene_boundary")
+    throw new Error("Scene boundary saving requires the actual StudioService; browser previews cannot authorize a boundary.");
   return simulateChange(project, change, requestId, true);
 }
 
@@ -1193,6 +1208,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "upsert_scene_boundary":
+    case "remove_scene_boundary":
+      throw new Error("Scene boundary saving requires the actual StudioService; browser previews cannot authorize a boundary.");
     case "upsert_camera_reframe":
     case "detach_camera_reframe":
       applyCameraReframeChange(next,change);

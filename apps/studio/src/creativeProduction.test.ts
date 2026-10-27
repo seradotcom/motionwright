@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { applyChange, bootstrap, previewCreativePatch } from "./api";
-import { defaultHeroConfig, heroNodeId, mergeComponentNodes, planContentDigest, realizeProductHero } from "./creativeProduction";
+import { applyChange, bootstrap, previewCreativePatch, sceneBoundaryAuthoringContext } from "./api";
+import { defaultHeroConfig, heroNodeId, mergeComponentNodes, planContentDigest, realizeProductHero,
+  parseSceneBoundary, parseSceneBoundaryAuthoringContext, parseSceneBoundaryContextRequest,
+  parseSceneBoundaryEndpoint, parseSceneBoundaryFilmOptions, parseSceneBoundaryJson } from "./creativeProduction";
 import type { CreativePatch, ProductionPlan } from "./creativeProduction";
 import { easedProgress, previewTransform } from "./canvasMotion";
 import { fixtureProject } from "./fixture";
 import { rationalSeconds, seconds } from "./types";
-import type { Project } from "./types";
+import type { Project, SceneBoundary, SceneBoundaryAuthoringContext, SceneBoundaryContextRequest,
+  SceneBoundaryEndpoint, SceneBoundaryFilmOptions, SceneBoundarySource } from "./types";
 
 const instance = "00000000-0000-4000-8000-000000000005";
 function source(): Project {
@@ -320,5 +323,209 @@ describe("attached MetricEvidence source notice cannot be rewritten into a verif
     p=await applyChange(p,{type:"detach_product_hero",instance_id:instance});
     expect(p.production_design?.heroes).toHaveLength(0);
     expect(p.scenes[0].nodes.find(n=>n.id===node_id)?.text).toContain("SOURCE NOT VERIFIED");
+  });
+});
+
+// Unit fixtures exercise the public wire contract. They do not attest service
+// persistence, dependency digests, predecessor freshness or native execution.
+const boundaryIds = {
+  project: "10000000-0000-4000-8000-000000000001",
+  generation: "10000000-0000-4000-8000-000000000002",
+  branch: "10000000-0000-4000-8000-000000000003",
+  scene: "10000000-0000-4000-8000-000000000004",
+  profile: "10000000-0000-4000-8000-000000000005",
+  boundary: "10000000-0000-4000-8000-000000000006",
+  predecessor: "10000000-0000-4000-8000-000000000007",
+  priorScene: "10000000-0000-4000-8000-000000000008",
+  node: "10000000-0000-4000-8000-000000000009",
+  other: "10000000-0000-4000-8000-000000000010",
+};
+function boundaryOptions(): SceneBoundaryFilmOptions {
+  return { frame_rate: { num: 30_000, den: 1_001 }, font_family: "Instrument Sans Variable",
+    mono_font_family: "IBM Plex Mono", role: "mechanism", archetype: "diagram_build" };
+}
+function boundarySource(): SceneBoundarySource {
+  return { project_id: boundaryIds.project, generation: boundaryIds.generation, branch_id: boundaryIds.branch,
+    authored_revision: 7, deliverable_profile_id: boundaryIds.profile,
+    film_options: boundaryOptions(), dependencies_sha256: "a".repeat(64) };
+}
+function boundaryEndpoint(): SceneBoundaryEndpoint {
+  return { nodes: [], camera: { center_x: 960, center_y: 540, zoom: 1, rotation_deg: 0, safe_margin: 0.05 }, assets: [] };
+}
+function explicitBoundary(): SceneBoundary {
+  return { version: 1, id: boundaryIds.boundary, scene_id: boundaryIds.scene, input: { kind: "self_contained" },
+    definition: { kind: "explicit", source: boundarySource(), entry: boundaryEndpoint(), exit: boundaryEndpoint() } };
+}
+function boundaryRequest(predecessor_boundary_id: string | null = null): SceneBoundaryContextRequest {
+  return { project_id: boundaryIds.project, expected: { resource: `project:${boundaryIds.project}`,
+    generation: boundaryIds.generation, revision: 7 }, branch_id: boundaryIds.branch,
+    scene_id: boundaryIds.scene, deliverable_profile_id: boundaryIds.profile,
+    authored_film_options: boundaryOptions(), predecessor_boundary_id };
+}
+function boundaryContext(predecessor: SceneBoundaryAuthoringContext["predecessor"] = null): SceneBoundaryAuthoringContext {
+  return { schema: "motionwright.scene-boundary-authoring-context/1", scene_id: boundaryIds.scene,
+    source: boundarySource(), predecessor };
+}
+
+describe("SceneBoundary authored wire decoding", () => {
+  it("retains incomplete declarations and applies only published optional-field defaults", () => {
+    const raw = { version: 1, id: boundaryIds.boundary, scene_id: boundaryIds.scene,
+      input: { kind: "predecessor" }, definition: { kind: "draft_incomplete" } };
+    expect(parseSceneBoundary(raw)).toEqual({ ...raw,
+      input: { kind: "predecessor", scene_id: null, boundary_id: null, exit_sha256: null, appearances: [] },
+      definition: { kind: "draft_incomplete", source: null, entry: null, exit: null } });
+    expect(parseSceneBoundaryEndpoint({})).toEqual({ nodes: [], camera: null, assets: [] });
+    expect(raw).toEqual({ version: 1, id: boundaryIds.boundary, scene_id: boundaryIds.scene,
+      input: { kind: "predecessor" }, definition: { kind: "draft_incomplete" } });
+    expect(() => parseSceneBoundaryEndpoint({ nodes: null })).toThrow("endpoint.nodes");
+    expect(() => parseSceneBoundaryEndpoint({ nodes: new Array(1) })).toThrow("endpoint.nodes[0]");
+    expect(() => parseSceneBoundaryEndpoint({ camera: undefined })).toThrow("endpoint.camera");
+  });
+
+  it("round-trips a complete declaration without sharing mutable source or endpoint objects", () => {
+    const original = explicitBoundary();
+    const parsed = parseSceneBoundaryJson(JSON.stringify(original));
+    expect(parsed).toEqual(original);
+    expect(parsed.definition).not.toBe(original.definition);
+    if (parsed.definition.kind !== "explicit" || original.definition.kind !== "explicit") throw new Error("fixture");
+    parsed.definition.source.film_options.font_family = "An independently authored font";
+    parsed.definition.entry.camera!.zoom = 2;
+    expect(original.definition.source.film_options.font_family).toBe("Instrument Sans Variable");
+    expect(original.definition.entry.camera!.zoom).toBe(1);
+    expect(() => parseSceneBoundaryJson('{"version":1e}')).toThrow("invalid JSON");
+  });
+
+  it("does not promote missing source, camera or predecessor selectors into an Explicit declaration", () => {
+    const boundary = explicitBoundary();
+    expect(() => parseSceneBoundary({ ...boundary, definition: { kind: "explicit", entry: {}, exit: {} } })).toThrow("missing source");
+    expect(() => parseSceneBoundary({ ...boundary, definition: { kind: "explicit", source: boundarySource(), entry: {}, exit: boundaryEndpoint() } })).toThrow("require a camera");
+    expect(() => parseSceneBoundary({ ...boundary, input: { kind: "predecessor" } })).toThrow("Explicit predecessor selectors");
+    const predecessor = { kind: "predecessor", scene_id: boundaryIds.priorScene, boundary_id: boundaryIds.predecessor,
+      exit_sha256: "b".repeat(64), appearances: [] };
+    expect(parseSceneBoundary({ ...boundary, input: predecessor }).input).toEqual(predecessor);
+  });
+
+  it("rejects undeclared authority and unknown fields at every declaration boundary", () => {
+    const valid = explicitBoundary();
+    const invalid = [
+      { ...valid, grant: "forged" },
+      { ...valid, input: { kind: "self_contained", boundary_id: boundaryIds.predecessor } },
+      { ...valid, definition: { ...valid.definition, native_ready: true } },
+      { ...valid, definition: { kind: "explicit", source: { ...boundarySource(), command: {} }, entry: boundaryEndpoint(), exit: boundaryEndpoint() } },
+      { ...valid, definition: { kind: "explicit", source: boundarySource(), entry: { ...boundaryEndpoint(), resolved: true }, exit: boundaryEndpoint() } },
+    ];
+    for (const candidate of invalid) expect(() => parseSceneBoundary(candidate)).toThrow("unknown field");
+    for (const candidate of [null, [], "explicit", { ...valid, version: 2 }]) expect(() => parseSceneBoundary(candidate)).toThrow("Scene boundary");
+  });
+
+  it("accepts only authored Rate numbers and closed Film options without inventing defaults", () => {
+    expect(parseSceneBoundaryFilmOptions(boundaryOptions())).toEqual(boundaryOptions());
+    for (const frame_rate of [{ num: "30", den: "1" }, { num: 30, den: 0 }, { num: 60, den: 2 },
+      { num: 4_294_967_296, den: 1 }, { num: 29.97, den: 1 }, { num: 30, den: 1, fps: 30 }]) {
+      expect(() => parseSceneBoundaryFilmOptions({ ...boundaryOptions(), frame_rate })).toThrow("frame_rate");
+    }
+    const { mono_font_family: omitted, ...missing } = boundaryOptions();
+    expect(omitted).toBe("IBM Plex Mono");
+    expect(() => parseSceneBoundaryFilmOptions(missing)).toThrow("missing mono_font_family");
+    for (const override of [{ font_family: " " }, { mono_font_family: "Mono\u0085" },
+      { role: "automatic" }, { archetype: "auto" }]) {
+      expect(() => parseSceneBoundaryFilmOptions({ ...boundaryOptions(), ...override })).toThrow("film options");
+    }
+  });
+
+  it("validates nested endpoint values and preserves canonical Canvas defaults", () => {
+    const rawNode = { id: boundaryIds.node, name: "An authored mark", kind: "rectangle",
+      x: 10, y: 20, width: 100, height: 80, rotation_deg: 0, opacity: 1 };
+    const endpoint = parseSceneBoundaryEndpoint({ nodes: [rawNode] });
+    expect(endpoint.nodes[0]).toEqual({ ...rawNode, parent_id: null, text: null,
+      coordinate_space: "project_pixels", z_index: 0, style: { fill: null, stroke: null, stroke_width: 0,
+        font_family: null, font_size: null, font_weight: null, line_height: null, blend_mode: "normal" },
+      relations: [], property_locks: [], keyframes: [] });
+    for (const override of [{ x: NaN }, { opacity: 2 }, { width: -1 }, { style: { stroke_width: 0, blend_mode: "normal", native_ready: true } },
+      { keyframes: [{ at: { num: "1", den: "2" }, property: "opacity", value: 0.5, interpolation: "linear", grant: "forged" }] }]) {
+      expect(() => parseSceneBoundaryEndpoint({ nodes: [{ ...rawNode, ...override }] })).toThrow("endpoint.nodes[0]");
+    }
+    expect(() => parseSceneBoundaryEndpoint({ nodes: [rawNode, rawNode] })).toThrow("duplicate node identity");
+    expect(() => parseSceneBoundaryEndpoint({ camera: { ...boundaryEndpoint().camera, zoom: 0 } })).toThrow("zoom");
+    expect(() => parseSceneBoundaryEndpoint({ assets: [{ asset_id: boundaryIds.other, content_sha256: "A".repeat(64) }] })).toThrow("lowercase");
+  });
+
+  it("rejects ambiguous appearance mappings and unsafe revision values without calculating freshness", () => {
+    const boundary = explicitBoundary();
+    const appearance = { predecessor_node_id: boundaryIds.other, successor_node_id: boundaryIds.node };
+    expect(() => parseSceneBoundary({ ...boundary, input: { kind: "predecessor", appearances: [appearance, appearance] } })).toThrow("only once");
+    const invalidSource = { ...boundarySource(), authored_revision: Number.MAX_SAFE_INTEGER + 1 };
+    expect(() => parseSceneBoundary({ ...boundary, definition: { kind: "explicit", source: invalidSource,
+      entry: boundaryEndpoint(), exit: boundaryEndpoint() } })).toThrow("exact integer");
+    // A previously bound source may persist after later project revisions.
+    // Parsing never certifies current dependency or execution admission.
+    const persisted = { ...boundary, definition: { kind: "draft_incomplete", source: { ...boundarySource(), authored_revision: 2 } } };
+    expect(parseSceneBoundary(persisted).definition).toMatchObject({ kind: "draft_incomplete", source: { authored_revision: 2 } });
+  });
+});
+
+describe("SceneBoundary authoring context identity decoding", () => {
+  it("requires an explicit nullable predecessor selector and the exact project stamp shape", () => {
+    const request = boundaryRequest();
+    expect(parseSceneBoundaryContextRequest(request)).toEqual(request);
+    const { predecessor_boundary_id: omitted, ...missing } = request;
+    expect(omitted).toBeNull();
+    expect(() => parseSceneBoundaryContextRequest(missing)).toThrow("missing predecessor_boundary_id");
+    expect(() => parseSceneBoundaryContextRequest({ ...request, expected: { ...request.expected, resource: `project:${boundaryIds.other}` } })).toThrow("does not identify");
+    expect(() => parseSceneBoundaryContextRequest({ ...request, expected: { ...request.expected, grant: "forged" } })).toThrow("unknown field");
+    expect(() => parseSceneBoundaryContextRequest(Object.values(request))).toThrow("expected an object");
+  });
+
+  it("retains the service's exact opaque digests in a detached response", () => {
+    const response = boundaryContext({ scene_id: boundaryIds.priorScene, boundary_id: boundaryIds.predecessor, exit_sha256: "b".repeat(64) });
+    const parsed = parseSceneBoundaryAuthoringContext(response, boundaryRequest(boundaryIds.predecessor));
+    expect(parsed).toEqual(response);
+    expect(parsed.source).not.toBe(response.source);
+    expect(parsed.source.film_options).not.toBe(response.source.film_options);
+    expect(parsed.predecessor).not.toBe(response.predecessor);
+    expect(parsed.source.dependencies_sha256).toBe("a".repeat(64));
+    expect(parsed.predecessor!.exit_sha256).toBe("b".repeat(64));
+  });
+
+  it.each(["project_id", "generation", "branch_id", "deliverable_profile_id"] as const)(
+    "rejects a response for another %s", (field) => {
+      const response = boundaryContext();
+      response.source[field] = boundaryIds.other;
+      expect(() => parseSceneBoundaryAuthoringContext(response, boundaryRequest())).toThrow("differs from the requested snapshot");
+    });
+
+  it("rejects another scene, revision and any changed authored Film option", () => {
+    const request = boundaryRequest();
+    expect(() => parseSceneBoundaryAuthoringContext({ ...boundaryContext(), scene_id: boundaryIds.other }, request)).toThrow("requested snapshot");
+    expect(() => parseSceneBoundaryAuthoringContext({ ...boundaryContext(), source: { ...boundarySource(), authored_revision: 8 } }, request)).toThrow("requested snapshot");
+    for (const override of [{ frame_rate: { num: 24, den: 1 } }, { font_family: "Other family" },
+      { mono_font_family: "Other mono" }, { role: "reveal" }, { archetype: "statement" }]) {
+      expect(() => parseSceneBoundaryAuthoringContext({ ...boundaryContext(), source: { ...boundarySource(),
+        film_options: { ...boundaryOptions(), ...override } } }, request)).toThrow("differs from the authored options");
+    }
+  });
+
+  it("never substitutes a predecessor or accepts an omitted, wrong-schema or authority-bearing response", () => {
+    const predecessor = { scene_id: boundaryIds.priorScene, boundary_id: boundaryIds.predecessor, exit_sha256: "b".repeat(64) };
+    expect(() => parseSceneBoundaryAuthoringContext(boundaryContext(predecessor), boundaryRequest())).toThrow("explicitly selected");
+    expect(() => parseSceneBoundaryAuthoringContext(boundaryContext(), boundaryRequest(boundaryIds.predecessor))).toThrow("explicitly selected");
+    expect(() => parseSceneBoundaryAuthoringContext(boundaryContext({ ...predecessor, boundary_id: boundaryIds.other }), boundaryRequest(boundaryIds.predecessor))).toThrow("explicitly selected");
+    const { predecessor: omitted, ...missing } = boundaryContext();
+    expect(omitted).toBeNull();
+    expect(() => parseSceneBoundaryAuthoringContext(missing, boundaryRequest())).toThrow("missing predecessor");
+    expect(() => parseSceneBoundaryAuthoringContext({ ...boundaryContext(), schema: "motionwright.scene-boundary-authoring-context/2" }, boundaryRequest())).toThrow("unsupported authoring context");
+    expect(() => parseSceneBoundaryAuthoringContext({ ...boundaryContext(), grant: "forged" }, boundaryRequest())).toThrow("unknown field");
+    expect(() => parseSceneBoundaryAuthoringContext({ ...boundaryContext(predecessor),
+      predecessor: { ...predecessor, native_ready: true } }, boundaryRequest(boundaryIds.predecessor))).toThrow("unknown field");
+  });
+
+  it("requires the real desktop service for context capture and mutation while preserving legacy projects", async () => {
+    const project = source(), before = structuredClone(project), storageBefore = await bootstrap();
+    expect(project.production_design?.scene_boundaries).toBeUndefined();
+    await expect(sceneBoundaryAuthoringContext(boundaryRequest())).rejects.toThrow("actual StudioService");
+    await expect(applyChange(project, { type: "upsert_scene_boundary", boundary: explicitBoundary() })).rejects.toThrow("actual StudioService");
+    await expect(applyChange(project, { type: "remove_scene_boundary", boundary_id: boundaryIds.boundary })).rejects.toThrow("actual StudioService");
+    expect(project).toEqual(before);
+    expect(await bootstrap()).toEqual(storageBefore);
   });
 });

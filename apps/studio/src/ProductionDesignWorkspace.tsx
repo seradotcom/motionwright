@@ -3,22 +3,22 @@ import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
 import NativeContrastWorkbench from "./NativeContrastWorkbench";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, Check, FileBox, Layers, Plus, RefreshCw, Save } from "lucide-react";
-import type { CanvasNode, Change, Project, Scene, DeliverableProfile, MotionCanvasRenderEvidence } from "./types";
+import type { CanvasNode, Change, Project, Scene, DeliverableProfile, MotionCanvasRenderEvidence, SceneBoundaryContextRequest, SceneBoundaryEndpoint } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { emptyProductionDesign, realizeProductHero, sameValue } from "./creativeProduction";
+import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
 import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
-import { bootstrap, projectHistory } from "./api";
+import { bootstrap, projectHistory, savedNativeWindowFilmOptions, sceneBoundaryAuthoringContext } from "./api";
 import {
-  acknowledgeProductionDraft, assertProductionOrigins, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
+  acknowledgeProductionDraft, assertProductionOrigins, boundaryFilmOptionsFromRawInput, boundaryFromRawInput, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
   encodeProductionFile, inspectProductionOutcome, prepareProductionSubmission, productionConflict,
   productionCopyKey, productionHasInput, productionHasWork, productionLabel, productionOutcomeMatches,
-  productionPointerKey, productionPreparationMatches, productionScope, productionUnconfirmed, productionValue,
+  productionPointerKey, productionPreparationMatches, productionScope, productionUnconfirmed, productionDraftValue,
   PRODUCTION_RECOVERY_PREFIX, readProductionCopies, readProductionRecoveryPointer, recoverProductionAfterReadFailure, reconcileProductionDraft, releaseProductionOutcome,
   resolveProductionDraft, retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy,
 } from "./productionDesignDraft";
-import type { ProductionCustody, ProductionDraft, ProductionInput, ProductionOperation, ProductionOutcomeReview, ProductionRecoveryEntry, ProductionTarget } from "./productionDesignDraft";
+import type { ProductionBoundaryInput, ProductionCustody, ProductionDraft, ProductionInput, ProductionOperation, ProductionOutcomeReview, ProductionRecoveryEntry, ProductionTarget } from "./productionDesignDraft";
 import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind } from "./creativeProduction";
 import PaidGenerationWorkspace from "./PaidGenerationWorkspace";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
@@ -309,6 +309,17 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
       notifyProduction(session);
     } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
   }
+  function startNewBoundary() {
+    if (busy || productionUnconfirmed(session.draft) || target.kind !== "boundary" || target.boundaryId !== null) return;
+    try {
+      if (!backupProduction(session)) { notifyProduction(session); return; }
+      const next = createProductionDraft(current.current, target);
+      forkProductionWriter(session); session.error = null; setReview(null);
+      replaceProduction(session, next);
+      session.notice = "Started another boundary with a new identity. The earlier input remains in its recovery copy.";
+      notifyProduction(session);
+    } catch (reason) { session.error = message(reason); notifyProduction(session); }
+  }
   function retryBackup() {
     if (busy) return;
     try {
@@ -345,7 +356,7 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
       notifyProduction(session);
     } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
   }
-  return { session, draft: session.draft, busy, conflict, review, reviewing, edit, send, choose, restore, readOutcome, continueEditing, download, discard, freshCopy,
+  return { session, draft: session.draft, busy, conflict, review, reviewing, edit, send, choose, restore, readOutcome, continueEditing, download, discard, freshCopy, startNewBoundary,
     retry: retryBackup,
     blocked: busy || !!session.backupError || conflict || productionUnconfirmed(session.draft) };
 }
@@ -372,7 +383,7 @@ function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor
         <p>Read saved r{review.project.revision} and {review.events.length} consecutive history records. {review.matchingValueRevisions.length} contain matching values; this does not identify the original request.</p>
         <details><summary>Submitted and saved parameters</summary><pre tabIndex={0} role="region" aria-label={label + " submitted and saved parameters"}>{JSON.stringify({ submitted: draft.pending.value,
           saved: draft.target.kind === "source" ? (review.project.production_design?.capsules.filter(capsule => capsule.id === draft.pending?.id) ?? [])
-            : productionValue(review.project, draft.target) }, null, 2)}</pre></details>
+            : productionDraftValue(draft, review.project) }, null, 2)}</pre></details>
         {productionUnconfirmed(draft) && review.project.revision <= review.pending.revision && <p role="status">
           The original request could still commit on r{review.pending.revision}. Reading the same revision does not resolve UNKNOWN. Keep its original copy; continue only after a newer saved revision has been read.
         </p>}
@@ -385,7 +396,7 @@ function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor
       <details style={{ minWidth: 0 }}><summary>Compare saved and authored parameters</summary><pre tabIndex={0} role="region" aria-label={label + " saved and authored parameters"}>{JSON.stringify(draft.target.kind === "source"
         ? { baseRevision: draft.baseRevision, savedRevision: project.revision, input: draft.input,
           savedCapsules: project.production_design?.capsules.filter(capsule => capsule.scene_id === sourceSceneId) ?? [] }
-        : { base: draft.base, saved: productionValue(project, draft.target), input: draft.input }, null, 2)}</pre></details>
+        : { base: draft.base, saved: productionDraftValue(draft, project), input: draft.input }, null, 2)}</pre></details>
       <button className="secondary-button" disabled={busy} onClick={() => editor.choose("draft")}>Keep my {label} input</button>
       <button className="secondary-button" disabled={busy} onClick={() => editor.choose("saved")}>{draft.target.kind === "source" ? "Reset Source attachment input" : "Use saved " + label + " values"}</button>
     </section>}
@@ -575,15 +586,203 @@ function SourcesWorkbench({project,scene,commit,commitCamera,busy,sourceServices
   </div>;
 }
 
+const boundaryRoles: readonly string[] = sceneBoundaryNarrativeRoles;
+const boundaryArchetypes: readonly string[] = sceneBoundaryArchetypes;
+const boundarySelections = new Map<string, string>();
+function readEndpointInput(raw: string): { endpoint: SceneBoundaryEndpoint | null; error: string | null } {
+  if (!raw.trim()) return { endpoint: null, error: null };
+  try { const value: unknown = JSON.parse(raw); return { endpoint: value === null ? null : parseSceneBoundaryEndpoint(value), error: null }; }
+  catch (reason) { return { endpoint: null, error: message(reason) }; }
+}
+function BoundaryEndpointEditor({ label, raw, edit, project, scene, profile, busy, onOpenCanvas }: {
+  label: "entry" | "exit"; raw: string; edit: (raw: string) => void; project: Project; scene: Scene | null;
+  profile: DeliverableProfile | undefined; busy: boolean; onOpenCanvas: () => void;
+}) {
+  const { endpoint, error } = readEndpointInput(raw);
+  const availableAssets = project.assets.filter(asset => asset.content_sha256);
+  const background = project.visual_language.palette.find(token => ["surface", "background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216";
+  function copyScene() {
+    if (scene) edit(JSON.stringify({ nodes: scene.nodes, camera: scene.camera, assets: [] }, null, 2));
+  }
+  return <section className="production-shot" style={{ minWidth: 0 }} aria-label={"Boundary " + label + " review"}>
+    <div className="production-viewer-toolbar"><div><strong>{label === "entry" ? "Entry" : "Exit"} snapshot</strong><span>Saved scene objects and authored pose</span></div>
+      <button className="secondary-button" disabled={!scene || busy} onClick={copyScene}>Copy saved scene to {label}</button></div>
+    {endpoint && profile && <div className="production-preview-mat" style={{ minHeight: 150, padding: 12 }}>
+      <CompositionStudy nodes={endpoint.nodes.map(node => ({ ...node, keyframes: [] }))} width={profile.width} height={profile.height} time={0} background={background}
+        ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides} label={"Boundary " + label + " object layout"}/>
+    </div>}
+    {endpoint && <>
+      <p className="production-help">{endpoint.nodes.length} objects · {endpoint.assets.length} asset references. This object layout uses stored coordinates. Camera pose and native appearance are reviewed in the native frame stage.</p>
+      <dl className="production-help" aria-label={"Boundary " + label + " camera"}>
+        <dt>Camera center</dt><dd>{endpoint.camera ? `${endpoint.camera.center_x}, ${endpoint.camera.center_y}` : "Not authored"}</dd>
+        <dt>Zoom / rotation / safe margin</dt><dd>{endpoint.camera ? `${endpoint.camera.zoom} / ${endpoint.camera.rotation_deg}° / ${endpoint.camera.safe_margin}` : "Not authored"}</dd>
+      </dl>
+      <details><summary>Inspect {label} objects</summary><ul className="production-help">{endpoint.nodes.map(node => <li key={node.id}>{node.name} · {node.kind} · {node.id}</li>)}</ul></details>
+      <fieldset className="production-claims"><legend>{label === "entry" ? "Entry" : "Exit"} asset references</legend>
+        {availableAssets.map(asset => <label key={asset.id}><input type="checkbox" disabled={busy} checked={endpoint.assets.some(item => item.asset_id === asset.id)}
+          onChange={event => edit(JSON.stringify({ ...endpoint, assets: event.target.checked
+            ? [...endpoint.assets.filter(item => item.asset_id !== asset.id), { asset_id: asset.id, content_sha256: asset.content_sha256! }]
+            : endpoint.assets.filter(item => item.asset_id !== asset.id) }, null, 2))}/>{asset.name}</label>)}
+        {!availableAssets.length && <p>No registered assets with content digests are available.</p>}
+        {endpoint.assets.filter(item => !availableAssets.some(asset => asset.id === item.asset_id && asset.content_sha256 === item.content_sha256)).map(item =>
+          <p key={item.asset_id} role="status">Retained reference {item.asset_id} has no matching current asset digest. Review it before native execution.</p>)}
+      </fieldset>
+    </>}
+    {error && <p className="production-error" role="status">Incomplete {label} input: {error}. Your original text is retained.</p>}
+    <label className="production-field"><span>{label === "entry" ? "Entry" : "Exit"} snapshot data</span><textarea aria-label={"Boundary " + label + " snapshot"} rows={7} spellCheck={false} value={raw} onChange={event => edit(event.target.value)}/></label>
+    <button className="text-button" onClick={onOpenCanvas}>Edit saved scene objects in Canvas</button>
+  </section>;
+}
+function SceneBoundaryEditor({ project, scene, boundaryId, commitCamera, busy, onOpenCanvas }: {
+  project: Project; scene: Scene | null; boundaryId: string | null; commitCamera: ProductionCommit; busy: boolean; onOpenCanvas: () => void;
+}) {
+  const editor = useProductionEditor(project, { kind: "boundary", sceneId: scene?.id ?? null, boundaryId }, commitCamera, busy);
+  const input = editor.draft.input as ProductionBoundaryInput;
+  const [binding, setBinding] = useState(false), currentProject = useRef(project), mounted = useRef(true);
+  currentProject.current = project;
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const patch = (value: Partial<ProductionBoundaryInput>) => editor.edit({ ...editor.session.draft.input as ProductionBoundaryInput, ...value });
+  const profile = project.deliverables.find(item => item.id === input.profileId);
+  const saved = project.production_design?.scene_boundaries?.find(item => item.id === input.boundaryId);
+  const boundaries = project.production_design?.scene_boundaries ?? [];
+  const predecessor = boundaries.find(item => item.id === input.predecessorBoundaryId);
+  const locked = project.locks.some(lock => ["project:" + project.id, "scene:" + scene?.id].includes(lock.resource) && ["content", "timing", "position", "style", "renderer"].includes(lock.kind));
+  const blocked = editor.blocked || binding;
+  let inputProblem: string | null = null;
+  try { boundaryFromRawInput(input, scene?.id ?? "", saved ?? null); }
+  catch (reason) { inputProblem = message(reason); }
+  function useRenderSettings() {
+    try {
+      if (!scene) throw new Error("Select a scene before copying saved render settings.");
+      const options = savedNativeWindowFilmOptions(project, input.profileId), intent = options.scene_intents.find(item => item.scene_id === scene.id);
+      if (!intent) throw new Error("This scene has no saved intent in the selected delivery recipe.");
+      patch({ frameRateNum: String(options.frame_rate.num), frameRateDen: String(options.frame_rate.den), fontFamily: options.font_family,
+        monoFontFamily: options.mono_font_family, role: intent.role, archetype: intent.archetype });
+    } catch (reason) { editor.session.error = message(reason); notifyProduction(editor.session); }
+  }
+  async function bind() {
+    if (blocked || !scene) return;
+    const sourceDraft = structuredClone(editor.session.draft), sourceProject = structuredClone(currentProject.current);
+    const sourceInput = sourceDraft.input as ProductionBoundaryInput;
+    editor.session.error = null; editor.session.notice = null;
+    try {
+      if (sourceInput.inputKind === "predecessor" && !sourceInput.predecessorBoundaryId) throw new Error("Choose an explicit predecessor before binding this source.");
+      const request: SceneBoundaryContextRequest = { project_id: sourceProject.id,
+        expected: { resource: "project:" + sourceProject.id, generation: sourceProject.generation, revision: sourceProject.revision },
+        branch_id: sourceProject.active_branch, scene_id: scene.id, deliverable_profile_id: sourceInput.profileId,
+        authored_film_options: boundaryFilmOptionsFromRawInput(sourceInput),
+        predecessor_boundary_id: sourceInput.inputKind === "predecessor" ? sourceInput.predecessorBoundaryId : null };
+      setBinding(true); editor.session.preparing = true; notifyProduction(editor.session);
+      const context = await sceneBoundaryAuthoringContext(request);
+      if (!mounted.current || !sameValue(sourceProject, currentProject.current)
+        || !productionPreparationMatches(sourceDraft, sourceProject, editor.session.draft, currentProject.current)) {
+        editor.session.notice = "The selected project or boundary input changed during binding. Current input was retained; bind again explicitly.";
+        return;
+      }
+      editor.edit({ ...sourceInput, boundSource: context.source, boundPredecessor: context.predecessor });
+      if (!editor.session.backupError) editor.session.notice = "Bound the selected source at revision " + context.source.authored_revision + ". Save the boundary when its endpoints are ready.";
+    } catch (reason) { if (mounted.current) editor.session.error = message(reason); }
+    finally { editor.session.preparing = false; if (mounted.current) setBinding(false); notifyProduction(editor.session); }
+  }
+  let appearances: { predecessor_node_id: string; successor_node_id: string }[] | null = null;
+  try {
+    const rows: unknown = JSON.parse(input.appearancesJson);
+    if (Array.isArray(rows) && rows.every(row => row && typeof row === "object" && !Array.isArray(row)
+      && Object.keys(row).length === 2 && typeof row.predecessor_node_id === "string" && typeof row.successor_node_id === "string")) appearances = rows;
+  } catch { /* The complete raw mapping remains editable below. */ }
+  const entry = readEndpointInput(input.entryJson).endpoint;
+  const predecessorNodes = predecessor?.definition.exit?.nodes ?? [];
+  return <div className="production-split" aria-label="Scene boundary editor" role="region">
+    <section className="production-inspector" style={{ minWidth: 0 }}>
+      <div className="production-section-title"><Layers size={16}/><div><h2>Scene boundary</h2><p>Author the entry, exit and inherited appearances.</p></div></div>
+      <p className="production-help">Drafts can remain incomplete. Explicit declarations retain their selected source and both endpoints for native continuity checks.</p>
+      <label className="production-field"><span>Delivery profile</span><select aria-label="Boundary delivery profile" value={input.profileId} onChange={event => {
+        const next = project.deliverables.find(item => item.id === event.target.value);
+        patch({ profileId: event.target.value, ...(next ? { frameRateNum: next.frame_rate.num, frameRateDen: next.frame_rate.den } : {}) });
+      }}><option value="">Choose a delivery profile</option>{input.profileId && !profile && <option value={input.profileId}>Unavailable profile · {input.profileId}</option>}{project.deliverables.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <button className="secondary-button" disabled={blocked || !profile || !scene} onClick={useRenderSettings}>Use saved render settings</button>
+      <div className="production-color-fields"><label className="production-field"><span>Frame rate numerator</span><input aria-label="Boundary frame rate numerator" inputMode="numeric" value={input.frameRateNum} onChange={event => patch({ frameRateNum: event.target.value })}/></label>
+        <label className="production-field"><span>Denominator</span><input aria-label="Boundary frame rate denominator" inputMode="numeric" value={input.frameRateDen} onChange={event => patch({ frameRateDen: event.target.value })}/></label></div>
+      <label className="production-field"><span>Primary font family</span><input aria-label="Boundary font family" value={input.fontFamily} onChange={event => patch({ fontFamily: event.target.value })}/></label>
+      <label className="production-field"><span>Monospaced font family</span><input aria-label="Boundary mono font family" value={input.monoFontFamily} onChange={event => patch({ monoFontFamily: event.target.value })}/></label>
+      <label className="production-field"><span>Narrative role</span><select aria-label="Boundary narrative role" value={input.role} onChange={event => patch({ role: event.target.value })}><option value="">Choose a role</option>{input.role && !boundaryRoles.includes(input.role) && <option value={input.role}>Unavailable · {input.role}</option>}{boundaryRoles.map(value => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+      <label className="production-field"><span>Archetype</span><select aria-label="Boundary archetype" value={input.archetype} onChange={event => patch({ archetype: event.target.value })}><option value="">Choose an archetype</option>{input.archetype && !boundaryArchetypes.includes(input.archetype) && <option value={input.archetype}>Unavailable · {input.archetype}</option>}{boundaryArchetypes.map(value => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+      <label className="production-field"><span>Continuity input</span><select aria-label="Boundary input mode" value={input.inputKind} onChange={event => patch({ inputKind: event.target.value as ProductionBoundaryInput["inputKind"] })}><option value="self_contained">Self contained</option><option value="predecessor">Inherit from a predecessor</option></select></label>
+      {input.inputKind === "predecessor" && <label className="production-field"><span>Predecessor declaration</span><select aria-label="Boundary predecessor" value={input.predecessorBoundaryId} onChange={event => patch({ predecessorBoundaryId: event.target.value })}><option value="">Choose a predecessor</option>
+        {input.predecessorBoundaryId && !boundaries.some(item => item.id === input.predecessorBoundaryId && item.id !== input.boundaryId) && <option value={input.predecessorBoundaryId}>Unavailable predecessor · {input.predecessorBoundaryId}</option>}
+        {boundaries.filter(item => item.id !== input.boundaryId).map(item => <option key={item.id} value={item.id}>{project.scenes.find(value => value.id === item.scene_id)?.name ?? "Unavailable scene"} · {item.definition.kind} · {item.id.slice(0, 8)}</option>)}</select></label>}
+      <section className="production-notice" style={{ minWidth: 0 }} aria-label="Boundary source binding">
+        <strong>{input.boundSource ? "Source bound at revision " + input.boundSource.authored_revision : "Source is not bound"}</strong>
+        <p className="production-help">Binding reads the selected source. Later project changes require an explicit rebind before native execution when those dependencies differ.</p>
+        <button className="secondary-button" disabled={blocked || !scene} onClick={() => void bind()}>{binding ? "Reading boundary source…" : input.boundSource ? "Rebind boundary source" : "Bind boundary source"}</button>
+        <details><summary>Inspect source binding</summary><pre tabIndex={0} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify({ source: input.boundSource, predecessor: input.boundPredecessor }, null, 2)}</pre></details>
+      </section>
+      <label className="production-field"><span>Declaration state</span><select aria-label="Boundary definition" value={input.definitionKind} onChange={event => patch({ definitionKind: event.target.value as ProductionBoundaryInput["definitionKind"] })}><option value="draft_incomplete">Draft · incomplete allowed</option><option value="explicit">Explicit · both endpoints required</option></select></label>
+      {locked && <p className="production-notice" role="status">A project or scene lock protects this declaration. Your editable input remains retained.</p>}
+      {editor.draft.removedBoundaryId && <p className="production-notice" role="status">This boundary was removed. Start another declaration to receive a new identity.</p>}
+      {inputProblem && <p className="production-error" role="status" aria-label="Boundary input needs attention">{inputProblem} Your original input remains editable.</p>}
+      <ProductionDraftFeedback editor={editor} project={project}/>
+      <button className="primary-button" disabled={blocked || locked || !scene || !productionHasInput(editor.draft) || !!editor.draft.removedBoundaryId || !!inputProblem} onClick={() => void editor.send("save")}><Save size={14}/> Save scene boundary</button>
+      <button className="text-button" disabled={blocked || locked || !saved} onClick={() => void editor.send("remove")}>Remove scene boundary</button>
+      {boundaryId === null && <button className="secondary-button" disabled={editor.busy || productionUnconfirmed(editor.draft)} onClick={editor.startNewBoundary}>Start another boundary</button>}
+      <p className="production-help">Removing a boundary keeps scene objects, cameras and assets. Its historical identity is preserved.</p>
+    </section>
+    <section className="production-viewer" style={{ overflowY: "auto" }} aria-label="Boundary endpoint review">
+      <BoundaryEndpointEditor label="entry" raw={input.entryJson} edit={value => patch({ entryJson: value })} project={project} scene={scene} profile={profile} busy={editor.busy} onOpenCanvas={onOpenCanvas}/>
+      <BoundaryEndpointEditor label="exit" raw={input.exitJson} edit={value => patch({ exitJson: value })} project={project} scene={scene} profile={profile} busy={editor.busy} onOpenCanvas={onOpenCanvas}/>
+      {input.inputKind === "predecessor" && <section className="production-shot" style={{ minWidth: 0 }} aria-label="Inherited appearances">
+        <h3>Inherited appearances</h3><p className="production-help">Choose the predecessor object and its corresponding entry object. An empty mapping explicitly inherits no objects.</p>
+        {appearances?.map((appearance, index) => <div className="production-color-fields" key={index}>
+          {([ ["predecessor_node_id", predecessorNodes, "Predecessor object"], ["successor_node_id", entry?.nodes ?? [], "Entry object"] ] as const).map(([key, nodes, label]) =>
+            <label className="production-field" key={key}><span>{label} {index + 1}</span><select aria-label={label + " " + (index + 1)} value={appearance[key]} onChange={event => patch({ appearancesJson: JSON.stringify(appearances!.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: event.target.value } : row), null, 2) })}>
+              <option value="">Choose an object</option>{appearance[key] && !nodes.some(node => node.id === appearance[key]) && <option value={appearance[key]}>Unavailable · {appearance[key]}</option>}{nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>)}
+          <button className="text-button" onClick={() => patch({ appearancesJson: JSON.stringify(appearances!.filter((_, rowIndex) => rowIndex !== index), null, 2) })}>Remove appearance {index + 1}</button>
+        </div>)}
+        <button className="secondary-button" disabled={!appearances} onClick={() => patch({ appearancesJson: JSON.stringify([...appearances!, { predecessor_node_id: "", successor_node_id: "" }], null, 2) })}>Add inherited appearance</button>
+        <label className="production-field"><span>Appearance mapping data</span><textarea aria-label="Boundary appearance mapping" rows={5} spellCheck={false} value={input.appearancesJson} onChange={event => patch({ appearancesJson: event.target.value })}/></label>
+      </section>}
+      <details className="production-diff-details"><summary>Compare saved declaration and authored input</summary><pre tabIndex={0} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify({ saved: saved ?? null, input }, null, 2)}</pre></details>
+    </section>
+  </div>;
+}
+function SceneBoundaryWorkbench(props: { project: Project; scene: Scene | null; commitCamera: ProductionCommit; busy: boolean; onOpenCanvas: () => void }) {
+  const owner = JSON.stringify([props.project.id, props.project.generation, props.project.active_branch, props.scene?.id ?? null]);
+  const [selected, setSelected] = useState(() => boundarySelections.get(owner) ?? "");
+  const boundaries = props.project.production_design?.scene_boundaries?.filter(item => item.scene_id === props.scene?.id) ?? [];
+  const retained = new Set<string>();
+  let recoveryInventoryError: string | null = null;
+  try {
+    // Discover targets only. Selecting one still uses the existing scoped,
+    // verified recovery reader; no stored input is silently adopted here.
+    for (let index = 0; index < window.localStorage.length; index++) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(PRODUCTION_RECOVERY_PREFIX)) continue;
+      let scope: unknown;
+      try { scope = JSON.parse(decodeURIComponent(key.slice(PRODUCTION_RECOVERY_PREFIX.length, key.lastIndexOf(":")))); }
+      catch { continue; }
+      if (Array.isArray(scope) && scope.length === 6 && scope[0] === props.project.id && scope[1] === props.project.generation
+        && scope[2] === props.project.active_branch && scope[3] === "boundary" && scope[4] === (props.scene?.id ?? null)
+        && typeof scope[5] === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(scope[5])) retained.add(scope[5]);
+    }
+  } catch (reason) { recoveryInventoryError = "Retained boundary selections could not be read: " + message(reason); }
+  if (selected) retained.add(selected);
+  const missing = [...retained].filter(id => !boundaries.some(item => item.id === id)).sort();
+  return <><label className="production-field" style={{ margin: "14px 24px", maxWidth: 560 }}><span>Saved declaration</span><select aria-label="Saved scene boundary" value={selected} onChange={event => { boundarySelections.set(owner, event.target.value); setSelected(event.target.value); }}>
+    <option value="">New boundary / current local draft</option>{missing.map(id => <option key={id} value={id}>Retained local declaration · {id}</option>)}
+    {boundaries.map(item => <option key={item.id} value={item.id}>{item.definition.kind === "explicit" ? "Explicit" : "Draft"} · {props.project.deliverables.find(profile => profile.id === item.definition.source?.deliverable_profile_id)?.name ?? "Unbound profile"} · {item.id.slice(0, 8)}</option>)}</select></label>
+    {recoveryInventoryError && <p className="production-error" role="alert">{recoveryInventoryError}</p>}
+    <SceneBoundaryEditor key={productionScope(props.project, { kind: "boundary", sceneId: props.scene?.id ?? null, boundaryId: selected || null })} {...props} boundaryId={selected || null}/></>;
+}
+
 export default function ProductionDesignWorkspace(props:{sourceServices:NativeSourceServices;graphServices:Pick<SemanticGraphWorkbenchProps,"readContext"|"outcomeTransport"|"refreshProject"|"openReview">;project:Project;scene:Scene|null;commit:Commit; commitCamera:(change:Change)=>Promise<Project>;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
-  const [tab,setTab]=useState<"component"|"stage"|"plan"|"brand"|"sources"|"captures"|"data"|"procedural"|"camera"|"graph"|"impact"|"evaluator"|"identity"|"distillation"|"generation"|"patch"|"inspection"|"contrast">("component");
+  const [tab,setTab]=useState<"component"|"stage"|"plan"|"brand"|"sources"|"captures"|"data"|"procedural"|"camera"|"boundary"|"graph"|"impact"|"evaluator"|"identity"|"distillation"|"generation"|"patch"|"inspection"|"contrast">("component");
   const [repairDraft,setRepairDraft]=useState<NativeReviewRepairDraft|null>(null);
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);
   return <section className="production-workspace" aria-label="Creative production workstation">
     <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} · {design.capsules.length} native source{design.capsules.length===1?"":"s"} · revision {props.project.revision}</p></div>
       <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>{setRepairDraft(null);props.onSelectScene(e.target.value);}}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
-    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["stage","ProductStage"],["camera","Camera"],["graph","Graph"],["plan","Production plan"],["brand","Brand & taste"],["sources","Native sources"],["captures","Capture sources"],["identity","Identity & consent"],["generation","Generation journal"],["data","Measured data"],["procedural","Procedural"],["impact","Render impact"],["evaluator","Evaluators"],["distillation","Distillation"],["patch","Scoped changes"],["inspection","Native inspection"],["contrast","Pixel contrast"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench key={productionScope(props.project,{kind:"hero",sceneId:props.scene?.id ?? null})} {...props}/>:tab==="stage"?<ProductStageWorkbench {...props} commit={props.commitCamera}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="graph"?<SemanticGraphWorkbench {...props} {...props.graphServices} commit={props.commitCamera}/>:tab==="plan"?<PlanWorkbench key={productionScope(props.project,{kind:"plan"})} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commitCamera} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="generation"?<PaidGenerationWorkspace key={props.project.generation} project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:tab==="identity"?<IdentityOriginWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commitCamera} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commitCamera} busy={props.busy} onOpenCanvas={props.onOpenCanvas} displayProfile={props.displayProfile}/>:tab==="impact"?<RenderTailWorkbench project={props.project}/>:tab==="evaluator"?<CreativeEvaluatorWorkbench project={props.project} scene={props.scene} commit={props.commitCamera} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="distillation"?<ComponentDistillationWorkbench project={props.project} commit={props.commitCamera} busy={props.busy}/>:tab==="contrast"?<NativeContrastWorkbench project={props.project} scene={props.scene} displayProfile={props.displayProfile} evidence={props.evidence} busy={props.busy} onOpenRender={props.onOpenRender}/>:tab==="inspection"?<NativeInspectionWorkbench key={JSON.stringify([props.project.id,props.project.generation,props.project.active_branch])} {...props} commit={props.commitCamera} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
+    <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["stage","ProductStage"],["camera","Camera"],["boundary","Scene boundaries"],["graph","Graph"],["plan","Production plan"],["brand","Brand & taste"],["sources","Native sources"],["captures","Capture sources"],["identity","Identity & consent"],["generation","Generation journal"],["data","Measured data"],["procedural","Procedural"],["impact","Render impact"],["evaluator","Evaluators"],["distillation","Distillation"],["patch","Scoped changes"],["inspection","Native inspection"],["contrast","Pixel contrast"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
+    {tab==="component"?<HeroWorkbench key={productionScope(props.project,{kind:"hero",sceneId:props.scene?.id ?? null})} {...props}/>:tab==="stage"?<ProductStageWorkbench {...props} commit={props.commitCamera}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="boundary"?<SceneBoundaryWorkbench key={JSON.stringify([props.project.id,props.project.generation,props.project.active_branch,props.scene?.id ?? null])} {...props}/>:tab==="graph"?<SemanticGraphWorkbench {...props} {...props.graphServices} commit={props.commitCamera}/>:tab==="plan"?<PlanWorkbench key={productionScope(props.project,{kind:"plan"})} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commitCamera} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="generation"?<PaidGenerationWorkspace key={props.project.generation} project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:tab==="identity"?<IdentityOriginWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commitCamera} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commitCamera} busy={props.busy} onOpenCanvas={props.onOpenCanvas} displayProfile={props.displayProfile}/>:tab==="impact"?<RenderTailWorkbench project={props.project}/>:tab==="evaluator"?<CreativeEvaluatorWorkbench project={props.project} scene={props.scene} commit={props.commitCamera} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="distillation"?<ComponentDistillationWorkbench project={props.project} commit={props.commitCamera} busy={props.busy}/>:tab==="contrast"?<NativeContrastWorkbench project={props.project} scene={props.scene} displayProfile={props.displayProfile} evidence={props.evidence} busy={props.busy} onOpenRender={props.onOpenRender}/>:tab==="inspection"?<NativeInspectionWorkbench key={JSON.stringify([props.project.id,props.project.generation,props.project.active_branch])} {...props} commit={props.commitCamera} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
   </section>;
 }

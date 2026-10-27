@@ -53,6 +53,63 @@ export interface CameraState {
   center_x: number; center_y: number; zoom: number;
   rotation_deg: number; safe_margin: number;
 }
+/** Canonical media Rate uses reduced positive u32 JSON numbers, not RationalTime strings. */
+export interface SceneBoundaryRate { num: number; den: number; }
+export type SceneBoundaryNarrativeRole = "hook" | "problem" | "mechanism" | "evidence" |
+  "comparison" | "reveal" | "payoff" | "cta";
+export type SceneBoundaryArchetype = "statement" | "split_explanation" | "architecture_reveal" |
+  "comparison" | "metric" | "timeline" | "code_focus" | "diagram_build" |
+  "object_spotlight" | "evidence_frame" | "product_proof" | "endcard";
+export interface SceneBoundaryFilmOptions {
+  frame_rate: SceneBoundaryRate;
+  font_family: string;
+  mono_font_family: string;
+  role: SceneBoundaryNarrativeRole;
+  archetype: SceneBoundaryArchetype;
+}
+export interface SceneBoundarySource {
+  project_id: string;
+  generation: string;
+  branch_id: string;
+  /** Pre-change revision captured by the service; never a native readiness token. */
+  authored_revision: number;
+  deliverable_profile_id: string;
+  film_options: SceneBoundaryFilmOptions;
+  dependencies_sha256: string;
+}
+export interface SceneBoundaryAsset { asset_id: string; content_sha256: string; }
+export interface SceneBoundaryEndpoint { nodes: CanvasNode[]; camera: CameraState | null; assets: SceneBoundaryAsset[]; }
+export interface SceneBoundaryAppearance { predecessor_node_id: string; successor_node_id: string; }
+export type SceneBoundaryInput =
+  | { kind: "self_contained" }
+  | { kind: "predecessor"; scene_id: string | null; boundary_id: string | null;
+      exit_sha256: string | null; appearances: SceneBoundaryAppearance[] };
+export type SceneBoundaryDefinition =
+  | { kind: "draft_incomplete"; source: SceneBoundarySource | null;
+      entry: SceneBoundaryEndpoint | null; exit: SceneBoundaryEndpoint | null }
+  | { kind: "explicit"; source: SceneBoundarySource;
+      entry: SceneBoundaryEndpoint; exit: SceneBoundaryEndpoint };
+export interface SceneBoundary {
+  version: number; id: string; scene_id: string;
+  input: SceneBoundaryInput; definition: SceneBoundaryDefinition;
+}
+export interface SceneBoundaryContextRequest {
+  project_id: string;
+  expected: { resource: string; generation: string; revision: number };
+  branch_id: string;
+  scene_id: string;
+  deliverable_profile_id: string;
+  authored_film_options: SceneBoundaryFilmOptions;
+  /** Required key; null explicitly selects no predecessor. */
+  predecessor_boundary_id: string | null;
+}
+export interface SceneBoundaryPredecessorContext { scene_id: string; boundary_id: string; exit_sha256: string; }
+export interface SceneBoundaryAuthoringContext {
+  schema: "motionwright.scene-boundary-authoring-context/1";
+  scene_id: string;
+  source: SceneBoundarySource;
+  predecessor: SceneBoundaryPredecessorContext | null;
+}
 export interface Beat {
   id: string; label: string; objective: string;
   start: RationalTime; duration: RationalTime;
@@ -777,6 +834,8 @@ export type Change =
   | { type: "detach_product_stage"; instance_id: string }
   | { type: "upsert_camera_reframe"; reframe: CameraReframe }
   | { type: "detach_camera_reframe"; id: string }
+  | { type: "upsert_scene_boundary"; boundary: SceneBoundary }
+  | { type: "remove_scene_boundary"; boundary_id: string }
   | { type: "bind_stage_capture"; stage_id: string; capture_id: string }
   | { type: "detach_stage_capture"; stage_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
