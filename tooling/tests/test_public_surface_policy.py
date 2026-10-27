@@ -1,7 +1,8 @@
 """Exercise source hygiene against real isolated Git repositories.
 
-Consumer tests isolate glib admission only; they execute the production source
-policy and traversal and make no claim about dependency or product acceptance.
+Consumer tests isolate glib and Tauri source-substitution admission only.
+They execute the production source policy, source-lock admission and traversal,
+and make no claim about dependency or product acceptance.
 """
 from pathlib import Path
 import json
@@ -356,8 +357,9 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         return root
 
     def run_policy(self, root):
-        # The unrelated glib admission dependency has its own independent suites.
-        # Source traversal, public-surface validation and credential checks are real.
+        # The unrelated glib and Tauri source-substitution admissions have their
+        # own independent suites. Source-lock admission, source traversal,
+        # public-surface validation and credential checks are real.
         bootstrap = (
             "import pathlib, runpy, sys, types\n"
             "root = pathlib.Path(sys.argv[1])\n"
@@ -365,6 +367,9 @@ class SourcePolicyConsumerTests(GitFixtureTests):
             "dependency = types.ModuleType('v01_glib_product_admission')\n"
             "dependency.admit_patched_glib = lambda root: None\n"
             "sys.modules['v01_glib_product_admission'] = dependency\n"
+            "dependency = types.ModuleType('v01_tauri_ipc_product_admission')\n"
+            "dependency.admit_patched_tauri = lambda root: None\n"
+            "sys.modules['v01_tauri_ipc_product_admission'] = dependency\n"
             "runpy.run_path(str(root / 'tooling/source_policy.py'), run_name='__main__')\n"
         )
         return subprocess.run(
