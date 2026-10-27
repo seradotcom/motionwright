@@ -1632,6 +1632,25 @@ pub fn build_motion_canvas_segments(
     deliverable_id: Uuid,
     options: &FilmBuildOptions,
 ) -> NativeResult<Vec<MotionCanvasSegment>> {
+    build_motion_canvas_segments_inner(project, deliverable_id, options, true)
+}
+
+/// Pure planning for callers that must inspect original receipts before new
+/// SceneBoundary admission. This does not authorize staging or native effects.
+pub(crate) fn plan_motion_canvas_segments(
+    project: &Project,
+    deliverable_id: Uuid,
+    options: &FilmBuildOptions,
+) -> NativeResult<Vec<MotionCanvasSegment>> {
+    build_motion_canvas_segments_inner(project, deliverable_id, options, false)
+}
+
+fn build_motion_canvas_segments_inner(
+    project: &Project,
+    deliverable_id: Uuid,
+    options: &FilmBuildOptions,
+    guard_full_selection: bool,
+) -> NativeResult<Vec<MotionCanvasSegment>> {
     project
         .validate()
         .map_err(|error| contract("Motionwright project is invalid", error))?;
@@ -1649,6 +1668,18 @@ pub fn build_motion_canvas_segments(
         .find(|profile| profile.id == deliverable_id)
         .ok_or_else(|| invalid("Deliverable profile not found"))?;
     let runs = motion_canvas_runs(project, deliverable)?;
+    if guard_full_selection {
+        let scene_ids = runs
+            .iter()
+            .flat_map(|run| run.iter().map(|scene| scene.id))
+            .collect::<Vec<_>>();
+        crate::native_scene_boundary::guard_motion_scenes(
+            project,
+            deliverable_id,
+            options,
+            &scene_ids,
+        )?;
+    }
     let mut segments = runs
         .iter()
         .enumerate()
@@ -1714,7 +1745,9 @@ pub fn build_motion_canvas_window(
             "Native source window is empty or exceeds the source clock bound",
         ));
     }
-    let segments = build_motion_canvas_segments(project, deliverable_id, options)?;
+    // Window planning is pure. Production admits its actual selected run after
+    // checking the original request identity and before staging/native effects.
+    let segments = plan_motion_canvas_segments(project, deliverable_id, options)?;
     let mut selected = segments
         .into_iter()
         .enumerate()
@@ -3441,5 +3474,178 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn native_boundary_test_draft(scene_id: Uuid) -> motionwright_domain::SceneBoundary {
+        use motionwright_domain::{SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput};
+        SceneBoundary {
+            version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+            id: Uuid::now_v7(),
+            scene_id,
+            input: SceneBoundaryInput::SelfContained,
+            definition: SceneBoundaryDefinition::DraftIncomplete {
+                source: None,
+                entry: None,
+                exit: None,
+            },
+        }
+    }
+
+    #[test]
+    fn native_boundary_full_rejects_draft_but_window_scope_is_run_local() {
+        let mut project = fixture_project();
+        let first = project.scenes[0].id;
+        project.scenes[1].renderer = RendererKind::Blender;
+        project
+            .apply_change(&Change::AddScene {
+                name: "Second Motion run".into(),
+                objective: "Keep selection local to the actual run".into(),
+                duration_seconds: 1,
+            })
+            .unwrap();
+        let second = project.scenes[2].id;
+        project
+            .apply_change(&Change::AddCanvasNode {
+                scene_id: second,
+                node: node("shape", None),
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::UpsertSceneBoundary {
+                boundary: Box::new(native_boundary_test_draft(second)),
+            })
+            .unwrap();
+        let before = project.clone();
+        let profile = project.deliverables[0].id;
+        let options = fixture_options(&project);
+
+        let error = build_motion_canvas_segments(&project, profile, &options).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("SceneBoundary"));
+
+        let first_window = build_motion_canvas_window(
+            &project,
+            profile,
+            first,
+            motionwright_domain::SourceFrameWindow { start: 10, end: 20 },
+            &options,
+        )
+        .unwrap();
+        assert_eq!(first_window.segment_index, 0);
+        assert_eq!(first_window.segment.scene_ids, vec![first]);
+        assert!(
+            crate::native_scene_boundary::ExecutionScope::motion(
+                &project,
+                profile,
+                &options,
+                &first_window.segment.scene_ids,
+            )
+            .is_ok()
+        );
+
+        let second_window = build_motion_canvas_window(
+            &project,
+            profile,
+            second,
+            motionwright_domain::SourceFrameWindow {
+                start: 90,
+                end: 100,
+            },
+            &options,
+        )
+        .unwrap();
+        assert_eq!(second_window.segment_index, 1);
+        assert_eq!(second_window.segment.scene_ids, vec![second]);
+        let error = crate::native_scene_boundary::ExecutionScope::motion(
+            &project,
+            profile,
+            &options,
+            &second_window.segment.scene_ids,
+        )
+        .err()
+        .expect("the selected Draft must not acquire an execution scope");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("SceneBoundary"));
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn native_boundary_explicit_compares_actual_film_options() {
+        use motionwright_domain::{
+            SceneBoundary, SceneBoundaryArchetype, SceneBoundaryDefinition, SceneBoundaryEndpoint,
+            SceneBoundaryFilmOptions, SceneBoundaryInput, SceneBoundaryNarrativeRole,
+        };
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        let profile = project.deliverables[0].id;
+        let options = fixture_options(&project);
+        let actual = SceneBoundaryFilmOptions {
+            frame_rate: options.frame_rate,
+            font_family: options.font_family.clone(),
+            mono_font_family: options.mono_font_family.clone(),
+            role: SceneBoundaryNarrativeRole::Mechanism,
+            archetype: SceneBoundaryArchetype::Statement,
+        };
+        let source = project
+            .capture_scene_boundary_source(scene_id, profile, &actual)
+            .unwrap();
+        let endpoint = SceneBoundaryEndpoint {
+            nodes: project.scenes[0].nodes.clone(),
+            camera: Some(project.scenes[0].camera.clone()),
+            assets: Vec::new(),
+        };
+        project
+            .apply_change(&Change::UpsertSceneBoundary {
+                boundary: Box::new(SceneBoundary {
+                    version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+                    id: Uuid::now_v7(),
+                    scene_id,
+                    input: SceneBoundaryInput::SelfContained,
+                    definition: SceneBoundaryDefinition::Explicit {
+                        source,
+                        entry: endpoint.clone(),
+                        exit: endpoint,
+                    },
+                }),
+            })
+            .unwrap();
+        let before = project.clone();
+        assert!(build_motion_canvas_segments(&project, profile, &options).is_ok());
+
+        for case in [
+            "frame_rate",
+            "font_family",
+            "mono_font_family",
+            "role",
+            "archetype",
+        ] {
+            let mut changed = options.clone();
+            match case {
+                "frame_rate" => changed.frame_rate = Rate::new(60, 1).unwrap(),
+                "font_family" => changed.font_family = "Another primary family".into(),
+                "mono_font_family" => changed.mono_font_family = "Another mono family".into(),
+                "role" => changed.scene_intents[0].role = NarrativeRole::Evidence,
+                "archetype" => changed.scene_intents[0].archetype = Archetype::Comparison,
+                _ => unreachable!(),
+            }
+            let error = crate::native_scene_boundary::guard_motion_scenes(
+                &project,
+                profile,
+                &changed,
+                &[scene_id],
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgument, "{case}");
+            assert!(error.message.contains("SceneBoundary"), "{case}");
+        }
+        let mut changed_role = options.clone();
+        changed_role.scene_intents[0].role = NarrativeRole::Evidence;
+        assert_eq!(
+            build_motion_canvas_segments(&project, profile, &changed_role)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument,
+        );
+        assert_eq!(project, before);
     }
 }

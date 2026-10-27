@@ -42,6 +42,17 @@ impl ProductionCoordinator {
                 "Project changed since HyperFrames source preparation",
             ));
         }
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Hyperframes,
+        )?;
+        crate::native_scene_boundary::guard_new_effect(
+            &project,
+            "driver.hyperframes.project.plan",
+            None,
+            None,
+        )?;
         // All unsupported source semantics reject before any provider command.
         let composition = build_hyperframes_source(&project, deliverable_id)?;
         let compiled = model::compile(&composition)?;

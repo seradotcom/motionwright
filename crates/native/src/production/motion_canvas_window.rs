@@ -568,12 +568,23 @@ impl ProductionCoordinator {
             return Err(invalid("Motion Canvas window request id is invalid"));
         }
         let project = current_project(&self.service, project_id, expected)?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Motion,
+        )?;
         let plan = request_plan(&project, request)?;
         let prefix = format!("{request_id}:motion:{}", plan.segment_index);
         // The existing durable receipts are inspected before any native call.
         // Cold has no implicit replay/fallback; warm is an explicit token read.
         require_uncaptured_identity(&self.service, project_id, &prefix)?;
-        let capture = self
+        let scoped = self.with_motion_scene_boundary_scope(
+            &project,
+            request.deliverable_id,
+            &request.options,
+            &plan.segment.scene_ids,
+        )?;
+        let capture = scoped
             .capture_motion_canvas_segment(
                 project_id,
                 expected,

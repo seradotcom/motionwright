@@ -438,6 +438,7 @@ impl ProductionCoordinator {
             validate_blender_proof(&self.client.connection().output_root, &proof)?;
             return Ok((StageDisposition::Reused, proof));
         }
+        crate::native_scene_boundary::guard_scene_without_film_options(project, scene_id)?;
         let attempt = self.claim(project, &key)?;
         // A Blender mutation can be partially applied. No automatic second
         // attempt is allowed after an interrupted/failed first attempt.
@@ -504,7 +505,7 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         options: &FilmBuildOptions,
     ) -> NativeResult<(StageDisposition, MotionCanvasRenderEvidence)> {
-        let segments = build_motion_canvas_segments(project, deliverable_id, options)?;
+        let segments = crate::film::plan_motion_canvas_segments(project, deliverable_id, options)?;
         let key = StageKey::for_input(
             flow,
             "motion-canvas",
@@ -533,6 +534,16 @@ impl ProductionCoordinator {
             )?;
             return Ok((StageDisposition::Reused, proof.evidence));
         }
+        let scene_ids = segments
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect::<Vec<_>>();
+        crate::native_scene_boundary::guard_motion_scenes(
+            project,
+            deliverable_id,
+            options,
+            &scene_ids,
+        )?;
         let attempt = self.claim(project, &key)?;
         let driver_request = format!("rc-{}-m{attempt}", &key.digest[..22]);
         let result = self
@@ -620,17 +631,57 @@ impl ProductionCoordinator {
         options: &FilmBuildOptions,
     ) -> NativeResult<CrossAppRecoveryReport> {
         let project = ensure_same_revision(self, project_id, expected)?;
-        // Preflight both stages before any expensive mutation.
-        build_blender_contribution(&project, blender_scene)?;
-        let segments = build_motion_canvas_segments(&project, deliverable, options)?;
+        // Pure preflight preserves the existing stage identities.
+        let mut blender_projection = build_blender_contribution(&project, blender_scene)?;
+        blender_projection.revision = 0;
+        let segments = crate::film::plan_motion_canvas_segments(&project, deliverable, options)?;
         let total_frames: u64 = segments
             .iter()
-            .try_fold(0_u64, |total, seg| total.checked_add(seg.frame_count))
+            .try_fold(0_u64, |total, segment| {
+                total.checked_add(segment.frame_count)
+            })
             .ok_or_else(|| invalid("Recovery preflight frame count overflow"))?;
         if segments.len() > RECOVERY_MAX_SEGMENTS || total_frames > RECOVERY_MAX_FRAMES {
             return Err(invalid(
                 "Recovery preflight exceeds native frame verification budget",
             ));
+        }
+        let blender_key = StageKey::for_input(
+            flow,
+            "blender",
+            "motionwright.recovery.blender",
+            &stage_input(&project, self.client.connection(), &blender_projection)?,
+        )?;
+        let motion_key = StageKey::for_input(
+            flow,
+            "motion-canvas",
+            "motionwright.recovery.motion-canvas",
+            &stage_input(
+                &project,
+                self.client.connection(),
+                &(project.revision, &segments),
+            )?,
+        )?;
+        // Read both original stage histories before any new admission or claim.
+        let previous_blender = read_previous::<RecoveryBlenderProof>(self, &project, &blender_key)?;
+        let previous_motion = read_previous::<MotionProof>(self, &project, &motion_key)?;
+        if previous_blender.is_none() {
+            crate::native_scene_boundary::guard_scene_without_film_options(
+                &project,
+                blender_scene,
+            )?;
+        }
+        if previous_motion.is_none() {
+            let scene_ids = segments
+                .iter()
+                .flat_map(|segment| segment.scene_ids.iter().copied())
+                .collect::<Vec<_>>();
+            crate::native_scene_boundary::guard_motion_scenes(
+                &project,
+                deliverable,
+                options,
+                &scene_ids,
+            )?;
         }
         let (blender, blender_proof) = self
             .recover_blender(&project, expected, flow, blender_scene)
@@ -1103,5 +1154,188 @@ mod tests {
         validate_motion_proof(root, &proof, Some(&hashes)).unwrap();
         fs::write(&png, b"tampered frame").unwrap();
         assert!(validate_motion_proof(root, &proof, Some(&hashes)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recovery_checks_motion_history_and_admission_before_new_blender_claim() {
+        use crate::film::SceneFilmIntent;
+        use motionwright_domain::{
+            RendererKind, SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput,
+        };
+        use semwright_motion_authoring::{Archetype, NarrativeRole};
+        use std::sync::atomic::Ordering;
+        for with_motion_unknown in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (coordinator, mut project, connection) = fixture(&dir);
+            let service = &coordinator.service;
+            for (name, renderer) in [
+                ("blender", RendererKind::Blender),
+                ("motion", RendererKind::MotionCanvas),
+            ] {
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        &format!("seed-{name}-scene"),
+                        &Change::AddScene {
+                            name: name.into(),
+                            objective: "Recovery admission fixture".into(),
+                            duration_seconds: 2,
+                        },
+                    )
+                    .unwrap()
+                    .project;
+                let scene_id = project.scenes.last().unwrap().id;
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        &format!("seed-{name}-renderer"),
+                        &Change::SetSceneRenderer { scene_id, renderer },
+                    )
+                    .unwrap()
+                    .project;
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        &format!("seed-{name}-node"),
+                        &Change::AddCanvasNode {
+                            scene_id,
+                            node: CanvasNode {
+                                id: Uuid::now_v7(),
+                                name: format!("{name} rectangle"),
+                                kind: "rectangle".into(),
+                                parent_id: None,
+                                x: 240.0,
+                                y: 320.0,
+                                width: 200.0,
+                                height: 110.0,
+                                rotation_deg: 0.0,
+                                opacity: 1.0,
+                                text: None,
+                                coordinate_space: CoordinateSpace::ProjectPixels,
+                                z_index: 1,
+                                style: NodeStyle {
+                                    fill: Some("#123456".into()),
+                                    stroke: None,
+                                    stroke_width: 0.0,
+                                    font_family: None,
+                                    font_size: None,
+                                    font_weight: None,
+                                    line_height: None,
+                                    blend_mode: BlendMode::Normal,
+                                },
+                                relations: vec![],
+                                property_locks: BTreeSet::new(),
+                                keyframes: vec![],
+                            },
+                        },
+                    )
+                    .unwrap()
+                    .project;
+            }
+            let blender_scene = project.scenes[0].id;
+            let motion_scene = project.scenes[1].id;
+            let deliverable = project.deliverables[0].id;
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "seed-motion-boundary-draft",
+                    &Change::UpsertSceneBoundary {
+                        boundary: Box::new(SceneBoundary {
+                            version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+                            id: Uuid::now_v7(),
+                            scene_id: motion_scene,
+                            input: SceneBoundaryInput::SelfContained,
+                            definition: SceneBoundaryDefinition::DraftIncomplete {
+                                source: None,
+                                entry: None,
+                                exit: None,
+                            },
+                        }),
+                    },
+                )
+                .unwrap()
+                .project;
+            let options = FilmBuildOptions {
+                frame_rate: Rate::new(30, 1).unwrap(),
+                font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+                mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+                scene_intents: vec![SceneFilmIntent {
+                    scene_id: motion_scene,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                }],
+            };
+            let mut blender_projection =
+                build_blender_contribution(&project, blender_scene).unwrap();
+            blender_projection.revision = 0;
+            let blender_key = StageKey::for_input(
+                "boundary-test",
+                "blender",
+                "motionwright.recovery.blender",
+                &stage_input(&project, &connection, &blender_projection).unwrap(),
+            )
+            .unwrap();
+            let segments =
+                crate::film::plan_motion_canvas_segments(&project, deliverable, &options).unwrap();
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].scene_ids, vec![motion_scene]);
+            let motion_key = StageKey::for_input(
+                "boundary-test",
+                "motion-canvas",
+                "motionwright.recovery.motion-canvas",
+                &stage_input(&project, &connection, &(project.revision, &segments)).unwrap(),
+            )
+            .unwrap();
+            if with_motion_unknown {
+                // Synthetic durable history; no native provider is invoked.
+                let attempt = coordinator.claim(&project, &motion_key).unwrap();
+                coordinator
+                    .checkpoint(
+                        &project,
+                        &motion_key,
+                        attempt,
+                        "outcome_unknown",
+                        json!({"retryable": false}),
+                    )
+                    .unwrap();
+            }
+            let before = service.production_receipts(project.id, 20).unwrap();
+            assert_eq!(before.len(), if with_motion_unknown { 2 } else { 0 });
+            let custody = coordinator.receipt_custody.snapshot();
+            let error = coordinator
+                .recover_blender_motion(
+                    project.id,
+                    &project.stamp(),
+                    "boundary-test",
+                    blender_scene,
+                    deliverable,
+                    &options,
+                )
+                .await
+                .unwrap_err();
+            if with_motion_unknown {
+                assert_eq!(error.code, ErrorCode::Conflict);
+                assert!(!error.outcome_known);
+            } else {
+                assert_eq!(error.code, ErrorCode::InvalidArgument);
+                assert!(error.outcome_known);
+                assert!(error.message.contains("SceneBoundary"));
+            }
+            assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+            assert!(
+                service
+                    .latest_production_receipt(project.id, &blender_key.id)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(service.production_receipts(project.id, 20).unwrap(), before);
+            assert_eq!(coordinator.receipt_custody.snapshot(), custody);
+            assert_eq!(service.project(project.id).unwrap(), project);
+        }
     }
 }

@@ -178,7 +178,7 @@ for path in iter_source_files(ROOT):
         # read_text normalizes newlines; the reviewed UTF-8 Git source uses LF.
         process_test_fixture_sources = {
             "crates/native/src/production/brand_fonts.rs":
-                "c4555a49e1e548ac3fb6324ba44100ae00d9b9e5effa7c8e3098508ce740f4e4",
+                "898dbb96ea14e2a24698bd2a97442eaa61debb55b91e627fd40a3ecb9ff14d4c",
         }
         reviewed_test_fixture = (
             rel in process_test_fixture_sources

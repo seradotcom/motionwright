@@ -233,22 +233,33 @@ impl ProductionCoordinator {
         if current(&self.service, expected)? != before {
             return Err(stale());
         }
-        self.realize_prepared_manim_scene(
+        self.require_no_unresolved_scene_requests(
             expected.project_id,
-            &RevisionStamp::from(&before),
             request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &before,
             package.plan.source.scene_id,
-            PreparedManimRender {
-                start_command: START_COMMAND,
-                plan_value: serde_json::to_value(&package.plan)
-                    .map_err(|_| invalid("Original Graph plan cannot be encoded"))?,
-                plan_sha256: package.closure.plan_sha256,
-                profile: package.plan.render_profile,
-                requires_camera_getters: false,
-                source_bundle: Some(PreparedManimSourceInput::Graph(input)),
-            },
-        )
-        .await
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
+        scoped
+            .realize_prepared_manim_scene(
+                expected.project_id,
+                &RevisionStamp::from(&before),
+                request_id,
+                package.plan.source.scene_id,
+                PreparedManimRender {
+                    start_command: START_COMMAND,
+                    plan_value: serde_json::to_value(&package.plan)
+                        .map_err(|_| invalid("Original Graph plan cannot be encoded"))?,
+                    plan_sha256: package.closure.plan_sha256,
+                    profile: package.plan.render_profile,
+                    requires_camera_getters: false,
+                    source_bundle: Some(PreparedManimSourceInput::Graph(input)),
+                },
+            )
+            .await
     }
 
     /// Realize one persisted Graph on the existing Manim Driver Host. The
@@ -287,22 +298,33 @@ impl ProductionCoordinator {
             return Err(stale());
         }
         let storage_stamp = RevisionStamp::from(&before);
-        self.realize_prepared_manim_scene(
+        self.require_no_unresolved_scene_requests(
             expected.project_id,
-            &storage_stamp,
             request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &before,
             plan.source.scene_id,
-            PreparedManimRender {
-                start_command: START_COMMAND,
-                plan_value: serde_json::to_value(&plan)
-                    .map_err(|_| invalid("Graph plan cannot be encoded"))?,
-                plan_sha256: compiled.plan_sha256,
-                profile: plan.render_profile,
-                requires_camera_getters: false,
-                source_bundle: None,
-            },
-        )
-        .await
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
+        scoped
+            .realize_prepared_manim_scene(
+                expected.project_id,
+                &storage_stamp,
+                request_id,
+                plan.source.scene_id,
+                PreparedManimRender {
+                    start_command: START_COMMAND,
+                    plan_value: serde_json::to_value(&plan)
+                        .map_err(|_| invalid("Graph plan cannot be encoded"))?,
+                    plan_sha256: compiled.plan_sha256,
+                    profile: plan.render_profile,
+                    requires_camera_getters: false,
+                    source_bundle: None,
+                },
+            )
+            .await
     }
 }
 

@@ -2573,6 +2573,11 @@ impl ProductionCoordinator {
             return Err(Error::new(ErrorCode::Conflict,
                 "Product phase was already attempted; inspect original receipts instead of replaying it").uncertain());
         }
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            request.scene_id,
+            motionwright_domain::RendererKind::Blender,
+        )?;
         let output_root = self.client.connection().output_root.clone();
         source_output_must_be_new(&output_root, ORIGINAL_FILE)?;
         product_png_must_be_new(&output_root, PRODUCT_FRAME_600)?;
@@ -2598,7 +2603,7 @@ impl ProductionCoordinator {
             "source_authority_imported_from_payload": false,
         }));
         let mut session = OriginalSession {
-            coordinator: self,
+            coordinator: &scoped,
             request,
             plan: &spec,
             journal,
@@ -3874,6 +3879,11 @@ impl ProductionCoordinator {
             return Err(Error::new(ErrorCode::Conflict,
                 "Product reopen phase was already attempted; inspect receipts instead of replaying it").uncertain());
         }
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            request.scene_id,
+            motionwright_domain::RendererKind::Blender,
+        )?;
         let output_root = self.client.connection().output_root.clone();
         check_product_staged_source(&output_root, witness)?;
         if proposed.is_some() {
@@ -3894,7 +3904,7 @@ impl ProductionCoordinator {
             "phase": request.phase,
         }));
         let mut session = OriginalSession {
-            coordinator: self,
+            coordinator: &scoped,
             request,
             plan: &spec,
             journal,

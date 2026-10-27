@@ -482,6 +482,7 @@ impl ProductionCoordinator {
             rendered,
             &self.client.connection().output_root,
         )?;
+        let scoped = self.with_mlt_motion_scene_boundary_scope(&project, options, &checked);
         let mut recipe: MltNativeVideoRecipe = mlt_native_video_recipe(&checked)?;
         if mode == MltTimelineMode::VideoOnly {
             // Deterministic, separate create-new output; never overwrite
@@ -492,7 +493,7 @@ impl ProductionCoordinator {
                 recipe.owner_output_namespace,
             );
         }
-        let sources = self
+        let sources = scoped
             .prepare_multi_segment_ffv1(
                 project_id,
                 expected,
@@ -510,7 +511,7 @@ impl ProductionCoordinator {
                 "MLT source intermediates do not match the exact semantic recipe",
             ));
         }
-        let create = self
+        let create = scoped
             .execute(
                 project_id,
                 expected,
@@ -521,7 +522,7 @@ impl ProductionCoordinator {
             )
             .await?;
         let mut session = new_session(response_data(&create)?)?;
-        let (after_sequence, sequence_result) = self
+        let (after_sequence, sequence_result) = scoped
             .apply_mlt_edit(
                 project_id,
                 expected,
@@ -533,7 +534,7 @@ impl ProductionCoordinator {
             .await?;
         let sequence = created(&sequence_result, "sequence")?;
         session = after_sequence;
-        let (after_track, track_result) = self
+        let (after_track, track_result) = scoped
             .apply_mlt_edit(
                 project_id,
                 expected,
@@ -567,7 +568,7 @@ impl ProductionCoordinator {
                     "Native verified FFV1 segment differs from canonical clip",
                 ));
             }
-            let (imported, asset_data) = self
+            let (imported, asset_data) = scoped
                 .apply_mlt_edit(
                     project_id,
                     expected,
@@ -608,7 +609,7 @@ impl ProductionCoordinator {
                     },
                 )
                 .await?;
-            let (inserted, clip_data) = self
+            let (inserted, clip_data) = scoped
                 .apply_mlt_edit(
                     project_id,
                     expected,
@@ -672,7 +673,7 @@ impl ProductionCoordinator {
             "sequence": sequence, "profile": recipe.lossless_sequence_profile,
             "output": recipe.lossless_sequence_path,
         });
-        let planned = self
+        let planned = scoped
             .execute(
                 project_id,
                 expected,
@@ -701,7 +702,7 @@ impl ProductionCoordinator {
         }
         let mut started_args = render_args.as_object().unwrap().clone();
         started_args.insert("expected_revision".into(), session.revision.clone().into());
-        let started = self
+        let started = scoped
             .execute(
                 project_id,
                 expected,

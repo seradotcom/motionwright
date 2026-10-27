@@ -1694,6 +1694,11 @@ impl ProductionCoordinator {
             return Err(Error::new(ErrorCode::Conflict,
                 "Lit-still phase was already attempted; inspect the original receipts without replay").uncertain());
         }
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            request.scene_id,
+            motionwright_domain::RendererKind::Blender,
+        )?;
         let output_root = self.client.connection().output_root.clone();
         new_lit_output(&output_root, request.phase.png())?;
         if let Some(name) = request.phase.output_source() {
@@ -1709,7 +1714,7 @@ impl ProductionCoordinator {
                 .map_err(|_| backend("Lit-still Project plan could not be encoded"))?,
         );
         let mut session = LitSession {
-            coordinator: self,
+            coordinator: &scoped,
             request,
             plan: &plan,
             journal,

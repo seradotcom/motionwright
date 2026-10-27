@@ -34,6 +34,7 @@ pub mod manim_static_projection;
 pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
 pub mod multi_renderer;
+mod native_scene_boundary;
 pub mod owner_reconciliation;
 pub mod production;
 #[cfg(test)]

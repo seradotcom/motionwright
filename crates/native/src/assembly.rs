@@ -1,7 +1,7 @@
 //! Source-bound, read-only multi-segment MLT assembly preflight.
 //! This validates native Film partition and already-produced manifest bytes;
 //! no renderer is dispatched, and no finished MP4 is claimed.
-use crate::film::{FilmBuildOptions, build_motion_canvas_segments};
+use crate::film::{FilmBuildOptions, plan_motion_canvas_segments};
 use crate::production::{
     MotionCanvasRenderEvidence, ensure_native_motion_verification,
     read_verified_production_artifact,
@@ -209,7 +209,7 @@ pub fn preflight_multi_segment_mlt(
             "Mixed/missing renderer media cannot be silently mapped into an MLT Motion Canvas master",
         ));
     }
-    let native = build_motion_canvas_segments(project, profile_id, options)?;
+    let native = plan_motion_canvas_segments(project, profile_id, options)?;
     if native.len() < 2 || native.len() > MAX_SEGMENTS || native.len() != evidence.segments.len() {
         return Err(unsupported(
             "Multi-segment MLT requires exactly 2–64 real canonical Motion Canvas segments",
@@ -320,6 +320,7 @@ pub fn preflight_multi_segment_mlt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::film::build_motion_canvas_segments;
     use crate::film::{MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY, SceneFilmIntent};
     use crate::production::MotionCanvasSegmentEvidence;
     use motionwright_domain::{BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle};
@@ -561,6 +562,149 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::Unsupported
+        );
+    }
+
+    #[test]
+    fn mlt_preflight_keeps_boundary_admission_at_dispatch_and_uses_actual_options() {
+        use crate::native_scene_boundary::{ExecutionScope, guard_new_effect};
+        use motionwright_domain::{
+            SceneBoundary, SceneBoundaryArchetype, SceneBoundaryDefinition, SceneBoundaryEndpoint,
+            SceneBoundaryFilmOptions, SceneBoundaryInput, SceneBoundaryNarrativeRole,
+        };
+        let (mut project, options, mut evidence, root) = seeded();
+        let profile = project.deliverables[0].id;
+        let scene_id = project.scenes[0].id;
+        let actual = SceneBoundaryFilmOptions {
+            frame_rate: options.frame_rate,
+            font_family: options.font_family.clone(),
+            mono_font_family: options.mono_font_family.clone(),
+            role: SceneBoundaryNarrativeRole::Mechanism,
+            archetype: SceneBoundaryArchetype::Statement,
+        };
+        let source = project
+            .capture_scene_boundary_source(scene_id, profile, &actual)
+            .unwrap();
+        let endpoint = SceneBoundaryEndpoint {
+            nodes: project.scenes[0].nodes.clone(),
+            camera: Some(project.scenes[0].camera.clone()),
+            assets: Vec::new(),
+        };
+        project
+            .apply_change(&Change::UpsertSceneBoundary {
+                boundary: Box::new(SceneBoundary {
+                    version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+                    id: Uuid::now_v7(),
+                    scene_id,
+                    input: SceneBoundaryInput::SelfContained,
+                    definition: SceneBoundaryDefinition::Explicit {
+                        source,
+                        entry: endpoint.clone(),
+                        exit: endpoint,
+                    },
+                }),
+            })
+            .unwrap();
+        // Complete this synthetic fixture stamp; no historical native result is reused.
+        evidence.revision = project.revision;
+        let original_manifests = evidence
+            .segments
+            .iter()
+            .map(|segment| {
+                fs::read(
+                    root.path()
+                        .join(segment.artifact["manifest"].as_str().unwrap()),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let checked =
+            preflight_multi_segment_mlt(&project, profile, &options, &evidence, root.path())
+                .unwrap();
+        let scene_ids = checked
+            .segments
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scene_ids,
+            project
+                .scenes
+                .iter()
+                .map(|scene| scene.id)
+                .collect::<Vec<_>>()
+        );
+        let admitted = ExecutionScope::mlt_motion(&project, profile, &options, &scene_ids);
+        guard_new_effect(
+            &project,
+            "driver.mlt-video.frames.encode",
+            Some(&admitted),
+            None,
+        )
+        .unwrap();
+
+        let mut changed = options.clone();
+        changed.scene_intents[0].role = NarrativeRole::Evidence;
+        let mismatched = ExecutionScope::mlt_motion(&project, profile, &changed, &scene_ids);
+        let error = guard_new_effect(
+            &project,
+            "driver.mlt-video.frames.encode",
+            Some(&mismatched),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("SceneBoundary"));
+
+        let mut draft = project.production_design.scene_boundaries[0].clone();
+        let retained_source = draft.source().cloned();
+        draft.definition = SceneBoundaryDefinition::DraftIncomplete {
+            source: retained_source,
+            entry: None,
+            exit: None,
+        };
+        project
+            .apply_change(&Change::UpsertSceneBoundary {
+                boundary: Box::new(draft),
+            })
+            .unwrap();
+        evidence.revision = project.revision;
+        let before = project.clone();
+        let strict = build_motion_canvas_segments(&project, profile, &options).unwrap_err();
+        assert_eq!(strict.code, ErrorCode::InvalidArgument);
+        assert!(strict.message.contains("SceneBoundary"));
+        let pending =
+            preflight_multi_segment_mlt(&project, profile, &options, &evidence, root.path())
+                .unwrap();
+        let pending_ids = pending
+            .segments
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect::<Vec<_>>();
+        let pending_scope = ExecutionScope::mlt_motion(&project, profile, &options, &pending_ids);
+        let refused = guard_new_effect(
+            &project,
+            "driver.mlt-video.project.create",
+            Some(&pending_scope),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+        assert!(refused.message.contains("SceneBoundary"));
+        assert_eq!(project, before);
+        assert_eq!(
+            evidence
+                .segments
+                .iter()
+                .map(|segment| {
+                    fs::read(
+                        root.path()
+                            .join(segment.artifact["manifest"].as_str().unwrap()),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>(),
+            original_manifests
         );
     }
 }

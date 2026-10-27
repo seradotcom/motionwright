@@ -1,5 +1,5 @@
 use crate::{
-    film::{FilmBuildOptions, build_motion_canvas_segments},
+    film::{FilmBuildOptions, plan_motion_canvas_segments},
     multi_renderer::{blender_export_path, build_blender_contribution, build_manim_plan},
 };
 use motionwright_domain::{
@@ -1867,6 +1867,177 @@ impl ProductionReceiptCustody {
     }
 }
 
+/// Private grammar for the durable keys emitted by one existing caller.
+/// This is a history selector, not an execution grant or a wire contract.
+#[derive(Clone, Copy)]
+enum SceneRequestFamily {
+    Motion,
+    Manim,
+    Blender,
+    Hyperframes,
+}
+
+impl SceneRequestFamily {
+    fn contains(self, base: &str, candidate: &str) -> bool {
+        fn index(value: &str) -> bool {
+            value
+                .parse::<usize>()
+                .is_ok_and(|parsed| parsed.to_string() == value)
+        }
+        fn poll(value: &str) -> bool {
+            value
+                .parse::<u32>()
+                .is_ok_and(|parsed| parsed.to_string() == value)
+        }
+        let Some(suffix) = candidate
+            .strip_prefix(base)
+            .and_then(|rest| rest.strip_prefix(':'))
+        else {
+            return false;
+        };
+        match self {
+            Self::Manim => {
+                matches!(suffix, "start" | "result")
+                    || suffix.strip_prefix("status:").is_some_and(poll)
+            }
+            Self::Motion => {
+                let Some((segment, phase)) = suffix
+                    .strip_prefix("motion:")
+                    .and_then(|rest| rest.split_once(':'))
+                else {
+                    return false;
+                };
+                if !index(segment) {
+                    return false;
+                }
+                if matches!(
+                    phase,
+                    "font-project-inspect"
+                        | "font-project-create"
+                        | "plan"
+                        | "apply"
+                        | "render-start"
+                        | "render-result"
+                        | "verify"
+                ) {
+                    return true;
+                }
+                let Some((phase, counter)) = phase.split_once(':') else {
+                    return false;
+                };
+                (matches!(phase, "font-list" | "font-import" | "font-readback") && index(counter))
+                    || (phase == "render-status" && poll(counter))
+            }
+            Self::Blender => {
+                if matches!(suffix, "collection" | "export") {
+                    return true;
+                }
+                let Some((object, phase)) = suffix
+                    .strip_prefix("object:")
+                    .and_then(|rest| rest.split_once(':'))
+                else {
+                    return false;
+                };
+                index(object)
+                    && matches!(
+                        phase,
+                        "create" | "transform" | "link" | "material" | "material-assign"
+                    )
+            }
+            Self::Hyperframes => {
+                matches!(
+                    suffix,
+                    "plan" | "inspect-before" | "apply" | "render-start" | "render-result"
+                ) || suffix.strip_prefix("render-status:").is_some_and(poll)
+            }
+        }
+    }
+}
+
+fn scene_receipt_snapshot_error(error: motionwright_storage::StorageError) -> Error {
+    match error {
+        motionwright_storage::StorageError::ReceiptStreamChanged => Error::new(
+            ErrorCode::Conflict,
+            "Production receipt history changed during admission; inspect before continuing",
+        ),
+        other => storage_error(other),
+    }
+}
+
+fn require_no_unresolved_scene_history(
+    request_id: &str,
+    family: SceneRequestFamily,
+    watermark: &motionwright_service::ProductionReceiptWatermark,
+    mut read_page: impl FnMut(
+        Option<Uuid>,
+    ) -> std::result::Result<
+        Vec<motionwright_service::ProductionReceipt>,
+        motionwright_storage::StorageError,
+    >,
+    final_watermark: impl FnOnce() -> std::result::Result<
+        motionwright_service::ProductionReceiptWatermark,
+        motionwright_storage::StorageError,
+    >,
+) -> NativeResult<()> {
+    // The reader supplies pages authenticated against the captured watermark.
+    // A positive unresolved head is sufficient to refuse without admitting an
+    // effect. Complete history and a stable final watermark are required for Ok.
+    let mut before = None;
+    let mut inspected = 0_u64;
+    let mut heads = std::collections::BTreeSet::new();
+    loop {
+        let batch = read_page(before).map_err(scene_receipt_snapshot_error)?;
+        if batch.is_empty() {
+            if inspected != watermark.count {
+                return Err(backend("Production receipt history snapshot is incomplete"));
+            }
+            break;
+        }
+        inspected = inspected
+            .checked_add(
+                u64::try_from(batch.len())
+                    .map_err(|_| backend("Production receipt page count exceeds its bound"))?,
+            )
+            .ok_or_else(|| backend("Production receipt history count overflowed"))?;
+        if inspected > watermark.count {
+            return Err(backend(
+                "Production receipt history exceeds its captured watermark",
+            ));
+        }
+        let next = batch.last().map(|receipt| receipt.id);
+        if next == before {
+            return Err(backend("Production receipt history cursor did not advance"));
+        }
+        for prior in batch {
+            // Head selection precedes classification: a newer known terminal
+            // suppresses its older UNKNOWN. Never filter by today's plan/stamp.
+            if family.contains(request_id, &prior.request_id)
+                && heads.insert(prior.request_id.clone())
+                && (prior.stage == "outcome_unknown"
+                    || (prior.stage == "dispatching"
+                        && prior.payload.get("mutation").and_then(Value::as_bool) == Some(true)))
+            {
+                // Do not let a later unrelated append or read failure replace
+                // this positively observed original uncertainty with known error.
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Production scene request has an unresolved original receipt; inspect before retrying",
+                ).uncertain());
+            }
+        }
+        before = next;
+        if inspected == watermark.count {
+            break;
+        }
+    }
+    if final_watermark().map_err(scene_receipt_snapshot_error)? != *watermark {
+        return Err(scene_receipt_snapshot_error(
+            motionwright_storage::StorageError::ReceiptStreamChanged,
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -1874,6 +2045,7 @@ pub struct ProductionCoordinator {
     receipt_custody: receipt_custody::ReceiptCustody,
     brand_font_media_root: Option<PathBuf>,
     retained_brand_font_root: Option<std::sync::Arc<brand_font_staging::RetainedFontRoot>>,
+    scene_boundary_scope: Option<std::sync::Arc<crate::native_scene_boundary::ExecutionScope>>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -1896,9 +2068,125 @@ impl ProductionCoordinator {
             receipt_custody: custody.inner.clone(),
             brand_font_media_root: None,
             retained_brand_font_root: None,
+            scene_boundary_scope: None,
             #[cfg(test)]
             before_dispatch_admission: None,
         })
+    }
+
+    fn require_no_unresolved_scene_requests(
+        &self,
+        project_id: Uuid,
+        request_id: &str,
+        family: SceneRequestFamily,
+    ) -> NativeResult<()> {
+        let watermark = self
+            .service
+            .production_receipt_watermark(project_id)
+            .map_err(scene_receipt_snapshot_error)?;
+        require_no_unresolved_scene_history(
+            request_id,
+            family,
+            &watermark,
+            |before| {
+                self.service
+                    .production_receipts_snapshot_page(project_id, &watermark, before, 256)
+            },
+            || self.service.production_receipt_watermark(project_id),
+        )
+    }
+
+    fn with_motion_scene_boundary_scope(
+        &self,
+        project: &motionwright_domain::Project,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+        scene_ids: &[Uuid],
+    ) -> NativeResult<Self> {
+        let scope = crate::native_scene_boundary::ExecutionScope::motion(
+            project,
+            deliverable_id,
+            options,
+            scene_ids,
+        )?;
+        let mut scoped = self.clone();
+        scoped.scene_boundary_scope = Some(std::sync::Arc::new(scope));
+        Ok(scoped)
+    }
+
+    fn with_scene_without_film_options(
+        &self,
+        project: &motionwright_domain::Project,
+        scene_id: Uuid,
+        renderer: motionwright_domain::RendererKind,
+    ) -> NativeResult<Self> {
+        let scope = crate::native_scene_boundary::ExecutionScope::scene_without_film_options(
+            project, scene_id, renderer,
+        )?;
+        let mut scoped = self.clone();
+        scoped.scene_boundary_scope = Some(std::sync::Arc::new(scope));
+        Ok(scoped)
+    }
+
+    fn with_mlt_motion_scene_boundary_scope(
+        &self,
+        project: &motionwright_domain::Project,
+        options: &FilmBuildOptions,
+        checked: &crate::assembly::MultiSegmentAssemblyPreflight,
+    ) -> Self {
+        // Only this invocation's fresh canonical preflight supplies selection.
+        let scene_ids = checked
+            .segments
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect::<Vec<_>>();
+        let scope = crate::native_scene_boundary::ExecutionScope::mlt_motion(
+            project,
+            checked.deliverable_id,
+            options,
+            &scene_ids,
+        );
+        let mut scoped = self.clone();
+        scoped.scene_boundary_scope = Some(std::sync::Arc::new(scope));
+        scoped
+    }
+
+    fn recheck_scene_boundary_before_dispatch(
+        &self,
+        prepared: &motionwright_domain::Project,
+        command: &str,
+        args: &Value,
+    ) -> NativeResult<()> {
+        let scope = self.scene_boundary_scope.as_deref();
+        let mlt_render_profile = args.get("profile").and_then(Value::as_str);
+        if !crate::native_scene_boundary::is_new_scene_effect(command, scope, mlt_render_profile) {
+            return Ok(());
+        }
+        let current = self.service.project(prepared.id).map_err(storage_error)?;
+        if current != *prepared {
+            return Err(crate::native_scene_boundary::stale());
+        }
+        crate::native_scene_boundary::guard_new_effect(&current, command, scope, mlt_render_profile)
+    }
+
+    fn require_motion_staging_admission(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+    ) -> NativeResult<()> {
+        let current = self.service.project(project_id).map_err(storage_error)?;
+        if expected.resource != current.resource_key()
+            || expected.generation != current.generation
+            || expected.revision != current.revision
+        {
+            return Err(crate::native_scene_boundary::stale());
+        }
+        crate::native_scene_boundary::guard_new_effect(
+            &current,
+            "driver.motion-canvas.asset.import",
+            self.scene_boundary_scope.as_deref(),
+            None,
+        )
     }
 
     /// Private, non-durable custody of a terminal whose local append was not
@@ -1933,6 +2221,7 @@ impl ProductionCoordinator {
         segment: &crate::film::MotionCanvasSegment,
         capture_end: u64,
     ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
+        self.require_motion_staging_admission(project_id, expected)?;
         // Register the accepted scope before its first await. A dropped future
         // leaves Running in the AppState-owned custody; it never retires files.
         let custody = self.begin_retained_font_capture(project_id, expected, prefix)?;
@@ -2275,11 +2564,17 @@ impl ProductionCoordinator {
             ));
         }
 
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Motion,
+        )?;
+
         let captions_requested = project
             .deliverables
             .iter()
             .any(|profile| profile.id == deliverable_id && profile.burn_in_captions);
-        let segments = build_motion_canvas_segments(&project, deliverable_id, options)?;
+        let segments = plan_motion_canvas_segments(&project, deliverable_id, options)?;
         if segments.is_empty() {
             return Err(Error::new(
                 ErrorCode::Unsupported,
@@ -2287,10 +2582,16 @@ impl ProductionCoordinator {
             ));
         }
 
+        let scene_ids = segments
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect::<Vec<_>>();
+        let scoped =
+            self.with_motion_scene_boundary_scope(&project, deliverable_id, options, &scene_ids)?;
         let mut evidence = Vec::with_capacity(segments.len());
         for (index, segment) in segments.into_iter().enumerate() {
             let prefix = format!("{request_id}:motion:{index}");
-            let capture = self
+            let capture = scoped
                 .capture_motion_canvas_segment(
                     project_id,
                     expected,
@@ -2723,8 +3024,18 @@ impl ProductionCoordinator {
                 "Motionwright project changed since the Blender contribution was prepared",
             ));
         }
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Blender,
+        )?;
         let plan = build_blender_contribution(&project, scene_id)?;
-        let collection = self
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            scene_id,
+            motionwright_domain::RendererKind::Blender,
+        )?;
+        let collection = scoped
             .execute(
                 project_id,
                 expected,
@@ -2740,7 +3051,7 @@ impl ProductionCoordinator {
             // arbitrary topology replacement. Motionwright's bounded Blender
             // projection only needs rectangles and circles, so it intentionally
             // composes allowlisted primitives plus reversible transforms instead.
-            let object = self
+            let object = scoped
                 .execute(
                     project_id,
                     expected,
@@ -2754,7 +3065,7 @@ impl ProductionCoordinator {
                     true,
                 )
                 .await?;
-            let transform = self
+            let transform = scoped
                 .execute(
                     project_id,
                     expected,
@@ -2769,7 +3080,7 @@ impl ProductionCoordinator {
                     true,
                 )
                 .await?;
-            let link = self
+            let link = scoped
                 .execute(
                     project_id,
                     expected,
@@ -2782,7 +3093,7 @@ impl ProductionCoordinator {
                     true,
                 )
                 .await?;
-            let material = self
+            let material = scoped
                 .execute(
                     project_id,
                     expected,
@@ -2797,7 +3108,7 @@ impl ProductionCoordinator {
                     true,
                 )
                 .await?;
-            let assignment = self
+            let assignment = scoped
                 .execute(
                     project_id,
                     expected,
@@ -2822,7 +3133,7 @@ impl ProductionCoordinator {
         }
 
         let export_path = blender_export_path(&plan);
-        let export = self
+        let export = scoped
             .execute(
                 project_id,
                 expected,
@@ -2967,6 +3278,16 @@ impl ProductionCoordinator {
             ));
         }
 
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            scene_id,
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
         manim_graph::require_non_graph_selection(&project, scene_id, None)?;
         let projected = build_manim_plan(&project, scene_id)?;
         let plan_value = serde_json::to_value(&projected)
@@ -2980,21 +3301,22 @@ impl ProductionCoordinator {
             .map_err(|_| invalid("Manim scene plan could not be digested"))?;
         let plan_sha256 = hex::encode(Sha256::digest(plan_bytes));
 
-        self.realize_prepared_manim_scene(
-            project_id,
-            expected,
-            request_id,
-            scene_id,
-            PreparedManimRender {
-                start_command: "driver.manim-community.render.start",
-                plan_value,
-                plan_sha256,
-                profile,
-                requires_camera_getters: false,
-                source_bundle: None,
-            },
-        )
-        .await
+        scoped
+            .realize_prepared_manim_scene(
+                project_id,
+                expected,
+                request_id,
+                scene_id,
+                PreparedManimRender {
+                    start_command: "driver.manim-community.render.start",
+                    plan_value,
+                    plan_sha256,
+                    profile,
+                    requires_camera_getters: false,
+                    source_bundle: None,
+                },
+            )
+            .await
     }
 
     /// Explicit static V2 production from the current canonical snapshot.
@@ -3016,6 +3338,17 @@ impl ProductionCoordinator {
             scene_id,
             deliverable_id,
         )?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            scene_id,
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
         let source = crate::manim_static_projection::prepare_saved_manim_static_source(
             &self.service,
             project_id,
@@ -3023,22 +3356,23 @@ impl ProductionCoordinator {
             scene_id,
             deliverable_id,
         )?;
-        self.realize_prepared_manim_scene(
-            project_id,
-            expected,
-            request_id,
-            scene_id,
-            PreparedManimRender {
-                start_command: "driver.manim-community.static.render.start",
-                plan_value: serde_json::to_value(&source.plan)
-                    .map_err(|_| invalid("Static Manim source cannot be encoded"))?,
-                plan_sha256: source.closure.plan_sha256,
-                profile: source.plan.render_profile,
-                requires_camera_getters: false,
-                source_bundle: None,
-            },
-        )
-        .await
+        scoped
+            .realize_prepared_manim_scene(
+                project_id,
+                expected,
+                request_id,
+                scene_id,
+                PreparedManimRender {
+                    start_command: "driver.manim-community.static.render.start",
+                    plan_value: serde_json::to_value(&source.plan)
+                        .map_err(|_| invalid("Static Manim source cannot be encoded"))?,
+                    plan_sha256: source.closure.plan_sha256,
+                    profile: source.plan.render_profile,
+                    requires_camera_getters: false,
+                    source_bundle: None,
+                },
+            )
+            .await
     }
 
     /// Plain native text/font/style source with the original canonical identity,
@@ -3059,6 +3393,17 @@ impl ProductionCoordinator {
             scene_id,
             deliverable_id,
         )?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            scene_id,
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
         let source = crate::manim_editable_projection::prepare_saved_manim_editable_source(
             &self.service,
             project_id,
@@ -3066,26 +3411,32 @@ impl ProductionCoordinator {
             scene_id,
             deliverable_id,
         )?;
+        scoped.recheck_scene_boundary_before_dispatch(
+            &project,
+            "driver.manim-community.editable.render.start",
+            &Value::Null,
+        )?;
         crate::manim_editable_projection::stage_font_inputs(
             &self.client.connection().output_root,
             &source,
         )?;
-        self.realize_prepared_manim_scene(
-            project_id,
-            expected,
-            request_id,
-            scene_id,
-            PreparedManimRender {
-                start_command: "driver.manim-community.editable.render.start",
-                plan_value: serde_json::to_value(&source.plan)
-                    .map_err(|_| invalid("Editable source cannot be encoded"))?,
-                plan_sha256: source.closure.plan_sha256,
-                profile: source.plan.render_profile,
-                requires_camera_getters: false,
-                source_bundle: None,
-            },
-        )
-        .await
+        scoped
+            .realize_prepared_manim_scene(
+                project_id,
+                expected,
+                request_id,
+                scene_id,
+                PreparedManimRender {
+                    start_command: "driver.manim-community.editable.render.start",
+                    plan_value: serde_json::to_value(&source.plan)
+                        .map_err(|_| invalid("Editable source cannot be encoded"))?,
+                    plan_sha256: source.closure.plan_sha256,
+                    profile: source.plan.render_profile,
+                    requires_camera_getters: false,
+                    source_bundle: None,
+                },
+            )
+            .await
     }
 
     /// Open an exported closed source through the same admitted Driver Host.
@@ -3108,6 +3459,17 @@ impl ProductionCoordinator {
             scene_id,
             deliverable_id,
         )?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            scene_id,
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
         let source = crate::manim_editable_projection::prepare_saved_manim_editable_bundle_input(
             &self.service,
             project_id,
@@ -3117,22 +3479,23 @@ impl ProductionCoordinator {
             &self.client.connection().output_root,
             &input,
         )?;
-        self.realize_prepared_manim_scene(
-            project_id,
-            expected,
-            request_id,
-            scene_id,
-            PreparedManimRender {
-                start_command: "driver.manim-community.editable.render.start",
-                plan_value: serde_json::to_value(&source.plan)
-                    .map_err(|_| invalid("Original editable plan cannot be encoded"))?,
-                plan_sha256: source.closure.plan_sha256,
-                profile: source.plan.render_profile,
-                requires_camera_getters: false,
-                source_bundle: Some(PreparedManimSourceInput::Editable(input)),
-            },
-        )
-        .await
+        scoped
+            .realize_prepared_manim_scene(
+                project_id,
+                expected,
+                request_id,
+                scene_id,
+                PreparedManimRender {
+                    start_command: "driver.manim-community.editable.render.start",
+                    plan_value: serde_json::to_value(&source.plan)
+                        .map_err(|_| invalid("Original editable plan cannot be encoded"))?,
+                    plan_sha256: source.closure.plan_sha256,
+                    profile: source.plan.render_profile,
+                    requires_camera_getters: false,
+                    source_bundle: Some(PreparedManimSourceInput::Editable(input)),
+                },
+            )
+            .await
     }
 
     /// Render the admitted camera profile from the current persisted project.
@@ -3154,6 +3517,17 @@ impl ProductionCoordinator {
             scene_id,
             deliverable_id,
         )?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            request_id,
+            SceneRequestFamily::Manim,
+        )?;
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            scene_id,
+            motionwright_domain::RendererKind::ManimCommunity,
+        )?;
         let compiled =
             crate::manim_camera_projection::prepare_saved_manim_camera_program_source_only(
                 &self.service,
@@ -3164,21 +3538,22 @@ impl ProductionCoordinator {
             )?;
         let plan_value = serde_json::to_value(&compiled.prepared.source)
             .map_err(|_| invalid("Manim camera scene plan could not be encoded"))?;
-        self.realize_prepared_manim_scene(
-            project_id,
-            expected,
-            request_id,
-            scene_id,
-            PreparedManimRender {
-                start_command: "driver.manim-community.camera.render.start",
-                plan_value,
-                plan_sha256: compiled.trusted_compiler.plan_sha256,
-                profile: compiled.prepared.source.render_profile,
-                requires_camera_getters: true,
-                source_bundle: None,
-            },
-        )
-        .await
+        scoped
+            .realize_prepared_manim_scene(
+                project_id,
+                expected,
+                request_id,
+                scene_id,
+                PreparedManimRender {
+                    start_command: "driver.manim-community.camera.render.start",
+                    plan_value,
+                    plan_sha256: compiled.trusted_compiler.plan_sha256,
+                    profile: compiled.prepared.source.render_profile,
+                    requires_camera_getters: true,
+                    source_bundle: None,
+                },
+            )
+            .await
     }
 
     async fn realize_prepared_manim_scene(
@@ -3709,6 +4084,13 @@ impl ProductionCoordinator {
             });
         }
 
+        // Completed/UNKNOWN receipts above retain their original precedence.
+        crate::native_scene_boundary::guard_new_effect(
+            &project,
+            command,
+            self.scene_boundary_scope.as_deref(),
+            args.get("profile").and_then(Value::as_str),
+        )?;
         manim_graph::validate_dispatch_source(&project, command, &args)?;
 
         #[cfg(test)]
@@ -3717,6 +4099,7 @@ impl ProductionCoordinator {
         }
 
         manim_graph::recheck_before_dispatch(&self.service, &project, command, &args)?;
+        self.recheck_scene_boundary_before_dispatch(&project, command, &args)?;
 
         // Capacity is claimed before the durable dispatch intent and native
         // effect. Every pre-terminal abort releases this reservation by Drop.
@@ -4392,6 +4775,8 @@ mod tests {
             }
         });
 
+        let held_custody = saturate_native_boundary_test_custody(&coordinator);
+        let custody_before = coordinator.receipt_custody.snapshot();
         let error = coordinator
             .execute(
                 project.id,
@@ -4438,6 +4823,8 @@ mod tests {
 
         // A fresh explicit request on the committed revision must still reach
         // the same concrete client. This excludes a permanently blocked fixture.
+        assert_eq!(coordinator.receipt_custody.snapshot(), custody_before);
+        drop(held_custody);
         coordinator.before_dispatch_admission = None;
         let current_stamp = motionwright_domain::RevisionStamp::from(&edited);
         let accepted = coordinator
@@ -5096,7 +5483,8 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         // The positive uses the same caller and transport fixture, with an
         // exactly representable duration. It is coordinator G1, not a render.
         options.frame_rate = rate;
-        let segments = build_motion_canvas_segments(&project, deliverable_id, &options).unwrap();
+        let segments =
+            crate::film::build_motion_canvas_segments(&project, deliverable_id, &options).unwrap();
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].frame_count, 60);
         assert_eq!(
@@ -5271,7 +5659,9 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     }
     #[cfg(unix)]
     async fn assert_reopened_prior_mutation_outcome(stage: &str, expected_known: bool) {
-        let (service, project, temp) = fixture_service();
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let project = persist_native_boundary_test_draft(&service, project);
         let command = "driver.motion-canvas.render.start";
         let request_id = "reopened-original-dispatch";
         let args = json!({
@@ -5354,6 +5744,13 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         assert!(
             !sentinel.exists(),
             "recovery dispatched a second native request"
+        );
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
         );
         assert_eq!(
             reopened.production_receipts(project.id, 10).unwrap(),
@@ -7470,6 +7867,7 @@ os._exit(0)
     async fn native_window_unknown_original_stops_before_any_client_dispatch() {
         let (service, initial, temp) = fixture_service();
         let project = motion_canvas_fixture(&service, initial);
+        let project = persist_native_boundary_test_draft(&service, project);
         let connection = fake_render_connection(&temp, project.resource_key());
         let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
         let expected = RevisionStamp::from(&project);
@@ -7697,5 +8095,1696 @@ os._exit(0)
             String::from_utf8_lossy(&stdout)
                 .contains("verified-artifact-fifo-rejected-before-read")
         );
+    }
+
+    #[cfg(unix)]
+    fn persist_native_boundary_test_draft(
+        service: &StudioService,
+        project: motionwright_domain::Project,
+    ) -> motionwright_domain::Project {
+        use motionwright_domain::{SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput};
+        service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "native-boundary-fixture-draft",
+                &Change::UpsertSceneBoundary {
+                    boundary: Box::new(SceneBoundary {
+                        version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+                        id: Uuid::now_v7(),
+                        scene_id: project.scenes[0].id,
+                        input: SceneBoundaryInput::SelfContained,
+                        definition: SceneBoundaryDefinition::DraftIncomplete {
+                            source: None,
+                            entry: None,
+                            exit: None,
+                        },
+                    }),
+                },
+            )
+            .unwrap()
+            .project
+    }
+
+    #[cfg(unix)]
+    fn saturate_native_boundary_test_custody(
+        coordinator: &ProductionCoordinator,
+    ) -> Vec<receipt_custody::ReceiptReservation> {
+        let limit = coordinator.receipt_custody.snapshot()["slot_limit"]
+            .as_u64()
+            .unwrap();
+        let mut held = Vec::new();
+        for index in 0..=limit {
+            match coordinator.receipt_custody.reserve(
+                true,
+                &format!("native-boundary-pressure-{index}"),
+                "driver.motion-canvas.render.start",
+                None,
+            ) {
+                Ok(reservation) => held.push(reservation),
+                Err(error) => {
+                    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+                    assert!(!held.is_empty());
+                    return held;
+                }
+            }
+        }
+        panic!("fixture failed to exhaust receipt custody");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_boundary_completed_receipt_precedes_new_effect_guard() {
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let project = persist_native_boundary_test_draft(&service, project);
+        let command = "driver.motion-canvas.render.start";
+        let request_id = "native-boundary-retained-completed";
+        let args = json!({
+            "expected_fingerprint": "a".repeat(64),
+            "profile": {
+                "first_frame": 0, "end_frame_exclusive": 60,
+                "scale": "full", "transparent": false, "timeout_ms": 300_000
+            }
+        });
+        // Synthetic persisted terminal fixture: no native render seeds this result.
+        let original_result = json!({
+            "data": {"job_ref": "retained-fixture-job"},
+            "synthetic_receipt_fixture": true
+        });
+        let original_claim = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: request_id.into(),
+            request_sha256: request_digest(command, &args).unwrap(),
+            command: command.into(),
+            stage: "dispatching".into(),
+            payload: json!({"mutation": true}),
+        };
+        service
+            .append_production_receipt(original_claim.clone())
+            .unwrap();
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "completed".into(),
+                payload: json!({"mutation": true, "result": original_result}),
+                ..original_claim
+            })
+            .unwrap();
+        let before = service.production_receipts(project.id, 20).unwrap();
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let held = saturate_native_boundary_test_custody(&coordinator);
+        let custody = coordinator.receipt_custody.snapshot();
+
+        let replayed = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replayed["replayed"], true);
+        assert_eq!(replayed["result"], original_result);
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "native-boundary-new-effect",
+                command,
+                args,
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.outcome_known);
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(service.production_receipts(project.id, 20).unwrap(), before);
+        assert_eq!(coordinator.receipt_custody.snapshot(), custody);
+        assert_eq!(service.project(project.id).unwrap(), project);
+        drop(held);
+        drop(coordinator);
+        drop(service);
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        assert_eq!(
+            reopened.production_receipts(project.id, 20).unwrap(),
+            before
+        );
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_boundary_motion_history_precedes_admission_and_font_staging() {
+        let cases = [
+            (false, "font-import:1", "dispatching", true, true),
+            (false, "plan", "outcome_unknown", false, true),
+            (true, "font-project-create", "dispatching", true, true),
+            (true, "font-import:0", "outcome_unknown", true, true),
+            (false, "plan", "dispatching", false, false),
+            (true, "plan", "dispatching", false, false),
+        ];
+        for (index, (window, suffix, stage, mutation, unresolved)) in cases.into_iter().enumerate()
+        {
+            let (service, initial, temp) = fixture_service();
+            let project = motion_canvas_fixture(&service, initial);
+            let project = persist_native_boundary_test_draft(&service, project);
+            let parent = format!("native-boundary-history-{index}");
+            let command = match suffix {
+                "font-project-create" => "driver.motion-canvas.project.create",
+                "font-import:0" | "font-import:1" => "driver.motion-canvas.asset.import",
+                "plan" => "driver.motion-canvas.composition.plan",
+                _ => unreachable!(),
+            };
+            service
+                .append_production_receipt(ProductionReceiptInput {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: format!("{parent}:motion:0:{suffix}"),
+                    request_sha256: "ab".repeat(32),
+                    command: command.into(),
+                    stage: stage.into(),
+                    payload: json!({"mutation": mutation, "synthetic_receipt_fixture": true}),
+                })
+                .unwrap();
+            let connection = fake_render_connection(&temp, project.resource_key());
+            let output_root = connection.output_root.clone();
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let before = service.production_receipts(project.id, 20).unwrap();
+            let custody = coordinator.receipt_custody.snapshot();
+            let output_before = fs::read_dir(&output_root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<BTreeSet<_>>();
+            let options = FilmBuildOptions {
+                frame_rate: Rate::new(30, 1).unwrap(),
+                font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+                mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+                scene_intents: vec![crate::film::SceneFilmIntent {
+                    scene_id: project.scenes[0].id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                }],
+            };
+            let error = if window {
+                coordinator
+                    .render_motion_canvas_window(
+                        project.id,
+                        &project.stamp(),
+                        &parent,
+                        &MotionCanvasWindowRequest {
+                            deliverable_id: project.deliverables[0].id,
+                            source_scene_id: project.scenes[0].id,
+                            source_window: motionwright_domain::SourceFrameWindow {
+                                start: 10,
+                                end: 20,
+                            },
+                            options,
+                        },
+                    )
+                    .await
+                    .unwrap_err()
+            } else {
+                coordinator
+                    .render_motion_canvas_segments(
+                        project.id,
+                        &project.stamp(),
+                        &parent,
+                        project.deliverables[0].id,
+                        &options,
+                    )
+                    .await
+                    .unwrap_err()
+            };
+            assert_eq!(
+                error.code,
+                if unresolved {
+                    ErrorCode::Conflict
+                } else {
+                    ErrorCode::InvalidArgument
+                },
+                "case {index}"
+            );
+            assert_eq!(error.outcome_known, !unresolved, "case {index}");
+            assert_eq!(
+                coordinator
+                    .client
+                    .execute_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert_eq!(service.production_receipts(project.id, 20).unwrap(), before);
+            assert_eq!(coordinator.receipt_custody.snapshot(), custody);
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert_eq!(
+                fs::read_dir(&output_root)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<BTreeSet<_>>(),
+                output_before
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mlt_audio_profile_is_not_a_visual_grant_and_unknown_precedes_scope() {
+        use std::sync::{Arc, atomic::Ordering};
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let project = persist_native_boundary_test_draft(&service, project);
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: vec![crate::film::SceneFilmIntent {
+                scene_id: project.scenes[0].id,
+                role: NarrativeRole::Mechanism,
+                archetype: Archetype::Statement,
+            }],
+        };
+        // Private synthetic dispatch context; no native render/preflight is claimed.
+        let mut scoped = coordinator.clone();
+        scoped.scene_boundary_scope = Some(Arc::new(
+            crate::native_scene_boundary::ExecutionScope::mlt_motion(
+                &project,
+                project.deliverables[0].id,
+                &options,
+                &[project.scenes[0].id],
+            ),
+        ));
+        let command = "driver.mlt-video.frames.encode";
+        let original_id = "mlt-boundary-original-unknown";
+        let args = json!({
+            "root": "output", "manifest_path": "render-fixture/artifact-manifest.json",
+            "expected_manifest_sha256": "ab".repeat(32),
+            "output_path": "fixture-only.mkv", "max_bytes": 1024
+        });
+        let claim = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: original_id.into(),
+            request_sha256: request_digest(command, &args).unwrap(),
+            command: command.into(),
+            stage: "dispatching".into(),
+            payload: json!({"mutation": true, "synthetic_receipt_fixture": true}),
+        };
+        service.append_production_receipt(claim.clone()).unwrap();
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "outcome_unknown".into(),
+                payload: json!({
+                    "mutation": true,
+                    "error": Error::new(ErrorCode::Timeout, "synthetic original").uncertain()
+                }),
+                ..claim
+            })
+            .unwrap();
+        let before = service.production_receipts(project.id, 20).unwrap();
+        let held = saturate_native_boundary_test_custody(&coordinator);
+        let custody = coordinator.receipt_custody.snapshot();
+        // Admission-only control reaches capacity, never driver argument validation or transport.
+        let audio = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "mlt-boundary-audio-only",
+                "driver.mlt-video.render.start",
+                json!({
+                    "project": "project:fixture", "expected_revision": "fixture-revision",
+                    "sequence": "sequence:fixture", "profile": "audio-wav",
+                    "output": "fixture-only.wav"
+                }),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(audio.code, ErrorCode::ResourceExhausted);
+        assert!(audio.outcome_known);
+        let mut forged_audio = args.clone();
+        forged_audio["profile"] = json!("audio-wav");
+        let visual = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "mlt-boundary-false-audio",
+                command,
+                forged_audio,
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(visual.code, ErrorCode::Unsupported);
+        assert!(visual.outcome_known);
+        let original = scoped
+            .execute(
+                project.id,
+                &project.stamp(),
+                original_id,
+                command,
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(original.code, ErrorCode::Conflict);
+        assert!(!original.outcome_known);
+        let fresh = scoped
+            .execute(
+                project.id,
+                &project.stamp(),
+                "mlt-boundary-fresh",
+                command,
+                args,
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(fresh.code, ErrorCode::InvalidArgument);
+        assert!(fresh.outcome_known);
+        assert!(fresh.message.contains("SceneBoundary"));
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(service.production_receipts(project.id, 20).unwrap(), before);
+        assert_eq!(coordinator.receipt_custody.snapshot(), custody);
+        assert_eq!(service.project(project.id).unwrap(), project);
+        drop(held);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_boundary_typed_entrypoints_preserve_prior_unknown_before_draft_guard() {
+        use motionwright_domain::RendererKind;
+        use std::{collections::BTreeMap, ffi::OsString, path::Path, sync::atomic::Ordering};
+        fn output_files(root: &Path) -> BTreeMap<OsString, Vec<u8>> {
+            fs::read_dir(root)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    assert!(fs::symlink_metadata(entry.path()).unwrap().is_file());
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect()
+        }
+        for (case_name, blender, export_unknown) in [
+            ("manim-static-start", false, false),
+            ("blender-object-create", true, false),
+            ("blender-export", true, true),
+        ] {
+            let (service, initial, temp) = fixture_service();
+            let mut project = motion_canvas_fixture(&service, initial);
+            let scene_id = project.scenes[0].id;
+            let renderer = if blender {
+                RendererKind::Blender
+            } else {
+                RendererKind::ManimCommunity
+            };
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "boundary-typed-fixture-renderer",
+                    &Change::SetSceneRenderer { scene_id, renderer },
+                )
+                .unwrap()
+                .project;
+            let original_node = project.scenes[0].nodes[0].clone();
+            let mut rectangle = original_node.clone();
+            rectangle.id = Uuid::now_v7();
+            rectangle.name = "Native boundary rectangle".into();
+            rectangle.kind = "rectangle".into();
+            rectangle.text = None;
+            rectangle.parent_id = None;
+            rectangle.rotation_deg = 0.0;
+            rectangle.opacity = 1.0;
+            rectangle.relations.clear();
+            rectangle.keyframes.clear();
+            rectangle.property_locks.clear();
+            rectangle.style.stroke = None;
+            rectangle.style.stroke_width = 0.0;
+            rectangle.style.font_family = None;
+            rectangle.style.font_size = None;
+            rectangle.style.font_weight = None;
+            rectangle.style.line_height = None;
+            rectangle.style.blend_mode = BlendMode::Normal;
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "boundary-typed-fixture-remove-text",
+                    &Change::RemoveCanvasNode {
+                        scene_id,
+                        node_id: original_node.id,
+                    },
+                )
+                .unwrap()
+                .project;
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "boundary-typed-fixture-add-rectangle",
+                    &Change::AddCanvasNode {
+                        scene_id,
+                        node: rectangle,
+                    },
+                )
+                .unwrap()
+                .project;
+            let flat_plan = if blender {
+                let plan = build_blender_contribution(&project, scene_id).unwrap();
+                assert_eq!(plan.objects.len(), 1);
+                Some(plan)
+            } else {
+                None
+            };
+            let project = persist_native_boundary_test_draft(&service, project);
+            let expected = project.stamp();
+            let request_id = format!("boundary-typed-{case_name}");
+            let mut calls: Vec<(&str, &str, Value, &str)> = Vec::new();
+            if let Some(plan) = &flat_plan {
+                let object = &plan.objects[0];
+                calls.push((
+                    "collection",
+                    "driver.blender.collection.create",
+                    json!({"name": &plan.collection_name}),
+                    "completed",
+                ));
+                calls.push(("object:0:create", "driver.blender.object.create",
+                    json!({"name": &object.name, "primitive": object.primitive.as_driver_name(), "location": object.location}),
+                    if export_unknown { "completed" } else { "outcome_unknown" }));
+                if export_unknown {
+                    calls.extend([
+                        ("object:0:transform", "driver.blender.object.transform",
+                            json!({"name": &object.name, "location": object.location, "rotation": object.rotation, "scale": object.scale}), "completed"),
+                        ("object:0:link", "driver.blender.collection.link",
+                            json!({"object": &object.name, "collection": &plan.collection_name}), "completed"),
+                        ("object:0:material", "driver.blender.material.create",
+                            json!({"name": &object.material_name, "color": object.color_rgba, "roughness": 0.45, "metallic": 0.0}), "completed"),
+                        ("object:0:material-assign", "driver.blender.material.assign",
+                            json!({"object": &object.name, "material": &object.material_name}), "completed"),
+                        ("export", "driver.blender.export.glb",
+                            json!({"collection": &plan.collection_name, "path": blender_export_path(plan), "animations": false}), "outcome_unknown"),
+                    ]);
+                }
+            } else {
+                // Opaque original fixture: no Manim bundle or native render is claimed.
+                calls.push((
+                    "start",
+                    "driver.manim-community.static.render.start",
+                    json!({"synthetic_retained_static_start": true}),
+                    "outcome_unknown",
+                ));
+            }
+            for (suffix, command, args, stage) in calls {
+                let claim = ProductionReceiptInput {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: format!("{request_id}:{suffix}"),
+                    request_sha256: request_digest(command, &args).unwrap(),
+                    command: command.into(),
+                    stage: "dispatching".into(),
+                    payload: json!({"mutation": true, "synthetic_receipt_fixture": true}),
+                };
+                service.append_production_receipt(claim.clone()).unwrap();
+                let payload = if stage == "completed" {
+                    json!({"mutation": true, "result": {"data": {}, "synthetic_receipt_fixture": true}})
+                } else {
+                    json!({"mutation": true, "error": Error::new(
+                        ErrorCode::Timeout, "retained unknown typed-entrypoint fixture"
+                    ).uncertain()})
+                };
+                service
+                    .append_production_receipt(ProductionReceiptInput {
+                        stage: stage.into(),
+                        payload,
+                        ..claim
+                    })
+                    .unwrap();
+            }
+            let before = service.production_receipts(project.id, 64).unwrap();
+            let connection = fake_render_connection(&temp, project.resource_key());
+            let output_root = connection.output_root.clone();
+            fs::write(
+                output_root.join("retained-boundary-fixture.bin"),
+                b"original output must remain unchanged",
+            )
+            .unwrap();
+            let files_before = output_files(&output_root);
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let held = saturate_native_boundary_test_custody(&coordinator);
+            let custody_before = coordinator.receipt_custody.snapshot();
+            let outcome = if blender {
+                coordinator
+                    .realize_blender_scene(project.id, &expected, &request_id, scene_id)
+                    .await
+            } else {
+                coordinator
+                    .realize_manim_static_scene(
+                        project.id,
+                        &expected,
+                        &request_id,
+                        scene_id,
+                        project.deliverables[0].id,
+                    )
+                    .await
+            };
+            let error = outcome.unwrap_err();
+            assert_eq!(error.code, ErrorCode::Conflict, "{case_name}");
+            assert!(!error.outcome_known, "{case_name}");
+            assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(service.production_receipts(project.id, 64).unwrap(), before);
+            assert_eq!(coordinator.receipt_custody.snapshot(), custody_before);
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert_eq!(output_files(&output_root), files_before);
+            drop(held);
+            drop(coordinator);
+            drop(service);
+            let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+            assert_eq!(
+                reopened.production_receipts(project.id, 64).unwrap(),
+                before
+            );
+            assert_eq!(reopened.project(project.id).unwrap(), project);
+        }
+    }
+
+    // A4 Native SceneBoundary late-observation causal tests.
+    // Synthetic source fixtures; compilation and execution are tracked externally.
+    // Insert this submodule inside production.rs::tests.
+    // Existing Native17 tests and fixtures remain unchanged.
+    // Synthetic persisted receipts are not evidence of a native render.
+
+    #[cfg(unix)]
+    mod late_observation_boundary_tests {
+        use super::*;
+        use motionwright_domain::{Project, RendererKind};
+        use motionwright_service::{ProductionReceipt, ProductionReceiptWatermark};
+        use std::{
+            collections::BTreeMap,
+            ffi::OsString,
+            path::Path,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Route {
+            Manim,
+            Full,
+            Window,
+            Hyperframes,
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Head {
+            Unknown,
+            CompletedAfterUnknown,
+            FailedKnownAfterUnknown,
+            ReadDispatching,
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Origin {
+            Current,
+            Neighbor,
+            OldRun,
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct Case {
+            suffix: &'static str,
+            command: &'static str,
+            head: Head,
+            origin: Origin,
+            padding: bool,
+        }
+
+        impl Case {
+            const fn new(suffix: &'static str, command: &'static str) -> Self {
+                Self {
+                    suffix,
+                    command,
+                    head: Head::Unknown,
+                    origin: Origin::Current,
+                    padding: false,
+                }
+            }
+
+            fn head(mut self, value: Head) -> Self {
+                self.head = value;
+                self
+            }
+
+            fn origin(mut self, value: Origin) -> Self {
+                self.origin = value;
+                self
+            }
+
+            fn padded(mut self) -> Self {
+                self.padding = true;
+                self
+            }
+        }
+
+        fn complete_snapshot(
+            service: &StudioService,
+            project_id: Uuid,
+        ) -> (ProductionReceiptWatermark, Vec<ProductionReceipt>) {
+            let watermark = service.production_receipt_watermark(project_id).unwrap();
+            let mut before = None;
+            let mut receipts = Vec::new();
+
+            loop {
+                // Deliberately independent of the production scanner's page size.
+                let page = service
+                    .production_receipts_snapshot_page(project_id, &watermark, before, 113)
+                    .unwrap();
+                if page.is_empty() {
+                    break;
+                }
+                before = page.last().map(|receipt| receipt.id);
+                receipts.extend(page);
+            }
+
+            assert_eq!(receipts.len() as u64, watermark.count);
+            assert_eq!(
+                service.production_receipt_watermark(project_id).unwrap(),
+                watermark
+            );
+            (watermark, receipts)
+        }
+
+        fn output_files(root: &Path) -> BTreeMap<OsString, Vec<u8>> {
+            fs::read_dir(root)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    assert!(fs::symlink_metadata(entry.path()).unwrap().is_file());
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect()
+        }
+
+        fn append_record(
+            service: &StudioService,
+            project: &Project,
+            request_id: &str,
+            command: &str,
+            args: &Value,
+            mutation: bool,
+            stage: &str,
+        ) {
+            let payload = match stage {
+                "dispatching" => json!({
+                    "mutation": mutation,
+                    "synthetic_receipt_fixture": true
+                }),
+                "completed" => {
+                    let mut envelope = transport_reply(command);
+                    envelope.data = Some(json!({
+                        "job_ref": "retained-observation-fixture-job",
+                        "state": "queued"
+                    }));
+                    json!({
+                        "mutation": mutation,
+                        "result": envelope,
+                        "synthetic_receipt_fixture": true
+                    })
+                }
+                "outcome_unknown" => json!({
+                    "mutation": mutation,
+                    "error": Error::new(
+                        ErrorCode::Timeout,
+                        "retained late-observation fixture"
+                    ).uncertain(),
+                    "synthetic_receipt_fixture": true
+                }),
+                "failed_known" => json!({
+                    "mutation": mutation,
+                    "error": Error::new(
+                        ErrorCode::BackendFailed,
+                        "retained known observation failure fixture"
+                    ),
+                    "synthetic_receipt_fixture": true
+                }),
+                _ => panic!("unsupported fixture stage"),
+            };
+            service
+                .append_production_receipt(ProductionReceiptInput {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: request_id.into(),
+                    request_sha256: request_digest(command, args).unwrap(),
+                    command: command.into(),
+                    stage: stage.into(),
+                    payload,
+                })
+                .unwrap();
+        }
+
+        fn append_completed(
+            service: &StudioService,
+            project: &Project,
+            request_id: &str,
+            command: &str,
+            mutation: bool,
+        ) {
+            // Synthetic durable originals, not native execution evidence.
+            let args = json!({"synthetic_retained_original": request_id});
+            for stage in ["dispatching", "completed"] {
+                append_record(
+                    service, project, request_id, command, &args, mutation, stage,
+                );
+            }
+        }
+
+        fn append_observation(
+            service: &StudioService,
+            project: &Project,
+            request_id: &str,
+            case: Case,
+        ) {
+            let args = json!({"job_ref": "retained-observation-fixture-job"});
+            append_record(
+                service,
+                project,
+                request_id,
+                case.command,
+                &args,
+                false,
+                "dispatching",
+            );
+            if case.head == Head::ReadDispatching {
+                return;
+            }
+            append_record(
+                service,
+                project,
+                request_id,
+                case.command,
+                &args,
+                false,
+                "outcome_unknown",
+            );
+            let terminal = match case.head {
+                Head::CompletedAfterUnknown => Some("completed"),
+                Head::FailedKnownAfterUnknown => Some("failed_known"),
+                Head::Unknown | Head::ReadDispatching => None,
+            };
+            if let Some(stage) = terminal {
+                append_record(
+                    service,
+                    project,
+                    request_id,
+                    case.command,
+                    &args,
+                    false,
+                    stage,
+                );
+            }
+        }
+
+        fn options_for(project: &Project) -> FilmBuildOptions {
+            FilmBuildOptions {
+                frame_rate: Rate::new(30, 1).unwrap(),
+                font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+                mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+                scene_intents: project
+                    .scenes
+                    .iter()
+                    .filter(|scene| scene.renderer == RendererKind::MotionCanvas)
+                    .map(|scene| crate::film::SceneFilmIntent {
+                        scene_id: scene.id,
+                        role: NarrativeRole::Mechanism,
+                        archetype: Archetype::Statement,
+                    })
+                    .collect(),
+            }
+        }
+
+        fn add_scene_with_existing_node(
+            service: &StudioService,
+            project: Project,
+            name: &str,
+            renderer: RendererKind,
+        ) -> (Project, Uuid) {
+            let mut node = project.scenes[0].nodes[0].clone();
+            node.id = Uuid::now_v7();
+            node.name = name.into();
+
+            let project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    &format!("late-fixture-{name}-scene"),
+                    &Change::AddScene {
+                        name: name.into(),
+                        objective: "Retained segment history fixture".into(),
+                        duration_seconds: 2,
+                    },
+                )
+                .unwrap()
+                .project;
+            let scene_id = project.scenes.last().unwrap().id;
+            let project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    &format!("late-fixture-{name}-renderer"),
+                    &Change::SetSceneRenderer { scene_id, renderer },
+                )
+                .unwrap()
+                .project;
+            let project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    &format!("late-fixture-{name}-node"),
+                    &Change::AddCanvasNode { scene_id, node },
+                )
+                .unwrap()
+                .project;
+            (project, scene_id)
+        }
+
+        async fn check(route: Route, index: usize, case: Case, unresolved: bool) {
+            let (service, initial, temp) = fixture_service();
+            let mut project = motion_canvas_fixture(&service, initial);
+            let mut selected_scene = project.scenes[0].id;
+            let deliverable = project.deliverables[0].id;
+            let parent = format!("late-boundary-{route:?}-{index}");
+
+            if route == Route::Manim {
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        "late-fixture-manim-renderer",
+                        &Change::SetSceneRenderer {
+                            scene_id: selected_scene,
+                            renderer: RendererKind::ManimCommunity,
+                        },
+                    )
+                    .unwrap()
+                    .project;
+            }
+
+            let mut gap_scene = None;
+            if case.origin == Origin::OldRun {
+                assert!(matches!(route, Route::Full | Route::Window));
+                let (next, gap) =
+                    add_scene_with_existing_node(&service, project, "gap", RendererKind::Blender);
+                let (next, tail) = add_scene_with_existing_node(
+                    &service,
+                    next,
+                    "tail",
+                    RendererKind::MotionCanvas,
+                );
+                project = next;
+                gap_scene = Some(gap);
+                selected_scene = tail;
+
+                let original_plan = crate::film::plan_motion_canvas_segments(
+                    &project,
+                    deliverable,
+                    &options_for(&project),
+                )
+                .unwrap();
+                assert_eq!(original_plan.len(), 2);
+                assert_eq!(original_plan[1].scene_ids, vec![tail]);
+            }
+
+            let original = project.clone();
+            let original_parent = if case.origin == Origin::Neighbor {
+                format!("{parent}-neighbor")
+            } else {
+                parent.clone()
+            };
+            let original_run = usize::from(case.origin == Origin::OldRun);
+            let original_prefix = match route {
+                Route::Full | Route::Window => {
+                    format!("{original_parent}:motion:{original_run}")
+                }
+                Route::Manim | Route::Hyperframes => original_parent,
+            };
+            let current_prefix = match route {
+                Route::Full | Route::Window => format!("{parent}:motion:0"),
+                Route::Manim | Route::Hyperframes => parent.clone(),
+            };
+            let (start_suffix, start_command) = match route {
+                Route::Manim => ("start", "driver.manim-community.static.render.start"),
+                Route::Full | Route::Window => {
+                    ("render-start", "driver.motion-canvas.render.start")
+                }
+                Route::Hyperframes => ("render-start", "driver.hyperframes.render.start"),
+            };
+
+            // A neighboring observation must not hide this operation's Completed start.
+            // For an old run, retain its actual old run index instead.
+            let start_prefix = if case.origin == Origin::OldRun {
+                &original_prefix
+            } else {
+                &current_prefix
+            };
+            append_completed(
+                &service,
+                &original,
+                &format!("{start_prefix}:{start_suffix}"),
+                start_command,
+                true,
+            );
+
+            let observation_id = format!("{original_prefix}:{}", case.suffix);
+            append_observation(&service, &original, &observation_id, case);
+
+            if case.padding {
+                // More than 256 DISTINCT newer heads, not merely 256 repeated rows.
+                for foreign in 0..270 {
+                    append_completed(
+                        &service,
+                        &original,
+                        &format!("{parent}-foreign-{foreign}:inspect"),
+                        "driver.motion-canvas.composition.inspect",
+                        false,
+                    );
+                }
+                let suffix = service.production_receipts(project.id, 256).unwrap();
+                assert!(
+                    suffix
+                        .iter()
+                        .all(|receipt| receipt.request_id != observation_id),
+                    "the fixture must put the relevant head outside the old suffix"
+                );
+            }
+
+            if let Some(gap) = gap_scene {
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        "late-fixture-collapse-original-runs",
+                        &Change::SetSceneRenderer {
+                            scene_id: gap,
+                            renderer: RendererKind::MotionCanvas,
+                        },
+                    )
+                    .unwrap()
+                    .project;
+                let current_plan = crate::film::plan_motion_canvas_segments(
+                    &project,
+                    deliverable,
+                    &options_for(&project),
+                )
+                .unwrap();
+                assert_eq!(current_plan.len(), 1);
+                assert!(current_plan[0].scene_ids.contains(&selected_scene));
+            }
+
+            // Window source bounds are GLOBAL timeline frames, not scene-relative.
+            // Three two-second scenes put the old tail at exactly 4s / frame 120.
+            let source_window = if case.origin == Origin::OldRun {
+                let selected = project
+                    .scenes
+                    .iter()
+                    .find(|scene| scene.id == selected_scene)
+                    .unwrap();
+                assert_eq!(
+                    selected.start,
+                    motionwright_domain::RationalTime { num: 4, den: 1 }
+                );
+                motionwright_domain::SourceFrameWindow {
+                    start: 130,
+                    end: 140,
+                }
+            } else {
+                motionwright_domain::SourceFrameWindow { start: 10, end: 20 }
+            };
+
+            // The historical receipt precedes the declaration, and invocation uses
+            // the actual CURRENT stamp. Stale-reference rejection cannot pass this test.
+            project = persist_native_boundary_test_draft(&service, project);
+            assert!(project.revision > original.revision);
+            assert_eq!(project.generation, original.generation);
+            let expected = project.stamp();
+            let options = options_for(&project);
+            let before = complete_snapshot(&service, project.id);
+
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), "", "", 91);
+            fs::write(&counter, b"").unwrap();
+            let output_root = connection.output_root.clone();
+            fs::write(output_root.join("retained-original.bin"), b"unchanged").unwrap();
+            let files_before = output_files(&output_root);
+
+            let mut coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let hook_calls = Arc::new(AtomicUsize::new(0));
+            let hook_counter = Arc::clone(&hook_calls);
+            coordinator.before_dispatch_admission = Some(Arc::new(move || {
+                hook_counter.fetch_add(1, Ordering::SeqCst);
+            }));
+            let held = saturate_native_boundary_test_custody(&coordinator);
+            let custody_before = coordinator.receipt_custody.snapshot();
+
+            let result: NativeResult<()> = match route {
+                Route::Manim => coordinator
+                    .realize_manim_static_scene(
+                        project.id,
+                        &expected,
+                        &parent,
+                        selected_scene,
+                        deliverable,
+                    )
+                    .await
+                    .map(|_| ()),
+                Route::Full => coordinator
+                    .render_motion_canvas_segments(
+                        project.id,
+                        &expected,
+                        &parent,
+                        deliverable,
+                        &options,
+                    )
+                    .await
+                    .map(|_| ()),
+                Route::Window => coordinator
+                    .render_motion_canvas_window(
+                        project.id,
+                        &expected,
+                        &parent,
+                        &MotionCanvasWindowRequest {
+                            deliverable_id: deliverable,
+                            source_scene_id: selected_scene,
+                            source_window,
+                            options,
+                        },
+                    )
+                    .await
+                    .map(|_| ()),
+                Route::Hyperframes => coordinator
+                    .render_hyperframes_source(
+                        project.id,
+                        &expected,
+                        &parent,
+                        deliverable,
+                        &"ab".repeat(32),
+                    )
+                    .await
+                    .map(|_| ()),
+            };
+            let error = result.unwrap_err();
+            let expected_code = if unresolved || route == Route::Window {
+                ErrorCode::Conflict
+            } else if route == Route::Full {
+                ErrorCode::InvalidArgument
+            } else {
+                ErrorCode::Unsupported
+            };
+            assert_eq!(error.code, expected_code, "{route:?} {case:?}");
+            assert_eq!(error.outcome_known, !unresolved, "{route:?} {case:?}");
+            if !unresolved && route != Route::Window {
+                assert!(error.message.contains("SceneBoundary"), "{error:?}");
+            }
+
+            assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(fs::read(&counter).unwrap(), b"");
+            assert_eq!(coordinator.receipt_custody.snapshot(), custody_before);
+            assert_eq!(complete_snapshot(&service, project.id), before);
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert_eq!(output_files(&output_root), files_before);
+
+            drop(held);
+            drop(coordinator);
+            drop(service);
+            let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+            assert_eq!(complete_snapshot(&reopened, project.id), before);
+            assert_eq!(reopened.project(project.id).unwrap(), project);
+        }
+
+        #[tokio::test]
+        async fn manim_late_observation_history_precedes_declared_boundary() {
+            let cases = [
+                (
+                    Case::new("result", "driver.manim-community.render.result").padded(),
+                    true,
+                ),
+                (
+                    Case::new("status:4294967295", "driver.manim-community.render.status"),
+                    true,
+                ),
+                (
+                    Case::new("result", "driver.manim-community.render.result")
+                        .origin(Origin::Neighbor),
+                    false,
+                ),
+                (
+                    Case::new("status:01", "driver.manim-community.render.status"),
+                    false,
+                ),
+                (
+                    Case::new("status:4294967296", "driver.manim-community.render.status"),
+                    false,
+                ),
+                (
+                    Case::new("result", "driver.manim-community.render.result")
+                        .head(Head::CompletedAfterUnknown),
+                    false,
+                ),
+                (
+                    Case::new("result", "driver.manim-community.render.result")
+                        .head(Head::FailedKnownAfterUnknown),
+                    false,
+                ),
+                (
+                    Case::new("status:0", "driver.manim-community.render.status")
+                        .head(Head::ReadDispatching),
+                    false,
+                ),
+            ];
+            for (index, (case, unresolved)) in cases.into_iter().enumerate() {
+                check(Route::Manim, index, case, unresolved).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn motion_full_retained_observations_survive_plan_and_head_changes() {
+            let cases = [
+                (
+                    Case::new("render-result", "driver.motion-canvas.render.result").padded(),
+                    true,
+                ),
+                (
+                    Case::new("verify", "driver.motion-canvas.composition.verify"),
+                    true,
+                ),
+                (
+                    Case::new(
+                        "render-status:4294967295",
+                        "driver.motion-canvas.render.status",
+                    ),
+                    true,
+                ),
+                (
+                    Case::new(
+                        "font-project-inspect",
+                        "driver.motion-canvas.composition.inspect",
+                    ),
+                    true,
+                ),
+                (
+                    Case::new("font-readback:1", "driver.motion-canvas.asset.list"),
+                    true,
+                ),
+                (
+                    Case::new("render-result", "driver.motion-canvas.render.result")
+                        .origin(Origin::OldRun),
+                    true,
+                ),
+                (
+                    Case::new("render-result", "driver.motion-canvas.render.result")
+                        .head(Head::CompletedAfterUnknown),
+                    false,
+                ),
+                (
+                    Case::new("verify", "driver.motion-canvas.composition.verify")
+                        .head(Head::FailedKnownAfterUnknown),
+                    false,
+                ),
+                (
+                    Case::new("font-list:1", "driver.motion-canvas.asset.list")
+                        .head(Head::ReadDispatching),
+                    false,
+                ),
+            ];
+            for (index, (case, unresolved)) in cases.into_iter().enumerate() {
+                check(Route::Full, index, case, unresolved).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn motion_window_late_unknown_precedes_completed_capture_identity() {
+            let cases = [
+                (
+                    Case::new("render-result", "driver.motion-canvas.render.result"),
+                    true,
+                ),
+                (
+                    Case::new("verify", "driver.motion-canvas.composition.verify"),
+                    true,
+                ),
+                (
+                    Case::new(
+                        "render-status:4294967295",
+                        "driver.motion-canvas.render.status",
+                    ),
+                    true,
+                ),
+                (
+                    Case::new("font-list:1", "driver.motion-canvas.asset.list"),
+                    true,
+                ),
+                (
+                    Case::new("verify", "driver.motion-canvas.composition.verify")
+                        .origin(Origin::OldRun),
+                    true,
+                ),
+                (
+                    Case::new("render-result", "driver.motion-canvas.render.result")
+                        .origin(Origin::Neighbor),
+                    false,
+                ),
+                (
+                    Case::new("render-status:01", "driver.motion-canvas.render.status"),
+                    false,
+                ),
+                (
+                    Case::new(
+                        "render-status:4294967296",
+                        "driver.motion-canvas.render.status",
+                    ),
+                    false,
+                ),
+            ];
+            for (index, (case, unresolved)) in cases.into_iter().enumerate() {
+                check(Route::Window, index, case, unresolved).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn hyperframes_late_observations_precede_declared_boundary() {
+            let cases = [
+                (
+                    Case::new("inspect-before", "driver.hyperframes.project.inspect"),
+                    true,
+                ),
+                (
+                    Case::new("render-result", "driver.hyperframes.render.result"),
+                    true,
+                ),
+                (
+                    Case::new(
+                        "render-status:4294967295",
+                        "driver.hyperframes.render.status",
+                    ),
+                    true,
+                ),
+                (
+                    Case::new("inspect-before", "driver.hyperframes.project.inspect")
+                        .head(Head::ReadDispatching),
+                    false,
+                ),
+            ];
+            for (index, (case, unresolved)) in cases.into_iter().enumerate() {
+                check(Route::Hyperframes, index, case, unresolved).await;
+            }
+        }
+
+        // Synthetic persisted history regression; execution status is recorded externally.
+        // Insert this function inside production::tests::late_observation_boundary_tests.
+        // Reuses that module's append_record, complete_snapshot and output_files helpers.
+        // The retained receipts and transport are synthetic; no Blender run is claimed.
+
+        #[tokio::test]
+        async fn blender_removed_object_history_precedes_current_plan_and_draft_guard() {
+            for head in ["outcome_unknown", "completed", "failed_known"] {
+                let unresolved = head == "outcome_unknown";
+                let (service, initial, temp) = fixture_service();
+                let mut project = motion_canvas_fixture(&service, initial);
+                let scene_id = project.scenes[0].id;
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        "late-blender-fixture-renderer",
+                        &Change::SetSceneRenderer {
+                            scene_id,
+                            renderer: RendererKind::Blender,
+                        },
+                    )
+                    .unwrap()
+                    .project;
+
+                let original_text = project.scenes[0].nodes[0].clone();
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        "late-blender-fixture-remove-text",
+                        &Change::RemoveCanvasNode {
+                            scene_id,
+                            node_id: original_text.id,
+                        },
+                    )
+                    .unwrap()
+                    .project;
+                for index in 0..2 {
+                    let mut rectangle = original_text.clone();
+                    rectangle.id = Uuid::now_v7();
+                    rectangle.name = format!("Retained Blender rectangle {index}");
+                    rectangle.kind = "rectangle".into();
+                    rectangle.text = None;
+                    rectangle.parent_id = None;
+                    rectangle.rotation_deg = 0.0;
+                    rectangle.opacity = 1.0;
+                    rectangle.relations.clear();
+                    rectangle.keyframes.clear();
+                    rectangle.property_locks.clear();
+                    rectangle.style.stroke = None;
+                    rectangle.style.stroke_width = 0.0;
+                    rectangle.style.font_family = None;
+                    rectangle.style.font_size = None;
+                    rectangle.style.font_weight = None;
+                    rectangle.style.line_height = None;
+                    rectangle.style.blend_mode = BlendMode::Normal;
+                    project = service
+                        .apply(
+                            project.id,
+                            &project.stamp(),
+                            &format!("late-blender-fixture-add-{index}"),
+                            &Change::AddCanvasNode {
+                                scene_id,
+                                node: rectangle,
+                            },
+                        )
+                        .unwrap()
+                        .project;
+                }
+
+                let original_plan = build_blender_contribution(&project, scene_id).unwrap();
+                assert_eq!(original_plan.objects.len(), 2);
+                let removed = &original_plan.objects[1];
+                let removed_node_id = removed.node_id;
+                let original_revision = project.revision;
+                let base = format!("late-blender-removed-{head}");
+                let request_id = format!("{base}:object:1:create");
+                let command = "driver.blender.object.create";
+                // These are the original builder's arguments, without invented Driver refs.
+                let args = json!({
+                    "name": &removed.name,
+                    "primitive": removed.primitive.as_driver_name(),
+                    "location": removed.location
+                });
+                append_record(
+                    &service,
+                    &project,
+                    &request_id,
+                    command,
+                    &args,
+                    true,
+                    "dispatching",
+                );
+                append_record(
+                    &service,
+                    &project,
+                    &request_id,
+                    command,
+                    &args,
+                    true,
+                    "outcome_unknown",
+                );
+                if !unresolved {
+                    // A later retained known head must suppress this identity's older UNKNOWN.
+                    append_record(&service, &project, &request_id, command, &args, true, head);
+                }
+
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        "late-blender-remove-original-second-object",
+                        &Change::RemoveCanvasNode {
+                            scene_id,
+                            node_id: removed_node_id,
+                        },
+                    )
+                    .unwrap()
+                    .project;
+                let current_plan = build_blender_contribution(&project, scene_id).unwrap();
+                assert_eq!(current_plan.objects.len(), 1);
+                assert!(
+                    current_plan
+                        .objects
+                        .iter()
+                        .all(|object| object.node_id != removed_node_id)
+                );
+                project = persist_native_boundary_test_draft(&service, project);
+                assert!(project.revision > original_revision);
+                let expected = project.stamp();
+
+                // Push the pertinent original beyond a 256-row newest-only read.
+                // These completed foreign heads are explicit synthetic receipt fixtures.
+                for index in 0..270 {
+                    append_completed(
+                        &service,
+                        &project,
+                        &format!("unrelated-blender-{head}-{index}"),
+                        "driver.blender.introspect.summary",
+                        false,
+                    );
+                }
+                let before = complete_snapshot(&service, project.id);
+                let original_head_position = before
+                    .1
+                    .iter()
+                    .position(|receipt| receipt.request_id == request_id)
+                    .unwrap();
+                assert!(original_head_position >= 270);
+                assert_eq!(before.1[original_head_position].stage, head);
+                assert_eq!(before.1[original_head_position].revision, original_revision);
+                assert!(before.1.iter().any(|receipt| {
+                    receipt.request_id == request_id && receipt.stage == "outcome_unknown"
+                }));
+
+                let (connection, counter) =
+                    fake_transport_connection(&temp, project.resource_key(), "", "", 91);
+                fs::write(&counter, b"").unwrap();
+                let output_root = connection.output_root.clone();
+                fs::write(
+                    output_root.join("retained-blender-history.bin"),
+                    b"original synthetic output must remain unchanged",
+                )
+                .unwrap();
+                let files_before = output_files(&output_root);
+                let mut coordinator =
+                    ProductionCoordinator::new(service.clone(), connection).unwrap();
+                let hook_calls = Arc::new(AtomicUsize::new(0));
+                let hook_counter = Arc::clone(&hook_calls);
+                coordinator.before_dispatch_admission = Some(Arc::new(move || {
+                    hook_counter.fetch_add(1, Ordering::SeqCst);
+                }));
+                let held = saturate_native_boundary_test_custody(&coordinator);
+                let custody_before = coordinator.receipt_custody.snapshot();
+                let error = coordinator
+                    .realize_blender_scene(project.id, &expected, &base, scene_id)
+                    .await
+                    .unwrap_err();
+                if unresolved {
+                    assert_eq!(error.code, ErrorCode::Conflict, "{head}");
+                    assert!(!error.outcome_known, "{head}");
+                    assert!(
+                        error.message.contains("unresolved original receipt"),
+                        "{head}"
+                    );
+                } else {
+                    assert_eq!(error.code, ErrorCode::Unsupported, "{head}");
+                    assert!(error.outcome_known, "{head}");
+                    assert!(error.message.contains("actual Film options"), "{head}");
+                }
+                assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+                assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
+                assert_eq!(fs::read(&counter).unwrap(), b"");
+                assert_eq!(complete_snapshot(&service, project.id), before);
+                assert_eq!(coordinator.receipt_custody.snapshot(), custody_before);
+                assert_eq!(service.project(project.id).unwrap(), project);
+                assert_eq!(output_files(&output_root), files_before);
+                drop(held);
+                drop(coordinator);
+                drop(service);
+
+                let reopened =
+                    StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+                assert_eq!(complete_snapshot(&reopened, project.id), before);
+                assert_eq!(reopened.project(project.id).unwrap(), project);
+            }
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn observed_unknown_survives_unrelated_receipt_drift() {
+            use std::cell::Cell;
+
+            // The two unresolved cases would previously reach either the final
+            // watermark (one row) or the next page (257 rows) after observing UNKNOWN.
+            // Resolved heads must still suppress their older UNKNOWN, without turning
+            // a subsequent snapshot conflict into an uncertain original outcome.
+            let cases = [
+                (0_usize, None, true),
+                (256, None, true),
+                (0, Some("completed"), false),
+                (0, Some("completed"), true),
+                (0, Some("failed_known"), false),
+                (0, Some("failed_known"), true),
+            ];
+            for (filler_count, resolved_stage, drift) in cases {
+                let (service, project, temp) = fixture_service();
+                let database = temp.path().join("motionwright.sqlite3");
+                let peer = StudioService::open(&database).unwrap();
+                assert_eq!(peer.project(project.id).unwrap(), project);
+
+                let base = "observed-unknown-drift";
+                let original_id = format!("{base}:result");
+                let peer_id = format!("{base}-unrelated:result");
+                let command = "driver.manim-community.render.result";
+                let args = json!({"fixture": "retained-original-observation"});
+                for index in 0..filler_count {
+                    append_record(
+                        &service,
+                        &project,
+                        &format!("{base}-neighbor-{index}:result"),
+                        command,
+                        &args,
+                        false,
+                        "completed",
+                    );
+                }
+                append_record(
+                    &service,
+                    &project,
+                    &original_id,
+                    command,
+                    &args,
+                    false,
+                    "outcome_unknown",
+                );
+                if let Some(stage) = resolved_stage {
+                    append_record(
+                        &service,
+                        &project,
+                        &original_id,
+                        command,
+                        &args,
+                        false,
+                        stage,
+                    );
+                }
+                let before = complete_snapshot(&service, project.id);
+                let journal = service.history(project.id, 0, 1024).unwrap();
+                assert_eq!(before.0.count > 256, filler_count == 256);
+                let page_calls = Cell::new(0_usize);
+                let final_watermark_calls = Cell::new(0_usize);
+                let result = require_no_unresolved_scene_history(
+                    base,
+                    SceneRequestFamily::Manim,
+                    &before.0,
+                    |cursor| {
+                        page_calls.set(page_calls.get() + 1);
+                        // This actual Service call authenticates the page with the
+                        // captured watermark both before and after its SQLite read.
+                        let page = service.production_receipts_snapshot_page(
+                            project.id, &before.0, cursor, 256,
+                        )?;
+                        if page_calls.get() == 1 {
+                            let head = page
+                                .iter()
+                                .find(|receipt| receipt.request_id == original_id)
+                                .unwrap();
+                            assert_eq!(head.stage, resolved_stage.unwrap_or("outcome_unknown"));
+                            if drift {
+                                // The independent Store appends only after the page is
+                                // authenticated. It does not settle the original key.
+                                append_record(
+                                    &peer,
+                                    &project,
+                                    &peer_id,
+                                    command,
+                                    &args,
+                                    false,
+                                    "completed",
+                                );
+                            }
+                        }
+                        Ok(page)
+                    },
+                    || {
+                        final_watermark_calls.set(final_watermark_calls.get() + 1);
+                        service.production_receipt_watermark(project.id)
+                    },
+                );
+                if resolved_stage.is_none() {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, ErrorCode::Conflict);
+                    assert!(!error.outcome_known);
+                    assert_eq!(page_calls.get(), 1);
+                    assert_eq!(final_watermark_calls.get(), 0);
+                } else {
+                    assert_eq!(page_calls.get(), 1);
+                    assert_eq!(final_watermark_calls.get(), 1);
+                    if drift {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.code, ErrorCode::Conflict);
+                        assert!(error.outcome_known);
+                    } else {
+                        result.unwrap();
+                    }
+                }
+
+                let after = complete_snapshot(&service, project.id);
+                if drift {
+                    assert_eq!(after.0.count, before.0.count + 1);
+                    let unrelated = after
+                        .1
+                        .iter()
+                        .filter(|receipt| receipt.request_id == peer_id)
+                        .collect::<Vec<_>>();
+                    assert_eq!(unrelated.len(), 1);
+                    assert_eq!(after.0.latest_id, Some(unrelated[0].id));
+                    let retained = after
+                        .1
+                        .iter()
+                        .filter(|receipt| receipt.request_id != peer_id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    assert_eq!(retained, before.1);
+                } else {
+                    assert_eq!(after, before);
+                }
+                assert_eq!(
+                    service
+                        .latest_production_receipt(project.id, &original_id)
+                        .unwrap()
+                        .unwrap()
+                        .stage,
+                    resolved_stage.unwrap_or("outcome_unknown")
+                );
+                assert_eq!(service.project(project.id).unwrap(), project);
+                assert_eq!(service.history(project.id, 0, 1024).unwrap(), journal);
+                drop(peer);
+                drop(service);
+                let reopened = StudioService::open(&database).unwrap();
+                assert_eq!(complete_snapshot(&reopened, project.id), after);
+                assert_eq!(reopened.project(project.id).unwrap(), project);
+                assert_eq!(reopened.history(project.id, 0, 1024).unwrap(), journal);
+            }
+        }
     }
 }

@@ -534,6 +534,7 @@ impl ProductionCoordinator {
             None => ActiveFontStaging::Legacy(FontStagingRoot::open(root)?),
         };
         let bound = self.bind_font_media(root).await?;
+        self.require_motion_staging_admission(project_id, expected)?;
         staging.revalidate()?;
         let staged = resolved
             .into_iter()

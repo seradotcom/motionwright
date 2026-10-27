@@ -992,6 +992,11 @@ impl ProductionCoordinator {
             return Err(Error::new(ErrorCode::Conflict,
                 "Original Blender phase was already attempted; inspect its original receipts instead of replaying it").uncertain());
         }
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            request.scene_id,
+            motionwright_domain::RendererKind::Blender,
+        )?;
         let output_root = self.client.connection().output_root.clone();
         let output_name = match request.phase {
             BlenderOriginalPhase::CreateOriginal => Some(ORIGINAL_FILE),
@@ -1019,7 +1024,7 @@ impl ProductionCoordinator {
         journal.phase = request.phase.label().into();
         journal.plan = Some(plan.clone());
         let mut session = OriginalSession {
-            coordinator: self,
+            coordinator: &scoped,
             request,
             plan: &plan,
             journal,

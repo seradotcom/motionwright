@@ -314,6 +314,25 @@ pub(super) fn reserve_product_cycle(
     source: &SavedProductSource,
 ) -> NativeResult<ProductCycleClaim> {
     let intent = make_atomic_intent(request, source)?;
+    let key = intent_key(&intent)?;
+    // Preserve the original attempt's classification before new admission.
+    // reserve_intent retains the existing atomic RequestReuse check.
+    if coordinator
+        .service
+        .latest_production_receipt(request.project_id, &key)
+        .map_err(storage_error)?
+        .is_some()
+    {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "Product source was already attempted; inspect its original durable outcome",
+        )
+        .uncertain());
+    }
+    crate::native_scene_boundary::guard_scene_without_film_options(
+        &source.project,
+        request.scene_id,
+    )?;
     reserve_intent(&coordinator.service, &coordinator.receipt_custody, intent)
 }
 
@@ -2277,5 +2296,234 @@ mod tests {
             serde_json::to_value(f.service.production_receipts(project.id, 64).unwrap()).unwrap(),
             receipts
         );
+    }
+
+    fn declare_selected_boundary_draft(f: &mut Fixture) {
+        use motionwright_domain::{
+            SCENE_BOUNDARY_VERSION, SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput,
+        };
+        let current = f.service.project(f.request.project_id).unwrap();
+        let updated = f
+            .service
+            .apply(
+                current.id,
+                &current.stamp(),
+                "fixture-selected-boundary-draft",
+                &Change::UpsertSceneBoundary {
+                    boundary: Box::new(SceneBoundary {
+                        version: SCENE_BOUNDARY_VERSION,
+                        id: Uuid::now_v7(),
+                        scene_id: f.request.scene_id,
+                        input: SceneBoundaryInput::SelfContained,
+                        definition: SceneBoundaryDefinition::DraftIncomplete {
+                            source: None,
+                            entry: None,
+                            exit: None,
+                        },
+                    }),
+                },
+            )
+            .unwrap()
+            .project;
+        f.request.expected = updated.stamp();
+        f.source = read_saved_product_source(
+            &f.service,
+            &BlenderProductCreateRequest {
+                project_id: f.request.project_id,
+                expected: f.request.expected.clone(),
+                scene_id: f.request.scene_id,
+                capsule_id: f.request.capsule_id,
+                request_id: f.request.request_id.clone(),
+            },
+            BLENDER_PRODUCT_RECIPE_MEDIA_TYPE,
+            decode_blender_product_recipe,
+        )
+        .unwrap();
+    }
+
+    fn boundary_inert_coordinator(f: &Fixture) -> ProductionCoordinator {
+        let executable = f.root.path().join("lineage-inert-transport");
+        let socket = f.root.path().join("lineage-inert.sock");
+        let session_file = f.root.path().join("lineage-inert-session.json");
+        let output_root = f.root.path().join("lineage-inert-output");
+        // Inert validation fixtures: no file here is launched.
+        std::fs::write(
+            &executable,
+            b"Motionwright lineage admission fixture; not executable.\n",
+        )
+        .unwrap();
+        std::fs::write(&socket, b"").unwrap();
+        std::fs::write(&session_file, b"{}").unwrap();
+        std::fs::create_dir(&output_root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in [
+                (&executable, 0o600),
+                (&socket, 0o600),
+                (&session_file, 0o600),
+                (&output_root, 0o700),
+            ] {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+        }
+        let connection = crate::production::ProductionConnection {
+            schema: crate::production::CONNECTION_SCHEMA.into(),
+            executable_sha256: crate::production::sha256_file(&executable).unwrap(),
+            executable,
+            socket,
+            session_file,
+            output_root,
+            resource: f.source.project.resource_key(),
+        };
+        ProductionCoordinator::new(f.service.clone(), connection).unwrap()
+    }
+
+    fn saturate_boundary_custody(
+        coordinator: &ProductionCoordinator,
+    ) -> Vec<crate::production::receipt_custody::ReceiptReservation> {
+        let limit = coordinator.receipt_custody.snapshot()["slot_limit"]
+            .as_u64()
+            .unwrap();
+        let mut held = Vec::new();
+        for index in 0..=limit {
+            match coordinator.receipt_custody.reserve(
+                true,
+                &format!("fixture-boundary-pressure-{index}"),
+                ROOT_COMMAND,
+                None,
+            ) {
+                Ok(reservation) => held.push(reservation),
+                Err(error) => {
+                    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+                    assert!(!held.is_empty());
+                    return held;
+                }
+            }
+        }
+        panic!("fixture failed to exhaust receipt custody");
+    }
+
+    #[test]
+    fn product_cycle_selected_draft_rejects_before_custody_or_dispatch_receipt() {
+        for saturated in [false, true] {
+            let mut f = fixture();
+            declare_selected_boundary_draft(&mut f);
+            let coordinator = boundary_inert_coordinator(&f);
+            let _held = if saturated {
+                saturate_boundary_custody(&coordinator)
+            } else {
+                Vec::new()
+            };
+            let watermark = f
+                .service
+                .production_receipt_watermark(f.request.project_id)
+                .unwrap();
+            assert_eq!(watermark.count, 0);
+            let custody = coordinator.receipt_custody.snapshot();
+            let key = intent_key(&make_atomic_intent(&f.request, &f.source).unwrap()).unwrap();
+
+            let error = reserve_product_cycle(&coordinator, &f.request, &f.source)
+                .err()
+                .unwrap();
+
+            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert!(error.outcome_known);
+            assert_eq!(
+                f.service
+                    .production_receipt_watermark(f.request.project_id)
+                    .unwrap(),
+                watermark
+            );
+            assert!(
+                f.service
+                    .latest_production_receipt(f.request.project_id, &key)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(coordinator.receipt_custody.snapshot(), custody);
+            assert_eq!(
+                coordinator
+                    .client
+                    .execute_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn product_cycle_existing_unknown_precedes_draft_without_reappend() {
+        for saturated in [false, true] {
+            let mut f = fixture();
+            let coordinator = boundary_inert_coordinator(&f);
+            let original = reserve_product_cycle(&coordinator, &f.request, &f.source).unwrap();
+            let key = original.key.clone();
+            // Lost continuation; the original dispatch remains durable.
+            drop(original);
+            declare_selected_boundary_draft(&mut f);
+            assert_eq!(
+                intent_key(&make_atomic_intent(&f.request, &f.source).unwrap()).unwrap(),
+                key
+            );
+            let original_receipt = serde_json::to_value(
+                f.service
+                    .latest_production_receipt(f.request.project_id, &key)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            let watermark = f
+                .service
+                .production_receipt_watermark(f.request.project_id)
+                .unwrap();
+            assert_eq!(watermark.count, 1);
+            let _held = if saturated {
+                saturate_boundary_custody(&coordinator)
+            } else {
+                Vec::new()
+            };
+            let custody = coordinator.receipt_custody.snapshot();
+
+            let error = reserve_product_cycle(&coordinator, &f.request, &f.source)
+                .err()
+                .unwrap();
+
+            assert_eq!(error.code, ErrorCode::Conflict);
+            assert!(!error.outcome_known);
+            assert_eq!(
+                f.service
+                    .production_receipt_watermark(f.request.project_id)
+                    .unwrap(),
+                watermark
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    f.service
+                        .latest_production_receipt(f.request.project_id, &key)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap(),
+                original_receipt
+            );
+            assert_eq!(coordinator.receipt_custody.snapshot(), custody);
+            let observed =
+                read_blender_product_attempt(&f.service, &attempt(&f, &f.source.project)).unwrap();
+            assert_eq!(
+                observed.attempt.state,
+                BlenderProductAttemptState::OutcomeUnknown
+            );
+            assert!(!observed.attempt.native_outcome_known);
+            assert!(!observed.automatic_retry);
+            assert!(observed.attempt.terminal_receipt_id.is_none());
+            assert_eq!(
+                coordinator
+                    .client
+                    .execute_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+        }
     }
 }
