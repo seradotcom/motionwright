@@ -681,6 +681,23 @@ test("Film and PCM guards use saved options and expose unsupported combinations 
   await expect(button(page, "Check Film projection")).toBeDisabled();
   expect(requests(service, "motion_canvas_preflight")).toHaveLength(0);
   project = await save(page, service, project.id, "Save scene intent");
+  await expect(button(page, "Check Film projection")).toBeDisabled();
+  await expect(page.getByRole("alert").filter({ hasText: "more than one saved primary font" })).toBeVisible();
+  expect(requests(service, "motion_canvas_preflight")).toHaveLength(0);
+  expect(requests(service, "render_motion_canvas")).toHaveLength(0);
+  const notes = project.scenes.flatMap(scene => scene.nodes.filter(node => node.name === "Independent synthetic note")
+    .map(node => ({ sceneId: scene.id, node })));
+  expect(notes).toHaveLength(1);
+  const note = notes[0]!;
+  expect(note.node).toMatchObject({ kind: "text", style: { font_family: "Inter" } });
+  const savedRecipe = recipeFor(project, a);
+  project = await service.apply(project, { type: "update_canvas_style", scene_id: note.sceneId, node_id: note.node.id,
+    style: { ...note.node.style, font_family: "Instrument Sans Variable" } });
+  expect(recipeFor(project, a)).toEqual(savedRecipe);
+  expect(project.scenes.find(scene => scene.id === note.sceneId)!.nodes.find(node => node.id === note.node.id))
+    .toEqual({ ...note.node, style: { ...note.node.style, font_family: "Instrument Sans Variable" } });
+  await reopenExact(service, project);
+  await page.reload(); await revision(page, project.revision); await film(page, a);
   await expect(button(page, "Check Film projection")).toBeEnabled();
   const options: MotionCanvasFilmOptions = { frame_rate: { num: 30, den: 1 },
     font_family: "Instrument Sans Variable", mono_font_family: "IBM Plex Mono",
