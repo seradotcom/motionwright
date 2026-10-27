@@ -1484,7 +1484,7 @@ test("saved parented Canvas text stays visible in real editorial study after ser
       x: 1020, y: 540, width: 720, height: 200, rotation_deg: -25, opacity: 0.4,
     };
     const transformInputs = [["X", "x"], ["Y", "y"], ["W", "width"], ["H", "height"],
-      ["Rotation", "rotation_deg"], ["Opacity", "opacity"] as const;
+      ["Rotation", "rotation_deg"], ["Opacity", "opacity"]] as const;
     const authorTransform = async (node: CanvasNode, geometry: CanvasTransform, label: string) => {
       await openCanvas(page, scene.name, node.name);
       for (const [label, field] of transformInputs) await input(page, label).fill(String(geometry[field]));
