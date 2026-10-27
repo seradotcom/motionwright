@@ -371,6 +371,11 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "scene_boundary_authoring_context" => encoded(
+                self.service
+                    .scene_boundary_authoring_context(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "semantic_graph_authoring_context" => encoded(
                 project_projection::semantic_graph_context(&self.service, request(args)?)?,
             ),

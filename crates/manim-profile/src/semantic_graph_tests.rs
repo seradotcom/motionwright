@@ -75,6 +75,7 @@ fn fixture() -> ManimSemanticGraphPlan {
             },
         ],
         label_box: rect(150.0, 120.0, 150.0, 40.0),
+        label_placement: None,
         appearance: GraphAppearance {
             at: time(1, 1),
             duration: time(1, 1),
@@ -309,6 +310,7 @@ fn causal_edges_use_the_same_geometry_without_becoming_flow_events() {
             to_port: edge.to_port,
             waypoints: edge.waypoints.clone(),
             label_box: edge.label_box.clone(),
+            label_placement: None,
             appearance: edge.appearance.clone(),
             influence: GraphCausalInfluence::Positive,
             basis: GraphCausalBasis::AuthorHypothesis {

@@ -65,6 +65,77 @@ pub struct GraphBox {
     pub height: f64,
 }
 
+/// Opt-in derived placement. The offset is a signed vector, never a frame point.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GraphLabelPlacement {
+    PolylineMidpoint { offset: GraphPoint },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphLabelPlacementFields {
+    kind: String,
+    #[serde(deserialize_with = "deserialize_graph_label_object")]
+    offset: GraphPoint,
+}
+
+// New placement and offset members require JSON objects. Keep the decoding
+// typed while refusing positional struct/enum sequences; unrelated GraphPoint
+// members retain their existing deserialization behavior.
+fn deserialize_graph_label_object<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct ObjectVisitor<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ObjectVisitor<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a typed Graph label object")
+        }
+
+        fn visit_map<M>(self, map: M) -> std::result::Result<T, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_map(ObjectVisitor(std::marker::PhantomData))
+}
+
+impl<'de> Deserialize<'de> for GraphLabelPlacement {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let fields: GraphLabelPlacementFields = deserialize_graph_label_object(deserializer)?;
+        match fields.kind.as_str() {
+            "polyline_midpoint" => Ok(Self::PolylineMidpoint {
+                offset: fields.offset,
+            }),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["polyline_midpoint"],
+            )),
+        }
+    }
+}
+
+fn deserialize_graph_label_placement<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<GraphLabelPlacement>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Only absence is manual. Explicit null must not erase authored intent.
+    GraphLabelPlacement::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphReferenceFrame {
@@ -200,6 +271,12 @@ pub struct GraphCausalEdge {
     pub to_port: GraphPort,
     pub waypoints: Vec<GraphPoint>,
     pub label_box: GraphBox,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_graph_label_placement"
+    )]
+    pub label_placement: Option<GraphLabelPlacement>,
     pub appearance: GraphAppearance,
     pub influence: GraphCausalInfluence,
     pub basis: GraphCausalBasis,
@@ -224,6 +301,12 @@ pub struct GraphFlowEdge {
     pub to_port: GraphPort,
     pub waypoints: Vec<GraphPoint>,
     pub label_box: GraphBox,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_graph_label_placement"
+    )]
+    pub label_placement: Option<GraphLabelPlacement>,
     pub appearance: GraphAppearance,
     pub channel: GraphFlowChannel,
 }
@@ -615,6 +698,58 @@ fn graph_port_point(vertex: &GraphVertex, port: GraphPort) -> GraphPoint {
     }
 }
 
+/// Euclidean arc-length midpoint of a nonempty finite polyline. Repeated
+/// points contribute zero length; an all-zero polyline returns its first point.
+/// This arithmetic helper does not admit a Graph or relax its segment guards.
+pub fn graph_polyline_midpoint(points: &[GraphPoint]) -> Result<GraphPoint> {
+    let first = points
+        .first()
+        .ok_or_else(|| graph_invalid("Graph midpoint needs a nonempty polyline"))?;
+    if points
+        .iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Err(graph_invalid("Graph midpoint contains a non-finite point"));
+    }
+    let mut total = 0.0;
+    for pair in points.windows(2) {
+        let length = (pair[1].x - pair[0].x).hypot(pair[1].y - pair[0].y);
+        total += length;
+        if !total.is_finite() {
+            return Err(graph_invalid(
+                "Graph polyline length exceeds finite geometry",
+            ));
+        }
+    }
+    if total == 0.0 {
+        return Ok(first.clone());
+    }
+    // Match Studio's remaining-distance subtraction order, not a separately
+    // accumulated prefix, so avoid an unnecessary cross-language rounding join.
+    let mut remaining = total / 2.0;
+    for pair in points.windows(2) {
+        let dx = pair[1].x - pair[0].x;
+        let dy = pair[1].y - pair[0].y;
+        let length = dx.hypot(dy);
+        if length == 0.0 {
+            continue;
+        }
+        if remaining <= length {
+            let fraction = remaining / length;
+            let midpoint = GraphPoint {
+                x: pair[0].x + dx * fraction,
+                y: pair[0].y + dy * fraction,
+            };
+            if !midpoint.x.is_finite() || !midpoint.y.is_finite() {
+                return Err(graph_invalid("Graph midpoint exceeds finite geometry"));
+            }
+            return Ok(midpoint);
+        }
+        remaining -= length;
+    }
+    Err(graph_invalid("Graph midpoint could not be resolved"))
+}
+
 struct GraphEdgeView<'a> {
     id: Uuid,
     label: &'a str,
@@ -624,10 +759,17 @@ struct GraphEdgeView<'a> {
     to_port: GraphPort,
     waypoints: &'a [GraphPoint],
     label_box: &'a GraphBox,
+    label_placement: Option<&'a GraphLabelPlacement>,
     appearance: &'a GraphAppearance,
 }
 
 impl GraphCausalEdge {
+    /// Resolve from the current endpoint ports and the unchanged authored path.
+    /// This is pure geometry; Project/source/native admission remains separate.
+    pub fn resolved_label_box(&self, graph: &SemanticGraph) -> Result<GraphBox> {
+        graph_resolved_label_box(&self.geometry(), graph)
+    }
+
     fn geometry(&self) -> GraphEdgeView<'_> {
         GraphEdgeView {
             id: self.id,
@@ -638,11 +780,17 @@ impl GraphCausalEdge {
             to_port: self.to_port,
             waypoints: &self.waypoints,
             label_box: &self.label_box,
+            label_placement: self.label_placement.as_ref(),
             appearance: &self.appearance,
         }
     }
 }
 impl GraphFlowEdge {
+    /// Every event-label interval uses this same current derived box.
+    pub fn resolved_label_box(&self, graph: &SemanticGraph) -> Result<GraphBox> {
+        graph_resolved_label_box(&self.geometry(), graph)
+    }
+
     fn geometry(&self) -> GraphEdgeView<'_> {
         GraphEdgeView {
             id: self.id,
@@ -653,9 +801,67 @@ impl GraphFlowEdge {
             to_port: self.to_port,
             waypoints: &self.waypoints,
             label_box: &self.label_box,
+            label_placement: self.label_placement.as_ref(),
             appearance: &self.appearance,
         }
     }
+}
+
+fn graph_resolved_label_box(edge: &GraphEdgeView<'_>, graph: &SemanticGraph) -> Result<GraphBox> {
+    let frame = &graph.reference_frame;
+    if frame.width == 0
+        || frame.height == 0
+        || frame.width > GRAPH_SAFE_INTEGER_MAX
+        || frame.height > GRAPH_SAFE_INTEGER_MAX
+    {
+        return Err(graph_invalid("unsupported Graph authored frame"));
+    }
+    // The authored manual box remains valid and unchanged, including in auto
+    // mode. Width and height always come from that exact authored box.
+    graph_box(edge.label_box, frame)?;
+    let Some(GraphLabelPlacement::PolylineMidpoint { offset }) = edge.label_placement else {
+        return Ok(edge.label_box.clone());
+    };
+    if !offset.x.is_finite() || !offset.y.is_finite() {
+        return Err(graph_invalid(
+            "Graph label offset must be a finite signed vector",
+        ));
+    }
+    if edge.waypoints.len() > SEMANTIC_GRAPH_MAX_WAYPOINTS {
+        return Err(graph_invalid(
+            "Graph label path exceeds the waypoint budget",
+        ));
+    }
+    let from = graph
+        .content
+        .vertices()
+        .iter()
+        .find(|vertex| vertex.id == edge.from_vertex_id)
+        .ok_or_else(|| graph_invalid("Graph source vertex is missing"))?;
+    let to = graph
+        .content
+        .vertices()
+        .iter()
+        .find(|vertex| vertex.id == edge.to_vertex_id)
+        .ok_or_else(|| graph_invalid("Graph destination vertex is missing"))?;
+    graph_box(&from.r#box, frame)?;
+    graph_box(&to.r#box, frame)?;
+    let mut points = Vec::with_capacity(edge.waypoints.len() + 2);
+    points.push(graph_port_point(from, edge.from_port));
+    points.extend_from_slice(edge.waypoints);
+    points.push(graph_port_point(to, edge.to_port));
+    for point in &points {
+        graph_point(point, frame)?;
+    }
+    let midpoint = graph_polyline_midpoint(&points)?;
+    let resolved = GraphBox {
+        x: midpoint.x + offset.x - edge.label_box.width / 2.0,
+        y: midpoint.y + offset.y - edge.label_box.height / 2.0,
+        width: edge.label_box.width,
+        height: edge.label_box.height,
+    };
+    graph_box(&resolved, frame)?;
+    Ok(resolved)
 }
 
 fn graph_edge_shape(
@@ -685,7 +891,7 @@ fn graph_edge_shape(
             "Graph edge needs distinct endpoints and bounded waypoints",
         ));
     }
-    graph_box(edge.label_box, &graph.reference_frame)?;
+    graph_resolved_label_box(&edge, graph)?;
     let mut previous = graph_port_point(from, edge.from_port);
     let destination = graph_port_point(to, edge.to_port);
     for point in edge.waypoints.iter().chain(std::iter::once(&destination)) {
@@ -1463,5 +1669,301 @@ impl Project {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod label_placement_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    // Authored domain geometry only. This fixture is not a native admission,
+    // ready context, persisted document or source of execution authority.
+    fn raw_graph(flow: bool) -> Value {
+        let id = |value: u128| Uuid::from_u128(value).to_string();
+        let vertex = |value, x, y| {
+            json!({
+                "id": id(value), "label": "Concept", "meaning": "Authored concept",
+                "unit": {"kind": "qualitative"},
+                "box": {"x": x, "y": y, "width": 100.0, "height": 80.0},
+                "shape": "rectangle", "target": null,
+                "appearance": {"at": {"num": "0", "den": "1"}, "duration": {"num": "1", "den": "30"}}
+            })
+        };
+        let mut edge = json!({
+            "id": id(12), "label": "Relationship", "from_vertex_id": id(10), "to_vertex_id": id(11),
+            "from_port": "right", "to_port": "left",
+            "waypoints": [{"x": 230.0, "y": 490.0}, {"x": 500.0, "y": 490.0}],
+            "label_box": {"x": 300.0, "y": 100.0, "width": 100.0, "height": 40.0},
+            "appearance": {"at": {"num": "1", "den": "30"}, "duration": {"num": "1", "den": "30"}}
+        });
+        let vertices = json!([vertex(10, 130.0, 250.0), vertex(11, 500.0, 830.0)]);
+        let content = if flow {
+            edge["channel"] = json!("data");
+            json!({"kind": "system_flow", "vertices": vertices, "edges": [edge],
+                "source": {"kind": "synthetic", "disclosure": "Illustrative flow; no recorded execution."},
+                "events": [{"id": id(13), "edge_id": id(12), "label": "Illustrated transfer",
+                    "at": {"num": "1", "den": "15"}, "duration": {"num": "1", "den": "30"}}]})
+        } else {
+            edge["influence"] = json!("unspecified");
+            edge["basis"] =
+                json!({"kind": "author_hypothesis", "disclosure": "Authored hypothesis."});
+            json!({"kind": "causal_diagram", "vertices": vertices, "edges": [edge]})
+        };
+        json!({"id": id(1), "scene_id": id(2), "component_version": 1,
+            "subject_ref": {"kind": "scene", "scene_id": id(2)},
+            "time_range": {"start": {"num": "0", "den": "1"}, "duration": {"num": "5", "den": "1"}},
+            "brand_profile_ref": null, "variant_profile_ref": id(3),
+            "reference_frame": {"width": 1000, "height": 1080}, "motion": "full",
+            "style": {"background": "#101820", "vertex_fill": "#263B4F", "text_color": "#FFFFFF",
+                "edge_color": "#77C9D4", "accent_color": "#E9B872", "font_family": "Instrument Sans Variable",
+                "font_size": 16.0, "edge_width": 2.0,
+                "disclosure_box": {"x": 20.0, "y": 1000.0, "width": 400.0, "height": 40.0}},
+            "content": content,
+            "authorship": {"author_label": "Domain fixture", "rationale": "Pure label geometry",
+                "source_snapshot": {"project_id": id(4), "generation": id(5), "branch_id": id(6), "revision": 7}}})
+    }
+
+    fn graph(flow: bool, automatic: bool) -> SemanticGraph {
+        let mut value = raw_graph(flow);
+        if automatic {
+            value["content"]["edges"][0]["label_placement"] =
+                json!({"kind": "polyline_midpoint", "offset": {"x": -5.0, "y": 10.0}});
+        }
+        let graph: SemanticGraph = serde_json::from_value(value).unwrap();
+        graph
+            .validate_shape(Some(RationalTime { num: 30, den: 1 }))
+            .unwrap();
+        graph
+    }
+
+    fn resolve(graph: &SemanticGraph) -> Result<GraphBox> {
+        match &graph.content {
+            GraphContent::CausalDiagram { edges, .. } => edges[0].resolved_label_box(graph),
+            GraphContent::SystemFlow { edges, .. } => edges[0].resolved_label_box(graph),
+        }
+    }
+
+    fn vertices_mut(graph: &mut SemanticGraph) -> &mut Vec<GraphVertex> {
+        match &mut graph.content {
+            GraphContent::CausalDiagram { vertices, .. }
+            | GraphContent::SystemFlow { vertices, .. } => vertices,
+        }
+    }
+
+    fn set_offset(graph: &mut SemanticGraph, x: f64, y: f64) {
+        let placement = Some(GraphLabelPlacement::PolylineMidpoint {
+            offset: GraphPoint { x, y },
+        });
+        match &mut graph.content {
+            GraphContent::CausalDiagram { edges, .. } => edges[0].label_placement = placement,
+            GraphContent::SystemFlow { edges, .. } => edges[0].label_placement = placement,
+        }
+    }
+
+    #[test]
+    fn absent_label_placement_preserves_original_wire_and_both_graph_kinds_roundtrip() {
+        for flow in [false, true] {
+            let manual = graph(flow, false);
+            let encoded = serde_json::to_value(&manual).unwrap();
+            assert_eq!(encoded, raw_graph(flow));
+            assert!(
+                encoded["content"]["edges"][0]
+                    .get("label_placement")
+                    .is_none()
+            );
+            assert_eq!(encoded["brand_profile_ref"], Value::Null);
+            assert_eq!(encoded["content"]["vertices"][0]["target"], Value::Null);
+            for source in [manual, graph(flow, true)] {
+                let encoded = serde_json::to_vec(&source).unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<SemanticGraph>(&encoded).unwrap(),
+                    source
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn present_null_incomplete_and_unknown_label_intent_are_closed_wire_errors() {
+        for flow in [false, true] {
+            for invalid in [
+                Value::Null,
+                json!("polyline_midpoint"),
+                json!(["polyline_midpoint", {"x": 0.0, "y": 0.0}]),
+                json!(["polyline_midpoint", {"offset": {"x": 0.0, "y": 0.0}}]),
+                json!({"kind": "polyline_midpoint"}),
+                json!({"kind": "polyline_midpoint", "offset": null}),
+                json!({"kind": "polyline_midpoint", "offset": [0.0, 0.0]}),
+                json!({"kind": {"polyline_midpoint": null}, "offset": {"x": 0.0, "y": 0.0}}),
+                json!({"kind": "polyline_midpoint", "offset": {"x": 0.0}}),
+                json!({"kind": "polyline_midpoint", "offset": {"x": 0.0, "y": 0.0, "z": 0.0}}),
+                json!({"kind": "polyline_midpoint", "offset": {"x": 0.0, "y": 0.0}, "ready": true}),
+                json!({"kind": "automatic", "offset": {"x": 0.0, "y": 0.0}}),
+            ] {
+                let mut wire = raw_graph(flow);
+                wire["content"]["edges"][0]["label_placement"] = invalid;
+                assert!(serde_json::from_value::<SemanticGraph>(wire).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn manual_boxes_do_not_follow_endpoint_edits_or_rewrite_waypoints() {
+        for flow in [false, true] {
+            let mut graph = graph(flow, false);
+            let authored = serde_json::to_value(&graph).unwrap()["content"]["edges"].clone();
+            let expected = resolve(&graph).unwrap();
+            vertices_mut(&mut graph)[1].r#box.y = 990.0;
+            graph
+                .validate_shape(Some(RationalTime { num: 30, den: 1 }))
+                .unwrap();
+            assert_eq!(resolve(&graph).unwrap(), expected);
+            assert_eq!(
+                serde_json::to_value(&graph).unwrap()["content"]["edges"],
+                authored
+            );
+        }
+    }
+
+    #[test]
+    fn auto_causal_and_flow_boxes_use_current_ports_fixed_waypoints_and_signed_offset() {
+        for flow in [false, true] {
+            let mut graph = graph(flow, true);
+            let original = graph.clone();
+            // Length 200 +270 +380 =850; its midpoint is (455,490).
+            assert_eq!(
+                resolve(&graph).unwrap(),
+                GraphBox {
+                    x: 400.0,
+                    y: 480.0,
+                    width: 100.0,
+                    height: 40.0
+                }
+            );
+            assert_eq!(graph, original);
+            vertices_mut(&mut graph)[1].r#box.y = 990.0;
+            graph
+                .validate_shape(Some(RationalTime { num: 30, den: 1 }))
+                .unwrap();
+            // Only the endpoint moves: length 1010 gives midpoint (500,525).
+            assert_eq!(
+                resolve(&graph).unwrap(),
+                GraphBox {
+                    x: 445.0,
+                    y: 515.0,
+                    width: 100.0,
+                    height: 40.0
+                }
+            );
+            assert_eq!(
+                serde_json::to_value(&graph).unwrap()["content"]["edges"],
+                serde_json::to_value(&original).unwrap()["content"]["edges"]
+            );
+        }
+    }
+
+    #[test]
+    fn midpoint_skips_repeated_segments_and_is_total_for_all_zero_paths() {
+        let points = vec![
+            GraphPoint { x: 230.0, y: 290.0 },
+            GraphPoint { x: 230.0, y: 290.0 },
+            GraphPoint { x: 230.0, y: 490.0 },
+            GraphPoint { x: 230.0, y: 490.0 },
+            GraphPoint { x: 500.0, y: 490.0 },
+            GraphPoint { x: 500.0, y: 870.0 },
+        ];
+        assert_eq!(
+            graph_polyline_midpoint(&points).unwrap(),
+            GraphPoint { x: 455.0, y: 490.0 }
+        );
+        let first = GraphPoint { x: -4.0, y: 5.0 };
+        let repeated = [first.clone(), first.clone(), first.clone(), first.clone()];
+        assert_eq!(graph_polyline_midpoint(&repeated).unwrap(), first);
+        assert_eq!(
+            graph_polyline_midpoint(std::slice::from_ref(&first)).unwrap(),
+            first
+        );
+        assert!(graph_polyline_midpoint(&[]).is_err());
+        assert!(
+            graph_polyline_midpoint(&[GraphPoint {
+                x: f64::NAN,
+                y: 0.0
+            }])
+            .is_err()
+        );
+        assert!(
+            graph_polyline_midpoint(&[
+                GraphPoint {
+                    x: -f64::MAX,
+                    y: 0.0
+                },
+                GraphPoint {
+                    x: f64::MAX,
+                    y: 0.0
+                },
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn midpoint_arithmetic_does_not_relax_existing_whole_graph_segment_admission() {
+        for flow in [false, true] {
+            let mut graph = graph(flow, true);
+            let start = GraphPoint { x: 230.0, y: 290.0 };
+            match &mut graph.content {
+                GraphContent::CausalDiagram { edges, .. } => edges[0].waypoints.insert(0, start),
+                GraphContent::SystemFlow { edges, .. } => edges[0].waypoints.insert(0, start),
+            }
+            assert!(resolve(&graph).is_ok());
+            let before = graph.clone();
+            let error = graph
+                .validate_shape(Some(RationalTime { num: 30, den: 1 }))
+                .unwrap_err();
+            assert!(error.to_string().contains("degenerate segment"));
+            assert_eq!(graph, before);
+        }
+    }
+
+    #[test]
+    fn resolved_bounds_reject_without_clamping_fallback_or_source_mutation() {
+        for flow in [false, true] {
+            for (x, y) in [(-1000.0, 0.0), (1000.0, 0.0), (0.0, -1000.0), (0.0, 1000.0)] {
+                let mut graph = graph(flow, true);
+                set_offset(&mut graph, x, y);
+                let before = graph.clone();
+                assert!(resolve(&graph).is_err());
+                assert!(graph.validate_shape(None).is_err());
+                assert_eq!(graph, before);
+            }
+            for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let mut graph = graph(flow, true);
+                set_offset(&mut graph, value, 0.0);
+                assert!(resolve(&graph).is_err());
+                assert!(graph.validate_shape(None).is_err());
+            }
+            let mut graph = graph(flow, true);
+            graph.reference_frame.width = GRAPH_SAFE_INTEGER_MAX + 1;
+            assert!(resolve(&graph).is_err());
+        }
+    }
+
+    #[test]
+    fn auto_labels_require_current_endpoints_and_the_original_bounded_path() {
+        for flow in [false, true] {
+            let mut missing = graph(flow, true);
+            vertices_mut(&mut missing).pop();
+            let before = missing.clone();
+            assert!(resolve(&missing).is_err());
+            assert_eq!(missing, before);
+            let mut over_budget = graph(flow, true);
+            let points = vec![GraphPoint { x: 400.0, y: 400.0 }; SEMANTIC_GRAPH_MAX_WAYPOINTS + 1];
+            match &mut over_budget.content {
+                GraphContent::CausalDiagram { edges, .. } => edges[0].waypoints = points,
+                GraphContent::SystemFlow { edges, .. } => edges[0].waypoints = points,
+            }
+            assert!(resolve(&over_budget).is_err());
+        }
     }
 }

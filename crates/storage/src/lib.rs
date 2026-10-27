@@ -31,6 +31,7 @@ mod project_creation;
 mod project_projection;
 mod render_window_cache;
 mod root_operation_budget;
+mod scene_boundary_target;
 pub use apply_receipt_binding::{
     APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
     ApplyResultObservation, MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
@@ -1431,6 +1432,10 @@ impl Store {
                 expected: expected.revision,
                 actual: project.revision,
             });
+        }
+
+        if let Change::UpsertSceneBoundary { boundary } = change {
+            scene_boundary_target::verify_upsert_target(&tx, &project, boundary)?;
         }
 
         if let Change::ApplyVoiceAlignment { application } = change {

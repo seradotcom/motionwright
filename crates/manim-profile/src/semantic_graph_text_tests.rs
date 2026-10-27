@@ -75,6 +75,7 @@ fn fixture() -> ManimSemanticGraphPlan {
         to_port: GraphPort::Left,
         waypoints: vec![GraphPoint { x: 100.0, y: 40.0 }],
         label_box: rect(100.0, 100.0, 240.0, 100.0),
+        label_placement: None,
         appearance: GraphAppearance {
             at: time(1, 1),
             duration: time(1, 1),
@@ -264,6 +265,7 @@ fn causal_minus_and_disclosures_use_the_frozen_presentation() {
             to_port: edge.to_port,
             waypoints: edge.waypoints.clone(),
             label_box: edge.label_box.clone(),
+            label_placement: None,
             appearance: edge.appearance.clone(),
             influence: GraphCausalInfluence::Negative,
             basis: GraphCausalBasis::AuthorHypothesis {

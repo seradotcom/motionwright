@@ -5,6 +5,13 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ProductionDesign {
+    /// Typed author-declared scene continuity; absence remains legacy source.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::scene_boundary::deserialize_scene_boundaries"
+    )]
+    pub scene_boundaries: Vec<SceneBoundary>,
     /// Per-profile authored intent; global audio gains remain in AudioState.
     #[serde(
         default,
@@ -427,6 +434,7 @@ impl ProductionDesign {
         brief: &Brief,
         audio: &AudioState,
     ) -> Result<()> {
+        self.validate_scene_boundaries()?;
         crate::creative_revisions::validate_creative_patch_records(&self.patches)?;
         self.validate_font_portable_copy_declarations()?;
         if let Some(lock) = &self.narration_take_lock {

@@ -29,6 +29,7 @@ mod procedural;
 mod product_stage;
 mod production_design;
 mod render_tail_impact;
+mod scene_boundary;
 mod scene_timing_guard;
 mod semantic_graph;
 mod semantic_sfx;
@@ -65,6 +66,7 @@ pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
 pub use render_tail_impact::*;
+pub use scene_boundary::*;
 pub use semantic_graph::*;
 pub use semantic_sfx::*;
 pub use stage_capture::*;
@@ -704,6 +706,7 @@ impl Project {
         if branch_ids.len() != self.branches.len() || !branch_ids.contains(&self.active_branch) {
             return Err(DomainError::Invalid("invalid branch set".into()));
         }
+        self.validate_scene_boundary_budget()?;
         self.validate_history()?;
         self.production_design
             .validate(&self.scenes, &self.assets, &self.brief, &self.audio)?;
@@ -1095,13 +1098,18 @@ impl Project {
         if let Change::SetLock { resource, .. } = change {
             validate_semantic_graph_resource_spelling(resource)?;
         }
-        // Graph edits and changes to their existing scene/profile dependencies
+        // Reparenting, Graph and boundary edits preserve their scene/profile dependencies
         // preserve the entire document on rejection outside Store as well.
         // Keep the existing Narrative and timing guards inside this boundary.
         if matches!(
             change,
-            Change::UpsertSemanticGraph { .. } | Change::RemoveSemanticGraph { .. }
-        ) || !self.production_design.semantic_graphs.is_empty()
+            Change::UpsertSemanticGraph { .. }
+                | Change::RemoveSemanticGraph { .. }
+                | Change::ReparentCanvasNode { .. }
+                | Change::UpsertSceneBoundary { .. }
+                | Change::RemoveSceneBoundary { .. }
+        ) || self.has_scene_boundary_state()
+            || !self.production_design.semantic_graphs.is_empty()
             || self.branch_workspaces.iter().any(|workspace| {
                 !workspace
                     .base_state
@@ -1234,6 +1242,10 @@ impl Project {
             ));
         }
         match change {
+            Change::UpsertSceneBoundary { boundary } => self.upsert_scene_boundary(boundary)?,
+            Change::RemoveSceneBoundary { boundary_id } => {
+                self.remove_scene_boundary(*boundary_id)?;
+            }
             Change::UpsertSemanticGraph { graph } => self.upsert_semantic_graph(graph)?,
             Change::RemoveSemanticGraph {
                 graph_id,
@@ -2221,6 +2233,7 @@ impl Project {
                 node_id,
                 parent_id,
                 z_index,
+                preserve,
             } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Content, LockKind::Position])?;
@@ -2229,26 +2242,14 @@ impl Project {
                     .iter_mut()
                     .find(|scene| scene.id == *scene_id)
                     .ok_or(DomainError::NotFound(resource))?;
-                if parent_id.is_some_and(|parent| {
-                    parent == *node_id || !scene.nodes.iter().any(|node| node.id == parent)
-                }) {
-                    return Err(DomainError::Invalid(
-                        "canvas parent must be another node in the scene".into(),
-                    ));
-                }
-                let node = scene
-                    .nodes
-                    .iter_mut()
-                    .find(|node| node.id == *node_id)
-                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
-                if property_locked(
-                    &node.property_locks,
-                    &[NodeProperty::Parent, NodeProperty::Order],
-                ) {
-                    return Err(DomainError::Locked(format!("node:{node_id} hierarchy")));
-                }
+                let (index, transform) =
+                    prepare_canvas_reparent(scene, *node_id, *parent_id, *preserve)?;
+                let node = &mut scene.nodes[index];
                 node.parent_id = *parent_id;
                 node.z_index = *z_index;
+                node.x = transform.x;
+                node.y = transform.y;
+                node.rotation_deg = transform.rotation_deg;
             }
             Change::SetCanvasRelations {
                 scene_id,
@@ -2830,6 +2831,12 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    UpsertSceneBoundary {
+        boundary: Box<SceneBoundary>,
+    },
+    RemoveSceneBoundary {
+        boundary_id: Uuid,
+    },
     UpsertFontPortableCopy {
         declaration: FontPortableCopyDeclaration,
     },
@@ -3122,6 +3129,12 @@ pub enum Change {
         node_id: Uuid,
         parent_id: Option<Uuid>,
         z_index: i32,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::canvas::deserialize_reparent_coordinate_policy"
+        )]
+        preserve: Option<ReparentCoordinatePolicy>,
     },
     SetCanvasRelations {
         scene_id: Uuid,
@@ -3385,6 +3398,7 @@ mod tests {
                 node_id: child_id,
                 parent_id: Some(parent_id),
                 z_index: 2,
+                preserve: None,
             })
             .unwrap();
 
@@ -3402,6 +3416,7 @@ mod tests {
                 node_id: child_id,
                 parent_id: None,
                 z_index: 2,
+                preserve: None,
             })
             .unwrap();
         project

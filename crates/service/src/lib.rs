@@ -9,6 +9,7 @@ mod models;
 mod portability;
 mod project_creation;
 mod project_projection;
+mod scene_boundary;
 mod semantic_graph;
 mod semantic_graph_admission;
 mod svg_admission;
@@ -32,6 +33,9 @@ pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
     NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
     ProjectionResult, ScenePage, ScenePageCursor, SceneRef, SceneSummary,
+};
+pub use scene_boundary::{
+    SceneBoundaryAuthoringContext, SceneBoundaryContextRequest, SceneBoundaryPredecessorContext,
 };
 pub use semantic_graph::SemanticGraphContextRequest;
 pub use semantic_graph_admission::{
