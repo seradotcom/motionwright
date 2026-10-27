@@ -1,6 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import type { Change, Project } from "../src/types";
+import type {
+  Change, Project, SceneBoundary, SceneBoundaryAuthoringContext, SceneBoundaryContextRequest,
+  SceneBoundaryEndpoint, SceneBoundaryFilmOptions,
+} from "../src/types";
 import { decodeProductionCopy, productionScope, type ProductionDraft } from "../src/productionDesignDraft";
 import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
@@ -774,4 +777,271 @@ test("opaque source attachment pre-dispatch delivery interruption stays UNKNOWN 
     Object.assign(observations, { attemptedBeforeDispatch: attempted, first, later, oracle, additionalEditorMutations: 0, additionalEditorGrants: 1, replayedOriginal: false });
   } catch (reason) { primary = { reason }; }
   finally { service.invoke = original; await finish(page, info, service, peers, final, observations, [], primary); }
+});
+
+const boundaryField = (page: Page, name: string) => page.getByLabel("Boundary " + name, { exact: true });
+const boundaryBinding = (page: Page) => page.getByRole("region", { name: "Boundary source binding", exact: true });
+async function openBoundaries(page: Page, sceneId: string, boundaryId = "") {
+  await button(page, "Production").click(); await button(page, "Scene boundaries").click();
+  await page.getByLabel("Production working scene").selectOption(sceneId);
+  await expect(page.getByRole("region", { name: "Scene boundary editor", exact: true })).toBeVisible();
+  await page.getByLabel("Saved scene boundary", { exact: true }).selectOption(boundaryId);
+}
+function boundaryAuthoring(project: Project) {
+  const scene = project.scenes.find(value => value.renderer === "motion-canvas" && value.nodes.length > 0);
+  const profile = project.deliverables[0];
+  if (!scene || !profile) throw new Error("Scene boundary coverage needs an existing editable scene and delivery profile from the real service fixture.");
+  const num = Number(profile.frame_rate.num), den = Number(profile.frame_rate.den);
+  for (const part of [num, den]) {
+    expect(Number.isSafeInteger(part)).toBe(true); expect(part).toBeGreaterThan(0); expect(part).toBeLessThanOrEqual(0xffffffff);
+  }
+  // These are explicit test author choices. The UI must not invent missing
+  // film options, derive a SHA, or claim that this editorial snapshot rendered.
+  const options: SceneBoundaryFilmOptions = { frame_rate: { num, den }, font_family: "Instrument Sans Variable",
+    mono_font_family: "IBM Plex Mono", role: "evidence", archetype: "evidence_frame" };
+  return { scene, profile, options };
+}
+async function fillBoundaryAuthoring(page: Page, profileId: string, options: SceneBoundaryFilmOptions) {
+  await boundaryField(page, "delivery profile").selectOption(profileId);
+  await boundaryField(page, "frame rate numerator").fill(String(options.frame_rate.num));
+  await boundaryField(page, "frame rate denominator").fill(String(options.frame_rate.den));
+  await boundaryField(page, "font family").fill(options.font_family);
+  await boundaryField(page, "mono font family").fill(options.mono_font_family);
+  await boundaryField(page, "narrative role").selectOption(options.role);
+  await boundaryField(page, "archetype").selectOption(options.archetype);
+  await boundaryField(page, "input mode").selectOption("self_contained");
+  await boundaryField(page, "definition").selectOption("draft_incomplete");
+}
+async function readBoundaryBinding(page: Page) {
+  const raw = await boundaryBinding(page).locator("pre").textContent();
+  if (!raw) throw new Error("The editor did not expose its inspected SceneBoundary source.");
+  return JSON.parse(raw) as Pick<SceneBoundaryAuthoringContext, "source" | "predecessor">;
+}
+function boundaryInspection(service: ScopedChangeService, index: number) {
+  const call = requests(service, "scene_boundary_authoring_context")[index];
+  if (!call || !("command" in call.payload)) throw new Error("The expected SceneBoundary context request was not sent to the real service.");
+  const request = call.payload.args?.request as SceneBoundaryContextRequest;
+  const reply = service.transcript.find(entry => entry.direction === "response" && entry.processId === call.processId && entry.payload.id === call.payload.id);
+  if (!reply || !("ok" in reply.payload)) throw new Error("The real SceneBoundary context response has not arrived.");
+  return { request, reply: reply.payload };
+}
+function expectBoundaryContext(service: ScopedChangeService, index: number, project: Project, sceneId: string,
+  profileId: string, options: SceneBoundaryFilmOptions) {
+  const inspection = boundaryInspection(service, index);
+  expect(inspection.request).toEqual({ project_id: project.id,
+    expected: { resource: "project:" + project.id, generation: project.generation, revision: project.revision },
+    branch_id: project.active_branch, scene_id: sceneId, deliverable_profile_id: profileId,
+    authored_film_options: options, predecessor_boundary_id: null });
+  if (!inspection.reply.ok) throw new Error("Actual SceneBoundary context was rejected: " + JSON.stringify(inspection.reply.error));
+  const context = inspection.reply.result as SceneBoundaryAuthoringContext;
+  expect(context).toEqual({ schema: "motionwright.scene-boundary-authoring-context/1", scene_id: sceneId,
+    source: { project_id: project.id, generation: project.generation, branch_id: project.active_branch,
+      authored_revision: project.revision, deliverable_profile_id: profileId, film_options: options,
+      dependencies_sha256: expect.stringMatching(/^[0-9a-f]{64}$/) }, predecessor: null });
+  return context;
+}
+function boundaryFrom(request: ApplyArgs): SceneBoundary {
+  if (request.request.change.type !== "upsert_scene_boundary") throw new Error("Expected the canonical SceneBoundary upsert mutation.");
+  return request.request.change.boundary;
+}
+function expectOnlyBoundaries(before: Project, after: Project, boundaries: SceneBoundary[]) {
+  expect(unrelated(after)).toEqual(unrelated(before)); expect(after.scenes).toEqual(before.scenes);
+  const earlier = structuredClone(before.production_design), current = structuredClone(after.production_design);
+  if (earlier) delete earlier.scene_boundaries;
+  if (current) delete current.scene_boundaries;
+  expect(current).toEqual(earlier); expect(after.production_design?.scene_boundaries ?? []).toEqual(boundaries);
+}
+
+test("Scene boundary explicit source binding, Draft and Explicit saves preserve authored objects and assets through SQLite reopen and journalled removal", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service), { scene, profile, options } = boundaryAuthoring(initial);
+    const existing = initial.production_design?.scene_boundaries ?? [];
+    const asset = initial.assets.find(value => value.content_sha256);
+    if (!asset?.content_sha256) throw new Error("Scene boundary coverage needs the fixture's existing digest-bound asset.");
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    observations.initial = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/"); await openBoundaries(page, scene.id);
+    await expect(boundaryField(page, "delivery profile")).toHaveValue("");
+    await expect(boundaryField(page, "font family")).toHaveValue("");
+    await expect(boundaryField(page, "mono font family")).toHaveValue("");
+    await fillBoundaryAuthoring(page, profile.id, options);
+    await boundaryField(page, "entry snapshot").fill("null"); await boundaryField(page, "exit snapshot").fill("null");
+    await expect(page.getByRole("status", { name: "Boundary input needs attention", exact: true })).toHaveCount(0);
+    expect(requests(service, "scene_boundary_authoring_context")).toHaveLength(0);
+    await button(page, "Bind boundary source").click(); await expect(button(page, "Rebind boundary source")).toBeVisible();
+    const firstContext = expectBoundaryContext(service, 0, initial, scene.id, profile.id, options);
+    expect(await readBoundaryBinding(page)).toEqual({ source: firstContext.source, predecessor: null });
+    expect(await service.project(initial.id)).toEqual(initial);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await button(page, "Save scene boundary").click(); await revision(page, initial.revision + 1);
+    const draft = boundaryFrom(applies(service)[writes]);
+    expect(draft).toEqual({ version: 1, id: expect.any(String), scene_id: scene.id, input: { kind: "self_contained" },
+      definition: { kind: "draft_incomplete", source: firstContext.source, entry: null, exit: null } });
+    final = await service.project(initial.id); const savedDraft = final;
+    expectOnlyBoundaries(initial, savedDraft, [...existing, draft]);
+    await page.reload(); await openBoundaries(page, scene.id, draft.id);
+    await expect(boundaryField(page, "definition")).toHaveValue("draft_incomplete");
+    expect(await readBoundaryBinding(page)).toEqual({ source: firstContext.source, predecessor: null });
+    await button(page, "Copy saved scene to entry").click(); await button(page, "Copy saved scene to exit").click();
+    const copiedEntry = JSON.parse(await boundaryField(page, "entry snapshot").inputValue()) as SceneBoundaryEndpoint;
+    const copiedExit = JSON.parse(await boundaryField(page, "exit snapshot").inputValue()) as SceneBoundaryEndpoint;
+    expect(copiedEntry).toEqual({ nodes: scene.nodes, camera: scene.camera, assets: [] }); expect(copiedExit).toEqual(copiedEntry);
+    const entry: SceneBoundaryEndpoint = { ...copiedEntry, assets: [{ asset_id: asset.id, content_sha256: asset.content_sha256 }] };
+    const exit: SceneBoundaryEndpoint = { ...copiedExit, camera: { ...scene.camera, center_x: scene.camera.center_x + 24 }, assets: entry.assets };
+    await boundaryField(page, "entry snapshot").fill(JSON.stringify(entry, null, 2));
+    await boundaryField(page, "exit snapshot").fill(JSON.stringify(exit, null, 2));
+    await boundaryField(page, "definition").selectOption("explicit");
+    await button(page, "Rebind boundary source").click();
+    await expect.poll(async () => (await readBoundaryBinding(page)).source.authored_revision).toBe(savedDraft.revision);
+    const explicitContext = expectBoundaryContext(service, 1, savedDraft, scene.id, profile.id, options);
+    expect(explicitContext.source.dependencies_sha256).toBe(firstContext.source.dependencies_sha256);
+    expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    await button(page, "Save scene boundary").click(); await revision(page, initial.revision + 2);
+    const explicit = boundaryFrom(applies(service)[writes + 1]);
+    expect(explicit).toEqual({ ...draft, definition: { kind: "explicit", source: explicitContext.source, entry, exit } });
+    final = await service.project(initial.id); expectOnlyBoundaries(initial, final, [...existing, explicit]);
+    const savedExplicit = final, beforeRemoval = await service.observeStoredProject(savedExplicit);
+    await page.screenshot({ path: info.outputPath("scene-boundary-explicit-persisted.png"), fullPage: true });
+    await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(savedExplicit);
+    expect(await service.history(initial.id, 0)).toEqual(beforeRemoval.journal);
+    await page.reload(); await openBoundaries(page, scene.id, explicit.id);
+    await expect(boundaryField(page, "definition")).toHaveValue("explicit");
+    expect(JSON.parse(await boundaryField(page, "entry snapshot").inputValue())).toEqual(entry);
+    expect(JSON.parse(await boundaryField(page, "exit snapshot").inputValue())).toEqual(exit);
+    expect(await readBoundaryBinding(page)).toEqual({ source: explicitContext.source, predecessor: null });
+    expect(requests(service, "scene_boundary_authoring_context")).toHaveLength(2);
+    expect(applies(service)).toHaveLength(writes + 2); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 2);
+    const removedInput = { entryJson: await boundaryField(page, "entry snapshot").inputValue(),
+      exitJson: await boundaryField(page, "exit snapshot").inputValue() };
+    await button(page, "Remove scene boundary").click(); await revision(page, initial.revision + 3);
+    final = await service.project(initial.id); expectOnlyBoundaries(initial, final, existing);
+    const sent = applies(service).slice(writes); expect(sent.map(value => value.request.change)).toEqual([
+      { type: "upsert_scene_boundary", boundary: draft }, { type: "upsert_scene_boundary", boundary: explicit },
+      { type: "remove_scene_boundary", boundary_id: explicit.id },
+    ]);
+    expect(new Set(sent.map(value => value.request.request_id)).size).toBe(3);
+    expect(new Set(sent.map(value => value.request.effect_grant)).size).toBe(3);
+    expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 3);
+    const oracle = await service.observeStoredProject(final);
+    expect(oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change)).toEqual(sent.map(value => value.request.change));
+    await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    await page.reload(); await openBoundaries(page, scene.id);
+    const removedProject = await service.project(initial.id);
+    expect(removedProject).toEqual(final);
+    expect((removedProject.production_design?.scene_boundaries ?? []).some(boundary => boundary.id === explicit.id)).toBe(false);
+    const selection = page.getByLabel("Saved scene boundary", { exact: true });
+    await expect(selection.getByRole("option", { name: "Retained local declaration · " + explicit.id, exact: true })).toHaveCount(1);
+    await selection.selectOption(explicit.id); await expect(selection).toHaveValue(explicit.id);
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(removedInput.entryJson);
+    await expect(boundaryField(page, "exit snapshot")).toHaveValue(removedInput.exitJson);
+    await expect(boundaryField(page, "definition")).toHaveValue("explicit");
+    expect(await readBoundaryBinding(page)).toEqual({ source: explicitContext.source, predecessor: null });
+    await expect(page.getByRole("status").filter({ hasText: "This boundary was removed." })).toBeVisible();
+    await expect(button(page, "Save scene boundary")).toBeDisabled(); await expect(button(page, "Remove scene boundary")).toBeDisabled();
+    const retainedRemoval = await activePlanCopy(page, productionScope(initial, { kind: "boundary", sceneId: scene.id, boundaryId: explicit.id }));
+    expect(retainedRemoval.draft.removedBoundaryId).toBe(explicit.id); expect(retainedRemoval.draft.pending).toBeNull();
+    expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 3);
+    expect(applies(service)).toHaveLength(writes + 3); expect(requests(service, "scene_boundary_authoring_context")).toHaveLength(2);
+    Object.assign(observations, { firstContext, savedDraft, explicitContext, savedExplicit, entry, exit, removedInput, retainedRemoval, sent, oracle,
+      additionalMutations: 3, additionalGrants: 3, nativeExecutionClaimed: false });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, [], primary); }
+});
+
+test("Scene boundary keeps invalid raw endpoint JSON and its prior source when a real peer makes explicit rebind stale", async ({ page }, info) => {
+  const service = await setup(info), peers: ScopedChangeService[] = [], observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service), { scene, profile, options } = boundaryAuthoring(initial);
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    const scope = productionScope(initial, { kind: "boundary", sceneId: scene.id, boundaryId: null });
+    observations.initial = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/"); await openBoundaries(page, scene.id);
+    await fillBoundaryAuthoring(page, profile.id, options);
+    await button(page, "Bind boundary source").click(); await expect(button(page, "Rebind boundary source")).toBeVisible();
+    const originalContext = expectBoundaryContext(service, 0, initial, scene.id, profile.id, options);
+    const rawEntry = "  {\n  \"nodes\": [\n    ", rawExit = "  null  \n";
+    await boundaryField(page, "entry snapshot").fill(rawEntry); await boundaryField(page, "exit snapshot").fill(rawExit);
+    await expect(page.getByRole("status", { name: "Boundary input needs attention", exact: true })).toContainText("JSON");
+    await expect(button(page, "Save scene boundary")).toBeDisabled();
+    await button(page, "Timeline").click(); await openBoundaries(page, scene.id);
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    await page.reload(); await openBoundaries(page, scene.id);
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    expect(await readBoundaryBinding(page)).toEqual({ source: originalContext.source, predecessor: null });
+    const retained = await activePlanCopy(page, scope);
+    if (retained.draft.input.kind !== "boundary") throw new Error("The active recovery copy is not the authored boundary draft.");
+    expect(retained.draft.input.entryJson).toBe(rawEntry); expect(retained.draft.input.exitJson).toBe(rawExit);
+    expect(retained.draft.input.boundSource).toEqual(originalContext.source); expect(retained.draft.pending).toBeNull();
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    expect(await service.project(initial.id)).toEqual(initial);
+    const peer = await service.peer(); peers.push(peer);
+    const peerCamera = { ...scene.camera, center_x: scene.camera.center_x + 31, zoom: 1.25 };
+    final = await peer.apply(await peer.project(initial.id), { type: "set_camera", scene_id: scene.id, camera: peerCamera });
+    expect(final.revision).toBe(initial.revision + 1);
+    await button(page, "Rebind boundary source").click();
+    await expect(page.getByRole("alert").filter({ hasText: "requires the complete current revision stamp" })).toBeVisible();
+    const stale = boundaryInspection(service, 1);
+    expect(stale.request).toEqual(boundaryInspection(service, 0).request);
+    expect(stale.reply.ok).toBe(false);
+    if (!stale.reply.ok) expect(stale.reply.error).toContain("requires the complete current revision stamp");
+    expect(await readBoundaryBinding(page)).toEqual({ source: originalContext.source, predecessor: null });
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    const afterStale = await activePlanCopy(page, scope);
+    if (afterStale.draft.input.kind !== "boundary") throw new Error("The stale read replaced the active boundary draft.");
+    expect(afterStale.draft.input).toEqual(retained.draft.input); expect(afterStale.draft.pending).toBeNull();
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    expect(await service.project(initial.id)).toEqual(final);
+    await page.reload(); await openBoundaries(page, scene.id); await revision(page, final.revision);
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    expect(await readBoundaryBinding(page)).toEqual({ source: originalContext.source, predecessor: null });
+    const conflict = page.getByRole("region", { name: "Scene boundary conflict", exact: true });
+    await expect(conflict).toBeVisible(); await expect(button(page, "Rebind boundary source")).toBeDisabled();
+    expect(requests(service, "scene_boundary_authoring_context")).toHaveLength(2);
+    // Reviewing the new project revision is a separate author decision. It
+    // retains both raw endpoints and the earlier source; it cannot rebind.
+    await button(page, "Keep my Scene boundary input").click(); await expect(conflict).toHaveCount(0);
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    expect(await readBoundaryBinding(page)).toEqual({ source: originalContext.source, predecessor: null });
+    const reviewed = await activePlanCopy(page, scope);
+    expect(reviewed.draft.input).toEqual(retained.draft.input); expect(reviewed.draft.baseRevision).toBe(final.revision);
+    expect(reviewed.draft.pending).toBeNull();
+    expect(requests(service, "scene_boundary_authoring_context")).toHaveLength(2);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await button(page, "Rebind boundary source").click();
+    await expect.poll(async () => (await readBoundaryBinding(page)).source.authored_revision).toBe(final!.revision);
+    const freshContext = expectBoundaryContext(service, 2, final, scene.id, profile.id, options);
+    expect(freshContext.source.dependencies_sha256).not.toBe(originalContext.source.dependencies_sha256);
+    expect(await readBoundaryBinding(page)).toEqual({ source: freshContext.source, predecessor: null });
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    await expect(page.getByRole("status", { name: "Boundary input needs attention", exact: true })).toContainText("JSON");
+    await expect(button(page, "Save scene boundary")).toBeDisabled();
+    const rebound = await activePlanCopy(page, scope);
+    if (rebound.draft.input.kind !== "boundary") throw new Error("The explicit rebind lost the boundary draft.");
+    expect(rebound.draft.input.boundaryId).toBe(retained.draft.input.boundaryId);
+    expect(rebound.draft.input.entryJson).toBe(rawEntry); expect(rebound.draft.input.exitJson).toBe(rawExit);
+    expect(rebound.draft.input.boundSource).toEqual(freshContext.source); expect(rebound.draft.pending).toBeNull();
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    expect(final.scenes.find(value => value.id === scene.id)?.camera).toEqual(peerCamera); expect(final.assets).toEqual(initial.assets);
+    expect(final.production_design).toEqual(initial.production_design);
+    const oracle = await service.observeStoredProject(final);
+    expect(oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change)).toEqual([
+      { type: "set_camera", scene_id: scene.id, camera: peerCamera },
+    ]);
+    await peer.close(); await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    await page.reload(); await openBoundaries(page, scene.id);
+    await expect(boundaryField(page, "entry snapshot")).toHaveValue(rawEntry); await expect(boundaryField(page, "exit snapshot")).toHaveValue(rawExit);
+    expect(await readBoundaryBinding(page)).toEqual({ source: freshContext.source, predecessor: null });
+    expect(requests(service, "scene_boundary_authoring_context")).toHaveLength(3);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await page.screenshot({ path: info.outputPath("scene-boundary-raw-json-retained.png"), fullPage: true });
+    Object.assign(observations, { rawEntry, rawExit, originalContext, retained, stale, afterStale, reviewed, freshContext, rebound, oracle,
+      additionalEditorMutations: 0, additionalEditorGrants: 0, additionalPeerMutations: 1, automaticRebinds: 0 });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, peers, final, observations, [], primary); }
 });

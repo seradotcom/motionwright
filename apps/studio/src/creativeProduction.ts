@@ -11,7 +11,10 @@ import type { ProceduralFieldInstance } from "./proceduralField";
 import { applyProceduralChange } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 import type { MeasuredTable, MeasuredBinding, MeasuredDataImpact } from "./measuredData";
-import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime } from "./types";
+import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project, RationalTime,
+  CameraState, SceneBoundary, SceneBoundaryAppearance, SceneBoundaryArchetype, SceneBoundaryAuthoringContext,
+  SceneBoundaryContextRequest, SceneBoundaryDefinition, SceneBoundaryEndpoint, SceneBoundaryFilmOptions,
+  SceneBoundaryInput, SceneBoundaryNarrativeRole, SceneBoundaryPredecessorContext, SceneBoundarySource } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
 export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence" | "step_sequence" | "contrast_comparison" | "editorial_quote";
@@ -58,7 +61,7 @@ export interface NarrationTakeLock {
 }
 import type { SemanticGraph } from "./semanticGraph";
 
-export interface ProductionDesign { semantic_graphs?: SemanticGraph[]; delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
+export interface ProductionDesign { scene_boundaries?: SceneBoundary[]; semantic_graphs?: SemanticGraph[]; delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
@@ -99,6 +102,272 @@ export const defaultHeroConfig = (): HeroConfig => ({
 });
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const digestPattern = /^[a-f0-9]{64}$/;
+
+export const sceneBoundaryNarrativeRoles = ["hook", "problem", "mechanism", "evidence", "comparison", "reveal", "payoff", "cta"] as const satisfies readonly SceneBoundaryNarrativeRole[];
+export const sceneBoundaryArchetypes = ["statement", "split_explanation", "architecture_reveal", "comparison", "metric", "timeline", "code_focus", "diagram_build", "object_spotlight", "evidence_frame", "product_proof", "endcard"] as const satisfies readonly SceneBoundaryArchetype[];
+
+function boundaryError(path: string, message: string): never {
+  throw new Error(`Scene boundary ${path}: ${message}.`);
+}
+function boundaryObject(value: unknown, path: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return boundaryError(path, "expected an object");
+  const object = value as Record<string, unknown>;
+  for (const key of required) if (!Object.hasOwn(object, key)) boundaryError(path, `missing ${key}`);
+  for (const key of Object.keys(object)) if (!required.includes(key) && !optional.includes(key)) boundaryError(path, `unknown field ${key}`);
+  return object;
+}
+function boundaryString(value: unknown, path: string): string {
+  if (typeof value !== "string") return boundaryError(path, "expected a string");
+  return value;
+}
+function boundaryUuid(value: unknown, path: string): string {
+  const id = boundaryString(value, path);
+  if (!uuidPattern.test(id)) return boundaryError(path, "expected a UUID");
+  return id.toLowerCase();
+}
+function boundaryDigest(value: unknown, path: string): string {
+  const digest = boundaryString(value, path);
+  if (!digestPattern.test(digest)) return boundaryError(path, "expected 64 lowercase hexadecimal characters");
+  return digest;
+}
+function boundaryNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return boundaryError(path, "expected a finite number");
+  return value;
+}
+function boundaryInteger(value: unknown, path: string, min = 0, max = Number.MAX_SAFE_INTEGER): number {
+  const number = boundaryNumber(value, path);
+  if (!Number.isSafeInteger(number) || number < min || number > max)
+    return boundaryError(path, `expected an exact integer between ${min} and ${max}`);
+  return number;
+}
+function boundaryEnum<T extends string>(value: unknown, path: string, values: readonly T[]): T {
+  if (typeof value !== "string" || !values.includes(value as T)) return boundaryError(path, `expected one of ${values.join(", ")}`);
+  return value as T;
+}
+function boundaryArray<T>(value: unknown, path: string, parse: (item: unknown, path: string) => T): T[] {
+  if (!Array.isArray(value)) return boundaryError(path, "expected an array");
+  return Array.from(value, (item, index) => parse(item, `${path}[${index}]`));
+}
+function boundaryOptional<T>(object: Record<string, unknown>, key: string, path: string, parse: (value: unknown, path: string) => T): T | null {
+  return !Object.hasOwn(object, key) || object[key] === null ? null : parse(object[key], `${path}.${key}`);
+}
+function boundaryDefaultArray<T>(object: Record<string, unknown>, key: string, path: string, parse: (item: unknown, path: string) => T): T[] {
+  return Object.hasOwn(object, key) ? boundaryArray(object[key], `${path}.${key}`, parse) : [];
+}
+
+/** Decode the canonical authored vocabulary; do not infer options from another renderer. */
+export function parseSceneBoundaryFilmOptions(value: unknown, path = "film options"): SceneBoundaryFilmOptions {
+  const object = boundaryObject(value, path, ["frame_rate", "font_family", "mono_font_family", "role", "archetype"]);
+  const rate = boundaryObject(object.frame_rate, `${path}.frame_rate`, ["num", "den"]);
+  const num = boundaryInteger(rate.num, `${path}.frame_rate.num`, 1, 0xffff_ffff);
+  const den = boundaryInteger(rate.den, `${path}.frame_rate.den`, 1, 0xffff_ffff);
+  let a = num, b = den;
+  while (b) [a, b] = [b, a % b];
+  if (a !== 1) boundaryError(`${path}.frame_rate`, "the rate must already be reduced");
+  const family = (input: unknown, label: string) => {
+    const text = boundaryString(input, label);
+    if (!text.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(text)) boundaryError(label, "font family is empty or contains control characters");
+    return text;
+  };
+  return { frame_rate: { num, den }, font_family: family(object.font_family, `${path}.font_family`),
+    mono_font_family: family(object.mono_font_family, `${path}.mono_font_family`),
+    role: boundaryEnum(object.role, `${path}.role`, sceneBoundaryNarrativeRoles),
+    archetype: boundaryEnum(object.archetype, `${path}.archetype`, sceneBoundaryArchetypes) };
+}
+
+/** Source digests are opaque values returned by the service; none are calculated here. */
+export function parseSceneBoundarySource(value: unknown, path = "source"): SceneBoundarySource {
+  const object = boundaryObject(value, path, ["project_id", "generation", "branch_id", "authored_revision", "deliverable_profile_id", "film_options", "dependencies_sha256"]);
+  return { project_id: boundaryUuid(object.project_id, `${path}.project_id`),
+    generation: boundaryUuid(object.generation, `${path}.generation`), branch_id: boundaryUuid(object.branch_id, `${path}.branch_id`),
+    authored_revision: boundaryInteger(object.authored_revision, `${path}.authored_revision`),
+    deliverable_profile_id: boundaryUuid(object.deliverable_profile_id, `${path}.deliverable_profile_id`),
+    film_options: parseSceneBoundaryFilmOptions(object.film_options, `${path}.film_options`),
+    dependencies_sha256: boundaryDigest(object.dependencies_sha256, `${path}.dependencies_sha256`) };
+}
+
+export function parseSceneBoundaryPredecessorContext(value: unknown, path = "predecessor"): SceneBoundaryPredecessorContext {
+  const object = boundaryObject(value, path, ["scene_id", "boundary_id", "exit_sha256"]);
+  return { scene_id: boundaryUuid(object.scene_id, `${path}.scene_id`),
+    boundary_id: boundaryUuid(object.boundary_id, `${path}.boundary_id`),
+    exit_sha256: boundaryDigest(object.exit_sha256, `${path}.exit_sha256`) };
+}
+
+export function parseSceneBoundaryAppearances(value: unknown, path = "appearances"): SceneBoundaryAppearance[] {
+  const appearances = boundaryArray(value, path, (entry, label) => {
+    const object = boundaryObject(entry, label, ["predecessor_node_id", "successor_node_id"]);
+    return { predecessor_node_id: boundaryUuid(object.predecessor_node_id, `${label}.predecessor_node_id`),
+      successor_node_id: boundaryUuid(object.successor_node_id, `${label}.successor_node_id`) };
+  });
+  if (new Set(appearances.map(item => item.predecessor_node_id)).size !== appearances.length
+      || new Set(appearances.map(item => item.successor_node_id)).size !== appearances.length)
+    boundaryError(path, "each predecessor and successor node may appear only once");
+  return appearances;
+}
+
+function boundaryRange(value: unknown, path: string, min: number, max: number): number {
+  const number = boundaryNumber(value, path);
+  if (number < min || number > max) boundaryError(path, `expected a value between ${min} and ${max}`);
+  return number;
+}
+function boundaryNodeStyle(value: unknown, path: string): NodeStyle {
+  const object = boundaryObject(value, path, ["stroke_width", "blend_mode"], ["fill", "stroke", "font_family", "font_size", "font_weight", "line_height"]);
+  const styleText = (text: unknown, label: string) => {
+    const parsed = boundaryString(text, label);
+    if (new TextEncoder().encode(parsed).length > 512) boundaryError(label, "style text exceeds 512 UTF-8 bytes");
+    return parsed;
+  };
+  return { fill: boundaryOptional(object, "fill", path, styleText), stroke: boundaryOptional(object, "stroke", path, styleText),
+    stroke_width: boundaryRange(object.stroke_width, `${path}.stroke_width`, 0, 1_000),
+    font_family: boundaryOptional(object, "font_family", path, styleText),
+    font_size: boundaryOptional(object, "font_size", path, (item, label) => boundaryRange(item, label, 1, 2_048)),
+    font_weight: boundaryOptional(object, "font_weight", path, (item, label) => boundaryInteger(item, label, 1, 1_000)),
+    line_height: boundaryOptional(object, "line_height", path, (item, label) => boundaryRange(item, label, 0.1, 20)),
+    blend_mode: boundaryEnum(object.blend_mode, `${path}.blend_mode`, ["normal", "multiply", "screen", "add"]) };
+}
+function boundaryKeyframe(value: unknown, path: string): CanvasKeyframe {
+  const object = boundaryObject(value, path, ["at", "property", "value", "interpolation"]);
+  const at = boundaryObject(object.at, `${path}.at`, ["num", "den"]);
+  const num = boundaryString(at.num, `${path}.at.num`), den = boundaryString(at.den, `${path}.at.den`);
+  if (!/^(0|[1-9][0-9]*)$/.test(num) || !/^[1-9][0-9]*$/.test(den))
+    boundaryError(`${path}.at`, "expected nonnegative rational integer strings with a positive denominator");
+  let a = BigInt(num), b = BigInt(den);
+  while (b) [a, b] = [b, a % b];
+  if (a !== 1n) boundaryError(`${path}.at`, "the rational time must already be reduced");
+  const property = boundaryEnum(object.property, `${path}.property`, ["x", "y", "width", "height", "rotation_deg", "opacity"]);
+  const parsed = boundaryNumber(object.value, `${path}.value`);
+  if ((property === "width" || property === "height") && parsed < 0 || property === "opacity" && (parsed < 0 || parsed > 1))
+    boundaryError(`${path}.value`, "keyframe value is outside its property's range");
+  return { at: { num, den }, property, value: parsed,
+    interpolation: boundaryEnum(object.interpolation, `${path}.interpolation`, ["hold", "linear", "ease_in_out", "ease_out_cubic"]) };
+}
+function boundaryCanvasNode(value: unknown, path: string): CanvasNode {
+  const object = boundaryObject(value, path, ["id", "name", "kind", "x", "y", "width", "height", "rotation_deg", "opacity"],
+    ["parent_id", "text", "coordinate_space", "z_index", "style", "relations", "property_locks", "keyframes"]);
+  const named = (input: unknown, label: string, max: number) => {
+    const text = boundaryString(input, label);
+    if (!text.trim() || new TextEncoder().encode(text).length > max) boundaryError(label, `must be nonempty and at most ${max} UTF-8 bytes`);
+    return text;
+  };
+  const relation = (input: unknown, label: string) => {
+    const record = boundaryObject(input, label, ["id", "kind", "target_id"]);
+    return { id: boundaryUuid(record.id, `${label}.id`),
+      kind: boundaryEnum(record.kind, `${label}.kind`, ["align_left", "align_center_x", "align_right", "align_top", "align_center_y", "align_bottom", "follow", "attach"]),
+      target_id: boundaryUuid(record.target_id, `${label}.target_id`) };
+  };
+  const properties = ["position", "size", "rotation", "opacity", "text", "style", "parent", "order"] as const;
+  // Rust uses a BTreeSet: canonical lock order follows the declared enum order.
+  const parsedLocks = boundaryDefaultArray(object, "property_locks", path, (item, label) => boundaryEnum(item, label, properties));
+  const text = boundaryOptional(object, "text", path, boundaryString);
+  if (text !== null && new TextEncoder().encode(text).length > 100_000) boundaryError(`${path}.text`, "text exceeds 100000 UTF-8 bytes");
+  const relations = boundaryDefaultArray(object, "relations", path, relation);
+  const keyframes = boundaryDefaultArray(object, "keyframes", path, boundaryKeyframe);
+  if (relations.length > 128 || keyframes.length > 128) boundaryError(path, "at most 128 relations and 128 keyframes are supported per node");
+  return { id: boundaryUuid(object.id, `${path}.id`), name: named(object.name, `${path}.name`, 160), kind: named(object.kind, `${path}.kind`, 128),
+    parent_id: boundaryOptional(object, "parent_id", path, boundaryUuid), text,
+    x: boundaryNumber(object.x, `${path}.x`), y: boundaryNumber(object.y, `${path}.y`),
+    width: boundaryRange(object.width, `${path}.width`, 0, Number.MAX_VALUE), height: boundaryRange(object.height, `${path}.height`, 0, Number.MAX_VALUE),
+    rotation_deg: boundaryNumber(object.rotation_deg, `${path}.rotation_deg`), opacity: boundaryRange(object.opacity, `${path}.opacity`, 0, 1),
+    coordinate_space: Object.hasOwn(object, "coordinate_space") ? boundaryEnum(object.coordinate_space, `${path}.coordinate_space`, ["project_pixels", "normalized", "scene_local"]) : "project_pixels",
+    z_index: Object.hasOwn(object, "z_index") ? boundaryInteger(object.z_index, `${path}.z_index`, -2_147_483_648, 2_147_483_647) : 0,
+    style: Object.hasOwn(object, "style") ? boundaryNodeStyle(object.style, `${path}.style`) : {
+      fill: null, stroke: null, stroke_width: 0, font_family: null, font_size: null, font_weight: null, line_height: null, blend_mode: "normal",
+    },
+    relations, property_locks: properties.filter(property => parsedLocks.includes(property)), keyframes };
+}
+function boundaryCamera(value: unknown, path: string): CameraState {
+  const object = boundaryObject(value, path, ["center_x", "center_y", "zoom", "rotation_deg", "safe_margin"]);
+  return { center_x: boundaryNumber(object.center_x, `${path}.center_x`), center_y: boundaryNumber(object.center_y, `${path}.center_y`),
+    zoom: boundaryRange(object.zoom, `${path}.zoom`, 0.01, 100), rotation_deg: boundaryNumber(object.rotation_deg, `${path}.rotation_deg`),
+    safe_margin: boundaryRange(object.safe_margin, `${path}.safe_margin`, 0, 0.49) };
+}
+
+/** Optional fields use only the published serde defaults. Scene/asset closure stays authoritative in Rust. */
+export function parseSceneBoundaryEndpoint(value: unknown, path = "endpoint"): SceneBoundaryEndpoint {
+  const object = boundaryObject(value, path, [], ["nodes", "camera", "assets"]);
+  const nodes = boundaryDefaultArray(object, "nodes", path, boundaryCanvasNode);
+  const assets = boundaryDefaultArray(object, "assets", path, (item, label) => {
+    const record = boundaryObject(item, label, ["asset_id", "content_sha256"]);
+    return { asset_id: boundaryUuid(record.asset_id, `${label}.asset_id`), content_sha256: boundaryDigest(record.content_sha256, `${label}.content_sha256`) };
+  });
+  if (new Set(nodes.map(node => node.id)).size !== nodes.length) boundaryError(`${path}.nodes`, "duplicate node identity");
+  if (new Set(assets.map(asset => asset.asset_id)).size !== assets.length) boundaryError(`${path}.assets`, "duplicate asset identity");
+  return { nodes, camera: boundaryOptional(object, "camera", path, boundaryCamera), assets };
+}
+
+/** Decode recoverable declaration data, not execution admission or native readiness. */
+export function parseSceneBoundary(value: unknown): SceneBoundary {
+  const object = boundaryObject(value, "declaration", ["version", "id", "scene_id", "input", "definition"]);
+  if (object.version !== 1) boundaryError("version", "only declaration version 1 is supported");
+  const inputKind = boundaryObject(object.input, "input", ["kind"], ["scene_id", "boundary_id", "exit_sha256", "appearances"]).kind;
+  let input: SceneBoundaryInput;
+  if (inputKind === "self_contained") {
+    boundaryObject(object.input, "input", ["kind"]);
+    input = { kind: "self_contained" };
+  } else if (inputKind === "predecessor") {
+    const predecessor = boundaryObject(object.input, "input", ["kind"], ["scene_id", "boundary_id", "exit_sha256", "appearances"]);
+    input = { kind: "predecessor", scene_id: boundaryOptional(predecessor, "scene_id", "input", boundaryUuid),
+      boundary_id: boundaryOptional(predecessor, "boundary_id", "input", boundaryUuid),
+      exit_sha256: boundaryOptional(predecessor, "exit_sha256", "input", boundaryDigest),
+      appearances: Object.hasOwn(predecessor, "appearances") ? parseSceneBoundaryAppearances(predecessor.appearances, "input.appearances") : [] };
+  } else return boundaryError("input.kind", "expected self_contained or predecessor");
+  const definitionObject = boundaryObject(object.definition, "definition", ["kind"], ["source", "entry", "exit"]);
+  let definition: SceneBoundaryDefinition;
+  if (definitionObject.kind === "draft_incomplete") {
+    definition = { kind: "draft_incomplete", source: boundaryOptional(definitionObject, "source", "definition", parseSceneBoundarySource),
+      entry: boundaryOptional(definitionObject, "entry", "definition", parseSceneBoundaryEndpoint),
+      exit: boundaryOptional(definitionObject, "exit", "definition", parseSceneBoundaryEndpoint) };
+  } else if (definitionObject.kind === "explicit") {
+    boundaryObject(object.definition, "definition", ["kind", "source", "entry", "exit"]);
+    definition = { kind: "explicit", source: parseSceneBoundarySource(definitionObject.source, "definition.source"),
+      entry: parseSceneBoundaryEndpoint(definitionObject.entry, "definition.entry"), exit: parseSceneBoundaryEndpoint(definitionObject.exit, "definition.exit") };
+    if (definition.entry.camera === null || definition.exit.camera === null) boundaryError("definition", "Explicit entry and exit each require a camera");
+    if (input.kind === "predecessor" && (input.scene_id === null || input.boundary_id === null || input.exit_sha256 === null))
+      boundaryError("input", "Explicit predecessor selectors must include scene_id, boundary_id and exit_sha256");
+  } else return boundaryError("definition.kind", "expected draft_incomplete or explicit");
+  return { version: 1, id: boundaryUuid(object.id, "id"), scene_id: boundaryUuid(object.scene_id, "scene_id"), input, definition };
+}
+
+export function parseSceneBoundaryJson(text: string): SceneBoundary {
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch { return boundaryError("JSON", "invalid JSON; the authored input has not been changed"); }
+  return parseSceneBoundary(value);
+}
+
+export function parseSceneBoundaryContextRequest(value: unknown): SceneBoundaryContextRequest {
+  const object = boundaryObject(value, "context request", ["project_id", "expected", "branch_id", "scene_id", "deliverable_profile_id", "authored_film_options", "predecessor_boundary_id"]);
+  const expected = boundaryObject(object.expected, "context request.expected", ["resource", "generation", "revision"]);
+  const project_id = boundaryUuid(object.project_id, "context request.project_id");
+  const resource = boundaryString(expected.resource, "context request.expected.resource");
+  if (resource !== `project:${project_id}`) boundaryError("context request.expected.resource", "does not identify the requested project");
+  return { project_id, expected: { resource, generation: boundaryUuid(expected.generation, "context request.expected.generation"),
+    revision: boundaryInteger(expected.revision, "context request.expected.revision") },
+    branch_id: boundaryUuid(object.branch_id, "context request.branch_id"), scene_id: boundaryUuid(object.scene_id, "context request.scene_id"),
+    deliverable_profile_id: boundaryUuid(object.deliverable_profile_id, "context request.deliverable_profile_id"),
+    authored_film_options: parseSceneBoundaryFilmOptions(object.authored_film_options, "context request.authored_film_options"),
+    predecessor_boundary_id: object.predecessor_boundary_id === null ? null : boundaryUuid(object.predecessor_boundary_id, "context request.predecessor_boundary_id") };
+}
+
+export function parseSceneBoundaryAuthoringContext(value: unknown, request: SceneBoundaryContextRequest): SceneBoundaryAuthoringContext {
+  const expected = parseSceneBoundaryContextRequest(request);
+  const object = boundaryObject(value, "context response", ["schema", "scene_id", "source", "predecessor"]);
+  if (object.schema !== "motionwright.scene-boundary-authoring-context/1") boundaryError("context response.schema", "unsupported authoring context");
+  const source = parseSceneBoundarySource(object.source, "context response.source");
+  const scene_id = boundaryUuid(object.scene_id, "context response.scene_id");
+  if (scene_id !== expected.scene_id || source.project_id !== expected.project_id || source.generation !== expected.expected.generation
+      || source.branch_id !== expected.branch_id || source.authored_revision !== expected.expected.revision
+      || source.deliverable_profile_id !== expected.deliverable_profile_id)
+    boundaryError("context response", "source identity, revision or profile differs from the requested snapshot");
+  if (!sameValue(source.film_options, expected.authored_film_options)) boundaryError("context response.source.film_options", "differs from the authored options");
+  const predecessor = object.predecessor === null ? null : parseSceneBoundaryPredecessorContext(object.predecessor, "context response.predecessor");
+  if ((expected.predecessor_boundary_id === null && predecessor !== null)
+      || (expected.predecessor_boundary_id !== null && predecessor?.boundary_id !== expected.predecessor_boundary_id))
+    boundaryError("context response.predecessor", "differs from the explicitly selected predecessor");
+  return { schema: "motionwright.scene-boundary-authoring-context/1", scene_id, source, predecessor };
+}
+
 function textBudget(value: string, max: number, label: string) {
   if (!value.trim() || new TextEncoder().encode(value).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid " + label);
 }
