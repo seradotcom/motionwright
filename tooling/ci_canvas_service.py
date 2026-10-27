@@ -80,6 +80,843 @@ CAMERA_TITLES = (
     "a late saved-Camera read for scene A preserves the exact visible author copy of scene B",
     "a successful original Camera reply closes only scene A while scene B keeps its exact author bytes",
 )
+# Exact A3 product source nominated for the isolated Camera7 + saved-Manim-v2
+# service regression. This does not grant native, installed or formal acceptance.
+CAMERA_EIGHT_SCOPE = "camera-with-v2"
+CAMERA_EIGHT_REVIEWED_PROFILE = {'schema': 'motionwright.camera-eight-runtime-profile/1',
+ 'source_commit': '27698b7beb274e7a6c028b98cde55519293b3154',
+ 'source_tree': '8b705be62a5584380091270db17df146196f5d5c',
+ 'product_paths': {'apps/studio/tests/camera-reframe-service.spec.ts': '5c9a6cd336786baa7fd22e871205c7515265b877dcdda9324378b46426a6536e',
+                   'apps/studio/tests/camera-reframe-v2-service.spec.ts': '08ae282be69784e085a7be73ae233146843e0ee156f7e27c332ace2ea50089da',
+                   'apps/studio/tests/support/scopedChangeService.ts': '2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d',
+                   'SOURCE_LOCK.json': 'aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f'},
+ 'runner': 'ubuntu-24.04',
+ 'minimum_available_memory_bytes': 4294967296,
+ 'minimum_target_free_bytes': 19327352832,
+ 'cargo_jobs': 1,
+ 'job_seconds': 5400}
+CAMERA_EIGHT_HISTORICAL_SOURCE = "4cc2cd42e293f11986d4dfda9c9658e884618316"
+CAMERA_EIGHT_HISTORICAL_TREE = "0ce41c8d7904e2f4afe434058dc0655f85996885"
+CAMERA_EIGHT_GATE_PATHS = ("tooling/ci_canvas_service.py", "tooling/tests/test_ci_canvas_service.py",
+                           ".github/workflows/studio-service-verification.yml")
+CAMERA_EIGHT_HISTORICAL_INPUT_PINS = (
+    ("apps/studio/tests/camera-reframe-service.spec.ts", "5c9a6cd336786baa7fd22e871205c7515265b877dcdda9324378b46426a6536e"),
+    ("apps/studio/tests/camera-reframe-v2-service.spec.ts", "08ae282be69784e085a7be73ae233146843e0ee156f7e27c332ace2ea50089da"),
+    ("apps/studio/tests/support/scopedChangeService.ts", "2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d"),
+    ("SOURCE_LOCK.json", "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"),
+)
+CAMERA_EIGHT_SELECTIONS = (
+    ("camera", "camera-reframe-service.spec.ts", CAMERA_TITLES),
+    ("camera-v2", "camera-reframe-v2-service.spec.ts", (
+        "saved Manim v2 Camera preserves its authored pair through raw recovery, two UI edits and SQLite reopen",)),
+)
+CAMERA_EIGHT_CATALOG_SHA256 = "9deb9db56f3854b0e3c7aefe139a64c379616e9d83340bf2cd007048ad408c4a"
+CAMERA_EIGHT_TIMEOUTS = {"camera": 1200, "camera-v2": 300}
+CAMERA_EIGHT_DATABASES = (
+    ("camera", CAMERA_TITLES[0], "camera.sqlite3", 1),
+    ("camera", CAMERA_TITLES[1], "camera-lost-reply.sqlite3", 1),
+    ("camera", CAMERA_TITLES[2], "camera-held-upsert.sqlite3", 2),
+    ("camera", CAMERA_TITLES[3], "camera-held-detach.sqlite3", 2),
+    ("camera", CAMERA_TITLES[4], "camera-held-same-revision.sqlite3", 1),
+    ("camera", CAMERA_TITLES[5], "camera-late-read-scene-scope.sqlite3", 1),
+    ("camera", CAMERA_TITLES[6], "camera-late-ack-scene-scope.sqlite3", 1),
+    ("camera-v2", CAMERA_EIGHT_SELECTIONS[1][2][0], "camera-v2.sqlite3", 1),
+)
+
+
+def camera_eight_selections():
+    rows = CAMERA_EIGHT_SELECTIONS
+    require(isinstance(rows, tuple) and len(rows) == 2
+            and tuple((label, filename, len(titles)) for label, filename, titles in rows) == (
+                ("camera", "camera-reframe-service.spec.ts", 7),
+                ("camera-v2", "camera-reframe-v2-service.spec.ts", 1))
+            and rows[0][2] == CAMERA_TITLES
+            and all(isinstance(titles, tuple) and all(isinstance(title, str) and title for title in titles)
+                    for _, _, titles in rows)
+            and len({(filename, title) for _, filename, titles in rows for title in titles}) == 8
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == CAMERA_EIGHT_CATALOG_SHA256, "Camera eight catalogue differs")
+    return rows
+
+
+def camera_eight_profile():
+    """Require a later explicit source nomination; historical inputs cannot activate it."""
+    profile = CAMERA_EIGHT_REVIEWED_PROFILE
+    require(isinstance(profile, dict) and set(profile) == {"schema", "source_commit", "source_tree",
+                "product_paths", "runner", "minimum_available_memory_bytes", "minimum_target_free_bytes",
+                "cargo_jobs", "job_seconds"}
+            and profile.get("schema") == "motionwright.camera-eight-runtime-profile/1",
+            "Camera runtime source/resource profile is not designated")
+    require(all(isinstance(profile.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", profile[key])
+                for key in ("source_commit", "source_tree"))
+            and profile["source_commit"] != CAMERA_EIGHT_HISTORICAL_SOURCE,
+            "Camera needs a later nominated source; historical 4cc is not a runtime target")
+    require(isinstance(profile.get("product_paths"), dict)
+            and set(profile["product_paths"]) == {name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS}
+            and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    for value in profile["product_paths"].values())
+            and profile["runner"] == "ubuntu-24.04"
+            and profile["minimum_available_memory_bytes"] == 4 * 1024**3
+            and profile["minimum_target_free_bytes"] == 18 * 1024**3
+            and profile["cargo_jobs"] == 1 and profile["job_seconds"] == 5400
+            and all(type(profile[key]) is int for key in ("minimum_available_memory_bytes",
+                    "minimum_target_free_bytes", "cargo_jobs", "job_seconds")),
+            "Camera nominated input or resource profile differs")
+    camera_eight_selections()
+    return dict(profile)
+
+
+def camera_eight_source_binding(repo, observation):
+    profile = camera_eight_profile()
+    require(isinstance(observation, dict) and isinstance(observation.get("files"), dict),
+            "Camera source observation missing")
+    for name, expected in profile["product_paths"].items():
+        require(observation["files"].get(name, {}).get("sha256") == expected,
+                "Camera product source bytes differ: " + name)
+    tree = subprocess.check_output(["git", "rev-parse", profile["source_commit"] + "^{tree}"],
+                                   cwd=repo, timeout=30).decode("ascii").strip()
+    require(tree == profile["source_tree"], "Camera nominated source tree differs")
+    changed = subprocess.check_output(["git", "diff", "--name-only", "-z", profile["source_commit"],
+                                       observation["checkout"], "--"], cwd=repo, timeout=30)
+    require(changed == b"" or changed.endswith(b"\0"), "Camera source delta is not closed")
+    names = changed.decode("utf-8").split("\0")[:-1] if changed else []
+    require(len(names) == len(set(names)) and set(names) <= set(CAMERA_EIGHT_GATE_PATHS),
+            "Camera gate changed nominated product outside its verification paths")
+    for name, expected in profile["product_paths"].items():
+        original = subprocess.check_output(["git", "show", profile["source_commit"] + ":" + name],
+                                           cwd=repo, timeout=30)
+        require(hashlib.sha256(original).hexdigest() == expected, "Camera nominated input blob differs")
+    return {"nominated_input": {"commit": profile["source_commit"], "tree": tree},
+            "executed_source": {"commit": observation["checkout"], "tree": observation["tree"]},
+            "verification_path_delta": names, "result_transfer": False, "source_profile": profile}
+
+
+def camera_eight_resources(repo, target, *, phase):
+    profile = camera_eight_profile()
+    require(phase in ("preflight", "build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2"),
+            "Camera resource phase differs")
+    require(sys.platform.startswith("linux") and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_JOB") == "real-service"
+            and os.environ.get("RUNNER_OS") == "Linux" and os.environ.get("ImageOS") == "ubuntu24"
+            and os.environ.get("ImageVersion") and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and re.fullmatch(r"[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")) is not None
+            and re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")) is not None,
+            "Camera requires its genuine first hosted Linux job")
+    require(repo.name == "g" and target == repo.parent / "v/t"
+            and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent,
+            "Camera requires its isolated existing g/v layout")
+    memory = Path("/proc/meminfo").read_text(encoding="ascii")
+    rows = re.findall(r"^MemAvailable:\s+([0-9]+) kB$", memory, re.MULTILINE)
+    require(len(rows) == 1, "Camera memory observation is absent")
+    available = int(rows[0]) * 1024
+    free = shutil.disk_usage(target.parent).free
+    require(available >= profile["minimum_available_memory_bytes"]
+            and type(free) is int and free >= profile["minimum_target_free_bytes"],
+            "Camera source build or case resource floor is unavailable")
+    return {"phase": phase, "available_memory_bytes": available, "target_free_bytes": free,
+            "minimum_available_memory_bytes": profile["minimum_available_memory_bytes"],
+            "minimum_target_free_bytes": profile["minimum_target_free_bytes"],
+            "cargo_jobs": 1, "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1",
+            "job": "real-service", "executed_source": os.environ["GITHUB_SHA"],
+            "image_os": os.environ["ImageOS"], "image_version": os.environ["ImageVersion"],
+            "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}
+
+
+def camera_eight_preflight(arguments):
+    parser = argparse.ArgumentParser(description="Bind the closed Camera source before dependencies.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    camera_eight_profile()  # A missing runtime nomination refuses before filesystem/Git queries.
+    repo, target, output = (path.resolve() for path in (args.repo, args.target, args.output))
+    require(output == repo.parent / "v/tools/camera-preflight.json" and not output.exists(),
+            "Camera preflight requires its fresh original path")
+    source = source_observation(repo, CAMERA_EIGHT_SCOPE)
+    resources = camera_eight_resources(repo, target, phase="preflight")
+    value = {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+             "resources": resources, "execution": "NOT_RUN", "formal_acceptance": False}
+    write_new(output, value)
+    require(json.loads(output.read_bytes()) == value, "Camera preflight original readback differs")
+    print(json.dumps({"status": "SOURCE_INPUTS_BOUND_NO_RUNTIME", "source": source["checkout"],
+                      "receipt": str(output)}))
+    return 0
+
+
+def camera_eight_report(document, filename, titles, *, listing, expected=None):
+    require(type(listing) is bool and (filename, titles) in {(name, names) for _, name, names in camera_eight_selections()},
+            "Camera file selection differs")
+    require(isinstance(document, dict) and document.get("errors") == [], "Camera original report errors")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(key)) is int for key in ("expected", "skipped", "unexpected", "flaky")),
+            "Camera report counters are not integers")
+    if listing:
+        require(stats["expected"] == 0 and stats["skipped"] == len(titles)
+                and stats["unexpected"] == stats["flaky"] == 0,
+                "Camera discovery contains executed or unexpected results")
+    else:
+        validate_browser_execution(document, filename, titles)
+    actual = browser_result_identities(document)
+    require(len(actual) == len(titles) and {pair for pair, _ in actual} == {(filename, title) for title in titles},
+            "Camera exact title inventory differs")
+    specs = []
+    def visit(suites):
+        for suite in suites:
+            specs.extend(suite.get("specs", []))
+            visit(suite.get("suites", []))
+    visit(document["suites"])
+    require(len(specs) == len(titles), "Camera original spec inventory differs")
+    identities = []
+    for spec in specs:
+        case = spec["tests"][0]
+        require(case.get("expectedStatus") == "passed" and case.get("annotations", []) == []
+                and type(case.get("timeout")) is int and case["timeout"] == 120000,
+                "Camera skip or original case timeout differs")
+        require(isinstance(spec.get("id"), str) and 0 < len(spec["id"]) <= 512
+                and all(ord(char) >= 33 for char in spec["id"])
+                and type(spec.get("line")) is int and spec["line"] > 0
+                and type(spec.get("column")) is int and spec["column"] > 0,
+                "Camera original Playwright identity is missing")
+        require(not listing or case.get("results") == [], "Camera list contains a test result")
+        if not listing:
+            require(type(case["results"][0].get("retry")) is int and case["results"][0]["retry"] == 0,
+                    "Camera original retry counter is not zero")
+        identities.append({key: spec[key] for key in ("file", "title", "id", "line", "column")})
+    require(len({row["id"] for row in identities}) == len(titles), "Camera original case ID is repeated")
+    identities.sort(key=lambda row: titles.index(row["title"]))
+    if not listing:
+        require(isinstance(expected, dict) and expected.get("status") == "LISTED_NOT_EXECUTED"
+                and expected.get("identities") == identities, "Camera execution differs from its original list")
+    return {"status": "LISTED_NOT_EXECUTED" if listing else "PASSED_ORIGINAL_SELECTED_CASES",
+            "listed": len(titles), "executed": 0 if listing else len(titles),
+            "identities": identities, "skips": 0, "retries": 0}
+
+
+def camera_eight_intent(label, titles, argv, cwd, source, binary):
+    return {"schema": "motionwright.camera-eight-selection-intent/1", "label": label,
+            "expected_cases": len(titles), "argv": argv, "cwd": str(cwd),
+            "source_commit": source["checkout"], "source_tree": source["tree"], "service_binary": binary,
+            "execution": "NOT_STARTED", "retry": "FORBIDDEN"}
+
+
+def camera_eight_record_attempt(selection, command):
+    pid = command.get("pid")
+    selection.update(command=command, attempted=type(pid) is int and pid > 0,
+                     original_pid=pid if type(pid) is int and pid > 0 else None,
+                     original_exit=command.get("exit_code"),
+                     status="UNKNOWN" if execution_unknown(command) else "FAIL", validated_cases=0)
+
+
+def camera_eight_archive_lists(root, inventory, receipt, source, command_closed):
+    rows = camera_eight_selections()
+    observed = receipt.get("camera_discovery", [])
+    require(isinstance(observed, list) and [row.get("label") for row in observed] == [row[0] for row in rows],
+            "Camera original two-list inventory differs")
+    preflight = archive_json(root, inventory, "tools/camera-preflight.json")
+    require(preflight.get("schema") == "motionwright.camera-eight-preflight/1"
+            and preflight.get("source") == source and preflight.get("execution") == "NOT_RUN"
+            and preflight.get("formal_acceptance") is False
+            and preflight.get("resources", {}).get("phase") == "preflight"
+            and receipt.get("camera_preflight") == {key: inventory["entries"]["tools/camera-preflight.json"][key]
+                                                     for key in ("bytes", "sha256")},
+            "Camera preflight original differs")
+    resource_rows = receipt.get("camera_resource_observations", [])
+    expected_phases = ["build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2"]
+    require(isinstance(resource_rows, list) and [row.get("phase") for row in resource_rows] == expected_phases,
+            "Camera resource observation roster differs")
+    for row in [preflight.get("resources", {}), *resource_rows]:
+        require(row.get("run_id") == receipt.get("run_id") and row.get("run_attempt") == receipt.get("run_attempt") == "1"
+                and row.get("job") == receipt.get("job") == "real-service"
+                and row.get("executed_source") == source["checkout"]
+                and row.get("image_os") == "ubuntu24" and isinstance(row.get("image_version"), str)
+                and row["image_version"] and type(row.get("cargo_jobs")) is int and row["cargo_jobs"] == 1
+                and row.get("minimum_available_memory_bytes") == 4 * 1024**3
+                and row.get("minimum_target_free_bytes") == 18 * 1024**3
+                and type(row.get("available_memory_bytes")) is int and row["available_memory_bytes"] >= 4 * 1024**3
+                and type(row.get("target_free_bytes")) is int and row["target_free_bytes"] >= 18 * 1024**3,
+                "Camera original resource/context observation differs")
+    repo, target = root.parent / "g", root / "t"
+    node = receipt["node"]["path"]
+    cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+    result = {}
+    for observed_row, selection in zip(observed, rows):
+        label, filename, titles = selection
+        command = observed_row.get("command", {})
+        command_closed(command, label + "-discovery")
+        env = service_environment_binding(target, root / "e", label, target / "debug/examples/studio_review_session")
+        env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(root / "e" / (label + "-discovery.json"))
+        require(command.get("argv") == service_command(node, cli, root / "e", selection,
+                                                       listing=True, scope=CAMERA_EIGHT_SCOPE)
+                and command.get("cwd") == str(repo / "apps/studio")
+                and command.get("selected_environment") == env,
+                "Camera original list invocation differs")
+        path = "e/" + label + "-discovery.json"
+        actual = camera_eight_report(archive_json(root, inventory, path), filename, titles, listing=True)
+        require(observed_row.get("status") == "LISTED_NOT_EXECUTED" and observed_row.get("verified") == actual
+                and observed_row.get("original_report") == {key: inventory["entries"][path][key] for key in ("bytes", "sha256")},
+                "Camera original list report differs")
+        result[label] = actual
+    all_ids = [identity["id"] for item in result.values() for identity in item["identities"]]
+    require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
+    def original_time(value):
+        require(isinstance(value, str) and value, "Camera original command time is absent")
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        require(instant.tzinfo is not None and instant.utcoffset() is not None,
+                "Camera original command time has no timezone")
+        return instant
+    lists_end = [original_time(row["command"].get("finished_utc")) for row in observed]
+    executions = receipt.get("selections", [])
+    require(len(executions) == 2 and all(max(lists_end) <= original_time(row.get("command", {}).get("started_utc"))
+                                       for row in executions),
+            "Camera execution started before both original lists closed")
+    return result
+
+
+def camera_eight_capture_bindings(root, inventory, captures):
+    """Bind eight distinct source-declared databases; do not claim archive reopen."""
+    require(len(captures) == 8 and len({row.get("manifest") for row in captures}) == 8,
+            "Camera requires all eight original closed stores")
+    layout = {database: (label, title, participants) for label, title, database, participants in CAMERA_EIGHT_DATABASES}
+    require(len(layout) == 8, "Camera source database inventory differs")
+    used, roots, bound = set(), set(), []
+    for capture in captures:
+        name = capture.get("manifest")
+        require(isinstance(name, str) and name.endswith("/closed-camera-store/manifest.json"),
+                "Camera original store path differs")
+        parts = name.split("/")
+        require(len(parts) == 5 and parts[0] == "e", "Camera closed store path is not a direct case output")
+        manifest = archive_json(root, inventory, name)
+        database = manifest.get("databaseRelativePath")
+        require(database in layout and database not in used, "Camera database is foreign or repeated")
+        label, title, participants = layout[database]
+        require(parts[1] == label + "-test-results", "Camera database belongs to another selection")
+        case_root = "/".join(parts[:3])
+        require(case_root not in roots, "Camera original cases share a store root")
+        roots.add(case_root); used.add(database)
+        _manifest, oracle, _outcome = partial_closed_store(root, inventory, case_root + "/closed-camera-store",
+                                                         root / case_root / "store", database, participants, 1)
+        bound.append({"label": label, "title": title, "manifest": name, "database": database,
+                      "project_id": oracle["project"]["id"], "participants": participants,
+                      "basis": "SOURCE_PINNED_DATABASE_AND_COMPLETE_HELPER_ORIGINALS",
+                      "independent_archive_reopen": False, "additional_oracle_reexecution": False})
+    require(used == set(layout), "Camera original database inventory is incomplete")
+    return bound
+
+
+# A3's two scoped-change cases are an independent source-bound selection.
+# They do not widen all184, activate Camera276 on another product, or grant native acceptance.
+# Prior gate e18af131/run40437980883/1 remains FAIL (two30s timeouts, zero passes).
+# dd73 changes only the two explicit fixture opt-ins; this rebind transfers no result.
+SCOPED_TWO_SCOPE = "scoped-change"
+SCOPED_TWO_PRODUCT_SOURCE = "dd73abcd90bfc9cd7b7fa0b338580dbddb01602e"
+SCOPED_TWO_PRODUCT_TREE = "3016f5300282e4768ba7e0d537763936b6bd5c17"
+SCOPED_TWO_GATE_PATHS = ("tooling/ci_canvas_service.py", "tooling/tests/test_ci_canvas_service.py",
+                        ".github/workflows/studio-service-verification.yml")
+SCOPED_TWO_TIMEOUT = 480
+SCOPED_TWO_INPUT_PINS = (('apps/studio/tests/scoped-change-service.spec.ts', 'a9980ff98398e8842624d63e2edbeee765c34808bdbf5e2774fe1d1f821a09d8'), ('apps/studio/tests/support/scopedChangeService.ts', '2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d'), ('SOURCE_LOCK.json', 'aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f'), ('Cargo.lock', '0c6a330de85c99f0913f4fc9e1b2af794d8cae239085952dd6400a017c67205b'))
+SCOPED_TWO_TITLES = ('Studio previews, commits, reopens, undoes and redoes against the real persisted service', 'two Studio clients reject a stale commit and let the author resolve only the overlapping property')
+SCOPED_TWO_SELECTIONS = (('scoped-change', 'scoped-change-service.spec.ts', ('Studio previews, commits, reopens, undoes and redoes against the real persisted service', 'two Studio clients reject a stale commit and let the author resolve only the overlapping property')),)
+SCOPED_TWO_CATALOG_SHA256 = '17261800bddc9a633470b72a65c41a5ac86178bdbcdf18349acc8aa8b5fc9ae2'
+SCOPED_TWO_REVIEWED_PROFILE = {'schema': 'motionwright.scoped-two-runtime-profile/1', 'source_commit': 'dd73abcd90bfc9cd7b7fa0b338580dbddb01602e', 'source_tree': '3016f5300282e4768ba7e0d537763936b6bd5c17', 'product_paths': {'apps/studio/tests/scoped-change-service.spec.ts': 'a9980ff98398e8842624d63e2edbeee765c34808bdbf5e2774fe1d1f821a09d8', 'apps/studio/tests/support/scopedChangeService.ts': '2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d', 'SOURCE_LOCK.json': 'aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f', 'Cargo.lock': '0c6a330de85c99f0913f4fc9e1b2af794d8cae239085952dd6400a017c67205b'}, 'runner': 'ubuntu-24.04', 'minimum_available_memory_bytes': 4294967296, 'minimum_target_free_bytes': 19327352832, 'cargo_jobs': 1, 'job_seconds': 5400}
+SCOPED_TWO_CASE_CONTRACTS = (
+    (1, (3,), ("apply_creative_patch", "update_canvas_style", "undo_creative_patch", "undo_creative_patch", "apply_creative_patch")),
+    (2, (1, 1), ("apply_creative_patch", "apply_creative_patch")),
+)
+
+
+def scoped_two_selections():
+    rows = SCOPED_TWO_SELECTIONS
+    require(isinstance(rows, tuple) and len(rows) == 1
+            and rows[0] == (SCOPED_TWO_SCOPE, "scoped-change-service.spec.ts", SCOPED_TWO_TITLES)
+            and isinstance(SCOPED_TWO_TITLES, tuple) and len(SCOPED_TWO_TITLES) == len(set(SCOPED_TWO_TITLES)) == 2
+            and all(isinstance(title, str) and title for title in SCOPED_TWO_TITLES)
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == SCOPED_TWO_CATALOG_SHA256, "Scoped2 exact catalogue differs")
+    return rows
+
+
+def scoped_two_profile():
+    """Require the exact reviewed dd73 source/resource nomination before any I/O."""
+    profile = SCOPED_TWO_REVIEWED_PROFILE
+    require(isinstance(profile, dict) and set(profile) == {"schema", "source_commit", "source_tree",
+                "product_paths", "runner", "minimum_available_memory_bytes", "minimum_target_free_bytes",
+                "cargo_jobs", "job_seconds"}
+            and profile.get("schema") == "motionwright.scoped-two-runtime-profile/1",
+            "Scoped2 runtime source/resource profile is not designated")
+    require(all(isinstance(profile.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", profile[key])
+                for key in ("source_commit", "source_tree"))
+            and profile["source_commit"] == SCOPED_TWO_PRODUCT_SOURCE
+            and profile["source_tree"] == SCOPED_TWO_PRODUCT_TREE,
+            "Scoped2 needs its exact nominated product commit and tree")
+    require(isinstance(profile.get("product_paths"), dict)
+            and set(profile["product_paths"]) == {name for name, _ in SCOPED_TWO_INPUT_PINS}
+            and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    for value in profile["product_paths"].values())
+            and profile["runner"] == "ubuntu-24.04"
+            and profile["minimum_available_memory_bytes"] == 4 * 1024**3
+            and profile["minimum_target_free_bytes"] == 18 * 1024**3
+            and profile["cargo_jobs"] == 1 and profile["job_seconds"] == 5400
+            and all(type(profile[key]) is int for key in ("minimum_available_memory_bytes",
+                    "minimum_target_free_bytes", "cargo_jobs", "job_seconds")),
+            "Scoped2 nominated input or resource profile differs")
+    scoped_two_selections()
+    return dict(profile)
+
+
+def scoped_two_source_binding(repo, observation):
+    profile = scoped_two_profile()
+    require(isinstance(observation, dict) and isinstance(observation.get("files"), dict),
+            "Scoped2 source observation missing")
+    for name, expected in profile["product_paths"].items():
+        require(observation["files"].get(name, {}).get("sha256") == expected,
+                "Scoped2 product source bytes differ: " + name)
+    tree = subprocess.check_output(["git", "rev-parse", profile["source_commit"] + "^{tree}"],
+                                   cwd=repo, timeout=30).decode("ascii").strip()
+    require(tree == profile["source_tree"], "Scoped2 nominated source tree differs")
+    changed = subprocess.check_output(["git", "diff", "--name-only", "-z", profile["source_commit"],
+                                       observation["checkout"], "--"], cwd=repo, timeout=30)
+    require(changed == b"" or changed.endswith(b"\0"), "Scoped2 source delta is not closed")
+    names = changed.decode("utf-8").split("\0")[:-1] if changed else []
+    require(len(names) == len(set(names)) and set(names) <= set(SCOPED_TWO_GATE_PATHS),
+            "Scoped2 gate changed nominated product outside its verification paths")
+    for name, expected in profile["product_paths"].items():
+        original = subprocess.check_output(["git", "show", profile["source_commit"] + ":" + name],
+                                           cwd=repo, timeout=30)
+        require(hashlib.sha256(original).hexdigest() == expected, "Scoped2 nominated input blob differs")
+    return {"nominated_input": {"commit": profile["source_commit"], "tree": tree},
+            "executed_source": {"commit": observation["checkout"], "tree": observation["tree"]},
+            "verification_path_delta": names, "result_transfer": False, "source_profile": profile}
+
+
+def scoped_two_resources(repo, target, *, phase):
+    profile = scoped_two_profile()
+    require(phase in ("preflight", "build", "list-scoped-change", "execute-scoped-change"),
+            "Scoped2 resource phase differs")
+    require(sys.platform.startswith("linux") and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_JOB") == "real-service"
+            and os.environ.get("RUNNER_OS") == "Linux" and os.environ.get("ImageOS") == "ubuntu24"
+            and os.environ.get("ImageVersion") and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and re.fullmatch(r"[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")) is not None
+            and re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")) is not None,
+            "Scoped2 requires its genuine first hosted Linux job")
+    require(repo.name == "g" and target == repo.parent / "v/t"
+            and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent,
+            "Scoped2 requires its isolated existing g/v layout")
+    memory = Path("/proc/meminfo").read_text(encoding="ascii")
+    rows = re.findall(r"^MemAvailable:\s+([0-9]+) kB$", memory, re.MULTILINE)
+    require(len(rows) == 1, "Scoped2 memory observation is absent")
+    available = int(rows[0]) * 1024
+    free = shutil.disk_usage(target.parent).free
+    require(available >= profile["minimum_available_memory_bytes"]
+            and type(free) is int and free >= profile["minimum_target_free_bytes"],
+            "Scoped2 source build or case resource floor is unavailable")
+    return {"phase": phase, "available_memory_bytes": available, "target_free_bytes": free,
+            "minimum_available_memory_bytes": profile["minimum_available_memory_bytes"],
+            "minimum_target_free_bytes": profile["minimum_target_free_bytes"],
+            "cargo_jobs": 1, "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1",
+            "job": "real-service", "executed_source": os.environ["GITHUB_SHA"],
+            "image_os": os.environ["ImageOS"], "image_version": os.environ["ImageVersion"],
+            "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}
+
+
+def scoped_two_preflight(arguments):
+    parser = argparse.ArgumentParser(description="Bind the closed Scoped2 source before dependencies.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    scoped_two_profile()  # A missing runtime nomination refuses before filesystem/Git queries.
+    repo, target, output = (path.resolve() for path in (args.repo, args.target, args.output))
+    require(output == repo.parent / "v/tools/scoped-preflight.json" and not output.exists(),
+            "Scoped2 preflight requires its fresh original path")
+    source = source_observation(repo, SCOPED_TWO_SCOPE)
+    resources = scoped_two_resources(repo, target, phase="preflight")
+    value = {"schema": "motionwright.scoped-two-preflight/1", "source": source,
+             "resources": resources, "execution": "NOT_RUN", "formal_acceptance": False}
+    write_new(output, value)
+    require(json.loads(output.read_bytes()) == value, "Scoped2 preflight original readback differs")
+    print(json.dumps({"status": "SOURCE_INPUTS_BOUND_NO_RUNTIME", "source": source["checkout"],
+                      "receipt": str(output)}))
+    return 0
+
+
+def scoped_two_report(document, filename, titles, *, listing, expected=None):
+    require(type(listing) is bool and (filename, titles) in {(name, names) for _, name, names in scoped_two_selections()},
+            "Scoped2 file selection differs")
+    require(isinstance(document, dict) and document.get("errors") == [], "Scoped2 original report errors")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(key)) is int for key in ("expected", "skipped", "unexpected", "flaky")),
+            "Scoped2 report counters are not integers")
+    if listing:
+        require(stats["expected"] == 0 and stats["skipped"] == len(titles)
+                and stats["unexpected"] == stats["flaky"] == 0,
+                "Scoped2 discovery contains executed or unexpected results")
+    else:
+        validate_browser_execution(document, filename, titles)
+    actual = browser_result_identities(document)
+    require(len(actual) == len(titles) and {pair for pair, _ in actual} == {(filename, title) for title in titles},
+            "Scoped2 exact title inventory differs")
+    specs = []
+    def visit(suites):
+        for suite in suites:
+            specs.extend(suite.get("specs", []))
+            visit(suite.get("suites", []))
+    visit(document["suites"])
+    require(len(specs) == len(titles), "Scoped2 original spec inventory differs")
+    identities = []
+    for spec in specs:
+        case = spec["tests"][0]
+        require(case.get("expectedStatus") == "passed" and case.get("annotations", []) == []
+                and type(case.get("timeout")) is int and case["timeout"] == 30000,
+                "Scoped2 skip or original case timeout differs")
+        require(isinstance(spec.get("id"), str) and 0 < len(spec["id"]) <= 512
+                and all(ord(char) >= 33 for char in spec["id"])
+                and type(spec.get("line")) is int and spec["line"] > 0
+                and type(spec.get("column")) is int and spec["column"] > 0,
+                "Scoped2 original Playwright identity is missing")
+        require(not listing or case.get("results") == [], "Scoped2 list contains a test result")
+        if not listing:
+            require(type(case["results"][0].get("retry")) is int and case["results"][0]["retry"] == 0,
+                    "Scoped2 original retry counter is not zero")
+        identities.append({key: spec[key] for key in ("file", "title", "id", "line", "column")})
+    require(len({row["id"] for row in identities}) == len(titles), "Scoped2 original case ID is repeated")
+    identities.sort(key=lambda row: titles.index(row["title"]))
+    if not listing:
+        require(isinstance(expected, dict) and expected.get("status") == "LISTED_NOT_EXECUTED"
+                and expected.get("identities") == identities, "Scoped2 execution differs from its original list")
+    return {"status": "LISTED_NOT_EXECUTED" if listing else "PASSED_ORIGINAL_SELECTED_CASES",
+            "listed": len(titles), "executed": 0 if listing else len(titles),
+            "identities": identities, "skips": 0, "retries": 0}
+
+
+def scoped_two_intent(label, titles, argv, cwd, source, binary):
+    return {"schema": "motionwright.scoped-two-selection-intent/1", "label": label,
+            "expected_cases": len(titles), "argv": argv, "cwd": str(cwd),
+            "source_commit": source["checkout"], "source_tree": source["tree"], "service_binary": binary,
+            "execution": "NOT_STARTED", "retry": "FORBIDDEN"}
+
+
+def scoped_two_record_attempt(selection, command):
+    pid = command.get("pid")
+    selection.update(command=command, attempted=type(pid) is int and pid > 0,
+                     original_pid=pid if type(pid) is int and pid > 0 else None,
+                     original_exit=command.get("exit_code"),
+                     status="UNKNOWN" if execution_unknown(command) else "FAIL", validated_cases=0)
+
+
+def scoped_two_archive_lists(root, inventory, receipt, source, command_closed):
+    rows = scoped_two_selections()
+    observed = receipt.get("scoped_discovery", [])
+    require(isinstance(observed, list) and [row.get("label") for row in observed] == [row[0] for row in rows],
+            "Scoped2 original one-list inventory differs")
+    preflight = archive_json(root, inventory, "tools/scoped-preflight.json")
+    require(preflight.get("schema") == "motionwright.scoped-two-preflight/1"
+            and preflight.get("source") == source and preflight.get("execution") == "NOT_RUN"
+            and preflight.get("formal_acceptance") is False
+            and preflight.get("resources", {}).get("phase") == "preflight"
+            and receipt.get("scoped_preflight") == {key: inventory["entries"]["tools/scoped-preflight.json"][key]
+                                                     for key in ("bytes", "sha256")},
+            "Scoped2 preflight original differs")
+    resource_rows = receipt.get("scoped_resource_observations", [])
+    expected_phases = ["build", "list-scoped-change", "execute-scoped-change"]
+    require(isinstance(resource_rows, list) and [row.get("phase") for row in resource_rows] == expected_phases,
+            "Scoped2 resource observation roster differs")
+    for row in [preflight.get("resources", {}), *resource_rows]:
+        require(row.get("run_id") == receipt.get("run_id") and row.get("run_attempt") == receipt.get("run_attempt") == "1"
+                and row.get("job") == receipt.get("job") == "real-service"
+                and row.get("executed_source") == source["checkout"]
+                and row.get("image_os") == "ubuntu24" and isinstance(row.get("image_version"), str)
+                and row["image_version"] and type(row.get("cargo_jobs")) is int and row["cargo_jobs"] == 1
+                and row.get("minimum_available_memory_bytes") == 4 * 1024**3
+                and row.get("minimum_target_free_bytes") == 18 * 1024**3
+                and type(row.get("available_memory_bytes")) is int and row["available_memory_bytes"] >= 4 * 1024**3
+                and type(row.get("target_free_bytes")) is int and row["target_free_bytes"] >= 18 * 1024**3,
+                "Scoped2 original resource/context observation differs")
+    repo, target = root.parent / "g", root / "t"
+    node = receipt["node"]["path"]
+    cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+    result = {}
+    for observed_row, selection in zip(observed, rows):
+        label, filename, titles = selection
+        command = observed_row.get("command", {})
+        command_closed(command, label + "-discovery")
+        env = service_environment_binding(target, root / "e", label, target / "debug/examples/studio_review_session")
+        env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(root / "e" / (label + "-discovery.json"))
+        require(command.get("argv") == service_command(node, cli, root / "e", selection,
+                                                       listing=True, scope=SCOPED_TWO_SCOPE)
+                and command.get("cwd") == str(repo / "apps/studio")
+                and command.get("selected_environment") == env,
+                "Scoped2 original list invocation differs")
+        path = "e/" + label + "-discovery.json"
+        actual = scoped_two_report(archive_json(root, inventory, path), filename, titles, listing=True)
+        require(observed_row.get("status") == "LISTED_NOT_EXECUTED" and observed_row.get("verified") == actual
+                and observed_row.get("original_report") == {key: inventory["entries"][path][key] for key in ("bytes", "sha256")},
+                "Scoped2 original list report differs")
+        result[label] = actual
+    all_ids = [identity["id"] for item in result.values() for identity in item["identities"]]
+    require(len(all_ids) == len(set(all_ids)) == 2, "Scoped2 original list is not two distinct identities")
+    def original_time(value):
+        require(isinstance(value, str) and value, "Scoped2 original command time is absent")
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        require(instant.tzinfo is not None and instant.utcoffset() is not None,
+                "Scoped2 original command time has no timezone")
+        return instant
+    lists_end = [original_time(row["command"].get("finished_utc")) for row in observed]
+    executions = receipt.get("selections", [])
+    require(len(executions) == 1 and all(max(lists_end) <= original_time(row.get("command", {}).get("started_utc"))
+                                       for row in executions),
+            "Scoped2 execution started before the original list closed")
+    return result
+
+
+def scoped_two_attachment(root, inventory, attachments, name, filename):
+    found = [item for item in attachments if isinstance(item, dict) and item.get("name") == name]
+    require(len(found) == 1 and found[0].get("contentType") == "application/json",
+            "Scoped2 original attachment missing or duplicate: " + name)
+    path = Path(found[0].get("path", ""))
+    relative = archive_member_name(path.relative_to(root).as_posix())
+    parts = relative.split("/")
+    require(parts[:2] == ["e", SCOPED_TWO_SCOPE + "-test-results"] and len(parts) in (4, 5),
+            "Scoped2 attachment outside its original case")
+    original_name = "/".join((*parts[:3], filename))
+    if len(parts) == 5:
+        require(parts[3] == "attachments" and re.fullmatch(re.escape(name) + r"-[0-9a-f]{40}\.json", parts[4]),
+                "Scoped2 reporter attachment name differs")
+    else:
+        require(relative == original_name, "Scoped2 direct attachment filename differs")
+    value = archive_json(root, inventory, relative)
+    original = archive_json(root, inventory, original_name)
+    require(value == original and all(inventory["entries"][relative][key] == inventory["entries"][original_name][key]
+                                     for key in ("bytes", "sha256")),
+            "Scoped2 reporter copy differs from its original")
+    return original_name, original
+
+
+def scoped_two_transcript(value, lifecycle, oracle, exit_count):
+    require(isinstance(value, dict) and set(value) == {
+                "evidenceScope", "fixture", "databasePath", "stderr", "transcript", "processExits", "lifecycleTaints"}
+            and value.get("evidenceScope") == "real_service_sqlite_cas; excludes_tauri_installer_native_render"
+            and value.get("fixture") == "synthetic_test_fixture"
+            and value.get("databasePath") == lifecycle["databasePath"]
+            and value.get("processExits") == lifecycle["exits"]
+            and value.get("lifecycleTaints") == lifecycle["taints"] == []
+            and isinstance(value.get("stderr"), str) and len(lifecycle["exits"]) == exit_count,
+            "Scoped2 original transcript or process family differs")
+    pids = [row["processId"] for row in lifecycle["exits"]]
+    require(len(pids) == len(set(pids)), "Scoped2 process exit was repeated")
+    transcript = value.get("transcript")
+    require(isinstance(transcript, list) and transcript, "Scoped2 original transcript is absent")
+    pending, used, pairs, observed_pids = {}, set(), [], set()
+    for entry in transcript:
+        require(isinstance(entry, dict) and set(entry) == {"at", "processId", "direction", "payload"}
+                and type(entry.get("processId")) is int and entry["processId"] in pids
+                and isinstance(entry.get("at"), str) and entry["at"], "Scoped2 original transcript identity differs")
+        instant = datetime.fromisoformat(entry["at"].replace("Z", "+00:00"))
+        require(instant.tzinfo is not None, "Scoped2 transcript time has no timezone")
+        observed_pids.add(entry["processId"])
+        payload = entry.get("payload")
+        require(isinstance(payload, dict) and type(payload.get("id")) in (str, int)
+                and (type(payload["id"]) is int or payload["id"]), "Scoped2 original RPC identity missing")
+        key = (type(payload["id"]).__name__, payload["id"])
+        if entry["direction"] == "request":
+            require(key not in used and isinstance(payload.get("command"), str) and payload["command"],
+                    "Scoped2 original request is repeated or unnamed")
+            used.add(key); pending[key] = entry
+        else:
+            require(entry["direction"] == "response" and key in pending and type(payload.get("ok")) is bool,
+                    "Scoped2 response lacks its original request")
+            request = pending.pop(key)
+            require(entry["processId"] == request["processId"]
+                    and ("result" in payload if payload["ok"] else "error" in payload),
+                    "Scoped2 response crossed process identity or lost its outcome")
+            pairs.append((request["payload"], payload))
+    require(not pending and observed_pids == set(pids) and pairs,
+            "Scoped2 transcript has unresolved requests or an unobserved process family")
+    request, response = pairs[-1]
+    require(request.get("command") == "get_project"
+            and request.get("args", {}).get("request", {}).get("project_id") == oracle["project"]["id"]
+            and response.get("ok") is True and response.get("result") == oracle["project"],
+            "Scoped2 final original read differs from the stored Project")
+    return {"original_requests": len(pairs), "original_processes": len(pids), "pending": 0}
+
+
+def scoped_two_capture_bindings(root, inventory, captures, binary):
+    """Bind each exact result to its complete original case; no archive reopen claim."""
+    known = {row["manifest"] for row in captures}
+    require(len(captures) == len(known) == 2, "Scoped2 requires two distinct original closed stores")
+    document = archive_json(root, inventory, "e/" + SCOPED_TWO_SCOPE + ".json")
+    cases = []
+    def collect(suites):
+        for suite in suites:
+            cases.extend(suite.get("specs", [])); collect(suite.get("suites", []))
+    collect(document["suites"])
+    require(len(cases) == 2 and {case["title"] for case in cases} == set(SCOPED_TWO_TITLES),
+            "Scoped2 store binding requires both exact cases")
+    bound, used = [], set()
+    for case in cases:
+        case_index = SCOPED_TWO_TITLES.index(case["title"])
+        participants, exits, changes = SCOPED_TWO_CASE_CONTRACTS[case_index]
+        attachments = case["tests"][0]["results"][0].get("attachments", [])
+        require(isinstance(attachments, list), "Scoped2 result attachments missing")
+        outcome_name, outcome = scoped_two_attachment(root, inventory, attachments,
+            "complete-store-finalization", "closed-store-1-outcomes.json")
+        case_root = outcome_name.rsplit("/", 1)[0]
+        prefix = case_root + "/closed-store-1"
+        manifest_name = prefix + "/manifest.json"
+        require(manifest_name in known and manifest_name not in used,
+                "Scoped2 closed store is missing or shared by two cases")
+        used.add(manifest_name)
+        manifest, oracle, original_outcome = partial_closed_store(root, inventory, prefix,
+            root / case_root / "service", "studio.sqlite3", participants, participants)
+        require(outcome == original_outcome, "Scoped2 finalization original differs")
+        project_name, project = scoped_two_attachment(root, inventory, attachments,
+            "persisted-project", "persisted-project.json")
+        require(project_name.rsplit("/", 1)[0] == case_root and project == oracle["project"],
+                "Scoped2 final Project differs from its complete store oracle")
+        require(len(oracle["journal"]) >= len(changes)
+                and tuple(row["change"]["type"] for row in oracle["journal"][-len(changes):]) == changes,
+                "Scoped2 final journal differs from its source-declared changes")
+        names = [item.get("name") for item in attachments if isinstance(item, dict)
+                 and str(item.get("name", "")).startswith("real-service-")]
+        require(sorted(names) == ["real-service-" + str(index + 1) + "-transcript" for index in range(participants)],
+                "Scoped2 transcript participant roster differs")
+        transcripts = []
+        for index in range(participants):
+            name, transcript = scoped_two_attachment(root, inventory, attachments,
+                "real-service-" + str(index + 1) + "-transcript", "service-" + str(index + 1) + "-transcript.json")
+            require(name.rsplit("/", 1)[0] == case_root, "Scoped2 transcript belongs to a different case")
+            observed = scoped_two_transcript(transcript, manifest["lifecycle"][index], oracle, exits[index])
+            transcripts.append({"path": name, **observed})
+        bound.append({"label": SCOPED_TWO_SCOPE, "file": case["file"], "title": case["title"] ,
+                      "original_case_id": case["id"], "manifest": manifest_name, "outcomes": outcome_name,
+                      "persisted_project": project_name, "transcripts": transcripts,
+                      "database": "studio.sqlite3", "source_directory": str(root / case_root / "service"),
+                      "service_binary": binary, "participants": participants,
+                      "project_id": oracle["project"]["id"], "journal_revision": oracle["project"]["revision"],
+                      "basis": "SOURCE_PINNED_CASE_TRANSCRIPTS_PROJECT_JOURNAL_AND_COMPLETE_HELPER_ORIGINALS",
+                      "independent_archive_reopen": False, "additional_oracle_reexecution": False})
+    require(used == known, "Scoped2 original store inventory is incomplete")
+    return sorted(bound, key=lambda row: SCOPED_TWO_TITLES.index(row["title"]))
+
+
+def run_scoped_two_selection(repo, output, target):
+    scoped_two_profile()  # Refuse missing/foreign nomination before source or process work.
+    require(sys.platform.startswith("linux"), "Scoped2 requires its owned POSIX process boundary")
+    repo, output, target = (path.resolve() for path in (repo, output, target))
+    require(repo.is_dir() and output == repo.parent / "v/e", "Scoped2 requires its isolated source/evidence path")
+    require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
+    output.mkdir(parents=True, exist_ok=False)
+    report = {"schema": "motionwright.canvas-service-ci/1", "status": "FAIL",
+              "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job": os.environ.get("GITHUB_JOB"), "selections": [], "scoped_discovery": [],
+              "selection_plan": selection_plan(SCOPED_TWO_SCOPE),
+              "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    label, filename, titles = scoped_two_selections()[0]
+    try:
+        before = source_observation(repo, SCOPED_TWO_SCOPE)
+        report["source_before"] = before
+        write_new(output / "source-before.json", before)
+        original, preflight = browser_report_original(output.parent / "tools/scoped-preflight.json")
+        require(preflight.get("schema") == "motionwright.scoped-two-preflight/1"
+                and preflight.get("source") == before and preflight.get("execution") == "NOT_RUN"
+                and preflight.get("formal_acceptance") is False and preflight.get("resources", {}).get("phase") == "preflight",
+                "Scoped2 preflight original source differs")
+        report["scoped_preflight"] = original
+        report["scoped_resource_observations"] = [scoped_two_resources(repo, target, phase="build")]
+        cargo, node = shutil.which("cargo"), shutil.which("node")
+        require(cargo is not None and node is not None, "cargo and node are required")
+        report["cargo"], report["node"] = observed_tool(Path(cargo)), observed_tool(Path(node))
+        cargo, node = report["cargo"]["path"], report["node"]["path"]
+        report["target_directory"] = str(target)
+        env = dict(os.environ)
+        for variable in PROCESS_ENVIRONMENT_KEYS:
+            env.pop(variable, None)
+        env["CARGO_TARGET_DIR"] = str(target)
+        build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
+                         "--example", "studio_review_session", "--jobs", "1"], repo, env, output, "build", 1200)
+        report["build"] = build
+        require_observed_command(build)
+        require(build["exit_code"] == 0, "Scoped2 real service build failed")
+        binary = target / "debug/examples/studio_review_session"
+        report["service_binary"] = {"path": str(binary), **digest(binary)}
+        retained_binary = output / "executed-studio-service"
+        shutil.copyfile(binary, retained_binary)
+        report["retained_service_binary"] = {"path": retained_binary.name, **digest(retained_binary)}
+        require(digest(retained_binary) == digest(binary), "Scoped2 retained service binary differs")
+        require(source_observation(repo, SCOPED_TWO_SCOPE) == before, "Scoped2 source changed during compilation")
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        report["playwright_cli"] = digest(cli)
+        (output / (label + "-stores")).mkdir()
+        case_env = dict(env)
+        case_env.update(service_environment_binding(target, output, label, binary))
+        case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + "-discovery.json"))
+        report["scoped_resource_observations"].append(scoped_two_resources(repo, target, phase="list-" + label))
+        command = execute(service_command(node, cli, output, (label, filename, titles), listing=True, scope=SCOPED_TWO_SCOPE),
+                          repo / "apps/studio", case_env, output, label + "-discovery", 60)
+        discovered = {"label": label, "command": command, "status": "FAIL"}
+        report["scoped_discovery"].append(discovered)
+        require_observed_command(command)
+        require(command["exit_code"] == 0, "Scoped2 original list process failed")
+        original, document = browser_report_original(output / (label + "-discovery.json"))
+        listed = scoped_two_report(document, filename, titles, listing=True)
+        discovered.update(original_report=original, verified=listed, status="LISTED_NOT_EXECUTED")
+        require(source_observation(repo, SCOPED_TWO_SCOPE) == before, "Scoped2 source changed during listing")
+        require(digest(binary) == {key: report["service_binary"][key] for key in ("bytes", "sha256")}
+                and digest(cli) == report["playwright_cli"], "Scoped2 original input changed during listing")
+        case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
+        argv = service_command(node, cli, output, (label, filename, titles), scope=SCOPED_TWO_SCOPE)
+        report["scoped_resource_observations"].append(scoped_two_resources(repo, target, phase="execute-" + label))
+        intent = scoped_two_intent(label, titles, argv, repo / "apps/studio", before, report["service_binary"])
+        selection = {"label": label, "expected_tests": 2, "status": "PRE_LAUNCH", "attempted": False,
+                     "launch_requested": False, "original_pid": None, "original_exit": None, "validated_cases": 0}
+        report["selections"].append(selection)
+        intent_path = output / (label + "-intent.json")
+        write_new(intent_path, intent)
+        identity, retained_intent = browser_report_original(intent_path)
+        require(retained_intent == intent, "Scoped2 pre-dispatch selection intent changed")
+        selection.update(intent=identity, launch_requested=True)
+        try:
+            command = execute(argv, repo / "apps/studio", case_env, output, label, SCOPED_TWO_TIMEOUT)
+        except UnknownObservation as error:
+            scoped_two_record_attempt(selection, error.command)
+            raise
+        scoped_two_record_attempt(selection, command)
+        require_observed_command(command)
+        original, document = browser_report_original(output / (label + ".json"))
+        selection["original_report"] = original
+        selection["verified"] = scoped_two_report(document, filename, titles, listing=False, expected=listed)
+        require(command["exit_code"] == 0, "Scoped2 original selected process did not exit zero")
+        selection.update(status="PASS", validated_cases=2)
+        report["source_after"] = source_observation(repo, SCOPED_TWO_SCOPE)
+        require(report["source_after"] == before, "Scoped2 source changed during browser execution")
+        require(digest(binary) == {key: report["service_binary"][key] for key in ("bytes", "sha256")}
+                and digest(retained_binary) == digest(binary) and digest(cli) == report["playwright_cli"],
+                "Scoped2 executed or retained input changed")
+        for name in ("cargo", "node"):
+            require(observed_tool(Path(report[name]["path"])) == report[name], "Scoped2 tool changed: " + name)
+        report["status"] = "PASS"
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                      terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+    except Exception as error:
+        report["error"] = str(error)
+    started = sum(row["expected_tests"] for row in report["selections"] if row.get("attempted") is True)
+    report["scoped_execution"] = {
+        "selected_cases": 2, "launch_requested_cases": sum(row["expected_tests"] for row in report["selections"]
+                                                          if row.get("launch_requested") is True),
+        "selected_cases_in_started_processes": started,
+        "validated_cases": sum(row.get("validated_cases", 0) for row in report["selections"]),
+        "state": ("UNKNOWN" if report["status"] == "UNKNOWN" else "VALIDATED_ALL_SELECTED_ORIGINALS"
+                  if report["status"] == "PASS" else "ATTEMPTED_NOT_VALIDATED" if started else "NOT_RUN"),
+        "retry": "FORBIDDEN", "formal_acceptance": False}
+    write_new(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"], "selected_tests": 2, "receipt": str(output / "receipt.json")}))
+    return 0 if report["status"] == "PASS" else 1
+
+
+
 GESTURE_TITLES = (
     "rapid pointer move and release commits one exact Canvas transform without losing the final delta",
     "pointercancel discards the transient delta and later pointerup cannot apply it",
@@ -2288,6 +3125,10 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if is_browser_scope(selection):
         return browser_selections(selection)
+    if selection == SCOPED_TWO_SCOPE:
+        return scoped_two_selections()
+    if selection == CAMERA_EIGHT_SCOPE:
+        return camera_eight_selections()
     if selection == PARTIAL_ORACLE_SCOPE:
         return partial_oracle_selections()
     require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
@@ -2327,6 +3168,25 @@ def selected_selections(selection):
 def selection_plan(selection):
     chosen = selected_selections(selection)
     labels = {row[0] for row in chosen}
+    if selection == SCOPED_TWO_SCOPE:
+        return {"requested": selection, "scope": "EXACT_SCOPED_CHANGE_TWO_REAL_SERVICE_CASES",
+                "required": [{"label": label, "file": filename, "titles": list(titles)} for label, filename, titles in chosen],
+                "not_selected": [{"label": label, "file": filename, "titles": list(titles), "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                                 for label, filename, titles in SELECTIONS],
+                "required_tests": 2, "full_default_tests": 184, "closed_store_captures": 2,
+                "discovery_required_before_execution": True, "execution_platform": "Linux",
+                "independent_archive_reopen": False, "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
+    if selection == CAMERA_EIGHT_SCOPE:
+        return {"requested": selection, "scope": "CAMERA_SEVEN_PLUS_SAVED_MANIM_V2",
+                "required": [{"label": label, "file": filename, "titles": list(titles)}
+                             for label, filename, titles in chosen],
+                "not_selected": [{"label": label, "file": filename, "titles": list(titles),
+                                  "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                                 for label, filename, titles in SELECTIONS if label != "camera"],
+                "required_tests": 8, "full_default_tests": 184, "existing_camera_cases": 7,
+                "added_v2_cases": 1, "discovery_required_before_execution": True,
+                "execution_platform": "Linux", "independent_archive_reopen": False,
+                "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
     if selection == PARTIAL_ORACLE_SCOPE:
         return {"requested": selection, "scope": "EXPLICIT_PARTIAL_TECHNICAL_SERVICE_ORACLES",
                 "required": [{"label": label, "file": filename, "titles": list(titles)}
@@ -2426,8 +3286,12 @@ def write_new(path, value):
 
 
 def source_observation(repo, selection=None):
-    require(selection is None or is_browser_scope(selection) or selection == PARTIAL_ORACLE_SCOPE,
+    require(selection is None or is_browser_scope(selection) or selection in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, SCOPED_TWO_SCOPE),
             "unknown source observation scope")
+    if selection == CAMERA_EIGHT_SCOPE:
+        camera_eight_profile()
+    if selection == SCOPED_TWO_SCOPE:
+        scoped_two_profile()
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], cwd=repo, timeout=30).decode().strip()
 
@@ -2571,6 +3435,10 @@ def source_observation(repo, selection=None):
     if selection == PARTIAL_ORACLE_SCOPE:
         partial_oracle_selections()
         paths = tuple(dict.fromkeys((*paths, *PARTIAL_ORACLE_SOURCE_PATHS)))
+    if selection == CAMERA_EIGHT_SCOPE:
+        paths = tuple(dict.fromkeys((*paths, *(name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS))))
+    if selection == SCOPED_TWO_SCOPE:
+        paths = tuple(dict.fromkeys((*paths, *(name for name, _ in SCOPED_TWO_INPUT_PINS))))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -2580,7 +3448,12 @@ def source_observation(repo, selection=None):
         require(observed == {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()},
                 "source differs from Git: " + name)
         files[name] = observed
-    return {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
+    result = {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
+    if selection == CAMERA_EIGHT_SCOPE:
+        result["camera_eight_binding"] = camera_eight_source_binding(repo, result)
+    if selection == SCOPED_TWO_SCOPE:
+        result["scoped_two_binding"] = scoped_two_source_binding(repo, result)
+    return result
 
 
 PROCESS_ENVIRONMENT_KEYS = ("CARGO_TARGET_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE",
@@ -2982,6 +3855,8 @@ def archive_closed_bindings(root, inventory, source):
     plan = receipt.get("selection_plan", {})
     require(plan == selection_plan(plan.get("requested")), "archive selection binding differs")
     required = selected_selections(plan["requested"])
+    camera_mode = plan["requested"] == CAMERA_EIGHT_SCOPE
+    scoped_mode = plan["requested"] == SCOPED_TWO_SCOPE
     selections = receipt.get("selections", [])
     require([x.get("label") for x in selections] == [x[0] for x in required],
             "archive selected roster differs")
@@ -3058,7 +3933,7 @@ def archive_closed_bindings(root, inventory, source):
         build = receipt.get("build", {})
         command_closed(build, "build")
         require(build.get("argv") == [cargo, "build", "--locked", "-p", "motionwright-service",
-                                       "--example", "studio_review_session"]
+                                       "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode or scoped_mode else [])]
                 and build.get("cwd") == str(repo)
                 and build.get("selected_environment") == service_environment_binding(target),
                 "service build invocation differs")
@@ -3081,6 +3956,8 @@ def archive_closed_bindings(root, inventory, source):
                         archive_json(root, inventory, "e/" + label + "-discovery.json"), filename, titles),
                     "partial oracle discovery original differs")
         partial_oracle_list_order(discovered, selections)
+    camera_lists = camera_eight_archive_lists(root, inventory, receipt, source, command_closed) if camera_mode else {}
+    scoped_lists = scoped_two_archive_lists(root, inventory, receipt, source, command_closed) if scoped_mode else {}
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
@@ -3094,7 +3971,8 @@ def archive_closed_bindings(root, inventory, source):
                 "browser selected command differs")
         else:
             require(selection["command"].get("argv") == service_command(
-                node, cli, root / "e", (label, filename, titles))
+                node, cli, root / "e", (label, filename, titles),
+                scope=SCOPED_TWO_SCOPE if scoped_mode else CAMERA_EIGHT_SCOPE if camera_mode else None)
                 and selection["command"].get("cwd") == cwd
                 and selection["command"].get("selected_environment") == service_environment_binding(
                     target, root / "e", label, binary_path), "service selected invocation differs")
@@ -3102,10 +3980,43 @@ def archive_closed_bindings(root, inventory, source):
         require(selection.get("status") == "PASS" and selection.get("expected_tests") == len(titles)
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
                 "archive report binding differs")
-        verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
-        require(selection.get("verified") == verify(
-            archive_json(root, inventory, "e/" + label + ".json"), filename, titles),
-            "archive original selected results differ")
+        original_document = archive_json(root, inventory, "e/" + label + ".json")
+        if camera_mode:
+            verified = camera_eight_report(original_document, filename, titles, listing=False, expected=camera_lists[label])
+            intent_name = "e/" + label + "-intent.json"
+            intent = camera_eight_intent(label, titles, selection["command"]["argv"], Path(cwd), source, receipt["service_binary"])
+            require(archive_json(root, inventory, intent_name) == intent
+                    and selection.get("intent") == {key: inventory["entries"][intent_name][key] for key in ("bytes", "sha256")}
+                    and selection.get("launch_requested") is True and selection.get("attempted") is True
+                    and type(selection.get("original_pid")) is int and selection["original_pid"] > 0
+                    and selection["original_pid"] == selection["command"].get("pid")
+                    and type(selection.get("original_exit")) is int and selection["original_exit"] == 0
+                    and type(selection.get("validated_cases")) is int and selection["validated_cases"] == len(titles),
+                    "Camera original attempt or intent differs")
+        elif scoped_mode:
+            verified = scoped_two_report(original_document, filename, titles, listing=False, expected=scoped_lists[label])
+            intent_name = "e/" + label + "-intent.json"
+            intent = scoped_two_intent(label, titles, selection["command"]["argv"], Path(cwd), source, receipt["service_binary"])
+            require(archive_json(root, inventory, intent_name) == intent
+                    and selection.get("intent") == {key: inventory["entries"][intent_name][key] for key in ("bytes", "sha256")}
+                    and selection.get("launch_requested") is True and selection.get("attempted") is True
+                    and type(selection.get("original_pid")) is int and selection["original_pid"] > 0
+                    and selection["original_pid"] == selection["command"].get("pid")
+                    and type(selection.get("original_exit")) is int and selection["original_exit"] == 0
+                    and type(selection.get("validated_cases")) is int and selection["validated_cases"] == len(titles),
+                    "Scoped2 original attempt or intent differs")
+        else:
+            verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
+            verified = verify(original_document, filename, titles)
+        require(selection.get("verified") == verified, "archive original selected results differ")
+    if camera_mode:
+        require(receipt.get("camera_execution") == {"selected_cases": 8, "launch_requested_cases": 8,
+                "selected_cases_in_started_processes": 8, "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                "retry": "FORBIDDEN", "formal_acceptance": False}, "Camera aggregate execution is not complete")
+    if scoped_mode:
+        require(receipt.get("scoped_execution") == {"selected_cases": 2, "launch_requested_cases": 2,
+                "selected_cases_in_started_processes": 2, "validated_cases": 2, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                "retry": "FORBIDDEN", "formal_acceptance": False}, "Scoped2 aggregate execution is not complete")
     if browser_mode:
         for name in inventory["entries"]:
             parts = name.split("/")
@@ -3174,6 +4085,10 @@ def archive_closed_bindings(root, inventory, source):
                          "evidence_scope": manifest.get("evidenceScope")})
     result = {"receipt": {k: inventory["entries"]["e/receipt.json"][k] for k in ("bytes", "sha256")},
               "selection_plan": plan, "captures": captures}
+    if camera_mode:
+        result["camera_eight_cases"] = camera_eight_capture_bindings(root, inventory, captures)
+    if scoped_mode:
+        result["scoped_two_cases"] = scoped_two_capture_bindings(root, inventory, captures, receipt["service_binary"])
     if plan["requested"] == PARTIAL_ORACLE_SCOPE:
         result["partial_oracle_cases"] = partial_oracle_store_bindings(
             root, inventory, selections, captures, receipt["service_binary"], source)
@@ -3321,7 +4236,9 @@ def retain_closed_archive(repo, root):
                                      original_receipt.get("unsealed_command", {}))
         commands = [original_receipt.get("build", {}), original_receipt.get("discovery", {}).get("command", {}),
                     *(row.get("command", {}) for row in original_receipt.get("selections", [])),
-                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", []))]
+                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", [])),
+                    *(row.get("command", {}) for row in original_receipt.get("camera_discovery", [])),
+                    *(row.get("command", {}) for row in original_receipt.get("scoped_discovery", []))]
         for command in commands:
             if execution_unknown(command):
                 raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
@@ -3331,7 +4248,7 @@ def retain_closed_archive(repo, root):
                 and archive_json(root, before, receipt_name) == original_receipt,
                 "original receipt changed before archive admission")
         selected = original_receipt.get("selection_plan", {}).get("requested")
-        source_mode = selected if is_browser_scope(selected) or selected == PARTIAL_ORACLE_SCOPE else None
+        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, SCOPED_TWO_SCOPE) else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -3516,9 +4433,18 @@ def service_environment_binding(target, output=None, label=None, binary=None):
             "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
 
 
-def service_command(node, cli, output, selection, *, listing=False):
+def service_command(node, cli, output, selection, *, listing=False, scope=None):
     label, filename, _titles = selection
     require(type(listing) is bool, "service list flag must be boolean")
+    require(scope in (None, CAMERA_EIGHT_SCOPE, SCOPED_TWO_SCOPE), "unknown closed service command scope")
+    if scope in (CAMERA_EIGHT_SCOPE, SCOPED_TWO_SCOPE):
+        required = scoped_two_selections() if scope == SCOPED_TWO_SCOPE else camera_eight_selections()
+        require(selection in required, "unknown exact service selection")
+        pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title))) for title in _titles) + ")$"
+        return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+                "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json",
+                "--output=" + str(output / (label + "-test-results")), "--grep", pattern,
+                *(["--list"] if listing else [])]
     if label in {row[0] for row in PARTIAL_ORACLE_SELECTIONS}:
         require(selection in partial_oracle_selections(), "unknown partial oracle selection")
         pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title)))
@@ -3892,15 +4818,22 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
+    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, SCOPED_TWO_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
     args = parser.parse_args()
+    if args.selection == SCOPED_TWO_SCOPE:
+        return run_scoped_two_selection(args.repo, args.output, args.target)
     if is_browser_scope(args.selection):
         return run_browser_selection(args.repo, args.output, args.target, args.selection)
     selections = selected_selections(args.selection)
-    partial_mode = args.selection == PARTIAL_ORACLE_SCOPE
-    require(not partial_mode or sys.platform.startswith("linux"),
+    partial_mode, camera_mode = args.selection == PARTIAL_ORACLE_SCOPE, args.selection == CAMERA_EIGHT_SCOPE
+    listed_mode = partial_mode or camera_mode
+    if camera_mode:
+        camera_eight_profile()  # No source/resource admission is inferred from this selector.
+    require(not listed_mode or sys.platform.startswith("linux"),
             "partial service verification requires its owned POSIX process boundary")
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
+    if camera_mode:
+        require(output == repo.parent / "v/e", "Camera requires its original isolated evidence path")
     require(repo.is_dir(), "repository missing")
     require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
     output.mkdir(parents=True, exist_ok=False)
@@ -3909,10 +4842,20 @@ def main():
               "job": os.environ.get("GITHUB_JOB"), "selections": [],
               "selection_plan": selection_plan(args.selection),
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    source_mode = args.selection if listed_mode else None
     try:
-        before = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
+        before = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source_before"] = before
         write_new(output / "source-before.json", before)
+        if camera_mode:
+            original, preflight = browser_report_original(output.parent / "tools/camera-preflight.json")
+            require(preflight.get("schema") == "motionwright.camera-eight-preflight/1"
+                    and preflight.get("source") == before and preflight.get("execution") == "NOT_RUN"
+                    and preflight.get("formal_acceptance") is False
+                    and preflight.get("resources", {}).get("phase") == "preflight",
+                    "Camera preflight original source differs")
+            report["camera_preflight"] = original
+            report["camera_resource_observations"] = [camera_eight_resources(repo, target, phase="build")]
         cargo, node = shutil.which("cargo"), shutil.which("node")
         require(cargo is not None and node is not None, "cargo and node are required")
         report["cargo"], report["node"] = observed_tool(Path(cargo)), observed_tool(Path(node))
@@ -3923,7 +4866,8 @@ def main():
             env.pop(variable, None)
         env["CARGO_TARGET_DIR"] = str(target)
         build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
-                         "--example", "studio_review_session"], repo, env, output, "build", 1200)
+                         "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])],
+                        repo, env, output, "build", 1200)
         report["build"] = build
         require_observed_command(build)
         require(build["exit_code"] == 0, "real service build failed")
@@ -3935,60 +4879,97 @@ def main():
         shutil.copyfile(binary, retained_binary)
         report["retained_service_binary"] = {"path": retained_binary.name, **digest(retained_binary)}
         require(digest(retained_binary) == digest(binary), "retained service binary differs")
-        require((source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo)) == before, "source changed during service compilation")
+        require((source_observation(repo, source_mode) if source_mode else source_observation(repo)) == before,
+                "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
-        if partial_mode:
-            report["partial_discovery"] = []
-            # Admit every current list before any selected test body is launched.
+        discovery_key = "camera_discovery" if camera_mode else "partial_discovery"
+        if listed_mode:
+            report[discovery_key] = []
+            # Every current list closes before any selected test body is launched.
             for label, filename, titles in selections:
                 stores = output / (label + "-stores")
                 stores.mkdir()
                 discovery_env = dict(env)
                 discovery_env.update(service_environment_binding(target, output, label, binary))
                 discovery_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + "-discovery.json"))
-                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True),
+                if camera_mode:
+                    report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="list-" + label))
+                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True,
+                                                  scope=CAMERA_EIGHT_SCOPE if camera_mode else None),
                                   repo / "apps/studio", discovery_env, output, label + "-discovery", 60)
                 observed = {"label": label, "command": command, "status": "FAIL"}
-                report["partial_discovery"].append(observed)
+                report[discovery_key].append(observed)
                 require_observed_command(command)
                 require(command["exit_code"] == 0, "partial oracle discovery process failed")
                 original, document = browser_report_original(output / (label + "-discovery.json"))
-                observed.update(original_report=original,
-                                verified=partial_oracle_discovery(document, filename, titles),
-                                status="LISTED_NOT_EXECUTED")
-            require(source_observation(repo, PARTIAL_ORACLE_SCOPE) == before,
-                    "source changed during partial oracle listing")
+                verified = (camera_eight_report(document, filename, titles, listing=True) if camera_mode
+                            else partial_oracle_discovery(document, filename, titles))
+                observed.update(original_report=original, verified=verified, status="LISTED_NOT_EXECUTED")
+            if camera_mode:
+                all_ids = [identity["id"] for row in report[discovery_key] for identity in row["verified"]["identities"]]
+                require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
+            require(source_observation(repo, source_mode) == before, "source changed during partial oracle listing")
             require(digest(binary) == {key: report["service_binary"][key] for key in ("bytes", "sha256")}
                     and digest(cli) == report["playwright_cli"], "partial oracle input changed during listing")
         for label, filename, titles in selections:
             case_env = dict(env)
             stores = output / (label + "-stores")
-            if not partial_mode:
+            if not listed_mode:
                 stores.mkdir()
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
-            argv = service_command(node, cli, output, (label, filename, titles))
-            command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
-            selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
-            report["selections"].append(selection)
+            argv = service_command(node, cli, output, (label, filename, titles),
+                                   scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
+            if camera_mode:
+                report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="execute-" + label))
+                intent = camera_eight_intent(label, titles, argv, repo / "apps/studio", before, report["service_binary"])
+                intent_path = output / (label + "-intent.json")
+                selection = {"label": label, "expected_tests": len(titles), "status": "PRE_LAUNCH",
+                             "attempted": False, "launch_requested": False, "original_pid": None,
+                             "original_exit": None, "validated_cases": 0}
+                report["selections"].append(selection)
+                write_new(intent_path, intent)
+                identity, retained_intent = browser_report_original(intent_path)
+                require(retained_intent == intent, "Camera pre-dispatch selection intent changed")
+                selection.update(intent=identity, launch_requested=True)
+            try:
+                command = execute(argv, repo / "apps/studio", case_env, output, label,
+                                  CAMERA_EIGHT_TIMEOUTS[label] if camera_mode else
+                                  PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
+            except UnknownObservation as error:
+                if camera_mode:
+                    camera_eight_record_attempt(selection, error.command)
+                raise
+            if camera_mode:
+                camera_eight_record_attempt(selection, command)
+            else:
+                selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
+                report["selections"].append(selection)
             require_observed_command(command)
             try:
                 result_path = output / (label + ".json")
                 selection["original_report"] = digest(result_path)
                 require(result_path.stat().st_size <= 64 * 1024 * 1024, "report exceeds bound")
                 document = json.loads(result_path.read_bytes())
-                verifier = validate_browser_execution if partial_mode else validate_report
-                selection["verified"] = verifier(document, filename, titles)
+                if camera_mode:
+                    discovered = next(row["verified"] for row in report[discovery_key] if row["label"] == label)
+                    selection["verified"] = camera_eight_report(document, filename, titles, listing=False, expected=discovered)
+                else:
+                    verifier = validate_browser_execution if partial_mode else validate_report
+                    selection["verified"] = verifier(document, filename, titles)
                 require(command["exit_code"] == 0, "selected process did not exit zero")
                 selection["status"] = "PASS"
+                if camera_mode:
+                    selection["validated_cases"] = len(titles)
             except Exception as error:
                 selection["error"] = str(error)
+            if camera_mode:
+                require(selection["status"] == "PASS", "Camera original execution or result admission failed")
             if command["exit_code"] is None:
                 break
-        report["source_after"] = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
+        report["source_after"] = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         require(report["source_after"] == before, "source changed during browser execution")
         require(digest(binary) == {k: report["service_binary"][k] for k in ("bytes", "sha256")},
                 "service executable changed")
@@ -4004,6 +4985,15 @@ def main():
                       terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         report["error"] = str(error)
+    if camera_mode:
+        started = sum(row["expected_tests"] for row in report["selections"] if row.get("attempted") is True)
+        report["camera_execution"] = {
+            "selected_cases": 8, "launch_requested_cases": sum(row["expected_tests"] for row in report["selections"]
+                                                                 if row.get("launch_requested") is True),
+            "selected_cases_in_started_processes": started, "validated_cases": sum(row.get("validated_cases", 0) for row in report["selections"]),
+            "state": ("UNKNOWN" if report["status"] == "UNKNOWN" else "VALIDATED_ALL_SELECTED_ORIGINALS"
+                      if report["status"] == "PASS" else "ATTEMPTED_NOT_VALIDATED" if started else "NOT_RUN"),
+            "retry": "FORBIDDEN", "formal_acceptance": False}
     write_new(output / "receipt.json", report)
     print(json.dumps({"status": report["status"],
                       "selected_tests": sum(x["expected_tests"] for x in report["selections"]),
@@ -5415,6 +6405,10 @@ def studio68_main(arguments):
     return exit_code
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["scoped-preflight"]:
+        raise SystemExit(scoped_two_preflight(sys.argv[2:]))
+    if sys.argv[1:2] == ["camera-preflight"]:
+        raise SystemExit(camera_eight_preflight(sys.argv[2:]))
     if sys.argv[1:2] == ["studio68"]:
         raise SystemExit(studio68_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "claim-source-contracts":
