@@ -1,0 +1,42 @@
+{
+  "clean_external_consumer_compile_clause_accepted": false,
+  "composition_report_sha256": "847666ff6e6ed270d22901d078442118f06dac070438e30b8a532903ae1c8451",
+  "decision": "sufficient_source_clause",
+  "field_ids": [
+    "CR-SDK-01#/statement"
+  ],
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "Only CR-SDK-01 statement on selected016f/AA; the separate clean external consumer compilation clause is not accepted by these source observations.",
+    "No Cargo, compiler, product, Host, native, installed-package or browser execution in this composition; imported-symbol typechecking is not inferred from text and manifests.",
+    "Repository public availability is an observation at the retained fresh-query times. AA is not asserted to be upstream main; registry publication is disabled for Native SDK and no registry release is claimed.",
+    "MIT/Apache license bytes and workspace inheritance are observed at exact AA; no commercial, installer or broader distribution authorization is granted.",
+    "Technical graph peer review alone is not A1 authority. The actual A1 source-selection event and completed source-commit receipt are required joins.",
+    "The original D4 reviews, PR213 query timestamp and all failed or unexecuted predecessors remain unchanged; no historical product PASS is transferred.",
+    "Actual final source-policy, privacy, compatibility, schema and history gates remain required before component application/integration; this composition does not report those gates as executed.",
+    "This one-field component is prepared for controlled intake only. Whole requirement/scenario acceptance and readiness are not inferred; every prior evidence record and review must remain intact."
+  ],
+  "obligations": [
+    {
+      "basis": "The exact selected016f manifests, complete tracked Git roster,244-line import inventory,86 source paths and current lock bind only declared canonical SDK sources at AA without SDK local-path or patch replacement. Seven fresh public GitHub GET originals join the canonical repository, exact AA/tree and five upstream license/package blobs to local immutable Git; PR213's retained canonical Native SDK contribution is an actual ancestor. A1's exact approved source graph, resulting016f source commit and original selected-source announcement bind the permitted pin. This closes the preserved source-only obligation.",
+      "id": "canonical_public_dependency_source_and_authorized_pin",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "163ffcd7b3e0f1e25b1693fce6a5f4d31eeb6aba0d8de802fbc14a5caea74ac9",
+  "original_composition_receipt_sha256": "210e5f04559c8be9382b0f62026cade1f7e393de8ceb91c94b835e58889edebd",
+  "original_current_origin_receipt_sha256": "797aa8350cfdb47f459bfd7955e1c523984351419abc3115f3da690aac755752",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-27T05:20:07.872501+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.sdk01-current-source-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "326b4f60ba2cbd051eb7cc163c53694be1ace6fe8af65ecac177ef009b913516",
+  "source_policy_gate_executed": false,
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

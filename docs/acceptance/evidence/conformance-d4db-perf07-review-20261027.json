@@ -1,0 +1,46 @@
+{
+  "composition_receipt_sha256": "5217519c9d060b39c5ef73d1c90ee7910b4b8893ecb59c46d6cbc81e772c6504",
+  "composition_report_sha256": "bd7c1d70696a1fc6f7b34b7ad45ab0bd6512e79dc2299738498e0ddac69a1c64",
+  "field_ids": [
+    "CR-PERF-07#/acceptance_criterion"
+  ],
+  "human_review_required_preserved": true,
+  "human_review_status_modified": false,
+  "human_statement_accepted": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "One objective no-participant-report acceptance field only; no participant study, human statement, performance score, native run, installed result, product acceptance, or release authorization.",
+    "The seven controls execute real Python reporting code with explicitly synthetic measurements; they are not seven people, projects, performance runs or accepted requirements.",
+    "The source composition authenticates that exact retained Python invocation and reviews the current report routes; it does not rerun the controls or compile/execute either Rust benchmark.",
+    "Historical executions remain tied to their original source. The new unit evidence is the brokered exact-D4 invocation only.",
+    "CR-PERF-07 statement, human review, requirement completion and the row's branch/partial/open state are preserved.",
+    "The admission is scoped to product source D4. It is not transferred to a later A1 candidate."
+  ],
+  "obligations": [
+    {
+      "basis": "The single original exact-D4 seven-selector Python invocation rejects fabricated feedback/superiority/work and preserves benign unobserved human/native/installed outputs; its inputs are synthetic and no participant is asserted.",
+      "id": "forged_human_feedback_rejected",
+      "status": "pass"
+    },
+    {
+      "basis": "The current source composition authenticates that original unit invocation and the exact historical/normative report routes, which retain human feedback as NOT_RUN before serialization. Technical performance PASS is not a human-study result.",
+      "id": "no_participant_report_branch",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "f43b7ef8781367e06e267a7eb2eba063b07e527a5d0434f924932e043af539c5",
+  "original_unit_receipt_sha256": "4058cb05e051501d670cb3de36457079ace1689c2c6df442e4e65db82e501a82",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-27T00:18:17.723417+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.perf07-objective-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+    "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+  },
+  "source_clause_sha256": "24dd23fb2b06c071f50d67c9a13f05c28558a57b4a644791bec8b78ca9b2454e",
+  "source_review_sha256": "a30e83b3e4594825bac5fe0414a0ba2badfbd6a3d3ec14817cc2dcc1d1e64839",
+  "tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+}

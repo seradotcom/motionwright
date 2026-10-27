@@ -1,0 +1,290 @@
+{
+  "actual_python_unit": {
+    "ended_at_utc": "2026-10-27T02:17:21.790167+00:00",
+    "environment": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]"
+    },
+    "exit_code": 0,
+    "failed": 0,
+    "kind": "unit",
+    "original_argv_published": false,
+    "original_argv_sha256": "0eed21801fcd8925ce52b6079f06d70cee358af245633492298b61ba5fbb7ece",
+    "original_receipt_sha256": "643ea7398f24322798e50e35f4a83fbd491edcaa12d7115e02151ebbcb4a6a3e",
+    "original_unit_receipt_sha256": "643ea7398f24322798e50e35f4a83fbd491edcaa12d7115e02151ebbcb4a6a3e",
+    "passed": 7,
+    "pid": 7932,
+    "profile": "performance-claim-seven-controls-current",
+    "scope": "actual7unit tests on exact016f bounded source projection",
+    "selectors": [
+      "test_creative_stage_cost.StageCostSafetyTests.test_false_human_feedback_rejected",
+      "test_creative_stage_cost.StageCostSafetyTests.test_false_competitor_superiority_rejected",
+      "test_creative_stage_cost.StageCostSafetyTests.test_savings_and_native_approval_never_inferred",
+      "test_creative_stage_cost.StageCostSafetyTests.test_forged_avoided_work_units_rejected",
+      "test_creative_stage_cost.StageCostSafetyTests.test_wrong_cache_kind_cannot_claim_renderer_savings",
+      "test_first_scene_reuse.FirstSceneSafetyTests.test_false_human_feedback_rejected",
+      "test_first_scene_reuse.FirstSceneSafetyTests.test_user_value_and_installed_first_frame_are_not_fabricated"
+    ],
+    "skipped": 0,
+    "started_at_utc": "2026-10-27T02:17:20.185062+00:00",
+    "streams": {
+      "stderr.original.log": {
+        "bytes": 1121,
+        "sha256": "d76e9ca6af57f6aec29d35a76932fc53feea09fa294b315c81ca0b4d377772f4"
+      },
+      "stdout.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "synthetic_inputs": true
+  },
+  "complete_criterion_ids": [
+    "CR-PERF-07#/acceptance_criterion"
+  ],
+  "criterion_id": "CR-PERF-07#/acceptance_criterion",
+  "decision": "sufficient",
+  "human_statement_accepted": false,
+  "limitations": [
+    "One objective no-participant reporting clause only. The separate human-study statement and its human-review requirement remain open and unchanged.",
+    "Seven real Python controls executed once on an exact four-file016f source projection with synthetic measurements; no full product build, actual performance benchmark, participant, native renderer or installed application was exercised.",
+    "The new source composition authenticates the original016f unit invocation and seven byte-identical reviewed report-route inputs. It executes no test or Rust benchmark.",
+    "Historical D4 and earlier records, reviews, decisions and evidence retain their original identities. No original execution is relabelled or inherited as a current run.",
+    "The prepared component cannot be applied to the D4 index. Controlled intake must preserve all history, verify the actual candidate source and unchanged clause/profile/contract, and run exact privacy, schema, compatibility and history gates.",
+    "This evidence neither completes the whole requirement nor grants product readiness, human approval or release authorization. A later source needs its own applicability decision."
+  ],
+  "observations": [
+    {
+      "basis": "The default/historical branch constructs a typed technical report whose human_feedback is the fixed NOT_RUN value. Its measured rows contain operation, persistence and cache values, with no participant score. The same report is retained and serialized; the later budget/source-identity checks do not promote it to a human result. Invalid configuration emits FAIL, not a human score.",
+      "id": "historical_report_does_not_create_human_ratings",
+      "locations": [
+        "BenchmarkReport:137-154",
+        "main:757-773",
+        "report construction and serialization:874-931"
+      ],
+      "paths": [
+        "crates/service/examples/acceptance_bench.rs"
+      ]
+    },
+    {
+      "basis": "The normative early return is closed through the inline support module. acceptance_main calls entry(false), responsiveness_main calls entry(true), and both reach suite. After all case work and before retention/stdout serialization, suite overwrites human_feedback with a fixed NOT_RUN value that explicitly disclaims participants, ratings and consent. The suite technical PASS/FAIL status belongs to measured technical cases, not a participant study. Configuration failures emit a FAIL error report without a human rating.",
+      "id": "normative_and_responsiveness_routes_keep_human_feedback_not_run",
+      "locations": [
+        "acceptance_bench:1-2,758-759",
+        "responsiveness_bench:support::suite1502-1620",
+        "entry1622-1635",
+        "acceptance_main2121-2123",
+        "responsiveness_main2118-2120"
+      ],
+      "paths": [
+        "crates/service/examples/acceptance_bench.rs",
+        "crates/service/examples/responsiveness_bench.rs"
+      ]
+    },
+    {
+      "basis": "checked_input requires a NOT_RUN human_feedback string and NONE comparative claims; the first-scene consumer reuses that guard. Both output constructors select explicit technical fields, retain human evaluation as NOT_RUN, keep installed/usefulness and native savings unmeasured, and do not copy arbitrary participant-score fields from input.",
+      "id": "consumer_rejects_fabricated_human_feedback",
+      "locations": [
+        "creative_stage_cost.checked_input",
+        "creative_stage_cost.build_stage_report",
+        "first_scene_reuse.first_scene_report"
+      ],
+      "paths": [
+        "tooling/creative_stage_cost.py",
+        "tooling/first_scene_reuse.py"
+      ]
+    },
+    {
+      "basis": "Two false-feedback controls require human_evidence_not_independent; benign controls preserve unobserved human/native/installed outcomes; further negatives reject fabricated superiority, work units and renderer-cache substitution. The seven original selectors passed in one new actual Windows invocation on an exact four-file016f source projection. This source composition reuses that original without rerunning it.",
+      "id": "exact_seven_controls_cover_negative_and_benign_outputs",
+      "locations": [
+        "seven original selectors recorded in the actual broker receipt"
+      ],
+      "paths": [
+        "tooling/tests/test_creative_stage_cost.py",
+        "tooling/tests/test_first_scene_reuse.py"
+      ]
+    },
+    {
+      "basis": "The test fixtures expressly manufacture nine synthetic measurement rows using a synthetic forty-character a digest. That digest labels fixture data, not the code execution source. Python import closure is stdlib plus these four exact files. Selected tests have no Cargo, provider, network or subprocess calls; their only temporary directories are redirected under the repository by the actual broker.",
+      "id": "fixture_and_import_scope_is_explicit",
+      "locations": [
+        "test module imports,benchmark(),setUp()",
+        "producer imports"
+      ],
+      "paths": [
+        "tooling/creative_stage_cost.py",
+        "tooling/first_scene_reuse.py",
+        "tooling/tests/test_creative_stage_cost.py",
+        "tooling/tests/test_first_scene_reuse.py"
+      ]
+    },
+    {
+      "basis": "The historical workflow explicitly selects historical mode and asserts NOT_RUN for human feedback. Its reporting stages separately reject false human feedback and preserve unobserved native/installed boundaries. Reading the workflow is not evidence that any current benchmark or native job ran.",
+      "id": "workflow_distinguishes_technical_reports_from_human_acceptance",
+      "locations": [
+        "historical environment declaration:56",
+        "report assertions143,218",
+        "consumer assertions238-263"
+      ],
+      "paths": [
+        ".github/workflows/performance-acceptance.yml"
+      ]
+    }
+  ],
+  "oracle_profile_sha256": "f43b7ef8781367e06e267a7eb2eba063b07e527a5d0434f924932e043af539c5",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reused_source_analysis": {
+    "D4_receipt_sha256": "5217519c9d060b39c5ef73d1c90ee7910b4b8893ecb59c46d6cbc81e772c6504",
+    "D4_report_sha256": "bd7c1d70696a1fc6f7b34b7ad45ab0bd6512e79dc2299738498e0ddac69a1c64",
+    "byte_identical_product_inputs": 7,
+    "changed_locks_retained_separately": true,
+    "old_unit_execution_relabelled": false,
+    "separate_review_sha256": "fc1e3b18f3b194f64b23f7a209d640b61359e8cc547627afd7bc14bad79c8cd6",
+    "source_review_sha256": "a30e83b3e4594825bac5fe0414a0ba2badfbd6a3d3ec14817cc2dcc1d1e64839"
+  },
+  "rust_benchmarks_executed": 0,
+  "schema": "motionwright.perf07-objective-reporting-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_bindings": {
+    ".github/workflows/performance-acceptance.yml": {
+      "bytes": 52727,
+      "git_blob": "68f3843f58d37070df54d40f06c314002e97008e",
+      "mode": "100644",
+      "role": "source_context_only_not_executed",
+      "sha256": "9b94f55a5a265528d797b7d0c71f8fd3e7687cedf2febe298b890ff88cb7c77c"
+    },
+    "Cargo.lock": {
+      "bytes": 142600,
+      "git_blob": "f26572bacbead9f526edd49309f437a22b2c2fca",
+      "mode": "100644",
+      "role": "source_context_only_not_executed",
+      "sha256": "455c72c93acaf90d1161f8f5c0c0fac70fb8c162f751ff3a8b65574f0209c448"
+    },
+    "SOURCE_LOCK.json": {
+      "bytes": 1653,
+      "git_blob": "32c519d3d891bf435b898edbce4deaea3e1ed601",
+      "mode": "100644",
+      "role": "source_context_only_not_executed",
+      "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+    },
+    "crates/service/examples/acceptance_bench.rs": {
+      "bytes": 42728,
+      "git_blob": "b08b50854435e0c6b14e12afb5781cfa7a683c59",
+      "mode": "100644",
+      "role": "source_context_only_not_executed",
+      "sha256": "96d00ee1f7fd04b53720d04332ea975f4c460eed111c4ad6d5e249ae085decfa"
+    },
+    "crates/service/examples/responsiveness_bench.rs": {
+      "bytes": 92652,
+      "git_blob": "de66c3660a5b88295598e2a56db38d34878c36e8",
+      "mode": "100644",
+      "role": "source_context_only_not_executed",
+      "sha256": "baec2bcffe0e1eaa24ec463b70dfa562804110e6e992691237a7a1f54e25ae92"
+    },
+    "tooling/creative_stage_cost.py": {
+      "bytes": 13037,
+      "git_blob": "e1ab0a2225cc2c0281ebbcd128672595c1c79559",
+      "mode": "100644",
+      "role": "executed_python",
+      "sha256": "bd3c832311257809fd2fde30f274049dea2f3174704a8721fb3d815a2814a74d"
+    },
+    "tooling/first_scene_reuse.py": {
+      "bytes": 6356,
+      "git_blob": "cc8b93dbf4b754ca1c302d505c22bd78b9324975",
+      "mode": "100644",
+      "role": "executed_python",
+      "sha256": "cdfd24950fae06ca424a6ccd2026c11e4dfca659c0e8c5a7b1eefc8fcce0f072"
+    },
+    "tooling/tests/test_creative_stage_cost.py": {
+      "bytes": 12782,
+      "git_blob": "669f120d2296ec0bc4c5d274c911909d03572605",
+      "mode": "100644",
+      "role": "executed_python",
+      "sha256": "52ad006147496e039a45b20068e9dfdf0c6f5e89dfdb8a5454c4955b149fff70"
+    },
+    "tooling/tests/test_first_scene_reuse.py": {
+      "bytes": 9940,
+      "git_blob": "89e404cd50da78cae27d2e721e7816414f1c8fa2",
+      "mode": "100644",
+      "role": "executed_python",
+      "sha256": "16e5eef1bc7bd095f86a32b09178dec0400793735639c35c2b1d5d1df046c998"
+    }
+  },
+  "source_clause_sha256": "24dd23fb2b06c071f50d67c9a13f05c28558a57b4a644791bec8b78ca9b2454e",
+  "source_composition": {
+    "ended_at_utc": "2026-10-27T02:36:55.580580+00:00",
+    "environment": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]"
+    },
+    "exit_code": 0,
+    "failed": 0,
+    "kind": "source",
+    "new_product_execution": false,
+    "original_argv_published": false,
+    "original_argv_sha256": "1a52aafe4d9d6c0b4b9b21ab4900cf960f59d1335f14570edb39584d23d7fd33",
+    "original_receipt_sha256": "aef0e3b499805d7ee5608516cdd4e532a03e4179b003cf908177d4eb4ab02636",
+    "original_report_sha256": "6a5972973642adcf5351211b9ff0d37c2d56d82ee96dc1927501a589f6b948b6",
+    "original_unit_receipt_sha256": "643ea7398f24322798e50e35f4a83fbd491edcaa12d7115e02151ebbcb4a6a3e",
+    "passed": 1,
+    "pid": 11312,
+    "producer_sha256": "bba18034eb3da814463e6b2940aa7954cb085c7dd48375735f96fd1c30a673b6",
+    "profile": "performance-unobserved-study-source",
+    "skipped": 0,
+    "started_at_utc": "2026-10-27T02:36:48.657774+00:00",
+    "streams": {
+      "stderr.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout.original.log": {
+        "bytes": 301,
+        "sha256": "3b04f2019779e94f2f577bf3b7ffbda3c503e2981bb3adfc7675f57521a99519"
+      }
+    }
+  },
+  "source_inputs": [
+    {
+      "bytes": 13037,
+      "path": "tooling/creative_stage_cost.py",
+      "sha256": "bd3c832311257809fd2fde30f274049dea2f3174704a8721fb3d815a2814a74d"
+    },
+    {
+      "bytes": 6356,
+      "path": "tooling/first_scene_reuse.py",
+      "sha256": "cdfd24950fae06ca424a6ccd2026c11e4dfca659c0e8c5a7b1eefc8fcce0f072"
+    },
+    {
+      "bytes": 12782,
+      "path": "tooling/tests/test_creative_stage_cost.py",
+      "sha256": "52ad006147496e039a45b20068e9dfdf0c6f5e89dfdb8a5454c4955b149fff70"
+    },
+    {
+      "bytes": 9940,
+      "path": "tooling/tests/test_first_scene_reuse.py",
+      "sha256": "16e5eef1bc7bd095f86a32b09178dec0400793735639c35c2b1d5d1df046c998"
+    },
+    {
+      "bytes": 42728,
+      "path": "crates/service/examples/acceptance_bench.rs",
+      "sha256": "96d00ee1f7fd04b53720d04332ea975f4c460eed111c4ad6d5e249ae085decfa"
+    },
+    {
+      "bytes": 92652,
+      "path": "crates/service/examples/responsiveness_bench.rs",
+      "sha256": "baec2bcffe0e1eaa24ec463b70dfa562804110e6e992691237a7a1f54e25ae92"
+    },
+    {
+      "bytes": 52727,
+      "path": ".github/workflows/performance-acceptance.yml",
+      "sha256": "9b94f55a5a265528d797b7d0c71f8fd3e7687cedf2febe298b890ff88cb7c77c"
+    }
+  ],
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

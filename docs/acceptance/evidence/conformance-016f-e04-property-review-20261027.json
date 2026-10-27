@@ -1,0 +1,45 @@
+{
+  "R3_resource_continuation_review_sha256": "2c19ea9ea9683f3ef504c0c9b962085d999f9ac4aa9dee5cc264e38287121881",
+  "decision": "sufficient",
+  "faithful_loader_delta_review_sha256": "bc5ee39a934a1e950e843ee68bb1d0ea0f43bbea05ec13cd393df25f98c2c1bd",
+  "field_ids": [
+    "MW05-E04-02#/acceptance"
+  ],
+  "human_review_invented": false,
+  "human_review_required": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "One objective acceptance field and its preserved unit profile only. The multidimensional report requirement and its separate negative case are not accepted by this component.",
+    "Eight real Node unit cases exercise the actual validator through seven complete byte-exact016f TypeScript modules. Inputs are synthetic in-memory classifications; no product function is extracted, replaced or mocked.",
+    "Node24 type stripping is not TypeScript typechecking, Vitest, a full Studio build, browser interaction, API/SQLite integration, native media, SDK authority or installed application evidence.",
+    "Only five retained React19.3.0 files are hash-verified. Two installation lock entries match the current source declaration; tarball and whole-package integrity are not asserted. No dependency was installed.",
+    "Historical A4 CI originals retain their original source/run identity. The old file aggregate is not a new016f execution; its separately documented inner-manifest discrepancy is preserved.",
+    "This component does not modify ledgers. Controlled intake must preserve history, authenticate the selected source and unchanged clause/profile/contract, and pass exact privacy/schema/compatibility/history gates.",
+    "No whole requirement/scenario acceptance, authenticated human review, product readiness or release authorization follows from this one-field unit result."
+  ],
+  "obligations": [
+    {
+      "basis": "The actual current-source validator accepts all five category values as separate unchanged entries, accepts no-loss native/translated values, requires nonempty loss notes for baked/approximate/unavailable values, and rejects unknown/coerced values, duplicate or malformed paths, excessive entries, oversized notes and control characters. Eight individually named real Node unit cases passed with zero fail/skip/cancel/todo on the complete byte-exact module closure; original child PID, terminal, streams and inputs are joined.",
+      "id": "five-category-distinction",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "261b5f7600418d82b72a77d167960fd92232c0e515ca8e9c963ca50452542d55",
+  "oracle_sha256": "573df748a02462a1b4f6dd5aacd1fcd7fb1a4c5ac9b7c084168d27541048e707",
+  "original_unit_receipt_sha256": "5e19e4f492ae6a2e20b3bad624c334d7334b53a1264af6131fbc52774ebc0870",
+  "original_unit_terminal_sha256": "3d5aea15bdc78ec05e22f3397b7010eca0f4583caa660c4f1e39035aa3694e62",
+  "pre_execution_review_sha256": "a2286ba1f6175277f74ff334dac710ff5db92bb3ccff2b26713fc41e9dac3e27",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "retained_R1_failure_review_sha256": "4733850b34b95d1c9e08415766511365dee6a56b09af0f164eb6c7f0cd2db045",
+  "reviewed_at_utc": "2026-10-27T05:13:12.434727+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.e04-objective-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "2f5b961681adaaa033229b0b47124e43787c4f6a09ee76b4316177bd4d2260c9",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

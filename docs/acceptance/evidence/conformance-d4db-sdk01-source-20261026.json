@@ -1,0 +1,1087 @@
+{
+  "canonical_origin_packet_sha256": "5af7648c7c4c617e9cbaa42d2afa97b213a76617837708d1e80330659b66f86e",
+  "compile_acceptance": {
+    "decision": "not_admitted",
+    "id": "CR-SDK-01#/acceptance_criterion",
+    "missing": "Actual clean isolated external consumer compile from permitted pinned public source, with environment, commands, original logs, exit and dependency/source boundary; a source-kind profile cannot replace this literal compilation."
+  },
+  "composition": {
+    "environment": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]"
+    },
+    "formal_acceptance": false,
+    "invocation": {
+      "ended_at_utc": "2026-10-26T22:55:35.496331+00:00",
+      "exit_code": 0,
+      "pid": 25116,
+      "started_at_utc": "2026-10-26T22:55:34.967543+00:00"
+    },
+    "native_executions": 0,
+    "original_argv_sha256": "70cf6666aa0dac330ff1ab4546104164dcfdfad7483e09842fd5d182440f2255",
+    "original_receipt_sha256": "aea3490f6a957b9dbd186d337af031d1a5b3101ee54bb06cc6d00198a8e69843",
+    "original_report_sha256": "b4d5230a533ce9829dd9342a9d4f11dddcc1cb2cbd9bff014a06e50f5b6a7404",
+    "original_stream_identities": {
+      "stderr.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout.original.log": {
+        "bytes": 224,
+        "sha256": "09aed605500b7998ae60e27325305845942a7a55979102ac902b642eaa61503b"
+      }
+    },
+    "private_argv_published": false,
+    "producer_sha256": "301df96c33e943f16abbe9bbd2a8657b3f095a3f5b7dbf4d5f9f23320176f549"
+  },
+  "counts_are": "One scoped source-evidence composition; API reads, manifests, packages and source files are not product tests or accepted requirements.",
+  "field_count": 1,
+  "fields": [
+    {
+      "complete_criterion_ids": [
+        "CR-SDK-01#/statement"
+      ],
+      "criterion_id": "CR-SDK-01#/statement",
+      "decision": "sufficient_frozen_d4_source_clause",
+      "execution_kind": "source",
+      "execution_profile": "canonical-sdk-external-consumer-source",
+      "external_source_observations": {
+        "canonical_sdk_admission": {
+          "merge_commit_sha": "95a3031469c014a29b57cb6109e0c3dd283cc234",
+          "merged": true,
+          "merged_at": "2026-10-04T05:50:50Z",
+          "pr": 213,
+          "scope": "Canonical Native SDK contribution and explicit repository-license declaration; not the current app's build or runtime acceptance.",
+          "url": "https://github.com/seradotcom/semwright/pull/213"
+        },
+        "current_pin_is_main_claimed": false,
+        "driver_sdk_package": "semwright-driver-sdk",
+        "license_observed_at_exact_pin": "MIT OR Apache-2.0",
+        "native_sdk_cargo_publish": false,
+        "native_sdk_package": "semwright-native-sdk",
+        "original_executions": [
+          {
+            "ended_at_utc": "2026-10-26T22:41:24.495699+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright",
+            "exit_code": 0,
+            "label": "repository",
+            "pid": 20792,
+            "started_at_utc": "2026-10-26T22:41:23.784464+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 6326,
+              "sha256": "7c312c6cf06c36c5297f4fb346088d5c176382af19adcbc8a0c860a6b1066d8b"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:25.114682+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/git/commits/01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "exit_code": 0,
+            "label": "git-commit",
+            "pid": 28240,
+            "started_at_utc": "2026-10-26T22:41:24.497695+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 1215,
+              "sha256": "d46e22313dd31ec46c983aa250304a03de6d82f9342bbc22a778d29937696f70"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:26.022479+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/pulls/213",
+            "exit_code": 0,
+            "label": "pr213",
+            "pid": 36036,
+            "started_at_utc": "2026-10-26T22:41:25.115699+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 19031,
+              "sha256": "9848e0ae7d9281378f1a2d6565d6c8adebcd4e7e5db6ea437dcb8edca3de9620"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:26.620277+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/contents/Cargo.toml?ref=01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "exit_code": 0,
+            "label": "Cargo_toml",
+            "pid": 36032,
+            "started_at_utc": "2026-10-26T22:41:26.023475+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 9423,
+              "sha256": "f6f46afe844684c462a792e460823229353447ad1c84682d700ffc7c71e81bf4"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:27.210115+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/contents/LICENSE-MIT?ref=01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "exit_code": 0,
+            "label": "LICENSE-MIT",
+            "pid": 20388,
+            "started_at_utc": "2026-10-26T22:41:26.620277+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 2464,
+              "sha256": "c11c35ccf91fc03ca2e6f1d85bc06878607ad253d117f61728778bd0cfb64c21"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:27.878157+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/contents/LICENSE-APACHE?ref=01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "exit_code": 0,
+            "label": "LICENSE-APACHE",
+            "pid": 19216,
+            "started_at_utc": "2026-10-26T22:41:27.211112+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 16648,
+              "sha256": "7e7e537295de571b5ba99d296261c21c4c56554311d74146ce39e1c4c4d912eb"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:28.459978+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/contents/crates/native-sdk/Cargo.toml?ref=01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "exit_code": 0,
+            "label": "crates_native-sdk_Cargo_toml",
+            "pid": 36260,
+            "started_at_utc": "2026-10-26T22:41:27.878664+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 5451,
+              "sha256": "45a47cc4dc8338d76465ba8cc5bbc87519c4387d5447863d08adc0a8380f20b8"
+            }
+          },
+          {
+            "ended_at_utc": "2026-10-26T22:41:29.055168+00:00",
+            "endpoint": "https://api.github.com/repos/seradotcom/semwright/contents/crates/driver-sdk/Cargo.toml?ref=01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "exit_code": 0,
+            "label": "crates_driver-sdk_Cargo_toml",
+            "pid": 15804,
+            "started_at_utc": "2026-10-26T22:41:28.459978+00:00",
+            "stderr": {
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "stdout": {
+              "bytes": 1842,
+              "sha256": "5ea1ae44a22724f5d97e88ef0a77df7f5d1c04d7634a54273bc234f200b4e6ec"
+            }
+          }
+        ],
+        "pr_merge_ancestry_to_current_pin_claimed": false,
+        "publish_false_scope": "Cargo registry publication is disabled. This does not negate the observed licensed public Git source used by the consumer, and no crate registry publication is claimed.",
+        "repository": {
+          "archived": false,
+          "disabled": false,
+          "full_name": "seradotcom/semwright",
+          "public": true,
+          "url": "https://github.com/seradotcom/semwright"
+        },
+        "sdk_revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "sdk_tree": "b85dc6f54c843d00c6903ed029772f768337c71f",
+        "signature_or_new_human_authorization_invented": false,
+        "upstream_files": [
+          {
+            "bytes": 6133,
+            "git_blob_sha1": "84c3b2ca2ec9fc9cae1f2f9f0dd8631e9694e660",
+            "path": "Cargo.toml",
+            "repository": "https://github.com/seradotcom/semwright",
+            "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "sha256": "51f94fd4afb6e48de17d043e5447ecf7555f88b89b4cd138fd644185eaaef5a7"
+          },
+          {
+            "bytes": 1079,
+            "git_blob_sha1": "0f7bced0f3b3e3176ed81072c7bf13388d459f60",
+            "path": "LICENSE-MIT",
+            "repository": "https://github.com/seradotcom/semwright",
+            "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "sha256": "ad56b5c3e274c6d82e1424447211bfb4e5b2c22c86e6cf8aa8120458aa7347ef"
+          },
+          {
+            "bytes": 11358,
+            "git_blob_sha1": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+            "path": "LICENSE-APACHE",
+            "repository": "https://github.com/seradotcom/semwright",
+            "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "bytes": 3172,
+            "git_blob_sha1": "9bc7f191cce38ea6233e441f560b7d197f5cf8cd",
+            "path": "crates/native-sdk/Cargo.toml",
+            "repository": "https://github.com/seradotcom/semwright",
+            "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "sha256": "9614711e1d3cb30dc207dde8c27e4269e7195e83ceefefa2a3aa68deeea0f6b5"
+          },
+          {
+            "bytes": 553,
+            "git_blob_sha1": "ac49e3f81b2dea6bca1b5089f36a5f67d4177448",
+            "path": "crates/driver-sdk/Cargo.toml",
+            "repository": "https://github.com/seradotcom/semwright",
+            "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+            "sha256": "a0c110445aeb0d7efef756c4d304f389d62e001d1158223f8b36925f1efe7179"
+          }
+        ]
+      },
+      "limits": [
+        "One statement clause only; CR-SDK-01 acceptance still requires actual clean external consumer compilation.",
+        "Source facts do not prove symbol typechecking, runtime authorization, native production, installed package or product acceptance.",
+        "No assertion that SDK01d4 is current main, is a descendant of PR213 merge, or has a cryptographic/human signature is made.",
+        "The accepted canonical public API/source boundary does not authorize distributing any particular installer or other separately licensed payload.",
+        "The frozen D4 tree and complete Git namespace inventory are part of scope. A new tree/new source file requires fresh inventory; unchanged listed manifests alone cannot transfer this PASS.",
+        "The original source-facts report and its PARTIAL decision remain intact as preceding history; this report is a new composition with additional originals.",
+        "Root must authenticate and retain actual process receipts and complete independent sufficiency review before ledger admission."
+      ],
+      "obligations": [
+        {
+          "basis": "Actual D4 manifests/lock/import inventory use the exact canonical Git source with no SDK path/patch substitution. Fresh canonical repository/commit/license/package/PR213 originals establish public source provenance and the accepted Native SDK contribution at the declared license boundary. This is source consumption, not a registry release, consumer compilation or runtime acceptance.",
+          "id": "canonical_public_dependency_source_and_authorized_pin",
+          "status": "pass"
+        }
+      ],
+      "scope": "required",
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+        "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+      },
+      "source_clause_sha256": "326b4f60ba2cbd051eb7cc163c53694be1ace6fe8af65ecac177ef009b913516",
+      "source_inputs": [
+        {
+          "path": "Cargo.lock",
+          "sha256": "0c6a330de85c99f0913f4fc9e1b2af794d8cae239085952dd6400a017c67205b"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "8c63f973bcbc43f45c26f074259f36aa8b3a46595657d34eecf86093cddca2c9"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+        },
+        {
+          "path": "apps/desktop/src-tauri/Cargo.toml",
+          "sha256": "b667854046289d2f536ba9e2b13669610f2f6906b04d084c235a01d6fc1b5287"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/av_delivery.rs",
+          "sha256": "02701735c237f6a00a9a759594adee0cee8d0a480a83de9dc49a113bd54dfbe4"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/blender_product.rs",
+          "sha256": "7f3b40d96aa251156187b640fb3a48a5d18354967138e98bb74b05dfa3443413"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/main.rs",
+          "sha256": "ed9b436053cb7c3b7ab58cec9b66cf598f57c179e21b310c0fdcc6c440d7d429"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/media_integrity.rs",
+          "sha256": "f92039c0fc041277950f48b603fbcd9f97dc0572d0158ed796003b87302a100f"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/runtime_doctor.rs",
+          "sha256": "24df4087348606da94e7445b216e7c120a9fb21084b3cb56e50c716a4ef3e56a"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/workflow_native.rs",
+          "sha256": "e1e00780646f072bfabc56221468cddeabaaeaa67a76fb2d5f786c6022244625"
+        },
+        {
+          "path": "crates/domain/Cargo.toml",
+          "sha256": "a51b9e586c664f95d40a537b8933304c0cf27716e3c0b30069a0e37247c50e7d"
+        },
+        {
+          "path": "crates/domain/src/lib.rs",
+          "sha256": "637810a831e90a766fb03ffc7784e1a543a9dee2d51082229d0a0257301773ef"
+        },
+        {
+          "path": "crates/driver-hyperframes/Cargo.toml",
+          "sha256": "b38c09745bb68b9b0a2261b21eec01aa877ebfc60882625090df581a88a7c36e"
+        },
+        {
+          "path": "crates/driver-hyperframes/examples/native-hyperframes-direct-reference.rs",
+          "sha256": "199efdf8f58941e68211951c5647a94dedef5242b85ab681116b2ab52b516b53"
+        },
+        {
+          "path": "crates/driver-hyperframes/src/driver.rs",
+          "sha256": "a3c807da23af2edc23144d348f8e830bb3783335a2b0f0e99323ae5891fb8b26"
+        },
+        {
+          "path": "crates/driver-hyperframes/src/lib.rs",
+          "sha256": "7c1e5f0a0ff20f4f716283b8ec35b73478872cd35cb2b7fa2ec0a98fa0f8e377"
+        },
+        {
+          "path": "crates/driver-hyperframes/src/main.rs",
+          "sha256": "b976668345e04e68a615f8d17a4cd35ba5a79bb92b50037831953a57f9fab915"
+        },
+        {
+          "path": "crates/driver-manim-community/Cargo.toml",
+          "sha256": "cb6e4f375cd6ab367fcd1c825d93f7ec0391df9aa8c5e36637bb50b856e0ecdd"
+        },
+        {
+          "path": "crates/driver-manim-community/src/graph_profile_probe.rs",
+          "sha256": "8750275f0cd81a312bda677c88198a19f6e05073f7ca63b535d88d926243726e"
+        },
+        {
+          "path": "crates/driver-manim-community/src/main.rs",
+          "sha256": "962bcdef14bf7ac6ff20dce0dc5f465b6c2834e335b161ff53372ef0193060f1"
+        },
+        {
+          "path": "crates/hyperframes-profile/Cargo.toml",
+          "sha256": "7036ceeaca95e1774865133e1acb66d23cb606dab2c451da9b1b7e9743461dcb"
+        },
+        {
+          "path": "crates/hyperframes-profile/src/lib.rs",
+          "sha256": "c705d551dec4a8c979a009476f9913f70b28d17bb794eeef8ebff1ab3c541d2f"
+        },
+        {
+          "path": "crates/manim-profile/Cargo.toml",
+          "sha256": "1c8ee6eb41b8aff0d5763ef6b204433d77759319110a8b905b5aa24c0d4bcb2c"
+        },
+        {
+          "path": "crates/manim-profile/src/lib.rs",
+          "sha256": "50ab40dcee282306720f4cceb71b0d54581723c1e60e3dc130a32b5346fd01e6"
+        },
+        {
+          "path": "crates/manim-profile/src/planar_camera.rs",
+          "sha256": "1ee9ad5d2e2715465005c931401e65d243e0171e69189c162070a7bc9c4a9642"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "6fe648c58666246315f61b38a2a19c10a6da08dab529a55b067a7f6205a19542"
+        },
+        {
+          "path": "crates/native/examples/native-blender-e2e.rs",
+          "sha256": "a15c76656a610bfae22c80c7b998adb9612be009e00fb758104031f223ebd2be"
+        },
+        {
+          "path": "crates/native/examples/native-blender-lit-still-e2e.rs",
+          "sha256": "38ca2ae9c755c6b41b9ffae1370c4ff02064d7149c5788e00454a5847daaae0d"
+        },
+        {
+          "path": "crates/native/examples/native-cross-app-recovery-e2e.rs",
+          "sha256": "37695a57c7d479bc0dfa0168bf4033297008a7949431d95da8e564f2acc2cab5"
+        },
+        {
+          "path": "crates/native/examples/native-film180-e2e.rs",
+          "sha256": "384f85a40b47ee5f5e613f5db2e697b426fcbc5a791fce2bf13c5025ec04b1c4"
+        },
+        {
+          "path": "crates/native/examples/native-hyperframes-e2e.rs",
+          "sha256": "813e578c6b23913e8a80bdf85f80b2cac11a9ea79522b9b26ea4ef13bdcf8e58"
+        },
+        {
+          "path": "crates/native/examples/native-manim-e2e.rs",
+          "sha256": "68c5aa4760052a08d918b0b97bef41f9a2ae846708742c509795a9ecc24ebc9c"
+        },
+        {
+          "path": "crates/native/examples/native-mlt-sequence-e2e.rs",
+          "sha256": "2b21416d5825bfdaad8439c0e33279451cd79154463bac0f6b1742753b126325"
+        },
+        {
+          "path": "crates/native/examples/native-render-e2e.rs",
+          "sha256": "b69eb2812a63e0ab6321c2a97a08cf74d665b1900fb7449811b7e44582c678a4"
+        },
+        {
+          "path": "crates/native/examples/native_manim_graph/source_cycle.rs",
+          "sha256": "53889e5e0083311619fedcee6c43e753b7cbd52b36282fcbec41ee7b0ab6c08f"
+        },
+        {
+          "path": "crates/native/src/apply_receipt_completion_tests.rs",
+          "sha256": "32ad63016e48721b725836b4ffd4731ae0e6c9493f9598b2025f487e30338d84"
+        },
+        {
+          "path": "crates/native/src/assembly.rs",
+          "sha256": "3d5424db1b09b9f500102c62aa340113768bad80320ff2b8a7919038aad72f7c"
+        },
+        {
+          "path": "crates/native/src/canonical.rs",
+          "sha256": "bb509647cb288ce6a1473f4aec964897e6cc20d4c7f87463a26d038abbd07f10"
+        },
+        {
+          "path": "crates/native/src/component_text.rs",
+          "sha256": "7511c1b0db50f304ee2eb5849bf811c0f5323f0d9c59be686ac07a5c6a9343a9"
+        },
+        {
+          "path": "crates/native/src/creative_doctor.rs",
+          "sha256": "cd90946e5587ebfe976f87d19001b765828188b6599891ad4c94ea616e451a81"
+        },
+        {
+          "path": "crates/native/src/expressive.rs",
+          "sha256": "d378f8b1fac23657c66c2a7b4097555f19592a37107925cc19268e09dbd7eabb"
+        },
+        {
+          "path": "crates/native/src/film.rs",
+          "sha256": "56730f49ebe5cefd3443f4da761bc614128b71f073a143d50ac0b11631809e74"
+        },
+        {
+          "path": "crates/native/src/film_brand_fonts.rs",
+          "sha256": "e996347962fb292d58ee2392f735a06d5d0f3633fc2fd50c348435969d14067e"
+        },
+        {
+          "path": "crates/native/src/film_captions.rs",
+          "sha256": "b5b774f8254a63d7ca812af64dbbc65922826d39c01749e21520e01a83e1b024"
+        },
+        {
+          "path": "crates/native/src/hyperframes.rs",
+          "sha256": "25a6cb1840e59530e493238ef87f13904a2e127b7ceeea56470f74277cadb122"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "ecef5303eb3ec06915c04e721184b2976510c70041edefb11a23734aab851e38"
+        },
+        {
+          "path": "crates/native/src/manim_camera_projection.rs",
+          "sha256": "17a8bbd2d87c01fd15897b69109d605106e8e195147d9788742ead457f5f0688"
+        },
+        {
+          "path": "crates/native/src/manim_editable_projection.rs",
+          "sha256": "733ddb6b2ce512ae58c278a3d74d074442e3787d1d0986219263e3e51fd07c72"
+        },
+        {
+          "path": "crates/native/src/manim_graph_projection.rs",
+          "sha256": "c3208085706cd62dfe6d706a77b18fe5ac8dd2855144abab56c55fd31c596fd9"
+        },
+        {
+          "path": "crates/native/src/manim_static_projection.rs",
+          "sha256": "8979af179ff52bf658e346840e3a96bef5323eac5c88fc5b1f28dd9a6261b334"
+        },
+        {
+          "path": "crates/native/src/mlt_av_audio.rs",
+          "sha256": "4b1711a23f14a52d8cefbe5b4a31f5c8867ea62d3e6ae2c03e46e6c23913cc3b"
+        },
+        {
+          "path": "crates/native/src/mlt_edit_plan.rs",
+          "sha256": "1969e3583c9dcc5cbf297e4da643df4c61a6a3bd42c992bc064290b7ec63975c"
+        },
+        {
+          "path": "crates/native/src/multi_renderer.rs",
+          "sha256": "62bf8073da854a5ae46ebd8ed343e26ee823c4709c3bad85df89f18520aa8a4b"
+        },
+        {
+          "path": "crates/native/src/original_mix.rs",
+          "sha256": "891b33a4272b47524b844eee24608d0cf16da46245d5b6a82fff8d9637d2fd6c"
+        },
+        {
+          "path": "crates/native/src/owner_reconciliation.rs",
+          "sha256": "8aa21748b2ab5376cd10ce3f69da2cb565969b76b11d740a3fe6b8bb7fbb10f4"
+        },
+        {
+          "path": "crates/native/src/production.rs",
+          "sha256": "1f8c87c06471e28ce694d54028b1f1601abc66dc9afac40c6e182b2cd271908f"
+        },
+        {
+          "path": "crates/native/src/production/audio_analysis.rs",
+          "sha256": "3b237923416ed3b5ec7d16cb425e4be7bb711394b369315b6525ce4f6e2961a0"
+        },
+        {
+          "path": "crates/native/src/production/audio_analysis/tests.rs",
+          "sha256": "c80868c8d6f93e5810f00aea03f70192a5af3cc88bbac03a4fcc59fe637000fa"
+        },
+        {
+          "path": "crates/native/src/production/blender_original.rs",
+          "sha256": "49c7c292ab1e07badb02f323208bbac09e9a6fdff9c35928de359972b930b843"
+        },
+        {
+          "path": "crates/native/src/production/blender_product_consumer.rs",
+          "sha256": "f238be4fcd2ca303a431933f231fb4b2aa1abeb58b8aaed7052057ee2b0a9c34"
+        },
+        {
+          "path": "crates/native/src/production/blender_render.rs",
+          "sha256": "7fc0f09e67483eca2e23327559328f830c106b60900c1432748afb60991e52b7"
+        },
+        {
+          "path": "crates/native/src/production/brand_fonts.rs",
+          "sha256": "c5629640cd459549a5702454248a5043074ccff802e06c6b59ed135901d59a63"
+        },
+        {
+          "path": "crates/native/src/production/manim_graph_profile.rs",
+          "sha256": "e405a8ea9d85f72e683182036ecdbfeeb1ac212cb96f1a0e5004dacee94e4281"
+        },
+        {
+          "path": "crates/native/src/production/receipt_custody.rs",
+          "sha256": "25a8146eb44cd1817532354647a943da194d27c4bc7eedf174b4afd8d5de9c9f"
+        },
+        {
+          "path": "crates/native/src/production/recovery.rs",
+          "sha256": "0ad972c80ae1e40dd1ed04d50fb160025f7786f097b857d0d4653305853c5394"
+        },
+        {
+          "path": "crates/native/src/production/voice_alignment.rs",
+          "sha256": "0b20e5056a12be7982b62a1c2d23824282aa2d65c1682b0a4fba1383604791ac"
+        },
+        {
+          "path": "crates/native/src/production/voice_alignment/evidence.rs",
+          "sha256": "fa94f052993270d70f65335b607f215bbd1c994eda4f883aba4198ccc9301c7b"
+        },
+        {
+          "path": "crates/native/src/sfx_mix.rs",
+          "sha256": "86d989ad70a9192ab3ab1a485cf8f2baa8c71e6b8483d53d96775fdf0823b1e6"
+        },
+        {
+          "path": "crates/native/tests/audio_master_native_admission.rs",
+          "sha256": "2fbaa54d3da97ce05193f9a41e8802c3358b19b34a037b1185ff13c7dd1d4ffc"
+        },
+        {
+          "path": "crates/native/tests/camera_reframe.rs",
+          "sha256": "93fd65153efdc557a8b485246e791853229ab1d5a432179f39d088bf8b62d8ac"
+        },
+        {
+          "path": "crates/native/tests/composition_stack.rs",
+          "sha256": "6332a7879e334c52a5adfdf0872a0d9f28db1da6f74113b72995b444311294b1"
+        },
+        {
+          "path": "crates/native/tests/craft_components.rs",
+          "sha256": "2ef7678695a16698e901ff3ec938b29f02da8c14bb87e332ecd780d5d7781082"
+        },
+        {
+          "path": "crates/native/tests/creative_approval_authority.rs",
+          "sha256": "a71a1479302ac869e018c76e78913cd16ce3ca9764ff75871682721f93e3c89a"
+        },
+        {
+          "path": "crates/native/tests/desktop_workflow_route.rs",
+          "sha256": "f3c767d0712a09d7b12c305055bdf6e0c24ac6299865fdeb83813a5f9eb8c3b3"
+        },
+        {
+          "path": "crates/native/tests/film_sixsecond_source.rs",
+          "sha256": "ab7c65dcb47cd73053fa987eb55584180b7ea80692cade0dc88d01ab2ee3b6ad"
+        },
+        {
+          "path": "crates/native/tests/manim_camera_source.rs",
+          "sha256": "60b4cf6545dbb59a4000c3348851be51772fc3055b06f140e75c9a270a960ae7"
+        },
+        {
+          "path": "crates/native/tests/manim_editable_projection.rs",
+          "sha256": "9bd93a0c8af69b41b6b1ca58bd4ca006f860963e869faa2dc9f2fb6468e20c0e"
+        },
+        {
+          "path": "crates/native/tests/manim_graph_projection.rs",
+          "sha256": "e33c5539096b298cd2a5ece136b6a49c36840c31b7f0c008eecc465b004d9692"
+        },
+        {
+          "path": "crates/native/tests/manim_static_projection.rs",
+          "sha256": "bebf49b0df6148171e20f0c4e54443af162bb2bd57b2f908895f142abeff4d90"
+        },
+        {
+          "path": "crates/native/tests/measured_data.rs",
+          "sha256": "09b919c2dfe81ef21070b82cef41da72532356cdf640a61e1ba91916c8eb917b"
+        },
+        {
+          "path": "crates/native/tests/motion_canvas_source_roundtrip.rs",
+          "sha256": "ef9a9ea29854af1394af426bd904124b7c7b33c6b9cef4369405e56c3ec3fa02"
+        },
+        {
+          "path": "crates/native/tests/motion_canvas_text.rs",
+          "sha256": "dc0978877a4ecf21712cee30b92e8c99237eb2535b829687cded4eb4926e8815"
+        },
+        {
+          "path": "crates/native/tests/native_caption_burn_in.rs",
+          "sha256": "ef46da288e84c3fe15497f8e32a51544b95e81fa6fae74b804ea3962643962b5"
+        },
+        {
+          "path": "crates/native/tests/procedural_fields.rs",
+          "sha256": "9177fc1804fee660681cf60f24cd1275db3568d53fc40cee2caf79e418b1cbaa"
+        },
+        {
+          "path": "crates/native/tests/product_hero.rs",
+          "sha256": "d77544b0e586a2e6c96eb6a3b90771e310ef50b6ee7f8b7277b100db8ea46922"
+        },
+        {
+          "path": "crates/native/tests/product_stage.rs",
+          "sha256": "86f1ad89164e2a0e425315b598c2fe62673d3a0c21daec342865a066f5d0f7ae"
+        },
+        {
+          "path": "crates/native/tests/saved_mix_native_consumers.rs",
+          "sha256": "aee96c2989d833895778f8ed2c06a8ff2156c1cf6121624fbf45fd8bb2d64328"
+        },
+        {
+          "path": "crates/native/tests/saved_original_mix.rs",
+          "sha256": "fcf47d3beff19fe5c2410f8b77645ec4092ff62d653d3d70cd5e1e62eb104d6a"
+        },
+        {
+          "path": "crates/native/tests/semantic_sfx_mix.rs",
+          "sha256": "350fb85abe01d5dda2e2495c488d601083b0a285c6696ae37e1c63ccee1ab570"
+        },
+        {
+          "path": "crates/native/tests/split_explanation.rs",
+          "sha256": "9d00b312b9b8b8849ccd26f034a6c641229b1f0ea16b52a02bf2a477b3aeb7e0"
+        },
+        {
+          "path": "crates/native/tests/stage_capture.rs",
+          "sha256": "68794008e6acc19905eccb904ee695febb6c47b299a9b2c23c212392953478fc"
+        },
+        {
+          "path": "crates/native/tests/step_sequence.rs",
+          "sha256": "03f92bf817697d48628c9d39df6e8b4d8bc6c439e9db371ea662c0fad56e431f"
+        },
+        {
+          "path": "crates/service/Cargo.toml",
+          "sha256": "029581d64961e5add8afe5ca83bb197dcee15968f6abe2e8a9e3f6ed3b316333"
+        },
+        {
+          "path": "crates/storage/Cargo.toml",
+          "sha256": "a9be4261b741cec63c55f8e5bfbcfaa36ebd8e230526c62e327e1161604044a2"
+        },
+        {
+          "path": "third_party/semwright-source-evidence/01d4a99a8473273fda5c61b7220d6da1bee94786/Cargo.toml",
+          "sha256": "51f94fd4afb6e48de17d043e5447ecf7555f88b89b4cd138fd644185eaaef5a7"
+        },
+        {
+          "path": "third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/Cargo.toml",
+          "sha256": "51f94fd4afb6e48de17d043e5447ecf7555f88b89b4cd138fd644185eaaef5a7"
+        },
+        {
+          "path": "third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/Cargo.toml",
+          "sha256": "fc799dce769d470d4153c5f8196c7062bda36c423dce456305db21bb38348130"
+        },
+        {
+          "path": "tooling/source_lock_admission.py",
+          "sha256": "64864bb471961dba225b9cfb442ae6ef1cf4cd54ed496d5b4d660b8079d167b1"
+        },
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "40d8d764021d01d9e12651535118c0956e4f3553539609a405614fcebaa0706d"
+        },
+        {
+          "path": "tooling/v01-glib-backport-probe/Cargo.toml",
+          "sha256": "f721da3e9f4ba355429bac6e56bcf37342bb4b09bef66b78d115844459914af1"
+        },
+        {
+          "path": "vendor/glib-0.18.5/Cargo.toml",
+          "sha256": "bcd52d812b4c111864ae8e88ba6c0a8311eb0cf781b5e81634950b4619592132"
+        }
+      ],
+      "source_tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+    }
+  ],
+  "new_native_executions": 0,
+  "new_policy_executions": 0,
+  "new_product_executions": 0,
+  "original_source_facts_decision_preserved": "partial_without_later_canonical_origin_composition",
+  "policy_transport_binding": {
+    "normalization": "The captured JSON text uses LF; replacing that sole terminal LF with CRLF exactly matches the retained original83-byte digest. Transported82 bytes are not mislabeled as the original stream.",
+    "reconstructed_original_sha256": "d8ef61fbc0b41e064be4143f36a2583cbd4cf2db3d20f07f8f52cdb6053b4fba",
+    "transport_bytes": 82,
+    "transport_sha256": "489bda2425f353f459e741d3a429781626d99b77c89c9326cafd9e2691cc667a"
+  },
+  "private_catalogue_text_published": false,
+  "product_acceptance_ready": false,
+  "raw_api_responses_published": false,
+  "release_authorized": false,
+  "reused_source_policy_original": {
+    "ended_at_utc": "2026-10-26T20:31:47.326540+00:00",
+    "exit_code": 0,
+    "name": "source-policy",
+    "pid": 35720,
+    "started_at_utc": "2026-10-26T20:31:32.973186+00:00",
+    "streams": {
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 83,
+        "sha256": "d8ef61fbc0b41e064be4143f36a2583cbd4cf2db3d20f07f8f52cdb6053b4fba"
+      }
+    }
+  },
+  "schema": "motionwright.sdk01-public-source-summary/1",
+  "scope_counts": {
+    "conditional": 0,
+    "optional": 0,
+    "required": 1
+  },
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+    "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+  },
+  "source_facts": {
+    "environment": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]"
+    },
+    "formal_acceptance": false,
+    "invocation": {
+      "ended_at_utc": "2026-10-26T22:49:52.539100+00:00",
+      "exit_code": 0,
+      "pid": 4828,
+      "started_at_utc": "2026-10-26T22:49:51.879281+00:00"
+    },
+    "native_executions": 0,
+    "original_argv_sha256": "c0a93dc6e01a61636aa67832b67f1d3c8845294bc917b49176a35c7ad62d7bf2",
+    "original_receipt_sha256": "8e2280cec5977f160c374e7402f326621843c2c2676359b03500a0984ffc71c2",
+    "original_report_sha256": "6560fb587e01cb4f9b62b8e1f2ef7384525d2a745da0c3755c7ad1a65de46b3e",
+    "original_stream_identities": {
+      "stderr.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout.original.log": {
+        "bytes": 202,
+        "sha256": "12a3ae0fa478aad589772dc9c737670f13446a9f652ac39ad7890505fe1b2155"
+      }
+    },
+    "private_argv_published": false,
+    "producer_sha256": "137d507dcbc8fcc5a746bf43bac20aeb51deb97fbecedd2851b476696775267e"
+  },
+  "source_facts_observations": {
+    "all_tracked_cargo_manifests_reviewed": 15,
+    "direct_semwright_core_reference": false,
+    "distinct_direct_sdk_packages": [
+      "semwright-audio-domain",
+      "semwright-backend-api",
+      "semwright-driver-blender",
+      "semwright-driver-host",
+      "semwright-driver-sdk",
+      "semwright-effect-conformance",
+      "semwright-media-time",
+      "semwright-motion-authoring",
+      "semwright-native-sdk",
+      "semwright-policy",
+      "semwright-project-graph",
+      "semwright-semantic-composition",
+      "semwright-types"
+    ],
+    "imports_grep_lines": 233,
+    "imports_grep_sha256": "c71fc58a196e7dc17698f76a821286ade49a5ab07934882d72bf50e810b61eeb",
+    "namespaces": [
+      "semwright_audio_domain",
+      "semwright_backend_api",
+      "semwright_driver_blender",
+      "semwright_driver_host",
+      "semwright_driver_sdk",
+      "semwright_effect_conformance",
+      "semwright_media_time",
+      "semwright_motion_authoring",
+      "semwright_native_sdk",
+      "semwright_policy",
+      "semwright_project_graph",
+      "semwright_semantic_composition",
+      "semwright_types"
+    ],
+    "sdk_dependency_declarations": [
+      {
+        "alias": "semwright-audio-domain",
+        "manifest": "Cargo.toml",
+        "package": "semwright-audio-domain",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-native-sdk",
+        "manifest": "Cargo.toml",
+        "package": "semwright-native-sdk",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-driver-sdk",
+        "manifest": "Cargo.toml",
+        "package": "semwright-driver-sdk",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-types",
+        "manifest": "Cargo.toml",
+        "package": "semwright-types",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-media-time",
+        "manifest": "Cargo.toml",
+        "package": "semwright-media-time",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-project-graph",
+        "manifest": "Cargo.toml",
+        "package": "semwright-project-graph",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-effect-conformance",
+        "manifest": "Cargo.toml",
+        "package": "semwright-effect-conformance",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-motion-authoring",
+        "manifest": "Cargo.toml",
+        "package": "semwright-motion-authoring",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-semantic-composition",
+        "manifest": "Cargo.toml",
+        "package": "semwright-semantic-composition",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-driver-blender",
+        "manifest": "Cargo.toml",
+        "package": "semwright-driver-blender",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "workspace.dependencies"
+      },
+      {
+        "alias": "semwright-native-sdk",
+        "manifest": "apps/desktop/src-tauri/Cargo.toml",
+        "package": "semwright-native-sdk",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-media-time",
+        "manifest": "crates/domain/Cargo.toml",
+        "package": "semwright-media-time",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-driver-sdk",
+        "manifest": "crates/driver-hyperframes/Cargo.toml",
+        "package": "semwright-driver-sdk",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-types",
+        "manifest": "crates/driver-hyperframes/Cargo.toml",
+        "package": "semwright-types",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-backend-api",
+        "manifest": "crates/driver-hyperframes/Cargo.toml",
+        "package": "semwright-backend-api",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "target.cfg(target_os = \"linux\").dev-dependencies"
+      },
+      {
+        "alias": "semwright-driver-host",
+        "manifest": "crates/driver-hyperframes/Cargo.toml",
+        "package": "semwright-driver-host",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "target.cfg(target_os = \"linux\").dev-dependencies"
+      },
+      {
+        "alias": "semwright-policy",
+        "manifest": "crates/driver-hyperframes/Cargo.toml",
+        "package": "semwright-policy",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "target.cfg(target_os = \"linux\").dev-dependencies"
+      },
+      {
+        "alias": "semwright-driver-sdk",
+        "manifest": "crates/driver-manim-community/Cargo.toml",
+        "package": "semwright-driver-sdk",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-types",
+        "manifest": "crates/driver-manim-community/Cargo.toml",
+        "package": "semwright-types",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-types",
+        "manifest": "crates/hyperframes-profile/Cargo.toml",
+        "package": "semwright-types",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-media-time",
+        "manifest": "crates/manim-profile/Cargo.toml",
+        "package": "semwright-media-time",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-native-sdk",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-native-sdk",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-audio-domain",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-audio-domain",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-project-graph",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-project-graph",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-media-time",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-media-time",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-motion-authoring",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-motion-authoring",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-semantic-composition",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-semantic-composition",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-driver-blender",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-driver-blender",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dependencies"
+      },
+      {
+        "alias": "semwright-effect-conformance",
+        "manifest": "crates/native/Cargo.toml",
+        "package": "semwright-effect-conformance",
+        "revision": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+        "table": "dev-dependencies"
+      }
+    ],
+    "sdk_local_path_or_patch_substitutions": 0,
+    "semwright_lock_packages": [
+      {
+        "name": "semwright-audio-domain",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-backend-api",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-driver-blender",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-driver-host",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-driver-sdk",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-effect-conformance",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-media-time",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-motion-authoring",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-native-sdk",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-platform-api",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-platform-linux-sys",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-platform-macos-sys",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-platform-services",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-platform-windows-sys",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-policy",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-project-graph",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-protocol",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-semantic-composition",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-types",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      },
+      {
+        "name": "semwright-video-domain",
+        "source": "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+      }
+    ],
+    "tracked_cargo_config_overrides": [],
+    "workspace_members": [
+      "crates/domain",
+      "crates/storage",
+      "crates/service",
+      "crates/manim-profile",
+      "crates/driver-manim-community",
+      "crates/hyperframes-profile",
+      "crates/driver-hyperframes",
+      "crates/native",
+      "apps/desktop/src-tauri"
+    ]
+  },
+  "tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+}

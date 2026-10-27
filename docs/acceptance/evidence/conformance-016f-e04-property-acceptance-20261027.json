@@ -1,0 +1,519 @@
+{
+  "basis": "The actual current-source validator accepts all five category values as separate unchanged entries, accepts no-loss native/translated values, requires nonempty loss notes for baked/approximate/unavailable values, and rejects unknown/coerced values, duplicate or malformed paths, excessive entries, oversized notes and control characters. Eight individually named real Node unit cases passed with zero fail/skip/cancel/todo on the complete byte-exact module closure; original child PID, terminal, streams and inputs are joined.",
+  "execution_kind": "unit",
+  "execution_profile": "e04e05-property-classification-studio",
+  "field_ids": [
+    "MW05-E04-02#/acceptance"
+  ],
+  "historical_qualification": {
+    "Vitest": "4.1.11",
+    "archive_sha256": "bf9d88fbe6692a7b33c4e8d2beb59bff85627482f594802f74f79e5f0a11ea95",
+    "attempt": 1,
+    "completed_at_utc": "2026-10-22T15:11:47Z",
+    "conclusion": "success",
+    "individual_case_execution_observations": false,
+    "job_id": 119906614056,
+    "job_name": "studio-tests",
+    "manifest_discrepancy": {
+      "declared": {
+        "bytes": 2811967,
+        "sha256": "c2b659b8dbf6c199e46df0db3102d32eb5115bfc2049307e6fabd5d63be4abfb"
+      },
+      "disposition": "Retain discrepancy and original bytes; no blanket manifest-validity claim. The three selected CI originals individually match their retained manifest entries. Historical record is not retagged or relied upon as a new016f unit result.",
+      "manifest_sha256": "9563875fd785e11ae3c97fcf972bd80455cd6f033518f78688d3e7283348a537",
+      "member": "source/record-source-results.json",
+      "physically_observed": {
+        "bytes": 2812082,
+        "sha256": "2d44fcad314799a5bcafac7db8bfeabdee3f4a4e26a0eb1b9437a53dde321096"
+      }
+    },
+    "new_execution_claimed": false,
+    "node": "22.23.3",
+    "observed_aggregate": "nativePropertyFidelity.test.ts, 11 tests, 23ms",
+    "original_log_line_1_based": 598,
+    "run_id": 39802244854,
+    "source_sha": "a4eb9ea550eee19d83244c6d9481e85d69b2ec15",
+    "started_at_utc": "2026-10-22T15:11:31Z",
+    "streams_match_retained_manifest": {
+      "ci/119906614056.original.log": {
+        "bytes": 49035,
+        "sha256": "2f92f5225418fcd535af4c012cc3aa20c724979d9731c41f3b5dade98f09d750"
+      },
+      "ci/jobs.original.json": {
+        "bytes": 27579,
+        "sha256": "2aeed779496aeb0d38dda90beaf7c8405291eff09a044b7533e4a9217128669c"
+      },
+      "ci/run.original.json": {
+        "bytes": 12745,
+        "sha256": "363752ec9ae96217936e763be8c781daffeb93969fbe00dd3ac5b3c57e853b4b"
+      }
+    },
+    "used_as_current_source_execution": false
+  },
+  "limitations": [
+    "One objective acceptance field and its preserved unit profile only. The multidimensional report requirement and its separate negative case are not accepted by this component.",
+    "Eight real Node unit cases exercise the actual validator through seven complete byte-exact016f TypeScript modules. Inputs are synthetic in-memory classifications; no product function is extracted, replaced or mocked.",
+    "Node24 type stripping is not TypeScript typechecking, Vitest, a full Studio build, browser interaction, API/SQLite integration, native media, SDK authority or installed application evidence.",
+    "Only five retained React19.3.0 files are hash-verified. Two installation lock entries match the current source declaration; tarball and whole-package integrity are not asserted. No dependency was installed.",
+    "Historical A4 CI originals retain their original source/run identity. The old file aggregate is not a new016f execution; its separately documented inner-manifest discrepancy is preserved.",
+    "This component does not modify ledgers. Controlled intake must preserve history, authenticate the selected source and unchanged clause/profile/contract, and pass exact privacy/schema/compatibility/history gates.",
+    "No whole requirement/scenario acceptance, authenticated human review, product readiness or release authorization follows from this one-field unit result."
+  ],
+  "obligation": "five-category-distinction",
+  "one_field_review_sha256": "a2286ba1f6175277f74ff334dac710ff5db92bb3ccff2b26713fc41e9dac3e27",
+  "oracle_profile_sha256": "261b5f7600418d82b72a77d167960fd92232c0e515ca8e9c963ca50452542d55",
+  "original_unit": {
+    "CommonJS_specifiers_preserved": true,
+    "SDK_pin": "aa918f5b82eace7bc37ad5979f8d9eefff6a9aac",
+    "actual_original_attempt": "R3",
+    "cases": [
+      {
+        "name": "E04 accepts five distinct categories without coercion",
+        "status": "pass"
+      },
+      {
+        "name": "E04 native and translated permit an absent loss note",
+        "status": "pass"
+      },
+      {
+        "name": "E04 baked approximate and unavailable require meaningful loss notes",
+        "status": "pass"
+      },
+      {
+        "name": "E04 unknown category values cannot become a supported state",
+        "status": "pass"
+      },
+      {
+        "name": "E04 one semantic property cannot carry duplicate classifications",
+        "status": "pass"
+      },
+      {
+        "name": "E04 malformed paths and prototype names are rejected within exact bounds",
+        "status": "pass"
+      },
+      {
+        "name": "E04 zero and sixty-four classifications are accepted but sixty-five are rejected",
+        "status": "pass"
+      },
+      {
+        "name": "E04 loss notes enforce UTF-8 byte limits and reject control characters",
+        "status": "pass"
+      }
+    ],
+    "compatibility_diagnostic": {
+      "dependency_files": {
+        "node_modules/react/LICENSE": {
+          "bytes": 1088,
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        },
+        "node_modules/react/cjs/react.development.js": {
+          "bytes": 49165,
+          "sha256": "97bef56f30daa05320514ea220d7d03eb765635519ff2d5650c4887772aa5767"
+        },
+        "node_modules/react/cjs/react.production.js": {
+          "bytes": 18040,
+          "sha256": "6b28feb9dbe9781ab1e1b64dea7b29a7c70f03d2dc10eaa966363053d8a9b4e5"
+        },
+        "node_modules/react/index.js": {
+          "bytes": 186,
+          "sha256": "60caffdecbdc5db3bc4ec4e83df9488345ccb271d07533b9210bf5750918d97e"
+        },
+        "node_modules/react/package.json": {
+          "bytes": 1242,
+          "sha256": "6e003e4e9ed25afa7fdd55613f8aa877cefa9b359d9c13f81ee704030248e24e"
+        }
+      },
+      "exit_code": 0,
+      "pid": 7588,
+      "product_cases_executed": 0,
+      "receipt_sha256": "223acba77feef72b0fe3692e8460233e878a45bb0fad0d927042451fce98e1a1",
+      "stdout_sha256": "95a9389c9bdc9fe28128d065c4343fd66b80500887df78a4aba310be2a421423",
+      "terminal_sha256": "c7747c49f94ae9bc90a30970ee452c9c4501db003022171c9e3d3899d440dd05"
+    },
+    "counts": {
+      "cancelled": 0,
+      "fail": 0,
+      "pass": 8,
+      "skipped": 0,
+      "suites": 0,
+      "tests": 8,
+      "todo": 0
+    },
+    "dependency_custody": {
+      "declaration_matches_current_source": true,
+      "locks": {
+        "node_modules/.package-lock.json": {
+          "bytes": 53849,
+          "react_entry": {
+            "engines": {
+              "node": ">=0.10.0"
+            },
+            "integrity": "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==",
+            "license": "MIT",
+            "resolved": "https://registry.npmjs.org/react/-/react-19.3.0.tgz",
+            "version": "19.3.0"
+          },
+          "sha256": "d88437186d45340b7bd6ef4d945aa40f458f6d3a33a6c1af950a4cd6b4f5e4bc"
+        },
+        "package-lock.json": {
+          "bytes": 80990,
+          "react_entry": {
+            "engines": {
+              "node": ">=0.10.0"
+            },
+            "integrity": "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==",
+            "license": "MIT",
+            "resolved": "https://registry.npmjs.org/react/-/react-19.3.0.tgz",
+            "version": "19.3.0"
+          },
+          "sha256": "e86192eba51121d2f94ef3abd8ad3b14933d9f4563d76d758f56bc404c708e1f"
+        }
+      },
+      "selected_file_hashes_verified": true,
+      "tarball_integrity_verified": false,
+      "whole_package_integrity_claimed": false
+    },
+    "dependency_exports_synthesized": false,
+    "ended_at_utc": "2026-10-27T05:05:53.628226+00:00",
+    "environment": {
+      "Node_binary_bytes": 92825416,
+      "Node_binary_sha256": "3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237",
+      "Node_compile_cache": "disabled",
+      "Node_environment": "production",
+      "broker_python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]",
+      "node": "v24.19.0",
+      "platform": "Windows-10-10.0.26200-SP0",
+      "runner_isolation": "none; same actual Node PID"
+    },
+    "exit_code": 0,
+    "harness_artifact": "docs/acceptance/evidence/conformance-016f-e04-property-oracle-20261027.mjs",
+    "harness_sha256": "573df748a02462a1b4f6dd5aacd1fcd7fb1a4c5ac9b7c084168d27541048e707",
+    "historical_execution_relabelled": false,
+    "input_hashes_stable_before_after": true,
+    "limitations": [
+      "One objective acceptance field and its preserved unit profile only. The multidimensional report requirement and its separate negative case are not accepted by this component.",
+      "Eight real Node unit cases exercise the actual validator through seven complete byte-exact016f TypeScript modules. Inputs are synthetic in-memory classifications; no product function is extracted, replaced or mocked.",
+      "Node24 type stripping is not TypeScript typechecking, Vitest, a full Studio build, browser interaction, API/SQLite integration, native media, SDK authority or installed application evidence.",
+      "Only five retained React19.3.0 files are hash-verified. Two installation lock entries match the current source declaration; tarball and whole-package integrity are not asserted. No dependency was installed.",
+      "Historical A4 CI originals retain their original source/run identity. The old file aggregate is not a new016f execution; its separately documented inner-manifest discrepancy is preserved.",
+      "This component does not modify ledgers. Controlled intake must preserve history, authenticate the selected source and unchanged clause/profile/contract, and pass exact privacy/schema/compatibility/history gates.",
+      "No whole requirement/scenario acceptance, authenticated human review, product readiness or release authorization follows from this one-field unit result."
+    ],
+    "loader_observations_are_not_function_coverage": true,
+    "memory_usage": {
+      "arrayBuffers": 539030,
+      "external": 10821859,
+      "heapTotal": 15962112,
+      "heapUsed": 12190704,
+      "rss": 72069120
+    },
+    "new_product_unit_execution": true,
+    "original_argv_sha256": "feab5beb71fbc94bac73466de9e1aececc6149225434c2d075cfcec6b796d5f6",
+    "original_intent_sha256": "c5ba40d5be26c49e93ee5a29ce122372dc3549490e1c604f58b78f107150240a",
+    "original_receipt_sha256": "5e19e4f492ae6a2e20b3bad624c334d7334b53a1264af6131fbc52774ebc0870",
+    "original_terminal_sha256": "3d5aea15bdc78ec05e22f3397b7010eca0f4583caa660c4f1e39035aa3694e62",
+    "pid": 31780,
+    "prior_non_admitted_attempt": {
+      "E04_cases_executed": 0,
+      "disposition": "Retained loader failure before criterion execution; no product verdict",
+      "exit_code": 1,
+      "pid": 24792,
+      "receipt_sha256": "723966066345b3a18bef8442fa9eaa5c9945e4c6ac610e06d1a2454d040d72fe"
+    },
+    "prior_resource_refusal": {
+      "Node_invocations": 0,
+      "originals": {
+        "controller-failure.private.json": {
+          "bytes": 318,
+          "sha256": "db747f08f4df9657200e2c3d8ce2fa815e4db99c05ddbbdd21296afe299e9123"
+        },
+        "intent.private.json": {
+          "bytes": 12178,
+          "sha256": "178fe6298786664da0c08ef4fee50fcd16bdcf09ba0da0fb33ea0deaefc304e0"
+        }
+      },
+      "postabort_observation_sha256": "0610290a761fbd574ee978db76e9b2c6ede72237f478edb7780e016a3267816b",
+      "product_verdict": "NOT_RUN",
+      "projection_reused_read_only": true
+    },
+    "private_paths_and_original_argv_published": false,
+    "resource_usage": {
+      "fsRead": 66,
+      "fsWrite": 1,
+      "involuntaryContextSwitches": 0,
+      "ipcReceived": 0,
+      "ipcSent": 0,
+      "majorPageFault": 32189,
+      "maxRSS": 75888,
+      "minorPageFault": 0,
+      "sharedMemorySize": 0,
+      "signalsCount": 0,
+      "swappedOut": 0,
+      "systemCPUTime": 296000,
+      "unsharedDataSize": 0,
+      "unsharedStackSize": 0,
+      "userCPUTime": 468000,
+      "voluntaryContextSwitches": 0
+    },
+    "runtime_dependency_files": [
+      {
+        "bytes": 1088,
+        "path": "node_modules/react/LICENSE",
+        "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+      },
+      {
+        "bytes": 49165,
+        "path": "node_modules/react/cjs/react.development.js",
+        "sha256": "97bef56f30daa05320514ea220d7d03eb765635519ff2d5650c4887772aa5767"
+      },
+      {
+        "bytes": 18040,
+        "path": "node_modules/react/cjs/react.production.js",
+        "sha256": "6b28feb9dbe9781ab1e1b64dea7b29a7c70f03d2dc10eaa966363053d8a9b4e5"
+      },
+      {
+        "bytes": 186,
+        "path": "node_modules/react/index.js",
+        "sha256": "60caffdecbdc5db3bc4ec4e83df9488345ccb271d07533b9210bf5750918d97e"
+      },
+      {
+        "bytes": 1242,
+        "path": "node_modules/react/package.json",
+        "sha256": "6e003e4e9ed25afa7fdd55613f8aa877cefa9b359d9c13f81ee704030248e24e"
+      }
+    ],
+    "runtime_import_edges": [
+      "node_modules/react/index.js -> node_modules/react/cjs/react.development.js",
+      "node_modules/react/index.js -> node_modules/react/cjs/react.production.js",
+      "src/creativeProduction.ts -> src/deliveryRecipe.ts",
+      "src/creativeProduction.ts -> src/proceduralField.ts",
+      "src/creativeProduction.ts -> src/types.ts",
+      "src/deliveryRecipe.ts -> src/audioRecipeContract.ts",
+      "src/deliveryRecipe.ts -> src/deliveryRecipeDraft.ts",
+      "src/deliveryRecipeDraft.ts -> node_modules/react/index.js",
+      "src/deliveryRecipeDraft.ts -> src/audioRecipeContract.ts",
+      "src/deliveryRecipeDraft.ts -> src/deliveryRecipe.ts",
+      "src/deliveryRecipeDraft.ts -> src/projectMutation.ts",
+      "src/proceduralField.ts -> src/creativeProduction.ts"
+    ],
+    "runtime_modules_observed_by_loader": [
+      "node_modules/react/cjs/react.development.js",
+      "node_modules/react/cjs/react.production.js",
+      "node_modules/react/index.js",
+      "src/audioRecipeContract.ts",
+      "src/creativeProduction.ts",
+      "src/deliveryRecipe.ts",
+      "src/deliveryRecipeDraft.ts",
+      "src/proceduralField.ts",
+      "src/projectMutation.ts",
+      "src/types.ts"
+    ],
+    "runtime_resolution_observations": [
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./deliveryRecipe.ts",
+        "parent": "src/creativeProduction.ts",
+        "specifier": "./deliveryRecipe",
+        "target": "src/deliveryRecipe.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./audioRecipeContract.ts",
+        "parent": "src/deliveryRecipe.ts",
+        "specifier": "./audioRecipeContract",
+        "target": "src/audioRecipeContract.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./deliveryRecipeDraft.ts",
+        "parent": "src/deliveryRecipe.ts",
+        "specifier": "./deliveryRecipeDraft",
+        "target": "src/deliveryRecipeDraft.ts"
+      },
+      {
+        "format": null,
+        "forwarded_specifier": "react",
+        "parent": "src/deliveryRecipeDraft.ts",
+        "specifier": "react",
+        "target": "node_modules/react/index.js"
+      },
+      {
+        "format": null,
+        "forwarded_specifier": "./cjs/react.development.js",
+        "parent": "node_modules/react/index.js",
+        "specifier": "./cjs/react.development.js",
+        "target": "node_modules/react/cjs/react.development.js"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./audioRecipeContract.ts",
+        "parent": "src/deliveryRecipeDraft.ts",
+        "specifier": "./audioRecipeContract",
+        "target": "src/audioRecipeContract.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./projectMutation.ts",
+        "parent": "src/deliveryRecipeDraft.ts",
+        "specifier": "./projectMutation",
+        "target": "src/projectMutation.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./deliveryRecipe.ts",
+        "parent": "src/deliveryRecipeDraft.ts",
+        "specifier": "./deliveryRecipe",
+        "target": "src/deliveryRecipe.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./proceduralField.ts",
+        "parent": "src/creativeProduction.ts",
+        "specifier": "./proceduralField",
+        "target": "src/proceduralField.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./creativeProduction.ts",
+        "parent": "src/proceduralField.ts",
+        "specifier": "./creativeProduction",
+        "target": "src/creativeProduction.ts"
+      },
+      {
+        "format": "module-typescript",
+        "forwarded_specifier": "./types.ts",
+        "parent": "src/creativeProduction.ts",
+        "specifier": "./types",
+        "target": "src/types.ts"
+      },
+      {
+        "format": null,
+        "forwarded_specifier": "./cjs/react.production.js",
+        "parent": "node_modules/react/index.js",
+        "specifier": "./cjs/react.production.js",
+        "target": "node_modules/react/cjs/react.production.js"
+      }
+    ],
+    "schema": "motionwright.e04-exact-unit-original-public/1",
+    "scope": "Eight real Node unit cases exercise the actual validator through seven complete byte-exact016f TypeScript modules. Inputs are synthetic in-memory classifications; no product function is extracted, replaced or mocked.",
+    "source": {
+      "digest_kind": "git-text-lf",
+      "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+      "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+    },
+    "source_inputs": [
+      {
+        "bytes": 142600,
+        "git_blob": "f26572bacbead9f526edd49309f437a22b2c2fca",
+        "mode": "100644",
+        "path": "Cargo.lock",
+        "role": "source_context_not_executed",
+        "sha256": "455c72c93acaf90d1161f8f5c0c0fac70fb8c162f751ff3a8b65574f0209c448"
+      },
+      {
+        "bytes": 1653,
+        "git_blob": "32c519d3d891bf435b898edbce4deaea3e1ed601",
+        "mode": "100644",
+        "path": "SOURCE_LOCK.json",
+        "role": "source_context_not_executed",
+        "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+      },
+      {
+        "bytes": 83713,
+        "git_blob": "3603612cab7f9abbb132ec69aa267ca060f0b474",
+        "mode": "100644",
+        "path": "apps/studio/package-lock.json",
+        "role": "source_context_not_executed",
+        "sha256": "bf7e12b36faff3d553033f903560070974774700f404ff6704ed0942094bc994"
+      },
+      {
+        "bytes": 919,
+        "git_blob": "2be45e9bde032f9e2c197789a8350dba017b72f0",
+        "mode": "100644",
+        "path": "apps/studio/package.json",
+        "role": "source_context_not_executed",
+        "sha256": "428526cf98577d3c960a1f13731cf89a1c1c19cb7a4e653a420d1e832c75c9b4"
+      },
+      {
+        "bytes": 9018,
+        "git_blob": "ee8ed3b9407c0cebe697d8acac87840302786744",
+        "mode": "100644",
+        "path": "apps/studio/src/audioRecipeContract.ts",
+        "role": "runtime_original_module",
+        "sha256": "2c1d6b9f669da87458c028e3635a8b58c6736d7af5b6c7095d0a85d8e23dbde9"
+      },
+      {
+        "bytes": 36639,
+        "git_blob": "07e93de66e53dda7353b54fd0018fd0b148f4145",
+        "mode": "100644",
+        "path": "apps/studio/src/creativeProduction.ts",
+        "role": "runtime_original_module",
+        "sha256": "5ee6199c10c113a25d44858531806eebed58e897f97ec46669a541ecfe4c8d96"
+      },
+      {
+        "bytes": 24822,
+        "git_blob": "e9c0ad34017c9f313e399603af10e6ce4ec24241",
+        "mode": "100644",
+        "path": "apps/studio/src/deliveryRecipe.ts",
+        "role": "runtime_original_module",
+        "sha256": "1dd204f9fbec4ce63ba8de8a60a7c3214b65c4ce59b0e2f9a54146fc5136f385"
+      },
+      {
+        "bytes": 54065,
+        "git_blob": "89b14c21a328d94612d0a2dbb80dd31fbd9513ff",
+        "mode": "100644",
+        "path": "apps/studio/src/deliveryRecipeDraft.ts",
+        "role": "runtime_original_module",
+        "sha256": "321a9ca2f744518bd93ee6dc837cea034cae1a53236619ab83612cbb05f5bc3e"
+      },
+      {
+        "bytes": 11819,
+        "git_blob": "348534588ae8695b672be5fab94f24f622be89e5",
+        "mode": "100644",
+        "path": "apps/studio/src/proceduralField.ts",
+        "role": "runtime_original_module",
+        "sha256": "3b0c179865d5db1741e25c9a407bdfbf6f0a19b46aade1bb3b0cb5cd934b8e5e"
+      },
+      {
+        "bytes": 12846,
+        "git_blob": "25239def2ab78a28274585afda75dc2ff6984304",
+        "mode": "100644",
+        "path": "apps/studio/src/projectMutation.ts",
+        "role": "runtime_original_module",
+        "sha256": "1195b5afb3e5fd2bdd1d74df6e99589f1bf60ece845bccc0da287a7c2123a614"
+      },
+      {
+        "bytes": 40539,
+        "git_blob": "79815ad599c4eda2b404fddee285350412a13220",
+        "mode": "100644",
+        "path": "apps/studio/src/types.ts",
+        "role": "runtime_original_module",
+        "sha256": "83f2d7992d14744e6b05b53c548bedd3a8f18913fcfaf8864742f0b4308794e6"
+      }
+    ],
+    "started_at_utc": "2026-10-27T05:05:53.103098+00:00",
+    "streams": {
+      "stderr.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout.original.log": {
+        "bytes": 11822,
+        "sha256": "4d1f10096081b155db4399142a24cf0dd542709ada6d5f73a97b2b0fc6da66fa"
+      }
+    },
+    "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+  },
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "schema": "motionwright.e04-property-classification-acceptance-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "2f5b961681adaaa033229b0b47124e43787c4f6a09ee76b4316177bd4d2260c9",
+  "technical_verdict": "PASS_FOR_ONE_CURRENT_SOURCE_UNIT_FIELD",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058",
+  "whole_requirement_accepted": false
+}
