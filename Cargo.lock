@@ -2120,6 +2120,8 @@ dependencies = [
  "motionwright-service",
  "same-file",
  "semwright-native-sdk",
+ "semwright-platform-api",
+ "semwright-platform-services",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2254,6 +2256,7 @@ dependencies = [
  "parking_lot",
  "quick-xml",
  "rusqlite",
+ "semwright-driver-motion-canvas",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3121,6 +3124,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3294,7 +3306,7 @@ dependencies = [
 [[package]]
 name = "semwright-audio-domain"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "hex",
  "schemars 1.2.2",
@@ -3307,7 +3319,7 @@ dependencies = [
 [[package]]
 name = "semwright-backend-api"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "semwright-types",
@@ -3319,7 +3331,7 @@ dependencies = [
 [[package]]
 name = "semwright-driver-blender"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "hex",
@@ -3342,7 +3354,7 @@ dependencies = [
 [[package]]
 name = "semwright-driver-host"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "hex",
@@ -3363,9 +3375,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "semwright-driver-motion-canvas"
+version = "1.0.0"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "hex",
+ "jsonschema",
+ "libc",
+ "png 0.18.1",
+ "regex",
+ "roxmltree",
+ "rustix",
+ "schemars 1.2.2",
+ "semwright-driver-sdk",
+ "semwright-media-time",
+ "semwright-motion-authoring",
+ "semwright-semantic-composition",
+ "semwright-types",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-util",
+ "ttf-parser",
+ "uuid",
+]
+
+[[package]]
 name = "semwright-driver-sdk"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "hex",
@@ -3384,7 +3425,7 @@ dependencies = [
 [[package]]
 name = "semwright-effect-conformance"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "schemars 1.2.2",
  "semwright-semantic-composition",
@@ -3396,7 +3437,7 @@ dependencies = [
 [[package]]
 name = "semwright-media-time"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "schemars 1.2.2",
  "semwright-semantic-composition",
@@ -3408,7 +3449,7 @@ dependencies = [
 [[package]]
 name = "semwright-motion-authoring"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "schemars 1.2.2",
  "semwright-media-time",
@@ -3420,7 +3461,7 @@ dependencies = [
 [[package]]
 name = "semwright-native-sdk"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "hex",
@@ -3440,7 +3481,7 @@ dependencies = [
 [[package]]
 name = "semwright-platform-api"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "semwright-backend-api",
@@ -3453,7 +3494,7 @@ dependencies = [
 [[package]]
 name = "semwright-platform-linux-sys"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "hex",
@@ -3470,7 +3511,7 @@ dependencies = [
 [[package]]
 name = "semwright-platform-macos-sys"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "hex",
  "libc",
@@ -3484,7 +3525,7 @@ dependencies = [
 [[package]]
 name = "semwright-platform-services"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "libc",
  "semwright-platform-api",
@@ -3499,7 +3540,7 @@ dependencies = [
 [[package]]
 name = "semwright-platform-windows-sys"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "async-trait",
  "hex",
@@ -3517,7 +3558,7 @@ dependencies = [
 [[package]]
 name = "semwright-policy"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "hex",
  "semwright-platform-api",
@@ -3532,7 +3573,7 @@ dependencies = [
 [[package]]
 name = "semwright-project-graph"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "schemars 1.2.2",
  "semwright-semantic-composition",
@@ -3545,7 +3586,7 @@ dependencies = [
 [[package]]
 name = "semwright-protocol"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "libc",
  "semwright-platform-services",
@@ -3559,7 +3600,7 @@ dependencies = [
 [[package]]
 name = "semwright-semantic-composition"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "hex",
  "schemars 1.2.2",
@@ -3572,7 +3613,7 @@ dependencies = [
 [[package]]
 name = "semwright-types"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "regex",
  "schemars 1.2.2",
@@ -3585,7 +3626,7 @@ dependencies = [
 [[package]]
 name = "semwright-video-domain"
 version = "1.0.0"
-source = "git+https://github.com/seradotcom/semwright?rev=01d4a99a8473273fda5c61b7220d6da1bee94786#01d4a99a8473273fda5c61b7220d6da1bee94786"
+source = "git+https://github.com/seradotcom/semwright?rev=aa918f5b82eace7bc37ad5979f8d9eefff6a9aac#aa918f5b82eace7bc37ad5979f8d9eefff6a9aac"
 dependencies = [
  "hex",
  "serde",
