@@ -245,6 +245,200 @@ fn graph_identity_kind_and_scene_profile_uniqueness_are_preserved() {
 }
 
 #[test]
+fn claim_bound_metaphor_edits_preserve_other_occurrences_and_reject_invalid_targets_atomically() {
+    let mut project = seed_domain();
+    project
+        .apply_change(&Change::AddScene {
+            name: "Another representation of the same claim".into(),
+            objective: "Keep independently authored occurrences distinct".into(),
+            duration_seconds: 6,
+        })
+        .unwrap();
+    let other_scene_id = project.scenes[1].id;
+    project
+        .apply_change(&Change::SetSceneRenderer {
+            scene_id: other_scene_id,
+            renderer: RendererKind::ManimCommunity,
+        })
+        .unwrap();
+    let mut profile = project.deliverables[0].clone();
+    profile.included_scene_ids = vec![project.scenes[0].id, other_scene_id];
+    project
+        .apply_change(&Change::UpsertDeliverable { profile })
+        .unwrap();
+    project
+        .apply_change(&Change::AddClaim {
+            text: "An authored source supplies a dependent stage.".into(),
+            source: Some(SourceReference::ManualNote {
+                label: "Original explanatory source".into(),
+            }),
+            context: "A conceptual relationship, not measured causation.".into(),
+            source_revision: Some("source-v1".into()),
+        })
+        .unwrap();
+    let original_claim = project.brief.claims[0].clone();
+    let stale_digest = semantic_graph_claim_digest(&original_claim).unwrap();
+    let expected = ClaimEditableFields::from(&original_claim);
+    let mut replacement = expected.clone();
+    replacement.source_revision = Some("source-v2".into());
+    project
+        .apply_change(&Change::UpdateClaim {
+            claim_id: original_claim.id,
+            expected,
+            replacement,
+        })
+        .unwrap();
+    let claim = project.brief.claims[0].clone();
+    let digest = semantic_graph_claim_digest(&claim).unwrap();
+    assert_eq!(claim.id, original_claim.id);
+    assert_ne!(digest, stale_digest);
+    let binding = GraphTargetBinding::Claim {
+        claim_id: claim.id,
+        content_sha256: digest.clone(),
+    };
+
+    let mut selected = graph_for(&project, false);
+    let GraphContent::CausalDiagram { vertices, .. } = &mut selected.content else {
+        panic!("The existing causal fixture must supply the selected occurrence");
+    };
+    vertices[0].target = Some(binding.clone());
+    vertices[0].label = "Source as a reservoir".into();
+    save(&mut project, selected.clone());
+
+    let mut other = graph_for(&project, true);
+    other.scene_id = other_scene_id;
+    other.subject_ref = GraphSubjectRef::Scene {
+        scene_id: other_scene_id,
+    };
+    let GraphContent::SystemFlow {
+        vertices,
+        edges,
+        events,
+        ..
+    } = &mut other.content
+    else {
+        panic!("The existing flow fixture must supply the other occurrence");
+    };
+    for vertex in vertices.iter_mut() {
+        vertex.id = Uuid::new_v4();
+    }
+    vertices[0].target = Some(binding.clone());
+    vertices[0].label = "Source as an input port".into();
+    edges[0].id = Uuid::new_v4();
+    edges[0].from_vertex_id = vertices[0].id;
+    edges[0].to_vertex_id = vertices[1].id;
+    events[0].id = Uuid::new_v4();
+    events[0].edge_id = edges[0].id;
+    assert_ne!(selected.id, other.id);
+    assert_ne!(selected.scene_id, other.scene_id);
+    assert!(selected.content.vertices().iter().all(|selected_vertex| {
+        other
+            .content
+            .vertices()
+            .iter()
+            .all(|other_vertex| selected_vertex.id != other_vertex.id)
+    }));
+    save(&mut project, other.clone());
+    let brief_before = project.brief.clone();
+
+    let mut edited = selected.clone();
+    edited.authorship.source_snapshot = GraphSourceSnapshot::from_project(&project);
+    let GraphContent::CausalDiagram { vertices, .. } = &mut edited.content else {
+        panic!("Editing the selected occurrence must retain its semantic kind");
+    };
+    vertices[0].label = "Source as a pulse".into();
+    vertices[0].shape = GraphVertexShape::Circle;
+    vertices[0].r#box.x = 80.0;
+    vertices[0].r#box.width = 80.0;
+    assert_ne!(edited.content, selected.content);
+    save(&mut project, edited.clone());
+
+    assert_eq!(project.brief, brief_before);
+    assert_eq!(project.brief.claims, vec![claim.clone()]);
+    assert_eq!(
+        semantic_graph_claim_digest(&project.brief.claims[0]).unwrap(),
+        digest
+    );
+    assert!(project.semantic_graph_dependencies().unwrap().contains(
+        &GraphDependencyDescriptor::Claim {
+            claim_id: claim.id,
+            content_sha256: digest.clone(),
+        }
+    ));
+    assert_eq!(project.production_design.semantic_graphs.len(), 2);
+    for expected in [&edited, &other] {
+        let saved = project
+            .production_design
+            .semantic_graphs
+            .iter()
+            .find(|graph| graph.id == expected.id)
+            .unwrap();
+        assert_eq!(saved, expected);
+        assert_eq!(saved.content.vertices()[0].target, Some(binding.clone()));
+        project.validate_semantic_graph_dependencies(saved).unwrap();
+    }
+    assert_eq!(edited.id, selected.id);
+    assert_eq!(edited.scene_id, selected.scene_id);
+    assert_eq!(
+        edited.content.vertices()[0].id,
+        selected.content.vertices()[0].id
+    );
+    assert_eq!(edited.content.edge_ids(), selected.content.edge_ids());
+    project.validate().unwrap();
+
+    let reject_with_reason = |project: &mut Project, mut graph: SemanticGraph, reason: &str| {
+        graph.authorship.source_snapshot = GraphSourceSnapshot::from_project(project);
+        let before = project.clone();
+        assert_eq!(
+            project.apply_change(&Change::UpsertSemanticGraph {
+                graph: Box::new(graph),
+            }),
+            Err(DomainError::Invalid(reason.into()))
+        );
+        assert_eq!(*project, before);
+    };
+    let missing_claim_id = Uuid::new_v4();
+    assert!(
+        project
+            .brief
+            .claims
+            .iter()
+            .all(|claim| claim.id != missing_claim_id)
+    );
+    for invalid_target in [
+        GraphTargetBinding::Claim {
+            claim_id: claim.id,
+            content_sha256: stale_digest,
+        },
+        GraphTargetBinding::Claim {
+            claim_id: missing_claim_id,
+            content_sha256: digest,
+        },
+    ] {
+        let mut invalid = edited.clone();
+        let GraphContent::CausalDiagram { vertices, .. } = &mut invalid.content else {
+            panic!("The target refusal must use the saved causal occurrence");
+        };
+        vertices[0].target = Some(invalid_target);
+        reject_with_reason(
+            &mut project,
+            invalid,
+            "Graph dependency is stale or has no current domain fingerprint",
+        );
+    }
+    let mut looped = edited;
+    let GraphContent::CausalDiagram { edges, .. } = &mut looped.content else {
+        panic!("The topology refusal must use the saved causal occurrence");
+    };
+    edges[0].to_vertex_id = edges[0].from_vertex_id;
+    reject_with_reason(
+        &mut project,
+        looped,
+        "Graph edge needs distinct endpoints and bounded waypoints",
+    );
+}
+
+#[test]
 fn historical_claim_binding_is_preserved_but_stale_dependency_cannot_be_reused() {
     let mut project = seed_domain();
     project
