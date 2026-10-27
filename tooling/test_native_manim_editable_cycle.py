@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import native_manim_editable_cycle as cycle
+from native_manim_editable_outer import OuterDeadline, origin_record
 from native_manim_camera_evidence import CameraCustody, CameraEvidenceError
 
 
@@ -57,6 +58,9 @@ class SchedulerTests(unittest.TestCase):
         self.root.chmod(0o700)
         self.context = {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
                         "run_id": "17", "run_attempt": "1"}
+        self.deadline = OuterDeadline(origin_record(self.context, 1, "synthetic-boot"), self.context,
+                                      "synthetic-boot", origin_sha256="d" * 64,
+                                      root=self.root / "clock", clock=lambda: 1)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -66,6 +70,7 @@ class SchedulerTests(unittest.TestCase):
             evidence_root=self.root / ("evidence-" + suffix),
             sealed_cycle_root=self.root / ("sealed-" + suffix),
             sealed_originals=None, edited_evidence_root=None, sealed_edited=None,
+            outer_deadline=self.deadline,
         )
 
     def validate(self, args):

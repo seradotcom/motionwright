@@ -80,12 +80,20 @@ def write_private_json(path: Path, payload: dict) -> None:
 
 
 def checked_plan(attempt=None) -> dict:
+    fixed = getattr(attempt, "fixedtxt_admitted_plan", None)
+    if fixed is not None:
+        import native_mlt_evidence_selection as selected
+        selected.fixedtxt_owner_selection_guard()
+        from native_film180_evidence_selection import FIXEDTXT_SCOPE
+    else:
+        FIXEDTXT_SCOPE = None
     require(sys.platform == "linux"
             and os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("CI") == "true"
             and os.environ.get("RUNNER_OS") == "Linux"
-            and os.environ.get("MOTIONWRIGHT_APPROVED_FILM180_G2") == "1"
-            and os.environ.get("MW_MLT_SCOPE") == custody.FILM_SCOPE
+            and os.environ.get("MOTIONWRIGHT_APPROVED_FIXEDTXT_V4_G2" if fixed is not None
+                               else "MOTIONWRIGHT_APPROVED_FILM180_G2") == "1"
+            and os.environ.get("MW_MLT_SCOPE") == (FIXEDTXT_SCOPE if fixed is not None else custody.FILM_SCOPE)
             and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and RUN_ATTEMPT == "1",
             "original_Film180_native_production_requires_approved_Linux_GHA")
@@ -126,7 +134,7 @@ def checked_plan(attempt=None) -> dict:
     runner = Path(os.environ.get("RUNNER_TEMP", ""))
     require(runner.is_absolute() and runner.is_dir() and not runner.is_symlink(),
             "ephemeral_GHA_runner_private_tmp_unavailable")
-    return {
+    result = {
         "schema": "motionwright.native.film180.g2-closed-inputs/1",
         "motionwright_SHA": RUN_SHA,
         "Semwright_source_SHA": PIN,
@@ -136,6 +144,11 @@ def checked_plan(attempt=None) -> dict:
         "native_effects_started": False,
         "human_acceptance": False,
     }
+    if fixed is not None:
+        result.update(schema="motionwright.native.fixedtxt-v4.g2-closed-inputs/1",
+                      expected_fixtures=[fixed["fixture"]], owner_count=1, arm=None,
+                      fixedtxt_plan_sha256=hashlib.sha256(attempt.fixedtxt_originals["plan_raw"]).hexdigest())
+    return result
 
 
 def pin_version() -> str:
@@ -816,17 +829,41 @@ class FilmAttempt:
         self.completed = False
         self.error = None
         self.fixed_text_v4 = None
+        self.fixedtxt_admitted_plan = None
+        self.fixedtxt_originals = None
 
     @classmethod
-    def prepare(cls, path: Path):
-        require(os.environ.get("MOTIONWRIGHT_APPROVED_FILM180_G2") == "1"
-                and os.environ.get("MW_MLT_SCOPE") == custody.FILM_SCOPE,
-                "Film180_explicit_manual_selection_required")
-        runner = observed.admission.disposable_linux_runner()
-        data = observed.strict_object(observed.admission.checked_bytes(path, 64 * 1024))
-        require(type(data) is dict
-                and set(data) == custody.RUNTIME_INPUT_KEYS | {"schema", "private_evidence_dir"}
-                and data["schema"] == custody.FILM_INPUT_SCHEMA, "Film180_inputs_schema")
+    def prepare(cls, path: Path, *, fixedtxt_originals=None):
+        if fixedtxt_originals is None:
+            require(os.environ.get("MOTIONWRIGHT_APPROVED_FILM180_G2") == "1"
+                    and os.environ.get("MW_MLT_SCOPE") == custody.FILM_SCOPE,
+                    "Film180_explicit_manual_selection_required")
+            runner = observed.admission.disposable_linux_runner()
+            data = observed.strict_object(observed.admission.checked_bytes(path, 64 * 1024))
+            require(type(data) is dict
+                    and set(data) == custody.RUNTIME_INPUT_KEYS | {"schema", "private_evidence_dir"}
+                    and data["schema"] == custody.FILM_INPUT_SCHEMA, "Film180_inputs_schema")
+            admitted_plan = None
+        else:
+            import native_mlt_evidence_selection as selected
+            selected.fixedtxt_owner_selection_guard()
+            require(type(fixedtxt_originals) is dict and set(fixedtxt_originals) == {
+                "plan", "runtime", "plan_raw", "runtime_raw", "cycle_raw", "current",
+                "admission_id", "recipient_sha256", "layout", "argv"}, "FixedTxt_held_originals_shape")
+            held = fixedtxt_originals
+            layout = held["layout"]
+            require(str(path) == layout["runtime"], "FixedTxt_runtime_argument_changed")
+            argv = custody.fixedtxt_prepare_owner_invocation(held["plan_raw"], held["runtime_raw"],
+                current=held["current"], admission_id=held["admission_id"], recipient_sha256=held["recipient_sha256"],
+                plan_input_path=layout["plan"], runtime_input_path=layout["runtime"], cycle_input_path=layout["cycle"],
+                cycle_raw=held["cycle_raw"], control_root=layout["control_root"], inputs_root=layout["inputs_root"],
+                source_root=str(ROOT), python_executable=sys.executable, environment=os.environ)
+            require(argv == held["argv"], "FixedTxt_owner_invocation_changed")
+            admitted_plan, data = selected.admit_fixedtxt_runtime_original(held["plan_raw"], held["runtime_raw"],
+                current=held["current"], admission_id=held["admission_id"], recipient_sha256=held["recipient_sha256"],
+                plan_input_path=layout["plan"])
+            require(admitted_plan == held["plan"] and data == held["runtime"], "FixedTxt_held_semantics_changed")
+            runner = observed.admission.disposable_linux_runner()
         closure, alias = observed.verify_runtime_inputs(
             {key: data[key] for key in custody.RUNTIME_INPUT_KEYS},
             source_sha=RUN_SHA, semwright_sha=PIN)
@@ -837,15 +874,25 @@ class FilmAttempt:
         private.mkdir(mode=0o700)
         result = cls(data, private)
         result.melt_alias_observation = alias
-        write_private_json(private / "runtime-input-custody.json", {
-            "schema": custody.FILM_INPUT_SCHEMA, "motionwright_sha": RUN_SHA, "semwright_sha": PIN,
+        result.fixedtxt_admitted_plan = admitted_plan
+        result.fixedtxt_originals = fixedtxt_originals
+        receipt = {
+            "schema": data["schema"], "motionwright_sha": RUN_SHA, "semwright_sha": PIN,
             "source_compiler": closure, "installed_melt_alias": alias,
             "known_melt_sha256": data["known_melt_sha256"],
             "official_runtime_receipt_sha256": data["official_runtime_receipt_sha256"],
             "installation_receipt_sha256": data["installation_receipt_sha256"],
             "historical_reference_WAV_reused": False, "own_source_wave_created": False,
             "native_effect_started": False,
-        })
+        }
+        if fixedtxt_originals is not None:
+            receipt.update(fixedtxt_admission_id=held["admission_id"], recipient_sha256=held["recipient_sha256"],
+                fixedtxt_plan=data["fixedtxt_plan"],
+                runtime_original={"bytes": len(held["runtime_raw"]),
+                                  "sha256": hashlib.sha256(held["runtime_raw"]).hexdigest()},
+                cycle_original={"bytes": len(held["cycle_raw"]),
+                                "sha256": hashlib.sha256(held["cycle_raw"]).hexdigest()})
+        write_private_json(private / "runtime-input-custody.json", receipt)
         return result
 
     def secondary(self, label):
@@ -1469,8 +1516,18 @@ def fixed_samples(key):
     return (0, 45, 120, 179)
 
 
-def fixed_cycle_inputs(path, attempt):
-    raw = regular(path, 1024 * 1024)[0]
+def admit_fixedtxt_wrapper_originals(runtime_path, cycle_path, *, selected_fixture):
+    """Use the actual A6 guard/layout; keep P/R/Q in the same invocation."""
+    import native_mlt_evidence_selection as selected
+    selected.fixedtxt_owner_selection_guard()
+    return custody.fixedtxt_acquire_owner_originals(os.environ,
+        runtime_input_path=str(runtime_path), cycle_input_path=str(cycle_path),
+        selected_fixture=selected_fixture, source_root=str(ROOT), python_executable=sys.executable)
+
+
+def fixed_cycle_inputs(path, attempt, *, original_raw=None):
+    raw = regular(path, 1024 * 1024)[0] if original_raw is None else original_raw
+    require(type(raw) is bytes and 0 < len(raw) <= 1024 * 1024, "FixedTxt_cycle_original_bytes")
     value = fixed_json(raw)
     require(set(value) == {"schema", "arm", "template_film", "managed_project", "caption_source",
                            "project_files", "runtime", "compiler_binary_sha256", "decoder_sha256", "common_sources"}
@@ -1875,14 +1932,28 @@ def fixed_owner_close(daemon, source, evidence, attempt, original_identity):
 
 def execute_fixed_text_v4(input_path, fixed_input_path, *, selected_fixture=None):
     selected_keys = fixed_selected_fixture_keys(selected_fixture)
+    from native_film180_evidence_selection import FIXEDTXT_SCOPE
+    guarded = selected_fixture is not None or os.environ.get("MW_MLT_SCOPE") == FIXEDTXT_SCOPE
+    originals = (admit_fixedtxt_wrapper_originals(input_path, fixed_input_path, selected_fixture=selected_fixture)
+                 if guarded else None)
     selected_decode_count = sum(len(fixed_samples(key)) for key in selected_keys)
-    attempt = FilmAttempt.prepare(input_path)
+    attempt = (FilmAttempt.prepare(input_path, fixedtxt_originals=originals) if originals is not None
+               else FilmAttempt.prepare(input_path))
     attempt.fixed_text_v4 = {"arm": None, "fixtures": list(selected_keys)}
     original_error = None
     try:
         plan = checked_plan(attempt)
         write_private_json(attempt.evidence_dir / "source-plan.json", plan)
-        spec, project_files, component, decoder = fixed_cycle_inputs(fixed_input_path, attempt)
+        spec, project_files, component, decoder = (fixed_cycle_inputs(fixed_input_path, attempt,
+            original_raw=originals["cycle_raw"]) if originals is not None
+            else fixed_cycle_inputs(fixed_input_path, attempt))
+        if originals is not None:
+            admitted = originals["plan"]
+            require(selected_keys == (admitted["fixture"],) and spec["arm"] == admitted["arm"]
+                    and spec["decoder_sha256"] == admitted["decoder_sha256"]
+                    and spec["runtime"]["native_source_sha256"][spec["arm"]]
+                    == admitted["arm_sources"][admitted["arm"]]["native_source_sha256"],
+                    "FixedTxt_original_cycle_differs_from_admitted_owner")
         attempt.fixed_text_v4 = {"arm": spec["arm"], "fixtures": list(selected_keys)}
         fixture_root = attempt.evidence_dir / "canonical-fixture-set"
         terminal = fixed_component(attempt, "fixed.source-fixtures", component, spec["compiler_binary_sha256"],
@@ -1959,12 +2030,22 @@ def execute_fixed_text_v4(input_path, fixed_input_path, *, selected_fixture=None
 
 def parse_cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--g2-inputs", type=Path, required=True)
-    parser.add_argument("--fixed-text-v4-inputs", type=Path)
+    # Keep original lexical spellings until the selected-owner path guard.
+    # Path(...) would silently erase ./ and duplicate separators first.
+    parser.add_argument("--g2-inputs", type=str, required=True)
+    parser.add_argument("--fixed-text-v4-inputs", type=str)
     parser.add_argument("--fixed-text-v4-fixture", choices=FIXED_TEXT_KEYS)
     arguments = parser.parse_args(argv)
     if arguments.fixed_text_v4_fixture is not None and arguments.fixed_text_v4_inputs is None:
         parser.error("--fixed-text-v4-fixture requires --fixed-text-v4-inputs")
+    if arguments.fixed_text_v4_fixture is not None:
+        from pathlib import PurePosixPath
+        for value in (arguments.g2_inputs, arguments.fixed_text_v4_inputs):
+            require("\\" not in value and str(PurePosixPath(value)) == value
+                    and ".." not in PurePosixPath(value).parts, "FixedTxt_CLI_noncanonical_input")
+    arguments.g2_inputs = Path(arguments.g2_inputs)
+    if arguments.fixed_text_v4_inputs is not None:
+        arguments.fixed_text_v4_inputs = Path(arguments.fixed_text_v4_inputs)
     return arguments
 
 

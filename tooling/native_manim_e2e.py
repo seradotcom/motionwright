@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -43,6 +44,214 @@ FONTCONFIG = Path("/etc/fonts").resolve()
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-manim-e2e" / GITHUB_SHA
 MANIM_VERSION = "0.21.0"
+_EDITABLE_OUTER_DEADLINE = None
+_EDITABLE_STAGE = "before-source-admission"
+_OWNED_PHASE_CHILDREN = []
+_CHILD_LAUNCH_CRITICAL = 0
+_CHILD_CLEANUP_CRITICAL = 0
+_DEFERRED_CANCELLATIONS = []
+_EDITABLE_CHILD_STREAM_BYTES = 0
+CHILD_TERM_SECONDS = 3
+CHILD_KILL_SECONDS = 2
+
+
+def bounded_timeout(maximum, *, cleanup=False):
+    if _EDITABLE_OUTER_DEADLINE is None:
+        return maximum
+    return _EDITABLE_OUTER_DEADLINE.remaining("terminal" if cleanup else "work", maximum)
+
+
+def editable_cancelled(signum, _frame):
+    if not _DEFERRED_CANCELLATIONS:
+        _DEFERRED_CANCELLATIONS.append(signum)
+    if _CHILD_LAUNCH_CRITICAL or _CHILD_CLEANUP_CRITICAL:
+        # Do not lose Popen's returned original between native creation and
+        # publication, or interrupt the only owner's terminal observation.
+        return
+    raise InterruptedError("original editable wrapper cancellation signal " + str(signum))
+
+
+def raise_deferred_cancellation():
+    # A cancellation remains latched. Catching the diagnostic cannot authorize
+    # another child, and normal cleanup must not turn cancellation into success.
+    if _DEFERRED_CANCELLATIONS:
+        raise InterruptedError("original editable wrapper cancellation signal "
+                               + str(_DEFERRED_CANCELLATIONS[0]))
+
+
+class OriginalPhaseChild:
+    """One retained Popen original, including failures before a phase receipt."""
+    def __init__(self, label, evidence, custody=None, *, record_native=False):
+        from native_manim_editable_outer import require
+        require(type(label) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,95}", label),
+                "bounded_original_child_label")
+        require(len(_OWNED_PHASE_CHILDREN) < 128, "original_child_roster_exhausted")
+        self.label, self.evidence, self.custody = label, Path(evidence), custody
+        self.record_native = record_native
+        self.process, self.code, self.primary = None, None, None
+        self.original_wait_completed = False
+        self.requested, self.terminal_attempted = False, False
+        self.cleanup_attempted = False
+        self.signals, self.secondary_errors = [], []
+        self.folder = None
+        if _EDITABLE_OUTER_DEADLINE is not None:
+            parent = _EDITABLE_OUTER_DEADLINE.root / "work/native-wrapper/children"
+            parent.mkdir(mode=0o700, exist_ok=True)
+            require(parent.resolve(strict=True) == parent, "original_child_custody_parent")
+            self.folder = parent / ("child-%03d" % len(_OWNED_PHASE_CHILDREN))
+            self.folder.mkdir(mode=0o700, exist_ok=False)
+        # Strong publication precedes process creation and every later callback.
+        _OWNED_PHASE_CHILDREN.append(self)
+
+    def secondary(self, stage, error):
+        from native_manim_editable_outer import private_exception
+        self.secondary_errors.append({"stage": stage, "error": private_exception(error)})
+        if self.custody is not None:
+            self.custody.secondary(stage, error)
+
+    def launch(self, argv, **kwargs):
+        global _CHILD_LAUNCH_CRITICAL
+        from native_manim_editable_outer import new_json
+        raise_deferred_cancellation()
+        bounded_timeout(1)
+        if self.folder is not None:
+            new_json(self.folder / "intent.json", {"schema": "motionwright.manim.original-child-intent/1",
+                "label": self.label, "argv": argv, "origin": _EDITABLE_OUTER_DEADLINE.binding(),
+                "launch_requested": False, "automatic_retry": False})
+        self.requested = True
+        _CHILD_LAUNCH_CRITICAL += 1
+        try:
+            self.process = subprocess.Popen(argv, **kwargs)
+        finally:
+            _CHILD_LAUNCH_CRITICAL -= 1
+        raise_deferred_cancellation()
+        return self.process
+
+    def observe_wait(self, timeout, *, cleanup=False):
+        code = self.process.wait(timeout=timeout)
+        if type(code) is not int:
+            raise RuntimeError("original child wait did not return an exit code")
+        self.code = code
+        if not cleanup:
+            self.original_wait_completed = True
+        return code
+
+    def stop(self, primary=None):
+        """Bound TERM/KILL/reap of this original; a reaped PID is never signalled."""
+        global _CHILD_CLEANUP_CRITICAL
+        if self.primary is None and primary is not None:
+            self.primary = primary
+        if self.process is None or type(self.code) is int:
+            return
+        if self.cleanup_attempted:
+            return
+        _CHILD_CLEANUP_CRITICAL += 1
+        try:
+            self.cleanup_attempted = True
+            for signum, cap in ((signal.SIGTERM, CHILD_TERM_SECONDS), (signal.SIGKILL, CHILD_KILL_SECONDS)):
+                try:
+                    observed = getattr(self.process, "returncode", None)
+                    if type(observed) is not int and callable(getattr(self.process, "poll", None)):
+                        observed = self.process.poll()
+                    if type(observed) is int:
+                        self.code = observed
+                        break
+                    allowance = bounded_timeout(cap, cleanup=True)
+                    attempt = {"signal": int(signum), "attempted": True, "result": "NOT_OBSERVED"}
+                    self.signals.append(attempt)
+                    try:
+                        os.killpg(self.process.pid, signum)
+                        attempt["result"] = "REQUEST_RETURNED"
+                    except ProcessLookupError:
+                        attempt["result"] = "ORIGINAL_GROUP_ABSENT_AT_REQUEST"
+                    self.observe_wait(allowance, cleanup=True)
+                    break
+                except subprocess.TimeoutExpired:
+                    # Expected escalation is retained, but not relabelled as an
+                    # observed terminal. The second wait still uses original H.
+                    self.signals[-1]["wait"] = "TIMEOUT_NO_TERMINAL"
+                except BaseException as cleanup:
+                    self.secondary("original-child-cleanup", cleanup)
+                    break
+        finally:
+            _CHILD_CLEANUP_CRITICAL -= 1
+        if type(self.code) is not int:
+            self.secondary("original-child-terminal-unknown", RuntimeError("original child terminal unobserved; no replay"))
+
+    def retain(self, streams, primary=None):
+        """Keep bounded child originals in the already selected outer-workflow seal."""
+        global _EDITABLE_CHILD_STREAM_BYTES
+        from native_manim_editable_outer import new_bytes, new_json, original, private_exception, sha, STREAM_LIMIT
+        if self.terminal_attempted:
+            return
+        self.terminal_attempted = True
+        if self.primary is None and primary is not None:
+            self.primary = primary
+        custody_primary = None
+        descriptors = {}
+        for name, path in streams.items():
+            try:
+                raw = original(path, STREAM_LIMIT)
+                descriptors[name] = {"bytes": len(raw), "sha256": sha(raw)}
+                if self.folder is not None:
+                    if _EDITABLE_CHILD_STREAM_BYTES + len(raw) > 64 * 1024 * 1024:
+                        raise ValueError("bounded original child stream custody exhausted")
+                    _EDITABLE_CHILD_STREAM_BYTES += len(raw)
+                    new_bytes(self.folder / (name + ".log"), raw)
+            except BaseException as cleanup:
+                if self.primary is None:
+                    self.primary = custody_primary = cleanup
+                else:
+                    self.secondary("original-child-stream-custody", cleanup)
+        receipt = {"schema": "motionwright.manim.original-child-terminal/1", "label": self.label,
+            "launch_requested": self.requested, "pid": self.process.pid if self.process is not None else None,
+            "process_exit_known": type(self.code) is int, "process_returncode": self.code,
+            "status": ("NOT_STARTED" if not self.requested else "EXITED"
+                       if type(self.code) is int and (self.primary is None or self.original_wait_completed) else "UNKNOWN"),
+            "original_wait_completed_before_error": self.original_wait_completed,
+            "cleanup_attempted": self.cleanup_attempted,
+            "native_outcome": "UNKNOWN" if self.primary is not None or type(self.code) is not int else "NOT_INTERPRETED",
+            "original_error": private_exception(self.primary) if self.primary is not None else None,
+            "termination_requests": self.signals, "secondary_errors": self.secondary_errors,
+            "streams": descriptors, "descendant_terminal_claimed": False, "automatic_retry": False}
+        self.terminal = receipt
+        if self.custody is not None and self.record_native:
+            self.custody.native_process = receipt
+        for path in (self.evidence / (self.label + ".process.json"),
+                     self.folder / "terminal.json" if self.folder is not None else None):
+            if path is not None:
+                try:
+                    new_json(path, receipt)
+                except BaseException as cleanup:
+                    if self.primary is None:
+                        self.primary = custody_primary = cleanup
+                        receipt["status"] = ("NOT_STARTED" if not self.requested else "EXITED"
+                            if type(self.code) is int and self.original_wait_completed else "UNKNOWN")
+                        receipt["native_outcome"] = "UNKNOWN"
+                        receipt["original_error"] = private_exception(cleanup)
+                    else:
+                        self.secondary("original-child-terminal-custody", cleanup)
+        if custody_primary is not None:
+            custody_primary.original_child_terminal = receipt
+            raise custody_primary
+        if self.secondary_errors and self.primary is None:
+            error = RuntimeError("original child custody or terminal incomplete; no replay")
+            error.original_child_terminal = receipt
+            raise error
+
+
+def stop_original_phase_children(primary):
+    # The active client and broker belong to this same original wrapper. Close
+    # them before stream fsync/copy/sealing can block. Each owner reserves cleanup
+    # once; a later finally cannot repeat termination after UNKNOWN.
+    global _CHILD_CLEANUP_CRITICAL
+    _CHILD_CLEANUP_CRITICAL += 1
+    try:
+        for child in reversed(_OWNED_PHASE_CHILDREN):
+            if child.process is not None and type(child.code) is not int and not child.cleanup_attempted:
+                child.stop(primary)
+    finally:
+        _CHILD_CLEANUP_CRITICAL -= 1
 
 
 def digest(path: Path) -> str:
@@ -64,7 +273,7 @@ def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 60) -> dict
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=timeout,
+        timeout=bounded_timeout(timeout),
         check=False,
     )
     if result.returncode != 0:
@@ -369,7 +578,7 @@ def semwright_version() -> str:
 
 
 def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -> None:
-    deadline = time.monotonic() + 45
+    deadline = time.monotonic() + bounded_timeout(45)
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise AssertionError(log.read_text(encoding="utf-8", errors="replace"))
@@ -387,7 +596,7 @@ def probe_video(path: Path, *, evidence=None, camera_custody=None) -> dict:
     if evidence is None:
         result = subprocess.run(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            check=False, timeout=30,
+            check=False, timeout=bounded_timeout(30),
         )
         if result.returncode != 0:
             raise AssertionError(
@@ -472,7 +681,11 @@ def capability_catalog(env: dict[str, str], socket: Path, session: Path, *,
 def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None,
                   record_native=True):
     """Capture original process streams in private files before interpreting them."""
+    if _EDITABLE_OUTER_DEADLINE is not None:
+        return _captured_json_with_outer(argv, env=env, evidence=evidence, label=label,
+            timeout=timeout, camera_custody=camera_custody, record_native=record_native)
     from native_manim_camera_evidence import CameraEvidenceError, object_bytes, read
+    timeout = bounded_timeout(timeout)
     streams = []
     process = None
     try:
@@ -485,7 +698,7 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
             stdout=streams[0], stderr=streams[1], start_new_session=True,
         )
         try:
-            code = process.wait(timeout=timeout)
+            code = process.wait(timeout=bounded_timeout(timeout))
         except subprocess.TimeoutExpired:
             if camera_custody is not None and record_native:
                 camera_custody.native_process = {
@@ -495,7 +708,7 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
                 }
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+                process.wait(timeout=bounded_timeout(5, cleanup=True))
             except BaseException as cleanup:
                 if camera_custody is not None:
                     camera_custody.secondary("native-client-timeout-cleanup", cleanup)
@@ -527,6 +740,64 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
             except BaseException as cleanup:
                 if camera_custody is not None:
                     camera_custody.secondary("native-process-stream-close", cleanup)
+
+
+def _captured_json_with_outer(argv, *, env, evidence, label, timeout=60, camera_custody=None,
+                  record_native=True):
+    """Capture original process streams in private files before interpreting them."""
+    from native_manim_camera_evidence import CameraEvidenceError, object_bytes, read
+    timeout = bounded_timeout(timeout)
+    streams = []
+    child = OriginalPhaseChild(label, evidence, camera_custody, record_native=record_native)
+    primary = None
+    try:
+        for name in ("stdout", "stderr"):
+            path = evidence / f"{label}.{name}.log"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            streams.append(os.fdopen(fd, "wb", buffering=0))
+        child.launch(
+            argv, env=env, stdin=subprocess.DEVNULL,
+            stdout=streams[0], stderr=streams[1], start_new_session=True,
+        )
+        code = child.observe_wait(timeout=bounded_timeout(timeout))
+        if code != 0:
+            # The original Rust diagnostic and append-only journal are retained.
+            # A nonzero wrapper process code cannot classify a native UNKNOWN.
+            raise CameraEvidenceError(f"native_example_process_exit_{code}_see_original_private_diagnostic")
+        value = object_bytes(read(evidence / f"{label}.stdout.log"))
+        if camera_custody is not None and record_native:
+            camera_custody.native_result = value
+        return value
+    except BaseException as error:
+        primary = error
+        stop_original_phase_children(error)
+        raise
+    finally:
+        cleanup_primary = None
+        for stream in streams:
+            try:
+                stream.flush()
+                os.fsync(stream.fileno())
+            except BaseException as cleanup:
+                child.secondary("native-process-stream-custody", cleanup)
+                if primary is None and cleanup_primary is None:
+                    cleanup_primary = cleanup
+            try:
+                stream.close()
+            except BaseException as cleanup:
+                child.secondary("native-process-stream-close", cleanup)
+                if primary is None and cleanup_primary is None:
+                    cleanup_primary = cleanup
+        try:
+            child.retain({name: evidence / f"{label}.{name}.log" for name in ("stdout", "stderr")},
+                         primary if primary is not None else cleanup_primary)
+        except BaseException as custody_error:
+            retained_primary = primary if primary is not None else cleanup_primary
+            if retained_primary is None:
+                raise
+            retained_primary.original_child_custody_error = custody_error
+        if primary is None and cleanup_primary is not None:
+            raise cleanup_primary
 
 
 def _private_options(args, *, editable=False, camera=True):
@@ -635,6 +906,10 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
     graph_result = None
     if editable != (editable_cycle is not None):
         raise ValueError("editable phases require the ordered source-cycle coordinator")
+    if editable:
+        if editable_cycle.get("outer_deadline") is not _EDITABLE_OUTER_DEADLINE or _EDITABLE_OUTER_DEADLINE is None:
+            raise ValueError("editable phase must inherit the same original outer deadline")
+        _EDITABLE_OUTER_DEADLINE.admit_work()
     cycle_observation = None
     editable_result = None
     static_result = None
@@ -883,7 +1158,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     "address_space_bytes": 4_294_967_296,
                     "file_size_bytes": 1_073_741_824,
                 },
-                "request_timeout_ms": 300_000,
+                "request_timeout_ms": max(1, int(bounded_timeout(300) * 1000)) if editable else 300_000,
                 "interfaces": {
                     "dynamic_capabilities": False,
                     "cooperative_cancellation": True,
@@ -946,22 +1221,16 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
             session = paths["runtime"] / "motionwright.session"
             daemon_log = evidence / "semwrightd.log"
             log_stream = daemon_log.open("wb")
-            daemon = subprocess.Popen(
-                [
-                    str(SW_BINS / "semwrightd"),
-                    "--config",
-                    str(config_path),
-                    "--socket",
-                    str(socket),
-                ],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log_stream,
-                stderr=log_stream,
-                start_new_session=True,
-            )
-
+            broker_child = (OriginalPhaseChild("broker", evidence, camera_custody)
+                            if _EDITABLE_OUTER_DEADLINE is not None else None)
+            daemon = None
             try:
+                launch_broker = broker_child.launch if broker_child is not None else subprocess.Popen
+                daemon = launch_broker(
+                    [str(SW_BINS / "semwrightd"), "--config", str(config_path), "--socket", str(socket)],
+                    env=env, stdin=subprocess.DEVNULL, stdout=log_stream, stderr=log_stream,
+                    start_new_session=True,
+                )
                 wait_for_socket(daemon, socket, daemon_log)
                 capabilities = capability_catalog(
                     env, socket, session, evidence=evidence,
@@ -1104,7 +1373,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     command.append(request_id)
                     native = camera_custody.once(lambda: captured_json(
                         command, env=env, evidence=evidence, label="native-example",
-                        timeout=420, camera_custody=camera_custody,
+                        timeout=bounded_timeout(420), camera_custody=camera_custody,
                     ))
                     require_original_native_video(
                         native, capabilities, paths["output"], paths["work"], evidence,
@@ -1181,32 +1450,54 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                         "native_manim_e2e": "PASS_REQUIRES_SEALED_CUSTODY",
                     })
             finally:
-                try:
-                    if daemon.poll() is None:
-                        try:
-                            os.killpg(daemon.pid, signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-                        try:
-                            daemon.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
+                broker_primary = sys.exc_info()[1]
+                broker_cleanup_primary = None
+                if broker_child is not None:
+                    broker_child.stop(broker_primary)
+                else:
+                    try:
+                        if daemon is not None and daemon.poll() is None:
                             try:
-                                os.killpg(daemon.pid, signal.SIGKILL)
+                                os.killpg(daemon.pid, signal.SIGTERM)
                             except ProcessLookupError:
                                 pass
-                            daemon.wait(timeout=5)
-                except BaseException as cleanup_error:
-                    camera_custody.secondary("broker-cleanup", cleanup_error)
+                            try:
+                                daemon.wait(timeout=bounded_timeout(10, cleanup=True))
+                            except subprocess.TimeoutExpired:
+                                try:
+                                    os.killpg(daemon.pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                                daemon.wait(timeout=bounded_timeout(5, cleanup=True))
+                    except BaseException as cleanup_error:
+                        camera_custody.secondary("broker-cleanup", cleanup_error)
                 # Preserve the log even if bounded broker shutdown itself failed.
                 try:
                     log_stream.flush()
                     os.fsync(log_stream.fileno())
                 except BaseException as cleanup_error:
                     camera_custody.secondary("broker-log-custody", cleanup_error)
+                    if broker_child is not None and broker_primary is None:
+                        broker_cleanup_primary = cleanup_error
                 try:
                     log_stream.close()
                 except BaseException as cleanup_error:
                     camera_custody.secondary("broker-log-close", cleanup_error)
+                    if broker_child is not None and broker_primary is None and broker_cleanup_primary is None:
+                        broker_cleanup_primary = cleanup_error
+                if broker_child is not None:
+                    retained_primary = (broker_primary if broker_primary is not None
+                                        else broker_cleanup_primary)
+                    try:
+                        broker_child.retain({"combined": daemon_log}, retained_primary)
+                    except BaseException as custody_error:
+                        if retained_primary is None:
+                            raise
+                        retained_primary.original_broker_custody_error = custody_error
+                    if broker_primary is None:
+                        if broker_cleanup_primary is not None:
+                            raise broker_cleanup_primary
+                        raise_deferred_cancellation()
 
         if not camera and not lifecycle:
             # __exit__ has sealed the actual selected originals and failed closed
@@ -1254,7 +1545,17 @@ def main(argv=None) -> None:
     parser.add_argument("--sealed-edited", type=Path)
     parser.add_argument("--sealed-cycle-root", type=Path)
     args = parser.parse_args(argv)
+    global _EDITABLE_OUTER_DEADLINE, _EDITABLE_STAGE
+    if args.scenario == "editable-source-cycle":
+        from native_manim_editable_outer import load_deadline
+        _EDITABLE_OUTER_DEADLINE = load_deadline()
+        _EDITABLE_OUTER_DEADLINE.admit_work()
+        args.outer_deadline = _EDITABLE_OUTER_DEADLINE
+        signal.signal(signal.SIGTERM, editable_cancelled)
+        signal.signal(signal.SIGINT, editable_cancelled)
+    _EDITABLE_STAGE = "exact-inputs-before-phase-custody"
     exact_inputs()
+    _EDITABLE_STAGE = "selected-source-cycle"
     camera = args.scenario != "static-scene"
     if args.scenario == "graph-source-cycle":
         from native_manim_graph_cycle import run_source_cycle
@@ -1286,12 +1587,41 @@ def main(argv=None) -> None:
     }, sort_keys=True))
 
 
+def _retain_editable_error(error):
+    if _EDITABLE_OUTER_DEADLINE is not None:
+        try:
+            from native_manim_editable_outer import retain_wrapper_error
+            retain_wrapper_error(_EDITABLE_OUTER_DEADLINE, error, _EDITABLE_STAGE)
+        except BaseException as custody_error:
+            error.wrapper_error_unretained = custody_error
+
+
+def entrypoint(argv=None):
+    """Retain a prephase error in the existing outer private selection once."""
+    try:
+        main(argv)
+        return 0
+    except BaseException as error:
+        if isinstance(error, SystemExit) and error.code == 0:
+            raise
+        _retain_editable_error(error)
+        # Original stdout/stderr, Rust diagnostics, journal and wrapper error
+        # belong in the private snapshot, never in public Actions logs.
+        try:
+            sys.stderr.write("Manim verification did not complete; inspect sealed originals. No replay.\n")
+        except BaseException:
+            pass
+        return 2
+
+
 if __name__ == "__main__":
     try:
         main()
     except BaseException as error:
         if isinstance(error, SystemExit) and error.code == 0:
             raise
+        if globals().get("_EDITABLE_OUTER_DEADLINE") is not None:
+            _retain_editable_error(error)
         # Original stdout/stderr, Rust diagnostics, journal and wrapper error
         # belong in the private snapshot, never in public Actions logs.
         try:

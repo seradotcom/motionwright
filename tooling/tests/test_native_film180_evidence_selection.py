@@ -452,3 +452,242 @@ class DedicatedPacketCaptureTests(unittest.TestCase):
 
 
 if __name__=="__main__":unittest.main()
+
+def fixedtxt_fixture(*, fixture="flow-control-base", arm="RED", decoded=False):
+    """Synthetic source-only originals; no caller, renderer or kernel evidence."""
+    import ci_private_evidence as crypto
+    current = {**CURRENT, "semwright_sha": "c" * 40 if arm == "GREEN" else CURRENT["semwright_sha"]}
+    directory = "output/synthetic-fixed-frame-source"
+    mandatory = film.fixedtxt_required_members(fixture, directory)
+    originals = {root + "/" + path: b'{"source_control_fixture":true}\n'
+                 for root, path in mandatory}
+    readback = "observation/" + fixture + "/fixed-text-original-readback/"
+    png = b"SYNTHETIC-PNG-ORIGINAL-NOT-A-NATIVE-RENDER"
+    rgba = b"\x00\x11\x22\xff" * (1920 * 1080) if decoded else b"SHORT-SYNTHETIC-RGBA"
+    frames = list(film.fixedtxt_frames(fixture))
+    manifest = {"frames": [{"index": i, "file": f"frames/{i:06d}.png", "bytes": len(png),
+                             "sha256": crypto.sha(png)} for i in range(180)]}
+    originals[readback + "artifact-manifest.json"] = crypto.json_bytes(manifest)
+    for i in range(180):
+        originals["owner/" + directory + f"/frames/{i:06d}.png"] = png
+    font = b"SYNTHETIC-FONT-ORIGINAL-NOT-A-FONT"
+    font_path = readback + "font-0000.original.bin"
+    originals[font_path] = font
+    originals[readback + "font-source-inventory.json"] = crypto.json_bytes({
+        "originals": [{"role": "bundled", "path": "fonts/source.woff2", "retained": "font-0000.original.bin",
+                       "bytes": len(font), "sha256": crypto.sha(font)}],
+        "glyph_fidelity_accepted": False, "browser_readiness_is_glyph_fidelity": False})
+    originals["inputs/source-input.original.json"] = b'{"explicit_synthetic_input":true}\n'
+    rows = []
+    for frame in frames:
+        stem = f"frame-{frame:06d}"
+        originals[readback + stem + ".original.png"] = png
+        originals[readback + stem + ".decoder.stdout"] = rgba
+        originals[readback + stem + ".decoder.stderr"] = b""
+        capture = dict(state="TERMINAL_OBSERVED", automatic_retry=False,
+            terminal=dict(whole_process_completed=True, exit_code=0, timed_out=False,
+                          output_budget_exceeded=False, pipes_closed=True, stdin_complete=True, pipe_errors=[]),
+            original_streams={name:dict(present=True, bytes=len(data), sha256=crypto.sha(data),
+                                       buffer_collected_from_process=True)
+                              for name, data in (("stdout", rgba), ("stderr", b""))},
+            invocation=dict(callable="decoded_rgba_png_capture", width=1920, height=1080,
+                            decoder="/synthetic/ffmpeg", decoder_sha256="d" * 64,
+                            input_png_sha256=crypto.sha(png)))
+        originals[readback + stem + ".decoder.capture.json"] = crypto.json_bytes(capture)
+        rows.append(dict(frame=frame, png_sha256=crypto.sha(png), png_bytes=len(png),
+            rgba_sha256=crypto.sha(rgba), rgba_bytes=len(rgba), original_rgba_file=stem + ".decoder.stdout",
+            compared_with_original_SDK_pixel_sample=False))
+    selected = dict(schema="motionwright.native.fixed-text-selected-originals/4", arm=arm, fixture=fixture,
+        manifest_sha256=crypto.sha(originals[readback + "artifact-manifest.json"]),
+        native_observation_sha256=crypto.sha(originals[readback + "native-observations.ndjson"]),
+        original_Host_stdin_sha256=crypto.sha(originals["observation/" + fixture + "/native-result.host-stdin/capture-0001.stdin"]),
+        original_font_readiness_sha256=crypto.sha(originals[readback + "font-readiness-receipt.json"]),
+        selected_frames=rows, actual_browser_readiness_observed=True, native_effect_repeated=False,
+        oracle_v3_reused=False, causal_pixel_verdict="NOT_EVALUATED", glyph_fidelity_accepted=False,
+        formal_acceptance=False, human_acceptance=False)
+    originals[readback + "selected-originals.json"] = crypto.json_bytes(selected)
+    members = []
+    for name, data in sorted(originals.items()):
+        root, path = name.split("/", 1)
+        role = mandatory.get((root, path), "font-original" if name == font_path else "input-original")
+        maximum = film.FIXEDTXT_RGBA_BYTES if role == "selected-rgba" else (
+            film.FIXEDTXT_MAX_JSON if role == "selection-plan" else max(4096, len(data)))
+        pin = crypto.sha(data) if role in ("cycle-inputs", "input-original") else None
+        members.append(dict(root=root, relative_path=path, role=role, maximum=maximum, expected_sha256=pin))
+    plan = dict(schema=film.FIXEDTXT_PLAN_SCHEMA, scope=film.FIXEDTXT_SCOPE, context=current,
+        arm=arm, fixture=fixture, case_roster=film.fixedtxt_case_roster(),
+        source_bindings=[dict(path=path, sha256="b" * 64) for path in film.FIXEDTXT_SOURCE_PATHS],
+        arm_sources={"RED":dict(source_sha=CURRENT["semwright_sha"], tree_sha="e" * 40, native_source_sha256="e" * 64),
+                     "GREEN":dict(source_sha="c" * 40, tree_sha="f" * 40, native_source_sha256="f" * 64)},
+        cycle_input_sha256=crypto.sha(originals["observation/fixed-text-inputs.original.json"]),
+        decoder_sha256="d" * 64, native_directory=directory, owner_count=1, expected_fixture_count=1,
+        default_fixture_count=12, render_frames=180, selected_frames=frames,
+        limits=dict(capsule_bytes=128 * 1024 * 1024, files=512, attempt_seconds=600, custody_seconds=120),
+        members=members)
+    originals["control/" + film.FIXEDTXT_PLAN_PATH] = crypto.json_bytes(plan)
+    return current, plan, originals
+
+
+def fixedtxt_snapshot_fixture(plan, originals):
+    """Existing TAR/schema with explicitly simulated regular-file observations."""
+    import ci_private_evidence as crypto
+    import stat
+    import tarfile
+    roots = {name:dict(status="CAPTURED", files=[]) for name in film.FIXEDTXT_ROOTS}
+    for index, (name, payload) in enumerate(sorted(originals.items()), 1):
+        root, path = name.split("/", 1)
+        mark = dict(device=1, inode=index, mode=stat.S_IFREG | 0o600, size=len(payload),
+                    uid=1000, gid=1000, mtime_ns=1, ctime_ns=1)
+        roots[root]["files"].append(dict(archive_path=name, observation=dict(
+            path="/synthetic/" + name, size=len(payload), sha256=crypto.sha(payload),
+            before=mark, after=mark, namespace_after=mark)))
+    manifest = dict(schema="motionwright.ci.private-snapshot/1", scope="selected-original-files-at-read-time",
+        roots=roots, selected_originals_complete=True, complete_owner_state_claimed=False)
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for name, payload in sorted(originals.items()) + [("snapshot-manifest.json", crypto.json_bytes(manifest))]:
+            info = tarfile.TarInfo(name); info.size = len(payload); info.mode = 0o600; info.mtime = 0
+            archive.addfile(info, io.BytesIO(payload))
+    return stream.getvalue()
+
+
+class FixedTxtClosedPlanTests(unittest.TestCase):
+    def test_nominal_24_arms_keep_48_decodes_per_arm_without_dispatch_authority(self):
+        roster = film.fixedtxt_case_roster()
+        self.assertEqual(len(roster), 24)
+        self.assertEqual(len({(row["arm"], row["fixture"]) for row in roster}), 24)
+        for arm in film.FIXEDTXT_ARMS:
+            self.assertEqual(sum(len(film.fixedtxt_frames(row["fixture"])) for row in roster if row["arm"] == arm), 48)
+        self.assertEqual(12 * 180, 2160)
+        self.assertEqual(96 * film.FIXEDTXT_RGBA_BYTES, 796262400)
+        self.assertGreater(96 * film.FIXEDTXT_RGBA_BYTES, core.MAX_TOTAL)
+        self.assertEqual(core.MAX_TOTAL, 512 * 1024 * 1024)
+        self.assertEqual(core.MAX_FILES, 4096)
+
+    def test_each_closed_fixture_has_one_explicit_arm_owner_and_actual_frame_roster(self):
+        for arm in film.FIXEDTXT_ARMS:
+            for fixture in film.FIXEDTXT_KEYS:
+                with self.subTest(arm=arm, fixture=fixture):
+                    current, plan, _ = fixedtxt_fixture(fixture=fixture, arm=arm)
+                    self.assertEqual(film.fixedtxt_validate_plan(plan, current=current), plan)
+                    self.assertEqual(plan["expected_fixture_count"], 1)
+                    self.assertEqual(plan["default_fixture_count"], 12)
+                    self.assertEqual(sum(row["role"] == "native-png" for row in plan["members"]), 180)
+
+    def test_full_cycle_pair_unknown_fixture_and_boolean_counters_are_rejected(self):
+        current, plan, _ = fixedtxt_fixture()
+        for key, value in (("expected_fixture_count", 12), ("expected_fixture_count", True),
+                           ("owner_count", 2), ("owner_count", True), ("arm", ["RED", "GREEN"]),
+                           ("fixture", "all"), ("scope", "film180-g2"), ("render_frames", 2160)):
+            with self.subTest(key=key, value=value), self.assertRaises(core.SelectionError):
+                film.fixedtxt_validate_plan({**plan, key:value}, current=current)
+        for roster in (plan["case_roster"][:-1], plan["case_roster"] + plan["case_roster"][:1],
+                       list(reversed(plan["case_roster"]))):
+            with self.assertRaisesRegex(core.SelectionError, "exact-24"):
+                film.fixedtxt_validate_plan({**plan, "case_roster":roster}, current=current)
+
+    def test_caps_include_full_originals_metadata_cipher_and_never_admit_full_pair(self):
+        current, plan, _ = fixedtxt_fixture()
+        for limits in ({**plan["limits"], "capsule_bytes":512 * 1024 * 1024 + 1},
+                       {**plan["limits"], "files":4097}, {**plan["limits"], "files":True},
+                       {**plan["limits"], "custody_seconds":600}, {**plan["limits"], "attempt_seconds":0}):
+            with self.assertRaises(core.SelectionError):
+                film.fixedtxt_validate_plan({**plan, "limits":limits}, current=current)
+        changed = copy.deepcopy(plan)
+        for row in changed["members"]:
+            if row["role"] == "native-png": row["maximum"] = 32 * 1024 * 1024
+        with self.assertRaisesRegex(core.SelectionError, "whole-capsule-budget"):
+            film.fixedtxt_validate_plan(changed, current=current)
+        changed = copy.deepcopy(plan)
+        next(row for row in changed["members"] if row["role"] == "selected-rgba")["maximum"] -= 1
+        with self.assertRaisesRegex(core.SelectionError, "full-rgba-bound"):
+            film.fixedtxt_validate_plan(changed, current=current)
+
+    def test_required_tail_selected_originals_and_paths_cannot_be_omitted_or_aliased(self):
+        current, plan, _ = fixedtxt_fixture()
+        for role in ("native-png", "host-stdin", "owner-closed-original", "selected-rgba", "decoder-terminal"):
+            changed = copy.deepcopy(plan)
+            victim = next(row for row in reversed(changed["members"]) if row["role"] == role)
+            changed["members"].remove(victim)
+            with self.subTest(role=role), self.assertRaises(core.SelectionError):
+                film.fixedtxt_validate_plan(changed, current=current)
+        for path in ("../outside", "/absolute", "a\\b", "a//b", "a/../b", "a\nb"):
+            changed = copy.deepcopy(plan); changed["members"][0]["relative_path"] = path
+            with self.assertRaises(core.SelectionError): film.fixedtxt_validate_plan(changed, current=current)
+        changed = copy.deepcopy(plan); changed["members"].append(changed["members"][0])
+        with self.assertRaisesRegex(core.SelectionError, "duplicate-original"):
+            film.fixedtxt_validate_plan(changed, current=current)
+
+    def test_arm_sources_input_and_member_roles_are_bound_independently(self):
+        current, plan, _ = fixedtxt_fixture()
+        # V4 binds one SDK revision and separate RED/GREEN native.ts originals.
+        same_sdk = copy.deepcopy(plan)
+        same_sdk["arm_sources"]["GREEN"].update(
+            source_sha=plan["arm_sources"]["RED"]["source_sha"],
+            tree_sha=plan["arm_sources"]["RED"]["tree_sha"])
+        self.assertIs(film.fixedtxt_validate_plan(same_sdk, current=current), same_sdk)
+        contradictory = copy.deepcopy(same_sdk)
+        contradictory["arm_sources"]["GREEN"]["tree_sha"] = "0" * 40
+        with self.assertRaisesRegex(core.SelectionError, "distinct-exact-arm-sources"):
+            film.fixedtxt_validate_plan(contradictory, current=current)
+        for change in (
+            lambda value:value["arm_sources"].update(GREEN=copy.deepcopy(value["arm_sources"]["RED"])),
+            lambda value:value["arm_sources"]["RED"].update(source_sha="0" * 40),
+            lambda value:value["source_bindings"].pop(),
+            lambda value:value.update(cycle_input_sha256="0" * 64),
+            lambda value:next(row for row in value["members"] if row["role"] == "selected-rgba").update(role="input-original"),
+        ):
+            changed = copy.deepcopy(plan); change(changed)
+            with self.assertRaises(core.SelectionError): film.fixedtxt_validate_plan(changed, current=current)
+
+    def test_selected_rgba_is_reused_as_original_without_decode_or_native_success(self):
+        current, plan, originals = fixedtxt_fixture(decoded=True)
+        with mock.patch("subprocess.Popen", side_effect=AssertionError("no decoder or native process")):
+            result = film.fixedtxt_validate_selected_frames(originals, plan=plan)
+        self.assertEqual(result["selected_decode_count"], 3)
+        self.assertTrue(result["original_rgba_reused"])
+        self.assertFalse(result["decoder_invoked_by_intake"])
+        self.assertFalse(result["pair_comparison_performed"])
+        self.assertFalse(result["native_success_verified"])
+
+    def test_consistently_rehashed_truncated_rgba_is_not_a_complete_original(self):
+        import ci_private_evidence as crypto
+        _current, plan, originals = fixedtxt_fixture(decoded=True)
+        prefix = "observation/" + plan["fixture"] + "/fixed-text-original-readback/"
+        frame = plan["selected_frames"][0]; stem = f"frame-{frame:06d}"
+        changed = dict(originals); shortened = originals[prefix + stem + ".decoder.stdout"][:-4]
+        changed[prefix + stem + ".decoder.stdout"] = shortened
+        receipt = crypto.strict(changed[prefix + "selected-originals.json"])
+        receipt["selected_frames"][0].update(rgba_sha256=crypto.sha(shortened), rgba_bytes=len(shortened))
+        changed[prefix + "selected-originals.json"] = crypto.json_bytes(receipt)
+        capture = crypto.strict(changed[prefix + stem + ".decoder.capture.json"])
+        capture["original_streams"]["stdout"].update(sha256=crypto.sha(shortened), bytes=len(shortened))
+        changed[prefix + stem + ".decoder.capture.json"] = crypto.json_bytes(capture)
+        with self.assertRaisesRegex(core.SelectionError, "original-rgba-truncated"):
+            film.fixedtxt_validate_selected_frames(changed, plan=plan)
+
+    def test_unknown_decoder_incomplete_eof_or_changed_invocation_never_becomes_native_pass(self):
+        import ci_private_evidence as crypto
+        _current, plan, originals = fixedtxt_fixture(decoded=True)
+        path = "observation/" + plan["fixture"] + "/fixed-text-original-readback/frame-000045.decoder.capture.json"
+        for change in (lambda value:value.update(state="UNKNOWN"),
+                       lambda value:value["terminal"].update(exit_code=True),
+                       lambda value:value["terminal"].update(pipes_closed=False),
+                       lambda value:value["terminal"].update(timed_out=True),
+                       lambda value:value["original_streams"]["stdout"].update(buffer_collected_from_process=False),
+                       lambda value:value["invocation"].update(decoder_sha256="0" * 64)):
+            changed = dict(originals); capture = crypto.strict(originals[path]); change(capture)
+            changed[path] = crypto.json_bytes(capture)
+            with self.assertRaises(core.SelectionError): film.fixedtxt_validate_selected_frames(changed, plan=plan)
+
+    def test_all_180_png_and_font_original_rosters_survive_selected_rgba_checks(self):
+        import ci_private_evidence as crypto
+        _current, plan, originals = fixedtxt_fixture(decoded=True)
+        prefix = "observation/" + plan["fixture"] + "/fixed-text-original-readback/"
+        changed = dict(originals)
+        changed["owner/" + plan["native_directory"] + "/frames/000179.png"] += b"changed"
+        with self.assertRaisesRegex(core.SelectionError, "all180-original-binding"):
+            film.fixedtxt_validate_selected_frames(changed, plan=plan)
+        changed = dict(originals); changed[prefix + "font-0000.original.bin"] += b"changed"
+        with self.assertRaisesRegex(core.SelectionError, "font-original-binding"):
+            film.fixedtxt_validate_selected_frames(changed, plan=plan)

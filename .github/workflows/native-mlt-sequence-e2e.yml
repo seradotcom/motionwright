@@ -32,6 +32,8 @@ on:
       - 'tooling/native_film180_original_g2.py'
       - 'tooling/native_film180_media_readback.py'
       - 'tooling/tests/test_native_film180_original_g2.py'
+      - 'tooling/tests/test_fixedtxt_owner_admission.py'
+      - 'tooling/test_fixed_text_native_owner_close.py'
       - 'tooling/tests/test_native_film180_media_readback.py'
       - 'tooling/ci_private_evidence.py'
       - 'tooling/native_mlt_g2_custody.py'
@@ -392,33 +394,28 @@ jobs:
         admit_contract_source()
         PY
 
-    - name: Verify complete source-only G2 custody contracts
-      id: g2_common_contracts
+    - name: Verify FixedTXT owner admission and closure source contracts
+      id: fixedtxt_source_contracts
       env:
         CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
       run: |
         set -euo pipefail
         umask 077
-        root="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        for group in fixedtxt-owner-admission fixedtxt-owner-close; do
+        case "$group" in
+          fixedtxt-owner-admission) directory="tooling/tests"; pattern="test_fixedtxt_owner_admission.py" ;;
+          fixedtxt-owner-close) directory="tooling"; pattern="test_fixed_text_native_owner_close.py" ;;
+          *) exit 2 ;;
+        esac
+        root="$RUNNER_TEMP/mw-$group-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         test ! -e "$root"
         mkdir -m 700 "$root"
         report="$root/contracts.json"
         set +e
         "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
-          --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
+          --repo "$GITHUB_WORKSPACE" --test-directory "$directory" --mode dotted --require-complete \
           --expected-source "$GITHUB_SHA" --report "$report" \
-          --pattern test_native_mlt_owner_workspace.py \
-          --pattern test_native_mlt_g2_custody.py \
-          --pattern test_native_mlt_g2_observation.py \
-          --pattern test_native_mlt_live_observer_diagnostics.py \
-          --pattern test_native_mlt_host_tool_observation.py \
-          --pattern test_native_mlt_loaded_module.py \
-          --pattern test_native_mlt_executable_alias.py \
-          --pattern test_native_mlt_compiler_intake.py \
-          --pattern test_native_evidence_projection.py \
-          --pattern test_native_mlt_evidence_selection.py \
-          --pattern test_native_aac_clock_inspection.py \
-          --pattern test_native_aac_clock_custody.py \
+          --pattern "$pattern" \
           > "$root/runner.stdout" 2> "$root/runner.stderr"
         runner_exit=$?
         set -e
@@ -431,11 +428,15 @@ jobs:
             handle.write("\n")
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
-        "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 28, '1aeec8f691523ac246458058af8e97bb561476de730803263f28dd1d63d5a274'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 52, 'a46e578a07d9edd01fac9b3c178e8e2ac8d21ba59b56b3585471175153d11396'), ('tooling/tests/test_native_mlt_evidence_selection.py', 38, '9a2a26593b9fb25a431c022ba2ceb0702ee32158a7e4cf180e613e25aff5d1ee'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f')]
+        "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" "$group" <<'PY'
+        import sys
+        GROUP = sys.argv[3]
+        SUITES = {
+            'fixedtxt-owner-admission': [('tooling/tests/test_fixedtxt_owner_admission.py', 23, 'ca343e849b2b2ba4175bb1d1db094816327e6c36e94977835bc7254612112045')],
+            'fixedtxt-owner-close': [('tooling/test_fixed_text_native_owner_close.py', 16, '219cbd906d2b155e6d88ab1541a9dd61c584ef64fcbf9cb8c175cdbcde847123')],
+        }[GROUP]
         MODE = 'dotted'
-        GROUP = 'common'
-        TOTAL = 355
+        TOTAL = sum(row[1] for row in SUITES)
 
         import ast
         from datetime import datetime
@@ -655,6 +656,288 @@ jobs:
 
         admit_contract_source()
         PY
+        done
+
+    - name: Verify complete source-only G2 custody contracts
+      id: g2_common_contracts
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        report="$root/contracts.json"
+        set +e
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+          --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
+          --expected-source "$GITHUB_SHA" --report "$report" \
+          --pattern test_native_mlt_owner_workspace.py \
+          --pattern test_native_mlt_g2_custody.py \
+          --pattern test_native_mlt_g2_observation.py \
+          --pattern test_native_mlt_live_observer_diagnostics.py \
+          --pattern test_native_mlt_host_tool_observation.py \
+          --pattern test_native_mlt_loaded_module.py \
+          --pattern test_native_mlt_executable_alias.py \
+          --pattern test_native_mlt_compiler_intake.py \
+          --pattern test_native_evidence_projection.py \
+          --pattern test_native_mlt_evidence_selection.py \
+          --pattern test_native_aac_clock_inspection.py \
+          --pattern test_native_aac_clock_custody.py \
+          > "$root/runner.stdout" 2> "$root/runner.stderr"
+        runner_exit=$?
+        set -e
+        "$CUSTODY_PYTHON" -B -E -s - "$root/runner-exit.json" "$runner_exit" <<'PY'
+        import json, sys
+        from pathlib import Path
+        value = {"schema": "motionwright.ci.source-runner-terminal/1", "exit_code": int(sys.argv[2]), "automatic_retry": False}
+        with Path(sys.argv[1]).open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, sort_keys=True)
+            handle.write("\n")
+        PY
+        if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
+        "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
+        SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 59, 'a1e9cc09b379151b583b3e0a6649053b76fe20c18ff95e7f3d0df615c79e06ed'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f')]
+        DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
+        MODE = 'dotted'
+        GROUP = 'common'
+        TOTAL = 476
+
+        import ast
+        from datetime import datetime
+        import hashlib
+        import json
+        import math
+        import os
+        from pathlib import Path
+        import re
+        import stat
+        import sys
+
+
+        def contract_need(value, message):
+            if not value:
+                raise ValueError(message)
+
+
+        def contract_sha(raw):
+            return hashlib.sha256(raw).hexdigest()
+
+
+        def contract_private(path, directory=False):
+            path = Path(path)
+            mark = path.lstat()
+            wanted = stat.S_ISDIR if directory else stat.S_ISREG
+            contract_need(wanted(mark.st_mode) and not path.is_symlink()
+                     and path.resolve(strict=True) == path and mark.st_uid == os.geteuid(),
+                     "Source group source-report identity/owner/type")
+            contract_need(stat.S_IMODE(mark.st_mode) == (0o700 if directory else 0o600),
+                     "Source group source-report must already be private; no retroactive chmod")
+            return mark
+
+
+        def contract_original(path):
+            before = contract_private(path)
+            raw = Path(path).read_bytes()
+            after = contract_private(path)
+            keys = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            contract_need(before.st_nlink == 1 and tuple(getattr(before, k) for k in keys) == tuple(getattr(after, k) for k in keys)
+                     and len(raw) == before.st_size, "Source group original changed/aliased during readback")
+            return raw
+
+
+        def contract_json(raw):
+            def pairs(rows):
+                result = {}
+                for key, value in rows:
+                    contract_need(key not in result, "Source group duplicate JSON key")
+                    result[key] = value
+                return result
+            return json.loads(raw, object_pairs_hook=pairs,
+                              parse_constant=lambda _: contract_need(False, "Source group nonfinite JSON"))
+
+
+        def contract_roster(raw, path, count, expected_sha):
+            tree = ast.parse(raw, filename=path)
+            contract_need(not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_tests"
+                             for n in ast.walk(tree)), "Unreviewed dynamic Source group discovery")
+            names, classes, actual_descriptions = [], [], {}
+            for cls in tree.body:
+                if not isinstance(cls, ast.ClassDef):
+                    continue
+                methods = [n.name for n in cls.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+                if methods:
+                    contract_need([ast.unparse(base) for base in cls.bases] == ["unittest.TestCase"]
+                             and cls.name not in classes and len(methods) == len(set(methods)), "Source group class/method roster changed")
+                    classes.append(cls.name)
+                    names.extend(cls.name + "." + name for name in methods)
+                    for method in cls.body:
+                        if isinstance(method, ast.FunctionDef) and method.name in methods:
+                            description = ast.get_docstring(method)
+                            if description:
+                                actual_descriptions[cls.name + "." + method.name] = description.strip().splitlines()[0].strip()
+            names.sort()
+            contract_need(len(names) == len(set(names)) == count
+                     and contract_sha(("\n".join(names) + "\n").encode()) == expected_sha, "Source group nominal source roster requires review")
+            contract_need(actual_descriptions == DESCRIPTIONS.get(path, {}),
+                     "Source group nominal source descriptions require review")
+            return names
+
+
+        def contract_nominal(raw, expected, descriptions):
+            text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+            contract_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
+                     "Source group noncanonical line separator")
+            contract_need(type(descriptions) is dict and set(descriptions) <= set(expected)
+                     and all(type(value) is str and value and not any(c in value for c in "\r\n")
+                             for value in descriptions.values()), "Source group description scope differs")
+            footer = re.search(r"\n-{70}\nRan ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s\n\nOK\n\Z", text)
+            contract_need(footer is not None and footer.group(1) == str(len(expected)), "Source group incomplete/failed unittest footer")
+            body = text[:footer.start()]
+            contract_need(body.endswith("\n"), "Source group terminal/footer separation")
+            observed = []
+            lines = body[:-1].split("\n")
+            index = 0
+            diagnostic = "MLT G2 secondary evidence failure; native outcome retained."
+            diagnostic_modules = (".test_native_mlt_g2_observation.", ".test_native_mlt_live_observer_diagnostics.",
+                                  ".test_native_film180_original_g2.")
+            while index < len(lines):
+                match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?", lines[index])
+                contract_need(match is not None, "Source group foreign/omitted/unreviewed nominal outcome")
+                method, identity, terminal = match.groups()
+                identity = identity if identity.rsplit(".", 1)[-1] == method else identity + "." + method
+                contract_need(identity in expected, "Source group diagnostic/terminal has no selected case")
+                index += 1
+                if identity in descriptions:
+                    contract_need(terminal is None and index < len(lines)
+                             and lines[index] == descriptions[identity] + " ... ok",
+                             "Source group source-bound description/terminal differs")
+                    index += 1
+                elif terminal != "ok":
+                    contract_need(terminal == diagnostic and any(part in "." + identity for part in diagnostic_modules),
+                                  "Source group unreviewed diagnostic")
+                    count = 1
+                    while index < len(lines) and lines[index] == diagnostic:
+                        count += 1
+                        index += 1
+                    contract_need(count <= 16 and index < len(lines) and lines[index] == "ok",
+                                  "Source group diagnostic has no terminal success")
+                    index += 1
+                observed.append(identity)
+            contract_need(observed == expected, "Source group duplicate/missing/foreign nominal cases")
+            return observed
+
+
+        def contract_check_receipt(receipt, source, github, definitions, runner_sha, locks, interpreter_sha):
+            contract_need(type(receipt) is dict and receipt.get("schema") == "motionwright.unittest-execution/1", "Source group receipt schema")
+            contract_need(receipt.get("executed_source_sha") == source["executed_source_sha"]
+                     and receipt.get("tree_sha") == source["tree_sha"] and receipt.get("github") == github,
+                     "Source group source/run/attempt/job differs")
+            contract_need(receipt.get("status") == "PASS" and type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
+                     and receipt.get("require_complete") is True and "source_postcheck_error" not in receipt,
+                     "Source group failed/incomplete/uncertain source receipt")
+            contract_need(receipt.get("test_definition_sha256") == definitions and receipt.get("runner_sha256") == runner_sha
+                     and receipt.get("source_locks") == locks and receipt.get("python_executable_sha256") == interpreter_sha,
+                     "Source group physical input/runner/interpreter identity differs")
+            contract_need(type(receipt.get("steps")) is list and len(receipt["steps"]) == len(SUITES), "Source group requires its entire closed module set")
+            contract_need(datetime.fromisoformat(receipt["started_at_utc"]) <= datetime.fromisoformat(receipt["completed_at_utc"]),
+                     "Source group receipt chronology")
+
+
+        def contract_check_step(step, path, count, mode, ids, logs, executable):
+            module = path[:-3].replace("/", ".")
+            label = "discovery:" + Path(path).name if mode == "discovery" else "dotted:" + module
+            command = [executable, "-B", "-E", "-s", "-m", "unittest"]
+            command += ["discover", "-s", "tooling/tests", "-p", Path(path).name, "-v"] if mode == "discovery" else [module, "-v"]
+            contract_need(step.get("entry_point") == label and step.get("command") == command, "Source group wrong entry point/interpreter")
+            contract_need(step.get("status") == "PASS" and type(step.get("exit_code")) is int and step["exit_code"] == 0,
+                     "Source group nonterminal/failed process")
+            counts = step.get("counts")
+            expected = {"terminal_status": "OK", "tests_run": count, "passed": count, "failures": 0, "errors": 0,
+                        "skipped": 0, "expected_failures": 0, "unexpected_successes": 0}
+            contract_need(type(counts) is dict and set(counts) == set(expected)
+                     and counts["terminal_status"] == "OK"
+                     and all(type(counts[k]) is int and counts[k] == v for k, v in expected.items() if k != "terminal_status"),
+                     "Source group omitted/noninteger/wrong counts")
+            duration = step.get("duration_seconds")
+            contract_need(type(duration) in (int, float) and math.isfinite(duration) and duration >= 0, "Source group invalid duration")
+            for stream, raw in logs.items():
+                contract_need(type(step.get(stream)) is dict and set(step[stream]) == {"file", "sha256"}
+                         and step[stream]["sha256"] == contract_sha(raw), "Source group original stream hash differs")
+            prefix = Path(path).stem if mode == "discovery" else module
+            descriptions = {prefix + "." + name: value for name, value in DESCRIPTIONS.get(path, {}).items()}
+            return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids], descriptions)
+
+
+        def admit_contract_source():
+            # Use the existing canonical verifier; no test/native command is started here.
+            from tooling.ci_test_runner import source_state
+            root, report = Path(sys.argv[1]), Path(sys.argv[2])
+            contract_private(root, directory=True)
+            contract_need(report.parent == root, "Source group report must use its reserved root")
+            contract_private(report.parent, directory=True)
+            wanted = {"contracts.json", "runner.stdout", "runner.stderr", "runner-exit.json"} | {f"contracts-{i:02d}-{stream}.log" for i in range(len(SUITES)) for stream in ("stdout", "stderr")}
+            contract_need(set(p.name for p in report.parent.iterdir()) == wanted, "Source group full source-report original closure differs")
+            before = source_state(Path.cwd(), os.environ["GITHUB_SHA"])
+            github = {key: os.environ.get(key, "") for key in
+                      ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+            contract_need(all(github.values()), "Source group job identity incomplete")
+            raw = contract_original(report)
+            receipt = contract_json(raw)
+            originals = {str(report): contract_sha(raw)}
+            terminal_raw = contract_original(root / "runner-exit.json")
+            terminal = contract_json(terminal_raw)
+            contract_need(terminal == {"schema": "motionwright.ci.source-runner-terminal/1",
+                                      "exit_code": 0, "automatic_retry": False}
+                          and type(terminal["exit_code"]) is int,
+                          "Source group original runner exit differs")
+            originals[str(root / "runner-exit.json")] = contract_sha(terminal_raw)
+            for name in ("runner.stdout", "runner.stderr"):
+                originals[str(root / name)] = contract_sha(contract_original(root / name))
+
+            definitions, rosters = {}, {}
+            for path, count, nominal_sha in SUITES:
+                body = Path(path).read_bytes()
+                definitions[path] = contract_sha(body)
+                rosters[path] = contract_roster(body, path, count, nominal_sha)
+            locks = {path: contract_sha(Path(path).read_bytes()) for path in
+                     ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json") if Path(path).is_file()}
+            runner_sha = contract_sha(Path("tooling/ci_test_runner.py").read_bytes())
+            interpreter_sha = contract_sha(Path(sys.executable).read_bytes())
+            contract_check_receipt(receipt, before, github, definitions, runner_sha, locks, interpreter_sha)
+            # Canonical runner preserves requested discovery order, then sorted dotted files.
+            plan = [(row, MODE) for row in (SUITES if MODE == "discovery" else sorted(SUITES))]
+            observed = []
+            for index, ((path, count, nominal_sha), mode) in enumerate(plan):
+                step = receipt["steps"][index]
+                logs = {}
+                for stream in ("stdout", "stderr"):
+                    name = f"contracts-{index:02d}-{stream}.log"
+                    contract_need(step[stream]["file"] == name, "Source group aliased stream path")
+                    body = contract_original(report.parent / name)
+                    logs[stream] = body
+                    originals[str(report.parent / name)] = contract_sha(body)
+                ids = contract_check_step(step, path, count, mode, rosters[path], logs, str(sys.executable))
+                observed.append({"entry_point": step["entry_point"], "nominal_ids": ids, "source_path": path})
+            contract_need(sum(len(row["nominal_ids"]) for row in observed) == TOTAL, "Source group incomplete invocation roster")
+            contract_need(source_state(Path.cwd(), os.environ["GITHUB_SHA"]) == before
+                     and definitions == {path: contract_sha(Path(path).read_bytes()) for path in definitions}
+                     and all(contract_sha(contract_original(Path(path))) == pin for path, pin in originals.items()), "Source group source/originals changed")
+            value = {"schema": "motionwright.closed-source-contract-group/1", "group": GROUP, **before, "github": github,
+                     "status": "PASS_SOURCE_CONTRACTS_ONLY", "unique_methods": TOTAL, "invocations": TOTAL,
+                     "steps": observed, "original_receipt_sha256": contract_sha(raw), "original_streams": originals,
+                     "scope": "Source/custody contracts only; no physical production or human acceptance",
+                     "native_execution": False, "formal_acceptance": False, "automatic_retry": False}
+            destination = report.parent / "contracts-admission.json"
+            with destination.open("x", encoding="utf-8", newline="\n") as handle:
+                json.dump(value, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            contract_private(destination)
+
+
+        admit_contract_source()
+        PY
 
     - name: Verify complete Film source and original-custody contracts
       id: g2_film_contracts
@@ -687,10 +970,10 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_film180_original_g2.py', 88, '21f97ff7432f879f3d596d7d81212f1dc2dc5d2db716b0da14acde26aa268523'), ('tooling/tests/test_native_film180_media_readback.py', 24, '275b2c50600f06de1b20d8ad58de4ea9ec7a4f2e490e244c794168cbe7364081'), ('tooling/tests/test_native_film180_evidence_selection.py', 32, '7894f402449384fb81b5a24870a8a44fe89506effdcd6bf0e518f51e671aacac')]
+        SUITES = [('tooling/tests/test_native_film180_original_g2.py', 88, '21f97ff7432f879f3d596d7d81212f1dc2dc5d2db716b0da14acde26aa268523'), ('tooling/tests/test_native_film180_media_readback.py', 24, '275b2c50600f06de1b20d8ad58de4ea9ec7a4f2e490e244c794168cbe7364081'), ('tooling/tests/test_native_film180_evidence_selection.py', 42, '0bb78be5dbbdfe3d8298a2d66dc2b3a182db50590cf8c9a7c55f638eab75188e')]
         MODE = 'dotted'
         GROUP = 'film'
-        TOTAL = 144
+        TOTAL = 154
 
         import ast
         from datetime import datetime
@@ -1164,7 +1447,7 @@ jobs:
         admit_contract_source()
         PY
 
-    - name: Verify remaining source import contracts (discovery480)
+    - name: Verify remaining source import contracts (discovery611)
       id: aac_remaining_discovery
       env:
         CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
@@ -1207,10 +1490,11 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 16, '1d9c5cfe023fbc7dbb0dad8aac422ba90d06a792cb7bf2a606f50d93e5525cfc'), ('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 28, '1aeec8f691523ac246458058af8e97bb561476de730803263f28dd1d63d5a274'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 52, 'a46e578a07d9edd01fac9b3c178e8e2ac8d21ba59b56b3585471175153d11396'), ('tooling/tests/test_native_mlt_evidence_selection.py', 38, '9a2a26593b9fb25a431c022ba2ceb0702ee32158a7e4cf180e613e25aff5d1ee'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_film180_original_g2.py', 88, '21f97ff7432f879f3d596d7d81212f1dc2dc5d2db716b0da14acde26aa268523'), ('tooling/tests/test_native_film180_media_readback.py', 24, '275b2c50600f06de1b20d8ad58de4ea9ec7a4f2e490e244c794168cbe7364081'), ('tooling/tests/test_native_film180_evidence_selection.py', 32, '7894f402449384fb81b5a24870a8a44fe89506effdcd6bf0e518f51e671aacac')]
+        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 16, '1d9c5cfe023fbc7dbb0dad8aac422ba90d06a792cb7bf2a606f50d93e5525cfc'), ('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 59, 'a1e9cc09b379151b583b3e0a6649053b76fe20c18ff95e7f3d0df615c79e06ed'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_film180_original_g2.py', 88, '21f97ff7432f879f3d596d7d81212f1dc2dc5d2db716b0da14acde26aa268523'), ('tooling/tests/test_native_film180_media_readback.py', 24, '275b2c50600f06de1b20d8ad58de4ea9ec7a4f2e490e244c794168cbe7364081'), ('tooling/tests/test_native_film180_evidence_selection.py', 42, '0bb78be5dbbdfe3d8298a2d66dc2b3a182db50590cf8c9a7c55f638eab75188e')]
+        DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
         MODE = 'discovery'
         GROUP = 'discovery_remaining'
-        TOTAL = 480
+        TOTAL = 611
 
         import ast
         from datetime import datetime
@@ -1270,7 +1554,7 @@ jobs:
             tree = ast.parse(raw, filename=path)
             contract_need(not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_tests"
                              for n in ast.walk(tree)), "Unreviewed dynamic Source group discovery")
-            names, classes = [], []
+            names, classes, actual_descriptions = [], [], {}
             for cls in tree.body:
                 if not isinstance(cls, ast.ClassDef):
                     continue
@@ -1280,16 +1564,26 @@ jobs:
                              and cls.name not in classes and len(methods) == len(set(methods)), "Source group class/method roster changed")
                     classes.append(cls.name)
                     names.extend(cls.name + "." + name for name in methods)
+                    for method in cls.body:
+                        if isinstance(method, ast.FunctionDef) and method.name in methods:
+                            description = ast.get_docstring(method)
+                            if description:
+                                actual_descriptions[cls.name + "." + method.name] = description.strip().splitlines()[0].strip()
             names.sort()
             contract_need(len(names) == len(set(names)) == count
                      and contract_sha(("\n".join(names) + "\n").encode()) == expected_sha, "Source group nominal source roster requires review")
+            contract_need(actual_descriptions == DESCRIPTIONS.get(path, {}),
+                     "Source group nominal source descriptions require review")
             return names
 
 
-        def contract_nominal(raw, expected):
+        def contract_nominal(raw, expected, descriptions):
             text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
             contract_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
                      "Source group noncanonical line separator")
+            contract_need(type(descriptions) is dict and set(descriptions) <= set(expected)
+                     and all(type(value) is str and value and not any(c in value for c in "\r\n")
+                             for value in descriptions.values()), "Source group description scope differs")
             footer = re.search(r"\n-{70}\nRan ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s\n\nOK\n\Z", text)
             contract_need(footer is not None and footer.group(1) == str(len(expected)), "Source group incomplete/failed unittest footer")
             body = text[:footer.start()]
@@ -1301,13 +1595,18 @@ jobs:
             diagnostic_modules = (".test_native_mlt_g2_observation.", ".test_native_mlt_live_observer_diagnostics.",
                                   ".test_native_film180_original_g2.")
             while index < len(lines):
-                match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\) \.\.\. (.*)", lines[index])
+                match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?", lines[index])
                 contract_need(match is not None, "Source group foreign/omitted/unreviewed nominal outcome")
                 method, identity, terminal = match.groups()
                 identity = identity if identity.rsplit(".", 1)[-1] == method else identity + "." + method
                 contract_need(identity in expected, "Source group diagnostic/terminal has no selected case")
                 index += 1
-                if terminal != "ok":
+                if identity in descriptions:
+                    contract_need(terminal is None and index < len(lines)
+                             and lines[index] == descriptions[identity] + " ... ok",
+                             "Source group source-bound description/terminal differs")
+                    index += 1
+                elif terminal != "ok":
                     contract_need(terminal == diagnostic and any(part in "." + identity for part in diagnostic_modules),
                                   "Source group unreviewed diagnostic")
                     count = 1
@@ -1359,7 +1658,8 @@ jobs:
                 contract_need(type(step.get(stream)) is dict and set(step[stream]) == {"file", "sha256"}
                          and step[stream]["sha256"] == contract_sha(raw), "Source group original stream hash differs")
             prefix = Path(path).stem if mode == "discovery" else module
-            return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids])
+            descriptions = {prefix + "." + name: value for name, value in DESCRIPTIONS.get(path, {}).items()}
+            return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids], descriptions)
 
 
         def admit_contract_source():
@@ -1494,17 +1794,69 @@ jobs:
         set -euo pipefail
         evidence="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         cargo build --locked -p motionwright-native --example native-film180-e2e
-        cargo test --locked -p motionwright-native --example native-film180-e2e \
-          -- --nocapture 2>&1 | tee "$evidence/film180-rust-source.log"
-        "$CUSTODY_PYTHON" -B -E -s - "$evidence/film180-rust-source.log" <<'PY'
-        import re, sys
+        umask 077
+        for phase in discovery execution; do
+          contract_argv=(cargo test --locked -p motionwright-native --example native-film180-e2e -- --nocapture)
+          suffix=""
+          if [ "$phase" = discovery ]; then
+            contract_argv+=(--list)
+            suffix=".discovery"
+          fi
+          log="$evidence/film180-rust-source$suffix.log"
+          set +e
+          "${contract_argv[@]}" 2>&1 | tee "$log"
+          contract_statuses=("${PIPESTATUS[@]}")
+          set -e
+          if [ "${#contract_statuses[@]}" -ne 2 ]; then
+            printf '%s\n' "Unexpected Film180 source/capture pipeline width" >&2
+            exit 2
+          fi
+          "$CUSTODY_PYTHON" -B -E -s - "$log" "$phase" "${contract_statuses[0]}" "${contract_statuses[1]}" "${contract_argv[@]}" <<'PY'
+        import hashlib, json, os, re, subprocess, sys
         from pathlib import Path
-        log = Path(sys.argv[1]).read_text()
-        rows = re.findall(
-            r"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
-            log)
-        assert rows == [("4", "0", "0", "0", "0")]
+        FILM_REQUIRED = ['brand_font::tests::bundled_instrument_and_ibm_are_not_managed_font_evidence', 'brand_font::tests::changed_pinned_inputs_and_noncanonical_parent_fail_before_source_writes', 'brand_font::tests::different_imported_digest_cannot_replace_pinned_face_or_destroy_original_cas', 'brand_font::tests::mixed_saved_family_is_rejected_without_native_receipts', 'brand_font::tests::saved_selection_reopens_exact_cas_film_and_history', 'brand_font::tests::selected_deliverable_overrides_reject_before_label_edit_and_native_receipts', 'brand_font::tests::source_component_label_edit_reopens_without_fabricated_native_success', 'brand_font::tests::unknown_font_import_identity_blocks_before_any_further_dispatch', 'fixed_text_v4::tests::compiler_members_cannot_escape_the_original_directory', 'fixed_text_v4::tests::conflicting_assets_for_same_managed_family_are_rejected', 'fixed_text_v4::tests::duplicate_original_descriptor_fields_are_rejected', 'fixed_text_v4::tests::native_return_requires_fresh_checked_provenance', 'fixed_text_v4::tests::one_managed_digest_cannot_alias_distinct_family_joins', 'fixed_text_v4::tests::pins_require_exact_lowercase_sha256', 'fixed_text_v4::tests::repeated_managed_family_with_same_asset_has_one_join', 'fixed_text_v4::tests::samples_cover_all_twelve_cases_and_caption_boundaries', 'stdin_readback::tests::absent_terminal_does_not_turn_capture_into_delivery', 'stdin_readback::tests::another_parents_complete_capture_does_not_end_publication_wait', 'stdin_readback::tests::changed_original_stdin_or_length_is_rejected', 'stdin_readback::tests::completed_write_without_input_is_not_accepted', 'stdin_readback::tests::crossed_parent_or_session_never_matches', 'stdin_readback::tests::crossed_provider_or_tool_is_rejected', 'stdin_readback::tests::duplicate_or_invalid_retained_metadata_stops_publication_wait', 'stdin_readback::tests::duplicate_parent_captures_are_not_selected_arbitrarily', 'stdin_readback::tests::failed_write_retains_original_io_details', 'stdin_readback::tests::interrupted_delivery_is_preserved_without_completion', 'stdin_readback::tests::not_observed_remains_uncertain_after_matching', 'stdin_readback::tests::observer_close_schema_and_scope_are_strict', 'stdin_readback::tests::observer_closure_does_not_erase_losses_or_discarded_captures', 'stdin_readback::tests::original_reader_keeps_private_mode_and_single_link_requirements', 'stdin_readback::tests::original_reader_preserves_private_bytes_empty_presence_and_the_bound', 'stdin_readback::tests::original_reader_rejects_fifo_replacement_without_a_writer', 'stdin_readback::tests::original_reader_rejects_replaced_regular_and_symlink_after_metadata', 'stdin_readback::tests::provider_process_transition_is_not_same_owner_lifetime', 'stdin_readback::tests::publication_waits_for_delayed_original_terminal_without_upgrading_its_state', 'stdin_readback::tests::selected_capture_joins_original_parent_session_and_bytes', 'stdin_readback::tests::terminal_unknown_duplicate_missing_or_extra_fields_are_rejected', 'stdin_readback::tests::unavailable_terminal_formats_remain_distinct', 'tests::changed_saved_source_intent_or_caption_boundaries_fail_before_native_dispatch', 'tests::editable_second_revision_uses_distinct_native_identity_and_requires_original_result', 'tests::original_av_requires_single_bounded_source_wav_and_exact_digest', 'tests::six_second_saved_source_reopens_and_retains_original_clock']
+        path, phase = Path(sys.argv[1]), sys.argv[2]
+        exit_code, capture_exit = int(sys.argv[3]), int(sys.argv[4])
+        command = sys.argv[5:]
+        assert phase in ("discovery", "execution") and command
+        assert len(FILM_REQUIRED) == len(set(FILM_REQUIRED)) == 42
+        raw = path.read_bytes()
+        text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+        listed = re.findall(r"(?m)^(\S+): (test|benchmark)$", text)
+        list_footer = re.findall(r"(?m)^([0-9]+) tests?, ([0-9]+) benchmarks?$", text)
+        actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+        rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+        dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+        discovery_ok = (len(listed) == 42 and sorted(listed) == [(name, "test") for name in FILM_REQUIRED]
+                        and list_footer == [("42", "0")] and not actual and not rows)
+        execution_ok = (len(actual) == 42 and sorted(actual) == [(name, "ok") for name in FILM_REQUIRED]
+                        and rows == [("ok", "42", "0", "0", "0", "0")] and not listed and not list_footer)
+        complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                    and (discovery_ok if phase == "discovery" else execution_ok))
+        source_path = "crates/native/examples/native-film180-e2e.rs"
+        receipt = {"schema": "motionwright.film180.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                   "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                   "job": os.environ["GITHUB_JOB"], "source_path": source_path,
+                   "source_file_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest(),
+                   "phase": phase, "command": command, "required": FILM_REQUIRED,
+                   "discovered": listed, "discovery_footer": list_footer, "observed": actual,
+                   "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                   "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                   "stream_representation": "Original process stdout/stderr merged by shell",
+                   "status": "PASS" if complete else "FAIL", "native_execution": False,
+                   "formal_acceptance": False, "automatic_retry": False}
+        with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+            json.dump(receipt, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        print(json.dumps({"phase": phase, "source_sha": head, "status": receipt["status"],
+                          "required_count": 42, "observed_count": len(listed if phase == "discovery" else actual),
+                          "exit_code": exit_code, "capture_exit_code": capture_exit}))
+        if not complete:
+            raise SystemExit("Exact Film180 source roster omitted, renamed, duplicated, skipped, failed or source changed")
         PY
+        done
     - name: Verify source remains the exact selected checkout
       if: always()
       run: |
@@ -1521,6 +1873,8 @@ jobs:
           ${{ runner.temp }}/mw-mlt-g2-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-film180-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-mlt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          ${{ runner.temp }}/mw-fixedtxt-owner-admission-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          ${{ runner.temp }}/mw-fixedtxt-owner-close-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-inspector-discovery-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-remaining-discovery-${{ github.run_id }}-${{ github.run_attempt }}
         if-no-files-found: error
@@ -1647,7 +2001,7 @@ jobs:
               names = {"contracts.json", "contracts-admission.json", "runner.stdout", "runner.stderr", "runner-exit.json"}
               names |= {f"contracts-{index:02d}-{stream}.log" for index in range(count) for stream in ("stdout", "stderr")}
               if label == "common":
-                  names |= {"publication-binding.json", "original-wav-rust.log", "film180-rust-source.log"}
+                  names |= {"publication-binding.json", "original-wav-rust.log", "film180-rust-source.log", "film180-rust-source.receipt.json", "film180-rust-source.discovery.log", "film180-rust-source.discovery.receipt.json"}
                   names |= {f"publication-binding-{index:02d}-{stream}.log" for index in range(2) for stream in ("stdout", "stderr")}
               return names
 
@@ -2136,10 +2490,11 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 28, '1aeec8f691523ac246458058af8e97bb561476de730803263f28dd1d63d5a274'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 52, 'a46e578a07d9edd01fac9b3c178e8e2ac8d21ba59b56b3585471175153d11396'), ('tooling/tests/test_native_mlt_evidence_selection.py', 38, '9a2a26593b9fb25a431c022ba2ceb0702ee32158a7e4cf180e613e25aff5d1ee'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f')]
+          SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 59, 'a1e9cc09b379151b583b3e0a6649053b76fe20c18ff95e7f3d0df615c79e06ed'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f')]
+          DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
           MODE = 'dotted'
           GROUP = 'common'
-          TOTAL = 355
+          TOTAL = 476
 
           import ast
           from datetime import datetime
@@ -2199,7 +2554,7 @@ jobs:
               tree = ast.parse(raw, filename=path)
               contract_need(not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_tests"
                                for n in ast.walk(tree)), "Unreviewed dynamic Source group discovery")
-              names, classes = [], []
+              names, classes, actual_descriptions = [], [], {}
               for cls in tree.body:
                   if not isinstance(cls, ast.ClassDef):
                       continue
@@ -2209,16 +2564,26 @@ jobs:
                                and cls.name not in classes and len(methods) == len(set(methods)), "Source group class/method roster changed")
                       classes.append(cls.name)
                       names.extend(cls.name + "." + name for name in methods)
+                      for method in cls.body:
+                          if isinstance(method, ast.FunctionDef) and method.name in methods:
+                              description = ast.get_docstring(method)
+                              if description:
+                                  actual_descriptions[cls.name + "." + method.name] = description.strip().splitlines()[0].strip()
               names.sort()
               contract_need(len(names) == len(set(names)) == count
                        and contract_sha(("\n".join(names) + "\n").encode()) == expected_sha, "Source group nominal source roster requires review")
+              contract_need(actual_descriptions == DESCRIPTIONS.get(path, {}),
+                       "Source group nominal source descriptions require review")
               return names
 
 
-          def contract_nominal(raw, expected):
+          def contract_nominal(raw, expected, descriptions):
               text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
               contract_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
                        "Source group noncanonical line separator")
+              contract_need(type(descriptions) is dict and set(descriptions) <= set(expected)
+                       and all(type(value) is str and value and not any(c in value for c in "\r\n")
+                               for value in descriptions.values()), "Source group description scope differs")
               footer = re.search(r"\n-{70}\nRan ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s\n\nOK\n\Z", text)
               contract_need(footer is not None and footer.group(1) == str(len(expected)), "Source group incomplete/failed unittest footer")
               body = text[:footer.start()]
@@ -2230,13 +2595,18 @@ jobs:
               diagnostic_modules = (".test_native_mlt_g2_observation.", ".test_native_mlt_live_observer_diagnostics.",
                                     ".test_native_film180_original_g2.")
               while index < len(lines):
-                  match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\) \.\.\. (.*)", lines[index])
+                  match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?", lines[index])
                   contract_need(match is not None, "Source group foreign/omitted/unreviewed nominal outcome")
                   method, identity, terminal = match.groups()
                   identity = identity if identity.rsplit(".", 1)[-1] == method else identity + "." + method
                   contract_need(identity in expected, "Source group diagnostic/terminal has no selected case")
                   index += 1
-                  if terminal != "ok":
+                  if identity in descriptions:
+                      contract_need(terminal is None and index < len(lines)
+                               and lines[index] == descriptions[identity] + " ... ok",
+                               "Source group source-bound description/terminal differs")
+                      index += 1
+                  elif terminal != "ok":
                       contract_need(terminal == diagnostic and any(part in "." + identity for part in diagnostic_modules),
                                     "Source group unreviewed diagnostic")
                       count = 1
@@ -2288,7 +2658,8 @@ jobs:
                   contract_need(type(step.get(stream)) is dict and set(step[stream]) == {"file", "sha256"}
                            and step[stream]["sha256"] == contract_sha(raw), "Source group original stream hash differs")
               prefix = Path(path).stem if mode == "discovery" else module
-              return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids])
+              descriptions = {prefix + "." + name: value for name, value in DESCRIPTIONS.get(path, {}).items()}
+              return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids], descriptions)
 
 
           def admit_contract_source():
@@ -2392,10 +2763,10 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_film180_original_g2.py', 88, '21f97ff7432f879f3d596d7d81212f1dc2dc5d2db716b0da14acde26aa268523'), ('tooling/tests/test_native_film180_media_readback.py', 24, '275b2c50600f06de1b20d8ad58de4ea9ec7a4f2e490e244c794168cbe7364081'), ('tooling/tests/test_native_film180_evidence_selection.py', 32, '7894f402449384fb81b5a24870a8a44fe89506effdcd6bf0e518f51e671aacac')]
+          SUITES = [('tooling/tests/test_native_film180_original_g2.py', 88, '21f97ff7432f879f3d596d7d81212f1dc2dc5d2db716b0da14acde26aa268523'), ('tooling/tests/test_native_film180_media_readback.py', 24, '275b2c50600f06de1b20d8ad58de4ea9ec7a4f2e490e244c794168cbe7364081'), ('tooling/tests/test_native_film180_evidence_selection.py', 42, '0bb78be5dbbdfe3d8298a2d66dc2b3a182db50590cf8c9a7c55f638eab75188e')]
           MODE = 'dotted'
           GROUP = 'film'
-          TOTAL = 144
+          TOTAL = 154
 
           import ast
           from datetime import datetime
@@ -2790,17 +3161,69 @@ jobs:
           umask 077
           evidence="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           cargo build --locked -p motionwright-native --example native-film180-e2e
-          cargo test --locked -p motionwright-native --example native-film180-e2e \
-            -- --nocapture 2>&1 | tee "$evidence/film180-rust-source.log"
-          "$CUSTODY_PYTHON" -B -E -s - "$evidence/film180-rust-source.log" <<'PY'
-          import re, sys
+          umask 077
+          for phase in discovery execution; do
+            contract_argv=(cargo test --locked -p motionwright-native --example native-film180-e2e -- --nocapture)
+            suffix=""
+            if [ "$phase" = discovery ]; then
+              contract_argv+=(--list)
+              suffix=".discovery"
+            fi
+            log="$evidence/film180-rust-source$suffix.log"
+            set +e
+            "${contract_argv[@]}" 2>&1 | tee "$log"
+            contract_statuses=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${#contract_statuses[@]}" -ne 2 ]; then
+              printf '%s\n' "Unexpected Film180 source/capture pipeline width" >&2
+              exit 2
+            fi
+            "$CUSTODY_PYTHON" -B -E -s - "$log" "$phase" "${contract_statuses[0]}" "${contract_statuses[1]}" "${contract_argv[@]}" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
           from pathlib import Path
-          log = Path(sys.argv[1]).read_text()
-          rows = re.findall(
-              r"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
-              log)
-          assert rows == [("4", "0", "0", "0", "0")]
+          FILM_REQUIRED = ['brand_font::tests::bundled_instrument_and_ibm_are_not_managed_font_evidence', 'brand_font::tests::changed_pinned_inputs_and_noncanonical_parent_fail_before_source_writes', 'brand_font::tests::different_imported_digest_cannot_replace_pinned_face_or_destroy_original_cas', 'brand_font::tests::mixed_saved_family_is_rejected_without_native_receipts', 'brand_font::tests::saved_selection_reopens_exact_cas_film_and_history', 'brand_font::tests::selected_deliverable_overrides_reject_before_label_edit_and_native_receipts', 'brand_font::tests::source_component_label_edit_reopens_without_fabricated_native_success', 'brand_font::tests::unknown_font_import_identity_blocks_before_any_further_dispatch', 'fixed_text_v4::tests::compiler_members_cannot_escape_the_original_directory', 'fixed_text_v4::tests::conflicting_assets_for_same_managed_family_are_rejected', 'fixed_text_v4::tests::duplicate_original_descriptor_fields_are_rejected', 'fixed_text_v4::tests::native_return_requires_fresh_checked_provenance', 'fixed_text_v4::tests::one_managed_digest_cannot_alias_distinct_family_joins', 'fixed_text_v4::tests::pins_require_exact_lowercase_sha256', 'fixed_text_v4::tests::repeated_managed_family_with_same_asset_has_one_join', 'fixed_text_v4::tests::samples_cover_all_twelve_cases_and_caption_boundaries', 'stdin_readback::tests::absent_terminal_does_not_turn_capture_into_delivery', 'stdin_readback::tests::another_parents_complete_capture_does_not_end_publication_wait', 'stdin_readback::tests::changed_original_stdin_or_length_is_rejected', 'stdin_readback::tests::completed_write_without_input_is_not_accepted', 'stdin_readback::tests::crossed_parent_or_session_never_matches', 'stdin_readback::tests::crossed_provider_or_tool_is_rejected', 'stdin_readback::tests::duplicate_or_invalid_retained_metadata_stops_publication_wait', 'stdin_readback::tests::duplicate_parent_captures_are_not_selected_arbitrarily', 'stdin_readback::tests::failed_write_retains_original_io_details', 'stdin_readback::tests::interrupted_delivery_is_preserved_without_completion', 'stdin_readback::tests::not_observed_remains_uncertain_after_matching', 'stdin_readback::tests::observer_close_schema_and_scope_are_strict', 'stdin_readback::tests::observer_closure_does_not_erase_losses_or_discarded_captures', 'stdin_readback::tests::original_reader_keeps_private_mode_and_single_link_requirements', 'stdin_readback::tests::original_reader_preserves_private_bytes_empty_presence_and_the_bound', 'stdin_readback::tests::original_reader_rejects_fifo_replacement_without_a_writer', 'stdin_readback::tests::original_reader_rejects_replaced_regular_and_symlink_after_metadata', 'stdin_readback::tests::provider_process_transition_is_not_same_owner_lifetime', 'stdin_readback::tests::publication_waits_for_delayed_original_terminal_without_upgrading_its_state', 'stdin_readback::tests::selected_capture_joins_original_parent_session_and_bytes', 'stdin_readback::tests::terminal_unknown_duplicate_missing_or_extra_fields_are_rejected', 'stdin_readback::tests::unavailable_terminal_formats_remain_distinct', 'tests::changed_saved_source_intent_or_caption_boundaries_fail_before_native_dispatch', 'tests::editable_second_revision_uses_distinct_native_identity_and_requires_original_result', 'tests::original_av_requires_single_bounded_source_wav_and_exact_digest', 'tests::six_second_saved_source_reopens_and_retains_original_clock']
+          path, phase = Path(sys.argv[1]), sys.argv[2]
+          exit_code, capture_exit = int(sys.argv[3]), int(sys.argv[4])
+          command = sys.argv[5:]
+          assert phase in ("discovery", "execution") and command
+          assert len(FILM_REQUIRED) == len(set(FILM_REQUIRED)) == 42
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          listed = re.findall(r"(?m)^(\S+): (test|benchmark)$", text)
+          list_footer = re.findall(r"(?m)^([0-9]+) tests?, ([0-9]+) benchmarks?$", text)
+          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          discovery_ok = (len(listed) == 42 and sorted(listed) == [(name, "test") for name in FILM_REQUIRED]
+                          and list_footer == [("42", "0")] and not actual and not rows)
+          execution_ok = (len(actual) == 42 and sorted(actual) == [(name, "ok") for name in FILM_REQUIRED]
+                          and rows == [("ok", "42", "0", "0", "0", "0")] and not listed and not list_footer)
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and (discovery_ok if phase == "discovery" else execution_ok))
+          source_path = "crates/native/examples/native-film180-e2e.rs"
+          receipt = {"schema": "motionwright.film180.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "source_path": source_path,
+                     "source_file_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest(),
+                     "phase": phase, "command": command, "required": FILM_REQUIRED,
+                     "discovered": listed, "discovery_footer": list_footer, "observed": actual,
+                     "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell",
+                     "status": "PASS" if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False, "automatic_retry": False}
+          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps({"phase": phase, "source_sha": head, "status": receipt["status"],
+                            "required_count": 42, "observed_count": len(listed if phase == "discovery" else actual),
+                            "exit_code": exit_code, "capture_exit_code": capture_exit}))
+          if not complete:
+              raise SystemExit("Exact Film180 source roster omitted, renamed, duplicated, skipped, failed or source changed")
           PY
+          done
 
       - name: Test redacted native observation diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_mlt_failure_diagnostic.py' -v
@@ -3118,7 +3541,7 @@ jobs:
               names = {"contracts.json", "contracts-admission.json", "runner.stdout", "runner.stderr", "runner-exit.json"}
               names |= {f"contracts-{index:02d}-{stream}.log" for index in range(count) for stream in ("stdout", "stderr")}
               if label == "common":
-                  names |= {"publication-binding.json", "original-wav-rust.log", "film180-rust-source.log"}
+                  names |= {"publication-binding.json", "original-wav-rust.log", "film180-rust-source.log", "film180-rust-source.receipt.json", "film180-rust-source.discovery.log", "film180-rust-source.discovery.receipt.json"}
                   names |= {f"publication-binding-{index:02d}-{stream}.log" for index in range(2) for stream in ("stdout", "stderr")}
               return names
 

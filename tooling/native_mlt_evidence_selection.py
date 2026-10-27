@@ -1654,3 +1654,372 @@ def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_ad
     require(all(public.get(k) is False for k in ("native_operation_retried","packet_PTS_and_AAC_priming_verified",
         "physical_AV_master_acceptance","human_acceptance","release_authorized")),"native-public-scope-escalation")
     return result
+
+# No runtime authority is present in this source preparation. A Film/Audio row,
+# a plan supplied by the producer, or a truthy input flag cannot populate it.
+FIXEDTXT_ATTEMPTS = {}
+FIXEDTXT_REVIEWED_WRAPPER_SHA256 = None
+FIXEDTXT_ADMISSION_SCHEMA = "motionwright.native.fixedtxt-attempt-admission/2"
+FIXEDTXT_PUBLIC_SCHEMA = "motionwright.native.fixedtxt-custody-public/1"
+FIXEDTXT_PUBLIC_KEYS = {
+    "schema", "scope", "context", "arm", "fixture", "plan_sha256", "recipient_spki_sha256",
+    "sealed_originals_sha256", "sealed_originals_bytes", "snapshot_capture_complete",
+    "planned_originals_complete", "decoder_originals_verified", "retained_file_count",
+    "missing_file_count", "verified_decode_count", "single_owner", "native_success_verified",
+    "pair_comparison_performed", "decoder_invoked_by_intake", "native_operation_retried",
+    "physical_acceptance", "human_acceptance", "release_authorized", "upload_authorization",
+}
+
+
+def fixedtxt_owner_selection_guard():
+    """Reject an unselected owner before routing, parsing, paths or effects.
+
+    This source-owned guard is shared by the preparer and the real wrapper.
+    A caller flag, input descriptor, callback or capsule cannot supply it.
+    The shipped catalogue and wrapper pin deliberately grant no attempt.
+    """
+    require(type(FIXEDTXT_ATTEMPTS) is dict and bool(FIXEDTXT_ATTEMPTS),
+            "fixedtxt-no-reviewed-attempt")
+    require(type(FIXEDTXT_REVIEWED_WRAPPER_SHA256) is str
+            and re.fullmatch(r"[0-9a-f]{64}", FIXEDTXT_REVIEWED_WRAPPER_SHA256),
+            "fixedtxt-reviewed-wrapper-pin-absent")
+    return FIXEDTXT_REVIEWED_WRAPPER_SHA256
+
+
+def _fixedtxt_reviewed_row(admission_id):
+    """Read the existing source-owned catalogue; no bytes or paths are opened."""
+    fixedtxt_owner_selection_guard()
+    require(type(admission_id) is str
+            and re.fullmatch(r"[a-z][a-z0-9-]{0,95}", admission_id),
+            "fixedtxt-admission-id")
+    require(type(FIXEDTXT_ATTEMPTS) is dict and admission_id in FIXEDTXT_ATTEMPTS,
+            "fixedtxt-no-reviewed-attempt")
+    row = FIXEDTXT_ATTEMPTS[admission_id]
+    require(type(row) is dict and set(row) == {
+        "schema", "scope", "context", "plan_sha256", "arm", "fixture",
+        "recipient_sha256", "limits", "single_owner", "runtime_original",
+    } and row["schema"] == FIXEDTXT_ADMISSION_SCHEMA,
+            "fixedtxt-reviewed-v2-row-fields")
+    return row
+
+
+def _fixedtxt_runtime_descriptor(row):
+    from native_film180_evidence_selection import fixedtxt_member_path
+    descriptor = row["runtime_original"]
+    require(type(descriptor) is dict and set(descriptor) == {
+        "root", "relative_path", "bytes", "sha256",
+    } and descriptor["root"] == "inputs", "fixedtxt-runtime-original-fields")
+    fixedtxt_member_path(descriptor["relative_path"])
+    require(type(descriptor["bytes"]) is int
+            and 1 <= descriptor["bytes"] <= 65536,
+            "fixedtxt-runtime-original-byte-bound")
+    core.project(descriptor["sha256"], SHA, exact=True)
+    return descriptor
+
+
+def admit_fixedtxt_attempt(plan_raw, *, current, admission_id, recipient_sha256):
+    """Admit the fixed original P; runtime bytes require the dual seam below.
+
+    The owner calls the same source guard before routing or acquisition.
+    This pure entry point also requires it, before semantic plan parsing.
+    """
+    import ci_private_evidence as crypto
+    from native_film180_evidence_selection import (
+        fixedtxt_validate_plan, FIXEDTXT_SCOPE, FIXEDTXT_MAX_JSON,
+    )
+    row = _fixedtxt_reviewed_row(admission_id)
+    crypto.validate_context(current)
+    core.project(recipient_sha256, SHA, exact=True)
+    core.project(row["plan_sha256"], SHA, exact=True)
+    require(row["context"] == current and row["recipient_sha256"] == recipient_sha256
+            and row["scope"] == FIXEDTXT_SCOPE, "fixedtxt-independent-context-and-recipient")
+    require(type(plan_raw) is bytes and 0 < len(plan_raw) <= FIXEDTXT_MAX_JSON
+            and sha(plan_raw) == row["plan_sha256"], "fixedtxt-independent-plan-original")
+    runtime = _fixedtxt_runtime_descriptor(row)
+    plan = fixedtxt_validate_plan(crypto.strict(plan_raw), current=current)
+    require(crypto.json_bytes(plan) == plan_raw, "fixedtxt-canonical-plan-original")
+    require([binding["sha256"] for binding in plan["source_bindings"]
+             if binding["path"] == "tooling/native_film180_original_g2.py"]
+            == [FIXEDTXT_REVIEWED_WRAPPER_SHA256], "fixedtxt-reviewed-wrapper-source-binding")
+    expected = dict(schema=FIXEDTXT_ADMISSION_SCHEMA, scope=FIXEDTXT_SCOPE, context=current,
+        plan_sha256=sha(plan_raw), arm=plan["arm"], fixture=plan["fixture"],
+        recipient_sha256=recipient_sha256, limits=plan["limits"], single_owner=1,
+        runtime_original=runtime)
+    require(crypto.json_bytes(row) == crypto.json_bytes(expected),
+            "fixedtxt-reviewed-attempt-binding")
+    selected = [member for member in plan["members"]
+                if (member["root"], member["relative_path"])
+                == (runtime["root"], runtime["relative_path"])]
+    require(len(selected) == 1 and selected[0]["role"] == "input-original"
+            and selected[0]["expected_sha256"] is None
+            and runtime["bytes"] <= selected[0]["maximum"],
+            "fixedtxt-runtime-original-planned-member")
+    nullable_inputs = [member for member in plan["members"]
+                       if member["role"] == "input-original"
+                       and member["expected_sha256"] is None]
+    require(nullable_inputs == selected, "fixedtxt-runtime-original-only-nullable-input")
+    return plan
+
+
+def _fixedtxt_plan_input_path(plan_input_path):
+    """Validate only syntax of an independently supplied owner path, not authority."""
+    from pathlib import PurePosixPath
+    require(type(plan_input_path) is str and 0 < len(plan_input_path) <= 1024
+            and "\\" not in plan_input_path
+            and PurePosixPath(plan_input_path).is_absolute()
+            and str(PurePosixPath(plan_input_path)) == plan_input_path
+            and ".." not in PurePosixPath(plan_input_path).parts,
+            "fixedtxt-independent-plan-input-path")
+    return plan_input_path
+
+
+def admit_fixedtxt_runtime_original(plan_raw, runtime_raw, *, current,
+                                   admission_id, recipient_sha256, plan_input_path):
+    """Admit P and R from the same held originals without filesystem effects."""
+    import ci_private_evidence as crypto
+    from native_mlt_g2_observation import RUNTIME_INPUT_KEYS
+    plan = admit_fixedtxt_attempt(plan_raw, current=current, admission_id=admission_id,
+                                  recipient_sha256=recipient_sha256)
+    runtime = _fixedtxt_runtime_descriptor(_fixedtxt_reviewed_row(admission_id))
+    require(type(runtime_raw) is bytes
+            and len(runtime_raw) == runtime["bytes"]
+            and sha(runtime_raw) == runtime["sha256"],
+            "fixedtxt-independent-runtime-original")
+    _fixedtxt_plan_input_path(plan_input_path)
+    value = crypto.strict(runtime_raw)
+    require(type(value) is dict and set(value) == RUNTIME_INPUT_KEYS | {
+        "schema", "private_evidence_dir", "fixedtxt_admission_id",
+        "fixedtxt_plan", "recipient_sha256",
+    } and value["schema"] == "motionwright.native.fixedtxt-v4-g2-inputs/1",
+            "fixedtxt-runtime-input-v1-fields")
+    reference = value["fixedtxt_plan"]
+    require(type(reference) is dict and set(reference) == {"path", "bytes", "sha256"}
+            and type(reference["bytes"]) is int
+            and reference["bytes"] == len(plan_raw)
+            and reference["path"] == plan_input_path
+            and reference["sha256"] == sha(plan_raw),
+            "fixedtxt-same-plan-original-reference")
+    require(value["fixedtxt_admission_id"] == admission_id
+            and value["recipient_sha256"] == recipient_sha256
+            and value["motionwright_sha"] == current["source_sha"]
+            and value["semwright_sha"] == current["semwright_sha"]
+            and value["run_id"] == current["run_id"]
+            and value["run_attempt"] == current["run_attempt"],
+            "fixedtxt-runtime-independent-context")
+    return plan, value
+
+
+def validate_fixedtxt_public(public, *, expected_plan, current):
+    import ci_private_evidence as crypto
+    from native_film180_evidence_selection import fixedtxt_validate_plan, fixedtxt_frames, FIXEDTXT_SCOPE
+    plan = fixedtxt_validate_plan(expected_plan, current=current)
+    require(type(public) is dict and set(public) == FIXEDTXT_PUBLIC_KEYS
+            and public["schema"] == FIXEDTXT_PUBLIC_SCHEMA and public["scope"] == FIXEDTXT_SCOPE
+            and public["context"] == current and public["arm"] == plan["arm"]
+            and public["fixture"] == plan["fixture"]
+            and public["plan_sha256"] == sha(crypto.json_bytes(plan)), "fixedtxt-public-family-or-binding")
+    for name in ("recipient_spki_sha256", "sealed_originals_sha256"):
+        core.project(public[name], SHA, exact=True)
+    require(type(public["sealed_originals_bytes"]) is int
+            and 0 < public["sealed_originals_bytes"] <= plan["limits"]["capsule_bytes"],
+            "fixedtxt-public-cipher-bound")
+    for name in ("snapshot_capture_complete", "planned_originals_complete", "decoder_originals_verified"):
+        require(type(public[name]) is bool, "fixedtxt-public-completeness-type")
+    for name in ("retained_file_count", "missing_file_count"):
+        require(type(public[name]) is int and 0 <= public[name] <= len(plan["members"]),
+                "fixedtxt-public-member-count")
+    require(public["retained_file_count"] + public["missing_file_count"] == len(plan["members"])
+            and (not public["planned_originals_complete"]
+                 or public["snapshot_capture_complete"] and public["missing_file_count"] == 0)
+            and (not public["decoder_originals_verified"] or public["planned_originals_complete"]),
+            "fixedtxt-public-completeness-contradiction")
+    require(type(public["verified_decode_count"]) is int
+            and public["verified_decode_count"] == (len(fixedtxt_frames(plan["fixture"]))
+                if public["decoder_originals_verified"] else 0)
+            and type(public["single_owner"]) is int and public["single_owner"] == 1,
+            "fixedtxt-public-one-fixture-counts")
+    require(all(public[name] is False for name in (
+        "native_success_verified", "pair_comparison_performed", "decoder_invoked_by_intake",
+        "native_operation_retried", "physical_acceptance", "human_acceptance", "release_authorized"))
+            and public["upload_authorization"] == "NOT_GRANTED_BY_COLLECTOR", "fixedtxt-public-no-escalation")
+    return public
+
+
+def verify_fixedtxt_snapshot(raw, *, expected_plan, current, plan_raw,
+                             plan_input_path, admission_id, recipient_sha256):
+    """Read the existing snapshot format against an independently frozen plan.
+
+    The snapshot's own manifest is evidence, never the expected member roster.
+    Missing/failed originals remain incomplete. Unknown decoder terminals are
+    not repaired by successful decryption or byte retention.
+    """
+    import ci_private_evidence as crypto
+    import stat
+    from native_film180_evidence_selection import (
+        fixedtxt_validate_plan, fixedtxt_validate_selected_frames, FIXEDTXT_MAX_JSON, FIXEDTXT_PLAN_PATH,
+    )
+    from native_mlt_g2_custody import _ffv1_source_tar_framing
+    plan = admit_fixedtxt_attempt(plan_raw, current=current, admission_id=admission_id,
+                                  recipient_sha256=recipient_sha256)
+    require(crypto.json_bytes(fixedtxt_validate_plan(expected_plan, current=current)) == plan_raw,
+            "fixedtxt-independent-plan-argument")
+    _fixedtxt_plan_input_path(plan_input_path)
+    require(type(raw) is bytes and 0 < len(raw) <= plan["limits"]["capsule_bytes"],
+            "fixedtxt-snapshot-total-bound")
+    physical_count = _ffv1_source_tar_framing(raw)
+    expected = {row["root"] + "/" + row["relative_path"]: row for row in plan["members"]}
+    originals = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        members = archive.getmembers()
+        names = [item.name for item in members]
+        require(not archive.pax_headers and len(members) == physical_count
+                and len(names) == len(set(names)) and len(members) <= plan["limits"]["files"] + 1
+                and "snapshot-manifest.json" in names, "fixedtxt-snapshot-member-roster")
+        require(set(names) <= set(expected) | {"snapshot-manifest.json"}, "fixedtxt-unplanned-original")
+        total = 0
+        for member in members:
+            limit = FIXEDTXT_MAX_JSON if member.name == "snapshot-manifest.json" else expected[member.name]["maximum"]
+            require(member.type == tarfile.REGTYPE and not member.linkname and not member.sparse
+                    and not member.pax_headers and 0 <= member.size <= limit, "fixedtxt-snapshot-member-bound")
+            stream = archive.extractfile(member)
+            require(stream is not None, "fixedtxt-snapshot-member-stream")
+            payload = stream.read(limit + 1)
+            require(len(payload) == member.size, "fixedtxt-snapshot-truncated-member")
+            total += len(payload)
+            require(total <= crypto.MAX_TOTAL, "fixedtxt-snapshot-total-bound")
+            originals[member.name] = payload
+    manifest = crypto.strict(originals.pop("snapshot-manifest.json"))
+    require(set(manifest) == {"schema", "scope", "roots", "selected_originals_complete", "complete_owner_state_claimed"}
+            and manifest["schema"] == "motionwright.ci.private-snapshot/1"
+            and manifest["scope"] == "selected-original-files-at-read-time"
+            and manifest["complete_owner_state_claimed"] is False
+            and type(manifest["selected_originals_complete"]) is bool
+            and type(manifest["roots"]) is dict and set(manifest["roots"]) == {row["root"] for row in plan["members"]},
+            "fixedtxt-snapshot-manifest-contract")
+    observed, complete = set(), True
+    mark_keys = {"device", "inode", "size", "mode", "uid", "gid", "mtime_ns", "ctime_ns"}
+    seen_inodes = set()
+    for root, result in manifest["roots"].items():
+        require(type(result) is dict and result.get("status") in ("CAPTURED", "PARTIAL", "ABSENT"),
+                "fixedtxt-snapshot-root-state")
+        status = result["status"]
+        root_keys = ({"status", "files"} if status == "CAPTURED" else
+                     {"status", "automatic_retry"} if status == "ABSENT" else
+                     {"status", "files", "error_type", "error", "automatic_retry", "original_retained_in_place"})
+        require(set(result) == root_keys, "fixedtxt-snapshot-root-fields")
+        if status != "CAPTURED":
+            require(result["automatic_retry"] is False, "fixedtxt-snapshot-retry")
+        if status == "PARTIAL":
+            require(result["original_retained_in_place"] is True
+                    and all(type(result[name]) is str and len(result[name]) <= 4096
+                            for name in ("error", "error_type")), "fixedtxt-partial-root-observation")
+        if result["status"] != "CAPTURED":
+            complete = False
+        rows = result.get("files", [])
+        require(type(rows) is list and len(rows) <= plan["limits"]["files"], "fixedtxt-snapshot-root-count")
+        for row in rows:
+            require(type(row) is dict and type(row.get("archive_path")) is str, "fixedtxt-snapshot-row")
+            path = row["archive_path"]
+            require(path in expected and expected[path]["root"] == root and path not in observed,
+                    "fixedtxt-snapshot-observed-roster")
+            observed.add(path)
+            if row.get("status") == "CAPTURE_FAILED":
+                require(set(row) == {"archive_path", "status", "error_type", "error",
+                                    "automatic_retry", "original_retained_in_place"}
+                        and all(type(row[name]) is str and len(row[name]) <= 4096 for name in ("error", "error_type"))
+                        and path not in originals and row.get("automatic_retry") is False
+                        and row.get("original_retained_in_place") is True, "fixedtxt-failed-row-with-payload")
+                complete = False
+                continue
+            require(set(row) == {"archive_path", "observation"} and path in originals,
+                    "fixedtxt-snapshot-payload-observation")
+            observation = row["observation"]
+            require(type(observation) is dict and set(observation) == {
+                "path", "size", "sha256", "before", "after", "namespace_after"}, "fixedtxt-observation-fields")
+            payload = originals[path]
+            require(type(observation["path"]) is str and 0 < len(observation["path"]) <= 1024
+                    and type(observation["size"]) is int
+                    and (observation["sha256"], observation["size"]) == (sha(payload), len(payload)),
+                    "fixedtxt-original-byte-binding")
+            pin = expected[path]["expected_sha256"]
+            require(pin is None or pin == sha(payload), "fixedtxt-independent-original-pin")
+            mark = observation["before"]
+            require(type(mark) is dict and set(mark) == mark_keys
+                    and all(type(number) is int for number in mark.values())
+                    and mark["size"] == len(payload) and stat.S_ISREG(mark["mode"])
+                    and mark == observation["after"] == observation["namespace_after"],
+                    "fixedtxt-original-file-stability")
+            identity = (mark["device"], mark["inode"])
+            require(identity not in seen_inodes, "fixedtxt-aliased-original")
+            seen_inodes.add(identity)
+    require(set(originals) <= observed, "fixedtxt-unobserved-payload")
+    require(not manifest["selected_originals_complete"] or complete,
+            "fixedtxt-forged-snapshot-completeness")
+    planned_complete = complete and manifest["selected_originals_complete"] and set(originals) == set(expected)
+    plan_path = "control/" + FIXEDTXT_PLAN_PATH
+    if plan_path in originals:
+        require(originals[plan_path] == plan_raw, "fixedtxt-foreign-plan-original")
+    else:
+        planned_complete = False
+    runtime = _fixedtxt_runtime_descriptor(_fixedtxt_reviewed_row(admission_id))
+    runtime_key = runtime["root"] + "/" + runtime["relative_path"]
+    require(runtime_key in originals, "fixedtxt-runtime-original-absent")
+    # The manifest cannot authorize R. This repeats the SAME external /2 row
+    # check on the exact retained member, without reopening a pathname.
+    admit_fixedtxt_runtime_original(plan_raw, originals[runtime_key], current=current,
+        admission_id=admission_id, recipient_sha256=recipient_sha256,
+        plan_input_path=plan_input_path)
+    verified = False
+    if planned_complete:
+        try:
+            fixedtxt_validate_selected_frames(originals, plan=plan)
+            verified = True
+        except (KeyError, ValueError, TypeError, core.SelectionError):
+            # Preserve complete bytes from an uncertain decoder without a
+            # native verdict. The independent strict caller may reject below.
+            verified = False
+    return dict(snapshot_capture_complete=manifest["selected_originals_complete"] and complete,
+        planned_originals_complete=planned_complete, decoder_originals_verified=verified,
+        retained_file_count=len(originals), missing_file_count=len(expected) - len(originals),
+        originals=originals, manifest=manifest)
+
+
+def verify_fixedtxt_sealed_selection(envelope, private_key, public, *, expected_plan,
+                                    current, plan_raw, plan_input_path,
+                                    admission_id, recipient_sha256, require_complete=True):
+    import ci_private_evidence as crypto
+    from native_film180_evidence_selection import fixedtxt_frames, fixedtxt_validate_plan
+    require(type(require_complete) is bool, "fixedtxt-intake-completeness-mode")
+    plan = admit_fixedtxt_attempt(plan_raw, current=current, admission_id=admission_id,
+                                  recipient_sha256=recipient_sha256)
+    require(crypto.json_bytes(fixedtxt_validate_plan(expected_plan, current=current)) == plan_raw,
+            "fixedtxt-independent-plan-argument")
+    _fixedtxt_plan_input_path(plan_input_path)
+    validate_fixedtxt_public(public, expected_plan=plan, current=current)
+    require(public["recipient_spki_sha256"] == recipient_sha256,
+            "fixedtxt-independent-recipient")
+    require(type(envelope) is bytes and (sha(envelope), len(envelope)) == (
+        public["sealed_originals_sha256"], public["sealed_originals_bytes"]), "fixedtxt-original-cipher-identity")
+    raw, authenticated = crypto.decrypt_snapshot(envelope, private_key)
+    require(authenticated == current, "fixedtxt-authenticated-context")
+    offset = len(crypto.MAGIC)
+    length = int.from_bytes(envelope[offset:offset + 4], "big")
+    header = crypto.strict(envelope[offset + 4:offset + 4 + length])
+    require(header["recipient_spki_sha256"] == public["recipient_spki_sha256"], "fixedtxt-authenticated-recipient")
+    result = verify_fixedtxt_snapshot(raw, expected_plan=plan, current=current,
+        plan_raw=plan_raw, plan_input_path=plan_input_path,
+        admission_id=admission_id, recipient_sha256=recipient_sha256)
+    for name in ("snapshot_capture_complete", "planned_originals_complete", "decoder_originals_verified",
+                 "retained_file_count", "missing_file_count"):
+        require(type(public[name]) is type(result[name]) and public[name] == result[name],
+                "fixedtxt-public-custody-contradiction")
+    require(not require_complete or result["planned_originals_complete"] and result["decoder_originals_verified"],
+            "fixedtxt-original-custody-incomplete")
+    return dict(schema="motionwright.native.fixedtxt-custody-intake/1", context=current,
+        arm=expected_plan["arm"], fixture=expected_plan["fixture"],
+        planned_originals_complete=result["planned_originals_complete"],
+        decoder_originals_verified=result["decoder_originals_verified"],
+        retained_file_count=result["retained_file_count"], missing_file_count=result["missing_file_count"],
+        verified_decode_count=len(fixedtxt_frames(expected_plan["fixture"])) if result["decoder_originals_verified"] else 0,
+        native_success_verified=False, native_operation_retried=False, decoder_invoked_by_intake=False,
+        pair_comparison_performed=False, physical_acceptance=False, human_acceptance=False, release_authorized=False)

@@ -1261,3 +1261,200 @@ class Ffv1SeedCustodyTests(unittest.TestCase):
 
 
 if __name__=="__main__":unittest.main()
+
+def fixedtxt_v2_bind(plan, originals, *, plan_input_path, recipient_sha256,
+                    admission_id="synthetic"):
+    """Synthetic test-only P/R originals; never a runtime admission or owner grant."""
+    import ci_private_evidence as crypto
+    import native_film180_evidence_selection as fixed
+    from native_mlt_g2_observation import RUNTIME_INPUT_KEYS
+    runtime_path = "source-input.original.json"
+    for member in plan["members"]:
+        if (member["root"], member["relative_path"]) == ("inputs", runtime_path):
+            member["maximum"] = 65536
+            member["expected_sha256"] = None
+    plan_raw = crypto.json_bytes(plan)
+    runtime = {key:"SYNTHETIC-COMPONENT-ONLY-NOT-RUNTIME" for key in RUNTIME_INPUT_KEYS}
+    runtime.update(
+        schema="motionwright.native.fixedtxt-v4-g2-inputs/1",
+        private_evidence_dir="/synthetic/component-only-no-runtime",
+        motionwright_sha=plan["context"]["source_sha"],
+        semwright_sha=plan["context"]["semwright_sha"],
+        run_id=plan["context"]["run_id"], run_attempt=plan["context"]["run_attempt"],
+        fixedtxt_admission_id=admission_id, recipient_sha256=recipient_sha256,
+        fixedtxt_plan=dict(path=plan_input_path, bytes=len(plan_raw), sha256=crypto.sha(plan_raw)))
+    runtime_raw = crypto.json_bytes(runtime)
+    originals["control/" + fixed.FIXEDTXT_PLAN_PATH] = plan_raw
+    originals["inputs/" + runtime_path] = runtime_raw
+    row = dict(schema=mlt.FIXEDTXT_ADMISSION_SCHEMA, scope=fixed.FIXEDTXT_SCOPE,
+        context=plan["context"], plan_sha256=crypto.sha(plan_raw),
+        arm=plan["arm"], fixture=plan["fixture"], recipient_sha256=recipient_sha256,
+        limits=plan["limits"], single_owner=1,
+        runtime_original=dict(root="inputs", relative_path=runtime_path,
+                              bytes=len(runtime_raw), sha256=crypto.sha(runtime_raw)))
+    binding = dict(plan_raw=plan_raw, plan_input_path=plan_input_path,
+                   admission_id=admission_id, recipient_sha256=recipient_sha256)
+    return binding, row
+
+
+class FixedTxtIndependentIntakeTests(unittest.TestCase):
+    def setUp(self):
+        # This inert fixture pin matches the synthetic source bindings only.
+        # The production constant remains None and authorizes no wrapper.
+        pin = mock.patch.object(mlt, "FIXEDTXT_REVIEWED_WRAPPER_SHA256", "b" * 64)
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    def fixture(self, **kwargs):
+        from tooling.tests.test_native_film180_evidence_selection import fixedtxt_fixture
+        current, plan, originals = fixedtxt_fixture(**kwargs)
+        self.fixedtxt_binding, self.fixedtxt_row = fixedtxt_v2_bind(
+            plan, originals, plan_input_path="/synthetic/component-control/fixedtxt-plan.original.json",
+            recipient_sha256="f" * 64)
+        catalogue = mock.patch.object(mlt, "FIXEDTXT_ATTEMPTS", {"synthetic":self.fixedtxt_row})
+        catalogue.start()
+        self.addCleanup(catalogue.stop)
+        return current, plan, originals
+
+    def snapshot(self, plan, originals):
+        from tooling.tests.test_native_film180_evidence_selection import fixedtxt_snapshot_fixture
+        return fixedtxt_snapshot_fixture(plan, originals)
+
+    def public(self, plan, *, complete=True, decoder=False):
+        import ci_private_evidence as crypto
+        import native_film180_evidence_selection as fixed
+        return dict(schema=mlt.FIXEDTXT_PUBLIC_SCHEMA, scope=fixed.FIXEDTXT_SCOPE,
+            context=plan["context"], arm=plan["arm"], fixture=plan["fixture"],
+            plan_sha256=crypto.sha(crypto.json_bytes(plan)), recipient_spki_sha256="f" * 64,
+            sealed_originals_sha256=crypto.sha(b"fixture"), sealed_originals_bytes=7,
+            snapshot_capture_complete=complete, planned_originals_complete=complete,
+            decoder_originals_verified=decoder, retained_file_count=len(plan["members"]),
+            missing_file_count=0, verified_decode_count=len(plan["selected_frames"]) if decoder else 0,
+            single_owner=1, native_success_verified=False, pair_comparison_performed=False,
+            decoder_invoked_by_intake=False, native_operation_retried=False,
+            physical_acceptance=False, human_acceptance=False, release_authorized=False,
+            upload_authorization="NOT_GRANTED_BY_COLLECTOR")
+
+    def test_empty_catalogue_rejects_before_plan_parsing_or_any_native_admission(self):
+        import ci_private_evidence as crypto
+        with mock.patch.object(mlt, "FIXEDTXT_ATTEMPTS", {}), \
+                mock.patch.object(crypto, "strict", side_effect=AssertionError("no input parsing before catalogue")), \
+                mock.patch("subprocess.Popen", side_effect=AssertionError("no native process")):
+            with self.assertRaisesRegex(core.SelectionError, "no-reviewed-attempt"):
+                mlt.admit_fixedtxt_attempt(b"not a plan", current=CURRENT, admission_id="missing",
+                                          recipient_sha256="f" * 64)
+
+    def test_reviewed_binding_is_exact_source_run_case_recipient_and_plan_without_flag_activation(self):
+        import ci_private_evidence as crypto
+        import native_film180_evidence_selection as fixed
+        current, plan, _ = self.fixture(); raw = crypto.json_bytes(plan)
+        row = dict(schema=mlt.FIXEDTXT_ADMISSION_SCHEMA, scope=fixed.FIXEDTXT_SCOPE,
+            context=current, plan_sha256=crypto.sha(raw), arm=plan["arm"], fixture=plan["fixture"],
+            recipient_sha256="f" * 64, limits=plan["limits"], single_owner=1,
+            runtime_original=self.fixedtxt_row["runtime_original"])
+        with mock.patch.object(mlt, "FIXEDTXT_ATTEMPTS", {"synthetic":row}):
+            self.assertEqual(mlt.admit_fixedtxt_attempt(raw, current=current, admission_id="synthetic",
+                                                     recipient_sha256="f" * 64), plan)
+            for altered in ({**row, "scope":"film180-g2"}, {**row, "plan_sha256":"0" * 64},
+                            {**row, "recipient_sha256":"0" * 64}, {**row, "single_owner":True},
+                            {**row, "admitted":True}, {**row, "fixture":"fixed-causal"}):
+                with mock.patch.object(mlt, "FIXEDTXT_ATTEMPTS", {"synthetic":altered}), \
+                        self.assertRaises(core.SelectionError):
+                    mlt.admit_fixedtxt_attempt(raw, current=current, admission_id="synthetic",
+                                              recipient_sha256="f" * 64)
+
+    def test_fixed_family_is_rejected_by_historical_film_and_audio_projection_readers(self):
+        current, plan, _ = self.fixture(); public = self.public(plan)
+        self.assertEqual(mlt.validate_fixedtxt_public(public, expected_plan=plan, current=current), public)
+        for reader in (mlt.validate_public_v2, mlt.validate_public_v3, mlt.validate_public_evidence):
+            with self.subTest(reader=reader.__name__), self.assertRaises(core.SelectionError): reader(public)
+        for schema in ("motionwright.native.film180-g2-public/2", "motionwright.native.mlt-g2-public/3"):
+            with self.assertRaises(core.SelectionError):
+                mlt.validate_fixedtxt_public({**public, "schema":schema}, expected_plan=plan, current=current)
+
+    def test_all_custody_bytes_can_be_retained_without_complete_decoder_or_native_credit(self):
+        current, plan, originals = self.fixture()
+        result = mlt.verify_fixedtxt_snapshot(self.snapshot(plan, originals), expected_plan=plan, current=current,
+            **self.fixedtxt_binding)
+        self.assertTrue(result["snapshot_capture_complete"])
+        self.assertTrue(result["planned_originals_complete"])
+        self.assertFalse(result["decoder_originals_verified"])
+        self.assertEqual(result["originals"], originals)
+        self.assertEqual(result["missing_file_count"], 0)
+        public = self.public(plan)
+        for name in ("native_success_verified", "native_operation_retried", "pair_comparison_performed",
+                     "decoder_invoked_by_intake", "physical_acceptance", "human_acceptance", "release_authorized"):
+            with self.subTest(name=name), self.assertRaises(core.SelectionError):
+                mlt.validate_fixedtxt_public({**public, name:True}, expected_plan=plan, current=current)
+        for key, value in (("retained_file_count", True), ("single_owner", True), ("missing_file_count", 1),
+                           ("verified_decode_count", 48), ("decoder_originals_verified", True)):
+            with self.assertRaises(core.SelectionError):
+                mlt.validate_fixedtxt_public({**public, key:value}, expected_plan=plan, current=current)
+
+    def test_snapshot_cannot_choose_its_own_expected_plan_omit_tail_or_add_an_original(self):
+        import ci_private_evidence as crypto
+        current, plan, originals = self.fixture()
+        path = "owner/" + plan["native_directory"] + "/frames/000179.png"
+        changed = dict(originals); del changed[path]
+        result = mlt.verify_fixedtxt_snapshot(self.snapshot(plan, changed), expected_plan=plan, current=current,
+            **self.fixedtxt_binding)
+        self.assertFalse(result["planned_originals_complete"])
+        self.assertFalse(result["decoder_originals_verified"])
+        self.assertEqual(result["missing_file_count"], 1)
+        self.assertEqual(result["originals"], changed)
+        changed = dict(originals); changed["owner/extra-secret.original"] = b"not selected"
+        with self.assertRaisesRegex(core.SelectionError, "unplanned-original"):
+            mlt.verify_fixedtxt_snapshot(self.snapshot(plan, changed), expected_plan=plan, current=current,
+                **self.fixedtxt_binding)
+        changed = dict(originals)
+        foreign = copy.deepcopy(plan); foreign["limits"]["attempt_seconds"] += 1
+        changed["control/fixedtxt-plan.original.json"] = crypto.json_bytes(foreign)
+        with self.assertRaisesRegex(core.SelectionError, "foreign-plan-original"):
+            mlt.verify_fixedtxt_snapshot(self.snapshot(plan, changed), expected_plan=plan, current=current,
+                **self.fixedtxt_binding)
+
+    def test_changed_snapshot_observation_and_forged_complete_are_rejected_without_decode(self):
+        import ci_private_evidence as crypto
+        import tarfile
+        current, plan, originals = self.fixture(); raw = self.snapshot(plan, originals)
+        def rewrite(change):
+            items = []
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as source:
+                for item in source.getmembers():
+                    data = source.extractfile(item).read()
+                    if item.name == "snapshot-manifest.json":
+                        value = crypto.strict(data); change(value); data = crypto.json_bytes(value)
+                    items.append((item.name, data))
+            out = io.BytesIO()
+            with tarfile.open(fileobj=out, mode="w") as target:
+                for name, data in items:
+                    info = tarfile.TarInfo(name); info.size = len(data); target.addfile(info, io.BytesIO(data))
+            return out.getvalue()
+        changes = (
+            lambda value:value["roots"]["owner"]["files"][0]["observation"].update(sha256="0" * 64),
+            lambda value:value["roots"]["owner"]["files"][0]["observation"]["after"].update(size=123),
+            lambda value:value["roots"]["owner"].update(status="PARTIAL", error_type="OSError", error="fixture",
+                automatic_retry=False, original_retained_in_place=True),
+        )
+        with mock.patch("subprocess.Popen", side_effect=AssertionError("no replay")):
+            for change in changes:
+                with self.assertRaises(core.SelectionError):
+                    mlt.verify_fixedtxt_snapshot(rewrite(change), expected_plan=plan, current=current,
+                        **self.fixedtxt_binding)
+
+    def test_foreign_external_plan_and_public_count_block_before_decryption(self):
+        import ci_private_evidence as crypto
+        current, plan, originals = self.fixture(); public = self.public(plan)
+        foreign = copy.deepcopy(plan); foreign["limits"]["attempt_seconds"] += 1
+        foreign_binding, foreign_row = fixedtxt_v2_bind(
+            foreign, dict(originals), plan_input_path=self.fixedtxt_binding["plan_input_path"],
+            recipient_sha256=self.fixedtxt_binding["recipient_sha256"])
+        with mock.patch.object(crypto, "decrypt_snapshot", side_effect=AssertionError("no decrypt")) as decrypt:
+            with mock.patch.object(mlt, "FIXEDTXT_ATTEMPTS", {"synthetic":foreign_row}), \
+                    self.assertRaisesRegex(core.SelectionError, "family-or-binding"):
+                mlt.verify_fixedtxt_sealed_selection(b"fixture", None, public,
+                    expected_plan=foreign, current=current, **foreign_binding)
+            with self.assertRaises(core.SelectionError):
+                mlt.verify_fixedtxt_sealed_selection(b"fixture", None, {**public, "single_owner":2},
+                    expected_plan=plan, current=current, **self.fixedtxt_binding)
+            decrypt.assert_not_called()

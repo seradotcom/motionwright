@@ -238,6 +238,7 @@ class FixedTextFixtureSelectionContracts(unittest.TestCase):
                 "caption_source": original("caption.original.txt"),
                 "common_sources": original("common.original.json"),
                 "compiler_binary_sha256": native_sha,
+                "decoder_sha256": "d" * 64,
                 "runtime": {"native_source_sha256": {"RED": "a" * 64, "GREEN": native_sha}},
             }
             terminal = {"schema": "motionwright-fixedtxt-film-fixture-set/4",
@@ -270,7 +271,14 @@ class FixedTextFixtureSelectionContracts(unittest.TestCase):
 
             output = io.StringIO()
             caught = None
+            # These pre-existing controls exercise cycle aggregation after the
+            # admission boundary. The new guard/reader has its own real-source
+            # causals; this inert boundary is not a runtime admission fixture.
+            admitted = {"cycle_raw": b"synthetic-held-cycle-original",
+                "plan": {"fixture": selected, "arm": "GREEN", "decoder_sha256": "d" * 64,
+                         "arm_sources": {"GREEN": {"native_source_sha256": native_sha}}}}
             with patch.object(runner.FilmAttempt, "prepare", return_value=attempt), \
+                    patch.object(runner, "admit_fixedtxt_wrapper_originals", return_value=admitted), \
                     patch.object(runner, "checked_plan", return_value={"synthetic": True}), \
                     patch.object(runner, "fixed_cycle_inputs", return_value=(spec, project_files, component, decoder)), \
                     patch.object(runner, "fixed_component", return_value=terminal) as produce, \

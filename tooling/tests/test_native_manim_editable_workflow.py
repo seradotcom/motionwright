@@ -5,8 +5,10 @@ verifier is extracted from the workflow; no provider, decoder or subprocess runs
 """
 from __future__ import annotations
 import ast
+import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -14,14 +16,17 @@ import textwrap
 import unittest
 from unittest import mock
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/native-manim-e2e.yml"
 sys.path.insert(0, str(ROOT / "tooling"))
-from native_manim_editable_cycle import EVIDENCE_NAME, PHASES
+from native_manim_editable_cycle import EVIDENCE_NAME, PHASES, seal_outer_cycle
+from test_native_manim_editable_outer_custody import launcher_fixture
 
 CURRENT = {"source_sha": "1" * 40, "semwright_sha": "2" * 40,
            "run_id": "12345", "run_attempt": "1"}
-RECIPIENT = "3" * 64
 FLAGS = (
     "fresh_process_and_session_per_phase", "same_saved_store",
     "typed_edit_import_and_fresh_readback", "original_bundle_byte_preserving_native_reopen",
@@ -68,11 +73,20 @@ def load_verifier():
 
 
 class EditableWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        der = cls.private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        cls.recipient = {"spki_der_base64": base64.b64encode(der).decode("ascii"),
+                         "sha256": digest(der)}
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        self.evidence, self.sealed = self.root / "private", self.root / "sealed"
+        self.evidence = self.root / ("manim-editable-private-" + CURRENT["source_sha"])
+        self.sealed = self.root / ("manim-editable-sealed-" + CURRENT["source_sha"])
         self.evidence.mkdir()
         self.sealed.mkdir()
         self.verifier = load_verifier()
@@ -100,7 +114,7 @@ class EditableWorkflowTests(unittest.TestCase):
                 "schema": "motionwright.manim.editable.sealed-custody/1",
                 "status": "PASS", "context": CURRENT, "selected_originals_complete": True,
                 "native_result_retained": True, "secondary_error_count": 0,
-                "recipient_sha256": RECIPIENT, "ciphertext_bytes": len(seal),
+                "recipient_sha256": self.recipient["sha256"], "ciphertext_bytes": len(seal),
                 "ciphertext_sha256": digest(seal),
             })
             rows.append({"phase": phase,
@@ -141,18 +155,28 @@ class EditableWorkflowTests(unittest.TestCase):
             "motion_canvas_equivalence_verified": False, "all_manim_features_accepted": False,
             "human_acceptance": False, "automatic_retry": False,
         })
+        write(self.evidence / "cycle-intent.json", {
+            "schema": "motionwright.manim.editable.source-cycle-intent/1",
+            "context": CURRENT, "unit_fixture": True, "native_effect_invocations": 0,
+        })
+        (self.root / "manim-editable-cycle-wrapper.log").write_bytes(
+            b"SYNTHETIC_EDITABLE_WRAPPER_STDOUT\r\n")
+        launcher_fixture(self.root, dict(CURRENT))
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}):
+            self.outer = seal_outer_cycle(self.evidence, self.sealed, self.recipient, dict(CURRENT))
 
     def check(self):
         with mock.patch("subprocess.run", side_effect=AssertionError("forbidden process")), \
                 mock.patch("subprocess.Popen", side_effect=AssertionError("forbidden process")), \
                 mock.patch("native_manim_editable_pixels.compare",
                            side_effect=AssertionError("publication is read-only")):
-            return self.verifier(self.evidence, self.sealed, dict(CURRENT), RECIPIENT)
+            return self.verifier(self.evidence, self.sealed, dict(CURRENT), self.recipient["sha256"])
 
     def test_original_four_outcomes_produce_closed_summary_without_native_work(self):
         before = {str(path.relative_to(self.root)): path.read_bytes()
                   for path in self.root.rglob("*") if path.is_file()}
         summary = self.check()
+        self.assertEqual(summary["schema"], "motionwright.manim.editable.source-cycle-public/2")
         self.assertEqual(summary["status"], "VERIFIED_SCOPED_EDITABLE_SOURCE_CYCLE")
         self.assertEqual(summary["publisher_native_effect_invocations"], 0)
         self.assertEqual([row["phase"] for row in summary["phases"]], list(PHASES))
@@ -161,11 +185,69 @@ class EditableWorkflowTests(unittest.TestCase):
             "native_effect_invocations", "publisher_native_effect_invocations",
             "decoded_frame_count_per_phase", "original_cycle_result_sha256",
             "original_pixel_cycle_sha256", "sealed_originals_recipient_sha256", "phases",
+            "outer_custody",
             *FLAGS, "motion_canvas_equivalence_verified", "all_manim_features_accepted",
             "human_acceptance", "automatic_retry",
         })
+        self.assertEqual(summary["outer_custody"], self.outer)
         self.assertEqual(before, {str(path.relative_to(self.root)): path.read_bytes()
                                  for path in self.root.rglob("*") if path.is_file()})
+
+    def test_missing_outer_ciphertext_blocks_v2_publication_without_resealing(self):
+        (self.sealed / "cycle-outer.mwseal").unlink()
+        before = {str(path.relative_to(self.root)): path.read_bytes()
+                  for path in self.root.rglob("*") if path.is_file()}
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            self.check()
+        self.assertEqual(before, {str(path.relative_to(self.root)): path.read_bytes()
+                                 for path in self.root.rglob("*") if path.is_file()})
+
+    def test_missing_outer_descriptor_blocks_v2_publication_without_resealing(self):
+        (self.sealed / "cycle-outer.public.json").unlink()
+        before = {str(path.relative_to(self.root)): path.read_bytes()
+                  for path in self.root.rglob("*") if path.is_file()}
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            self.check()
+        self.assertEqual(before, {str(path.relative_to(self.root)): path.read_bytes()
+                                 for path in self.root.rglob("*") if path.is_file()})
+
+    def test_coherent_outer_ciphertext_substitution_rejects_foreign_or_invalid_header(self):
+        from ci_private_evidence import MAGIC, encrypt_snapshot
+
+        foreign_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        foreign_der = foreign_private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        foreign_recipient = {
+            "spki_der_base64": base64.b64encode(foreign_der).decode("ascii"),
+            "sha256": digest(foreign_der),
+        }
+        variants = [("invalid_header", MAGIC + bytes(4) + b"synthetic-invalid-envelope")]
+        for key, value in (("source_sha", "a" * 40), ("semwright_sha", "b" * 40),
+                           ("run_id", "54321"), ("run_attempt", "2")):
+            variants.append((key, encrypt_snapshot(
+                b"synthetic-foreign-context", self.recipient, {**CURRENT, key: value})))
+        variants.append(("recipient", encrypt_snapshot(
+            b"synthetic-foreign-recipient", foreign_recipient, dict(CURRENT))))
+        cipher_path = self.sealed / "cycle-outer.mwseal"
+        receipt_path = self.sealed / "cycle-outer.public.json"
+        original_cipher, original_receipt = cipher_path.read_bytes(), receipt_path.read_bytes()
+        for kind, replacement in variants:
+            with self.subTest(kind=kind):
+                cipher_path.write_bytes(replacement)
+                receipt = json.loads(original_receipt)
+                receipt.update(ciphertext_bytes=len(replacement), ciphertext_sha256=digest(replacement))
+                write(receipt_path, receipt)
+                before = {str(path.relative_to(self.root)): path.read_bytes()
+                          for path in self.root.rglob("*") if path.is_file()}
+                try:
+                    with self.assertRaisesRegex(ValueError, "editable_public_outer_seal_header_"):
+                        self.check()
+                    self.assertEqual(before, {
+                        str(path.relative_to(self.root)): path.read_bytes()
+                        for path in self.root.rglob("*") if path.is_file()})
+                finally:
+                    cipher_path.write_bytes(original_cipher)
+                    receipt_path.write_bytes(original_receipt)
 
     def test_each_missing_original_seal_rejects_without_recovery_or_publication(self):
         for phase in PHASES:
@@ -219,7 +301,8 @@ class EditableWorkflowTests(unittest.TestCase):
             self.check()
         self.cycle.write_bytes(raw)
         with self.assertRaisesRegex(ValueError, "editable_public_original_context"):
-            self.verifier(self.evidence, self.sealed, {**CURRENT, "run_attempt": "2"}, RECIPIENT)
+            self.verifier(self.evidence, self.sealed, {**CURRENT, "run_attempt": "2"},
+                          self.recipient["sha256"])
 
     def test_changed_last_frame_and_missing_negative_are_rejected(self):
         raw, cycle_raw = self.pixel.read_bytes(), self.cycle.read_bytes()

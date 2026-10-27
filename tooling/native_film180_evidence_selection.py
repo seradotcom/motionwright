@@ -765,3 +765,322 @@ def verify_film_intake(raw,*,current):
         native_reopen_performed=False,decode_or_psnr_recomputed=False,source_content_oracle_recomputed=True,
         packet_PTS_and_AAC_priming_verified=False,privileged_Broker_grant_verified=False,
         physical_acceptance=False,human_acceptance=False,release_authorized=False,native_operation_retried=False)
+
+# FixedTXT is a different, closed evidence family. This source preparation does
+# not select a native job, authorize an attempt or inherit Film180 acceptance.
+FIXEDTXT_SCOPE = "fixedtxt-v4-one-fixture"
+FIXEDTXT_PLAN_SCHEMA = "motionwright.native.fixedtxt-originals-plan/1"
+FIXEDTXT_KEYS = (
+    "fixed-causal", "flow-control-base", "flow-control-with-fixed",
+    "flow-text-control", "fixed-multirun", "fixed-multirun-control",
+    "fixed-transform-clip", "fixed-camera-scene", "fixed-counter-captions",
+    "fixed-layer-behind", "fixed-layer-equal", "fixed-layer-front",
+)
+FIXEDTXT_ARMS = ("RED", "GREEN")
+FIXEDTXT_RGBA_BYTES = 1920 * 1080 * 4
+FIXEDTXT_ROOTS = ("control", "inputs", "observation", "owner")
+FIXEDTXT_PLAN_PATH = "fixedtxt-plan.original.json"
+FIXEDTXT_MAX_JSON = 512 * 1024
+FIXEDTXT_SOURCE_PATHS = tuple(sorted(set(mlt.FILM_SOURCE_PATHS) | {
+    "tooling/native_film180_evidence_selection.py",
+    "tooling/native_film180_original_g2.py",
+    "tooling/native_evidence_projection.py",
+    "tooling/ci_private_evidence.py",
+    "tooling/mlt_official_runtime_intake.py",
+}))
+
+
+def fixedtxt_frames(fixture):
+    require(type(fixture) is str and fixture in FIXEDTXT_KEYS, "fixedtxt-fixture")
+    if fixture == "fixed-counter-captions":
+        return (0, 29, 30, 45, 119, 120, 179)
+    if fixture in ("flow-control-base", "flow-control-with-fixed", "fixed-transform-clip"):
+        return (45, 120, 179)
+    return (0, 45, 120, 179)
+
+
+def fixedtxt_case_roster():
+    """The finite source roster is not a dispatch plan or an execution result."""
+    return [dict(arm=arm, fixture=fixture) for arm in FIXEDTXT_ARMS for fixture in FIXEDTXT_KEYS]
+
+
+def fixedtxt_member_path(value):
+    require(type(value) is str and 0 < len(value) <= 88
+            and re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", value) is not None
+            and all(part not in (".", "..") for part in value.split("/")),
+            "fixedtxt-member-path")
+    # Short ASCII paths keep the existing TAR in its regular-header grammar;
+    # PAX/GNU long-name records are not another way to add unlisted originals.
+    return value
+
+
+def fixedtxt_required_members(fixture, native_directory):
+    """Exact known V4 originals, including all 180 source PNGs and one owner."""
+    frames = fixedtxt_frames(fixture)
+    fixedtxt_member_path(native_directory)
+    require(native_directory.startswith("output/") and native_directory.count("/") == 1,
+            "fixedtxt-native-directory")
+    rows = {
+        ("control", FIXEDTXT_PLAN_PATH): "selection-plan",
+        ("observation", "fixed-text-inputs.original.json"): "cycle-inputs",
+        ("observation", "fixed-text-cycle.observation.json"): "cycle-observation",
+        ("observation", "final-custody.json"): "final-custody",
+        ("observation", "canonical-fixture-set/evidence/fixture-set-component.json"): "fixture-set",
+        ("observation", "canonical-fixture-set/fixtures/" + fixture + "/film.original.json"): "authored-film",
+        ("observation", "canonical-fixture-set/fixtures/" + fixture + "/expectations.json"): "fixture-expectations",
+    }
+    for name, role in (
+        ("fixed-text-case.json", "case-inputs"), ("native-result.json", "native-result"),
+        ("final-custody.json", "case-final-custody"),
+        ("fixed.project-inspect.stdout", "project-snapshot-original"),
+        ("canonical-component/evidence/project.derived.json", "compiled-project"),
+        ("canonical-component/evidence/compile-component.json", "compile-component"),
+        ("canonical-component/evidence/generated-inventory.json", "generated-inventory"),
+        ("native-result.fixed-text/host-binding.observation.json", "host-source-binding"),
+        ("owner-workspace.json", "owner-workspace"),
+        ("owner-workspace-terminal.json", "owner-workspace-terminal"),
+        ("owner-custody-close.observation.json", "owner-close"),
+        ("owner-closed.original.json", "owner-closed-original"),
+        ("owner-shutdown.intent.json", "owner-shutdown-intent"),
+        ("owner-shutdown.terminal.json", "owner-shutdown-terminal"),
+        ("native-result.host-stdin/session.original.json", "host-session"),
+        ("native-result.host-stdin/readback.intent.json", "host-readback-intent"),
+        ("native-result.host-stdin/native-return.snapshot.json", "host-return-snapshot"),
+        ("native-result.host-stdin/capture-0001.stdin", "host-stdin"),
+        ("native-result.host-stdin/capture-0001.json", "host-capture"),
+        ("native-result.host-stdin/capture-0001.terminal.json", "host-terminal"),
+        ("native-result.host-stdin/readback.observation.json", "host-readback"),
+    ):
+        rows[("observation", fixture + "/" + name)] = role
+    readback = fixture + "/fixed-text-original-readback/"
+    for name, role in (
+        ("artifact-manifest.json", "native-frame-manifest"),
+        ("native-observations.ndjson", "native-observations"),
+        ("native-observations-receipt.json", "native-observations-receipt"),
+        ("canvas-color-observations.json", "canvas-observations"),
+        ("font-readiness-receipt.json", "font-readiness"),
+        ("font-source-inventory.json", "font-inventory"),
+        ("selected-originals.json", "selected-originals"),
+    ):
+        rows[("observation", readback + name)] = role
+    for frame in range(180):
+        rows[("owner", native_directory + f"/frames/{frame:06d}.png")] = "native-png"
+    for frame in frames:
+        for suffix, role in (("original.png", "selected-png"), ("decoder.stdout", "selected-rgba"),
+                             ("decoder.stderr", "decoder-stderr"), ("decoder.capture.json", "decoder-terminal")):
+            rows[("observation", readback + f"frame-{frame:06d}." + suffix)] = role
+    return rows
+
+
+def fixedtxt_validate_plan(value, *, current):
+    """Validate an independent plan before paths, capture, crypto or native I/O.
+
+    The real catalogue is empty. Positive unit fixtures are not a resource
+    estimate and cannot select a source, owner, renderer or physical attempt.
+    """
+    import ci_private_evidence as crypto
+    crypto.validate_context(current)
+    require(current["run_attempt"] == "1", "fixedtxt-first-attempt")
+    fields = {"schema", "scope", "context", "arm", "fixture", "case_roster",
+              "source_bindings", "arm_sources", "cycle_input_sha256", "decoder_sha256",
+              "native_directory", "owner_count", "expected_fixture_count",
+              "default_fixture_count", "render_frames", "selected_frames", "limits", "members"}
+    require(type(value) is dict and set(value) == fields and value["schema"] == FIXEDTXT_PLAN_SCHEMA
+            and value["scope"] == FIXEDTXT_SCOPE and value["context"] == current,
+            "fixedtxt-plan-fields")
+    require(type(value["arm"]) is str and value["arm"] in FIXEDTXT_ARMS,
+            "fixedtxt-arm")
+    frames = fixedtxt_frames(value["fixture"])
+    require(value["case_roster"] == fixedtxt_case_roster(), "fixedtxt-exact-24-case-roster")
+    for name, expected in (("owner_count", 1), ("expected_fixture_count", 1),
+                           ("default_fixture_count", 12), ("render_frames", 180)):
+        require(type(value[name]) is int and value[name] == expected, "fixedtxt-one-case-counters")
+    require(type(value["selected_frames"]) is list
+            and all(type(frame) is int for frame in value["selected_frames"])
+            and value["selected_frames"] == list(frames), "fixedtxt-selected-frame-roster")
+    arms = value["arm_sources"]
+    require(type(arms) is dict and set(arms) == set(FIXEDTXT_ARMS), "fixedtxt-two-arm-source-roster")
+    for arm in FIXEDTXT_ARMS:
+        source = arms[arm]
+        require(type(source) is dict and set(source) == {"source_sha", "tree_sha", "native_source_sha256"},
+                "fixedtxt-arm-source-fields")
+        for name in ("source_sha", "tree_sha"):
+            core.project(source[name], SHA40, exact=True)
+        core.project(source["native_source_sha256"], SHA, exact=True)
+    require(arms[value["arm"]]["source_sha"] == current["semwright_sha"]
+            and (arms["RED"]["source_sha"] != arms["GREEN"]["source_sha"]
+                 or arms["RED"]["tree_sha"] == arms["GREEN"]["tree_sha"])
+            and arms["RED"]["native_source_sha256"] != arms["GREEN"]["native_source_sha256"],
+            "fixedtxt-distinct-exact-arm-sources")
+    for name in ("cycle_input_sha256", "decoder_sha256"):
+        core.project(value[name], SHA, exact=True)
+    bindings = value["source_bindings"]
+    require(type(bindings) is list and len(bindings) == len(FIXEDTXT_SOURCE_PATHS),
+            "fixedtxt-source-binding-roster")
+    for row in bindings:
+        require(type(row) is dict and set(row) == {"path", "sha256"}, "fixedtxt-source-binding-fields")
+        require(type(row["path"]) is str, "fixedtxt-source-binding-path")
+        core.project(row["sha256"], SHA, exact=True)
+    require([row["path"] for row in bindings] == list(FIXEDTXT_SOURCE_PATHS),
+            "fixedtxt-source-binding-roster")
+    limits = value["limits"]
+    require(type(limits) is dict and set(limits) == {
+        "capsule_bytes", "files", "attempt_seconds", "custody_seconds"}, "fixedtxt-limit-fields")
+    require(all(type(n) is int for n in limits.values())
+            and 0 < limits["capsule_bytes"] <= min(crypto.MAX_TOTAL, crypto.MAX_FILE)
+            and 0 < limits["files"] <= crypto.MAX_FILES
+            and 0 < limits["custody_seconds"] < limits["attempt_seconds"] <= 2**31 - 1,
+            "fixedtxt-finite-whole-attempt-limits")
+    mandatory = fixedtxt_required_members(value["fixture"], value["native_directory"])
+    members = value["members"]
+    require(type(members) is list and len(mandatory) <= len(members) <= limits["files"],
+            "fixedtxt-member-count")
+    seen, total, tar_bound = {}, 0, 0
+    extra_roles = {"input-original", "font-original", "attempt-original", "owner-original"}
+    for row in members:
+        require(type(row) is dict and set(row) == {
+            "root", "relative_path", "role", "maximum", "expected_sha256"}, "fixedtxt-member-fields")
+        require(type(row["root"]) is str and row["root"] in FIXEDTXT_ROOTS,
+                "fixedtxt-root-label")
+        path = fixedtxt_member_path(row["relative_path"])
+        key = (row["root"], path)
+        require(key not in seen, "fixedtxt-duplicate-original")
+        require(type(row["role"]) is str and (row["role"] == mandatory.get(key)
+                or key not in mandatory and row["role"] in extra_roles), "fixedtxt-role-layout")
+        require(type(row["maximum"]) is int and 0 <= row["maximum"] <= crypto.MAX_FILE,
+                "fixedtxt-member-budget")
+        require(row["maximum"] > 0 or row["role"] == "decoder-stderr", "fixedtxt-empty-member-bound")
+        if row["expected_sha256"] is not None:
+            core.project(row["expected_sha256"], SHA, exact=True)
+        if row["role"] == "selected-rgba":
+            require(row["maximum"] == FIXEDTXT_RGBA_BYTES, "fixedtxt-full-rgba-bound")
+        if row["role"] == "cycle-inputs":
+            require(row["expected_sha256"] == value["cycle_input_sha256"], "fixedtxt-original-input-pin")
+        if row["role"] == "selection-plan":
+            require(row["maximum"] == FIXEDTXT_MAX_JSON and row["expected_sha256"] is None,
+                    "fixedtxt-plan-no-self-hash")
+        if row["root"] == "observation":
+            first = path.split("/", 1)[0]
+            require(first not in FIXEDTXT_KEYS or first == value["fixture"], "fixedtxt-other-fixture-original")
+        seen[key] = row
+        total += row["maximum"]
+        tar_bound += 512 + ((row["maximum"] + 511) // 512) * 512
+    require(set(mandatory) <= set(seen), "fixedtxt-required-original-missing")
+    require({root for root, _path in seen} == set(FIXEDTXT_ROOTS), "fixedtxt-complete-root-roster")
+    require([(row["root"], row["relative_path"]) for row in members] == sorted(seen),
+            "fixedtxt-canonical-member-order")
+    # The old generic artifact intake limits each cipher to MAX_FILE. Keeping
+    # that stricter bound also preserves Core's total 512 MiB ceiling. Metadata,
+    # TAR padding, the existing envelope and the public projection are included.
+    tar_bound += 512 + FIXEDTXT_MAX_JSON + 1024
+    tar_bound = ((tar_bound + 10239) // 10240) * 10240
+    require(total <= crypto.MAX_TOTAL and tar_bound + 8192 + 64 + FIXEDTXT_MAX_JSON
+            <= limits["capsule_bytes"], "fixedtxt-whole-capsule-budget")
+    require(len(crypto.json_bytes(value)) <= FIXEDTXT_MAX_JSON, "fixedtxt-plan-size")
+    return value
+
+
+def fixedtxt_validate_selected_frames(originals, *, plan):
+    """Read existing RGBA and terminal bytes; never decode or rerun anything."""
+    import ci_private_evidence as crypto
+    readback = "observation/" + plan["fixture"] + "/fixed-text-original-readback/"
+    selected = crypto.strict(originals[readback + "selected-originals.json"])
+    fields = {"schema", "arm", "fixture", "manifest_sha256", "native_observation_sha256",
+        "original_Host_stdin_sha256", "original_font_readiness_sha256", "selected_frames",
+        "actual_browser_readiness_observed", "native_effect_repeated", "oracle_v3_reused",
+        "causal_pixel_verdict", "glyph_fidelity_accepted", "formal_acceptance", "human_acceptance"}
+    require(set(selected) == fields and selected["schema"] == "motionwright.native.fixed-text-selected-originals/4"
+            and selected["arm"] == plan["arm"] and selected["fixture"] == plan["fixture"],
+            "fixedtxt-selected-original-context")
+    require(selected["actual_browser_readiness_observed"] is True
+            and selected["causal_pixel_verdict"] == "NOT_EVALUATED"
+            and all(selected[name] is False for name in ("native_effect_repeated", "oracle_v3_reused",
+                "glyph_fidelity_accepted", "formal_acceptance", "human_acceptance")),
+            "fixedtxt-selected-original-scope")
+    for name, path in (
+        ("manifest_sha256", readback + "artifact-manifest.json"),
+        ("native_observation_sha256", readback + "native-observations.ndjson"),
+        ("original_font_readiness_sha256", readback + "font-readiness-receipt.json"),
+        ("original_Host_stdin_sha256", "observation/" + plan["fixture"] + "/native-result.host-stdin/capture-0001.stdin"),
+    ):
+        require(selected[name] == sha(originals[path]), "fixedtxt-selected-linked-original")
+    manifest = core.strict(originals[readback + "artifact-manifest.json"])
+    native_frames = manifest.get("frames")
+    require(type(native_frames) is list and len(native_frames) == 180, "fixedtxt-all180-native-roster")
+    for index, frame_row in enumerate(native_frames):
+        require(type(frame_row) is dict and type(frame_row.get("index")) is int
+                and frame_row["index"] == index and frame_row.get("file") == f"frames/{index:06d}.png"
+                and type(frame_row.get("bytes")) is int, "fixedtxt-all180-native-row")
+        original = originals["owner/" + plan["native_directory"] + f"/frames/{index:06d}.png"]
+        require((frame_row.get("sha256"), frame_row["bytes"]) == (sha(original), len(original)),
+                "fixedtxt-all180-original-binding")
+    fonts = crypto.strict(originals[readback + "font-source-inventory.json"])
+    require(set(fonts) == {"originals", "glyph_fidelity_accepted", "browser_readiness_is_glyph_fidelity"}
+            and fonts["glyph_fidelity_accepted"] is False and fonts["browser_readiness_is_glyph_fidelity"] is False
+            and type(fonts["originals"]) is list and 1 <= len(fonts["originals"]) <= 256,
+            "fixedtxt-font-original-inventory")
+    font_paths = set()
+    for index, font in enumerate(fonts["originals"]):
+        require(type(font) is dict and set(font) == {"role", "path", "retained", "bytes", "sha256"}
+                and type(font["role"]) is str and font["role"] in ("bundled", "imported")
+                and type(font["path"]) is str and 0 < len(font["path"]) <= 320
+                and font["retained"] == f"font-{index:04d}.original.bin"
+                and type(font["bytes"]) is int, "fixedtxt-font-original-row")
+        path = readback + font["retained"]
+        require(path not in font_paths and path in originals
+                and 0 < len(originals[path]) <= 16 * 1024 * 1024
+                and (font["sha256"], font["bytes"]) == (sha(originals[path]), len(originals[path])),
+                "fixedtxt-font-original-binding")
+        font_paths.add(path)
+    require(font_paths == {row["root"] + "/" + row["relative_path"]
+                           for row in plan["members"] if row["role"] == "font-original"}
+            and sum(len(originals[path]) for path in font_paths) <= 128 * 1024 * 1024,
+            "fixedtxt-complete-font-roster")
+    rows = selected["selected_frames"]
+    frames = list(fixedtxt_frames(plan["fixture"]))
+    require(type(rows) is list and len(rows) == len(frames), "fixedtxt-decoder-roster")
+    for row, frame in zip(rows, frames):
+        require(type(row) is dict and set(row) == {"frame", "png_sha256", "png_bytes", "rgba_sha256",
+            "rgba_bytes", "original_rgba_file", "compared_with_original_SDK_pixel_sample"}
+            and type(row["frame"]) is int and row["frame"] == frame
+            and type(row["compared_with_original_SDK_pixel_sample"]) is bool, "fixedtxt-decoder-row")
+        stem = f"frame-{frame:06d}"
+        png = originals[readback + stem + ".original.png"]
+        rgba = originals[readback + stem + ".decoder.stdout"]
+        stderr = originals[readback + stem + ".decoder.stderr"]
+        native = originals["owner/" + plan["native_directory"] + f"/frames/{frame:06d}.png"]
+        require(png == native and type(row["png_bytes"]) is int
+                and (row["png_sha256"], row["png_bytes"]) == (sha(png), len(png)),
+                "fixedtxt-selected-png-original")
+        require(type(row["rgba_bytes"]) is int and row["rgba_bytes"] == len(rgba) == FIXEDTXT_RGBA_BYTES
+                and row["rgba_sha256"] == sha(rgba) and row["original_rgba_file"] == stem + ".decoder.stdout",
+                "fixedtxt-original-rgba-truncated-or-changed")
+        capture = crypto.strict(originals[readback + stem + ".decoder.capture.json"])
+        terminal = capture.get("terminal")
+        require(type(terminal) is dict and capture.get("state") == "TERMINAL_OBSERVED"
+                and capture.get("automatic_retry") is False
+                and type(terminal.get("exit_code")) is int and terminal["exit_code"] == 0
+                and terminal.get("whole_process_completed") is True
+                and terminal.get("timed_out") is False and terminal.get("output_budget_exceeded") is False
+                and terminal.get("pipes_closed") is True and terminal.get("stdin_complete") is True
+                and terminal.get("pipe_errors") == [] and stderr == b"", "fixedtxt-decoder-original-terminal")
+        streams = capture.get("original_streams")
+        require(type(streams) is dict and set(streams) == {"stdout", "stderr"}, "fixedtxt-decoder-stream-roster")
+        for name, data in (("stdout", rgba), ("stderr", stderr)):
+            stream = streams[name]
+            require(type(stream) is dict and set(stream) == {"present", "bytes", "sha256", "buffer_collected_from_process"}
+                    and stream["present"] is True and stream["buffer_collected_from_process"] is True
+                    and type(stream["bytes"]) is int and (stream["sha256"], stream["bytes"]) == (sha(data), len(data)),
+                    "fixedtxt-decoder-stream-binding")
+        invocation = capture.get("invocation")
+        require(type(invocation) is dict and set(invocation) == {
+            "callable", "width", "height", "decoder", "decoder_sha256", "input_png_sha256"}
+            and invocation["callable"] == "decoded_rgba_png_capture"
+            and type(invocation["width"]) is int and type(invocation["height"]) is int
+            and (invocation["width"], invocation["height"]) == (1920, 1080)
+            and type(invocation["decoder"]) is str and 0 < len(invocation["decoder"]) <= 4096
+            and invocation["decoder_sha256"] == plan["decoder_sha256"]
+            and invocation["input_png_sha256"] == sha(png), "fixedtxt-decoder-invocation-binding")
+    return {"selected_decode_count": len(frames), "original_rgba_reused": True,
+            "decoder_invoked_by_intake": False, "pair_comparison_performed": False,
+            "native_success_verified": False, "formal_acceptance": False, "human_acceptance": False}

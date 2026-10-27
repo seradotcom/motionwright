@@ -17,6 +17,7 @@ import warnings
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_evidence_projection as selection_core
 import native_mlt_evidence_selection as selection
 from cryptography.exceptions import InvalidTag
@@ -1333,6 +1334,310 @@ class Ffv1PreflightBridgeTests(unittest.TestCase):
             self.assertIs(caught.exception,primary)
             write.assert_not_called();intake.assert_not_called()
 
+class FixedTxtCapsuleCustodyTests(unittest.TestCase):
+    def setUp(self):
+        # Explicit synthetic source identity, never a shipped runtime pin.
+        pin = mock.patch.object(selection, "FIXEDTXT_REVIEWED_WRAPPER_SHA256", "b" * 64)
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        der = cls.private.public_key().public_bytes(serialization.Encoding.DER,
+                                                   serialization.PublicFormat.SubjectPublicKeyInfo)
+        cls.recipient = {"spki_der_base64":base64.b64encode(der).decode(), "sha256":sealed.sha(der)}
+
+    def row(self, plan):
+        import native_film180_evidence_selection as fixed
+        return dict(schema=selection.FIXEDTXT_ADMISSION_SCHEMA, scope=fixed.FIXEDTXT_SCOPE,
+            context=plan["context"], plan_sha256=sealed.sha(sealed.json_bytes(plan)),
+            arm=plan["arm"], fixture=plan["fixture"], recipient_sha256=self.recipient["sha256"],
+            limits=plan["limits"], single_owner=1,
+            runtime_original=self.fixedtxt_row["runtime_original"])
+
+    def bind_fixture(self, plan, originals, *, plan_input_path):
+        from tooling.tests.test_native_mlt_evidence_selection import fixedtxt_v2_bind
+        self.fixedtxt_binding, self.fixedtxt_row = fixedtxt_v2_bind(
+            plan, originals, plan_input_path=plan_input_path,
+            recipient_sha256=self.recipient["sha256"])
+
+    @contextmanager
+    def fixture_path_syntax(self, declared_plan_path):
+        # Only the POSIX syntax edge is mocked on NTFS; path equality and all
+        # original file/handle/cipher checks remain real. No owner grant is made.
+        if os.name == "nt":
+            def exact_fixture_path(value):
+                self.assertEqual(value, declared_plan_path)
+                return value
+            with mock.patch.object(selection, "_fixedtxt_plan_input_path",
+                                   side_effect=exact_fixture_path):
+                yield
+        else:
+            yield
+
+    @contextmanager
+    def fixture(self, *, decoded=False):
+        from tooling.tests.test_native_film180_evidence_selection import fixedtxt_fixture
+        current, plan, originals = fixedtxt_fixture(decoded=decoded)
+        with tempfile.TemporaryDirectory(prefix="fixedtxt-source-control-") as temporary:
+            temp = Path(temporary).resolve(); source = temp / "source"; source.mkdir()
+            roots = {name:temp / ("motionwright-native-av-g2-synthetic" if name == "owner" else name)
+                     for name in ("control", "inputs", "observation", "owner")}
+            for path in roots.values(): path.mkdir()
+            declared_plan_path = str(roots["control"] / "fixedtxt-plan.original.json")
+            self.bind_fixture(plan, originals, plan_input_path=declared_plan_path)
+            owner = roots["owner"].stat()
+            originals["observation/" + plan["fixture"] + "/owner-workspace.json"] = sealed.json_bytes(dict(
+                schema="motionwright.native.mlt-g2-owner-workspace/1", path=str(roots["owner"]),
+                motionwright_sha=current["source_sha"], semwright_sha=current["semwright_sha"],
+                run_id=current["run_id"], run_attempt="1", device=owner.st_dev, inode=owner.st_ino,
+                uid=owner.st_uid, gid=owner.st_gid))
+            for name, data in originals.items():
+                label, relative = name.split("/", 1)
+                target = roots[label] / relative; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
+            with self.fixture_path_syntax(declared_plan_path), \
+                    mock.patch.object(selection, "FIXEDTXT_ATTEMPTS", {"synthetic":self.row(plan)}), \
+                    mock.patch.object(custody, "checked_owner_workspace", return_value=roots["owner"]), \
+                    mock.patch.object(selection_core, "verify_source_bindings", return_value={"source_bytes_bound":True}):
+                yield current, plan, originals, roots, source, temp
+
+    def capture(self, current, plan, roots, source, temp):
+        return custody.capture_fixedtxt_capsule(self.fixedtxt_binding["plan_raw"], current=current,
+            admission_id="synthetic", recipient=self.recipient, roots=roots,
+            source_root=source, runner_temp=temp,
+            plan_input_path=self.fixedtxt_binding["plan_input_path"])
+
+    def test_empty_or_foreign_attempt_stops_before_files_snapshot_or_encryption(self):
+        from tooling.tests.test_native_film180_evidence_selection import fixedtxt_fixture
+        current, plan, originals = fixedtxt_fixture()
+        self.bind_fixture(plan, originals,
+                          plan_input_path="/synthetic/component-control/fixedtxt-plan.original.json")
+        for catalogue in ({}, {"synthetic":{**self.row(plan), "scope":"film180-g2"}}):
+            with mock.patch.object(selection, "FIXEDTXT_ATTEMPTS", catalogue), \
+                    mock.patch.object(custody, "_fixedtxt_inventory", side_effect=AssertionError("no files")) as inventory, \
+                    mock.patch.object(custody, "gather_snapshot", side_effect=AssertionError("no capture")) as capture, \
+                    mock.patch.object(custody, "encrypt_snapshot", side_effect=AssertionError("no crypto")) as encrypt:
+                with self.assertRaises(selection_core.SelectionError): self.capture(current, plan, {}, None, None)
+                inventory.assert_not_called(); capture.assert_not_called(); encrypt.assert_not_called()
+
+    def test_real_existing_snapshot_cipher_and_two_file_intake_preserve_one_fixture_originals(self):
+        with self.fixture(decoded=True) as (current, plan, originals, roots, source, temp):
+            with mock.patch("subprocess.Popen", side_effect=AssertionError("no renderer or decoder")), \
+                    mock.patch.object(custody, "gather_snapshot", wraps=sealed.gather_snapshot) as capture:
+                envelope, public = self.capture(current, plan, roots, source, temp)
+                capture.assert_called_once()
+                self.assertEqual(capture.call_args.kwargs, {"preserve_partial":True})
+            self.assertTrue(public["planned_originals_complete"])
+            self.assertTrue(public["decoder_originals_verified"])
+            self.assertEqual(public["verified_decode_count"], 3)
+            self.assertFalse(public["native_success_verified"])
+            plaintext, authenticated = sealed.decrypt_snapshot(envelope, self.private)
+            self.assertEqual(authenticated, current)
+            actual = selection.verify_fixedtxt_snapshot(plaintext, expected_plan=plan, current=current,
+                **self.fixedtxt_binding)
+            self.assertEqual(actual["originals"], originals)
+            output = temp / "public"; output.mkdir()
+            custody.write_fixedtxt_capsule(output, envelope, public, expected_plan=plan,
+                                           current=current, admission_id="synthetic",
+                                           plan_raw=self.fixedtxt_binding["plan_raw"])
+            encoded = io.BytesIO()
+            with zipfile.ZipFile(encoded, "w", compression=zipfile.ZIP_STORED) as archive:
+                for name in ("sealed-originals.bin", "public-evidence.json"): archive.write(output / name, name)
+            raw_zip = encoded.getvalue()
+            expected = dict(artifact_id=71, run_id=int(current["run_id"]), run_attempt=1,
+                            source_sha=current["source_sha"], zip_sha256=sealed.sha(raw_zip))
+            result = custody.verify_fixedtxt_artifact(raw_zip, self.private, current=current,
+                expected_plan=plan, expected_artifact=expected, **self.fixedtxt_binding)
+            self.assertTrue(result["planned_originals_complete"])
+            self.assertTrue(result["decoder_originals_verified"])
+            self.assertFalse(result["native_success_verified"])
+            self.assertFalse(result["pair_comparison_performed"])
+            self.assertNotIn(b"SYNTHETIC-PNG", envelope)
+
+    def test_missing_original_keeps_other_bytes_encrypted_but_strict_intake_refuses(self):
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            missing = plan["native_directory"] + "/frames/000179.png"
+            (roots["owner"] / missing).unlink()
+            with mock.patch.object(custody, "gather_snapshot", wraps=sealed.gather_snapshot) as capture:
+                envelope, public = self.capture(current, plan, roots, source, temp)
+                capture.assert_called_once()
+            self.assertFalse(public["planned_originals_complete"])
+            self.assertFalse(public["decoder_originals_verified"])
+            self.assertEqual(public["missing_file_count"], 1)
+            raw, _ = sealed.decrypt_snapshot(envelope, self.private)
+            actual = selection.verify_fixedtxt_snapshot(raw, expected_plan=plan, current=current,
+                **self.fixedtxt_binding)
+            wanted = dict(originals); del wanted["owner/" + missing]
+            self.assertEqual(actual["originals"], wanted)
+            with self.assertRaisesRegex(selection_core.SelectionError, "custody-incomplete"):
+                selection.verify_fixedtxt_sealed_selection(envelope, self.private, public,
+                    current=current, expected_plan=plan, **self.fixedtxt_binding)
+            partial = selection.verify_fixedtxt_sealed_selection(envelope, self.private, public,
+                current=current, expected_plan=plan, require_complete=False, **self.fixedtxt_binding)
+            self.assertFalse(partial["native_success_verified"])
+            self.assertEqual(partial["missing_file_count"], 1)
+
+    def test_extra_oversize_overlapping_or_foreign_owner_roots_fail_before_capture(self):
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            with mock.patch.object(custody, "gather_snapshot", side_effect=AssertionError("no capture")) as capture:
+                (roots["owner"] / "unplanned.original").write_bytes(b"never select by discovery")
+                with self.assertRaisesRegex(custody.CustodyRejected, "unplanned-original"):
+                    self.capture(current, plan, roots, source, temp)
+                (roots["owner"] / "unplanned.original").unlink()
+                target = roots["owner"] / plan["native_directory"] / "frames/000000.png"
+                original = target.read_bytes(); target.write_bytes(b"x" * 4097)
+                with self.assertRaisesRegex(custody.CustodyRejected, "exceeds-plan"):
+                    self.capture(current, plan, roots, source, temp)
+                target.write_bytes(original)
+                with self.assertRaises(custody.CustodyRejected):
+                    self.capture(current, plan, {**roots, "inputs":roots["owner"]}, source, temp)
+                with mock.patch.object(custody, "checked_owner_workspace", return_value=roots["inputs"]):
+                    with self.assertRaisesRegex(custody.CustodyRejected, "owner-differs"):
+                        self.capture(current, plan, roots, source, temp)
+                capture.assert_not_called()
+
+    def test_actual_snapshot_manifest_bound_is_checked_before_encryption(self):
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            # Exercise the real three-observation serializer with many small
+            # planned originals; a payload-only count would incorrectly pass.
+            for index in range(900):
+                relative = f"extra-{index:04d}.original"
+                (roots["inputs"] / relative).write_bytes(b"x")
+                plan["members"].append(dict(root="inputs", relative_path=relative, role="input-original",
+                                            maximum=1, expected_sha256=sealed.sha(b"x")))
+            plan["members"].sort(key=lambda row:(row["root"], row["relative_path"]))
+            plan["limits"]["files"] = len(plan["members"])
+            self.bind_fixture(plan, originals,
+                              plan_input_path=self.fixedtxt_binding["plan_input_path"])
+            (roots["control"] / "fixedtxt-plan.original.json").write_bytes(self.fixedtxt_binding["plan_raw"])
+            (roots["inputs"] / "source-input.original.json").write_bytes(
+                originals["inputs/source-input.original.json"])
+            with mock.patch.object(selection, "FIXEDTXT_ATTEMPTS", {"synthetic":self.row(plan)}), \
+                    mock.patch.object(custody, "gather_snapshot", side_effect=AssertionError("no capture")) as capture, \
+                    mock.patch.object(custody, "encrypt_snapshot", side_effect=AssertionError("no crypto")) as encrypt:
+                with self.assertRaisesRegex(custody.CustodyRejected, "manifest-bound"):
+                    self.capture(current, plan, roots, source, temp)
+                capture.assert_not_called(); encrypt.assert_not_called()
+
+    def test_source_postcheck_failure_stops_before_encryption_without_repeating_capture(self):
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            with mock.patch.object(selection_core, "verify_source_bindings",
+                    side_effect=[{}, selection_core.SelectionError("source-changed")]), \
+                    mock.patch.object(custody, "gather_snapshot", return_value=(b"retained prefix", False)) as capture, \
+                    mock.patch.object(custody, "encrypt_snapshot", side_effect=AssertionError("no crypto")) as encrypt:
+                with self.assertRaisesRegex(selection_core.SelectionError, "source-changed"):
+                    self.capture(current, plan, roots, source, temp)
+                capture.assert_called_once(); encrypt.assert_not_called()
+            self.assertTrue((roots["observation"] / "final-custody.json").is_file())
+
+    def test_same_two_file_transport_rejects_extra_capsules_and_foreign_external_descriptor(self):
+        from tooling.tests.test_native_film180_evidence_selection import fixedtxt_fixture
+        current, plan, originals = fixedtxt_fixture()
+        self.bind_fixture(plan, originals,
+                          plan_input_path="/synthetic/component-control/fixedtxt-plan.original.json")
+        for names in (("sealed-originals.bin", "public-evidence.json", "part-02.bin"),
+                      ("sealed-source-originals.bin", "source-public-evidence.json")):
+            encoded = io.BytesIO()
+            with zipfile.ZipFile(encoded, "w") as archive:
+                for name in names: archive.writestr(name, b"fixture")
+            raw = encoded.getvalue()
+            expected = dict(artifact_id=71, run_id=int(current["run_id"]), run_attempt=1,
+                            source_sha=current["source_sha"], zip_sha256=sealed.sha(raw))
+            with mock.patch.object(selection, "FIXEDTXT_ATTEMPTS", {"synthetic":self.row(plan)}), \
+                    mock.patch.object(selection, "verify_fixedtxt_sealed_selection", side_effect=AssertionError("no decrypt")) as intake:
+                with self.assertRaisesRegex(custody.CustodyRejected, "two-file-artifact-roster"):
+                    custody.verify_fixedtxt_artifact(raw, self.private, current=current,
+                        expected_plan=plan, expected_artifact=expected, **self.fixedtxt_binding)
+                with self.assertRaisesRegex(custody.CustodyRejected, "artifact-context"):
+                    custody.verify_fixedtxt_artifact(raw, self.private, current=current,
+                        expected_plan=plan, expected_artifact={**expected, "source_sha":"0" * 40},
+                        **self.fixedtxt_binding)
+                intake.assert_not_called()
+
+
+    def test_inventory_uses_real_nofollow_identity_matching_original_file_handles(self):
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            actual_roots, inventory = custody._fixedtxt_inventory(
+                roots, plan, source_root=source, runner_temp=temp)
+            self.assertEqual(actual_roots, roots)
+            self.assertEqual(set(inventory), {tuple(name.split("/", 1)) for name in originals})
+            identities = []
+            for frame in ("000000.png", "000001.png"):
+                relative = plan["native_directory"] + "/frames/" + frame
+                target = roots["owner"] / relative
+                fresh = target.lstat()
+                with target.open("rb") as original:
+                    held = custody.os.fstat(original.fileno())
+                self.assertEqual((fresh.st_dev, fresh.st_ino, fresh.st_nlink),
+                                 (held.st_dev, held.st_ino, held.st_nlink))
+                self.assertEqual(fresh.st_nlink, 1)
+                self.assertGreater(fresh.st_ino, 0)
+                self.assertEqual(inventory[("owner", relative)], sealed.metadata_identity(held))
+                identities.append((held.st_dev, held.st_ino))
+            self.assertEqual(len(set(identities)), 2)
+
+    def test_real_hardlinks_remain_rejected_before_snapshot_or_encryption(self):
+        for alias_kind in ("outside-selected-roots", "another-planned-original"):
+            with self.subTest(alias_kind=alias_kind), self.fixture() as (
+                    current, plan, originals, roots, source, temp):
+                target = roots["owner"] / plan["native_directory"] / "frames/000000.png"
+                alias = temp / "same-original.hardlink"
+                if alias_kind == "another-planned-original":
+                    alias = target.with_name("000001.png")
+                    alias.unlink()
+                custody.os.link(target, alias)
+                first, second = target.lstat(), alias.lstat()
+                self.assertEqual((first.st_dev, first.st_ino), (second.st_dev, second.st_ino))
+                self.assertEqual((first.st_nlink, second.st_nlink), (2, 2))
+                with mock.patch.object(custody, "gather_snapshot", side_effect=AssertionError("no capture")) as capture, \
+                        mock.patch.object(custody, "encrypt_snapshot", side_effect=AssertionError("no crypto")) as encrypt:
+                    with self.assertRaisesRegex(custody.CustodyRejected, "fixedtxt-aliased-original"):
+                        self.capture(current, plan, roots, source, temp)
+                    capture.assert_not_called(); encrypt.assert_not_called()
+                self.assertEqual(target.read_bytes(), alias.read_bytes())
+
+    def test_changed_externally_pinned_R_stops_after_one_capture_before_encryption(self):
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            path = roots["inputs"] / "source-input.original.json"
+            changed = sealed.strict(path.read_bytes())
+            changed["private_evidence_dir"] = "/synthetic/consistently-changed-runtime"
+            path.write_bytes(sealed.json_bytes(changed))
+            with mock.patch.object(custody, "gather_snapshot", wraps=sealed.gather_snapshot) as capture, \
+                    mock.patch.object(custody, "encrypt_snapshot", side_effect=AssertionError("no encryption of changed R")) as encrypt, \
+                    self.assertRaisesRegex(selection_core.SelectionError, "independent-runtime-original"):
+                self.capture(current, plan, roots, source, temp)
+            capture.assert_called_once(); encrypt.assert_not_called()
+            self.assertEqual(sealed.strict(path.read_bytes()), changed)
+
+    def test_consistent_cipher_public_and_zip_mutation_cannot_authorize_foreign_R(self):
+        from tooling.tests.test_native_film180_evidence_selection import fixedtxt_snapshot_fixture
+        with self.fixture() as (current, plan, originals, roots, source, temp):
+            envelope, public = self.capture(current, plan, roots, source, temp)
+            changed = copy.deepcopy(originals)
+            value = sealed.strict(changed["inputs/source-input.original.json"])
+            value["private_evidence_dir"] = "/synthetic/foreign-runtime-with-updated-internal-hashes"
+            changed["inputs/source-input.original.json"] = sealed.json_bytes(value)
+            # This fixture deliberately recomputes every internal snapshot,
+            # authenticated cipher, projection and archive digest. The external
+            # reviewed R pin is the one authority that is kept unchanged.
+            plaintext = fixedtxt_snapshot_fixture(plan, changed)
+            altered_cipher = sealed.encrypt_snapshot(plaintext, self.recipient, current)
+            altered_public = {**public, "sealed_originals_sha256": sealed.sha(altered_cipher),
+                              "sealed_originals_bytes": len(altered_cipher)}
+            with self.assertRaisesRegex(selection_core.SelectionError, "independent-runtime-original"):
+                selection.verify_fixedtxt_sealed_selection(altered_cipher, self.private, altered_public,
+                    current=current, expected_plan=plan, require_complete=False, **self.fixedtxt_binding)
+            encoded = io.BytesIO()
+            with zipfile.ZipFile(encoded, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("sealed-originals.bin", altered_cipher)
+                archive.writestr("public-evidence.json", sealed.json_bytes(altered_public))
+            raw = encoded.getvalue()
+            expected = dict(artifact_id=71, run_id=int(current["run_id"]), run_attempt=1,
+                            source_sha=current["source_sha"], zip_sha256=sealed.sha(raw))
+            with self.assertRaisesRegex(selection_core.SelectionError, "independent-runtime-original"):
+                custody.verify_fixedtxt_artifact(raw, self.private, current=current, expected_plan=plan,
+                    expected_artifact=expected, require_complete=False, **self.fixedtxt_binding)
 
 if __name__ == "__main__":
     unittest.main()

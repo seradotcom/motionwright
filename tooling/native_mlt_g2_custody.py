@@ -1222,6 +1222,397 @@ def main(argv=None):
         return 0 if result["source_content_and_live_module_verified"] else 2
     return 0
 
+FIXEDTXT_RUNTIME_MEMBER = "source-input.original.json"
+FIXEDTXT_CYCLE_MEMBER = "cycle.original.json"
+
+
+def fixedtxt_owner_context(env):
+    """Use the actual owner environment, never fields read from R or a capsule."""
+    selected.fixedtxt_owner_selection_guard()
+    from native_film180_evidence_selection import FIXEDTXT_SCOPE
+    require(env.get("GITHUB_ACTIONS") == "true" and env.get("CI") == "true"
+            and env.get("RUNNER_OS") == "Linux"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("GITHUB_RUN_ATTEMPT") == "1"
+            and env.get("MW_MLT_SCOPE") == FIXEDTXT_SCOPE
+            and env.get("MOTIONWRIGHT_APPROVED_FIXEDTXT_V4_G2") == "1"
+            and env.get("MOTIONWRIGHT_APPROVED_MLT_G2") == "1",
+            "fixedtxt-explicit-single-owner-context")
+    current = {"source_sha": env.get("GITHUB_SHA"), "semwright_sha": g2.SEMWRIGHT_PIN,
+               "run_id": env.get("GITHUB_RUN_ID"), "run_attempt": "1"}
+    from ci_private_evidence import validate_context
+    validate_context(current)
+    return current
+
+
+def fixedtxt_owner_layout(*, current, runner_temp):
+    """Pure closed owner layout; no path resolution, reads or directory creation.
+
+    These are new source-owned names for this 043c successor. They are not a
+    recovered frozen-R3 layout. The caller supplies independently verified
+    RUNNER_TEMP; neither an input's parent nor R can choose any root/member.
+    """
+    selected.fixedtxt_owner_selection_guard()
+    from ci_private_evidence import validate_context
+    from native_film180_evidence_selection import FIXEDTXT_PLAN_PATH
+    validate_context(current)
+    require(current["run_attempt"] == "1", "fixedtxt-first-owner-attempt")
+    require(type(runner_temp) is str and 0 < len(runner_temp) <= 768
+            and "\\" not in runner_temp and all(32 <= ord(ch) < 127 for ch in runner_temp),
+            "fixedtxt-owner-temp-syntax")
+    temp = PurePosixPath(runner_temp)
+    require(temp.is_absolute() and temp != PurePosixPath("/")
+            and str(temp) == runner_temp and ".." not in temp.parts,
+            "fixedtxt-owner-temp-canonical")
+    suffix = current["run_id"] + "-1"
+    control = temp / ("mw-fixedtxt-g2-control-" + suffix)
+    inputs = temp / ("mw-fixedtxt-g2-inputs-" + suffix)
+    return {"control_root": str(control), "inputs_root": str(inputs),
+            "plan": str(control / FIXEDTXT_PLAN_PATH),
+            "runtime": str(inputs / FIXEDTXT_RUNTIME_MEMBER),
+            "cycle": str(inputs / FIXEDTXT_CYCLE_MEMBER),
+            "observation_root": str(temp / ("mw-fixedtxt-g2-original-" + suffix))}
+
+
+def fixedtxt_current_selection(current):
+    """Select one externally reviewed row by the independently held context."""
+    selected.fixedtxt_owner_selection_guard()
+    from native_film180_evidence_selection import FIXEDTXT_SCOPE
+    require(len(selected.FIXEDTXT_ATTEMPTS) <= 128, "fixedtxt-catalogue-bound")
+    matches = [identifier for identifier, row in selected.FIXEDTXT_ATTEMPTS.items()
+               if type(row) is dict and row.get("context") == current
+               and row.get("scope") == FIXEDTXT_SCOPE]
+    require(len(matches) == 1, "fixedtxt-one-independent-current-row")
+    identifier = matches[0]
+    row = selected._fixedtxt_reviewed_row(identifier)
+    require(type(row["recipient_sha256"]) is str and HEX.fullmatch(row["recipient_sha256"]),
+            "fixedtxt-independent-recipient-SPKI")
+    return identifier, row["recipient_sha256"]
+
+
+def fixedtxt_owner_input_paths(*, current, runner_temp, control_root, inputs_root,
+                              plan_input_path, runtime_input_path, cycle_input_path):
+    """Compare all supplied paths with the one source-owned layout before I/O."""
+    selected.fixedtxt_owner_selection_guard()
+    layout = fixedtxt_owner_layout(current=current, runner_temp=runner_temp)
+    for key, value in (("control_root", control_root), ("inputs_root", inputs_root),
+                       ("plan", plan_input_path), ("runtime", runtime_input_path),
+                       ("cycle", cycle_input_path)):
+        require(type(value) is str and value == layout[key], "fixedtxt-owner-input-location")
+    return layout
+
+
+def fixedtxt_prepare_owner_invocation(
+    plan_raw, runtime_raw, *, current, admission_id, recipient_sha256,
+    plan_input_path, runtime_input_path, cycle_input_path, cycle_raw,
+    control_root, inputs_root, source_root, python_executable, environment,
+):
+    """Pure same-buffer admission for the existing wrapper's exact argv.
+
+    No supplied callback can replace the source guard. No path is opened,
+    resolved or serialized here; the owner has captured P/R/Q already.
+    """
+    selected.fixedtxt_owner_selection_guard()
+    require(fixedtxt_owner_context(environment) == current, "fixedtxt-independent-current-context")
+    require(fixedtxt_current_selection(current) == (admission_id, recipient_sha256),
+            "fixedtxt-independent-selected-row")
+    paths = fixedtxt_owner_input_paths(current=current, runner_temp=environment.get("RUNNER_TEMP"),
+        control_root=control_root, inputs_root=inputs_root, plan_input_path=plan_input_path,
+        runtime_input_path=runtime_input_path, cycle_input_path=cycle_input_path)
+    plan, runtime = selected.admit_fixedtxt_runtime_original(
+        plan_raw, runtime_raw, current=current, admission_id=admission_id,
+        recipient_sha256=recipient_sha256, plan_input_path=paths["plan"])
+    descriptor = selected._fixedtxt_runtime_descriptor(selected._fixedtxt_reviewed_row(admission_id))
+    require(descriptor["relative_path"] == FIXEDTXT_RUNTIME_MEMBER
+            and runtime["private_evidence_dir"] == paths["observation_root"],
+            "fixedtxt-owner-runtime-independent-members")
+    require(type(cycle_raw) is bytes and 0 < len(cycle_raw) <= 1024 * 1024
+            and sha(cycle_raw) == plan["cycle_input_sha256"], "fixedtxt-owner-cycle-original")
+    members = [member for member in plan["members"]
+               if (member["root"], member["relative_path"]) == ("inputs", FIXEDTXT_CYCLE_MEMBER)]
+    require(len(members) == 1 and members[0]["role"] == "input-original"
+            and members[0]["expected_sha256"] == sha(cycle_raw)
+            and len(cycle_raw) <= members[0]["maximum"], "fixedtxt-owner-cycle-planned-member")
+    # Q has its own 1 MiB bound above; use the existing strict parser without
+    # borrowing the carrier's smaller metadata-manifest bound.
+    cycle = selected_core.strict(cycle_raw)
+    require(cycle.get("schema") == "motionwright.fixed-text-native-cycle-inputs/4"
+            and cycle.get("arm") == plan["arm"] and cycle.get("decoder_sha256") == plan["decoder_sha256"]
+            and type(cycle.get("runtime")) is dict
+            and cycle["runtime"].get("semwright_revision") == current["semwright_sha"]
+            and type(cycle["runtime"].get("native_source_sha256")) is dict
+            and cycle["runtime"]["native_source_sha256"].get(plan["arm"])
+            == plan["arm_sources"][plan["arm"]]["native_source_sha256"],
+            "fixedtxt-owner-cycle-selected-bindings")
+    require(type(source_root) is str and source_root == environment.get("GITHUB_WORKSPACE")
+            and PurePosixPath(source_root).is_absolute() and str(PurePosixPath(source_root)) == source_root
+            and ".." not in PurePosixPath(source_root).parts and "\\" not in source_root,
+            "fixedtxt-owner-source-root")
+    require(type(python_executable) is str and PurePosixPath(python_executable).is_absolute()
+            and str(PurePosixPath(python_executable)) == python_executable
+            and ".." not in PurePosixPath(python_executable).parts and "\\" not in python_executable,
+            "fixedtxt-observed-python-required")
+    return [python_executable, "-B", "-E", "-s",
+            str(PurePosixPath(source_root) / "tooling/native_film180_original_g2.py"),
+            "--g2-inputs", paths["runtime"], "--fixed-text-v4-inputs", paths["cycle"],
+            "--fixed-text-v4-fixture", plan["fixture"]]
+
+
+def fixedtxt_acquire_owner_originals(env, *, runtime_input_path, cycle_input_path,
+                                    selected_fixture, source_root, python_executable):
+    """Acquire the three exact owner inputs once with the existing openat reader.
+
+    R's small routing parse happens only after the source guard and independently
+    owned layout. Its hints are compared before P is opened. The held P/R/Q
+    buffers are passed unchanged to the pure preparer and returned to the wrapper.
+    """
+    selected.fixedtxt_owner_selection_guard()
+    from native_film180_evidence_selection import FIXEDTXT_PLAN_PATH, FIXEDTXT_MAX_JSON, FIXEDTXT_KEYS
+    current = fixedtxt_owner_context(env)
+    layout = fixedtxt_owner_layout(current=current, runner_temp=env.get("RUNNER_TEMP"))
+    require(type(runtime_input_path) is str and runtime_input_path == layout["runtime"]
+            and type(cycle_input_path) is str and cycle_input_path == layout["cycle"]
+            and selected_fixture in FIXEDTXT_KEYS, "fixedtxt-CLI-inputs-differ-from-owner")
+    require(type(source_root) is str and source_root == env.get("GITHUB_WORKSPACE"),
+            "fixedtxt-owner-source-root")
+    identifier, recipient = fixedtxt_current_selection(current)
+    # Same common disposable-runtime guard; no new exception for this family.
+    runner = admission.disposable_linux_runner()
+    require(str(runner) == env.get("RUNNER_TEMP"), "fixedtxt-observed-runner-root")
+    handles = selected_core.RootHandles({"control": layout["control_root"], "inputs": layout["inputs_root"]})
+    primary = None
+    try:
+        runtime_raw, runtime_identity = handles.read("inputs", selected_core.member_path(FIXEDTXT_RUNTIME_MEMBER), 65536)
+        routing = strict(runtime_raw)
+        reference = routing.get("fixedtxt_plan")
+        require(type(reference) is dict and reference.get("path") == layout["plan"]
+                and routing.get("fixedtxt_admission_id") == identifier
+                and routing.get("recipient_sha256") == recipient,
+                "fixedtxt-routing-hints-differ-from-independent-owner")
+        plan_raw, plan_identity = handles.read("control", selected_core.member_path(FIXEDTXT_PLAN_PATH), FIXEDTXT_MAX_JSON)
+        source_plan = selected.admit_fixedtxt_attempt(plan_raw, current=current,
+            admission_id=identifier, recipient_sha256=recipient)
+        # The existing verifier requires and validates the collector's source
+        # binding as well as the reviewed wrapper. Do not use a wrapper-only
+        # pseudo-roster or self-computed collector pin before this step.
+        selected_core.verify_source_bindings(source_root, current["source_sha"], source_plan["source_bindings"])
+        plan, runtime = selected.admit_fixedtxt_runtime_original(
+            plan_raw, runtime_raw, current=current, admission_id=identifier,
+            recipient_sha256=recipient, plan_input_path=layout["plan"])
+        require(plan["fixture"] == selected_fixture, "fixedtxt-owner-fixture-changed")
+        cycle_raw, cycle_identity = handles.read("inputs", selected_core.member_path(FIXEDTXT_CYCLE_MEMBER), 1024 * 1024)
+        identities = (runtime_identity, plan_identity, cycle_identity)
+        require(len({identity[:2] for identity in identities}) == 3, "fixedtxt-aliased-owner-inputs")
+        argv = fixedtxt_prepare_owner_invocation(plan_raw, runtime_raw,
+            current=current, admission_id=identifier, recipient_sha256=recipient,
+            plan_input_path=layout["plan"], runtime_input_path=layout["runtime"],
+            cycle_input_path=layout["cycle"], cycle_raw=cycle_raw,
+            control_root=layout["control_root"], inputs_root=layout["inputs_root"],
+            source_root=source_root, python_executable=python_executable, environment=env)
+        require(plan == source_plan and handles.stable_roots(), "fixedtxt-owner-input-roots-changed")
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            handles.close()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("FixedTXT input-handle close also failed; no read or close was retried.")
+    return {"plan": plan, "runtime": runtime, "plan_raw": plan_raw, "runtime_raw": runtime_raw,
+            "cycle_raw": cycle_raw, "current": current, "admission_id": identifier,
+            "recipient_sha256": recipient, "layout": layout, "argv": argv}
+
+
+def _fixedtxt_inventory(roots, plan, *, source_root, runner_temp):
+    """Bound the complete declared roots, without opening any selected payload."""
+    from native_film180_evidence_selection import FIXEDTXT_ROOTS, FIXEDTXT_MAX_JSON
+    require(type(roots) is dict and set(roots) == set(FIXEDTXT_ROOTS), "fixedtxt-private-root-roster")
+    temp = Path(runner_temp)
+    source = Path(source_root)
+    require(temp.is_absolute() and temp.is_dir() and temp.resolve(strict=True) == temp
+            and not any(path.is_symlink() for path in (temp, *temp.parents)), "fixedtxt-private-temp")
+    require(source.is_absolute() and source.is_dir() and source.resolve(strict=True) == source,
+            "fixedtxt-source-root")
+    paths, root_ids = {}, set()
+    for label, raw in roots.items():
+        root = Path(raw)
+        require(root.is_absolute() and root.is_relative_to(temp) and root != temp
+                and not root.is_relative_to(source) and not source.is_relative_to(root)
+                and root.resolve(strict=True) == root and root.is_dir()
+                and not any(path.is_symlink() for path in (root, *root.parents)), "fixedtxt-private-root-location")
+        mark = root.lstat()
+        require(stat.S_ISDIR(mark.st_mode) and (mark.st_dev, mark.st_ino) not in root_ids,
+                "fixedtxt-private-root-identity")
+        require(not any(root.is_relative_to(other) or other.is_relative_to(root) for other in paths.values()),
+                "fixedtxt-overlapping-roots")
+        root_ids.add((mark.st_dev, mark.st_ino)); paths[label] = root
+    expected = {(row["root"], row["relative_path"]): row for row in plan["members"]}
+    seen, aliases, listing, count, total = {}, set(), {}, 0, 0
+    for label, root in sorted(paths.items()):
+        captured, pending, namespaces = [], [root], 0
+        while pending:
+            parent = pending.pop()
+            with os.scandir(parent) as iterator:
+                for entry in iterator:
+                    namespaces += 1
+                    require(namespaces <= MAX_FILES * 4, "fixedtxt-namespace-count")
+                    path = Path(entry.path)
+                    # DirEntry.stat omits dev/inode/nlink on Windows.
+                    # Keep the fresh no-follow identity and hardlink guard.
+                    mark = path.lstat()
+                    require(not entry.is_symlink() and stat.S_ISREG(mark.st_mode) or
+                            not entry.is_symlink() and stat.S_ISDIR(mark.st_mode), "fixedtxt-nonregular-original")
+                    if stat.S_ISDIR(mark.st_mode):
+                        pending.append(path)
+                        continue
+                    relative = path.relative_to(root).as_posix()
+                    key = (label, relative)
+                    require(key in expected and key not in seen, "fixedtxt-unplanned-original")
+                    require(0 <= mark.st_size <= expected[key]["maximum"], "fixedtxt-original-exceeds-plan")
+                    identity = (mark.st_dev, mark.st_ino)
+                    require(identity not in aliases and mark.st_nlink == 1, "fixedtxt-aliased-original")
+                    aliases.add(identity)
+                    require(len(str(path)) <= 1024, "fixedtxt-physical-path-bound")
+                    count += 1; total += mark.st_size
+                    require(count <= plan["limits"]["files"] and total <= MAX_TOTAL,
+                            "fixedtxt-inventory-budget")
+                    seen[key] = metadata_identity(mark)
+                    physical = dict(device=mark.st_dev, inode=mark.st_ino, size=mark.st_size,
+                        mode=mark.st_mode, uid=mark.st_uid, gid=mark.st_gid,
+                        mtime_ns=mark.st_mtime_ns, ctime_ns=mark.st_ctime_ns)
+                    captured.append(dict(archive_path=label + "/" + relative,
+                        observation=dict(path=str(path), sha256="f" * 64, size=mark.st_size,
+                            before=physical, after=physical, namespace_after=physical)))
+        listing[label] = dict(status="CAPTURED", files=sorted(captured, key=lambda row: row["archive_path"]))
+    # Same compact JSON and three physical observations as gather_snapshot.
+    # The actual TAR is checked again before encryption; this is not permission
+    # to grow a manifest or drop rows if a failure makes it larger.
+    manifest = dict(schema="motionwright.ci.private-snapshot/1",
+        scope="selected-original-files-at-read-time", roots=listing,
+        selected_originals_complete=True, complete_owner_state_claimed=False)
+    require(len(json_bytes(manifest)) <= FIXEDTXT_MAX_JSON, "fixedtxt-snapshot-manifest-bound")
+    return paths, seen
+
+
+def capture_fixedtxt_capsule(plan_raw, *, current, admission_id, recipient,
+                            roots, source_root, runner_temp, plan_input_path):
+    """Reuse one existing snapshot and one existing cipher; no native effects.
+
+    The source/run catalogue is empty. No workflow routes here before the
+    owner's one-fixture ABI, complete inputs and finite runtime are admitted.
+    This function does not provide a watchdog or native process supervision.
+    """
+    from native_film180_evidence_selection import (
+        FIXEDTXT_PLAN_PATH, FIXEDTXT_SCOPE, fixedtxt_frames,
+    )
+    require(type(recipient) is dict and type(recipient.get("sha256")) is str,
+            "fixedtxt-recipient-reference")
+    plan = selected.admit_fixedtxt_attempt(plan_raw, current=current, admission_id=admission_id,
+                                           recipient_sha256=recipient["sha256"])
+    selected._fixedtxt_plan_input_path(plan_input_path)
+    public_key(recipient)
+    paths, before = _fixedtxt_inventory(roots, plan, source_root=source_root, runner_temp=runner_temp)
+    require(str(paths["control"] / FIXEDTXT_PLAN_PATH) == plan_input_path,
+            "fixedtxt-owner-plan-input-location")
+    # Reuse the existing single-owner receipt and its physical identity checks.
+    owner = checked_owner_workspace({"RUNNER_TEMP": str(runner_temp)}, current,
+                                     paths["observation"] / plan["fixture"])
+    require(owner == paths["owner"], "fixedtxt-owner-differs-from-planned-root")
+    require(regular(paths["control"] / FIXEDTXT_PLAN_PATH, MAX_JSON)[0] == plan_raw,
+            "fixedtxt-independent-plan-original")
+    selected_core.verify_source_bindings(source_root, current["source_sha"], plan["source_bindings"])
+    plaintext, snapshot_complete = gather_snapshot(paths, preserve_partial=True)
+    selected_core.verify_source_bindings(source_root, current["source_sha"], plan["source_bindings"])
+    _, after = _fixedtxt_inventory(paths, plan, source_root=source_root, runner_temp=runner_temp)
+    require(before == after, "fixedtxt-selected-namespace-changed")
+    result = selected.verify_fixedtxt_snapshot(plaintext, expected_plan=plan, current=current,
+        plan_raw=plan_raw, plan_input_path=plan_input_path,
+        admission_id=admission_id, recipient_sha256=recipient["sha256"])
+    require(result["originals"].get("control/" + FIXEDTXT_PLAN_PATH) == plan_raw,
+            "fixedtxt-capture-plan-original-absent-or-changed")
+    require(type(snapshot_complete) is bool and snapshot_complete == result["snapshot_capture_complete"],
+            "fixedtxt-snapshot-completeness-mismatch")
+    require(0 < len(plaintext) <= plan["limits"]["capsule_bytes"] - MAX_JSON - 8192 - 64,
+            "fixedtxt-snapshot-before-encryption-bound")
+    encrypted = encrypt_snapshot(plaintext, recipient, current)
+    public = dict(schema=selected.FIXEDTXT_PUBLIC_SCHEMA, scope=FIXEDTXT_SCOPE,
+        context=current, arm=plan["arm"], fixture=plan["fixture"], plan_sha256=sha(plan_raw),
+        recipient_spki_sha256=recipient["sha256"], sealed_originals_sha256=sha(encrypted),
+        sealed_originals_bytes=len(encrypted), single_owner=1,
+        verified_decode_count=len(fixedtxt_frames(plan["fixture"])) if result["decoder_originals_verified"] else 0,
+        native_success_verified=False, pair_comparison_performed=False,
+        decoder_invoked_by_intake=False, native_operation_retried=False,
+        physical_acceptance=False, human_acceptance=False, release_authorized=False,
+        upload_authorization="NOT_GRANTED_BY_COLLECTOR")
+    for name in ("snapshot_capture_complete", "planned_originals_complete", "decoder_originals_verified",
+                 "retained_file_count", "missing_file_count"):
+        public[name] = result[name]
+    selected.validate_fixedtxt_public(public, expected_plan=plan, current=current)
+    require(len(encrypted) + len(json_bytes(public)) <= plan["limits"]["capsule_bytes"],
+            "fixedtxt-two-file-capsule-bound")
+    return encrypted, public
+
+
+def write_fixedtxt_capsule(directory, envelope, public, *, expected_plan, current, admission_id, plan_raw):
+    """Use the existing exclusive writer and exact existing two-file container."""
+    selected.fixedtxt_owner_selection_guard()
+    plan = selected.admit_fixedtxt_attempt(plan_raw, current=current,
+        admission_id=admission_id, recipient_sha256=public["recipient_spki_sha256"])
+    require(plan == expected_plan, "fixedtxt-writer-held-plan-differs")
+    selected.validate_fixedtxt_public(public, expected_plan=expected_plan, current=current)
+    require(type(envelope) is bytes and (sha(envelope), len(envelope)) == (
+        public["sealed_originals_sha256"], public["sealed_originals_bytes"]), "fixedtxt-writer-original-cipher")
+    root = Path(directory)
+    require(root.is_absolute() and root.is_dir() and root.resolve(strict=True) == root
+            and not any(path.is_symlink() for path in (root, *root.parents))
+            and not list(root.iterdir()), "fixedtxt-fresh-output-root")
+    # Never retry a failed fsync/write/readback. Its original files stay in place.
+    new_bytes(root / "sealed-originals.bin", envelope)
+    new_json(root / "public-evidence.json", public)
+    require({path.name for path in root.iterdir()} == {"sealed-originals.bin", "public-evidence.json"},
+            "fixedtxt-output-roster")
+    return {"sealed_originals_sha256": sha(envelope), "public_evidence_sha256": sha(json_bytes(public)),
+            "artifact_uploaded": False, "native_success_verified": False}
+
+
+def verify_fixedtxt_artifact(original_zip, private_key, *, current, expected_plan,
+                             expected_artifact, plan_raw, plan_input_path,
+                             admission_id, recipient_sha256, require_complete=True):
+    """Independent descriptor and plan; neither is recovered as authority from ZIP."""
+    from native_film180_evidence_selection import fixedtxt_validate_plan
+    plan = selected.admit_fixedtxt_attempt(plan_raw, current=current,
+        admission_id=admission_id, recipient_sha256=recipient_sha256)
+    require(json_bytes(fixedtxt_validate_plan(expected_plan, current=current)) == plan_raw,
+            "fixedtxt-independent-plan-argument")
+    selected._fixedtxt_plan_input_path(plan_input_path)
+    expected = artifact_descriptor(strict(json_bytes(expected_artifact)))
+    require(expected["source_sha"] == current["source_sha"]
+            and str(expected["run_id"]) == current["run_id"]
+            and str(expected["run_attempt"]) == current["run_attempt"], "fixedtxt-artifact-context")
+    require(type(original_zip) is bytes and 0 < len(original_zip) <= MAX_FILE
+            and sha(original_zip) == expected["zip_sha256"], "fixedtxt-original-zip-identity")
+    with zipfile.ZipFile(io.BytesIO(original_zip)) as archive:
+        entries = archive.infolist()
+        require(len(entries) == 2 and {entry.filename for entry in entries} == {
+            "sealed-originals.bin", "public-evidence.json"}, "fixedtxt-two-file-artifact-roster")
+        require(sum(entry.file_size for entry in entries) <= plan["limits"]["capsule_bytes"],
+                "fixedtxt-artifact-total-bound")
+        for entry in entries:
+            limit = MAX_JSON if entry.filename == "public-evidence.json" else MAX_FILE
+            require(not entry.is_dir() and not entry.flag_bits & 1
+                    and stat.S_IFMT(entry.external_attr >> 16) in (0, stat.S_IFREG)
+                    and 0 < entry.file_size <= limit, "fixedtxt-artifact-member")
+        require(archive.testzip() is None, "fixedtxt-artifact-crc")
+        public = strict(archive.read("public-evidence.json"))
+    selected.validate_fixedtxt_public(public, expected_plan=plan, current=current)
+    envelope = zip_member(original_zip, "sealed-originals.bin", public["sealed_originals_sha256"], MAX_FILE)
+    return selected.verify_fixedtxt_sealed_selection(envelope, private_key, public,
+        expected_plan=plan, current=current, plan_raw=plan_raw,
+        plan_input_path=plan_input_path, admission_id=admission_id,
+        recipient_sha256=recipient_sha256, require_complete=require_complete)
+
 
 if __name__ == "__main__":
     try:
