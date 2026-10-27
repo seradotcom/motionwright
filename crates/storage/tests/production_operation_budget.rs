@@ -1882,12 +1882,11 @@ fn main() {
         let mut statement = conn
             .prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name")
             .unwrap();
-        let objects = statement
+        statement
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        objects
+            .unwrap()
     }
 
     fn require_old_writer_rejected(error: rusqlite::Error) {
