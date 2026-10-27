@@ -1,3 +1,4 @@
+mod branch_combination;
 mod brand_campaign;
 mod brand_governance;
 mod camera_reframe;
@@ -35,6 +36,7 @@ mod semantic_graph;
 mod semantic_sfx;
 mod stage_capture;
 mod voice_alignment;
+pub use branch_combination::*;
 pub use brand_campaign::*;
 pub use brand_governance::*;
 pub use camera_reframe::*;
@@ -1242,6 +1244,7 @@ impl Project {
             ));
         }
         match change {
+            Change::CombineCreativeBranches { input } => self.combine_creative_branches(input)?,
             Change::UpsertSceneBoundary { boundary } => self.upsert_scene_boundary(boundary)?,
             Change::RemoveSceneBoundary { boundary_id } => {
                 self.remove_scene_boundary(*boundary_id)?;
@@ -2831,6 +2834,9 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    CombineCreativeBranches {
+        input: Box<BranchCombination>,
+    },
     UpsertSceneBoundary {
         boundary: Box<SceneBoundary>,
     },

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { bootstrap, projectHistory } from "./api";
 import type { Change, Project } from "./types";
+import { beginBranchCombination, combinationInput, combinationPreviewMatches, editBranchCombination,
+  prepareCombinationSubmission, retainCanonicalCombinationPreview, unavailableBranchCombination } from "./branchCombinationDraft";
+import type { BranchCombinationCapability, BranchCombinationDraft, PreparedBranchCombination } from "./branchCombinationDraft";
 import {
   acknowledgeBranchDraft, advanceBranchDraft, assertBranchOrigins, branchCopyKey, branchHasWork,
   branchOutcomeMatches, branchPointerKey, branchScope, branchUnknown, BRANCH_RECOVERY_PREFIX,
@@ -57,9 +60,13 @@ function getSession(project: Project): BranchSession {
 function replace(session: BranchSession, draft: BranchDraft, persist = true) {
   session.draft = draft; const retained = persist ? backup(session) : true; session.notify?.(); return retained;
 }
-export function useBranchDraft(project: Project, commit: (change: Change) => Promise<Project>, externalBusy: boolean) {
+export function useBranchDraft(project: Project, commit: (change: Change) => Promise<Project>, externalBusy: boolean,
+  capability: BranchCombinationCapability = unavailableBranchCombination) {
   const [session] = useState(() => getSession(project)), [, render] = useState(0);
   const [outcome, setOutcome] = useState<BranchOutcome | null>(null), [reviewing, setReviewing] = useState(false);
+  const [combinationPreview, setCombinationPreview] = useState<PreparedBranchCombination | null>(null);
+  const [previewingCombination, setPreviewingCombination] = useState(false);
+  const combinationEpoch = useRef(0);
   const current = useRef(project), alive = useRef(true), epoch = useRef(0); current.current = project;
   const busy = externalBusy || session.inFlight;
   useEffect(() => {
@@ -78,6 +85,7 @@ export function useBranchDraft(project: Project, commit: (change: Change) => Pro
     const next = reconcileBranchDraft(session.draft, project);
     if (next !== session.draft) replace(session, next, branchHasWork(next));
     setOutcome(value => branchOutcomeMatches(session.draft, project, value) ? value : null);
+    setCombinationPreview(value => combinationPreviewMatches(session.draft, project, value) ? value : null);
   }, [project, session]);
   function edit(name: string) {
     try {
@@ -108,6 +116,77 @@ export function useBranchDraft(project: Project, commit: (change: Change) => Pro
     } catch (reason) {
       session.error = message(reason);
       replace(session, retainBranchFailure(session.draft, id, message(reason)));
+    } finally { session.inFlight = false; session.notify?.(); }
+  }
+  function startCombination() {
+    if (busy || branchUnknown(session.draft) || session.recoveryProblem || session.backupError) return;
+    try {
+      if (branchHasWork(session.draft) && !backup(session)) return;
+      const next = beginBranchCombination(session.draft, current.current, crypto.randomUUID());
+      fork(session); replace(session, next); setCombinationPreview(null); setOutcome(null);
+      session.error = null; session.notice = "Started a separate recoverable combination. No project change was sent.";
+      session.notify?.();
+    } catch (reason) { session.error = message(reason); session.notify?.(); }
+  }
+  function startOrdinary() {
+    if (busy || branchUnknown(session.draft) || session.recoveryProblem || session.backupError) return;
+    try {
+      if (branchHasWork(session.draft) && !backup(session)) return;
+      const next = { ...createBranchDraft(current.current), origins: structuredClone(session.draft.origins) };
+      fork(session); replace(session, next); setCombinationPreview(null); setOutcome(null);
+      session.error = null; session.notice = "Started a separate branch-name draft. Earlier combination input remains in its copy.";
+      session.notify?.();
+    } catch (reason) { session.error = message(reason); session.notify?.(); }
+  }
+  function editCombination(update: Partial<Pick<BranchCombinationDraft,"donorBranchId"|"sceneId"|"rationale"|"picks">>) {
+    try {
+      if (session.recoveryProblem) session.editedWhileRecoveryBlocked = true;
+      const next = editBranchCombination(session.draft, update);
+      replace(session, next); setCombinationPreview(null); session.error = null; session.notice = null;
+      session.notify?.();
+    } catch (reason) { session.error = message(reason); session.notify?.(); }
+  }
+  async function previewCombination() {
+    if (busy || previewingCombination || capability.status !== "available" || branchUnknown(session.draft)) return;
+    const requestEpoch = ++combinationEpoch.current;
+    setPreviewingCombination(true); setCombinationPreview(null);
+    const source = structuredClone(current.current), startedDraft = structuredClone(session.draft);
+    try {
+      const input = combinationInput(startedDraft, source);
+      const response = await capability.preview(source, input);
+      if (!alive.current || requestEpoch !== combinationEpoch.current) return;
+      const prepared = retainCanonicalCombinationPreview(startedDraft, source, input, response);
+      if (!combinationPreviewMatches(session.draft, current.current, prepared))
+        throw new Error("The source or choices changed during preview. Your latest input remains editable.");
+      setCombinationPreview(prepared); session.error = null;
+      session.notice = "Canonical source preview received. Review the fields before creating the inactive candidate.";
+      session.notify?.();
+    } catch (reason) {
+      if (alive.current && requestEpoch === combinationEpoch.current) { session.error = message(reason); session.notify?.(); }
+    } finally { if (alive.current && requestEpoch === combinationEpoch.current) setPreviewingCombination(false); }
+  }
+  async function saveCombination() {
+    if (busy || previewingCombination || capability.status !== "available" || session.backupError || session.recoveryProblem
+      || !combinationPreviewMatches(session.draft, current.current, combinationPreview)) return;
+    const proof = combinationPreview!, id = crypto.randomUUID();
+    let prepared: ReturnType<typeof prepareCombinationSubmission>;
+    try {
+      prepared = prepareCombinationSubmission(session.draft, current.current, id, proof);
+      session.error = null; session.notice = null;
+      if (!replace(session, prepared.draft)) {
+        session.draft = retainBranchFailure(session.draft, id, "The combination recovery copy was not confirmed before dispatch.", true);
+        session.error = "No combination was sent. Confirm the recovery copy before trying again."; session.notify?.(); return;
+      }
+    } catch (reason) { session.error = message(reason); session.notify?.(); return; }
+    session.inFlight = true; session.notify?.();
+    try {
+      const receipt = await commit(prepared.change);
+      const next = acknowledgeBranchDraft(session.draft, id, receipt, proof);
+      fork(session); replace(session, next); setCombinationPreview(null);
+      session.error = null; session.notice = "Created the inactive candidate at r" + receipt.revision + ". Your input remains editable; starting another candidate allocates a separate identity.";
+      session.notify?.();
+    } catch (reason) {
+      session.error = message(reason); replace(session, retainBranchFailure(session.draft, id, message(reason)));
     } finally { session.inFlight = false; session.notify?.(); }
   }
   function retry() {
@@ -180,7 +259,7 @@ export function useBranchDraft(project: Project, commit: (change: Change) => Pro
       if (!backup(session)) return;
       const next = separateBranchIntent(session.draft, current.current, outcome, {
         key: branchCopyKey(session.draft.scope, session.custody.writerId), raw: session.custody.expectedRaw!,
-      });
+      }, session.draft.combination ? crypto.randomUUID() : undefined);
       // Origins travel in the published successor and are checked again after
       // data/pointer publication and on reload, not only after this function.
       fork(session); replace(session, next); setOutcome(null);
@@ -229,16 +308,24 @@ export function useBranchDraft(project: Project, commit: (change: Change) => Pro
     } catch (reason) { session.error = message(reason); session.notify?.(); }
   }
   let nameError: string | null = null;
-  if (session.draft.name !== "") { try { validateBranchName(session.draft.name, project); } catch (reason) { nameError = message(reason); } }
+  if (!session.draft.combination && session.draft.name !== "") { try { validateBranchName(session.draft.name, project); } catch (reason) { nameError = message(reason); } }
   const conflict = session.draft.baseRevision !== project.revision;
   return { session, busy, nameError, conflict, outcome, reviewing, edit, save, retry, advance, inspect, separate, restore, download,
+    startCombination, startOrdinary, editCombination, previewCombination, saveCombination, previewingCombination,
+    combinationPreview: combinationPreviewMatches(session.draft, project, combinationPreview) ? combinationPreview : null,
+    combinationAvailable: capability.status === "available",
+    canSaveCombination: !busy && !previewingCombination && capability.status === "available" && !session.backupError
+      && !session.recoveryProblem && combinationPreviewMatches(session.draft, project, combinationPreview),
     canSeparate: !busy && branchOutcomeMatches(session.draft, project, outcome)
       && project.revision > (session.draft.pending?.revision ?? Number.POSITIVE_INFINITY),
-    canSave: !busy && !session.backupError && !session.recoveryProblem && !branchUnknown(session.draft) && !conflict && !nameError && !!session.draft.name.trim() };
+    canSave: !session.draft.combination && !busy && !session.backupError && !session.recoveryProblem && !branchUnknown(session.draft) && !conflict && !nameError && !!session.draft.name.trim() };
 }
 export function BranchRecovery({ editor }: { editor: ReturnType<typeof useBranchDraft> }) {
   const { session } = editor;
-  return <div className="branch-recovery" aria-label="Branch name recovery">
+  const combined = !!session.draft.combination;
+  return <div className="branch-recovery" aria-label={combined ? "Combination recovery" : "Branch name recovery"}>
+    {combined && <p>The recoverable branch draft contains a combination. Use its source preview to create the candidate.
+      <button type="button" className="button compact" disabled={editor.busy || branchUnknown(session.draft)} onClick={editor.startOrdinary}>Keep combination copy and start a branch name</button></p>}
     {session.notice && <p role="status">{session.notice}</p>}
     {session.error && <p className="error-banner inline-error" role="alert">{session.error}</p>}
     {editor.nameError && <p role="alert">{editor.nameError}</p>}
@@ -251,15 +338,15 @@ export function BranchRecovery({ editor }: { editor: ReturnType<typeof useBranch
     </section>}
     {editor.outcome && <section aria-label="Saved branch outcome">
       <p>Read saved revision r{editor.outcome.project.revision} and {editor.outcome.events.length} committed changes.
-        Matching names do not identify or acknowledge the original request.</p>
+        {combined ? "Matching combination values do not identify or acknowledge the original request." : "Matching names do not identify or acknowledge the original request."}</p>
       {session.draft.pending && editor.outcome.project.revision <= session.draft.pending.revision && <p role="status">
         The original request can still commit on this revision. Keep it UNKNOWN and inspect again after the saved revision advances.
       </p>}
       <button type="button" className="button compact" disabled={!editor.canSeparate}
-        onClick={editor.separate}>Keep original attempt and start another branch</button>
+        onClick={editor.separate}>{combined ? "Keep original attempt and start another combination" : "Keep original attempt and start another branch"}</button>
     </section>}
     {editor.conflict && !branchUnknown(session.draft) && <p>
-      This name was prepared from r{session.draft.baseRevision}; the displayed source is newer. Review the branch list below.
+      {combined ? "This combination" : "This name"} was prepared from r{session.draft.baseRevision}; the displayed source is newer. Review the branch list below.
       <button type="button" className="button compact" disabled={editor.busy} onClick={editor.advance}>Use the displayed source branch</button>
     </p>}
     {(branchHasWork(session.draft) || session.copies.length > 0 || session.backupError) && <details>

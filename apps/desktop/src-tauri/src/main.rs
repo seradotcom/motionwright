@@ -521,6 +521,23 @@ async fn semantic_graph_authoring_context(
     .map_err(sanitized)
 }
 
+/// Source-bound canonical inspection only; no grant, write or renderer authority.
+#[tauri::command]
+async fn preview_branch_combination(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::BranchCombinationPreviewRequest,
+) -> Result<motionwright_domain::CreativePatchPreview, String> {
+    let service = state.service.clone();
+    let preview = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service.preview_branch_combination(&request).map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Branch combination inspection task failed.".to_owned())??;
+    owner.begin_phase()?;
+    Ok(preview)
+}
+
 /// Read-only authoring source from the canonical Store, without execution authority.
 #[tauri::command]
 async fn scene_boundary_authoring_context(
@@ -2962,6 +2979,7 @@ fn main() {
             project_scene_nodes,
             semantic_graph_authoring_context,
             scene_boundary_authoring_context,
+            preview_branch_combination,
             issue_project_creation_grant,
             create_project,
             recover_project_creation,

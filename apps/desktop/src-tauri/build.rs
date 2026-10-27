@@ -9,6 +9,7 @@ fn main() {
             "project_scene_nodes",
             "semantic_graph_authoring_context",
             "scene_boundary_authoring_context",
+            "preview_branch_combination",
             "issue_project_creation_grant",
             "create_project",
             "recover_project_creation",

@@ -1,4 +1,5 @@
 mod audio;
+mod branch_combination;
 mod brand_fonts;
 mod file_import;
 mod font_portability;
@@ -17,6 +18,7 @@ pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
     WAVEFORM_FRAMES_PER_PEAK, WaveformPage,
 };
+pub use branch_combination::BranchCombinationPreviewRequest;
 pub use brand_fonts::{
     BrandFontSource, MAX_BRAND_FONT_BYTES, VerifiedBrandFont, brand_font_source,
 };

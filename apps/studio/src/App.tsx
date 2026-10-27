@@ -2382,6 +2382,7 @@ export default function App() {
           project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
       case "Review":
         return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo}
+          desktopMode={boot.native_sdk.mode === "tauri"}
           key={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : "selected-resource"}
           externalResource={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : null} />;
       case "Deliver":

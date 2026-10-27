@@ -1,6 +1,8 @@
 import { CircleDashed, Clock3, MessageSquareText, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import CreativeAlternativesPanel from "./CreativeAlternativesPanel";
+import { previewBranchCombination } from "./api";
+import { unavailableBranchCombination } from "./branchCombinationDraft";
 import { reviewHasWork, reviewProfileAnchor, reviewTimes, useReviewDraft } from "./reviewDraft";
 import type { Change, CreativeReview, Project, RationalTime, ReviewKind, ReviewStatus, Scene } from "./types";
 import { seconds } from "./types";
@@ -17,8 +19,10 @@ export default function ReviewWorkspace({
   playhead,
   onSeek,
   externalResource = null,
+  desktopMode = false,
 }: {
   project: Project;
+  desktopMode?: boolean;
   externalResource?: string | null;
   scene: Scene | null;
   commit: (change: Change) => Promise<Project>;
@@ -71,7 +75,8 @@ export default function ReviewWorkspace({
         <span className="count-label">{project.reviews.length} anchored</span>
       </header>
 
-      <CreativeAlternativesPanel project={project} commit={commit} />
+      <CreativeAlternativesPanel project={project} commit={commit} playhead={playhead} onSeek={onSeek}
+        combinationCapability={desktopMode ? {status:"available",preview:previewBranchCombination} : unavailableBranchCombination} />
 
       <div className="review-columns">
         <section>

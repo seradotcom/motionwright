@@ -327,6 +327,18 @@ export type CreativeEdit =
 export interface Proposal {
   id: string; title: string; rationale: string; structure: string[]; edits: CreativeEdit[];
 }
+/** Exact two-parent source selection; values are read from saved branches by Rust. */
+export type BranchCombinationField = "transform" | "style" | "motion";
+export interface BranchCombinationPick { node_id: string; field: BranchCombinationField; }
+export interface BranchCombination {
+  source: { resource: string; generation: string; revision: number }; base_branch_id: string; base_head_revision: number;
+  donor_branch_id: string; donor_head_revision: number;
+  candidate_branch_id: string; candidate_name: string; scene_id: string;
+  picks: BranchCombinationPick[]; rationale: string;
+}
+export interface BranchCombinationPreviewRequest {
+  project_id: string; generation: string; revision: number; input: BranchCombination;
+}
 export interface ProposalSet {
   id: string; base_revision: number; scope: ProposalScope;
   search_budget: SearchBudget; proposals: Proposal[]; selected: string | null;
@@ -898,6 +910,7 @@ export type Change =
   | { type: "remove_semantic_sfx"; cue_id: string }
   | { type: "set_mix_intent"; mix: MixIntent }
   | { type: "set_visual_language"; visual_language: VisualLanguage }
+  | { type: "combine_creative_branches"; input: BranchCombination }
   | { type: "add_proposal_set"; proposal_set: ProposalSet }
   | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }
   | { type: "upsert_extension"; extension: ExtensionProfile }

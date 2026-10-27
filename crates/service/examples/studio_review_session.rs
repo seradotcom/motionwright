@@ -639,6 +639,11 @@ impl Session {
                         .map_err(|error| error.to_string())?,
                 )
             }
+            "preview_branch_combination" => encoded(
+                self.service
+                    .preview_branch_combination(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "preview_creative_patch" => {
                 let request: PatchRequest = request(args)?;
                 let project =

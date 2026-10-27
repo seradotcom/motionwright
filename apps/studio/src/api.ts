@@ -35,6 +35,8 @@ import type {
   AssetIntegrityPage,
   StudioBootstrap,
   BranchState,
+  BranchCombination,
+  BranchCombinationPreviewRequest,
   CanvasKeyframe,
   CaptionExportResult,
   Change,
@@ -1176,6 +1178,16 @@ export async function projectHistory(
   );
 }
 
+/** Canonical source inspection only. The caller must decode and bind the reply. */
+export async function previewBranchCombination(project: Project, input: BranchCombination): Promise<unknown> {
+  if (!isTauri()) throw new Error("Combining editable branches requires the actual StudioService and canonical source preview.");
+  const request: BranchCombinationPreviewRequest = {
+    project_id: project.id, generation: project.generation, revision: project.revision,
+    input: structuredClone(input),
+  };
+  return invoke<unknown>("preview_branch_combination", { request });
+}
+
 export async function applyChange(project: Project, change: Change): Promise<Project> {
   const requestId = crypto.randomUUID();
   if (isTauri()) {
@@ -1192,6 +1204,8 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     });
   }
 
+  if (change.type === "combine_creative_branches")
+    throw new Error("Combining editable branches requires the actual StudioService and canonical source preview.");
   if (change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph")
     throw new Error("Semantic Graph saving requires the actual StudioService and matching native consumer.");
   if (change.type === "upsert_scene_boundary" || change.type === "remove_scene_boundary")
@@ -1208,6 +1222,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.reviews ??= [];
   next.merges ??= [];
   switch (change.type) {
+    case "combine_creative_branches":
+      throw new Error("Combining editable branches requires the actual StudioService and canonical source preview.");
     case "upsert_scene_boundary":
     case "remove_scene_boundary":
       throw new Error("Scene boundary saving requires the actual StudioService; browser previews cannot authorize a boundary.");

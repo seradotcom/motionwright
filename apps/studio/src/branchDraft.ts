@@ -1,5 +1,7 @@
 import { sameValue } from "./creativeProduction";
-import type { Change, Project, ProjectEvent } from "./types";
+import { acknowledgeCombinedBranchDraft, separateCombinedBranchDraft, validateCombinationDraft, validateCombinationPending } from "./branchCombinationDraft";
+import type { BranchCombinationDraft, PreparedBranchCombination } from "./branchCombinationDraft";
+import type { BranchCombination, Change, Project, ProjectEvent } from "./types";
 
 export const BRANCH_RECOVERY_PREFIX = "motionwright.branch-recovery.v1:";
 export const BRANCH_POINTER_PREFIX = "motionwright.branch-writer.v1:";
@@ -16,14 +18,14 @@ const bytes = (value: string) => new TextEncoder().encode(value).length;
 export interface BranchOrigin { key: string; raw: string }
 export interface BranchPending {
   id: string; revision: number; sequence: number; name: string; priorIds: string[];
-  outcome: "UNKNOWN" | "NOT_SENT"; diagnostic: string | null;
+  outcome: "UNKNOWN" | "NOT_SENT"; diagnostic: string | null; combination?: BranchCombination;
 }
 export interface BranchDraft {
   scope: string; baseRevision: number; sequence: number; name: string;
-  pending: BranchPending | null; origins: BranchOrigin[];
+  pending: BranchPending | null; origins: BranchOrigin[]; combination?: BranchCombinationDraft;
 }
 export interface BranchCopy {
-  schema: "motionwright.branch-recovery/1"; scope: string; writerId: string; updatedAt: number; draft: BranchDraft;
+  schema: "motionwright.branch-recovery/1" | "motionwright.branch-recovery/2"; scope: string; writerId: string; updatedAt: number; draft: BranchDraft;
 }
 export interface BranchCustody { writerId: string; expectedRaw: string | null; expectedPointer: string | null }
 export type BranchStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem">;
@@ -38,7 +40,7 @@ function assertOwner(draft: BranchDraft, project: Project) {
   if (draft.scope !== branchScope(project)) throw new Error("This name belongs to another project, generation or branch.");
 }
 export const branchUnknown = (draft: BranchDraft) => draft.pending?.outcome === "UNKNOWN";
-export const branchHasWork = (draft: BranchDraft) => draft.name !== "" || draft.pending !== null;
+export const branchHasWork = (draft: BranchDraft) => draft.name !== "" || draft.pending !== null || draft.combination !== undefined;
 export function createBranchDraft(project: Project): BranchDraft {
   const scope = branchScope(project); assertScope(scope);
   return { scope, baseRevision: project.revision, sequence: 0, name: "", pending: null, origins: [] };
@@ -67,12 +69,15 @@ export function recoverBranchAfterReadFailure(recovered: BranchDraft, current: B
   assertOwner(recovered, project); assertOwner(current, project);
   const attempt = (pending: BranchPending) => ({
     id: pending.id, revision: pending.revision, sequence: pending.sequence,
-    name: pending.name, priorIds: pending.priorIds,
+    name: pending.name, priorIds: pending.priorIds, ...(pending.combination ? { combination: pending.combination } : {}),
   });
   if (current.pending && (!recovered.pending || !sameValue(attempt(current.pending), attempt(recovered.pending))))
     throw new Error("The current and recovered branch attempts differ.");
   if (![current.sequence, recovered.sequence].every(integer))
     throw new Error("The recovered branch edit sequence is invalid.");
+  if (editedWhileBlocked && current.combination && recovered.combination
+    && current.combination.candidateId !== recovered.combination.candidateId)
+    throw new Error("The recovered and later combination identities differ; both inputs remain retained.");
   const maximum = Math.max(current.sequence, recovered.sequence);
   if (editedWhileBlocked && maximum === Number.MAX_SAFE_INTEGER)
     throw new Error("The branch edit sequence cannot advance safely.");
@@ -86,6 +91,7 @@ export function recoverBranchAfterReadFailure(recovered: BranchDraft, current: B
   return reconcileBranchDraft({
     ...recovered,
     name: editedWhileBlocked ? current.name : recovered.name,
+    ...(editedWhileBlocked && current.combination ? { combination: clone(current.combination) } : {}),
     sequence: editedWhileBlocked ? maximum + 1 : recovered.sequence,
     // NOT_SENT is known only by the original live caller. A retained label is
     // not permission to repeat a request after reloading.
@@ -104,6 +110,7 @@ export function validateBranchName(name: string, project: Project): string {
 }
 export function prepareBranchSubmission(draft: BranchDraft, project: Project, id: string): { draft: BranchDraft; change: Change } {
   assertOwner(draft, project);
+  if (draft.combination) throw new Error("This draft is a combination. Use its canonical preview and combination action.");
   if (branchUnknown(draft)) throw new Error("Check the unconfirmed branch creation before starting another. No request was repeated.");
   if (draft.baseRevision !== project.revision) throw new Error("Review the current source branch before creating from this name.");
   if (!uuid(id)) throw new Error("A new local attempt identity is required.");
@@ -116,9 +123,10 @@ export function retainBranchFailure(draft: BranchDraft, id: string, diagnostic: 
     outcome: notSent ? "NOT_SENT" : "UNKNOWN", diagnostic: diagnostic.slice(0, 4000) } };
 }
 /** Only the original live callback supplies this Project and local identity. */
-export function acknowledgeBranchDraft(draft: BranchDraft, originalId: string, project: Project): BranchDraft {
+export function acknowledgeBranchDraft(draft: BranchDraft, originalId: string, project: Project, prepared?: PreparedBranchCombination): BranchDraft {
   const pending = draft.pending;
   if (!pending || pending.id !== originalId) return draft;
+  if (pending.combination) return acknowledgeCombinedBranchDraft(draft, project, prepared);
   assertOwner(draft, project);
   const added = project.branches.filter(branch => !pending.priorIds.includes(branch.id));
   const branch = added[0];
@@ -140,30 +148,38 @@ export function decodeBranchCopy(raw: string, scope: string, writerId: string): 
   assertScope(scope);
   const copy: unknown = JSON.parse(raw);
   if (!object(copy) || !exact(copy, ["schema", "scope", "writerId", "updatedAt", "draft"])
-    || copy.schema !== "motionwright.branch-recovery/1" || copy.scope !== scope || copy.writerId !== writerId
+    || !["motionwright.branch-recovery/1", "motionwright.branch-recovery/2"].includes(String(copy.schema)) || copy.scope !== scope || copy.writerId !== writerId
     || !uuid(writerId) || !integer(copy.updatedAt) || !object(copy.draft)) throw new Error("The branch recovery envelope is invalid.");
   const draft = copy.draft;
-  if (!exact(draft, ["scope", "baseRevision", "sequence", "name", "pending", "origins"])
+  const combined = copy.schema === "motionwright.branch-recovery/2";
+  if (!exact(draft, ["scope", "baseRevision", "sequence", "name", "pending", "origins", ...(combined ? ["combination"] : [])])
     || draft.scope !== scope || !integer(draft.baseRevision) || !integer(draft.sequence) || typeof draft.name !== "string"
     || !Array.isArray(draft.origins) || draft.origins.length > 16) throw new Error("The branch recovery input is invalid.");
+  if (combined) {
+    validateCombinationDraft(draft.combination);
+    const completed = draft.combination.completed;
+    if (completed && (completed.sequence > draft.sequence || completed.revision > draft.baseRevision || draft.pending !== null))
+      throw new Error("The retained combination completion conflicts with its draft sequence or source.");
+  }
   for (const origin of draft.origins) {
     if (!object(origin) || !exact(origin, ["key", "raw"]) || typeof origin.key !== "string" || typeof origin.raw !== "string"
       || !origin.key.startsWith(BRANCH_RECOVERY_PREFIX + encodeURIComponent(scope) + ":") || bytes(origin.raw) > MAX_BRANCH_COPY_BYTES)
       throw new Error("The branch recovery origin is invalid.");
     const writer = origin.key.slice(origin.key.lastIndexOf(":") + 1), value: unknown = JSON.parse(origin.raw);
-    if (!uuid(writer) || !object(value) || value.schema !== "motionwright.branch-recovery/1" || value.scope !== scope || value.writerId !== writer
+    if (!uuid(writer) || !object(value) || !["motionwright.branch-recovery/1", "motionwright.branch-recovery/2"].includes(String(value.schema)) || value.scope !== scope || value.writerId !== writer
       || !object(value.draft) || !object(value.draft.pending) || value.draft.pending.outcome !== "UNKNOWN")
       throw new Error("The retained branch origin does not identify its original unconfirmed copy.");
   }
   if (draft.pending !== null) {
     const pending = draft.pending;
-    if (!object(pending) || !exact(pending, ["id", "revision", "sequence", "name", "priorIds", "outcome", "diagnostic"])
+    if (!object(pending) || !exact(pending, ["id", "revision", "sequence", "name", "priorIds", "outcome", "diagnostic", ...(combined ? ["combination"] : [])])
       || !uuid(pending.id) || !integer(pending.revision) || pending.revision !== draft.baseRevision
       || !integer(pending.sequence) || pending.sequence > draft.sequence || typeof pending.name !== "string" || !pending.name.trim()
       || !Array.isArray(pending.priorIds) || pending.priorIds.length > 256 || !pending.priorIds.every(uuid)
       || !["UNKNOWN", "NOT_SENT"].includes(String(pending.outcome))
       || (pending.diagnostic !== null && (typeof pending.diagnostic !== "string" || pending.diagnostic.length > 4000)))
       throw new Error("The original branch attempt in this copy is invalid.");
+    if (combined) validateCombinationPending(pending.combination, draft as unknown as BranchDraft, pending as unknown as BranchPending);
   }
   return copy as unknown as BranchCopy;
 }
@@ -210,7 +226,7 @@ export function writeBranchCopy(storage: BranchStorage, tab: Pick<Storage, "getI
   const retainedRaw = custody.expectedRaw !== null && custody.expectedPointer === custody.writerId
     && sameValue(decodeBranchCopy(custody.expectedRaw, draft.scope, custody.writerId).draft, draft)
     ? custody.expectedRaw : null;
-  const value: BranchCopy = { schema: "motionwright.branch-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft };
+  const value: BranchCopy = { schema: draft.combination ? "motionwright.branch-recovery/2" : "motionwright.branch-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft };
   const raw = retainedRaw ?? JSON.stringify(value); decodeBranchCopy(raw, draft.scope, custody.writerId);
   if (storage.length > MAX_KEYS) throw new Error("The recovery catalogue is too large to inspect safely.");
   let total = bytes(raw), count = 1;
@@ -259,15 +275,17 @@ export async function inspectBranchOutcome(draft: BranchDraft, selected: Project
   } while (cursor < project.revision);
   if (!sameValue(await transport.readProject(selected.id), project)) throw new Error("The saved branch changed during inspection. Read it again.");
   return { scope: draft.scope, pending, project, events,
-    matchingRevisions: events.filter(event => event.change.type === "create_branch" && event.change.name === pending.name).map(event => event.revision) };
+    matchingRevisions: events.filter(event => pending.combination
+      ? sameValue(event.change, { type: "combine_creative_branches", input: pending.combination })
+      : event.change.type === "create_branch" && event.change.name === pending.name).map(event => event.revision) };
 }
-export function separateBranchIntent(draft: BranchDraft, project: Project, outcome: BranchOutcome, origin: BranchOrigin): BranchDraft {
+export function separateBranchIntent(draft: BranchDraft, project: Project, outcome: BranchOutcome, origin: BranchOrigin, candidateId?: string): BranchDraft {
   if (!branchOutcomeMatches(draft, project, outcome)) throw new Error("Read the exact saved branch and its history before starting a separate intent.");
   if (project.revision <= draft.pending!.revision) throw new Error("The original branch request could still commit on its base. Keep it UNKNOWN.");
   const writer = origin.key.slice(origin.key.lastIndexOf(":") + 1);
   if (origin.key !== branchCopyKey(draft.scope, writer) || !sameValue(decodeBranchCopy(origin.raw, draft.scope, writer).draft, draft))
     throw new Error("The original branch input must remain in its exact separate recovery copy.");
   return { ...draft, baseRevision: project.revision, sequence: draft.sequence + 1,
-    name: draft.sequence === draft.pending!.sequence ? "" : draft.name, pending: null,
+    ...(draft.pending!.combination ? separateCombinedBranchDraft(draft, candidateId) : { name: draft.sequence === draft.pending!.sequence ? "" : draft.name }), pending: null,
     origins: [...draft.origins.filter(value => value.key !== origin.key), clone(origin)] };
 }

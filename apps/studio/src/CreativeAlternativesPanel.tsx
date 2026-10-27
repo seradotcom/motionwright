@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import BranchCombinationEditor from "./BranchCombinationEditor";
+import type { BranchCombinationCapability } from "./branchCombinationDraft";
 import { ArrowLeftRight, GitCompareArrows, ShieldAlert } from "lucide-react";
 import type { Change, Project, SourceReference } from "./types";
 import { inspectCreativeAlternative } from "./creativeAlternativeEvidence";
@@ -15,9 +17,9 @@ function sourceLabel(source:SourceReference|null):string {
   return "Manual note: "+source.label;
 }
 export default function CreativeAlternativesPanel({
-  project,commit,
+  project,commit,combinationCapability,playhead,onSeek,
 }:{
-  project:Project;commit:Commit;
+  project:Project;commit:Commit;combinationCapability?:BranchCombinationCapability;playhead?:number;onSeek?:(absoluteSeconds:number)=>void;
 }) {
   const candidates=project.branches.filter(branch=>branch.id!==project.active_branch &&
     project.branch_workspaces.some(snapshot=>snapshot.branch_id===branch.id));
@@ -191,6 +193,8 @@ export default function CreativeAlternativesPanel({
         {note&&<p className="creative-alternatives-status" role="status">{note}</p>}
       </div>}
     </>}
+    <BranchCombinationEditor key={JSON.stringify([project.id,project.generation,project.active_branch])}
+      project={project} commit={commit} capability={combinationCapability} playhead={playhead} onSeek={onSeek}/>
     <p className="creative-alternatives-boundary">
       A saved positive study does not automatically distill a new component.
       Negative studies do not prohibit a branch by themselves. Source deltas

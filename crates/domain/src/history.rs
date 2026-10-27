@@ -326,7 +326,7 @@ impl CreativeReview {
 }
 
 impl Project {
-    fn capture_branch_state(&self) -> BranchState {
+    pub(crate) fn capture_branch_state(&self) -> BranchState {
         BranchState {
             scenes: self.scenes.clone(),
             markers: self.markers.clone(),
@@ -665,6 +665,13 @@ impl Project {
             .ok_or_else(|| DomainError::Invalid("active branch is missing".into()))?;
         branch.head_revision = next_revision;
 
+        if let Change::CombineCreativeBranches { input } = change {
+            let candidate = self.branches.iter_mut()
+                .find(|branch| branch.id == input.candidate_branch_id)
+                .ok_or_else(|| DomainError::Invalid("derived branch is missing".into()))?;
+            candidate.head_revision = next_revision;
+        }
+
         if matches!(change, Change::MergeBranch { .. })
             && let Some(record) = self.merges.iter_mut().rev().find(|record| {
                 record.target_branch == active_branch && record.committed_revision.is_none()
@@ -675,7 +682,8 @@ impl Project {
 
         let preserves_review_state = matches!(
             change,
-            Change::CreateBranch { .. }
+            Change::CombineCreativeBranches { .. }
+                | Change::CreateBranch { .. }
                 | Change::CheckoutBranch { .. }
                 | Change::AddReview { .. }
                 | Change::ResolveReview { .. }
