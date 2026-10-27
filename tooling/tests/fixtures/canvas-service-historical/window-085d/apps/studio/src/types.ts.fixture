@@ -1,0 +1,1009 @@
+import type { NarrativeEditingState, NarrativeEditingChange } from "./narrativeEditing";
+import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
+import type { DeliveryRecipe } from "./deliveryRecipe";
+import type { MeasuredTable, MeasuredView } from "./measuredData";
+import type { ProceduralConfig } from "./proceduralField";
+import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
+import type { SemanticSfxCue } from "./semanticSfx";
+import type { ComponentDistillationInput, DistillationReview } from "./componentDistillation";
+import type { ProductStageConfig } from "./productStage";
+import type { CameraReframe } from "./cameraReframe";
+import type { StageCaptureCard } from "./stageCapture";
+import type { CaptureSourceRecord } from "./captureSource";
+import type { CreativeEvaluatorBundle } from "./creativeEvaluator";
+import type { IdentityOriginRecord, IdentityRevocation } from "./identityOrigin";
+export type ProjectState = "current" | "stale" | "unknown";
+export type SceneStatus = "draft" | "review" | "approved" | "needs_work";
+export type RendererKind =
+  | "motion-canvas"
+  | "mlt"
+  | "blender"
+  | "manim-community"
+  | "remotion"
+  | "manim-gl";
+export type LockKind = "content" | "timing" | "position" | "style" | "renderer";
+export type CoordinateSpace = "project_pixels" | "normalized" | "scene_local";
+export type ReparentCoordinatePolicy = "world" | "local";
+export type NodeProperty = "position" | "size" | "rotation" | "opacity" | "text" | "style" | "parent" | "order";
+export type BlendMode = "normal" | "multiply" | "screen" | "add";
+export type MotionProperty = "x" | "y" | "width" | "height" | "rotation_deg" | "opacity";
+export type MotionInterpolation = "hold" | "linear" | "ease_in_out" | "ease_out_cubic";
+export type RelationKind = "align_left" | "align_center_x" | "align_right" | "align_top" | "align_center_y" | "align_bottom" | "follow" | "attach";
+
+export interface RationalTime { num: string; den: string; }
+export interface NodeStyle {
+  fill: string | null;
+  stroke: string | null;
+  stroke_width: number;
+  font_family: string | null;
+  font_size: number | null;
+  font_weight: number | null;
+  line_height: number | null;
+  blend_mode: BlendMode;
+}
+export interface NodeRelation { id: string; kind: RelationKind; target_id: string; }
+export interface CanvasKeyframe {
+  at: RationalTime; property: MotionProperty; value: number; interpolation: MotionInterpolation;
+}
+export interface CanvasTransform {
+  x: number; y: number; width: number; height: number;
+  rotation_deg: number; opacity: number;
+}
+export interface CameraState {
+  center_x: number; center_y: number; zoom: number;
+  rotation_deg: number; safe_margin: number;
+}
+export interface Beat {
+  id: string; label: string; objective: string;
+  start: RationalTime; duration: RationalTime;
+}
+export interface CanvasNode extends CanvasTransform {
+  id: string; name: string; kind: string; parent_id: string | null;
+  text: string | null; coordinate_space: CoordinateSpace; z_index: number;
+  style: NodeStyle; relations: NodeRelation[]; property_locks: NodeProperty[];
+  keyframes: CanvasKeyframe[];
+}
+export interface Scene {
+  id: string; name: string; objective: string;
+  start: RationalTime; duration: RationalTime;
+  renderer: RendererKind; status: SceneStatus;
+  beats: Beat[]; nodes: CanvasNode[]; camera: CameraState;
+}
+export interface Marker { id: string; at: RationalTime; label: string; }
+export interface ProjectLock { id: string; resource: string; kind: LockKind; note: string; }
+export type CaptionFormat = "web_vtt" | "srt";
+export type VideoCodec = "h264" | "hevc" | "prores_422_hq" | "vp9" | "av1";
+export type AudioCodec = "aac" | "pcm_s16_le" | "opus";
+export type FramingStrategy = "replan" | "crop";
+export type OutputColorSpace = "rec709" | "display_p3" | "rec2020";
+export type OutputContainer = "mp4" | "mov" | "webm" | "mkv";
+export interface DeliverableProfile {
+  id: string; name: string; width: number; height: number;
+  language: string; captions: boolean; caption_format: CaptionFormat;
+  video_codec: VideoCodec; audio_codec: AudioCodec; audio_sample_rate_hz: number;
+  brand_profile: string | null; cut_label: string | null;
+  parent_profile_id: string | null; source_revision: number | null;
+  framing_strategy: FramingStrategy; crop_approved: boolean; timing_locked: boolean;
+  voice_track_id: string | null; text_overrides: Record<string, string>;
+  included_scene_ids: string[]; protected_scene_ids: string[];
+  burn_in_captions: boolean; frame_rate: RationalTime;
+  color_space: OutputColorSpace; container: OutputContainer;
+  adaptation_notes: string[];
+}
+export interface CaptionExportResult {
+  path: string; cue_count: number;
+  project_id?: string; generation?: string; revision?: string; profile_id?: string;
+  sidecar_sha256?: string; source_current?: boolean;
+}
+export interface OtioExportResult { path: string; scene_count: number; loss_report: string[]; }
+export interface Branch {
+  id: string; name: string; parent_branch: string | null;
+  base_revision: number; head_revision: number; protected: boolean; created_at: string;
+}
+export interface BranchState {
+  production_design?: ProductionDesign;
+  scenes: Scene[]; markers: Marker[]; locks: ProjectLock[]; deliverables: DeliverableProfile[];
+  brief: Brief; narrative: Narrative; audio: AudioState; visual_language: VisualLanguage;
+  proposal_sets: ProposalSet[]; model_invocations: ModelInvocationReceipt[];
+}
+export interface BranchWorkspace {
+  branch_id: string; base_revision: number; base_state: BranchState; current_state: BranchState;
+}
+export type ReviewKind = "technical" | "creative" | "editorial";
+export type ReviewStatus = "open" | "resolved" | "dismissed" | "needs_recheck";
+export interface ReviewAnchor {
+  resource: string; branch_id: string; revision: number;
+  start: RationalTime | null; end: RationalTime | null;
+  locale: string | null; profile_id: string | null;
+}
+export interface CreativeReview {
+  id: string; kind: ReviewKind; anchor: ReviewAnchor; body: string;
+  status: ReviewStatus; resolution: string | null; created_at: string; resolved_at: string | null;
+}
+export interface MergeRecord {
+  id: string; source_branch: string; target_branch: string;
+  base_revision: number; committed_revision: number | null; merged_at: string;
+}
+export interface Asset {
+  id: string; name: string; media_type: string;
+  content_sha256: string | null; source_revision: string | null;
+}
+
+/** SHA-256 state of an existing content-addressed local file, never Project Graph admission. */
+export type AssetIntegrityStatus = "verified" | "missing" | "corrupt" | "unsafe" |
+  "unreadable" | "not_content_addressed" | "deferred_by_budget";
+export interface AssetIntegrityRecord {
+  asset_id: string;
+  status: AssetIntegrityStatus;
+  size_bytes: number | null;
+}
+export interface AssetIntegrityPage {
+  project_id: string;
+  generation: string;
+  revision: number;
+  total_assets: number;
+  items: AssetIntegrityRecord[];
+  next: number | null;
+  complete: boolean;
+  checked_bytes: number;
+}
+
+export type ExtensionKind =
+  | "remotion-renderer"
+  | "manim-gl-renderer"
+  | "generative-assets"
+  | "catalog-package";
+export interface ExtensionProfile {
+  id: string;
+  name: string;
+  kind: ExtensionKind;
+  package_version: string;
+  digest_sha256: string;
+  license: string;
+  source: string;
+  rights_status: RightsStatus;
+  enabled: boolean;
+  permissions: Array<"read_project" | "read_assets" | "write_artifacts" | "network">;
+}
+
+export type ExternalSystem = "launchwright";
+export type HandoffDirection = "context_input" | "context_output" | "artifact_output" | "evidence_output";
+export type ExternalResourceKind = "release" | "target" | "context" | "artifact" | "evidence";
+export interface HandoffBinding {
+  id: string;
+  system: ExternalSystem;
+  direction: HandoffDirection;
+  external_kind: ExternalResourceKind;
+  external_id: string;
+  external_revision: string | null;
+  local_resource: string;
+  artifact_sha256: string | null;
+}
+
+export type SourceReference =
+  | { kind: "asset"; asset_id: string }
+  | { kind: "url"; url: string }
+  | { kind: "project_revision"; revision: number }
+  | { kind: "manual_note"; label: string };
+export interface Claim {
+  id: string; text: string; source: SourceReference | null;
+  context: string; source_revision: string | null;
+}
+export type ClaimEditableFields = Pick<Claim, "text" | "source" | "context" | "source_revision">;
+export interface Brief {
+  objective: string; audience: string; constraints: string[];
+  exclusions: string[]; claims: Claim[];
+}
+export interface NarrativeBeat {
+  id: string; label: string; objective: string; audience_takeaway: string;
+  claim_ids: string[]; preferred_duration: RationalTime | null;
+}
+export interface ProtectedSection { beat_id: string; reason: string; }
+export interface Narrative {
+  premise: string; beats: NarrativeBeat[]; protected_sections: ProtectedSection[];
+  editing?: NarrativeEditingState | null;
+}
+export interface VoiceTrack {
+  id: string; asset_id: string; label: string; sample_rate_hz: number; channels: number;
+  measured_duration: RationalTime; source_sha256: string;
+  loudness_lufs: number | null; true_peak_dbfs: number | null;
+}
+export interface WaveformPage {
+  schema: string;
+  algorithm: "sample-peak-max-abs-v1";
+  source_sha256: string;
+  sample_rate_hz: number;
+  channels: number;
+  frames_per_peak: number;
+  total_frames: number;
+  peak_count: number;
+  page_index: number;
+  page_size: number;
+  start_peak: number;
+  peaks: number[];
+  has_previous: boolean;
+  has_next: boolean;
+}
+export type AlignmentEvidence =
+  | { kind: "manual" }
+  | { kind: "measured"; engine: string; source_sha256: string; confidence_millis: number | null }
+  | { kind: "unknown" };
+export interface TranscriptSegment {
+  id: string; voice_track_id: string; start: RationalTime; end: RationalTime;
+  text: string; speaker: string | null; alignment: AlignmentEvidence;
+}
+export type CueEvidence = "manual" | "transcript_aligned" | "measured" | "unknown";
+export interface AudioCue {
+  id: string; label: string; at: RationalTime;
+  source_segment_id: string | null; evidence: CueEvidence;
+}
+export interface MixIntent {
+  voice_gain_db: number; music_gain_db: number;
+  target_lufs: number | null; target_true_peak_dbfs: number | null;
+}
+export interface AudioState {
+  voice_tracks: VoiceTrack[]; active_voice_track_id: string | null;
+  transcript: TranscriptSegment[]; cues: AudioCue[];
+  sfx_cues?: SemanticSfxCue[]; mix: MixIntent;
+}
+export interface VisualToken { name: string; value: string; }
+export type ReducedMotionBehavior = "instant" | "fade_only" | "static_equivalent";
+export interface MotionVerb {
+  name: string; meaning: string; duration_ms: number; reduced_motion: ReducedMotionBehavior;
+}
+export type RightsStatus = "cleared" | "restricted" | "unknown";
+export interface FontRight { family: string; source: string; rights_status: RightsStatus; }
+export interface VisualLanguage {
+  version: number; name: string; palette: VisualToken[]; type_tokens: VisualToken[];
+  motion_grammar: MotionVerb[]; anti_slop_rules: string[]; fonts: FontRight[];
+}
+export type ProposalScope =
+  | { kind: "project" }
+  | { kind: "scene"; scene_id: string }
+  | { kind: "selection"; resource_refs: string[] };
+export interface SearchBudget { candidates: number; model_calls: number; max_tokens: number; }
+export type CreativeEdit =
+  | { kind: "scene_objective"; scene_id: string; objective: string }
+  | { kind: "scene_order"; scene_ids: string[] }
+  | { kind: "beat_rewrite"; beat_id: string; objective: string }
+  | { kind: "renderer_choice"; scene_id: string; renderer: string };
+export interface Proposal {
+  id: string; title: string; rationale: string; structure: string[]; edits: CreativeEdit[];
+}
+export interface ProposalSet {
+  id: string; base_revision: number; scope: ProposalScope;
+  search_budget: SearchBudget; proposals: Proposal[]; selected: string | null;
+}
+export type DataClass = "metadata" | "text" | "frame" | "audio" | "source_code";
+export type InvocationOutcome = "succeeded" | "failed" | "cancelled" | "unknown";
+export interface InvocationBudget { max_calls: number; max_tokens: number; max_cost_microunits: number | null; }
+export interface ModelInvocationReceipt {
+  id: string; provider: string; model: string; provider_version: string | null;
+  base_revision: number; resource_refs: string[]; data_classes: DataClass[];
+  budget: InvocationBudget; outcome: InvocationOutcome;
+}
+export type ModelProviderKind = "manual" | "external_agent" | "local" | "remote";
+export interface ModelRequestDraft {
+  provider_kind: ModelProviderKind;
+  provider: string;
+  model: string;
+  resource_refs: string[];
+  data_classes: DataClass[];
+  budget: InvocationBudget;
+}
+export interface ModelContextDisclosure {
+  resource_ref: string;
+  data_class: DataClass;
+  label: string;
+  media_type: string | null;
+  estimated_bytes: number;
+  content_sha256: string | null;
+  preview: string | null;
+  preview_truncated: boolean;
+  untrusted_data: boolean;
+}
+export interface ModelRequestPreflight {
+  schema: string;
+  project_id: string;
+  generation: string;
+  base_revision: number;
+  provider_kind: ModelProviderKind;
+  provider: string;
+  model: string;
+  resource_refs: string[];
+  data_classes: DataClass[];
+  budget: InvocationBudget;
+  disclosures: ModelContextDisclosure[];
+  estimated_total_bytes: number;
+  source_data_classes: DataClass[];
+  explicit_source_consent_required: boolean;
+  fallback_provider: string | null;
+  studio_network_dispatch_supported: boolean;
+  network_dispatched: boolean;
+  fingerprint_sha256: string;
+}
+
+export type ProductionJobState =
+  | "queued"
+  | "running"
+  | "cancel_requested"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "outcome_unknown";
+export type ProductionJobApplicability = "current" | "stale";
+export type ProductionObservationState = "observed" | "failed_known" | "outcome_unknown";
+export interface ProductionJobProgress {
+  completed: number; total: number | null; message: string | null;
+}
+export interface ProductionJobProjection {
+  job_ref: string;
+  provider: string;
+  root_request_id: string;
+  generation: string;
+  revision: number;
+  state: ProductionJobState;
+  cancellation_requested: boolean;
+  applicability: ProductionJobApplicability;
+  last_command: string;
+  created_at: string;
+  last_observed_at: string;
+  local_observations: number;
+  provider_generation: number | null;
+  progress: ProductionJobProgress | null;
+  artifact_available: boolean;
+  result_available: boolean;
+  last_observation: ProductionObservationState;
+}
+
+/** Read-only source-scoped lifecycle receipt inventory, never evidence
+ * that native MLT projects are live, closed or safe for auto cleanup. */
+export interface MltCleanupInventory {
+  schema: "motionwright.v01-mlt-cleanup-inventory/1";
+  project_id: string;
+  generation: string;
+  revision: number;
+  source_receipts_scanned: number;
+  confirmed_native_creations_current_revision: number;
+  confirmed_native_creations_historical: number;
+  unconfirmed_or_invalid_creation_requests: number;
+  observed_close_request_identities: number;
+  disposition: string;
+  complete_source_receipt_snapshot: true;
+  native_provider_liveness_verified: false;
+  foreground_cleanup_consent_obtained: false;
+  verified_native_project_cleanup: false;
+  automatic_destructive_cleanup_allowed: false;
+}
+
+/** One explicit same-original-job Semwright Broker status read. This is
+ * NOT a verified media artifact, terminal receipt or retry permission. */
+export interface OwnerMotionStatusObservation {
+  schema: "motionwright.v01-owner-native-status/1";
+  job_ref: string;
+  provider_state: "unknown" | "queued" | "starting" | "rendering"
+    | "succeeded_unverified" | "failed_unverified" | "cancelled_unverified";
+  diagnostic: string;
+  provider_generation_matches_original_start: boolean;
+  source_authority_checked: boolean;
+  broker_observed: boolean;
+  read_only: true;
+  native_result_verified: false;
+  output_bytes_verified: false;
+  automatic_retry_permitted: false;
+}
+
+/** Cursor issued by the local Tauri service for a frozen app-owned receipt
+ * snapshot. A changed receipt stream makes this cursor stale, even when the
+ * creative revision is unchanged.
+ */
+export interface ProductionJobsHistoryCursor {
+  latest_id: string;
+  receipt_count: number;
+  offset: number;
+}
+export interface ProductionJobsHistoryPage {
+  items: ProductionJobProjection[];
+  total_jobs: number;
+  next: ProductionJobsHistoryCursor | null;
+  complete: boolean;
+}
+
+export type MotionCanvasNarrativeRole =
+  | "hook" | "problem" | "mechanism" | "evidence"
+  | "comparison" | "reveal" | "payoff" | "cta";
+export type MotionCanvasArchetype =
+  | "statement" | "split_explanation" | "architecture_reveal" | "comparison"
+  | "metric" | "timeline" | "code_focus" | "diagram_build"
+  | "object_spotlight" | "evidence_frame" | "product_proof" | "endcard";
+export interface MotionCanvasSceneIntent {
+  scene_id: string;
+  role: MotionCanvasNarrativeRole;
+  archetype: MotionCanvasArchetype;
+}
+export interface MotionCanvasFilmOptions {
+  frame_rate: { num: number; den: number };
+  font_family: string;
+  mono_font_family: string;
+  scene_intents: MotionCanvasSceneIntent[];
+}
+export interface MotionCanvasSegmentEvidence {
+  segment_id: string;
+  scene_ids: string[];
+  frame_count: number;
+  plan_ref: string;
+  fingerprint: string;
+  job_ref: string;
+  artifact: Record<string, unknown>;
+  verification: Record<string, unknown>;
+}
+export interface NativePreviewGrant {
+  token: string;
+  segment_id: string;
+  scene_ids: string[];
+  frame_count: number;
+}
+/** Local semantic Film projection only; not a renderer job or quality PASS. */
+export interface MotionCanvasProjectionPreflight {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  verdict: "projection_ready" | "unsupported";
+  reason: string | null;
+  segment_count: number;
+  total_frames: number;
+  segments: Array<{
+    segment_id: string;
+    scene_ids: string[];
+    frame_count: number;
+  }>;
+}
+export interface MotionCanvasRenderEvidence {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  frame_rate: { num: number; den: number };
+  segments: MotionCanvasSegmentEvidence[];
+  /** Desktop-session-only readback handles, not canonical render evidence. */
+  preview?: NativePreviewGrant[];
+}
+
+/** Original source-frame coordinates. All ranges are half-open. */
+export interface SourceFrameWindow { start: number; end: number; }
+export interface MotionCanvasWindowSummary {
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  source_scene_id: string;
+  source_window: SourceFrameWindow;
+  segment_window: SourceFrameWindow;
+  original_prefix: SourceFrameWindow;
+  frame_rate: { num: number; den: number };
+  preview_only: true;
+  master_eligible: false;
+  validation: {
+    verdict: "PASS" | "UNKNOWN";
+    native_frame_coverage: "PASS" | "UNKNOWN";
+    pass_checks: number;
+    unknown_checks: number;
+    unknown_findings: number;
+  };
+  cost: {
+    operation: "native_prefix" | "explicit_original_reuse";
+    original_prefix_pngs: number;
+    selected_pngs: number;
+    reused_original_pngs: number;
+    start_calls_observed: number;
+    cached_png_bytes_returned: number;
+    cache_payload_bytes_admitted: number;
+    cache_micros: number;
+    internal_simulation_steps: null;
+    internal_simulation_observation: "not_observed";
+  };
+}
+/** Session-only Window result. This is deliberately not Full render evidence. */
+export interface NativeWindowRenderResponse {
+  window: MotionCanvasWindowSummary;
+  preview: NativePreviewGrant;
+}
+
+/** Read-only, session-authorized native multi-segment manifest/Film check.
+ * It is not a completed MLT render and intentionally contains no paths.
+ */
+export interface MultiSegmentReadinessReport {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  verdict: "source_manifest_ready";
+  mlt_profile: "h264-1080p" | "h264-720p";
+  total_frames: number;
+  segments: Array<{
+    segment_id: string;
+    scene_ids: string[];
+    start_frame: number;
+    frame_count: number;
+  }>;
+  evidence_scope: "manifest-digest-verified-not-composited-mp4";
+}
+
+export interface MltAudioArtifact {
+  relative_path: string;
+  sha256: string;
+  sample_rate: number;
+  channels: number;
+}
+
+export interface AvSyncCue {
+  id: string;
+  expected_us: number;
+}
+
+export interface AvSyncSpec {
+  window_us: number;
+  full_scan: boolean;
+  cues: AvSyncCue[];
+}
+
+export interface PortableMediaVerification {
+  status: "sha256-content-verified";
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  /** String preserves the exact u64 revision without JavaScript rounding. */
+  source_revision: string;
+  signed_authenticity: false;
+  human_acceptance: false;
+  trusted_anchor_matched: boolean;
+}
+
+export interface MasterExportReceipt {
+  destination: string;
+  size_bytes: number;
+  sha256: string;
+  revision: number;
+  deliverable_id: string;
+  source_current: boolean;
+  /** Optional unsigned local integrity descriptor, not an authenticity signature. */
+  integrity_manifest_path?: string | null;
+}
+
+/** Numeric outcomes emitted by the current native decoded-audio measurement.
+ * These states grant no listening, creative or distribution approval. */
+export type DeliveryAudioQcStatus = "not_requested" | "within_targets" | "outside_targets" | "unavailable";
+export type NativeAvAudioQcUnavailableReason =
+  | "session_unavailable" | "source_changed" | "connection_unavailable"
+  | "artifact_changed" | "measurement_unavailable" | "unresolved_receipt" | "unsupported_platform";
+
+/** Public QC/2 projection only. Private measurement proofs, paths, connection
+ * identity, request/lane selectors and complete receipts never enter Studio. */
+export interface DeliveryAudioQcReport {
+  schema: "motionwright.delivery-audio-qc-report/2";
+  qc: {
+    schema: "motionwright.delivery-audio-qc/1";
+    status: DeliveryAudioQcStatus;
+    targets: { target_lufs: number | null; target_true_peak_dbtp: number | null } | null;
+    target_lufs_milli: number | null;
+    target_true_peak_millidbtp: number | null;
+    measured_integrated_lufs_milli: number | null;
+    measured_true_peak_millidbtp: number | null;
+    lufs_delta_milli: number | null;
+    lufs_tolerance_milli: number;
+    lufs_status: DeliveryAudioQcStatus;
+    true_peak_status: DeliveryAudioQcStatus;
+    evaluated_phase: "decoded_mlt_master";
+    decoded_wav_sha256: string;
+    decoded_sample_frames: number;
+    measurement_receipt_id: string;
+    /** Public digest reference, not the private proof or a way to reconstruct it. */
+    measurement_proof_sha256: string;
+    evidence_scope: "final-decoded-pcm16-public-milli-numeric-qc-not-mastered-not-intelligibility-not-human-approved";
+  };
+  measurement_method: { engine: string; version: string; producer_schema_version: number };
+  decoded_input: {
+    format: "wav_pcm_s16le";
+    sha256: string;
+    sample_rate_hz: number;
+    channels: number;
+    channel_layout: string;
+    sample_interval: { start_sample_frame: number; end_sample_frame_exclusive: number };
+  };
+  measurement_windows: {
+    integrated_loudness: "complete_decoded_input_with_provider_gating";
+    momentary_window_ms: number;
+    short_term_window_ms: number;
+    momentary_and_short_term_position: "ending_at_decoded_input_end";
+    loudness_range: "complete_decoded_input_with_provider_gating";
+    true_peak: "complete_decoded_input";
+    sample_peak: "complete_decoded_input";
+  };
+  true_peak_oversample: number;
+  measured_levels: {
+    integrated_lufs_milli: number | null;
+    momentary_lufs_milli: number | null;
+    short_term_lufs_milli: number | null;
+    loudness_range_milli: number | null;
+    true_peak_millidbtp: number | null;
+    sample_peak_millidbfs: number | null;
+  };
+  units: {
+    integrated_lufs_milli: "LUFS"; momentary_lufs_milli: "LUFS"; short_term_lufs_milli: "LUFS";
+    loudness_range_milli: "LU"; true_peak_millidbtp: "dBTP"; sample_peak_millidbfs: "dBFS";
+    target_lufs_milli: "LUFS"; target_true_peak_millidbtp: "dBTP";
+    lufs_delta_milli: "LU"; lufs_tolerance_milli: "LU";
+  };
+  published_resolution: {
+    numerator: 1; denominator: 1000; rounding_authority: "identified_provider_integer_milli_output";
+  };
+  master_artifact_sha256: string;
+  evidence_scope: "measured-final-pcm-numeric-report-not-normalization-not-intelligibility-not-human-acceptance";
+}
+
+export type NativeAvAudioQcResponse =
+  | { kind: "report"; report: DeliveryAudioQcReport }
+  | { kind: "not_requested" }
+  | { kind: "unavailable"; reason: NativeAvAudioQcUnavailableReason };
+
+/** Trusted desktop mint from a source-bound multi-segment native MP4.
+ * No MLT raw project handles, filesystem paths, or arbitrary render plans. */
+export interface NativeMultisegmentAvMasterEvidence {
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  frame_count: number;
+  video_segments: number;
+  video_codec: "h264";
+  audio_codec: "aac";
+  audio_sample_rate: 48000;
+  audio_channels: 2;
+  master_sha256: string;
+  /** Opaque session owner media token: read-only review if review_only=true. */
+  export_token: string;
+  /** Absent on historical evidence; absence is not a numeric QC outcome. */
+  audio_qc?: NativeAvAudioQcResponse;
+  /** True means only a real local native master review, never deliver/publish. */
+  review_only: boolean;
+  provider_project_cleanup: "not_requested_requires_foreground_broker_consent";
+  evidence_scope:
+    | "native-multisegment-av-verified-technical-output-not-human-approved"
+    | "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved";
+}
+
+export interface MltAvMasterEvidence {
+  /** Ephemeral, source-verified desktop delivery handle; never a path. */
+  export_token?: string | null;
+  /** Fresh public projection; readback revalidates instead of persisting this value. */
+  audio_qc?: NativeAvAudioQcResponse;
+  project_resource: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  motion_segment_id: string;
+  frame_rate: { num: number; den: number };
+  frame_count: number;
+  mezzanine: Record<string, unknown>;
+  source_audio: MltAudioArtifact;
+  master: Record<string, unknown>;
+  decoded_audio: Record<string, unknown>;
+  sync: Record<string, unknown> | null;
+}
+
+export type EffectKind =
+  | "project_edit"
+  | "import_local"
+  | "render_local"
+  | "deliver_local"
+  | "workflow_mutation"
+  | "remote_egress"
+  | "upload_external"
+  | "install_runtime"
+  | "publish_external";
+
+export interface EffectGrantReceipt {
+  token: string;
+  effect: EffectKind;
+  project_id: string | null;
+  generation: string | null;
+  revision: number | null;
+  expires_in_seconds: number;
+  one_time: boolean;
+}
+
+export type WorkflowOverviewStatus = "available" | "unconfigured" | "browser_demo";
+export type WorkflowAction =
+  | "record_start"
+  | "record_stop"
+  | "compile"
+  | "suggestion_compile"
+  | "proposal_plan"
+  | "proposal_accept"
+  | "verify"
+  | "replay"
+  | "promote";
+
+export type { WorkflowActionResponse as WorkflowActionResult } from "./workflowActionDraft";
+
+export interface WorkflowOverview {
+  status: WorkflowOverviewStatus;
+  reason: string | null;
+  connection_identity: string | null;
+  authority: Record<string, unknown> | null;
+  traces: Record<string, unknown> | null;
+  candidates: Record<string, unknown> | null;
+  patterns: Record<string, unknown> | null;
+  suggestions: Record<string, unknown> | null;
+  proposals: Record<string, unknown> | null;
+  promotions: Record<string, unknown> | null;
+}
+
+import type { PaidGenerationEdit, PaidGenerationLedger } from "./paidGenerationTypes";
+
+import type { OtioOwnerCutReview } from "./otioCutReview";
+
+export interface Project {
+  paid_generation?: PaidGenerationLedger;
+  production_design?: ProductionDesign;
+  schema_version: number; id: string; generation: string; revision: number;
+  title: string; state: ProjectState; active_branch: string;
+  branches: Branch[]; branch_workspaces: BranchWorkspace[];
+  reviews: CreativeReview[]; merges: MergeRecord[];
+  scenes: Scene[]; markers: Marker[]; assets: Asset[];
+  locks: ProjectLock[]; deliverables: DeliverableProfile[];
+  brief: Brief; narrative: Narrative; audio: AudioState;
+  visual_language: VisualLanguage; proposal_sets: ProposalSet[];
+  model_invocations: ModelInvocationReceipt[]; extensions: ExtensionProfile[]; handoffs: HandoffBinding[]; updated_at: string;
+}
+
+import type { BrandCampaignRollout } from "./brandCampaign";
+import type { SemanticGraphChange } from "./semanticGraph";
+
+export type Change =
+  | SemanticGraphChange
+  | NarrativeEditingChange
+  | { type:"record_narration_take"; expected_source_sha256:string; expected_project_revision:number; reviewer:string; reason:string }
+  | { type:"release_narration_take"; expected_source_sha256:string; reviewer:string; reason:string }
+  | { type:"apply_brand_campaign"; rollout:BrandCampaignRollout }
+  | { type: "apply_otio_owner_cut_review"; review: OtioOwnerCutReview }
+  | { type: "edit_paid_generation"; edit: PaidGenerationEdit }
+  | { type: "undo_creative_patch"; patch_id: string }
+  | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
+  | { type: "detach_product_hero"; instance_id: string }
+  | { type: "propose_component_distillation"; input: ComponentDistillationInput }
+  | { type: "review_component_distillation"; id: string; review: DistillationReview }
+  | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
+  | { type: "detach_product_stage"; instance_id: string }
+  | { type: "upsert_camera_reframe"; reframe: CameraReframe }
+  | { type: "detach_camera_reframe"; id: string }
+  | { type: "bind_stage_capture"; stage_id: string; capture_id: string }
+  | { type: "detach_stage_capture"; stage_id: string }
+  | { type: "register_capture_source"; record: CaptureSourceRecord }
+  | { type: "register_identity_origin"; record: IdentityOriginRecord }
+  | { type: "revoke_identity_origin"; revocation: IdentityRevocation }
+  | { type: "set_production_plan"; plan: ProductionPlan | null }
+  | { type: "set_delivery_recipe"; deliverable_profile_id: string; recipe: DeliveryRecipe | null }
+  | { type: "upsert_measured_table"; table: MeasuredTable }
+  | { type: "upsert_measured_binding"; binding_id: string; scene_id: string; node_id: string; table_id: string; datum_key: string; view: MeasuredView }
+  | { type: "detach_measured_binding"; binding_id: string }
+  | { type: "upsert_procedural_field"; instance_id: string; scene_id: string; config: ProceduralConfig }
+  | { type: "detach_procedural_field"; instance_id: string }
+  | { type: "set_brand_governance"; profile: BrandProfile | null; exceptions: BrandException[] }
+  | { type: "set_taste_profile"; profile: TasteProfile | null }
+  | { type: "record_creative_decision"; decision: CreativeDecision }
+  | { type: "register_creative_evaluator"; bundle: CreativeEvaluatorBundle }
+  | { type: "evaluate_creative_scene"; evaluator_id: string; evaluator_version: number; scene_id: string }
+  | { type: "upsert_native_capsule"; capsule: NativeCapsule }
+  | { type: "apply_creative_patch"; patch: CreativePatch }
+  | { type: "rename_project"; title: string }
+  | { type: "set_brief"; objective: string; audience: string; constraints: string[]; exclusions: string[] }
+  | { type: "add_claim"; text: string; source: SourceReference | null; context: string; source_revision: string | null }
+  | { type: "update_claim"; claim_id: string; expected: ClaimEditableFields; replacement: ClaimEditableFields }
+  | { type: "set_narrative_premise"; premise: string }
+  | { type: "add_scene"; name: string; objective: string; duration_seconds: number }
+  | { type: "move_scene"; scene_id: string; to_index: number }
+  | { type: "update_scene_objective"; scene_id: string; objective: string }
+  | { type: "set_scene_renderer"; scene_id: string; renderer: RendererKind }
+  | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
+  | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
+  | { type: "snap_scene_cut_to_music"; scene_id: string; beat_index: number; source_sha256: string; base_revision: number; acknowledge_absolute_anchors: boolean }
+  | { type: "conform_scenes_to_music"; targets: Array<{scene_id:string;beat_index:number}>; source_sha256: string; base_revision:number; acknowledge_absolute_anchors:boolean }
+  | { type: "upsert_scene_beat"; scene_id: string; beat: Beat }
+  | { type: "remove_scene_beat"; scene_id: string; beat_id: string }
+  | { type: "add_canvas_node"; scene_id: string; node: CanvasNode }
+  | { type: "remove_canvas_node"; scene_id: string; node_id: string }
+  | { type: "transform_canvas_node"; scene_id: string; node_id: string; transform: CanvasTransform }
+  | { type: "set_canvas_keyframe"; scene_id: string; node_id: string; keyframe: CanvasKeyframe }
+  | { type: "set_canvas_position_keyframe"; scene_id: string; node_id: string; at: RationalTime; x: number; y: number; interpolation: MotionInterpolation }
+  | { type: "set_canvas_linear_position_motion"; scene_id: string; node_id: string; deliverable_id: string; start_x: number; start_y: number; end_frame: number }
+  | { type: "set_canvas_out_cubic_position_motion"; scene_id: string; node_id: string; deliverable_id: string; start_x: number; start_y: number; end_frame: number }
+  | { type: "remove_canvas_keyframe"; scene_id: string; node_id: string; at: RationalTime; property: MotionProperty }
+  | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
+  | { type: "update_canvas_style"; scene_id: string; node_id: string; style: NodeStyle }
+  | { type: "reparent_canvas_node"; scene_id: string; node_id: string; parent_id: string | null; z_index: number; preserve?: ReparentCoordinatePolicy }
+  | { type: "set_canvas_relations"; scene_id: string; node_id: string; relations: NodeRelation[] }
+  | { type: "set_node_property_lock"; scene_id: string; node_id: string; property: NodeProperty; locked: boolean }
+  | { type: "set_camera"; scene_id: string; camera: CameraState }
+  | { type: "add_marker"; at: RationalTime; label: string }
+  | { type: "add_asset"; asset: Asset }
+  | { type: "remove_asset"; asset_id: string }
+  | { type: "upsert_deliverable"; profile: DeliverableProfile }
+  | { type: "remove_deliverable"; profile_id: string }
+  | { type: "set_active_voice_track"; track_id: string }
+  | { type: "upsert_transcript_segment"; segment: TranscriptSegment }
+  | { type: "remove_transcript_segment"; segment_id: string }
+  | { type: "upsert_audio_cue"; cue: AudioCue }
+  | { type: "remove_audio_cue"; cue_id: string }
+  | { type: "upsert_semantic_sfx"; cue: SemanticSfxCue }
+  | { type: "remove_semantic_sfx"; cue_id: string }
+  | { type: "set_mix_intent"; mix: MixIntent }
+  | { type: "set_visual_language"; visual_language: VisualLanguage }
+  | { type: "add_proposal_set"; proposal_set: ProposalSet }
+  | { type: "select_proposal"; proposal_set_id: string; proposal_id: string }
+  | { type: "upsert_extension"; extension: ExtensionProfile }
+  | { type: "remove_extension"; extension_id: string }
+  | { type: "upsert_handoff"; binding: HandoffBinding }
+  | { type: "remove_handoff"; binding_id: string }
+  | { type: "record_model_invocation"; receipt: ModelInvocationReceipt }
+  | { type: "create_branch"; name: string }
+  | { type: "checkout_branch"; branch_id: string }
+  | { type: "merge_branch"; source_branch_id: string }
+  | {
+      type: "add_review"; kind: ReviewKind; resource: string; body: string;
+      start: RationalTime | null; end: RationalTime | null;
+      locale: string | null; profile_id: string | null;
+    }
+  | { type: "resolve_review"; review_id: string; resolution: string }
+  | { type: "reopen_review"; review_id: string }
+  | { type: "set_lock"; resource: string; kind: LockKind; note: string }
+  | { type: "remove_lock"; lock_id: string };
+
+export interface ProjectEvent {
+  revision: number;
+  change: { type: string; [key: string]: unknown };
+  created_at: string;
+}
+
+export type ProductionRuntimeStatus =
+  | "ready"
+  | "incompatible"
+  | "unconfigured"
+  | "invalid"
+  | "resource_mismatch"
+  | "unavailable"
+  | "browser_demo";
+
+export interface ProductionRuntimeCompatibility {
+  status: ProductionRuntimeStatus;
+  reason: string | null;
+  expected_version: string;
+  observed_version: string | null;
+  version_compatible: boolean | null;
+  pinned_revision: string;
+  connection_identity: string | null;
+  executable_sha256: string | null;
+}
+
+export interface CreativeDoctorCheck {
+  id: string;
+  status: "validated" | "blocked" | "version_compatible" | "observed" | "not_tested";
+  detail: string;
+}
+export interface CreativeDoctorRenderer {
+  renderer: Scene["renderer"];
+  required_semwright_driver: string | null;
+  scene_count: number;
+  declared_extension_admitted: boolean;
+  provider_verified: boolean;
+  state: "not_used" | "native_provider_not_tested" |
+    "optional_descriptor_only" | "optional_extension_not_admitted" |
+    "native_runtime_version_compatible" | "native_runtime_version_incompatible" |
+    "native_runtime_version_observed" | "native_package_not_found_in_declared_runtime" |
+    "native_runtime_not_observed";
+}
+export interface CreativeDoctorOutput {
+  profile_id: string;
+  width: number;
+  height: number;
+  estimated_uncompressed_rgba_frame_bytes: number;
+  source_profile_validated: boolean;
+  render_and_delivery_verified: false;
+}
+export interface CreativeRuntimeDoctorReport {
+  schema: "motionwright.creative-runtime-doctor/1";
+  project_id: string;
+  generation: string;
+  revision: number;
+  semwright_native_sdk_source_pin: string;
+  runtime_version_evidence: string;
+  runtime_version_detail: string;
+  verdict: "preflight_only" | "owner_action_required" | "browser_only" | "source_invalid";
+  renderers: CreativeDoctorRenderer[];
+  outputs: CreativeDoctorOutput[];
+  checks: CreativeDoctorCheck[];
+  ready_for_native_production: false;
+  install_performed: false;
+  broker_dispatch_performed: boolean;
+  authorizing_grant_created: false;
+}
+
+export interface Bootstrap {
+  project: Project;
+  native_sdk: {
+    application: string;
+    pinned_revision: string;
+    version: string;
+    mode: "tauri" | "browser-demo";
+  };
+}
+
+/** Nullable startup wire. Bootstrap above describes an already opened editor view. */
+export interface StudioBootstrap {
+  project: Project | null;
+  project_selection:
+    | { status: "unselected" }
+    | { status: "selected"; project_id: string }
+    | { status: "unavailable"; project_id: string; message: string };
+  native_sdk: Bootstrap["native_sdk"];
+}
+
+export interface PortableBundlePlan {
+  project_id: string;
+  title: string;
+  source_generation: string;
+  revision: string;
+  event_count: number;
+  blob_count: number;
+  total_blob_bytes: string;
+  rotates_generation: boolean;
+  /** Exact inspected manifest input, not a grant or permission to retry. */
+  fingerprint: string;
+}
+
+export interface PortableBundleExport {
+  destination: string;
+  blob_count: number;
+  total_blob_bytes: string;
+}
+export const seconds = (time: RationalTime): number => Number(time.num) / Number(time.den);
+
+const gcd = (left: number, right: number): number => {
+  let a = Math.abs(Math.trunc(left));
+  let b = Math.abs(Math.trunc(right));
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a || 1;
+};
+
+export const rationalSeconds = (value: number): RationalTime => {
+  if (!Number.isFinite(value)) throw new Error("time must be finite");
+  const numerator = Math.round(value * 1000);
+  if (numerator === 0) return { num: "0", den: "1" };
+  const divisor = gcd(numerator, 1000);
+  return {
+    num: String(numerator / divisor),
+    den: String(1000 / divisor),
+  };
+};
+
+/** Read-only references from the original receipt stream, never proof or grants. */
+export interface NativeAudioQcReceiptHint {
+  decoded_measurement_receipt_id: string;
+  master_sha256: string;
+}
+export interface NativeAudioQcReceiptInventory {
+  project_id: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  items: NativeAudioQcReceiptHint[];
+  legacy_unbound_count: number;
+  unavailable_count: number;
+}
+export type NativeAudioQcReceiptInventoryResponse =
+  | { kind: "inventory"; inventory: NativeAudioQcReceiptInventory }
+  | { kind: "unavailable"; reason: NativeAvAudioQcUnavailableReason };

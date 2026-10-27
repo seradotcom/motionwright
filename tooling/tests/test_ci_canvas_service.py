@@ -15,6 +15,36 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
+def read_historical_source_fixture(root, pins):
+    """Read retained source bytes only; this does not admit a runtime profile."""
+    expected = dict(pins)
+    if not expected or len(expected) != len(pins):
+        raise ValueError("Historical source fixture pins are empty or duplicated")
+    root_mode = root.lstat().st_mode
+    if gate.stat.S_ISLNK(root_mode):
+        raise ValueError("Historical source fixture root is a symbolic link")
+    if not gate.stat.S_ISDIR(root_mode):
+        raise ValueError("Historical source fixture root is not a directory")
+    observed = set()
+    for path in root.rglob("*"):
+        mode = path.lstat().st_mode
+        if gate.stat.S_ISLNK(mode):
+            raise ValueError("Historical source fixture contains a symbolic link")
+        if gate.stat.S_ISREG(mode):
+            observed.add(path.relative_to(root).as_posix())
+        elif not gate.stat.S_ISDIR(mode):
+            raise ValueError("Historical source fixture contains a non-regular entry")
+    if observed != {name + ".fixture" for name in expected}:
+        raise ValueError("Historical source fixture inventory differs")
+    sources = {}
+    for name, digest in pins:
+        raw = (root / (name + ".fixture")).read_bytes()
+        if gate.hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError("Historical source fixture bytes differ: " + name)
+        sources[name] = raw
+    return sources
+
+
 def synthetic_process_fields(env=None):
     """An archive/parser fixture, never evidence that a real process executed."""
     return {"process_observation_schema": "motionwright.studio-command-process-observation/2",
@@ -5517,16 +5547,27 @@ class CameraEightSourceTests(unittest.TestCase):
         return value
 
     def test_eight_exact_historical_source_titles_and_four_inputs_match_the_git_fixtures(self):
-        repo = PATH.parents[1]
-        for name, expected in gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS:
-            raw = (repo / name).read_bytes()
-            self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), expected, name)
-        camera = (repo / "apps/studio/tests/camera-reframe-service.spec.ts").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parent / "fixtures/canvas-service-historical/camera-eight"
+        pins = gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS
+        self.assertEqual(len(pins), 4)
+        original_read = Path.read_bytes
+
+        def retained_read(path):
+            self.assertTrue(path.is_relative_to(root), "historical controls must not read the live checkout")
+            return original_read(path)
+
+        with mock.patch.object(Path, "read_bytes", retained_read), \
+                mock.patch.object(gate.subprocess, "run", side_effect=AssertionError("no Git or process execution")), \
+                mock.patch.object(gate.subprocess, "Popen", side_effect=AssertionError("no Git or process execution")):
+            sources = read_historical_source_fixture(root, pins)
+        for name, expected in pins:
+            self.assertEqual(gate.hashlib.sha256(sources[name]).hexdigest(), expected, name)
+        camera = sources["apps/studio/tests/camera-reframe-service.spec.ts"].decode("utf-8")
         literal = re.findall(r'\btest\("([^"\n]+)"', camera)
         self.assertEqual(literal, [*gate.CAMERA_TITLES[:2], *gate.CAMERA_TITLES[4:]])
         self.assertEqual(camera.count('for (const operation of ["upsert", "detach"] as const)'), 1)
         self.assertEqual(camera.count('test(`a peer ${operation} with identical saved Camera values cannot acknowledge the held original`'), 1)
-        v2 = (repo / "apps/studio/tests/camera-reframe-v2-service.spec.ts").read_text(encoding="utf-8")
+        v2 = sources["apps/studio/tests/camera-reframe-v2-service.spec.ts"].decode("utf-8")
         self.assertEqual(re.findall(r'\btest\("([^"\n]+)"', v2), list(gate.CAMERA_EIGHT_SELECTIONS[1][2]))
         self.assertEqual(len(gate.selected_selections("camera")[0][2]), 7)
         self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 184)
@@ -5534,6 +5575,26 @@ class CameraEightSourceTests(unittest.TestCase):
         self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["not_selected"],
                          [{"label": label, "file": name, "titles": list(titles), "status": "NOT_SELECTED", "technical_credit": "NONE"}
                           for label, name, titles in gate.SELECTIONS if label != "camera"])
+
+        for mutation in ("changed", "missing", "extra", "duplicate-pin"):
+            with self.subTest(historical_fixture=mutation), tempfile.TemporaryDirectory() as directory:
+                retained = Path(directory)
+                for name, raw in sources.items():
+                    path = retained / (name + ".fixture")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(raw)
+                changed = retained / "SOURCE_LOCK.json.fixture"
+                altered_pins = pins
+                if mutation == "changed":
+                    changed.write_bytes(sources["SOURCE_LOCK.json"] + b" ")
+                elif mutation == "missing":
+                    changed.unlink()
+                elif mutation == "extra":
+                    (retained / "foreign.fixture").write_bytes(b"foreign source")
+                else:
+                    altered_pins = (*pins, pins[0])
+                with self.assertRaises(ValueError):
+                    read_historical_source_fixture(retained, altered_pins)
 
     def test_catalogue_and_full_title_commands_reject_omission_duplication_renaming_and_retry(self):
         rows = gate.camera_eight_selections()
@@ -6113,13 +6174,16 @@ class WindowBaseObjectSourceTests(unittest.TestCase):
                 "code": code, "receipt": receipt, "calls": calls}
 
     def test_current_085d_fourteen_pins_and_complete_catalogues_are_source_data_only(self):
-        root = Path(__file__).resolve().parents[2]
+        root = Path(__file__).resolve().parent / "fixtures/canvas-service-historical/window-085d"
         self.assertEqual(gate.window_frontend_profile()["source_commit"], "085d12a947d4b15bd74d131e007fe908e925106f")
         self.assertEqual(gate.window_frontend_profile()["source_tree"], "882e0ba3cec60ec5dfda911314d47c6620ff73ec")
         pins = (*gate.WINDOW_FRONTEND_PRODUCT_PINS, *gate.WINDOW_FRONTEND_DEPENDENCY_PINS)
         self.assertEqual(len(pins), 14)
+        with mock.patch.object(gate.subprocess, "run", side_effect=AssertionError("no Git or process execution")), \
+                mock.patch.object(gate.subprocess, "Popen", side_effect=AssertionError("no Git or process execution")):
+            sources = read_historical_source_fixture(root, pins)
         for name, expected in pins:
-            self.assertEqual(gate.hashlib.sha256((root / name).read_bytes()).hexdigest(), expected, name)
+            self.assertEqual(gate.hashlib.sha256(sources[name]).hexdigest(), expected, name)
         self.assertEqual([len(names) for _, names in gate.window_frontend_inventory()], [9, 3, 19, 15, 5, 4, 195])
         self.assertEqual(len(gate.WINDOW_FRONTEND_BROWSER_SELECTION[2]), 6)
         self.assertIsNone(gate.CAMERA_EIGHT_REVIEWED_PROFILE)

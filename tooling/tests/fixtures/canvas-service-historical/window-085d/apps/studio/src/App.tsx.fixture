@@ -1,0 +1,2582 @@
+import CommandPalette, { type EditorCommand } from "./CommandPalette";
+import SceneInspector from "./SceneInspector";
+import { isPaletteShortcut } from "./editorCommandSearch";
+import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
+import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
+import { graphReviewAnchor, graphSame } from "./semanticGraph";
+import { readSemanticGraphContext } from "./semanticGraphService";
+import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
+import {
+  Activity,
+  AlignLeft,
+  AudioLines,
+  Box,
+  Boxes,
+  ChevronDown,
+  ChevronUp,
+  CircleCheck,
+  CircleDashed,
+  Clock3,
+  Columns3,
+  FileOutput,
+  Film,
+  GitBranch,
+  Layers3,
+  LockKeyhole,
+  MessageSquareText,
+  Moon,
+  MoreHorizontal,
+  MoveRight,
+  PanelLeftClose,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  SkipBack,
+  SkipForward,
+  Search,
+  Settings2,
+  SlidersHorizontal,
+  Sparkles,
+  Sun,
+  Type,
+  Wand2,
+  WifiOff,
+  Workflow,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
+import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
+import ProjectProjectionWorkspace from "./ProjectProjectionWorkspace";
+import {
+  openSavedProjectView, projectViewId, projectViewRevision,
+  type ProjectOpenMode, type StudioProjectView,
+} from "./projectProjection";
+import FileImportRecovery, { type FileImportConfirmation } from "./FileImportRecovery";
+import { removeFileImport, type RetainedFileImport } from "./fileImport";
+import {
+  forgetProjectSelection, listProjectLibrary,
+  readProjectSelection, rememberOpenedProject, type ProjectSelectionRead,
+  createProjectWithRetainedIntent, discardProjectCreationCopy, readProjectCreations,
+  recoverRetainedProjectCreation, PROJECT_CREATION_PREFIX, type ProjectCreationCopy,
+} from "./projectLibrary";
+import {
+  applyChange,
+  bootstrap,
+  projectHistory,
+  exportProjectBundle,
+  importAssetFile,
+  importNativeCapsuleSourceFile,
+  importProjectBundle,
+  importVoiceFile,
+  recoverOriginalFileImport,
+  inspectProjectBundle,
+  renderMotionCanvasWindow,
+  savedNativeWindowFilmOptions,
+} from "./api";
+import AudioWorkspace from "./AudioWorkspace";
+import CanvasWorkspace from "./CanvasWorkspace";
+import DependenciesWorkspace from "./DependenciesWorkspace";
+import DeliveryProfiles from "./DeliveryProfiles";
+import type { DeliveryProjectState } from "./deliveryProfileDraft";
+import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
+import IntegrationsWorkspace from "./IntegrationsWorkspace";
+import ProductionJobsWorkspace from "./ProductionJobs";
+import NativeAvReview from "./NativeAvReview";
+import NativeFrameStage from "./NativeFrameStage";
+import RetainedPreviewFrame from "./RetainedPreviewFrame";
+import { previewRecoveryScope } from "./previewRecovery";
+import { usePreviewRecovery } from "./usePreviewRecovery";
+import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
+import {
+  clearConfirmedNativeWindow, createNativeWindowIntent, markNativeWindowUncertain,
+  nativeWindowCutRange, nativeWindowFrameAtPlayhead, nativeWindowIntentMatches,
+  nativeWindowReuseToken, nativeWindowSceneBounds, parseNativeWindowRange, readNativeWindowUncertainties,
+  NATIVE_WINDOW_UNCERTAINTY_PREFIX,
+  type NativeWindowIntent, type NativeWindowReceipt, type NativeWindowUncertaintyClaim,
+} from "./nativeWindowPreview";
+import { editorialTimeForMasterMedia, programMasterAtPlayhead } from "./programMaster";
+import { resolveSceneRenderReceipt } from "./renderReceipt";
+import WorkflowWorkspace from "./WorkflowWorkspace";
+import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
+import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
+import type {
+  Bootstrap,
+  StudioBootstrap,
+  Change,
+  PortableBundlePlan,
+  MotionCanvasRenderEvidence,
+  MotionCanvasFilmOptions,
+  MltAvMasterEvidence,
+  MasterExportReceipt,
+  Project,
+  ProjectState,
+  RationalTime,
+  ReviewAnchor,
+  RendererKind,
+  Scene,
+  SourceFrameWindow,
+} from "./types";
+import { rationalSeconds, seconds } from "./types";
+import {
+  DEFAULT_EDITOR_RATE,
+  formatEditorTimecode as formatTime,
+  rulerTime,
+  stepEditorialFrame,
+  supportsDropFrame,
+  timebaseLabel,
+  validEditorRate,
+  type TimecodeMode,
+} from "./timecode";
+
+type Workspace =
+  | "Brief"
+  | "Narrative"
+  | "Audio"
+  | "Storyboard"
+  | "Canvas"
+  | "Production"
+  | "Timeline"
+  | "Jobs"
+  | "Workflows"
+  | "Integrations"
+  | "Alternatives"
+  | "Changes"
+  | "Dependencies"
+  | "Review"
+  | "Deliver";
+
+type Theme = "dark" | "light";
+
+const THEME_STORAGE_KEY = "motionwright.theme";
+
+function preferredTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "dark" || stored === "light") return stored;
+  } catch {
+    // Local storage may be unavailable in hardened or private WebViews.
+  }
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
+  { name: "Brief", icon: AlignLeft },
+  { name: "Narrative", icon: Type },
+  { name: "Audio", icon: AudioLines },
+  { name: "Storyboard", icon: Columns3 },
+  { name: "Canvas", icon: Box },
+  { name: "Production", icon: Layers3 },
+  { name: "Timeline", icon: Film },
+  { name: "Jobs", icon: Activity },
+  { name: "Workflows", icon: Wand2 },
+  { name: "Integrations", icon: Settings2 },
+  { name: "Alternatives", icon: Sparkles },
+  { name: "Changes", icon: GitBranch },
+  { name: "Dependencies", icon: Workflow },
+  { name: "Review", icon: MessageSquareText },
+  { name: "Deliver", icon: FileOutput },
+];
+
+const rendererLabels: Record<RendererKind, string> = {
+  "motion-canvas": "Motion Canvas",
+  mlt: "MLT",
+  blender: "Blender",
+  "manim-community": "Manim Community",
+  remotion: "Remotion",
+  "manim-gl": "ManimGL",
+};
+
+
+function projectTimelineDuration(project: Project) {
+  return Math.max(
+    1,
+    ...project.scenes.map((scene) => seconds(scene.start) + seconds(scene.duration)),
+    ...project.markers.map((marker) => seconds(marker.at)),
+    ...project.audio.voice_tracks.map((track) => seconds(track.measured_duration)),
+    ...project.audio.transcript.map((segment) => seconds(segment.end)),
+    ...project.audio.cues.map((cue) => seconds(cue.at)),
+  );
+}
+
+function stateLabel(state: ProjectState) {
+  return state.toUpperCase();
+}
+
+function StatusPill({ state }: { state: ProjectState | Scene["status"] }) {
+  const label = state.replace("_", " ").toUpperCase();
+  return <span className={"status-pill status-" + state}>{label}</span>;
+}
+
+function IconButton({
+  label,
+  onClick,
+  children,
+  disabled = false,
+}: {
+  label: string;
+  onClick?: () => void;
+  children: React.ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      className="icon-button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      disabled={disabled}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+interface NativeWindowEditorState {
+  startRaw: string;
+  endRaw: string;
+  receipt: NativeWindowReceipt | null;
+  pending: NativeWindowIntent | null;
+  error: string | null;
+}
+type NativeWindowEditors = Record<string, NativeWindowEditorState>;
+type UpdateNativeWindowEditors = (update: (current: NativeWindowEditors) => NativeWindowEditors) => void;
+
+export function PreviewSurface({
+  scene,
+  project,
+  playhead,
+  rate,
+  mode,
+  profile,
+  renderEvidence,
+  avEvidence,
+  onInspectRender,
+  onSeek,
+  onPauseEditorial,
+  editorialPlaying,
+  desktopMode = false,
+  windowEditors,
+  onWindowEditors,
+  onInspectWindow,
+}: {
+  scene: Scene | null;
+  project: Project;
+  playhead: number;
+  rate: RationalTime;
+  mode: TimecodeMode;
+  profile: Project["deliverables"][number] | null;
+  renderEvidence: MotionCanvasRenderEvidence | null;
+  avEvidence: MltAvMasterEvidence | null;
+  onInspectRender: () => void;
+  onSeek: (seconds: number) => void;
+  onPauseEditorial: () => void;
+  editorialPlaying: boolean;
+  desktopMode?: boolean;
+  windowEditors?: NativeWindowEditors;
+  onWindowEditors?: UpdateNativeWindowEditors;
+  onInspectWindow?: () => void;
+}) {
+  const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
+  const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
+  const nativeAv = programMasterAtPlayhead(project, scene, profile, renderEvidence, avEvidence, playhead);
+  const windowDraftKey = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id, profile?.id]);
+  let defaultBounds = { start: "", end: "" };
+  let windowInputIssue: string | null = null;
+  let windowOptions: MotionCanvasFilmOptions | null = null;
+  let windowRange: SourceFrameWindow | null = null;
+  let cutRange: { start: RationalTime; end: RationalTime } | null = null;
+  if (scene && profile) {
+    try {
+      const fps = { num: Number(profile.frame_rate.num), den: Number(profile.frame_rate.den) };
+      const bounds = nativeWindowSceneBounds(scene, fps);
+      defaultBounds = { start: String(bounds.start), end: String(Math.min(bounds.end, bounds.start + 30, 1_080_000)) };
+    } catch (reason) { windowInputIssue = reason instanceof Error ? reason.message : "The saved source window is unavailable."; }
+  }
+  const windowEditor = windowEditors?.[windowDraftKey] ?? { startRaw: defaultBounds.start, endRaw: defaultBounds.end, receipt: null, pending: null, error: null };
+  if (scene && profile && !windowInputIssue) {
+    try {
+      windowOptions = savedNativeWindowFilmOptions(project, profile.id);
+      windowRange = parseNativeWindowRange(scene, windowOptions.frame_rate, windowEditor.startRaw, windowEditor.endRaw);
+      cutRange = nativeWindowCutRange(project, scene, profile, windowRange, windowOptions.frame_rate);
+    } catch (reason) { windowInputIssue = reason instanceof Error ? reason.message : "The saved window intent is incomplete."; }
+  }
+  const [windowStorageVersion, setWindowStorageVersion] = useState(0);
+  useEffect(() => {
+    if (!desktopMode || !onWindowEditors) return;
+    const changed = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(NATIVE_WINDOW_UNCERTAINTY_PREFIX)) setWindowStorageVersion(value => value + 1);
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [desktopMode, onWindowEditors]);
+  const { unresolvedWindows, windowCopyIssue } = useMemo(() => {
+    try { return { unresolvedWindows: desktopMode && onWindowEditors ? readNativeWindowUncertainties(window.localStorage, project) : [], windowCopyIssue: null }; }
+    catch (reason) { return { unresolvedWindows: [], windowCopyIssue: reason instanceof Error ? reason.message : "The original window outcome copy is unavailable." }; }
+  }, [desktopMode, onWindowEditors, project, windowEditors, windowStorageVersion]);
+  const currentWindowReceipt = scene && profile && windowRange && windowOptions && windowEditor.receipt
+    && nativeWindowIntentMatches(windowEditor.receipt.intent, project, scene, profile, windowRange, windowOptions)
+    ? windowEditor.receipt : null;
+  const windowFrame = nativeWindowFrameAtPlayhead(project, scene, profile, currentWindowReceipt, playhead);
+  const windowAuthorityKey = JSON.stringify(["window", project.id, project.generation, project.active_branch,
+    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions,
+    currentWindowReceipt?.response.preview.token]);
+  const windowDispatchContext = JSON.stringify([project.id, project.generation, project.active_branch,
+    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions]);
+  const windowCurrent = useRef({ context: windowDispatchContext, epoch: 0, project, scene, profile, range: windowRange, options: windowOptions });
+  if (windowCurrent.current.context !== windowDispatchContext) {
+    windowCurrent.current = { context: windowDispatchContext, epoch: windowCurrent.current.epoch + 1,
+      project, scene, profile, range: windowRange, options: windowOptions };
+  } else {
+    windowCurrent.current = { ...windowCurrent.current, project, scene, profile, range: windowRange, options: windowOptions };
+  }
+  const windowMounted = useRef(false);
+  const windowDispatchBusy = useRef(false);
+  useEffect(() => {
+    windowMounted.current = true;
+    return () => { windowMounted.current = false; windowCurrent.current.epoch++; };
+  }, []);
+  const anyWindowPending = Object.values(windowEditors ?? {}).some(value => value.pending?.project_id === project.id
+    && value.pending.generation === project.generation && value.pending.revision === project.revision);
+  const updateWindow = (key: string, initial: NativeWindowEditorState, update: (current: NativeWindowEditorState) => NativeWindowEditorState) => {
+    onWindowEditors?.(current => ({ ...current, [key]: update(current[key] ?? initial) }));
+  };
+  const captureWindow = async (reuse: boolean) => {
+    if (!desktopMode || !onWindowEditors || !scene || !profile || !windowRange || !windowOptions
+        || anyWindowPending || windowDispatchBusy.current || (!reuse && (unresolvedWindows.length > 0 || windowCopyIssue))) return;
+    const initial = windowEditor, key = windowDraftKey;
+    const originalEpoch = windowCurrent.current.epoch;
+    const originalContext = windowCurrent.current.context;
+    let intent: NativeWindowIntent;
+    try { intent = createNativeWindowIntent(project, scene, profile, windowRange, windowOptions, crypto.randomUUID()); }
+    catch (reason) {
+      updateWindow(key, initial, value => ({ ...value, error: reason instanceof Error ? reason.message : "The saved window intent is invalid." }));
+      return;
+    }
+    const token = reuse ? nativeWindowReuseToken(intent, currentWindowReceipt) : null;
+    if (reuse && !token) return;
+    intent = { ...intent, reuse_token: token };
+    let dispatched = false;
+    let claim: NativeWindowUncertaintyClaim | null = null;
+    const fresh = () => {
+      const now = windowCurrent.current;
+      return windowMounted.current && now.epoch === originalEpoch && now.context === originalContext
+        && now.scene !== null && now.profile !== null && now.range !== null && now.options !== null
+        && nativeWindowIntentMatches(intent, now.project, now.scene, now.profile, now.range, now.options);
+    };
+    const beforeDispatch = () => {
+      if (!fresh()) throw new Error("Window selection changed while preparing its grant; no native command was dispatched.");
+      if (!reuse && readNativeWindowUncertainties(window.localStorage, project).length > 0) {
+        throw new Error("An original window outcome is unresolved; this saved revision remains blocked.");
+      }
+    };
+    windowDispatchBusy.current = true;
+    updateWindow(key, initial, value => ({ ...value, pending: intent, error: null }));
+    try {
+      const result = await renderMotionCanvasWindow(project, intent, beforeDispatch, () => {
+        if (!fresh()) throw new Error("The selected window changed before native dispatch.");
+        if (!reuse) claim = markNativeWindowUncertain(window.localStorage, intent);
+        dispatched = true;
+      });
+      let copyWarning: string | null = null;
+      if (claim) {
+        try { clearConfirmedNativeWindow(window.localStorage, claim); }
+        catch (reason) { copyWarning = reason instanceof Error ? reason.message : "The completed window marker remains retained."; }
+      }
+      const canPublish = fresh();
+      updateWindow(key, initial, value => value.pending?.request_id !== intent.request_id ? value : ({ ...value, pending: null,
+        receipt: canPublish ? result : value.receipt,
+        error: canPublish ? copyWarning : "The original window completed for an earlier selection. Its pixels were not published; inspect the original operation in Jobs." }));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "The native window request did not return a verified response.";
+      updateWindow(key, initial, value => value.pending?.request_id !== intent.request_id ? value : ({ ...value, pending: null, error: !reuse && dispatched
+        ? "Capture outcome UNKNOWN for original request " + intent.request_id + ". The intent is retained and this saved revision remains blocked. Jobs inspection does not clear the marker or recover a preview token. " + message
+        : reuse ? "Original window reuse failed; no fallback capture was dispatched. " + message : message }));
+    } finally { windowDispatchBusy.current = false; }
+  };
+  const authorityKey = JSON.stringify([project.id, project.generation, project.active_branch,
+    project.revision, scene?.id, profile?.id, nativeFrame?.token, nativeAv?.exportToken]);
+  // AV belongs to the whole admitted master, so its explicit choice must
+  // survive scene/playhead changes. Capture authority stays scene-specific.
+  const avAuthorityKey = JSON.stringify([project.id, project.generation, project.active_branch,
+    project.revision, profile?.id, renderEvidence?.preview?.map(grant => grant.token), avEvidence?.export_token]);
+  // Revisions preserve decoded pixels, while native reads still require an
+  // explicit opt-in tied to the exact current authority. A restored local copy
+  // is always historical, even when its source revision matches the project.
+  const [choice, setChoice] = useState<{ source: "design" | "frames" | "window" | "av" | "recovery"; authority: string }>(
+    { source: "recovery", authority: "" },
+  );
+  const selectPreviewSource = (source: typeof choice.source) => setChoice({
+    source, authority: source === "av" ? avAuthorityKey : source === "window" ? windowAuthorityKey : authorityKey,
+  });
+  // A real authority change consumes the previous opt-in. Returning A -> B -> A
+  // cannot resurrect it; moving between scenes of the same master can retain it.
+  useEffect(() => {
+    setChoice(previous => previous.authority === (previous.source === "av" ? avAuthorityKey : previous.source === "window" ? windowAuthorityKey : authorityKey)
+      ? previous : { source: "recovery", authority: authorityKey });
+  }, [avAuthorityKey, authorityKey, windowAuthorityKey]);
+  const recovery = usePreviewRecovery(previewRecoveryScope(project, scene, profile), project.revision, authorityKey);
+  const showingNative = choice.source === "frames" && choice.authority === authorityKey && nativeFrame !== null;
+  const showingAv = choice.source === "av" && choice.authority === avAuthorityKey && nativeAv !== null;
+  const showingWindow = choice.source === "window" && choice.authority === windowAuthorityKey && windowFrame !== null;
+  const showingHistorical = recovery.frame !== null && !showingNative && !showingWindow && !showingAv && choice.source !== "design";
+  const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
+  const hasProgramDesign = hasEditableProgramDesign(scene);
+
+  return (
+    <section className="preview-wrap" aria-label="Program preview" style={onWindowEditors ? { gridTemplateRows: "auto minmax(0, 1fr) auto" } : undefined}>
+      <div className="preview-toolbar" style={onWindowEditors ? { flexWrap: "wrap", minHeight: 36 } : undefined}>
+        <div className="preview-mode">
+          <span className="preview-dot" />
+          Program
+          <span className="toolbar-divider" />
+          <span className="muted">
+            {showingAv ? "Verified H.264/AAC master · decoded review" :
+              showingWindow ? "Native window PNG · preview only · " + currentWindowReceipt!.response.window.validation.verdict :
+              showingNative ? "Verified native PNG · sampled frames" :
+              showingHistorical ? "Retained historical preview · not current" : "Design representation"}
+          </span>
+          <span
+            className="preview-revision"
+            aria-label={showingHistorical
+              ? `Retained preview source revision ${recovery.frame!.sourceRevision}; current project revision ${project.revision}; not current`
+              : `Preview representation is based on project revision ${project.revision}`}
+          >
+            {showingHistorical ? `SOURCE r${recovery.frame!.sourceRevision} · NOT CURRENT` : `PROJECT r${project.revision}`}
+          </span>
+        </div>
+        {receipt?.kind === "current" && (
+          <button type="button" className={"button compact native-frame-toggle " + (showingNative ? "selected" : "")}
+            disabled={!showingNative && nativeFrame === null}
+            title={nativeFrame === null
+              ? "No verified local frame grant was returned with this native render."
+              : "Read-only sampled PNG preview. Does not alter project or certify live AV playback."}
+            onClick={() => selectPreviewSource(showingNative ? "design" : "frames")}>
+            {showingNative ? "Show design" : "Show native frames"}
+          </button>
+        )}
+        {recovery.frame && <button type="button" className={"button compact native-frame-toggle " + (showingHistorical ? "selected" : "")}
+          onClick={() => selectPreviewSource(showingHistorical ? "design" : "recovery")}>
+          {showingHistorical ? "Show design" : "Show retained preview"}
+        </button>}
+        {nativeAv && (
+          <button type="button" className={"button compact native-frame-toggle " + (showingAv ? "selected" : "")}
+            title="Review the exact source-bound native H.264/AAC master. This is not a general media import."
+            onClick={() => {
+              onPauseEditorial();
+              selectPreviewSource(showingAv ? "design" : "av");
+            }}>
+            {showingAv ? "Show design" : "Review final AV"}
+          </button>
+        )}
+        {currentWindowReceipt && <button type="button" className={"button compact native-frame-toggle " + (showingWindow ? "selected" : "")}
+          disabled={!showingWindow && windowFrame === null}
+          title={windowFrame === null ? "The source playhead is outside this half-open window. No boundary frame will be substituted."
+            : "Read original window PNGs. Partial coverage remains preview-only and cannot supply a master."}
+          onClick={() => selectPreviewSource(showingWindow ? "design" : "window")}>
+          {showingWindow ? "Show design" : "Show window frames"}
+        </button>}
+        <div className="timecode">{formatTime(playhead, rate, mode)}</div>
+        {onWindowEditors && <details style={{ flex: "1 1 100%", minWidth: 0, paddingBottom: 6 }}>
+          <summary>Native window preview</summary>
+          <div role="region" aria-label="Native window controls" style={{ display: "grid", gap: 6, minWidth: 0, overflowWrap: "anywhere", paddingTop: 7 }}>
+            <p style={{ margin: 0 }}>Preview a selected range from the saved source scene. This capture remains preview-only.</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", minWidth: 0 }}>
+              <label style={{ display: "grid", gap: 3, minWidth: 0 }}>Source window start frame
+                <input aria-label="Source window start frame" type="text" inputMode="numeric" autoComplete="off" spellCheck={false}
+                  style={{ width: "12ch", maxWidth: "100%" }} value={windowEditor.startRaw}
+                  onChange={event => { const raw = event.target.value; updateWindow(windowDraftKey, windowEditor, value => ({ ...value, startRaw: raw, error: null })); }} />
+              </label>
+              <label style={{ display: "grid", gap: 3, minWidth: 0 }}>Source window end frame (exclusive)
+                <input aria-label="Source window end frame (exclusive)" type="text" inputMode="numeric" autoComplete="off" spellCheck={false}
+                  style={{ width: "12ch", maxWidth: "100%" }} value={windowEditor.endRaw}
+                  onChange={event => { const raw = event.target.value; updateWindow(windowDraftKey, windowEditor, value => ({ ...value, endRaw: raw, error: null })); }} />
+              </label>
+              <button type="button" className="button compact" disabled={!desktopMode || !scene || !profile || !windowRange || !windowOptions
+                || anyWindowPending || unresolvedWindows.length > 0 || windowCopyIssue !== null}
+                onClick={() => { void captureWindow(false); }}>Capture native window</button>
+              <button type="button" className="button compact" disabled={!desktopMode || !currentWindowReceipt || anyWindowPending}
+                onClick={() => { void captureWindow(true); }}>Reuse original window</button>
+              <button type="button" className="button compact" onClick={onInspectRender}>Inspect saved Film</button>
+              {onInspectWindow && <button type="button" className="button compact" onClick={onInspectWindow}>Inspect original jobs</button>}
+            </div>
+            {!desktopMode && <p role="status" style={{ margin: 0 }}>Native window capture requires the installed desktop runtime.</p>}
+            {windowInputIssue && <p role="status" style={{ margin: 0 }}>{windowInputIssue}</p>}
+            {cutRange && windowRange && <p style={{ margin: 0 }} aria-label="Selected native window coordinates">
+              Source frames {windowRange.start} to {windowRange.end} (end excluded); selected cut {formatTime(seconds(cutRange.start), rate, mode)} to {formatTime(seconds(cutRange.end), rate, mode)}.
+            </p>}
+            {anyWindowPending && <p role="status" style={{ margin: 0 }}>Waiting for the original window request. No native request will be retried.</p>}
+            {(windowCopyIssue || (unresolvedWindows.length > 0 && !anyWindowPending)) && <p role="alert" style={{ margin: 0 }}>
+              {windowCopyIssue ?? "Capture outcome UNKNOWN for retained original request(s) " + unresolvedWindows.map(intent => intent.request_id).join(", ")
+                + ". This saved revision remains blocked. Jobs can inspect original operations; it does not clear these markers or recover preview tokens."}
+            </p>}
+            {windowEditor.error && <p role="alert" style={{ margin: 0 }}>{windowEditor.error}</p>}
+            {currentWindowReceipt && <div role="status" aria-label="Native window evidence" style={{ minWidth: 0 }}>
+              <strong>WINDOW · {currentWindowReceipt.response.window.validation.verdict} · PREVIEW ONLY · NOT A MASTER</strong>
+              <p style={{ margin: "4px 0 0" }}>Source frames {currentWindowReceipt.response.window.source_window.start} to {currentWindowReceipt.response.window.source_window.end} (end excluded). Coverage {currentWindowReceipt.response.window.validation.native_frame_coverage}.</p>
+              <details style={{ marginTop: 4, minWidth: 0 }}>
+                <summary>Capture details</summary>
+                {cutRange && <p style={{ margin: "4px 0 0" }}>Exact selected-cut seconds [{cutRange.start.num}/{cutRange.start.den}, {cutRange.end.num}/{cutRange.end.den}).</p>}
+                <p style={{ margin: "4px 0 0" }}>Source [{currentWindowReceipt.response.window.source_window.start}, {currentWindowReceipt.response.window.source_window.end}); segment [{currentWindowReceipt.response.window.segment_window.start}, {currentWindowReceipt.response.window.segment_window.end}); original prefix [0, {currentWindowReceipt.response.window.original_prefix.end}); local PNG [0, {currentWindowReceipt.response.preview.frame_count}).</p>
+                <p style={{ margin: "4px 0 0" }}>{currentWindowReceipt.response.window.cost.original_prefix_pngs} original prefix PNGs; {currentWindowReceipt.response.window.cost.selected_pngs} selected; {currentWindowReceipt.response.window.cost.reused_original_pngs} reused; {currentWindowReceipt.response.window.cost.start_calls_observed} fresh authenticated start calls. Internal simulation: not observed.</p>
+                <p style={{ margin: "4px 0 0" }}>{currentWindowReceipt.response.window.cost.cached_png_bytes_returned} cached PNG bytes returned; {currentWindowReceipt.response.window.cost.cache_payload_bytes_admitted} cache payload bytes admitted. These are not physical disk-I/O counters.</p>
+              </details>
+              {!windowFrame && <p style={{ margin: "4px 0 0" }}>The source playhead is outside this window. No frame is current and no edge frame is substituted.</p>}
+            </div>}
+          </div>
+        </details>}
+      </div>
+      <div className="preview-stage">
+        <div className="safe-frame">
+          <div className="frame-meta">
+            <span>{showingHistorical ? recovery.frame!.sceneName : scene?.name ?? "No scene selected"}</span>
+            <span>{scene ? rendererLabels[scene.renderer] : "—"}</span>
+          </div>
+          {scene ? (
+            <>
+              {!hasProgramDesign && <>
+              <div className="preview-copy">
+                <span className="scene-kicker">SCENE {project.scenes.indexOf(scene) + 1}</span>
+                <h2>{scene.name}</h2>
+                <p>{scene.objective || "No objective set."}</p>
+              </div>
+              <div className="semantic-diagram" aria-label="Semantic composition representation">
+                <div className="semantic-node strong">Intent</div>
+                <MoveRight size={16} aria-hidden="true" />
+                <div className="semantic-node">Native SDK</div>
+                <MoveRight size={16} aria-hidden="true" />
+                <div className="semantic-node accent">{rendererLabels[scene.renderer]}</div>
+              </div>
+              </>}
+              {hasProgramDesign && !showingNative && !showingWindow && !showingAv && !showingHistorical &&
+                <ProgramDesignStudy project={project} scene={scene} time={relative} profile={profile}/>}
+              <div className="preview-progress" aria-hidden="true">
+                <span
+                  style={{
+                    width: `${Math.max(4, (relative / Math.max(seconds(scene.duration), 1)) * 100)}%`,
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="empty-stage">
+              <Film size={26} />
+              <strong>Select a scene</strong>
+              <span>Its semantic preview and revision state will appear here.</span>
+            </div>
+          )}
+          {showingHistorical && recovery.frame && <RetainedPreviewFrame
+            frame={recovery.frame} currentRevision={project.revision} confirmed={recovery.confirmed} />}
+          {showingNative && nativeFrame && (
+            <NativeFrameStage key={authorityKey}
+              project={project} selection={nativeFrame} editorialPlaying={editorialPlaying}
+              onDecoded={decoded => recovery.remember(decoded, authorityKey, scene?.name ?? "Scene")} />
+          )}
+          {showingWindow && windowFrame && currentWindowReceipt && (
+            <NativeFrameStage key={windowAuthorityKey}
+              project={project} selection={windowFrame} editorialPlaying={editorialPlaying}
+              windowReceipt={currentWindowReceipt} />
+          )}
+          {showingAv && nativeAv && (
+            <NativeAvReview
+              key={avAuthorityKey}
+              embedded
+              project={project}
+              exportToken={nativeAv.exportToken}
+              editorialPlaying={editorialPlaying}
+              seekTimeSeconds={nativeAv.mediaTimeSeconds}
+              onMediaPlay={onPauseEditorial}
+              onMediaTime={(mediaTime) => {
+                const editorial = editorialTimeForMasterMedia(project, nativeAv, mediaTime);
+                if (editorial !== null) onSeek(editorial);
+              }}
+            />
+          )}
+        </div>
+      </div>
+      <footer className="preview-footer">
+        <span>{profile ? profile.width + " × " + profile.height : "No output profile selected"}</span>
+        <span>{timebaseLabel(rate, mode)} · editorial display</span>
+        <span className={"preview-evidence receipt-" + (receipt?.kind ?? "none")} aria-label="Scene native render receipt">
+          {receipt?.kind === "current" ? (
+            <>
+              <CircleCheck size={13} aria-hidden="true" />
+              Native segment receipt · {receipt.segment.frame_count} frames · r{receipt.revision} · metadata only
+            </>
+          ) : receipt?.kind === "stale" ? (
+            <>
+              <CircleDashed size={13} aria-hidden="true" />
+              STALE receipt r{receipt.revision} · project is r{project.revision}
+            </>
+          ) : receipt?.kind === "other_profile" ? (
+            <>
+              <CircleDashed size={13} aria-hidden="true" />
+              Receipt for {receipt.profileName} · different display profile
+            </>
+          ) : (
+            <><CircleDashed size={13} aria-hidden="true" /> No {currentWindowReceipt ? "full " : ""}render evidence attached</>
+          )}
+        </span>
+        {(receipt || showingHistorical) && (
+          <button className="button compact" type="button" onClick={onInspectRender}>
+            Inspect receipt in Deliver
+          </button>
+        )}
+      </footer>
+      {(recovery.frame || recovery.error) && <div className="preview-recovery-status" aria-label="Preview recovery status"
+        style={{ padding: "0.6rem 1rem", borderTop: "1px solid var(--border)", fontSize: "0.78rem", lineHeight: 1.5 }}>
+        {recovery.frame && <span role="status">{recovery.busy ? "Saving the decoded preview for reopening…"
+          : recovery.confirmed ? "Recovery copy confirmed for reopening. It remains historical and cannot certify a current render."
+          : recovery.owned.length > 0
+            ? "Preview remains visible in memory; its recovery copy is not confirmed. An earlier saved copy is preserved."
+            : "Preview remains visible in memory; its recovery copy is not confirmed. Retry recovery before closing Studio."}</span>}
+        {recovery.error && <p role="alert">{recovery.error}</p>}
+        {showingHistorical && <p>No current render is shown. Inspect its status in Deliver to request a new authorized render.</p>}
+        {recovery.error && <button type="button" className="button compact" disabled={recovery.busy}
+          onClick={recovery.retry}>Retry preview recovery</button>}
+        {recovery.frame && recovery.confirmed && recovery.frame.writerId === recovery.writerId &&
+          <button type="button" className="button compact" disabled={recovery.busy}
+            onClick={() => void recovery.discard()}>Remove my retained preview</button>}
+        {recovery.canDiscardEarlier && <button type="button" className="button compact" disabled={recovery.busy}
+          onClick={() => void recovery.discardEarlier()}>Remove my earlier recovery copy</button>}
+        {recovery.damagedOwned.length > 0 && <button type="button" className="button compact" disabled={recovery.busy}
+          onClick={() => void recovery.discardDamaged()}>Remove my damaged recovery copy</button>}
+      </div>}
+    </section>
+  );
+}
+
+function StoryboardView({
+  project,
+  selectedSceneId,
+  onSelect,
+  rate,
+  mode,
+}: {
+  project: Project;
+  selectedSceneId: string | null;
+  onSelect: (id: string) => void;
+  rate: RationalTime;
+  mode: TimecodeMode;
+}) {
+  return (
+    <div className="workspace-scroll storyboard-view">
+      <header className="workspace-heading">
+        <div>
+          <h2>Storyboard</h2>
+          <p>Persistent scene identity, timing and realization choice.</p>
+        </div>
+        <span className="count-label">{project.scenes.length} scenes</span>
+      </header>
+      <div className="storyboard-strip">
+        {project.scenes.map((scene, index) => (
+          <button
+            key={scene.id}
+            type="button"
+            className={"story-card " + (scene.id === selectedSceneId ? "selected" : "")}
+            onClick={() => onSelect(scene.id)}
+          >
+            <div className="story-frame">
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <div className="story-frame-mark">{scene.name.slice(0, 1)}</div>
+            </div>
+            <div className="story-copy">
+              <div className="story-title-row">
+                <strong>{scene.name}</strong>
+                <StatusPill state={scene.status} />
+              </div>
+              <p>{scene.objective || "No objective yet."}</p>
+              <div className="story-meta">
+                <span>{formatTime(seconds(scene.duration), rate, mode)}</span>
+                <span>{rendererLabels[scene.renderer]}</span>
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BriefView({
+  project,
+  commit,
+}: {
+  project: Project;
+  commit: (change: Change) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(project.title);
+  useEffect(() => setTitle(project.title), [project.title]);
+  const dirty = title.trim() !== project.title && title.trim().length > 0;
+
+  return (
+    <div className="workspace-scroll document-view">
+      <header className="workspace-heading">
+        <div>
+          <h2>Project brief</h2>
+          <p>Product truth and production constraints belong to the project, not to a prompt transcript.</p>
+        </div>
+        <StatusPill state={project.state} />
+      </header>
+      <div className="document-grid">
+        <section className="document-main">
+          <label className="field-label" htmlFor="project-title">Project title</label>
+          <div className="inline-save-field">
+            <input id="project-title" value={title} onChange={(event) => setTitle(event.target.value)} />
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!dirty}
+              onClick={() => commit({ type: "rename_project", title: title.trim() })}
+            >
+              Save title
+            </button>
+          </div>
+
+          <h3>Production objective</h3>
+          <p className="long-copy">
+            Build a maintainable audiovisual project where narrative, scene identity, renderer choice,
+            review state and deliverables remain connected through repeated revisions.
+          </p>
+
+          <div className="brief-facts">
+            <div><span>Project revision</span><strong>r{project.revision}</strong></div>
+            <div><span>Generation</span><strong className="mono">{project.generation.slice(0, 8)}…</strong></div>
+            <div><span>Active branch</span><strong>{project.branches.find((branch) => branch.id === project.active_branch)?.name ?? "Unknown"}</strong></div>
+          </div>
+        </section>
+        <aside className="document-side">
+          <h3>Constraints</h3>
+          <ul className="constraint-list">
+            <li><CircleCheck size={15} /> Native SDK transaction boundary</li>
+            <li><CircleCheck size={15} /> Revision-safe mutations</li>
+            <li><CircleCheck size={15} /> Human and agent share one project state</li>
+            <li><CircleDashed size={15} /> Render evidence not attached in this project</li>
+          </ul>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function NarrativeView({
+  scene,
+  commit,
+}: {
+  scene: Scene | null;
+  commit: (change: Change) => Promise<void>;
+}) {
+  const [objective, setObjective] = useState(scene?.objective ?? "");
+  useEffect(() => setObjective(scene?.objective ?? ""), [scene?.id, scene?.objective]);
+
+  if (!scene) {
+    return <EmptyWorkspace icon={Type} title="Select a scene" body="Narrative editing is bound to persistent scene identity." />;
+  }
+
+  const dirty = objective !== scene.objective && objective.trim().length > 0;
+  return (
+    <div className="workspace-scroll narrative-view">
+      <header className="workspace-heading">
+        <div>
+          <h2>Narrative</h2>
+          <p>Edit purpose before realization. Renderer-specific details stay downstream.</p>
+        </div>
+        <StatusPill state={scene.status} />
+      </header>
+      <div className="narrative-sheet">
+        <span className="sheet-label">Scene objective</span>
+        <h3>{scene.name}</h3>
+        <textarea
+          value={objective}
+          onChange={(event) => setObjective(event.target.value)}
+          rows={7}
+          aria-label="Scene objective"
+        />
+        <div className="sheet-actions">
+          <span>{objective.length} / 4000</span>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={!dirty}
+            onClick={() => commit({
+              type: "update_scene_objective",
+              scene_id: scene.id,
+              objective: objective.trim(),
+            })}
+          >
+            Commit objective
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlternativesView({ scene }: { scene: Scene | null }) {
+  const [choice, setChoice] = useState<"A" | "B" | "C">("B");
+  if (!scene) {
+    return <EmptyWorkspace icon={Sparkles} title="No comparison target" body="Select a scene before generating or comparing structural alternatives." />;
+  }
+  const alternatives = [
+    { id: "A" as const, title: "Direct proof", structure: "Problem → semantic control → persisted revision", note: "Fastest comprehension; low visual detour." },
+    { id: "B" as const, title: "Contrast cut", structure: "Pixel fragility ↔ native semantics ↔ artifact truth", note: "Strongest mechanism contrast for this scene." },
+    { id: "C" as const, title: "Artifact trail", structure: "Intent → graph → renderer → readback → revision", note: "Best provenance story; denser technical load." },
+  ];
+  return (
+    <div className="workspace-scroll alternatives-view">
+      <header className="workspace-heading">
+        <div>
+          <h2>Alternatives</h2>
+          <p>Structural proposals are separate until explicitly selected. These are planning proposals, not rendered evidence.</p>
+        </div>
+        <span className="count-label">A / B / C synchronized</span>
+      </header>
+      <div className="alternatives-grid">
+        {alternatives.map((alternative) => (
+          <button
+            type="button"
+            key={alternative.id}
+            className={"alternative " + (choice === alternative.id ? "selected" : "")}
+            onClick={() => setChoice(alternative.id)}
+          >
+            <div className="alternative-head">
+              <span className="alternative-id">{alternative.id}</span>
+              {choice === alternative.id && <span className="selected-label">Selected for review</span>}
+            </div>
+            <h3>{alternative.title}</h3>
+            <p className="alternative-structure">{alternative.structure}</p>
+            <p>{alternative.note}</p>
+          </button>
+        ))}
+      </div>
+      <p className="honesty-note">
+        Selection here is local comparison state. No project mutation is claimed until a change set is committed.
+      </p>
+    </div>
+  );
+}
+
+function formatByteCount(value: string) {
+  let bytes: bigint;
+  try {
+    bytes = BigInt(value);
+  } catch {
+    return value + " B";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let unit = 0;
+  let display = bytes;
+  while (display >= 1024n && unit < units.length - 1) {
+    display /= 1024n;
+    unit += 1;
+  }
+  return display.toString() + " " + units[unit];
+}
+
+function DeliverView({
+  project,
+  commit,
+  commitRecipe,
+  desktopMode,
+  onImportBundle,
+  onOpenAudio,
+  currentProjectState,
+  renderEvidence,
+  onRenderEvidence,
+  avEvidence,
+  onAvEvidence,
+  exportEvidence,
+  onExportEvidence,
+}: {
+  project: Project;
+  commit: (change: Change) => Promise<void>;
+  commitRecipe: (change: Change) => Promise<Project>;
+  desktopMode: boolean;
+  onImportBundle: (path: string, fingerprint: string) => Promise<Project>;
+  onOpenAudio: () => void;
+  currentProjectState: () => DeliveryProjectState;
+  renderEvidence: MotionCanvasRenderEvidence | null;
+  onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
+  avEvidence: MltAvMasterEvidence | null;
+  onAvEvidence: (evidence: MltAvMasterEvidence) => void;
+  exportEvidence: MasterExportReceipt | null;
+  onExportEvidence: (receipt: MasterExportReceipt) => void;
+}) {
+  const [exportPath, setExportPath] = useState("");
+  const [importPath, setImportPath] = useState("");
+  const [bundleInspection, setBundleInspection] = useState<{
+    path: string;
+    plan: PortableBundlePlan;
+  } | null>(null);
+  const bundlePlan = bundleInspection && bundleInspection.path === importPath.trim()
+    ? bundleInspection.plan : null;
+  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | null>(null);
+  const [portableStatus, setPortableStatus] = useState<string | null>(null);
+  const [portableError, setPortableError] = useState<string | null>(null);
+
+  const inspectBundle = async () => {
+    const path = importPath.trim();
+    if (!desktopMode || !path) return;
+    setPortableBusy("inspect");
+    setBundleInspection(null);
+    setPortableStatus(null);
+    setPortableError(null);
+    try {
+      const plan = await inspectProjectBundle(path);
+      setBundleInspection({ path, plan });
+    } catch (reason) {
+      setBundleInspection(null);
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
+
+  const exportBundle = async () => {
+    if (!desktopMode || !exportPath.trim()) return;
+    setPortableBusy("export");
+    setPortableStatus(null);
+    setPortableError(null);
+    try {
+      const result = await exportProjectBundle(project, exportPath.trim());
+      setPortableStatus(
+        "Portable bundle written to " + result.destination +
+        " · " + result.blob_count + " blobs · " + formatByteCount(result.total_blob_bytes),
+      );
+    } catch (reason) {
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
+
+  const importBundle = async () => {
+    const inspected = bundleInspection;
+    if (!desktopMode || !inspected || inspected.path !== importPath.trim()) return;
+    setPortableBusy("import");
+    setPortableStatus(null);
+    setPortableError(null);
+    try {
+      const imported = await onImportBundle(inspected.path, inspected.plan.fingerprint);
+      setPortableStatus(
+        "Imported " + imported.title + " at revision " + imported.revision +
+        " with a fresh execution generation.",
+      );
+      setBundleInspection(null);
+    } catch (reason) {
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
+
+  return (
+    <div className="workspace-scroll deliver-view">
+      <header className="workspace-heading">
+        <div>
+          <h2>Deliver</h2>
+          <p>Variant intent is versioned independently from renderer output.</p>
+        </div>
+        <span className="count-label">{project.deliverables.length} profiles</span>
+      </header>
+
+      <DeliveryProfiles project={project} commit={commit} commitRecipe={commitRecipe} desktopMode={desktopMode}
+        onOpenAudio={onOpenAudio} currentProjectState={currentProjectState}
+        renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
+        avEvidence={avEvidence} onAvEvidence={onAvEvidence}
+        exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
+
+      <OtioCutReviewWorkbench project={project} commit={commit} desktopMode={desktopMode}
+        busy={portableBusy !== null}/>
+
+      <section className="portable-project" aria-label="Portable project">
+        <header className="portable-heading">
+          <div>
+            <strong>Portable project</strong>
+            <span>Project state, journal and content-addressed asset bytes.</span>
+          </div>
+          <span className="status-pill status-current">SELF-CONTAINED</span>
+        </header>
+
+        <div className="portable-operation">
+          <div className="portable-operation-copy">
+            <strong>Export active project</strong>
+            <span>Creates a new directory and refuses to overwrite an existing destination.</span>
+          </div>
+          <label>
+            <span className="field-label">Destination · absolute path</span>
+            <input
+              aria-label="Portable export path"
+              value={exportPath}
+              disabled={!desktopMode || portableBusy !== null}
+              placeholder="/absolute/path/project.motionwright"
+              onChange={(event) => setExportPath(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={!desktopMode || !exportPath.trim() || portableBusy !== null}
+            onClick={() => void exportBundle()}
+          >
+            {portableBusy === "export" ? "Exporting…" : "Export bundle"}
+          </button>
+        </div>
+
+        <div className="portable-operation import-operation">
+          <div className="portable-operation-copy">
+            <strong>Inspect and import</strong>
+            <span>Preflight verifies project history, manifest and every referenced blob before any project state is admitted.</span>
+          </div>
+          <label>
+            <span className="field-label">Source · absolute path</span>
+            <input
+              aria-label="Portable import path"
+              value={importPath}
+              disabled={!desktopMode || portableBusy !== null}
+              placeholder="/absolute/path/project.motionwright"
+              onChange={(event) => {
+                setImportPath(event.target.value);
+                setBundleInspection(null);
+                setPortableStatus(null);
+              }}
+            />
+          </label>
+          <div className="portable-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={!desktopMode || !importPath.trim() || portableBusy !== null}
+              onClick={() => void inspectBundle()}
+            >
+              {portableBusy === "inspect" ? "Inspecting…" : "Inspect bundle"}
+            </button>
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!desktopMode || !bundlePlan || portableBusy !== null}
+              onClick={() => void importBundle()}
+            >
+              {portableBusy === "import" ? "Importing…" : "Import verified bundle"}
+            </button>
+          </div>
+        </div>
+
+        {!desktopMode && (
+          <div className="portable-runtime-note">
+            <CircleDashed size={15} />
+            <span>Desktop filesystem capability is required. Browser demo mode never fabricates a portable bundle.</span>
+          </div>
+        )}
+
+        {bundlePlan && (
+          <div className="portable-plan" aria-label="Portable bundle preflight">
+            <div><span>Project</span><strong>{bundlePlan.title}</strong></div>
+            <div><span>Revision</span><strong className="mono">r{bundlePlan.revision}</strong></div>
+            <div><span>Journal</span><strong>{bundlePlan.event_count} events</strong></div>
+            <div><span>Assets</span><strong>{bundlePlan.blob_count} blobs · {formatByteCount(bundlePlan.total_blob_bytes)}</strong></div>
+            <div><span>Authority</span><strong>{bundlePlan.rotates_generation ? "New generation on import" : "Unchanged"}</strong></div>
+          </div>
+        )}
+
+        {portableError && (
+          <div className="portable-message error" role="alert">
+            <strong>Portable operation blocked.</strong>
+            <span>{portableError}</span>
+          </div>
+        )}
+        {portableStatus && (
+          <div className="portable-message success" role="status">
+            <CircleCheck size={15} />
+            <span>{portableStatus}</span>
+          </div>
+        )}
+      </section>
+
+      <div className="evidence-callout">
+        <FileOutput size={18} />
+        <div>
+          <strong>No false media export</strong>
+          <span>Render-profile export stays disabled until a real artifact is associated with the active revision. Portable project export is a separate, verified project-state operation.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyWorkspace({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: typeof Film;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div className="empty-workspace">
+      <Icon size={24} />
+      <strong>{title}</strong>
+      <span>{body}</span>
+    </div>
+  );
+}
+
+function ProjectRail({
+  project,
+  selectedSceneId,
+  selectScene,
+  commit,
+  commitRequired,
+  ingestAsset,
+  desktopMode,
+  collapsed,
+  setCollapsed,
+}: {
+  project: Project;
+  selectedSceneId: string | null;
+  selectScene: (id: string) => void;
+  commit: (change: Change) => Promise<void>;
+  commitRequired: (change: Change) => Promise<void>;
+  ingestAsset: (path: string) => Promise<void>;
+  desktopMode: boolean;
+  collapsed: boolean;
+  setCollapsed: (value: boolean) => void;
+}) {
+  const [addingScene, setAddingScene] = useState(false);
+  const [newName, setNewName] = useState("New scene");
+  const [sceneBusy, setSceneBusy] = useState(false);
+  const sceneSubmitting = useRef(false);
+  const [sceneError, setSceneError] = useState<string | null>(null);
+  const [addingAsset, setAddingAsset] = useState(false);
+  const [assetPath, setAssetPath] = useState("");
+  const [assetBusy, setAssetBusy] = useState(false);
+  const [assetError, setAssetError] = useState<string | null>(null);
+
+  if (collapsed) {
+    return (
+      <aside className="project-rail collapsed">
+        <IconButton label="Open project rail" onClick={() => setCollapsed(false)}>
+          <PanelLeftClose size={17} className="flip-x" />
+        </IconButton>
+        <span className="rail-count">{project.scenes.length}</span>
+      </aside>
+    );
+  }
+
+  const selectedIndex = project.scenes.findIndex((scene) => scene.id === selectedSceneId);
+  return (
+    <aside className="project-rail">
+      <div className="rail-heading">
+        <span>Project</span>
+        <IconButton label="Collapse project rail" onClick={() => setCollapsed(true)}>
+          <PanelLeftClose size={16} />
+        </IconButton>
+      </div>
+      <div className="rail-search">
+        <Search size={14} />
+        <span>Find in project</span>
+        <kbd>⌘K</kbd>
+      </div>
+
+      <div className="rail-section">
+        <div className="rail-section-title">
+          <span>Scenes</span>
+          <button type="button" className="plain-icon" aria-label="Add scene" disabled={sceneBusy} onClick={() => { setAddingScene((value) => !value); setSceneError(null); }}>
+            {addingScene ? <X size={14} /> : <Plus size={14} />}
+          </button>
+        </div>
+        {addingScene && (
+          <form
+            className="add-scene-form"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (!newName.trim() || sceneSubmitting.current) return;
+              sceneSubmitting.current = true;
+              setSceneBusy(true);
+              setSceneError(null);
+              try {
+                await commitRequired({ type: "add_scene", name: newName.trim(), objective: "", duration_seconds: 6 });
+                setAddingScene(false);
+                setNewName("New scene");
+              } catch (reason) {
+                setSceneError(reason instanceof Error ? reason.message : String(reason));
+              } finally {
+                sceneSubmitting.current = false;
+                setSceneBusy(false);
+              }
+            }}
+          >
+            <input value={newName} disabled={sceneBusy} onChange={(event) => setNewName(event.target.value)} aria-label="New scene name" />
+            <button className="button button-primary compact" type="submit" disabled={sceneBusy || !newName.trim()}>
+              {sceneBusy ? "Adding…" : "Add"}
+            </button>
+            {sceneError && <span className="asset-import-error" role="alert">{sceneError}</span>}
+          </form>
+        )}
+        <div className="tree-list">
+          {project.scenes.map((scene, index) => (
+            <button
+              key={scene.id}
+              type="button"
+              className={"tree-row " + (selectedSceneId === scene.id ? "selected" : "")}
+              onClick={() => selectScene(scene.id)}
+            >
+              <span className="tree-index">{String(index + 1).padStart(2, "0")}</span>
+              <span className="tree-name">{scene.name}</span>
+              <span className={"scene-state-dot state-" + scene.status} />
+            </button>
+          ))}
+        </div>
+        {selectedSceneId && project.scenes.length > 1 && (
+          <div className="rail-reorder">
+            <span>Order</span>
+            <IconButton
+              label="Move selected scene earlier"
+              disabled={selectedIndex <= 0}
+              onClick={() => commit({ type: "move_scene", scene_id: selectedSceneId, to_index: selectedIndex - 1 })}
+            >
+              <ChevronUp size={14} />
+            </IconButton>
+            <IconButton
+              label="Move selected scene later"
+              disabled={selectedIndex < 0 || selectedIndex >= project.scenes.length - 1}
+              onClick={() => commit({ type: "move_scene", scene_id: selectedSceneId, to_index: selectedIndex + 1 })}
+            >
+              <ChevronDown size={14} />
+            </IconButton>
+          </div>
+        )}
+      </div>
+
+      <div className="rail-section">
+        <div className="rail-section-title">
+          <span>Assets</span>
+          <div className="rail-section-actions">
+            <span>{project.assets.length}</span>
+            <button
+              type="button"
+              className="plain-icon"
+              aria-label="Import local asset"
+              disabled={!desktopMode}
+              title={desktopMode ? "Import a local file into the content-addressed project store" : "Asset import requires the desktop runtime"}
+              onClick={() => {
+                setAddingAsset((value) => !value);
+                setAssetError(null);
+              }}
+            >
+              {addingAsset ? <X size={14} /> : <Plus size={14} />}
+            </button>
+          </div>
+        </div>
+        {addingAsset && (
+          <form
+            className="asset-import-form"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const path = assetPath.trim();
+              if (!path || assetBusy) return;
+              setAssetBusy(true);
+              setAssetError(null);
+              try {
+                await ingestAsset(path);
+                setAssetPath("");
+                setAddingAsset(false);
+              } catch (reason) {
+                setAssetError(reason instanceof Error ? reason.message : String(reason));
+              } finally {
+                setAssetBusy(false);
+              }
+            }}
+          >
+            <input
+              aria-label="Local asset path"
+              value={assetPath}
+              disabled={assetBusy}
+              placeholder="/absolute/path/to/asset"
+              onChange={(event) => setAssetPath(event.target.value)}
+            />
+            <button
+              className="button button-primary compact"
+              type="submit"
+              disabled={!assetPath.trim() || assetBusy}
+            >
+              {assetBusy ? "Importing…" : "Import"}
+            </button>
+            {assetError && <span className="asset-import-error" role="alert">{assetError}</span>}
+          </form>
+        )}
+        <div className="asset-list">
+          {project.assets.map((asset) => (
+            <div className="asset-row" key={asset.id}>
+              <Layers3 size={14} />
+              <div className="asset-row-copy">
+                <span>{asset.name}</span>
+                <small>{asset.media_type}</small>
+              </div>
+              <button
+                type="button"
+                className="plain-icon asset-remove"
+                aria-label={"Remove asset " + asset.name}
+                title="Remove project reference; immutable blob bytes are retained"
+                onClick={() => void commit({ type: "remove_asset", asset_id: asset.id })}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+        {!desktopMode && (
+          <span className="rail-runtime-note">Local asset import is available in the desktop runtime.</span>
+        )}
+      </div>
+
+      <div className="rail-section">
+        <div className="rail-section-title"><span>Branches</span><span>{project.branches.length}</span></div>
+        {project.branches.map((branch) => (
+          <div className="asset-row" key={branch.id}>
+            <GitBranch size={14} />
+            <span>{branch.name}</span>
+            {branch.id === project.active_branch && <span className="active-dot" />}
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+
+function Timeline({
+  project,
+  selectedSceneId,
+  selectScene,
+  playhead,
+  setPlayhead,
+  commit,
+  playing,
+  togglePlayback,
+  stepFrame,
+  rate,
+  mode,
+  selectedProfileId,
+  onSelectProfile,
+  onSelectMode,
+}: {
+  project: Project;
+  selectedSceneId: string | null;
+  selectScene: (id: string, seekToStart?: boolean) => void;
+  playhead: number;
+  setPlayhead: (value: number) => void;
+  commit: (change: Change) => Promise<void>;
+  playing: boolean;
+  togglePlayback: () => void;
+  stepFrame: (direction: -1 | 1) => void;
+  rate: RationalTime;
+  mode: TimecodeMode;
+  selectedProfileId: string | null;
+  onSelectProfile: (id: string) => void;
+  onSelectMode: (mode: TimecodeMode) => void;
+}) {
+  const [selection, setSelection] = useState<{
+    kind: "transcript" | "beat" | "cue" | "marker";
+    id: string;
+    label: string;
+  } | null>(null);
+  const duration = projectTimelineDuration(project);
+  const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
+  // The Audio ledger retains every take. The VO lane represents the active
+  // take used by narration and native mix intent, not overlapping alternatives.
+  const measuredVoice = project.audio.voice_tracks.filter((track) => track.id === project.audio.active_voice_track_id);
+  const measuredAssetIds = new Set(project.audio.voice_tracks.map((track) => track.asset_id));
+  const pendingAudio = project.assets.filter(
+    (asset) => asset.media_type.startsWith("audio/") && !measuredAssetIds.has(asset.id),
+  );
+  const beatEntries = project.scenes.flatMap((scene) =>
+    scene.beats.map((beat) => {
+      const sceneStart = seconds(scene.start);
+      const sceneEnd = sceneStart + seconds(scene.duration);
+      const start = Math.min(sceneEnd, sceneStart + seconds(beat.start));
+      const end = Math.min(sceneEnd, start + seconds(beat.duration));
+      return { scene, beat, start, end };
+    }),
+  );
+
+  const sceneAtTime = (time: number) =>
+    project.scenes.find((scene) => {
+      const start = seconds(scene.start);
+      const end = start + seconds(scene.duration);
+      return time >= start && time < end;
+    }) ?? null;
+
+  const selectAt = (
+    time: number,
+    nextSelection: { kind: "transcript" | "beat" | "cue" | "marker"; id: string; label: string },
+    sceneId?: string,
+  ) => {
+    const bounded = Math.max(0, Math.min(duration, time));
+    setPlayhead(bounded);
+    setSelection(nextSelection);
+    const targetScene = sceneId
+      ? project.scenes.find((scene) => scene.id === sceneId) ?? null
+      : sceneAtTime(bounded);
+    if (targetScene && targetScene.id !== selectedSceneId) {
+      selectScene(targetScene.id, false);
+    }
+  };
+
+  return (
+    <section className="timeline-panel" aria-label="Timeline">
+      <div className="timeline-header">
+        <div className="timeline-title">
+          <Film size={15} />
+          Timeline
+          <span className="muted">shared clock</span>
+        </div>
+        <div className="timeline-selection-context" aria-live="polite">
+          {selection ? (
+            <>
+              <span>{selection.kind}</span>
+              <strong>{selection.label}</strong>
+            </>
+          ) : (
+            <>
+              <span>context</span>
+              <strong>{project.scenes.find((scene) => scene.id === selectedSceneId)?.name ?? "project"}</strong>
+            </>
+          )}
+        </div>
+        <div className="timeline-timebase" aria-label="Editor timebase controls">
+          <label htmlFor="editor-timebase">Display profile</label>
+          <select
+            id="editor-timebase"
+            aria-label="Editor preview timebase"
+            value={selectedProfileId ?? ""}
+            disabled={project.deliverables.length === 0}
+            onChange={(event) => onSelectProfile(event.target.value)}
+            title="A display-only frame clock. Does not modify the export profile or project."
+          >
+            {project.deliverables.length === 0 ? <option value="">24 fps fallback</option> : null}
+            {project.deliverables.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name} · {validEditorRate(profile.frame_rate)
+                  ? timebaseLabel(profile.frame_rate, "ndf")
+                  : "invalid rate · 24 fps fallback"}
+              </option>
+            ))}
+          </select>
+          {supportsDropFrame(rate) && (
+            <select aria-label="Timecode numbering" value={mode}
+              title="Display numbering only; does not change exported media."
+              onChange={(event) => onSelectMode(event.target.value as TimecodeMode)}>
+              <option value="ndf">NDF</option>
+              <option value="df">DF</option>
+            </select>
+          )}
+        </div>
+        <div className="timeline-transport">
+          <IconButton label="Step back one frame" onClick={() => stepFrame(-1)}>
+            <SkipBack size={13} />
+          </IconButton>
+          <IconButton label={playing ? "Pause design preview" : "Play design preview"} onClick={togglePlayback}>
+            {playing ? <Pause size={13} /> : <Play size={13} />}
+          </IconButton>
+          <IconButton label="Step forward one frame" onClick={() => stepFrame(1)}>
+            <SkipForward size={13} />
+          </IconButton>
+          <button
+            type="button"
+            className="button compact"
+            onClick={() => commit({
+              type: "add_marker",
+              at: rationalSeconds(playhead),
+              label: "Marker " + (project.markers.length + 1),
+            })}
+          >
+            <Plus size={12} /> Marker
+          </button>
+          <span className="timecode" title={timebaseLabel(rate, mode) + " · display only"}>{formatTime(playhead, rate, mode)}</span>
+        </div>
+      </div>
+      <div className="timeline-body">
+        <div className="track-labels" aria-hidden="true">
+          <div className="ruler-label">time</div>
+          <div><span>VO</span><span className="track-type">audio</span></div>
+          <div><span>Transcript</span><span className="track-type">text</span></div>
+          <div><span>Beats</span><span className="track-type">story</span></div>
+          <div><span>Scenes</span><span className="track-type">semantic</span></div>
+          <div><span>Review</span><span className="track-type">cues · markers</span></div>
+        </div>
+        <div
+          className="track-area"
+          onPointerDown={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+            const nextPlayhead = ratio * duration;
+            setSelection(null);
+            setPlayhead(nextPlayhead);
+            const sceneAtPlayhead = sceneAtTime(nextPlayhead);
+            if (sceneAtPlayhead && sceneAtPlayhead.id !== selectedSceneId) {
+              selectScene(sceneAtPlayhead.id, false);
+            }
+          }}
+        >
+          <div className="ruler">
+            {ticks.map((tick) => (
+              <span key={tick} style={{ left: (tick / duration) * 100 + "%" }}>
+                {rulerTime(tick)}
+              </span>
+            ))}
+          </div>
+          <div className="track voice-track">
+            {measuredVoice.map((track) => (
+              <div
+                className="audio-presence measured"
+                key={track.id}
+                aria-label={"Measured voice track " + track.label}
+                style={{ width: Math.min(100, (seconds(track.measured_duration) / duration) * 100) + "%" }}
+              >
+                <span>{track.label}</span>
+                <small>{track.sample_rate_hz} Hz · {track.channels} ch · measured duration</small>
+              </div>
+            ))}
+            {measuredVoice.length === 0 && project.audio.voice_tracks.length > 0 && (
+              <div className="audio-pending" aria-label="No active voice take">
+                <span>No active voice take</span>
+                <small>choose a measured take in Audio</small>
+              </div>
+            )}
+            {project.audio.voice_tracks.length === 0 && pendingAudio.length > 0 && (
+              <div className="audio-pending" aria-label="Audio source awaiting measurement">
+                <span>{pendingAudio[0].name}</span>
+                <small>source attached · duration unmeasured</small>
+              </div>
+            )}
+            {project.audio.voice_tracks.length === 0 && pendingAudio.length === 0 && (
+              <div className="audio-pending empty" aria-label="No measured voice track">
+                <span>No measured voice</span>
+                <small>timeline duration is not inferred from text</small>
+              </div>
+            )}
+          </div>
+          <div className="track transcript-track">
+            {project.audio.transcript.length === 0 ? (
+              <span className="timeline-empty-lane">No measured or manually aligned transcript</span>
+            ) : (
+              project.audio.transcript.map((segment) => {
+                const start = seconds(segment.start);
+                const end = seconds(segment.end);
+                const selected = selection?.kind === "transcript" && selection.id === segment.id;
+                return (
+                  <button
+                    key={segment.id}
+                    type="button"
+                    className={"timeline-transcript" + (selected ? " selected" : "")}
+                    style={{
+                      left: (start / duration) * 100 + "%",
+                      width: (Math.max(0.1, end - start) / duration) * 100 + "%",
+                    }}
+                    aria-label={"Transcript: " + segment.text}
+                    aria-pressed={selected}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => selectAt(start, { kind: "transcript", id: segment.id, label: segment.text })}
+                    title={segment.text}
+                  >
+                    {segment.text}
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <div className="track beat-track">
+            {beatEntries.length === 0 ? (
+              <span className="timeline-empty-lane">No scene beats authored</span>
+            ) : (
+              beatEntries.map(({ scene, beat, start, end }) => {
+                const selected = selection?.kind === "beat" && selection.id === beat.id;
+                return (
+                  <button
+                    key={beat.id}
+                    type="button"
+                    className={"timeline-beat" + (selected ? " selected" : "")}
+                    style={{
+                      left: (start / duration) * 100 + "%",
+                      width: (Math.max(0.1, end - start) / duration) * 100 + "%",
+                    }}
+                    aria-label={"Beat: " + beat.label}
+                    aria-pressed={selected}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => selectAt(
+                      start,
+                      { kind: "beat", id: beat.id, label: beat.label },
+                      scene.id,
+                    )}
+                    title={beat.objective}
+                  >
+                    <span>{beat.label}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <div className="track scene-track">
+            {project.scenes.map((scene, index) => (
+              <button
+                key={scene.id}
+                type="button"
+                className={"timeline-clip clip-" + (index % 4) + (selectedSceneId === scene.id ? " selected" : "")}
+                style={{
+                  left: (seconds(scene.start) / duration) * 100 + "%",
+                  width: (seconds(scene.duration) / duration) * 100 + "%",
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  setSelection(null);
+                  selectScene(scene.id);
+                }}
+              >
+                <span>{scene.name}</span>
+                <small>{rendererLabels[scene.renderer]}</small>
+              </button>
+            ))}
+          </div>
+          <div className="track review-track">
+            {project.audio.cues.map((cue) => {
+              const at = seconds(cue.at);
+              const selected = selection?.kind === "cue" && selection.id === cue.id;
+              return (
+                <button
+                  key={cue.id}
+                  type="button"
+                  className={"timeline-cue" + (selected ? " selected" : "")}
+                  style={{ left: (at / duration) * 100 + "%" }}
+                  aria-label={"Cue: " + cue.label}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => selectAt(at, { kind: "cue", id: cue.id, label: cue.label })}
+                  title={cue.label + " · " + cue.evidence}
+                >
+                  <i />
+                  <b>{cue.label}</b>
+                </button>
+              );
+            })}
+            {project.markers.map((marker) => {
+              const at = seconds(marker.at);
+              const selected = selection?.kind === "marker" && selection.id === marker.id;
+              return (
+                <button
+                  key={marker.id}
+                  type="button"
+                  className={"timeline-marker" + (selected ? " selected" : "")}
+                  style={{ left: (at / duration) * 100 + "%" }}
+                  aria-label={"Marker: " + marker.label}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => selectAt(at, { kind: "marker", id: marker.id, label: marker.label })}
+                  title={marker.label}
+                >
+                  <i />
+                  <b>{marker.label}</b>
+                </button>
+              );
+            })}
+          </div>
+          <div className="splice-line" style={{ left: (playhead / duration) * 100 + "%" }}>
+            <span />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+export default function App() {
+  const [view, setView] = useState<StudioProjectView | null>(null);
+  const viewRef = useRef<StudioProjectView | null>(view);
+  const boot = view?.kind === "full" ? view.boot : null;
+  const setBoot = useCallback((next: Bootstrap) => {
+    const accepted: StudioProjectView = { kind: "full", boot: next };
+    viewRef.current = accepted;
+    setView(accepted);
+  }, []);
+  const [workspace, setWorkspace] = useState<Workspace>("Timeline");
+  const [graphReviewSelection, setGraphReviewSelection] = useState<{ owner: string; resource: string } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const [playhead, setPlayhead] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
+  const [nativeWindowEditors, setNativeWindowEditors] = useState<NativeWindowEditors>({});
+  const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
+  const [nativeExportReceipt, setNativeExportReceipt] = useState<MasterExportReceipt | null>(null);
+  const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
+  const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fileImportConfirmation, setFileImportConfirmation] = useState<FileImportConfirmation | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>(preferredTheme);
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const workspaceNavRef = useRef<HTMLElement>(null);
+  const bootRef = useRef<Bootstrap | null>(boot);
+  const mutationGate = useRef(new ProjectMutationGate());
+  const currentProjectState = useCallback((): DeliveryProjectState => ({
+    project: bootRef.current?.project ?? null,
+    ...mutationGate.current.activity,
+  }), []);
+
+  const [bootReady, setBootReady] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
+  const [creationCopies, setCreationCopies] = useState<ProjectCreationCopy[]>([]);
+  const [creationLimited, setCreationLimited] = useState(false);
+  const [creationError, setCreationError] = useState<string | null>(null);
+  const shellSdkRef = useRef<Bootstrap["native_sdk"] | null>(null);
+  const selectionRef = useRef<ProjectSelectionRead | null>(null);
+  const desktopBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  const publishOpenedProject = useCallback((next: Project, nativeSdk: Bootstrap["native_sdk"]) => {
+    const previous = bootRef.current?.project;
+    const sameScope = previous?.id === next.id && previous.generation === next.generation;
+    const value: Bootstrap = { project: next, native_sdk: nativeSdk };
+    bootRef.current = value;
+    shellSdkRef.current = nativeSdk;
+    setBoot(value);
+    setBootReady(true);
+    setBootError(null);
+    setSelectedSceneId(selected => sameScope && selected && next.scenes.some(scene => scene.id === selected)
+      ? selected : next.scenes[0]?.id ?? null);
+    setPlayhead(at => sameScope ? Math.min(at, projectTimelineDuration(next)) : 0);
+    setPlaying(false);
+    setTimebaseProfileId(selected => sameScope && next.deliverables.some(profile => profile.id === selected)
+      ? selected : next.deliverables[0]?.id ?? null);
+    if (!sameScope) setTimecodeMode("ndf");
+    setNativeRenderReceipt(null);
+    setNativeAvReceipt(null);
+    setNativeExportReceipt(null);
+  }, [setBoot]);
+
+  const publishOpenedView = useCallback((next: StudioProjectView) => {
+    if (next.kind === "full") {
+      publishOpenedProject(next.boot.project, next.boot.native_sdk);
+      return;
+    }
+    // A saved-page observation has no complete Project or editable branch.
+    bootRef.current = null;
+    viewRef.current = next;
+    shellSdkRef.current = next.native_sdk;
+    setView(next);
+    setBootReady(true);
+    setBootError(null);
+    setSelectedSceneId(null);
+    setPlaying(false);
+    setPaletteOpen(false);
+    setNativeRenderReceipt(null);
+    setNativeAvReceipt(null);
+    setNativeExportReceipt(null);
+  }, [publishOpenedProject]);
+
+  const rememberSelection = useCallback((opened: Pick<Project, "id">, before: ProjectSelectionRead) => {
+    // Preference failure must never turn an admitted open into a reported
+    // project failure or roll back the editor's real canonical snapshot.
+    try {
+      const result = rememberOpenedProject(opened, before);
+      selectionRef.current = result.observed;
+      setLibraryNotice(result.status === "saved" ? null
+        : `The project is open. ${result.message ?? "The startup selection could not be remembered."}`);
+    } catch (reason) {
+      setLibraryNotice(`The project is open, but its startup selection could not be remembered. ${String(reason)}`);
+    }
+  }, []);
+
+  const admitSavedView = useCallback(async (id: string, mode: ProjectOpenMode = "auto"): Promise<StudioProjectView> => {
+    const source = viewRef.current;
+    return mutationGate.current.readView({
+      source: projectViewRevision(source),
+      current: () => projectViewRevision(viewRef.current),
+      requestedProjectId: id,
+      load: () => openSavedProjectView(id, mode, sdk => {
+        // Shell information is not project authority. Keep library creation
+        // available when the selected saved identity cannot be opened.
+        if (viewRef.current === source) shellSdkRef.current = sdk;
+      }),
+      view: projectViewRevision,
+      publish: publishOpenedView,
+      pending: setBusy,
+    });
+  }, [publishOpenedView]);
+
+  const loadProject = useCallback(async () => {
+    const openingFrom = viewRef.current;
+    setBootError(null);
+    const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    // Preserve the explicitly labelled browser demo. Saved project reads have
+    // no demo fallback and are exposed only when the desktop bridge exists.
+    if (!desktop) {
+      try {
+        const value = await bootstrap();
+        if (viewRef.current !== openingFrom) return;
+        if (value.project) publishOpenedProject(value.project, value.native_sdk);
+      } catch (reason) {
+        if (viewRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+      }
+      return;
+    }
+    const saved = readProjectSelection();
+    selectionRef.current = saved;
+    if (saved.status === "invalid" || saved.status === "unavailable") setLibraryNotice(saved.message);
+    const requestedId = openingFrom ? projectViewId(openingFrom) : saved.status === "remembered" ? saved.projectId : null;
+    try {
+      if (requestedId !== null) {
+        await admitSavedView(requestedId);
+      } else {
+        await mutationGate.current.readView<StudioBootstrap>({
+          source: projectViewRevision(openingFrom),
+          current: () => projectViewRevision(viewRef.current),
+          requestedProjectId: null,
+          load: () => bootstrap(null),
+          view: () => null,
+          publish: value => {
+            shellSdkRef.current = value.native_sdk;
+            setBootReady(true);
+            setLibraryOpen(true);
+          },
+          pending: setBusy,
+        });
+      }
+    } catch (reason) {
+      if (reason instanceof ProjectReadSupersededError) return;
+      if (viewRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [admitSavedView, publishOpenedProject]);
+
+  const openLibraryProject = useCallback(async (id: string, mode: ProjectOpenMode = "auto"): Promise<Pick<Project, "id">> => {
+    const saved = readProjectSelection();
+    const opened = await admitSavedView(id, mode);
+    const identity = { id: projectViewId(opened) };
+    rememberSelection(identity, saved);
+    return identity;
+  }, [admitSavedView, rememberSelection]);
+
+  const readProjectedPage = useCallback(async <R,>(load: () => Promise<R>, publish: (result: R) => void): Promise<R> => {
+    // Bind a page callback to its rendered view. A newer opening must not
+    // silently give an older scene request another project's identity.
+    const source = view;
+    if (source?.kind !== "projection") throw new Error("The saved-page view is no longer active.");
+    return mutationGate.current.readView({
+      source: projectViewRevision(source),
+      current: () => projectViewRevision(viewRef.current),
+      requestedProjectId: source.head.identity.project_id,
+      load,
+      view: () => projectViewRevision(source),
+      publish,
+      pending: setBusy,
+    });
+  }, [view]);
+
+  const refreshCreations = useCallback(() => {
+    try {
+      const value = readProjectCreations();
+      setCreationCopies(value.copies); setCreationLimited(value.limited); setCreationError(null);
+    } catch (reason) {
+      setCreationError("Retained creation requests could not be read. Existing projects remain available. " + String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!desktopBridge) return;
+    refreshCreations();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(PROJECT_CREATION_PREFIX)) refreshCreations();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [desktopBridge, refreshCreations]);
+
+  const finishObservedCreation = useCallback((copy: ProjectCreationCopy, warning: string | null) => {
+    // Canonical admission has already succeeded. Preference/receipt cleanup
+    // errors must not turn that successful operation into a reported failure.
+    try { if (!warning) discardProjectCreationCopy(copy); }
+    catch (reason) { warning = "The project is open; its local creation record was retained. " + String(reason); }
+    if (warning) setLibraryNotice(previous => [previous, warning].filter(Boolean).join(" "));
+  }, []);
+
+  const createLibraryProject = useCallback(async (title: string): Promise<Project> => {
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection();
+    const source = projectViewRevision(viewRef.current);
+    let observed: Awaited<ReturnType<typeof createProjectWithRetainedIntent>> | undefined;
+    try {
+      const opened = await mutationGate.current.create<Project>(bootRef.current?.project ?? null,
+        () => bootRef.current?.project ?? null,
+        async () => {
+          observed = await createProjectWithRetainedIntent(title);
+          // The receipt is the original r0. Read current authority separately,
+          // including revisions authored after the creation transaction.
+          const current = await openSavedProjectView(observed.outcome.project.id, "editor");
+          if (current.kind !== "full") throw new Error("The new project's complete editor is unavailable. Recover its original creation request.");
+          return current.boot.project;
+        }, value => publishOpenedProject(value, nativeSdk), setBusy,
+        { source, current: () => projectViewRevision(viewRef.current) });
+      rememberSelection(opened, saved);
+      if (observed) finishObservedCreation(observed.copy, observed.warning);
+      return opened;
+    } finally { refreshCreations(); }
+  }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
+
+  const recoverLibraryCreation = useCallback(async (copy: ProjectCreationCopy): Promise<Project | null> => {
+    const source = projectViewRevision(viewRef.current);
+    const saved = readProjectSelection();
+    try {
+      const observed = await recoverRetainedProjectCreation(copy);
+      if (!observed.outcome) {
+        setLibraryNotice(observed.warning);
+        return null;
+      }
+      const opened = await mutationGate.current.readView({
+        source, current: () => projectViewRevision(viewRef.current),
+        requestedProjectId: observed.outcome.project.id,
+        load: () => openSavedProjectView(observed.outcome!.project.id, "editor"),
+        view: projectViewRevision, publish: publishOpenedView, pending: setBusy,
+      });
+      if (opened.kind !== "full") throw new Error("The recovered project's complete editor is unavailable. Its creation record was retained.");
+      rememberSelection(opened.boot.project, saved);
+      finishObservedCreation(observed.copy, observed.warning);
+      return opened.boot.project;
+    } finally { refreshCreations(); }
+  }, [publishOpenedView, rememberSelection, finishObservedCreation, refreshCreations]);
+
+  const discardLibraryCreation = useCallback((copy: ProjectCreationCopy) => {
+    try { discardProjectCreationCopy(copy); }
+    finally { refreshCreations(); }
+  }, [refreshCreations]);
+
+  const forgetRememberedSelection = useCallback(() => {
+    const before = selectionRef.current ?? readProjectSelection();
+    const result = forgetProjectSelection(before);
+    selectionRef.current = result.observed;
+    setLibraryNotice(result.status === "cleared" ? null : result.message);
+  }, []);
+
+  useEffect(() => {
+    void loadProject();
+  }, [loadProject]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Theme remains active for this session when persistence is unavailable.
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    const markOnline = () => setOnline(true);
+    const markOffline = () => setOnline(false);
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+    return () => {
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
+    };
+  }, []);
+
+  const project = boot?.project ?? null;
+  const selectedProfile = project?.deliverables.find((profile) => profile.id === timebaseProfileId)
+    ?? project?.deliverables[0] ?? null;
+  const timebaseRate = selectedProfile && validEditorRate(selectedProfile.frame_rate)
+    ? selectedProfile.frame_rate : DEFAULT_EDITOR_RATE;
+  // Rate alone does not select DF; operators must choose that display policy.
+  const displayMode = supportsDropFrame(timebaseRate) ? timecodeMode : "ndf";
+  const selectedScene = useMemo(
+    () => project?.scenes.find((scene) => scene.id === selectedSceneId) ?? null,
+    [project, selectedSceneId],
+  );
+
+  const selectScene = useCallback((id: string, seekToStart = true) => {
+    setSelectedSceneId(id);
+    if (!seekToStart) return;
+    const scene = project?.scenes.find((candidate) => candidate.id === id);
+    if (scene) setPlayhead(seconds(scene.start));
+  }, [project]);
+
+  // All visual workspaces seek the same project-global editorial clock.
+  // A seek is a view operation, not a creative project mutation.
+  const seekTo = useCallback((requestedSeconds: number) => {
+    if (!project || !Number.isFinite(requestedSeconds)) return;
+    const next = Math.max(0, Math.min(projectTimelineDuration(project), requestedSeconds));
+    setPlaying(false);
+    setPlayhead(next);
+    const scene = project.scenes.find((candidate) => {
+      const start = seconds(candidate.start);
+      return next >= start && next < start + seconds(candidate.duration);
+    });
+    if (scene) setSelectedSceneId(scene.id);
+  }, [project]);
+
+  const stepFrame = useCallback((direction: -1 | 1) => {
+    if (!project) return;
+    setPlaying(false);
+    const next = stepEditorialFrame(playhead, timebaseRate, direction, projectTimelineDuration(project));
+    setPlayhead(next);
+    const scene = project.scenes.find((candidate) => {
+      const start = seconds(candidate.start);
+      return next >= start && next < start + seconds(candidate.duration);
+    });
+    if (scene) setSelectedSceneId(scene.id);
+  }, [playhead, project, timebaseRate.num, timebaseRate.den]);
+
+  useEffect(() => {
+    if (!playing || !project) return;
+    const duration = projectTimelineDuration(project);
+    const timer = window.setInterval(() => {
+      setPlayhead((current) => {
+        const next = Math.min(duration, current + 0.1);
+        const scene = project.scenes.find((candidate) => {
+          const start = seconds(candidate.start);
+          return next >= start && next < start + seconds(candidate.duration);
+        });
+        if (scene) setSelectedSceneId(scene.id);
+        if (next >= duration) setPlaying(false);
+        return next;
+      });
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [playing, project]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (libraryOpen || !project) return;
+      if (isPaletteShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        setPaletteOpen((open) => !open);
+        return;
+      }
+      if (paletteOpen || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        target &&
+        (target.isContentEditable ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT")
+      ) {
+        return;
+      }
+      if (event.code === "Space") {
+        // Native activation of the focused control owns Space. The transport
+        // shortcut applies when focus is on the editorial surface itself.
+        if (target?.closest("button, a[href], summary, [role='button'], [role='checkbox'], [role='switch'], [role='tab'], [role='menuitem']")) return;
+        event.preventDefault();
+        setPlaying((current) => !current);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        stepFrame(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        stepFrame(1);
+      } else if (event.key.toLowerCase() === "k") {
+        setPlaying(false);
+      } else if (event.key.toLowerCase() === "l") {
+        setPlaying(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stepFrame, paletteOpen, libraryOpen, project]);
+
+  const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
+    // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    return mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      operation,
+      next => {
+        const current = bootRef.current;
+        if (!current) return;
+        const updated = { ...current, project: next };
+        bootRef.current = updated;
+        setBoot(updated);
+        setSelectedSceneId(selected => selected && next.scenes.some(scene => scene.id === selected)
+          ? selected : next.scenes[0]?.id ?? null);
+      },
+      setBusy,
+    );
+  }, [boot]);
+
+  // Deliver has its own error boundary and must observe a rejected CAS before
+  // selecting newly authored profiles. Other editor controls retain their
+  // globally reported, nonthrowing commit contract.
+  const commitRequired = useCallback(async (change: Change): Promise<void> => {
+    await transactProject(source => applyChange(source, change));
+  }, [transactProject]);
+
+  // Camera keeps an uncertain attempt until this original mutation returns.
+  // A Project observation or a swallowed error cannot acknowledge the attempt.
+  const commitCamera = useCallback((change: Change): Promise<Project> =>
+    transactProject(source => applyChange(source, change)), [transactProject]);
+
+  // Read real selected source through the existing coordinator. A context read
+  // can report blocked; it does not grant a write or acknowledge an UNKNOWN.
+  const openGraphReview = useCallback((anchor: ReviewAnchor) => {
+    const source = viewRef.current?.kind === "full" ? viewRef.current.boot.project : null;
+    if (!source || !graphSame(graphReviewAnchor(source, anchor.resource), anchor)) {
+      setError("The saved Graph review source changed. Inspect the current Graph before opening its review."); return;
+    }
+    setGraphReviewSelection({ owner: JSON.stringify([source.id, source.generation, source.active_branch]), resource: anchor.resource });
+    setWorkspace("Review");
+  }, []);
+  const refreshGraphProject = useCallback(async (): Promise<Project> => {
+    const source = viewRef.current;
+    if (!("__TAURI_INTERNALS__" in window) || source?.kind !== "full") throw new Error("A saved project refresh requires the actual StudioService.");
+    const next = await admitSavedView(source.boot.project.id, "editor");
+    if (next.kind !== "full") throw new Error("The complete saved project is unavailable.");
+    return next.boot.project;
+  }, [admitSavedView]);
+
+  const commit = useCallback(async (change: Change) => {
+    setError(null);
+    try {
+      await commitRequired(change);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [commitRequired]);
+
+  // Brief retains the original rejected outcome for recovery and also reports
+  // it in the shared project notice. Reporting never acknowledges or retries it.
+  const commitReportedRequired = useCallback(async (change: Change): Promise<void> => {
+    setError(null);
+    try {
+      await commitRequired(change);
+    } catch (reason) {
+      try { setError(reason instanceof Error ? reason.message : String(reason)); }
+      finally { throw reason; }
+    }
+  }, [commitRequired]);
+
+  // Only call after the existing coordinator admitted and published the current
+  // canonical Project. A local cleanup failure cannot undo that saved outcome.
+  const cleanConfirmedFileImport = useCallback((retained: RetainedFileImport) => {
+    try {
+      removeFileImport(retained.copy.preparation.project_id, retained.key, retained.raw);
+      setFileImportConfirmation(null);
+    } catch (reason) {
+      setFileImportConfirmation({ retained, cleanupWarning: reason instanceof Error ? reason.message : String(reason) });
+    }
+  }, []);
+
+  const ingestFile = useCallback(async (
+    operation: (source: Project) => Promise<{ project: Project; retained: RetainedFileImport }>,
+  ) => {
+    let completed: RetainedFileImport | undefined;
+    const published = await transactProject(async source => {
+      const result = await operation(source);
+      completed = result.retained;
+      return result.project;
+    });
+    // Keep the request if either receipt reconciliation or publication failed.
+    // Cleanup cannot erase a different copy installed while the IPC was pending.
+    if (completed) cleanConfirmedFileImport(completed);
+    return published;
+  }, [transactProject, cleanConfirmedFileImport]);
+
+  const ingestAsset = useCallback(async (path: string) => {
+    await ingestFile(source => importAssetFile(source, path));
+  }, [ingestFile]);
+
+  const ingestVoice = useCallback(async (path: string, label?: string) => {
+    await ingestFile(source => importVoiceFile(source, path, label));
+  }, [ingestFile]);
+
+  const ingestNativeSource = useCallback(async (request: NativeSourceSaveRequest): Promise<Project> =>
+    ingestFile(source => {
+      if (source.id !== request.source.project_id || source.generation !== request.source.generation
+          || source.revision !== request.source.revision || source.active_branch !== request.source.branch_id) {
+        throw new Error("The source input belongs to an earlier project view. Read the current project and review your input before saving.");
+      }
+      return importNativeCapsuleSourceFile(source, request.path, request.spec);
+    }), [ingestFile]);
+
+  const recoverFileImport = useCallback(async (retained: RetainedFileImport): Promise<boolean> => {
+    let found = false;
+    await transactProject(async source => {
+      const current = await recoverOriginalFileImport(source, retained);
+      if (current === null) return source;
+      found = true;
+      return current;
+    });
+    if (found) cleanConfirmedFileImport(retained);
+    return found;
+  }, [transactProject, cleanConfirmedFileImport]);
+
+  const importPortableBundle = useCallback(async (path: string, fingerprint: string): Promise<Project> => {
+    const source = boot?.project;
+    if (!source) throw new Error("Project is not ready.");
+    const saved = readProjectSelection();
+    const imported = await mutationGate.current.run(
+      source,
+      () => bootRef.current?.project ?? null,
+      () => importProjectBundle(path, fingerprint),
+      imported => {
+        const current = bootRef.current;
+        if (!current) throw new Error("The current project is unavailable. Reopen to reconcile the import.");
+        const updated = { ...current, project: imported };
+        bootRef.current = updated;
+        setBoot(updated);
+        setNativeRenderReceipt(null);
+        setNativeAvReceipt(null);
+        setNativeExportReceipt(null);
+        setSelectedSceneId(imported.scenes[0]?.id ?? null);
+        setPlayhead(0);
+        setPlaying(false);
+        setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
+        setTimecodeMode("ndf");
+      },
+      setBusy,
+      "replace",
+    );
+    rememberSelection(imported, saved);
+    return imported;
+  }, [boot, rememberSelection]);
+
+  const libraryDialog = desktopBridge ? (
+    <ProjectLibraryDialog key="project-library" open={libraryOpen}
+      currentProjectId={view ? projectViewId(view) : null} onClose={() => setLibraryOpen(false)}
+      onList={listProjectLibrary} onOpen={openLibraryProject}
+      onBrowse={id => openLibraryProject(id, "pages")}
+      onCreate={createLibraryProject} creationCopies={creationCopies}
+      creationLimited={creationLimited} creationError={creationError}
+      onRecoverCreation={recoverLibraryCreation} onDiscardCreation={discardLibraryCreation}
+      onRefreshCreations={refreshCreations}
+      notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null} />
+  ) : null;
+
+  if (view?.kind === "projection") {
+    const id = view.head.identity.project_id;
+    return (
+      <main className="projection-shell" style={{ minHeight: "100vh", overflow: "auto" }}>
+        <ProjectProjectionWorkspace
+          key={JSON.stringify([id, view.head.identity.generation, view.head.identity.revision])}
+          view={view} busy={busy} notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null}
+          read={readProjectedPage} onLibrary={() => setLibraryOpen(true)}
+          onReload={async () => { await openLibraryProject(id, "pages"); }}
+          onOpenEditor={async () => { await openLibraryProject(id, "editor"); }} />
+        {libraryDialog}
+      </main>
+    );
+  }
+
+  if (!project || !boot) {
+    return (
+      <main className="boot-screen" aria-busy={!bootReady && !bootError}>
+        <div className="brand-mark">MW</div>
+        {bootError ? (
+          <section className="boot-error" role="alert" aria-label="Project open error">
+            <strong>Couldn’t open the selected project</strong>
+            <span>{bootError}</span>
+            <button type="button" className="button button-primary" onClick={() => void loadProject()}>Retry selected project</button>
+          </section>
+        ) : bootReady ? (
+          <section className="boot-loading" role="status"><strong>Choose a project</strong><span>Your saved projects are in the local library.</span></section>
+        ) : (
+          <section className="boot-loading" role="status" aria-live="polite">
+            <strong>Opening Motionwright</strong><span>Loading the local project store…</span>
+            <div className="boot-skeleton" aria-hidden="true"><i /><i /><i /></div>
+          </section>
+        )}
+        {desktopBridge && <button type="button" className="button button-primary"
+          onClick={() => setLibraryOpen(true)}>Open project library</button>}
+        {libraryDialog}
+      </main>
+    );
+  }
+
+  const renderWorkspace = () => {
+    switch (workspace) {
+      case "Brief":
+        return <RichBriefView project={project} commit={commitReportedRequired} commitClaim={commitCamera} />;
+      case "Narrative":
+        return <RichNarrativeView project={project} scene={selectedScene} commit={commitCamera} />;
+      case "Audio":
+        return (
+          <AudioWorkspace
+            project={project}
+            commit={commit}
+            commitRequired={commitRequired}
+            commitRecipe={commitCamera}
+            desktopMode={boot.native_sdk.mode === "tauri"}
+            importVoice={ingestVoice}
+            playhead={playhead}
+            onSeek={seekTo}
+          />
+        );
+      case "Storyboard":
+        return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
+      case "Production":
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
+          sourceServices={{ saveSource: ingestNativeSource, refreshProject: refreshGraphProject }} graphServices={{
+          readContext: readSemanticGraphContext,
+          outcomeTransport: {
+            readProject: async id => {
+              if (!("__TAURI_INTERNALS__" in window)) throw new Error("A saved Graph read requires StudioService.");
+              const value = await bootstrap(id);
+              if (!value.project || value.project.id !== id) throw new Error("The selected saved Graph Project is unavailable.");
+              return value.project;
+            },
+            readHistory: async (source, after, limit) => {
+              if (!("__TAURI_INTERNALS__" in window)) throw new Error("Graph history requires StudioService.");
+              return projectHistory(source, after, limit);
+            },
+          }, refreshProject: refreshGraphProject, openReview: openGraphReview,
+        }} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
+      case "Canvas":
+        return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
+          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
+      case "Timeline":
+        return <PreviewSurface
+          key={JSON.stringify([
+            project.id, project.generation, project.active_branch,
+            selectedProfile?.id,
+          ])}
+          scene={selectedScene} project={project} playhead={playhead}
+          rate={timebaseRate} mode={displayMode} profile={selectedProfile}
+          renderEvidence={nativeRenderReceipt} avEvidence={nativeAvReceipt}
+          onInspectRender={() => setWorkspace("Deliver")}
+          onSeek={seekTo} onPauseEditorial={() => setPlaying(false)}
+          editorialPlaying={playing} desktopMode={boot.native_sdk.mode === "tauri"}
+          windowEditors={nativeWindowEditors} onWindowEditors={setNativeWindowEditors}
+          onInspectWindow={() => setWorkspace("Jobs")} />;
+      case "Jobs":
+        return (
+          <ProductionJobsWorkspace
+            project={project}
+            desktopMode={boot.native_sdk.mode === "tauri"}
+          />
+        );
+      case "Workflows":
+        return <WorkflowWorkspace project={project} />;
+      case "Integrations":
+        return <IntegrationsWorkspace project={project} nativeSdk={boot.native_sdk} commit={commitCamera} />;
+      case "Alternatives":
+        return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
+      case "Changes":
+        return <ChangesWorkspace key={[project.id, project.generation, project.active_branch].join(":")}
+          project={project} commit={commit} commitBranch={commitCamera} busy={busy} />;
+      case "Dependencies":
+        return <DependenciesWorkspace
+          key={[project.id, project.generation, project.revision].join(":")}
+          project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
+      case "Review":
+        return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo}
+          key={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : "selected-resource"}
+          externalResource={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : null} />;
+      case "Deliver":
+        return (
+          <DeliverView
+            project={project}
+            commit={commitRequired}
+            commitRecipe={commitCamera}
+            onOpenAudio={() => setWorkspace("Audio")}
+            currentProjectState={currentProjectState}
+            desktopMode={boot.native_sdk.mode === "tauri"}
+            renderEvidence={nativeRenderReceipt}
+            onRenderEvidence={(result) => setNativeRenderReceipt(result)}
+            avEvidence={nativeAvReceipt}
+            onAvEvidence={(result) => setNativeAvReceipt(result)}
+            exportEvidence={nativeExportReceipt}
+            onExportEvidence={(result) => setNativeExportReceipt(result)}
+            onImportBundle={importPortableBundle}
+          />
+        );
+    }
+  };
+
+  // These commands only navigate or control the editorial view. They never
+  // bypass Studio's CAS, approval, Native SDK or export permissions.
+  const editorCommands: EditorCommand[] = [
+    ...workspaces.map(({ name, icon }) => ({
+      id: "workspace-" + name.toLowerCase(),
+      group: "Navigate",
+      label: "Go to " + name,
+      description: name + " workspace · view only",
+      keywords: name.toLowerCase() + " open page switch",
+      icon,
+      run: () => setWorkspace(name),
+    })),
+    {
+      id: "transport-toggle", group: "Transport",
+      label: playing ? "Pause design preview" : "Play design preview",
+      description: "Local editorial transport · no render or project edit",
+      keywords: "play pause space video",
+      shortcut: "Space",
+      disabled: project.scenes.length === 0,
+      icon: playing ? Pause : Play,
+      run: () => setPlaying((current) => !current),
+    },
+    {
+      id: "transport-back", group: "Transport", label: "Step back one frame",
+      description: "Move shared playhead to the previous frame",
+      keywords: "left previous frame seek",
+      shortcut: "←", icon: SkipBack,
+      disabled: project.scenes.length === 0,
+      run: () => stepFrame(-1),
+    },
+    {
+      id: "transport-forward", group: "Transport", label: "Step forward one frame",
+      description: "Move shared playhead to the next frame",
+      keywords: "right next frame seek",
+      shortcut: "→", icon: SkipForward,
+      disabled: project.scenes.length === 0,
+      run: () => stepFrame(1),
+    },
+    {
+      id: "view-theme", group: "View",
+      label: theme === "dark" ? "Use light theme" : "Use dark theme",
+      description: "Editor appearance · project revision unchanged",
+      keywords: "dark light color appearance",
+      icon: theme === "dark" ? Sun : Moon,
+      run: () => setTheme((current) => current === "dark" ? "light" : "dark"),
+    },
+    {
+      id: "view-rail", group: "View",
+      label: railCollapsed ? "Show project rail" : "Hide project rail",
+      description: "Adjust editing space · project revision unchanged",
+      keywords: "sidebar asset rail collapse show hide",
+      icon: PanelLeftClose,
+      run: () => setRailCollapsed((current) => !current),
+    },
+  ];
+
+  return (
+    <main className="app-shell">
+      <header className="command-bar">
+        <div className="brand">
+          <div className="brand-mark">MW</div>
+          <div className="brand-copy">
+            <strong>Motionwright</strong>
+            <span>{project.title}</span>
+          </div>
+        </div>
+        <div className="project-context">
+          <span className="branch-chip"><GitBranch size={13} /> {project.branches.find((branch) => branch.id === project.active_branch)?.name ?? "main"}</span>
+          <span className="revision-chip">r{project.revision}</span>
+          <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
+        </div>
+        <div className="command-actions">
+          {desktopBridge && <button type="button" className="button compact"
+            disabled={busy} onClick={() => setLibraryOpen(true)}>Open project library</button>}
+          {busy && <span className="saving-state" role="status" aria-live="polite"><RefreshCw size={13} className="spin" /> Committing</span>}
+          {!online && (
+            <span className="offline-chip" title="Network unavailable. Local project editing remains available.">
+              <WifiOff size={13} aria-hidden="true" /> OFFLINE · LOCAL
+            </span>
+          )}
+          <span className="sdk-chip" title={"Pinned Semwright Native SDK: " + boot.native_sdk.pinned_revision + ". Desktop hosting does not verify Broker or renderer readiness; check Integrations."}>
+            Native SDK · {boot.native_sdk.mode === "tauri" ? "desktop mode" : "browser demo"}
+          </span>
+          <button type="button" className="quick-command-trigger" aria-label="Open command palette"
+            title="Search workspaces and editor actions" onClick={() => setPaletteOpen(true)}>
+            <Search size={15} aria-hidden="true" />
+            <span className="quick-command-label">Commands</span>
+            <kbd>⌘ / Ctrl K</kbd>
+          </button>
+          <IconButton label={theme === "dark" ? "Use light theme" : "Use dark theme"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </IconButton>
+          <IconButton label="More project information" onClick={() => setWorkspace("Brief")}>
+            <MoreHorizontal size={17} />
+          </IconButton>
+        </div>
+      </header>
+
+      {paletteOpen && <CommandPalette commands={editorCommands} onClose={() => setPaletteOpen(false)} />}
+      {libraryDialog}
+      {libraryNotice && <div className="project-format-notice" role="status">
+        <span>{libraryNotice}</span>
+        <button type="button" className="button compact" onClick={forgetRememberedSelection}>Forget remembered selection</button>
+      </div>}
+
+      {desktopBridge && <FileImportRecovery key={JSON.stringify([project.id, project.generation])}
+        project={project} busy={busy} confirmation={fileImportConfirmation} onRecover={recoverFileImport}
+        onClearConfirmation={() => setFileImportConfirmation(null)} onDismiss={() => {
+          setFileImportConfirmation(null);
+          workspaceNavRef.current?.querySelector<HTMLButtonElement>('button[aria-current="page"]')?.focus();
+        }} />}
+
+      <nav ref={workspaceNavRef} className="workspace-bar" aria-label="Workspaces">
+        {workspaces.map(({ name, icon: Icon }) => (
+          <button
+            type="button"
+            key={name}
+            className={workspace === name ? "active" : ""}
+            aria-current={workspace === name ? "page" : undefined}
+            onClick={() => setWorkspace(name)}
+          >
+            <Icon size={14} />
+            <span>{name}</span>
+          </button>
+        ))}
+      </nav>
+
+      {error && (
+        <div className="error-banner" role="alert">
+          <strong>Project change needs attention.</strong>
+          <span>{error}</span>
+          <button type="button" className="plain-icon" aria-label="Dismiss error" onClick={() => setError(null)}><X size={15} /></button>
+        </div>
+      )}
+
+      {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
+      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "") + (workspace === "Production" ? " production-layout" : "")}>
+        <ProjectRail
+          project={project}
+          selectedSceneId={selectedSceneId}
+          selectScene={selectScene}
+          commit={commit}
+          commitRequired={commitRequired}
+          ingestAsset={ingestAsset}
+          desktopMode={boot.native_sdk.mode === "tauri"}
+          collapsed={railCollapsed}
+          setCollapsed={setRailCollapsed}
+        />
+        <div className="center-stack">
+          <div className="workspace-stage">{renderWorkspace()}</div>
+        </div>
+        {workspace !== "Production" && <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera} commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />}
+      </div>
+
+      <Timeline
+        project={project}
+        selectedSceneId={selectedSceneId}
+        selectScene={selectScene}
+        playhead={playhead}
+        setPlayhead={seekTo}
+        commit={commit}
+        playing={playing}
+        togglePlayback={() => setPlaying((current) => !current)}
+        stepFrame={stepFrame}
+        rate={timebaseRate}
+        mode={displayMode}
+        selectedProfileId={selectedProfile?.id ?? null}
+        onSelectProfile={(id) => {
+          setPlaying(false);
+          setTimebaseProfileId(id);
+          setTimecodeMode("ndf");
+        }}
+        onSelectMode={(mode) => {
+          setPlaying(false);
+          setTimecodeMode(mode);
+        }}
+      />
+    </main>
+  );
+}
