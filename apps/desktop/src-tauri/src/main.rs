@@ -521,6 +521,25 @@ async fn semantic_graph_authoring_context(
     .map_err(sanitized)
 }
 
+/// Read-only authoring source from the canonical Store, without execution authority.
+#[tauri::command]
+async fn scene_boundary_authoring_context(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneBoundaryContextRequest,
+) -> Result<motionwright_service::SceneBoundaryAuthoringContext, String> {
+    let service = state.service.clone();
+    let context = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .scene_boundary_authoring_context(&request)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Scene boundary source inspection task failed.".to_owned())??;
+    owner.begin_phase()?;
+    Ok(context)
+}
+
 #[tauri::command]
 async fn project_scene_nodes(
     mut owner: desktop_owner::OwnerInvocation,
@@ -2942,6 +2961,7 @@ fn main() {
             project_scene_page,
             project_scene_nodes,
             semantic_graph_authoring_context,
+            scene_boundary_authoring_context,
             issue_project_creation_grant,
             create_project,
             recover_project_creation,

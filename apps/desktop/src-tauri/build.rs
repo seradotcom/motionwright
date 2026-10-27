@@ -8,6 +8,7 @@ fn main() {
             "project_scene_page",
             "project_scene_nodes",
             "semantic_graph_authoring_context",
+            "scene_boundary_authoring_context",
             "issue_project_creation_grant",
             "create_project",
             "recover_project_creation",

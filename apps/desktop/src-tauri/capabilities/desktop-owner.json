@@ -13,6 +13,7 @@
     "allow-project-scene-page",
     "allow-project-scene-nodes",
     "allow-semantic-graph-authoring-context",
+    "allow-scene-boundary-authoring-context",
     "allow-issue-project-creation-grant",
     "allow-create-project",
     "allow-recover-project-creation",

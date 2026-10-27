@@ -111,6 +111,9 @@ pub fn text_blocks(plan: &ManimSemanticGraphPlan) -> Result<Vec<GraphTextBlock>>
         GraphContent::CausalDiagram { edges, .. } => {
             let mut disclosures = Vec::with_capacity(edges.len());
             for edge in edges {
+                let label_box = edge
+                    .resolved_label_box(graph)
+                    .map_err(|_| reject("canonical_graph_label_placement_rejected"))?;
                 let sign = match edge.influence {
                     GraphCausalInfluence::Positive => "+",
                     GraphCausalInfluence::Negative => "\u{2212}",
@@ -121,7 +124,7 @@ pub fn text_blocks(plan: &ManimSemanticGraphPlan) -> Result<Vec<GraphTextBlock>>
                     GraphTextOwner::Edge { id: edge.id },
                     format!("graph-edge:{}:{}", graph.id, edge.id),
                     format!("{} \u{00b7} {sign}", edge.label),
-                    &edge.label_box,
+                    &label_box,
                     (0, count),
                     Vec::new(),
                 )?;
@@ -143,6 +146,9 @@ pub fn text_blocks(plan: &ManimSemanticGraphPlan) -> Result<Vec<GraphTextBlock>>
             ..
         } => {
             for edge in edges {
+                let label_box = edge
+                    .resolved_label_box(graph)
+                    .map_err(|_| reject("canonical_graph_label_placement_rejected"))?;
                 let channel = match edge.channel {
                     GraphFlowChannel::Data => "data",
                     GraphFlowChannel::Control => "control",
@@ -179,7 +185,7 @@ pub fn text_blocks(plan: &ManimSemanticGraphPlan) -> Result<Vec<GraphTextBlock>>
                         GraphTextOwner::Edge { id: edge.id },
                         format!("graph-edge:{}:{}", graph.id, edge.id),
                         text,
-                        &edge.label_box,
+                        &label_box,
                         (first, end),
                         active,
                     )?;

@@ -449,3 +449,121 @@ fn rounded_rectangle_radius_uses_the_smaller_authored_dimension() {
     );
     assert_eq!(rounded_rectangle_radius(&rect(0.0, 0.0, 40.25, 60.5)), 1.61);
 }
+
+fn automatic_label_fixture(causal: bool) -> ManimSemanticGraphPlan {
+    let mut plan = fixture();
+    let GraphContent::SystemFlow {
+        vertices, edges, ..
+    } = &mut plan.source.content
+    else {
+        unreachable!()
+    };
+    vertices[1].r#box.y = 135.0;
+    edges[0].waypoints = vec![
+        GraphPoint { x: 100.0, y: 40.0 },
+        GraphPoint { x: 100.0, y: 160.0 },
+    ];
+    edges[0].label_placement = Some(motionwright_domain::GraphLabelPlacement::PolylineMidpoint {
+        offset: GraphPoint { x: 7.0, y: 0.0 },
+    });
+    if causal {
+        let GraphContent::SystemFlow {
+            vertices, edges, ..
+        } = plan.source.content.clone()
+        else {
+            unreachable!()
+        };
+        let edge = &edges[0];
+        plan.source.content = GraphContent::CausalDiagram {
+            vertices,
+            edges: vec![GraphCausalEdge {
+                id: edge.id,
+                label: edge.label.clone(),
+                from_vertex_id: edge.from_vertex_id,
+                to_vertex_id: edge.to_vertex_id,
+                from_port: edge.from_port,
+                to_port: edge.to_port,
+                waypoints: edge.waypoints.clone(),
+                label_box: edge.label_box.clone(),
+                label_placement: edge.label_placement.clone(),
+                appearance: edge.appearance.clone(),
+                influence: GraphCausalInfluence::Negative,
+                basis: GraphCausalBasis::AuthorHypothesis {
+                    disclosure: "Explicit hypothesis".into(),
+                },
+            }],
+        };
+    }
+    plan
+}
+
+#[test]
+fn causal_auto_label_uses_current_ports_without_rewriting_editable_source() {
+    let mut plan = automatic_label_fixture(true);
+    // Polyline length350 gives midpoint(125,160), offset(+7,0), half-size(120,50).
+    for (destination_x, expected_x) in [(300.0, 12.0), (340.0, 32.0)] {
+        let GraphContent::CausalDiagram { vertices, edges } = &mut plan.source.content else {
+            unreachable!()
+        };
+        vertices[1].r#box.x = destination_x;
+        assert_eq!(edges[0].label_box, rect(100.0, 100.0, 240.0, 100.0));
+        let before = plan.clone();
+        let blocks = text_blocks(&plan).unwrap();
+        let edges = edge_blocks(&blocks);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].authored_box, rect(expected_x, 110.0, 240.0, 100.0));
+        assert_eq!(
+            (
+                edges[0].active_start_frame,
+                edges[0].active_end_frame_exclusive
+            ),
+            (0, 60)
+        );
+        assert_eq!(edges[0].text, "Payload \u{00b7} \u{2212}");
+        assert_eq!(
+            blocks.last().unwrap().text,
+            "Hypothesis: Explicit hypothesis"
+        );
+        assert_eq!(plan, before);
+    }
+}
+
+#[test]
+fn flow_auto_label_reaches_every_event_interval_without_rewriting_editable_source() {
+    let mut plan = automatic_label_fixture(false);
+    for (destination_x, expected_x) in [(300.0, 12.0), (340.0, 32.0)] {
+        let GraphContent::SystemFlow {
+            vertices, edges, ..
+        } = &mut plan.source.content
+        else {
+            unreachable!()
+        };
+        vertices[1].r#box.x = destination_x;
+        assert_eq!(edges[0].label_box, rect(100.0, 100.0, 240.0, 100.0));
+        let before = plan.clone();
+        let blocks = text_blocks(&plan).unwrap();
+        let edges = edge_blocks(&blocks);
+        assert_eq!(
+            edges
+                .iter()
+                .map(|block| (
+                    block.active_start_frame,
+                    block.active_end_frame_exclusive,
+                    block.authored_box.clone(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 20, rect(expected_x, 110.0, 240.0, 100.0)),
+                (20, 30, rect(expected_x, 110.0, 240.0, 100.0)),
+                (30, 60, rect(expected_x, 110.0, 240.0, 100.0)),
+            ],
+        );
+        assert_eq!(edges[0].text, "Payload \u{00b7} data");
+        assert_eq!(edges[1].text, "Payload \u{00b7} data\nFirst event");
+        assert_eq!(edges[2].text, edges[0].text);
+        assert!(edges[0].active_event_ids.is_empty());
+        assert_eq!(edges[1].active_event_ids, vec![id(40)]);
+        assert!(edges[2].active_event_ids.is_empty());
+        assert_eq!(plan, before);
+    }
+}

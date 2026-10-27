@@ -1706,6 +1706,7 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 node_id: uuid(args, "node_id")?,
                 parent_id,
                 z_index,
+                preserve: None,
             })
         }
         OperationKind::SetCanvasRelations => {
