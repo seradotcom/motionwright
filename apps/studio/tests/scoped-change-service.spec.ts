@@ -48,7 +48,7 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], pro
 }
 
 test("Studio previews, commits, reopens, undoes and redoes against the real persisted service", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let final: Project | undefined;
   try {
     const boot = await service.fixtureBootstrap();
@@ -213,7 +213,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
 });
 
 test("two Studio clients reject a stale commit and let the author resolve only the overlapping property", async ({ page, context }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let peer: ScopedChangeService | undefined;
   let secondPage: Page | undefined;
   let final: Project | undefined;
