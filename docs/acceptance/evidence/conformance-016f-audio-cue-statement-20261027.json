@@ -1,0 +1,325 @@
+{
+  "basis": [
+    "Six byte-bound current source checks and the retained source reading establish independent canonical and Studio cue identity, identity-carrying changes, stable-ID lookup/submission, explicit creation identity, collision rejection and next-ID rotation after matching acknowledgement input. These are source checks, not Rust or Host executions.",
+    "Six individually named real Node units preserve cue ID and segment anchor across text/reordering and retiming, reserve explicit new identity, rotate only the next identity after a synthetic acknowledgement snapshot, and reject collision/removal/foreign scope without mutating input snapshots. Complete original input fragments, observations, PID/terminal, exact source and load closure are retained."
+  ],
+  "field_ids": [
+    "CR-AUDIO-04#/statement"
+  ],
+  "limitations": [
+    "One required statement field with its preserved separate source and unit obligations. Word-move/anchor-migration acceptance is not admitted by this component.",
+    "Six actual Node units exercise the complete byte-exact current Studio audio module and original fixture/type modules. Voice and acknowledgement snapshots are synthetic unit inputs, not measured audio or a service implementation.",
+    "Six current source predicates and the retained technical reading establish identifier separation and editor identity routing; no Rust test, compilation, Host grant or native audio execution is claimed.",
+    "Node native erasable TypeScript is not Vitest, TypeScript typechecking, a full Studio build, browser interaction, persistence, SQLite, actual service acknowledgement or installed product evidence.",
+    "The first Node attempt retained six passing assertions but failed its after-hook input capture. It remains NOT_ADMITTED. This second attempt requires complete same-input fragments, observations, terminal and source/load closure; no earlier result is relabelled.",
+    "Historical A4 Vitest evidence remains at its original source/run identity. No historical47-case file aggregate is presented as a current execution.",
+    "The complete criterion flag belongs to a composition of source and actual unit evidence, not to six unit counts alone. No complete requirement or scenario acceptance follows.",
+    "This staging producer does not change ledgers. Exact current-source intake must preserve all historical records and pass full privacy, schema, compatibility and history gates before integration.",
+    "No authenticated human reviewer, product acceptance readiness or release authorization is asserted."
+  ],
+  "oracle_profile_sha256": "480b4563ac12c142e82bdc234c74d1442b9e22d9905ac9b19e4b30fed7efe956",
+  "original_unit": {
+    "SDK_pin": "aa918f5b82eace7bc37ad5979f8d9eefff6a9aac",
+    "actual_attempt": "R2",
+    "capture_delta_peer_sha256": "cd2b8557de13b671096fd8ba20d5ee40b2c4a54d588a735b57370e0fced71be1",
+    "cases": [
+      {
+        "name": "AUDIO04 cue identity and anchor survive text changes and collection reordering",
+        "status": "pass"
+      },
+      {
+        "name": "AUDIO04 manual retiming preserves the existing cue identity and source anchor",
+        "status": "pass"
+      },
+      {
+        "name": "AUDIO04 new cue allocation is explicit and stable before acknowledgement",
+        "status": "pass"
+      },
+      {
+        "name": "AUDIO04 acknowledgement rotates only the next cue identity and retains newer typing",
+        "status": "pass"
+      },
+      {
+        "name": "AUDIO04 a retained new-cue identity cannot silently overwrite an existing cue",
+        "status": "pass"
+      },
+      {
+        "name": "AUDIO04 removed cues and foreign project scopes cannot be recreated or retargeted",
+        "status": "pass"
+      }
+    ],
+    "counts": {
+      "cancelled": 0,
+      "fail": 0,
+      "pass": 6,
+      "skipped": 0,
+      "suites": 0,
+      "tests": 6,
+      "todo": 0
+    },
+    "ended_at_utc": "2026-10-27T06:18:23.818156+00:00",
+    "environment": {
+      "Node_binary_bytes": 92825416,
+      "Node_binary_sha256": "3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237",
+      "Node_compile_cache": "disabled",
+      "broker_python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]",
+      "node": "v24.19.0",
+      "platform": "Windows-10-10.0.26200-SP0",
+      "test_isolation": "none; same actual Node PID"
+    },
+    "exit_code": 0,
+    "harness_artifact": "docs/acceptance/evidence/conformance-016f-audio-cue-oracle-20261027.mjs",
+    "harness_sha256": "0a10f37620e97c973c642ccf3a1e3c991fb03d9736eafbaec233026cab5f3cc1",
+    "historical_execution_relabelled": false,
+    "input_capture": "Complete same-case inputs, compact JSON fragments plus SHA256 manifest; no omitted fields",
+    "input_output_originals": {
+      "inputs.case1.original.private.json": {
+        "bytes": 52925,
+        "sha256": "50f6d13126e8c6adc5956044df871cbe6faf3664df5385570c8ce2faa19c9f85"
+      },
+      "inputs.case2.original.private.json": {
+        "bytes": 52453,
+        "sha256": "8bbd6793c8c4708df148929fdd59e237fa985c703d5c8b68ce6b54d047c8487c"
+      },
+      "inputs.case3.original.private.json": {
+        "bytes": 51976,
+        "sha256": "fd2020750d2619103514e2a7ac81a3a8b43395694e5fb6657d2762c336bcc192"
+      },
+      "inputs.case4.original.private.json": {
+        "bytes": 104595,
+        "sha256": "88fb5fd21bb566a7869dea5ac77c0173f6563d65980fa13944a5b54fe2d8549d"
+      },
+      "inputs.case5.original.private.json": {
+        "bytes": 52533,
+        "sha256": "2e3f2b7f4320761e3b2ec301a4b53c24f3ec973c715fa9d9d4587dadfd3b5420"
+      },
+      "inputs.case6.original.private.json": {
+        "bytes": 103898,
+        "sha256": "cb9346a5eaf727297ccaf8be4bc8b5fc30aeb3fe76bae0e2e5ba5e94a9892efa"
+      },
+      "inputs.original.private.json": {
+        "bytes": 1761,
+        "sha256": "b16bc79f1012cbc4231aa8ce08068fc6e48511465c202ca822dead38bf773edf"
+      },
+      "observations.original.private.json": {
+        "bytes": 3483,
+        "sha256": "63f4da6e8ac9f17fc7923858a44be2385d75baedc7b30fc62b3dd60523dd59b7"
+      }
+    },
+    "limitations": [
+      "One required statement field with its preserved separate source and unit obligations. Word-move/anchor-migration acceptance is not admitted by this component.",
+      "Six actual Node units exercise the complete byte-exact current Studio audio module and original fixture/type modules. Voice and acknowledgement snapshots are synthetic unit inputs, not measured audio or a service implementation.",
+      "Six current source predicates and the retained technical reading establish identifier separation and editor identity routing; no Rust test, compilation, Host grant or native audio execution is claimed.",
+      "Node native erasable TypeScript is not Vitest, TypeScript typechecking, a full Studio build, browser interaction, persistence, SQLite, actual service acknowledgement or installed product evidence.",
+      "The first Node attempt retained six passing assertions but failed its after-hook input capture. It remains NOT_ADMITTED. This second attempt requires complete same-input fragments, observations, terminal and source/load closure; no earlier result is relabelled.",
+      "Historical A4 Vitest evidence remains at its original source/run identity. No historical47-case file aggregate is presented as a current execution.",
+      "The complete criterion flag belongs to a composition of source and actual unit evidence, not to six unit counts alone. No complete requirement or scenario acceptance follows.",
+      "This staging producer does not change ledgers. Exact current-source intake must preserve all historical records and pass full privacy, schema, compatibility and history gates before integration.",
+      "No authenticated human reviewer, product acceptance readiness or release authorization is asserted."
+    ],
+    "loader_observation_is_not_full_function_coverage": true,
+    "new_product_unit_execution": true,
+    "original_argv_sha256": "8e39d68cb7f36f5a28c8c2f99b14f998256c00bef9b767aeb74e8b063f69c4c9",
+    "original_intent_sha256": "db27e26251d44ace0b5fa563b6235a988c21867d905defeb6916d6132c2e9edb",
+    "original_receipt_sha256": "15990119c793bde3e5bb6c4c23bbc275eb7227b92ac510ead1155d6bbd27a1e1",
+    "original_terminal_sha256": "bc2a10b7307bc8719a8bfc7df65b7462d5861b2f8eca27a08604b0fd13e97abd",
+    "pid": 34132,
+    "prior_failed_attempt": {
+      "disposition": "NOT_ADMITTED_RETAINED_ORIGINAL",
+      "exit_code": 0,
+      "originals": {
+        "receipt.private.json": {
+          "bytes": 15160,
+          "sha256": "1918c9d62fd2798a3ed2b2710210a5c118623e637dd43ec7338db65d6c249188"
+        },
+        "stdout.original.log": {
+          "bytes": 4152,
+          "sha256": "b3c7d5a79261c269603603cb3aa8cc7cb10957070d4e9c49615c8a848bf83cae"
+        }
+      },
+      "pid": 9888,
+      "reason": "Six assertions passed, but input capture failed its after-hook bound before complete artifacts/closure existed."
+    },
+    "private_argv_or_paths_published": false,
+    "product_functions_extracted_or_replaced": false,
+    "runtime_import_edges": [
+      "src/audioDraft.ts -> src/types.ts"
+    ],
+    "runtime_modules_observed_by_loader": [
+      "src/audioDraft.ts",
+      "src/fixture.ts",
+      "src/types.ts"
+    ],
+    "schema": "motionwright.audio04-current-unit-original-public/1",
+    "source": {
+      "digest_kind": "git-text-lf",
+      "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+      "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+    },
+    "source_hashes_stable_before_after": true,
+    "source_inputs": [
+      {
+        "bytes": 142600,
+        "git_blob": "f26572bacbead9f526edd49309f437a22b2c2fca",
+        "mode": "100644",
+        "path": "Cargo.lock",
+        "sha256": "455c72c93acaf90d1161f8f5c0c0fac70fb8c162f751ff3a8b65574f0209c448"
+      },
+      {
+        "bytes": 1653,
+        "git_blob": "32c519d3d891bf435b898edbce4deaea3e1ed601",
+        "mode": "100644",
+        "path": "SOURCE_LOCK.json",
+        "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+      },
+      {
+        "bytes": 83713,
+        "git_blob": "3603612cab7f9abbb132ec69aa267ca060f0b474",
+        "mode": "100644",
+        "path": "apps/studio/package-lock.json",
+        "sha256": "bf7e12b36faff3d553033f903560070974774700f404ff6704ed0942094bc994"
+      },
+      {
+        "bytes": 919,
+        "git_blob": "2be45e9bde032f9e2c197789a8350dba017b72f0",
+        "mode": "100644",
+        "path": "apps/studio/package.json",
+        "sha256": "428526cf98577d3c960a1f13731cf89a1c1c19cb7a4e653a420d1e832c75c9b4"
+      },
+      {
+        "bytes": 14006,
+        "git_blob": "d93014a88cb19f959556d0daaabb6bf8030ad2e2",
+        "mode": "100644",
+        "path": "apps/studio/src/audioDraft.test.ts",
+        "sha256": "a82419bb9eec22079c16961df87b3d62b3a637eac910903de9e6c499943098b6"
+      },
+      {
+        "bytes": 33035,
+        "git_blob": "870d8b37e8cd2b0453100639889ff24c5ac6a0e0",
+        "mode": "100644",
+        "path": "apps/studio/src/audioDraft.ts",
+        "sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511"
+      },
+      {
+        "bytes": 12129,
+        "git_blob": "edc7d4517b0c403dea468daf3dd72e475b0b8f32",
+        "mode": "100644",
+        "path": "apps/studio/src/fixture.ts",
+        "sha256": "3be709fc03d738931d099fd8123e5e03f22afa93b5ea4eb7182cb1c68147c074"
+      },
+      {
+        "bytes": 40539,
+        "git_blob": "79815ad599c4eda2b404fddee285350412a13220",
+        "mode": "100644",
+        "path": "apps/studio/src/types.ts",
+        "sha256": "83f2d7992d14744e6b05b53c548bedd3a8f18913fcfaf8864742f0b4308794e6"
+      },
+      {
+        "bytes": 25314,
+        "git_blob": "e62b905eb025032fd1117e3b9f2dbcd567866116",
+        "mode": "100644",
+        "path": "crates/domain/src/creative.rs",
+        "sha256": "e01edcef2c460191f14c318ba0c308b7f2cf1cd74464c86dfaabae69298653f0"
+      }
+    ],
+    "started_at_utc": "2026-10-27T06:18:23.492430+00:00",
+    "streams": {
+      "stderr.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout.original.log": {
+        "bytes": 5119,
+        "sha256": "51d96f4706f0cb6bd9f995b9f996830a637f74c48f2992d61d67b73519a97f4c"
+      }
+    },
+    "synthetic_fixture_inputs": true,
+    "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+  },
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "schema": "motionwright.audio04-source-and-unit-statement-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "94fbc9a59a93618c1b318687f2d3239c0022f45c01c74f9db1a8df6975aa9426",
+  "source_observations": {
+    "basis": "Six byte-bound current source checks and the retained source reading establish independent canonical and Studio cue identity, identity-carrying changes, stable-ID lookup/submission, explicit creation identity, collision rejection and next-ID rotation after matching acknowledgement input. These are source checks, not Rust or Host executions.",
+    "counts_scope": "Six executed byte-bound source predicates; not product test, requirement or scenario counts",
+    "criterion_id": "CR-AUDIO-04#/statement",
+    "execution_profile": "audio-current-source-boundaries",
+    "kind": "source",
+    "limitations": [
+      "One required statement field with its preserved separate source and unit obligations. Word-move/anchor-migration acceptance is not admitted by this component.",
+      "Six actual Node units exercise the complete byte-exact current Studio audio module and original fixture/type modules. Voice and acknowledgement snapshots are synthetic unit inputs, not measured audio or a service implementation.",
+      "Six current source predicates and the retained technical reading establish identifier separation and editor identity routing; no Rust test, compilation, Host grant or native audio execution is claimed.",
+      "Node native erasable TypeScript is not Vitest, TypeScript typechecking, a full Studio build, browser interaction, persistence, SQLite, actual service acknowledgement or installed product evidence.",
+      "The first Node attempt retained six passing assertions but failed its after-hook input capture. It remains NOT_ADMITTED. This second attempt requires complete same-input fragments, observations, terminal and source/load closure; no earlier result is relabelled.",
+      "Historical A4 Vitest evidence remains at its original source/run identity. No historical47-case file aggregate is presented as a current execution.",
+      "The complete criterion flag belongs to a composition of source and actual unit evidence, not to six unit counts alone. No complete requirement or scenario acceptance follows.",
+      "This staging producer does not change ledgers. Exact current-source intake must preserve all historical records and pass full privacy, schema, compatibility and history gates before integration.",
+      "No authenticated human reviewer, product acceptance readiness or release authorization is asserted."
+    ],
+    "observed_at_utc": "2026-10-27T06:26:01.790620+00:00",
+    "original_unit_receipt_sha256": "15990119c793bde3e5bb6c4c23bbc275eb7227b92ac510ead1155d6bbd27a1e1",
+    "predicates": [
+      {
+        "basis": "The current canonical cue has an independent UUID, label, rational time and optional segment UUID.",
+        "id": "canonical_identity_and_position_are_separate",
+        "path": "crates/domain/src/creative.rs",
+        "source_sha256": "e01edcef2c460191f14c318ba0c308b7f2cf1cd74464c86dfaabae69298653f0",
+        "status": "pass"
+      },
+      {
+        "basis": "Canonical source validates referenced segment identity and rejects duplicate cue IDs; no Rust runtime test is inferred.",
+        "id": "canonical_references_and_duplicates_are_checked",
+        "path": "crates/domain/src/creative.rs",
+        "source_sha256": "e01edcef2c460191f14c318ba0c308b7f2cf1cd74464c86dfaabae69298653f0",
+        "status": "pass"
+      },
+      {
+        "basis": "Studio and change types carry the cue identity independently of label and time.",
+        "id": "studio_change_types_carry_identity",
+        "path": "apps/studio/src/types.ts",
+        "source_sha256": "83f2d7992d14744e6b05b53c548bedd3a8f18913fcfaf8864742f0b4308794e6",
+        "status": "pass"
+      },
+      {
+        "basis": "Existing cue lookup and submission use stable identity; a new cue uses its reserved draft identity.",
+        "id": "editor_lookup_and_submission_preserve_existing_identity",
+        "path": "apps/studio/src/audioDraft.ts",
+        "source_sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511",
+        "status": "pass"
+      },
+      {
+        "basis": "A new draft reserves an explicit identity and a retained identity cannot silently overwrite an existing cue.",
+        "id": "new_editor_identity_is_explicit_and_collision_checked",
+        "path": "apps/studio/src/audioDraft.ts",
+        "source_sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511",
+        "status": "pass"
+      },
+      {
+        "basis": "The editor rotates the next identity only through the matching acknowledgement comparison; this remains source and synthetic unit evidence.",
+        "id": "next_identity_changes_only_after_matching_unit_acknowledgement",
+        "path": "apps/studio/src/audioDraft.ts",
+        "source_sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511",
+        "status": "pass"
+      }
+    ],
+    "producer_pid": 33016,
+    "producer_sha256": "78a34809354856e01bbbe359cda78c85434776fecd7eacb2a97be26603e8e77c",
+    "schema": "motionwright.audio04-current-source-observations-public/1",
+    "source": {
+      "digest_kind": "git-text-lf",
+      "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+      "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+    },
+    "source_review_sha256": "1c47f531e71b829b60dea1f5cf260e90c550284ce8ded4b7a1044cd4dcaf2e44",
+    "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+  },
+  "technical_verdict": "PASS_FOR_ONE_CURRENT_SOURCE_STATEMENT_FIELD",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058",
+  "whole_requirement_accepted": false
+}

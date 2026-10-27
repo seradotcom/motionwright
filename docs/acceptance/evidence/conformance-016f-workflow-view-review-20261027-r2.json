@@ -1,0 +1,52 @@
+{
+  "decision": "sufficient",
+  "field_ids": [
+    "CR-WORKFLOW-08#/statement"
+  ],
+  "finite_runner_peer_sha256": "ebbb859e39100b6e35bf9aa92845a98e1c2a1ead56d4039f3459db2495787642",
+  "human_review_invented": false,
+  "human_review_required": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "The original controller receipt remains NOT_ADMITTED_RETAINED_ORIGINAL: its read-only verifier expected pending instead of the actual skipped per-method enum. This successor verifies the immutable originals, preserves that failure, and supplies a separately hashed correction; no Node/product replay.",
+    "One required statement field with its preserved source and literal Vitest obligations. Separate Broker/capability-registration acceptance is not admitted by this component.",
+    "One unchanged original Vitest method executes browser-mode API behavior in Node. The original file contains twelve methods; eleven were filtered and remain explicitly unexecuted, not passed.",
+    "The record counts refer only to the one selected method: one pass, zero fail/skip within that selection. The untouched original report retains twelve total, aggregate numPendingTests=11 and eleven per-method skipped statuses.",
+    "Six current source predicates and technical reading establish the existing view/API route. They do not execute a live canonical Host, grant, store, SQLite, native workflow or desktop browser.",
+    "The original Vite editor security pretest ran separately with virtual file/process effects on the exact locked installed bundle. Its thirteen component checks are not workflow acceptance cases or real editor launches.",
+    "An existing Vitest/Vite installation was read without install. Captured file and lock identities are verified; global tarball integrity and universal interception of filesystem effects are not claimed.",
+    "Historical c4 evidence remains at its original source and run identity; no historical twelve-case file aggregate is relabelled as current execution.",
+    "The complete criterion binding is a joint source/unit composition with a separate sufficiency review. This does not accept a whole requirement, scenario or release.",
+    "The complete original304-file availability inventory is preserved. Exactly seven pinned WOFF2 files remain raw-byte availability observations; they are not UTF8 source bindings or proof of font use/rendering. The297 UTF8 files retain canonical source bindings. An earlier unadmitted component included those binaries as text inputs and was correctly refused by the existing guard; its bytes and failed preparation remain retained.",
+    "Staging does not change ledgers. Exact POST45 intake must preserve all history and pass full privacy, schema, compatibility and history gates before integration.",
+    "No authenticated human reviewer, product acceptance readiness or release authorization is asserted."
+  ],
+  "obligations": [
+    {
+      "basis": "Six exact-source predicates and technical inspection establish that the learned-evidence view derives its collections from the existing workflow API, carries current source stamps, uses the current project/connection in desktop source, and delegates to existing canonical query/action routes. No Host/native runtime is inferred from source.",
+      "id": "view_uses_existing_canonical_api",
+      "status": "pass"
+    },
+    {
+      "basis": "The one original current Vitest method passed in Node browser mode: browser_demo, null canonical connection identity, six empty learned-evidence collections and promote rejection before desktop dispatch. The eleven other original methods were filtered and retain skipped per-method status with aggregate numPendingTests=11 in the untouched report.",
+      "id": "browser_mode_has_no_canonical_workflow_evidence",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "d708af87aa34bcd64484ba5c50e4479fdde9ce3dd762186c070d2d9c88466e1a",
+  "original_unit_receipt_sha256": "e98f008e91d978ffe448cdc84c341775675f654e448af6bd1668a09a408890c4",
+  "original_unit_terminal_sha256": "d6b95c8fd6fe6df7afc680d8b514e1f0926517d481226acee48df2c9dddf5713",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-27T08:40:07.526167+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.workflow08-objective-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "bbf2130785ef10026dc4f2638dc4291005e74190aec790d41151fc4b01c4586c",
+  "source_review_sha256": "4efdcc29c2dc1b90bd40660188df1d1e0fb031c0e0b64e0d31183bc427c217eb",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

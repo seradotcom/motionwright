@@ -1,0 +1,53 @@
+{
+  "browser_behavior_requires_separate_original_Vitest_evidence": true,
+  "criterion_id": "CR-WORKFLOW-08#/statement",
+  "definition_kind": "Six exact-file source predicates plus technical source inspection",
+  "execution_profile": "workflow-canonical-view-source",
+  "live_canonical_execution_claimed": false,
+  "predicates": [
+    {
+      "basis": "All six learned-evidence collections are read from the existing workflowOverview response.",
+      "id": "view_reads_existing_overview_collections",
+      "path": "apps/studio/src/WorkflowWorkspace.tsx",
+      "source_sha256": "5ba73d498052d98f7260ec2dd392407ef9b31ce4671404c777c8d59c6562acf2"
+    },
+    {
+      "basis": "The view and its actions retain the selected project source stamp and draft scope; retained author recovery is not substituted for canonical collections.",
+      "id": "view_and_action_are_bound_to_current_source",
+      "path": "apps/studio/src/WorkflowWorkspace.tsx",
+      "source_sha256": "5ba73d498052d98f7260ec2dd392407ef9b31ce4671404c777c8d59c6562acf2"
+    },
+    {
+      "basis": "The desktop route invokes the existing overview command; browser mode has no canonical identity/authority or learned-evidence entries.",
+      "id": "browser_overview_is_empty_and_desktop_uses_existing_command",
+      "path": "apps/studio/src/api.ts",
+      "source_sha256": "de7faa18b2e3ad44b779e0f38587e45786ab473f576963b25f0868ebe9a82541"
+    },
+    {
+      "basis": "The browser branch rejects before permission acquisition or the existing desktop action invocation; no live grant is claimed.",
+      "id": "browser_action_rejects_before_desktop_dispatch",
+      "path": "apps/studio/src/api.ts",
+      "source_sha256": "de7faa18b2e3ad44b779e0f38587e45786ab473f576963b25f0868ebe9a82541"
+    },
+    {
+      "basis": "The desktop source loads the selected project/connection, checks resource identity and queries the six existing canonical workflow operations.",
+      "id": "desktop_overview_uses_current_project_and_existing_queries",
+      "path": "apps/desktop/src-tauri/src/main.rs",
+      "source_sha256": "f6871618ab53b4d7db25c997fc38c7009d9afc4fabbeb3ec8f0698cca53f64cb"
+    },
+    {
+      "basis": "The existing native adapter delegates to ProductionCoordinator with service, grant checks and receipt custody in source; this is not native execution.",
+      "id": "desktop_action_delegates_to_existing_coordinator",
+      "path": "apps/desktop/src-tauri/src/workflow_native.rs",
+      "source_sha256": "e1e00780646f072bfabc56221468cddeabaaeaa67a76fb2d5f786c6022244625"
+    }
+  ],
+  "schema": "motionwright.workflow08-source-oracle-definition/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_review_sha256": "4efdcc29c2dc1b90bd40660188df1d1e0fb031c0e0b64e0d31183bc427c217eb",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}
