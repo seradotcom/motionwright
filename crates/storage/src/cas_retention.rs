@@ -1096,10 +1096,9 @@ pub(super) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
              WHERE type='trigger' AND tbl_name IN ('cas_store_identity','cas_import_commits')
              ORDER BY tbl_name,name",
         )?;
-        let rows = statement
+        statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
+            .collect::<rusqlite::Result<_>>()?
     };
     if version < 6 {
         if !observed_triggers.is_empty() {

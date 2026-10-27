@@ -1001,6 +1001,7 @@ pub(super) fn hash_portable_file(path: &Path, limit: u64) -> Result<BlobDescript
     transfer_portable_bytes(input, std::io::sink(), limit)
 }
 
+#[cfg(test)]
 pub(super) fn inspect_portable_file(
     path: &Path,
     context: &str,
