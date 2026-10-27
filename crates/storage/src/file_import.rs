@@ -430,6 +430,29 @@ impl Store {
         )
     }
 
+    /// Capture bytes already held by the caller through the canonical bounded
+    /// import stage. This accepts data, not a path or a provider grant. The
+    /// caller remains responsible for authenticating its original capture.
+    pub fn stage_file_import_bytes_with_limit(
+        &self,
+        bytes: &[u8],
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
+        let size = bytes.len() as u64;
+        if size > max_bytes {
+            return Err(StorageError::BlobTooLarge {
+                size,
+                limit: max_bytes,
+            });
+        }
+        self.stage_import_reader_with_purpose(
+            bytes,
+            max_bytes,
+            super::cas_retention::CapturePurpose::Legacy,
+            None,
+        )
+    }
+
     pub(super) fn stage_derived_file_import(&self, source: &Path) -> Result<StagedFileImport> {
         self.stage_derived_file_import_with_limit(source, u64::MAX)
     }
@@ -454,6 +477,17 @@ impl Store {
     ) -> Result<StagedFileImport> {
         ensure_regular_directory(&self.blob_root, "blob root")?;
         let input = open_regular_import_source(source, max_bytes)?;
+        self.stage_import_reader_with_purpose(input, max_bytes, purpose, Some(source))
+    }
+
+    fn stage_import_reader_with_purpose(
+        &self,
+        input: impl Read,
+        max_bytes: u64,
+        purpose: super::cas_retention::CapturePurpose,
+        _source_for_tests: Option<&Path>,
+    ) -> Result<StagedFileImport> {
+        ensure_regular_directory(&self.blob_root, "blob root")?;
         let (path, output, retention) =
             super::cas_retention::begin_capture(&self.blob_root, self.cas_store_id, purpose)?;
         let mut staged = StagedFileImport {
@@ -483,7 +517,9 @@ impl Store {
                 #[cfg(test)]
                 if first_read {
                     first_read = false;
-                    run_import_source_read_hook(source);
+                    if let Some(source) = _source_for_tests {
+                        run_import_source_read_hook(source);
+                    }
                 }
                 let next_size =
                     size_bytes

@@ -29,9 +29,15 @@ use tokio::{
 use uuid::Uuid;
 
 mod audio_analysis;
+mod audio_derivative;
 mod blender_original;
 mod blender_render;
+mod brand_font_staging;
 mod brand_fonts;
+pub use brand_font_staging::{
+    ProductionFontInvocationKind, ProductionFontPostcheck, ProductionFontStagingCustody,
+    ProductionFontStagingOwner, ProductionFontStagingScope,
+};
 mod hyperframes;
 mod manim_graph;
 mod manim_graph_profile;
@@ -50,6 +56,7 @@ pub use motion_canvas_window::{
 mod native_runtime_versions;
 #[cfg(test)]
 mod path_boundary_tests;
+mod provider_binding;
 mod receipt_custody;
 mod transport_custody;
 pub use transport_custody::ProductionTransportCustody;
@@ -61,6 +68,10 @@ pub use audio_analysis::{
     AudioAnalysisLane, AudioQcReceiptHint, AudioQcReceiptInventory, DeliveryAudioQcStatus,
     MeasuredMltAvMasterEvidence, MeasuredMltMultisegmentAvMasterEvidence, VerifiedAudioMeasurement,
     VerifiedDeliveryAudioQc, VerifiedDeliveryAudioQcReport, VerifiedOriginalMixAudioMeasurements,
+};
+pub use audio_derivative::{
+    AdoptedAudioDerivative, AudioDerivativeFailure, AudioDerivativeIntent,
+    AudioDerivativePcmObservation, AudioDerivativeProfile, ObservedAudioDerivative,
 };
 pub use blender_original::{
     BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderOriginalEdit, BlenderOriginalFile,
@@ -411,6 +422,15 @@ fn sha256_file(path: &Path) -> NativeResult<String> {
 }
 
 fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeResult<PathBuf> {
+    output_artifact_path_with_minimum(root, relative, 1, max_bytes)
+}
+
+fn output_artifact_path_with_minimum(
+    root: &Path,
+    relative: &str,
+    minimum_bytes: u64,
+    max_bytes: u64,
+) -> NativeResult<PathBuf> {
     if relative.is_empty()
         || relative.len() > 4096
         || relative.contains('\0')
@@ -473,7 +493,7 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
     }
     let metadata = fs::metadata(&candidate)
         .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact is unavailable"))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
+    if !metadata.is_file() || metadata.len() < minimum_bytes || metadata.len() > max_bytes {
         return Err(invalid("Production artifact is not a bounded regular file"));
     }
     Ok(candidate)
@@ -515,7 +535,7 @@ fn same_artifact_snapshot(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     }
 }
 
-/// Private opening step for read_verified_production_artifact only. The flags
+/// Private opening step for the common bounded production file capture. The flags
 /// prevent a substituted leaf FIFO from waiting for a writer on Unix and avoid
 /// following a substituted leaf link/reparse point. They do not isolate every
 /// ancestor and do not bound ordinary filesystem wall time.
@@ -562,29 +582,131 @@ fn open_verified_artifact_input(
     Ok((file, opened))
 }
 
+/// Bytes and their descriptor observed by one bounded retained-file read.
+///
+/// This value does not verify an external pin or grant access to its source.
+/// Callers must independently admit the root and retain any required owner
+/// authority. It describes the captured bytes, not a future state of the path.
+#[derive(Debug)]
+pub struct CapturedProductionFile {
+    bytes: Vec<u8>,
+    descriptor: motionwright_storage::BlobDescriptor,
+}
+
+impl CapturedProductionFile {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn descriptor(&self) -> &motionwright_storage::BlobDescriptor {
+        &self.descriptor
+    }
+
+    pub fn into_parts(self) -> (Vec<u8>, motionwright_storage::BlobDescriptor) {
+        (self.bytes, self.descriptor)
+    }
+}
+
+/// Observe an existing regular file within a root already admitted by the caller.
+///
+/// The same retained descriptor, bounded read and before/after/path checks used
+/// for verified production artifacts apply here. The returned SHA-256 and count
+/// describe these bytes; they are not an expected pin, a grant, a continuous
+/// ancestor-isolation claim or a filesystem wall-time bound. A zero-byte file
+/// may be observed, but absence never becomes an empty capture.
+pub fn capture_production_file(
+    root: &Path,
+    relative: &str,
+    max_bytes: u64,
+) -> NativeResult<CapturedProductionFile> {
+    capture_production_file_with_bounds(root, relative, 0, None, max_bytes)
+}
+
 /// Read immutable production bytes only after the existing owner-root and grant
-/// checks. The bounded descriptor read is followed by fresh path/root checks and
-/// the exact expected SHA-256. This is not an arbitrary-path desktop command or
-/// a continuous filesystem-ancestor isolation claim.
+/// checks. The common bounded capture is followed by the exact expected SHA-256.
+/// This wrapper preserves its nonempty artifact contract. It is not an
+/// arbitrary-path desktop command or continuous ancestor-isolation claim.
 pub fn read_verified_production_artifact(
     root: &Path,
     relative: &str,
     expected_sha256: &str,
     max_bytes: u64,
 ) -> NativeResult<Vec<u8>> {
+    read_verified_production_bytes(root, relative, expected_sha256, 1, None, max_bytes)
+}
+
+// Original process streams may be empty, but must exist and match both their
+// exact observed count and digest. The public artifact reader keeps minimum 1.
+#[cfg(all(test, unix))]
+fn read_verified_production_original(
+    root: &Path,
+    relative: &str,
+    expected_sha256: &str,
+    expected_bytes: u64,
+    max_bytes: u64,
+) -> NativeResult<Vec<u8>> {
+    read_verified_production_bytes(
+        root,
+        relative,
+        expected_sha256,
+        0,
+        Some(expected_bytes),
+        max_bytes,
+    )
+}
+
+fn read_verified_production_bytes(
+    root: &Path,
+    relative: &str,
+    expected_sha256: &str,
+    minimum_bytes: u64,
+    expected_bytes: Option<u64>,
+    max_bytes: u64,
+) -> NativeResult<Vec<u8>> {
+    // Validate external expectations before any source IO, as in the existing
+    // verified artifact and exact-count original-custody wrappers.
+    if expected_bytes.is_some_and(|bytes| bytes < minimum_bytes || bytes > max_bytes) {
+        return Err(invalid(
+            "Production original byte count exceeds its closed budget",
+        ));
+    }
     if !is_sha256(expected_sha256) {
         return Err(invalid("Production artifact digest is malformed"));
     }
+    let captured = capture_production_file_with_bounds(
+        root,
+        relative,
+        minimum_bytes,
+        expected_bytes,
+        max_bytes,
+    )?;
+    if captured.descriptor.sha256 != expected_sha256 {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Production artifact no longer matches its verified original",
+        ));
+    }
+    Ok(captured.into_parts().0)
+}
+
+fn capture_production_file_with_bounds(
+    root: &Path,
+    relative: &str,
+    minimum_bytes: u64,
+    expected_bytes: Option<u64>,
+    max_bytes: u64,
+) -> NativeResult<CapturedProductionFile> {
     let read_limit = max_bytes
         .checked_add(1)
         .filter(|limit| max_bytes > 0 && *limit <= isize::MAX as u64)
         .ok_or_else(|| invalid("Production artifact read budget is invalid or overflows"))?;
-    let path = output_artifact_path(root, relative, max_bytes)?;
+    let path = output_artifact_path_with_minimum(root, relative, minimum_bytes, max_bytes)?;
     let before = safe_metadata(&path)?;
     if !before.is_file()
         || is_link_or_reparse(&before)
-        || before.len() == 0
+        || before.len() < minimum_bytes
         || before.len() > max_bytes
+        || expected_bytes.is_some_and(|bytes| before.len() != bytes)
     {
         return Err(invalid("Production artifact is not a bounded regular file"));
     }
@@ -610,23 +732,177 @@ pub fn read_verified_production_artifact(
             "Production artifact handle cannot be rechecked",
         )
     })?;
-    let resolved_after = output_artifact_path(root, relative, max_bytes)?;
+    let resolved_after =
+        output_artifact_path_with_minimum(root, relative, minimum_bytes, max_bytes)?;
     let current = safe_metadata(&resolved_after)?;
     if resolved_after != path
         || !same_artifact_snapshot(&before, &after)
         || !same_artifact_snapshot(&opened, &after)
         || !same_artifact_snapshot(&after, &current)
-        || bytes.is_empty()
+        || (bytes.len() as u64) < minimum_bytes
+        || expected_bytes.is_some_and(|expected| bytes.len() as u64 != expected)
         || bytes.len() as u64 > max_bytes
         || bytes.len() as u64 != before.len()
-        || hex::encode(Sha256::digest(&bytes)) != expected_sha256
     {
         return Err(Error::new(
             ErrorCode::StaleReference,
-            "Production artifact no longer matches its verified original",
+            "Production file changed during its bounded capture",
         ));
     }
-    Ok(bytes)
+    let descriptor = motionwright_storage::BlobDescriptor {
+        sha256: hex::encode(Sha256::digest(&bytes)),
+        size_bytes: bytes.len() as u64,
+    };
+    Ok(CapturedProductionFile { bytes, descriptor })
+}
+
+#[cfg(test)]
+mod retained_file_capture_tests {
+    use super::*;
+
+    #[test]
+    fn capture_observes_the_same_original_bytes_count_and_digest_without_an_external_pin() {
+        let root = tempfile::tempdir().unwrap();
+        let original = b"original bounded source bytes";
+        fs::write(root.path().join("original.bin"), original).unwrap();
+        let captured =
+            capture_production_file(root.path(), "original.bin", original.len() as u64).unwrap();
+        assert_eq!(captured.bytes(), original);
+        assert_eq!(captured.descriptor().size_bytes, original.len() as u64);
+        assert_eq!(
+            captured.descriptor().sha256,
+            hex::encode(Sha256::digest(original))
+        );
+        let (retained, descriptor) = captured.into_parts();
+        assert_eq!(retained, original);
+        assert_eq!(descriptor.size_bytes, retained.len() as u64);
+        assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(&retained)));
+        assert!(
+            read_verified_production_artifact(
+                root.path(),
+                "original.bin",
+                &"00".repeat(32),
+                original.len() as u64
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn capture_of_an_empty_file_does_not_admit_a_missing_file_or_empty_verified_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("empty.stdout"), b"").unwrap();
+        let captured = capture_production_file(root.path(), "empty.stdout", 1).unwrap();
+        let empty_sha = hex::encode(Sha256::digest(b""));
+        assert!(captured.bytes().is_empty());
+        assert_eq!(captured.descriptor().size_bytes, 0);
+        assert_eq!(captured.descriptor().sha256, empty_sha);
+        assert!(capture_production_file(root.path(), "missing.stdout", 1).is_err());
+        assert!(
+            read_verified_production_artifact(root.path(), "empty.stdout", &empty_sha, 1).is_err()
+        );
+        assert_eq!(
+            read_verified_production_bytes(root.path(), "empty.stdout", &empty_sha, 0, Some(0), 1)
+                .unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(
+            read_verified_production_bytes(root.path(), "empty.stdout", &empty_sha, 0, Some(1), 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn capture_retains_its_bytes_when_the_source_path_changes_after_the_observation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("original.bin");
+        fs::write(&path, b"prior").unwrap();
+        let captured = capture_production_file(root.path(), "original.bin", 5).unwrap();
+        let observed_sha = captured.descriptor().sha256.clone();
+        // Same length, different bytes. The old capture must not lazily resolve
+        // its path, and its observed pin must reject the later source.
+        fs::write(&path, b"later").unwrap();
+        assert_eq!(captured.bytes(), b"prior");
+        assert_eq!(captured.descriptor().size_bytes, 5);
+        assert_eq!(
+            captured.descriptor().sha256,
+            hex::encode(Sha256::digest(b"prior"))
+        );
+        assert!(
+            read_verified_production_artifact(root.path(), "original.bin", &observed_sha, 5)
+                .is_err()
+        );
+        let later = capture_production_file(root.path(), "original.bin", 5).unwrap();
+        assert_eq!(later.bytes(), b"later");
+        assert_ne!(later.descriptor().sha256, captured.descriptor().sha256);
+    }
+
+    #[test]
+    fn capture_keeps_closed_budgets_and_the_verified_wrappers_reject_invalid_pins_before_io() {
+        let root = tempfile::tempdir().unwrap();
+        for limit in [0, u64::MAX] {
+            let error = capture_production_file(root.path(), "missing.bin", limit).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgument);
+        }
+        let error =
+            read_verified_production_artifact(root.path(), "missing.bin", "not-a-digest", 4)
+                .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        let error = read_verified_production_bytes(
+            root.path(),
+            "missing.bin",
+            &"00".repeat(32),
+            0,
+            Some(5),
+            4,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        fs::write(root.path().join("original.bin"), b"1234").unwrap();
+        assert!(capture_production_file(root.path(), "original.bin", 3).is_err());
+        assert!(capture_production_file(root.path(), "../original.bin", 4).is_err());
+        assert!(capture_production_file(root.path(), "nested/../original.bin", 4).is_err());
+        let captured = capture_production_file(root.path(), "original.bin", 4).unwrap();
+        assert_eq!(captured.descriptor().size_bytes, 4);
+        assert!(
+            read_verified_production_bytes(
+                root.path(),
+                "original.bin",
+                &captured.descriptor().sha256,
+                0,
+                Some(3),
+                4
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initial_capture_uses_the_same_rejection_of_leaf_and_owner_directory_links() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("original.bin"), b"original").unwrap();
+        symlink(
+            root.path().join("original.bin"),
+            root.path().join("alias.bin"),
+        )
+        .unwrap();
+        assert!(capture_production_file(root.path(), "alias.bin", 8).is_err());
+        fs::create_dir(root.path().join("owner")).unwrap();
+        fs::write(root.path().join("owner/original.bin"), b"original").unwrap();
+        fs::rename(
+            root.path().join("owner"),
+            root.path().join("retained-owner"),
+        )
+        .unwrap();
+        symlink(
+            root.path().join("retained-owner"),
+            root.path().join("owner"),
+        )
+        .unwrap();
+        assert!(capture_production_file(&root.path().join("owner"), "original.bin", 8).is_err());
+    }
 }
 
 fn verify_output_artifact(
@@ -1036,16 +1312,33 @@ impl ProductionClient {
         args: Value,
         mutation: bool,
     ) -> NativeResult<BrokerResult> {
+        self.execute_with_authority(command, args, mutation, None, None)
+            .await
+    }
+
+    async fn execute_with_authority(
+        &self,
+        command: &str,
+        args: Value,
+        mutation: bool,
+        authority: Option<ExpectedAuthority>,
+        binding: Option<&provider_binding::BoundMediaContext>,
+    ) -> NativeResult<BrokerResult> {
         #[cfg(test)]
         let _ = self
             .execute_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+        // The closed bound route keeps the complete parsed Core envelope.
+        // Existing optional transport custody owns original binary stdout/stderr.
+        let retain_original_core = authority.is_some();
         let mut capture: Option<transport_custody::CaptureReservation> = None;
         let result = async {
-            let expected = expected_authority(command).ok_or_else(|| {
-                Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
-            })?;
+            let expected = authority
+                .or_else(|| expected_authority(command))
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
+                })?;
             let mutation = mutation
                 || WORKFLOW_MUTATING_COMMANDS.contains(&command)
                 || HYPERFRAMES_MUTATING_COMMANDS.contains(&command)
@@ -1080,7 +1373,10 @@ impl ProductionClient {
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
 
-            let budget_secs = if command == "driver.manim-community.doctor" {
+            let budget_secs = if let Some(binding) = binding {
+                binding.check_connection(self)?;
+                binding.transport_budget_secs(command, &args, mutation)?
+            } else if command == "driver.manim-community.doctor" {
                 DEFAULT_DEADLINE_SECS
             } else if command.starts_with("driver.hyperframes.")
                 || command.starts_with("driver.mlt-video.")
@@ -1176,6 +1472,13 @@ impl ProductionClient {
                 )));
             }
 
+            let original_core = if retain_original_core {
+                Some(serde_json::from_slice::<Value>(&stdout).map_err(|_| {
+                    post_spawn_error(backend("Semwright CLI returned invalid Core JSON"))
+                })?)
+            } else {
+                None
+            };
             let envelope: Envelope = serde_json::from_slice(&stdout).map_err(|_| {
                 post_spawn_error(backend(
                     "Semwright CLI returned an invalid response envelope",
@@ -1210,13 +1513,17 @@ impl ProductionClient {
             let value = envelope.data.ok_or_else(|| {
                 post_spawn_error(backend("Canonical production response has no data"))
             })?;
+            let mut projected = json!({
+                "data": value,
+                "execution": envelope.execution,
+                "warnings": envelope.warnings,
+                "provenance_checked": true
+            });
+            if let Some(original) = original_core {
+                projected["original_envelope"] = original;
+            }
             Ok(BrokerResult {
-                value: json!({
-                    "data": value,
-                    "execution": envelope.execution,
-                    "warnings": envelope.warnings,
-                    "provenance_checked": true
-                }),
+                value: projected,
                 request_id: envelope.request_id,
             })
         }
@@ -1566,6 +1873,7 @@ pub struct ProductionCoordinator {
     client: ProductionClient,
     receipt_custody: receipt_custody::ReceiptCustody,
     brand_font_media_root: Option<PathBuf>,
+    retained_brand_font_root: Option<std::sync::Arc<brand_font_staging::RetainedFontRoot>>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -1587,6 +1895,7 @@ impl ProductionCoordinator {
             client: ProductionClient::new(connection)?,
             receipt_custody: custody.inner.clone(),
             brand_font_media_root: None,
+            retained_brand_font_root: None,
             #[cfg(test)]
             before_dispatch_admission: None,
         })
@@ -1624,6 +1933,34 @@ impl ProductionCoordinator {
         segment: &crate::film::MotionCanvasSegment,
         capture_end: u64,
     ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
+        // Register the accepted scope before its first await. A dropped future
+        // leaves Running in the AppState-owned custody; it never retires files.
+        let custody = self.begin_retained_font_capture(project_id, expected, prefix)?;
+        let result = self
+            .capture_motion_canvas_segment_inner(
+                project_id,
+                expected,
+                prefix,
+                index,
+                segment,
+                capture_end,
+            )
+            .await;
+        if let Some(custody) = custody {
+            custody.finish(&result);
+        }
+        result
+    }
+
+    async fn capture_motion_canvas_segment_inner(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        prefix: &str,
+        index: usize,
+        segment: &crate::film::MotionCanvasSegment,
+        capture_end: u64,
+    ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
         if capture_end == 0 || capture_end > segment.frame_count {
             return Err(invalid(
                 "Native capture prefix is outside its canonical Film",
@@ -1635,6 +1972,7 @@ impl ProductionCoordinator {
         self.prepare_motion_fonts(project_id, expected, prefix, &segment.film)
             .await?;
 
+        self.revalidate_retained_brand_font_staging()?;
         let fonts_micros = motion_canvas_window::elapsed_micros(phase_started);
         let phase_started = std::time::Instant::now();
         let planned = self
@@ -1656,6 +1994,7 @@ impl ProductionCoordinator {
                 false,
             )
             .await?;
+        self.revalidate_retained_brand_font_staging()?;
         let plan_ref = required_string(
             response_data(&planned)?,
             "/plan_ref",
@@ -1674,6 +2013,7 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
+        self.revalidate_retained_brand_font_staging()?;
         let applied_data = response_data(&applied)?;
         if applied_data.get("applied").and_then(Value::as_bool) != Some(true)
             || applied_data.get("execution_status").and_then(Value::as_str) != Some("completed")
@@ -1709,6 +2049,8 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
+        self.revalidate_retained_brand_font_staging()
+            .map_err(unconfirmed_started_motion_render)?;
         let start_origin = match started.get("replayed").and_then(Value::as_bool) {
             Some(false) => MotionCanvasStartOrigin::FreshAuthenticatedCall,
             Some(true) => MotionCanvasStartOrigin::StoredReceiptReplay,
@@ -1754,6 +2096,8 @@ impl ProductionCoordinator {
                 }
                 Err(error) => return Err(unconfirmed_started_motion_render(error)),
             };
+            self.revalidate_retained_brand_font_staging()
+                .map_err(unconfirmed_started_motion_render)?;
             let data = response_data(&status)
                 .map_err(unconfirmed_started_motion_render)?
                 .clone();
@@ -1814,6 +2158,8 @@ impl ProductionCoordinator {
             )
             .await
             .map_err(unconfirmed_started_motion_render)?;
+        self.revalidate_retained_brand_font_staging()
+            .map_err(unconfirmed_started_motion_render)?;
         let rendered_data = response_data(&rendered).map_err(unconfirmed_started_motion_render)?;
         require_acknowledged_motion_job(rendered_data, &job_ref, "result")?;
         if rendered_data.get("state").and_then(Value::as_str) != Some("succeeded") {
@@ -1844,6 +2190,7 @@ impl ProductionCoordinator {
                 false,
             )
             .await?;
+        self.revalidate_retained_brand_font_staging()?;
         let verification = response_data(&verified)?.clone();
 
         let verification_micros = motion_canvas_window::elapsed_micros(phase_started);
@@ -1864,7 +2211,45 @@ impl ProductionCoordinator {
         })
     }
 
-    pub async fn render_motion_canvas_segments(
+    /// Constructing this Future accepts the complete retained-font invocation,
+    /// even when the caller queues or drops it before its first poll.
+    pub fn render_motion_canvas_segments<'a>(
+        &'a self,
+        project_id: Uuid,
+        expected: &'a RevisionStamp,
+        request_id: &'a str,
+        deliverable_id: Uuid,
+        options: &'a FilmBuildOptions,
+    ) -> impl std::future::Future<Output = NativeResult<MotionCanvasRenderEvidence>> + Send + 'a
+    {
+        let accepted = self.accept_retained_font_render(
+            project_id,
+            expected,
+            request_id,
+            ProductionFontInvocationKind::Full,
+        );
+        async move {
+            let mut work = accepted?;
+            if let Some(work) = work.as_mut() {
+                work.start_native()?;
+            }
+            let result = self
+                .render_motion_canvas_segments_inner(
+                    project_id,
+                    expected,
+                    request_id,
+                    deliverable_id,
+                    options,
+                )
+                .await;
+            if let Some(work) = work {
+                work.finish_native(&result);
+            }
+            result
+        }
+    }
+
+    async fn render_motion_canvas_segments_inner(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
@@ -3172,7 +3557,7 @@ impl ProductionCoordinator {
             request_id,
             operation,
             args,
-            receipt_context,
+            receipt_context.map(ReceiptDispatchContext::Audio),
         )
         .await
         .map(ReceiptExecutionOutcome::into_legacy_value)
@@ -3187,10 +3572,22 @@ impl ProductionCoordinator {
         request_id: &str,
         operation: (&str, bool),
         args: Value,
-        receipt_context: Option<audio_analysis::AudioReceiptContext>,
+        dispatch_context: Option<ReceiptDispatchContext<'_>>,
     ) -> NativeResult<ReceiptExecutionOutcome> {
         let (command, mutation) = operation;
+        let (receipt_context, media_binding) = match dispatch_context {
+            Some(ReceiptDispatchContext::Audio(context)) => (Some(context), None),
+            Some(ReceiptDispatchContext::Bound(binding)) => (None, Some(binding)),
+            None => (None, None),
+        };
+        let media_mutation = if let Some(binding) = media_binding {
+            binding.check_connection(&self.client)?;
+            binding.mutation_for(command)?
+        } else {
+            false
+        };
         let mutation = mutation
+            || media_mutation
             || WORKFLOW_MUTATING_COMMANDS.contains(&command)
             || HYPERFRAMES_MUTATING_COMMANDS.contains(&command)
             || BLENDER_PRODUCT_MUTATING_COMMANDS.contains(&command)
@@ -3203,7 +3600,12 @@ impl ProductionCoordinator {
             ));
         }
         let receipt_context = receipt_context.map(|context| context.payload());
+        let media_context =
+            media_binding.map(|binding| (binding.receipt_key(), binding.receipt_context()));
         let with_context = |mut payload: Value| {
+            if let Some((key, context)) = &media_context {
+                payload[*key] = context.clone();
+            }
             if let Some(context) = &receipt_context {
                 payload["audio_reopen"] = context.clone();
             }
@@ -3230,7 +3632,11 @@ impl ProductionCoordinator {
             .or_else(|| args.get("job"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let digest = request_digest(command, &args)?;
+        let digest = if media_context.is_some() {
+            request_digest(command, &with_context(json!({"args": &args})))?
+        } else {
+            request_digest(command, &args)?
+        };
 
         if let Some(prior) = self
             .service
@@ -3238,10 +3644,22 @@ impl ProductionCoordinator {
             .map_err(storage_error)?
         {
             if prior.request_sha256 != digest || prior.command != command {
-                return Err(Error::new(
+                let error = Error::new(
                     ErrorCode::Conflict,
                     "Production request id was reused with different input",
-                ));
+                );
+                // A fresh canonical binding changes this private digest. It
+                // cannot settle an earlier mutation whose terminal is unknown.
+                let unresolved_bound_effect = media_binding.is_some()
+                    && (prior.stage == "outcome_unknown"
+                        || (prior.stage == "dispatching"
+                            && prior.payload.get("mutation").and_then(Value::as_bool)
+                                == Some(true)));
+                return Err(if unresolved_bound_effect {
+                    error.uncertain()
+                } else {
+                    error
+                });
             }
             // A completed request remains bound to its original authoring stamp.
             // A fresh expected reference cannot turn an older result into current
@@ -3323,14 +3741,57 @@ impl ProductionCoordinator {
             })
             .map_err(storage_error)?;
 
-        match self.client.execute(command, args, mutation).await {
+        let dispatched = match media_binding {
+            Some(binding) => {
+                self.client
+                    .execute_bound_media_transport(binding, command, args, mutation)
+                    .await
+            }
+            None => self.client.execute(command, args, mutation).await,
+        };
+        match dispatched {
             Ok(result) => {
                 #[cfg(all(test, unix))]
                 let observed_sdk_value = result.value.clone();
                 #[cfg(all(test, unix))]
                 let observed_broker_request_id = json!(&result.request_id);
-                // Retain the exact Broker result and identifier before the
-                // fallible append. The attempted stage is not a durable receipt.
+                // Hold any pure bound qualification error without returning.
+                // Every result, including rejected metadata, reaches the same
+                // original-result custody and append path before propagation.
+                let bound_error = media_binding
+                    .and_then(|binding| binding.qualify_result(&result, command, mutation).err());
+                let stage = match &bound_error {
+                    Some(error) if error.outcome_known => "failed_known",
+                    Some(_) => "outcome_unknown",
+                    None => "completed",
+                };
+                let mut original_payload = with_context(json!({
+                    "result": result.value,
+                    "broker_request_id": result.request_id,
+                    "job_ref": job_ref
+                }));
+                if let Some(binding) = media_binding {
+                    original_payload["mutation"] = json!(mutation);
+                    let historical = bound_error.as_ref().is_some_and(|error| {
+                        error.code == ErrorCode::StaleReference && error.outcome_known
+                    });
+                    original_payload[binding.qualification_key()] = json!(if historical {
+                        "historical"
+                    } else if bound_error.is_some() {
+                        "rejected"
+                    } else {
+                        "admitted"
+                    });
+                    if historical {
+                        original_payload["native_completion"] = json!("confirmed");
+                        original_payload["rejected_scope"] = json!("current_admission");
+                    }
+                    if let Some(error) = &bound_error {
+                        original_payload["error"] = json!(error);
+                    }
+                }
+                // The original JSON structure is unchanged in this payload.
+                // Optional transport custody separately retains binary streams.
                 custody.observe(ProductionReceiptInput {
                     project_id,
                     generation: project.generation,
@@ -3338,12 +3799,8 @@ impl ProductionCoordinator {
                     request_id: request_id.into(),
                     request_sha256: digest,
                     command: command.into(),
-                    stage: "completed".into(),
-                    payload: with_context(json!({
-                        "result": result.value,
-                        "broker_request_id": result.request_id,
-                        "job_ref": job_ref
-                    })),
+                    stage: stage.into(),
+                    payload: original_payload,
                 });
                 match self
                     .service
@@ -3351,6 +3808,9 @@ impl ProductionCoordinator {
                 {
                     Ok(receipt) => {
                         custody.confirmed();
+                        if let Some(error) = bound_error {
+                            return Err(error);
+                        }
                         Ok(ReceiptExecutionOutcome {
                             origin: ReceiptExecutionOrigin::FreshAuthenticated(Box::new(
                                 AuthenticatedSdkResult {
@@ -3374,6 +3834,9 @@ impl ProductionCoordinator {
                     }
                     Err(storage_error) => {
                         custody.failed(storage_error);
+                        if let Some(error) = bound_error {
+                            return Err(error);
+                        }
                         let error = backend(
                             "Production completed but its local receipt could not be persisted",
                         );
@@ -3414,6 +3877,12 @@ impl ProductionCoordinator {
             }
         }
     }
+}
+
+// Closed internal dispatch metadata; it cannot be supplied by stored caller JSON.
+enum ReceiptDispatchContext<'a> {
+    Audio(audio_analysis::AudioReceiptContext),
+    Bound(&'a provider_binding::BoundMediaContext),
 }
 
 // Private dispatch provenance. Stored JSON cannot construct an observed result.

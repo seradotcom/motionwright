@@ -2,7 +2,8 @@
 //!
 //! Reuses Motionwright StudioService, the persisted DeliveryRecipe,
 //! ProductionCoordinator, and the pinned Semwright Driver Host. No alternate
-//! renderer, untrusted project code, imported media or retry of UNKNOWN effects.
+//! renderer, untrusted project code or retry of UNKNOWN effects.
+//! The private Montserrat variant imports only its pinned licensed font fixture.
 //! Native rendering is NEVER performed by the seed/readback source tests.
 use motionwright_domain::{
     AlignmentEvidence, BlendMode, CanvasNode, Change, CoordinateSpace, DeliveryArchetype,
@@ -43,9 +44,29 @@ const CAPTION_WINDOWS: [(i64, i64); 2] = [(6, 27), (33, 72)];
 const NATIVE_REQUEST: &str = "film180-original-native-single-run-v1";
 const EDITED_REQUEST: &str = "film180-edited-native-single-run-v1";
 
+#[path = "native_film180_brand_font/mod.rs"]
+mod brand_font;
+
+#[derive(Clone, Copy)]
+enum NativeSource<'a> {
+    Original,
+    BrandFont { owner_media_root: &'a Path },
+}
+
+struct NativeAdmission {
+    film_sha: String,
+    options: FilmBuildOptions,
+    request_id: &'static str,
+    prior_request: Option<&'static str>,
+}
+
 fn usage() -> ! {
     eprintln!(
-        "usage: native-film180-e2e seed FRESH_DATABASE NEW_SOURCE_WAV NEW_PROJECT_JSON |\
+        "usage: native-film180-e2e seed-brand-font FRESH_DATABASE NEW_SOURCE_WAV NEW_BASELINE_PROJECT_JSON NEW_BRAND_PROJECT_JSON |\
+         readback-brand-font EXISTING_DATABASE NEW_OBSERVATION_JSON |\
+         edit-brand-font EXISTING_DATABASE ORIGINAL_NATIVE_EVIDENCE NEW_EDITED_PROJECT_JSON |\
+         render-brand-font-captured EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_HOST_CUSTODY_DIR OWNER_MEDIA_ROOT NEW_EVIDENCE_JSON |\
+         seed FRESH_DATABASE NEW_SOURCE_WAV NEW_PROJECT_JSON |\
          readback EXISTING_DATABASE NEW_OBSERVATION_JSON |\
          edit EXISTING_DATABASE ORIGINAL_NATIVE_EVIDENCE NEW_EDITED_PROJECT_JSON |\
          render EXISTING_DATABASE OWNED_CONNECTION NEW_EVIDENCE_JSON |\
@@ -279,9 +300,20 @@ fn authored_options(project: &Project) -> FixtureResult<FilmBuildOptions> {
 
 fn verified_projection(project: &Project) -> FixtureResult<String> {
     project.validate()?;
-    let profile = &project.deliverables[0];
     let opts = authored_options(project)?;
-    let segments = build_motion_canvas_segments(project, profile.id, &opts)?;
+    verified_projection_with_options(project, &opts)
+}
+
+fn verified_projection_with_options(
+    project: &Project,
+    opts: &FilmBuildOptions,
+) -> FixtureResult<String> {
+    project.validate()?;
+    let profile = project
+        .deliverables
+        .first()
+        .ok_or("source has no deliverable")?;
+    let segments = build_motion_canvas_segments(project, profile.id, opts)?;
     if segments.len() != 1
         || segments[0].frame_count != FRAME_COUNT
         || segments[0].duration != RationalTime::new(6, 1)?
@@ -517,11 +549,49 @@ fn bound_stage_request(project: &Project) -> FixtureResult<&'static str> {
     }
 }
 
+fn admit_native_source(
+    source: NativeSource<'_>,
+    service: &StudioService,
+    project: &Project,
+) -> FixtureResult<NativeAdmission> {
+    match source {
+        NativeSource::Original => {
+            let film_sha = verified_projection(project)?;
+            let options = authored_options(project)?;
+            let request_id = bound_stage_request(project)?;
+            Ok(NativeAdmission {
+                film_sha,
+                options,
+                request_id,
+                prior_request: (request_id == EDITED_REQUEST).then_some(NATIVE_REQUEST),
+            })
+        }
+        NativeSource::BrandFont { .. } => brand_font::admit(service, project),
+    }
+}
+
 async fn render_original(
     database: &Path,
     connection: &Path,
     evidence: &Path,
     custody_source: Option<&Path>,
+) -> FixtureResult<MotionCanvasRenderEvidence> {
+    render_source(
+        database,
+        connection,
+        evidence,
+        custody_source,
+        NativeSource::Original,
+    )
+    .await
+}
+
+async fn render_source(
+    database: &Path,
+    connection: &Path,
+    evidence: &Path,
+    custody_source: Option<&Path>,
+    source: NativeSource<'_>,
 ) -> FixtureResult<MotionCanvasRenderEvidence> {
     if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
         return Err("Film180 original native effects require disposable GitHub Actions".into());
@@ -533,15 +603,19 @@ async fn render_original(
         return Err("native Film180 requires exactly one original saved project".into());
     };
     let original = project.clone();
-    let film_sha = verified_projection(&original)?;
+    let NativeAdmission {
+        film_sha,
+        options,
+        request_id,
+        prior_request,
+    } = admit_native_source(source, &service, &original)?;
     let connection = ProductionConnection::load(connection)?;
     if connection.resource != original.resource_key() {
         return Err(
             "native Film180 owner connection is not bound to the exact saved project".into(),
         );
     }
-    let request_id = bound_stage_request(&original)?;
-    if request_id == EDITED_REQUEST {
+    if let Some(prior_request) = prior_request {
         // A later revision is not evidence that the first physical render
         // succeeded. The prior, separately authorized native result and
         // native verification must have durable original receipts.
@@ -552,7 +626,7 @@ async fn render_original(
             ),
             ("motion:0:verify", "driver.motion-canvas.composition.verify"),
         ] {
-            let prior = format!("{NATIVE_REQUEST}:{suffix}");
+            let prior = format!("{prior_request}:{suffix}");
             let receipt = service
                 .latest_production_receipt(original.id, &prior)?
                 .ok_or("original terminal native receipt is absent")?;
@@ -582,17 +656,29 @@ async fn render_original(
             );
         }
     }
+    if matches!(source, NativeSource::BrandFont { .. }) {
+        brand_font::preflight(&service, &original, request_id, evidence, custody_source)?;
+    }
+    let output_root = connection.output_root.clone();
     let stdin_readback = custody_source
         .map(|source| stdin_readback::Readback::begin(source, &connection, evidence))
         .transpose()?;
     let coordinator = ProductionCoordinator::new(service.clone(), connection)?;
+    let coordinator = match source {
+        NativeSource::Original => coordinator,
+        NativeSource::BrandFont { owner_media_root } => {
+            // Only reachable after the Linux/captured preflight above. The
+            // caller supplies its actual owner root; this grants no authority.
+            coordinator.with_brand_font_media_root(owner_media_root.to_path_buf())?
+        }
+    };
     let outcome = coordinator
         .render_motion_canvas_segments(
             original.id,
             &RevisionStamp::from(&original),
             request_id,
             original.deliverables[0].id,
-            &authored_options(&original)?,
+            &options,
         )
         .await;
     let native_succeeded = outcome.is_ok();
@@ -628,7 +714,7 @@ async fn render_original(
                         "native Film180 result differs from exact source revision/clock".into(),
                     );
                 }
-                let original_verified = verified_projection(&original)?;
+                let original_verified = admit_native_source(source, &service, &original)?.film_sha;
                 if original_verified != film_sha {
                     return Err("original Film180 source changed during native dispatch".into());
                 }
@@ -720,6 +806,16 @@ async fn render_original(
     // Native success and custody failure are separate original observations.
     // Preserve the exact secondary error; neither outcome authorizes redispatch.
     custody?;
+    if matches!(source, NativeSource::BrandFont { .. }) {
+        brand_font::verify_host_input(
+            &service,
+            &original,
+            request_id,
+            evidence,
+            &output_root,
+            &native_snapshot["value"],
+        )?;
+    }
     retained_native_result.ok_or_else(|| "Original full native result was not retained".into())
 }
 
@@ -2877,6 +2973,62 @@ async fn main() -> FixtureResult<()> {
         .and_then(|x| x.into_string().ok())
         .unwrap_or_else(|| usage());
     match subcommand.as_str() {
+        "seed-brand-font" => {
+            let database = path_arg(&mut args);
+            let wave = path_arg(&mut args);
+            let baseline = path_arg(&mut args);
+            let target = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let project = brand_font::seed(&database, &wave, &baseline, &target)?;
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "schema":"motionwright.native.brand-font-film180.synthetic-source/1",
+                    "project_id":project.id,"generation":project.generation,"revision":project.revision,
+                    "source_project_json":target,"source_only":true,
+                    "native_render_performed":false,"formal_acceptance":false
+                }))?
+            );
+        }
+        "readback-brand-font" => {
+            let database = path_arg(&mut args);
+            let target = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            brand_font::readback(&database, &target)?;
+        }
+        "edit-brand-font" => {
+            let database = path_arg(&mut args);
+            let original_native_evidence = path_arg(&mut args);
+            let target = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            brand_font::edit(&database, &original_native_evidence, &target)?;
+        }
+        "render-brand-font-captured" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let custody = path_arg(&mut args);
+            let owner_media_root = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            render_source(
+                &database,
+                &connection,
+                &evidence,
+                Some(&custody),
+                NativeSource::BrandFont {
+                    owner_media_root: &owner_media_root,
+                },
+            )
+            .await?;
+        }
         "seed" => {
             let database = path_arg(&mut args);
             let wave = path_arg(&mut args);

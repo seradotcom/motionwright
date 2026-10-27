@@ -839,6 +839,33 @@ impl StudioService {
         )
     }
 
+    /// Adopt an independently captured byte sequence through the same import
+    /// pipeline as import_file_verified, without reopening the original path.
+    ///
+    /// Scope/revision, bounded staging, credential and media validation, exact
+    /// descriptor checks, CAS publication and idempotent receipts remain shared.
+    /// The caller must own and authenticate the capture and its local adoption
+    /// authority; bytes or a provider observation do not create that authority.
+    /// Known replay only checks these bytes and returns the original receipt.
+    pub fn import_bytes_verified(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        bytes: &[u8],
+        expected_source: &BlobDescriptor,
+        intent: FileImportIntent,
+    ) -> StorageResult<ApplyOutcome> {
+        self.import_bytes_with_identity(
+            project_id,
+            expected,
+            request_id,
+            bytes,
+            intent,
+            expected_source,
+        )
+    }
+
     pub fn waveform_page(
         &self,
         project_id: Uuid,

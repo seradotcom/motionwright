@@ -13,6 +13,14 @@ pub const MAX_APPLY_BINDING_BYTES: usize = 4 * 1024;
 const FORMAT: &str = "motionwright.apply-binding/1";
 const HASH_DOMAIN: &[u8] = b"motionwright.apply-binding/1\0";
 
+/// The exact canonical digest used by the existing V1 apply writer.
+/// This pure encoding helper performs no Store access and creates no authority.
+/// Its version names the typed (project UUID, Change) encoding, not a recovery
+/// retention epoch. Callers must not substitute a wire-JSON digest.
+pub fn apply_request_digest_v1(id: Uuid, change: &Change) -> Result<String> {
+    request_digest(id, change)
+}
+
 /// Historical facts captured by the writer, never inferred from the current head.
 /// Revisions remain exact decimal strings even above JavaScript's integer range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +62,39 @@ pub enum ApplyReceiptObservation {
         reason: ApplyReceiptInvalid,
     },
     AuthorityMismatch,
+}
+
+/// Read-only historical result evidence from the same canonical V1 checker.
+/// Only KnownVerifiedV1 carries an outcome. The stored result remains original
+/// (including replayed=false); observing it never executes or replays a change.
+/// UUIDs, digests and this value are not owner/root/project permission grants.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ApplyResultObservation {
+    KnownVerifiedV1 {
+        binding: Box<VerifiedApplyReceiptV1>,
+        outcome: Box<ApplyOutcome>,
+    },
+    LegacyUnverified,
+    NotFound,
+    Invalid {
+        reason: ApplyReceiptInvalid,
+    },
+    AuthorityMismatch,
+}
+
+impl ApplyResultObservation {
+    fn into_receipt_observation(self) -> ApplyReceiptObservation {
+        match self {
+            Self::KnownVerifiedV1 { binding, .. } => {
+                ApplyReceiptObservation::KnownVerifiedV1 { binding }
+            }
+            Self::LegacyUnverified => ApplyReceiptObservation::LegacyUnverified,
+            Self::NotFound => ApplyReceiptObservation::NotFound,
+            Self::Invalid { reason } => ApplyReceiptObservation::Invalid { reason },
+            Self::AuthorityMismatch => ApplyReceiptObservation::AuthorityMismatch,
+        }
+    }
 }
 
 pub(super) struct ApplyBase {
@@ -360,51 +401,125 @@ fn observe_on_snapshot(
     request_id: &str,
     request_sha256: &str,
 ) -> Result<ApplyReceiptObservation> {
+    Ok(lookup_on_snapshot(
+        conn,
+        id,
+        original.generation,
+        Some(&original.resource),
+        request_id,
+        request_sha256,
+    )?
+    .into_receipt_observation())
+}
+
+fn lookup_on_snapshot(
+    conn: &Connection,
+    id: Uuid,
+    generation: Uuid,
+    resource: Option<&str>,
+    request_id: &str,
+    request_sha256: &str,
+) -> Result<ApplyResultObservation> {
     let current = match super::load_project_from_row(conn, id) {
         Ok(project) => project,
-        Err(StorageError::NotFound) => return Ok(ApplyReceiptObservation::AuthorityMismatch),
+        Err(StorageError::NotFound) => return Ok(ApplyResultObservation::AuthorityMismatch),
         Err(StorageError::Serde(_) | StorageError::Domain(_)) => {
-            return Ok(ApplyReceiptObservation::Invalid {
+            return Ok(ApplyResultObservation::Invalid {
                 reason: ApplyReceiptInvalid::ReceiptIntegrity,
             });
         }
         Err(StorageError::Sql(error)) => match check_sql_error(error) {
             ReceiptCheckError::Invalid(reason) => {
-                return Ok(ApplyReceiptObservation::Invalid { reason });
+                return Ok(ApplyResultObservation::Invalid { reason });
             }
             ReceiptCheckError::Storage(error) => return Err(error),
         },
         Err(error) => return Err(error),
     };
-    if current.resource_key() != original.resource || current.generation != original.generation {
-        return Ok(ApplyReceiptObservation::AuthorityMismatch);
+    if current.id != id
+        || current.generation != generation
+        || resource.is_some_and(|resource| current.resource_key() != resource)
+    {
+        return Ok(ApplyResultObservation::AuthorityMismatch);
     }
     let receipt = match read_receipt(conn, id, request_id) {
         Ok(Some(receipt)) => receipt,
-        Ok(None) => return Ok(ApplyReceiptObservation::NotFound),
+        Ok(None) => return Ok(ApplyResultObservation::NotFound),
         Err(ReceiptCheckError::Invalid(reason)) => {
-            return Ok(ApplyReceiptObservation::Invalid { reason });
+            return Ok(ApplyResultObservation::Invalid { reason });
         }
         Err(ReceiptCheckError::Storage(error)) => return Err(error),
     };
     if receipt.request_sha256 != request_sha256 {
-        return Ok(ApplyReceiptObservation::Invalid {
+        return Ok(ApplyResultObservation::Invalid {
             reason: ApplyReceiptInvalid::RequestMismatch,
         });
     }
     match check_receipt(conn, &current, request_id, &receipt) {
         Ok(checked) => Ok(match checked.binding {
-            Some(binding) => ApplyReceiptObservation::KnownVerifiedV1 {
+            Some(binding) => ApplyResultObservation::KnownVerifiedV1 {
                 binding: Box::new(binding),
+                outcome: Box::new(checked.outcome),
             },
-            None => ApplyReceiptObservation::LegacyUnverified,
+            None => ApplyResultObservation::LegacyUnverified,
         }),
-        Err(ReceiptCheckError::Invalid(reason)) => Ok(ApplyReceiptObservation::Invalid { reason }),
+        Err(ReceiptCheckError::Invalid(reason)) => Ok(ApplyResultObservation::Invalid { reason }),
         Err(ReceiptCheckError::Storage(error)) => Err(error),
     }
 }
 
 impl Store {
+    /// Read an original verified apply result from an already admitted Store.
+    ///
+    /// The caller must independently authorize this Store and project. The full
+    /// expected generation is required: import rotates it and can reuse a raw
+    /// request key. No UUID truncation, numeric epoch or SDK recovery key mapping
+    /// is defined here. request_sha256 is the existing canonical digest of the
+    /// typed (project UUID, Change) encoding, not a hash of wire JSON or a ref.
+    ///
+    /// One Deferred SQLite snapshot contains the project/generation check, key
+    /// lookup, event/result/binding verification and returned historical outcome.
+    /// There is no apply, Store open/migration, cache drain, CAS read, provider
+    /// call, new ledger or schema change. Missing/legacy/invalid evidence carries
+    /// no outcome and never permits retry; operational failures remain errors.
+    ///
+    /// Full Project validation costs O(document), and the full result is not a
+    /// bounded SDK wire response. A transport adapter must enforce its own byte
+    /// budget without truncating this exact historical result.
+    pub fn lookup_apply_result_v1(
+        &mut self,
+        id: Uuid,
+        generation: Uuid,
+        request_id: &str,
+        request_sha256: &str,
+        request_encoding_version: u32,
+    ) -> Result<ApplyResultObservation> {
+        if request_encoding_version != APPLY_REQUEST_ENCODING_V1 {
+            return Ok(ApplyResultObservation::Invalid {
+                reason: ApplyReceiptInvalid::UnsupportedContract,
+            });
+        }
+        if request_id.is_empty()
+            || request_id.len() > 256
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(DomainError::Invalid("invalid request id".into()).into());
+        }
+        if validate_digest(request_sha256).is_err() {
+            return Err(DomainError::Invalid("invalid apply request digest".into()).into());
+        }
+        if id.is_nil() || generation.is_nil() {
+            return Ok(ApplyResultObservation::AuthorityMismatch);
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let observation =
+            lookup_on_snapshot(&tx, id, generation, None, request_id, request_sha256)?;
+        tx.commit()?;
+        Ok(observation)
+    }
+
     /// Observe an existing local receipt on one read snapshot of an admitted Store.
     ///
     /// This does not open a Store, migrate, drain caches, consume a grant, call a
@@ -1119,5 +1234,365 @@ mod tests {
                 assert_eq!(conn.total_changes(), 0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod result_lookup_tests {
+    use super::*;
+
+    type Snapshot = Vec<Vec<Vec<rusqlite::types::Value>>>;
+
+    fn snapshot(store: &Store) -> Snapshot {
+        [
+            "SELECT * FROM projects ORDER BY id",
+            "SELECT * FROM events ORDER BY project_id,revision",
+            "SELECT * FROM receipts ORDER BY project_id,request_id",
+        ]
+        .into_iter()
+        .map(|sql| {
+            let mut statement = store.conn.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect()
+        })
+        .collect()
+    }
+
+    fn known(value: ApplyResultObservation) -> (Box<VerifiedApplyReceiptV1>, Box<ApplyOutcome>) {
+        match value {
+            ApplyResultObservation::KnownVerifiedV1 { binding, outcome } => (binding, outcome),
+            other => panic!("expected an actual verified persisted result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn digest_lookup_returns_original_verified_outcome_without_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("history.sqlite3")).unwrap();
+        let original = store.create_named_project("Original").unwrap();
+        let change = Change::RenameProject {
+            title: "Historical committed title".into(),
+        };
+        let committed = store
+            .apply(original.id, &original.stamp(), "known", &change)
+            .unwrap();
+        let current = store
+            .apply(
+                original.id,
+                &committed.project.stamp(),
+                "later",
+                &Change::RenameProject {
+                    title: "Current later title".into(),
+                },
+            )
+            .unwrap();
+        let digest = request_digest(original.id, &change).unwrap();
+        store.conn.pragma_update(None, "query_only", true).unwrap();
+        let before = snapshot(&store);
+        let changes = store.conn.total_changes();
+        let (binding, outcome) = known(
+            store
+                .lookup_apply_result_v1(
+                    original.id,
+                    original.generation,
+                    "known",
+                    &digest,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+        );
+        assert_eq!(*outcome, committed);
+        assert!(
+            !outcome.replayed,
+            "a historical read must not relabel an execution as a replay"
+        );
+        assert_eq!(binding.request_sha256, digest);
+        assert_eq!(binding.generation, original.generation.to_string());
+        assert_eq!(
+            binding.result_revision,
+            committed.project.revision.to_string()
+        );
+        assert!(outcome.project.revision < current.project.revision);
+        assert_eq!(
+            store
+                .observe_apply_receipt_v1(
+                    original.id,
+                    &original.stamp(),
+                    "known",
+                    &change,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+            ApplyReceiptObservation::KnownVerifiedV1 { binding }
+        );
+        assert_eq!(store.load_project(original.id).unwrap(), current.project);
+        assert_eq!(snapshot(&store), before);
+        assert_eq!(store.conn.total_changes(), changes);
+    }
+
+    #[test]
+    fn digest_lookup_requires_full_generation_when_key_and_digest_are_reused() {
+        let source_directory = tempfile::tempdir().unwrap();
+        let mut source = Store::open(source_directory.path().join("source.sqlite3")).unwrap();
+        let original = source.create_named_project("Portable original").unwrap();
+        // Preserve the full existing Store key space. This deliberately exceeds
+        // the Native SDK's 128-byte key limit and defines no SDK key encoding.
+        let key = "k".repeat(256);
+        let change = Change::RenameProject {
+            title: "Same canonical intent".into(),
+        };
+        let first = source
+            .apply(original.id, &original.stamp(), &key, &change)
+            .unwrap();
+        let digest = request_digest(original.id, &change).unwrap();
+        let (first_binding, first_result) = known(
+            source
+                .lookup_apply_result_v1(
+                    original.id,
+                    original.generation,
+                    &key,
+                    &digest,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+        );
+        assert_eq!(*first_result, first);
+        let backup = source.export_project(original.id).unwrap();
+
+        let destination_directory = tempfile::tempdir().unwrap();
+        let mut destination =
+            Store::open(destination_directory.path().join("destination.sqlite3")).unwrap();
+        let imported = destination.import_project(&backup).unwrap();
+        assert_eq!(imported.id, original.id);
+        assert_ne!(imported.generation, original.generation);
+        let intervening = destination
+            .apply(
+                imported.id,
+                &imported.stamp(),
+                "intervening",
+                &Change::RenameProject {
+                    title: "Intervening new-generation title".into(),
+                },
+            )
+            .unwrap();
+        let second = destination
+            .apply(imported.id, &intervening.project.stamp(), &key, &change)
+            .unwrap();
+        assert!(!second.replayed);
+        destination
+            .conn
+            .pragma_update(None, "query_only", true)
+            .unwrap();
+        let before = snapshot(&destination);
+        let changes = destination.conn.total_changes();
+        assert_eq!(
+            destination
+                .lookup_apply_result_v1(
+                    imported.id,
+                    original.generation,
+                    &key,
+                    &digest,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+            ApplyResultObservation::AuthorityMismatch
+        );
+        assert_eq!(
+            destination
+                .observe_apply_receipt_v1(
+                    imported.id,
+                    &original.stamp(),
+                    &key,
+                    &change,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+            ApplyReceiptObservation::AuthorityMismatch
+        );
+        let (second_binding, second_result) = known(
+            destination
+                .lookup_apply_result_v1(
+                    imported.id,
+                    imported.generation,
+                    &key,
+                    &digest,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+        );
+        assert_eq!(*second_result, second);
+        assert_eq!(first_binding.project_id, second_binding.project_id);
+        assert_eq!(first_binding.resource, second_binding.resource);
+        assert_eq!(first_binding.request_id, second_binding.request_id);
+        assert_eq!(first_binding.request_sha256, second_binding.request_sha256);
+        assert_ne!(first_binding.generation, second_binding.generation);
+        assert_ne!(first_binding.result_sha256, second_binding.result_sha256);
+        assert_ne!(first_binding.binding_sha256, second_binding.binding_sha256);
+        assert_eq!(snapshot(&destination), before);
+        assert_eq!(destination.conn.total_changes(), changes);
+    }
+
+    #[test]
+    fn digest_lookup_unverified_receipts_never_carry_an_outcome() {
+        for scenario in ["missing", "digest", "legacy", "corrupt", "contract"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = Store::open(directory.path().join("unverified.sqlite3")).unwrap();
+            let original = store
+                .create_named_project("Private result fixture")
+                .unwrap();
+            let change = Change::RenameProject {
+                title: "Retained full result must stay private".into(),
+            };
+            store
+                .apply(original.id, &original.stamp(), "known", &change)
+                .unwrap();
+            let canonical = request_digest(original.id, &change).unwrap();
+            let mut key = "known";
+            let mut digest = canonical.clone();
+            let mut version = APPLY_REQUEST_ENCODING_V1;
+            let expected = match scenario {
+                "missing" => {
+                    key = "absent";
+                    ApplyResultObservation::NotFound
+                }
+                "digest" => {
+                    digest = "0".repeat(64);
+                    assert_ne!(digest, canonical);
+                    ApplyResultObservation::Invalid {
+                        reason: ApplyReceiptInvalid::RequestMismatch,
+                    }
+                }
+                "legacy" => {
+                    store.conn.execute(
+                        "UPDATE receipts SET apply_binding_version=0,apply_binding_json=NULL WHERE project_id=?1 AND request_id='known'",
+                        [original.id.to_string()],
+                    ).unwrap();
+                    ApplyResultObservation::LegacyUnverified
+                }
+                "corrupt" => {
+                    store.conn.execute(
+                        "UPDATE receipts SET result_json=?1 WHERE project_id=?2 AND request_id='known'",
+                        params!["{\"unverified_private_marker\":\"do-not-return\"}", original.id.to_string()],
+                    ).unwrap();
+                    ApplyResultObservation::Invalid {
+                        reason: ApplyReceiptInvalid::ReceiptIntegrity,
+                    }
+                }
+                "contract" => {
+                    version += 1;
+                    ApplyResultObservation::Invalid {
+                        reason: ApplyReceiptInvalid::UnsupportedContract,
+                    }
+                }
+                _ => unreachable!(),
+            };
+            store.conn.pragma_update(None, "query_only", true).unwrap();
+            let before = snapshot(&store);
+            let changes = store.conn.total_changes();
+            let observed = store
+                .lookup_apply_result_v1(original.id, original.generation, key, &digest, version)
+                .unwrap();
+            assert_eq!(observed, expected, "{scenario}");
+            let serialized = serde_json::to_value(&observed).unwrap();
+            assert!(serialized.get("outcome").is_none());
+            assert!(serialized.get("binding").is_none());
+            assert!(!serialized.to_string().contains("unverified_private_marker"));
+            assert_eq!(snapshot(&store), before);
+            assert_eq!(store.conn.total_changes(), changes);
+        }
+    }
+
+    #[test]
+    fn digest_lookup_preserves_sqlite_failures_and_checks_generation_before_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("failure.sqlite3")).unwrap();
+        let original = store.create_named_project("Operational failure").unwrap();
+        let change = Change::RenameProject {
+            title: "Known commit".into(),
+        };
+        store
+            .apply(original.id, &original.stamp(), "known", &change)
+            .unwrap();
+        let digest = request_digest(original.id, &change).unwrap();
+        store.conn.execute_batch("DROP TABLE receipts").unwrap();
+        store.conn.pragma_update(None, "query_only", true).unwrap();
+        let changes = store.conn.total_changes();
+        let wrong_generation = Uuid::now_v7();
+        assert_ne!(wrong_generation, original.generation);
+        assert_eq!(
+            store
+                .lookup_apply_result_v1(
+                    original.id,
+                    wrong_generation,
+                    "known",
+                    &digest,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+            ApplyResultObservation::AuthorityMismatch
+        );
+        assert!(matches!(
+            store.lookup_apply_result_v1(
+                original.id,
+                original.generation,
+                "known",
+                &digest,
+                APPLY_REQUEST_ENCODING_V1,
+            ),
+            Err(StorageError::Sql(rusqlite::Error::SqliteFailure(..)))
+        ));
+        assert_eq!(store.conn.total_changes(), changes);
+    }
+
+    #[test]
+    fn digest_lookup_keeps_one_snapshot_during_actual_peer_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snapshot.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let original = store.create_named_project("Snapshot result").unwrap();
+        let mut peer = Store::open(&path).unwrap();
+        let change = Change::RenameProject {
+            title: "Peer committed result".into(),
+        };
+        let digest = request_digest(original.id, &change).unwrap();
+        let tx = store
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .unwrap();
+        super::super::load_project_from_row(&tx, original.id).unwrap();
+        let committed = peer
+            .apply(original.id, &original.stamp(), "peer", &change)
+            .unwrap();
+        assert_eq!(
+            lookup_on_snapshot(&tx, original.id, original.generation, None, "peer", &digest,)
+                .unwrap(),
+            ApplyResultObservation::NotFound
+        );
+        tx.commit().unwrap();
+        store.conn.pragma_update(None, "query_only", true).unwrap();
+        let before = snapshot(&store);
+        let changes = store.conn.total_changes();
+        let (_, observed) = known(
+            store
+                .lookup_apply_result_v1(
+                    original.id,
+                    original.generation,
+                    "peer",
+                    &digest,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+        );
+        assert_eq!(*observed, committed);
+        assert_eq!(snapshot(&store), before);
+        assert_eq!(store.conn.total_changes(), changes);
     }
 }

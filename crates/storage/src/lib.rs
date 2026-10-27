@@ -33,7 +33,8 @@ mod render_window_cache;
 mod root_operation_budget;
 pub use apply_receipt_binding::{
     APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
-    MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
+    ApplyResultObservation, MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
+    apply_request_digest_v1,
 };
 pub use cas_retention::{CasBlobLease, CasRecoveryReport, CasRetentionPolicy};
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};

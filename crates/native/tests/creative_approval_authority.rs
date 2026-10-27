@@ -364,7 +364,10 @@ mod outgoing {
         let grants = EffectGrantRegistry::default();
         let custody = ProductionReceiptCustody::default();
         let key = "approved-concept-without-effect-grant";
+        // Harness admission is explicit; this does not exercise native owner IPC.
+        let admit_fixture_phase = || Ok::<(), String>(());
         let error = execute_workflow_action(
+            &admit_fixture_phase,
             &service,
             &grants,
             &custody,

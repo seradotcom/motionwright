@@ -1,0 +1,15 @@
+{
+  "generation": 17,
+  "items": [
+    {
+      "index": 0,
+      "name": "",
+      "ref": "blender-rna/v1/scenes/U2NlbmU/W1sicCIsImN5Y2xlcyJdXQ@17",
+      "rna_type": "CyclesRenderSettings"
+    }
+  ],
+  "mutation": "domain_specific",
+  "offset": 0,
+  "relation": "cycles",
+  "truncated": false
+}

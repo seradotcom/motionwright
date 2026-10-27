@@ -46,6 +46,12 @@ mod routed {
     };
     use tempfile::TempDir;
 
+    // Explicit Rust harness admission. It tests the shared dispatch helper,
+    // not WebView identity, native owner lifecycle or desktop IPC admission.
+    fn admit_fixture_phase() -> Result<(), String> {
+        Ok(())
+    }
+
     enum Reply {
         Success,
         MalformedAfterEffect,
@@ -249,6 +255,143 @@ mod routed {
     }
 
     #[tokio::test]
+    async fn denied_phase_precedes_project_read_and_preserves_the_unused_grant() {
+        let f = fixture(WorkflowAction::RecordStart, Reply::Success, false);
+        let mut original = request(
+            &f.project,
+            &f.grants,
+            "closed-before-project-read",
+            WorkflowAction::RecordStart,
+            true,
+        );
+        let grant = original.effect_grant.unwrap();
+        // Reading this absent project first would return Unavailable instead
+        // of the phase refusal. The grant still belongs to the actual project.
+        original.project_id = uuid::Uuid::now_v7();
+        let denied = || Err::<(), String>("The fixture phase is closed.".into());
+        let failure = execute_workflow_action(
+            &denied,
+            &f.service,
+            &f.grants,
+            &f.custody,
+            Ok(Some(f.connection.clone())),
+            original,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::PermissionDenied);
+        assert!(failure.outcome_known);
+        assert!(matches!(
+            failure.receipt,
+            WorkflowReceiptObservation::NotChecked
+        ));
+        assert_eq!(count(&f.calls), 0);
+        assert_eq!(count(&f.effects), 0);
+        assert!(
+            f.service
+                .production_receipts(f.project.id, 20)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+        f.grants
+            .consume(
+                grant,
+                EffectKind::WorkflowMutation,
+                EffectScope::project(f.project.id, f.project.generation, f.project.revision),
+                WorkflowAction::RecordStart.command(),
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn phase_closed_by_transport_keeps_original_outcomes_without_a_fresh_receipt_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for reply in [
+            Reply::Success,
+            Reply::KnownRejection,
+            Reply::MalformedAfterEffect,
+        ] {
+            let success = matches!(reply, Reply::Success);
+            let known_rejection = matches!(reply, Reply::KnownRejection);
+            let f = fixture(WorkflowAction::RecordStart, reply, false);
+            let phase_attempts = AtomicUsize::new(0);
+            // This test factory closes as soon as the actual transport sentinel
+            // records its one call. It models phase admission only, not IPC or
+            // native ownership. The admitted invocation must retain its result.
+            let admit_before_transport = || {
+                phase_attempts.fetch_add(1, Ordering::SeqCst);
+                if count(&f.calls) == 0 {
+                    Ok(())
+                } else {
+                    Err("The fixture phase closed during transport.".to_owned())
+                }
+            };
+            let result = execute_workflow_action(
+                &admit_before_transport,
+                &f.service,
+                &f.grants,
+                &f.custody,
+                Ok(Some(f.connection.clone())),
+                request(
+                    &f.project,
+                    &f.grants,
+                    "close-during-original-dispatch",
+                    WorkflowAction::RecordStart,
+                    true,
+                ),
+            )
+            .await;
+            if success {
+                let response = result.unwrap();
+                assert_eq!(response.result, json!({"accepted": true}));
+                assert_eq!(response.broker_request_id, "broker-assigned-request");
+                assert!(!response.replayed);
+                assert_eq!(observed_stage(&response.receipt), "completed");
+                assert_eq!(phase_attempts.load(Ordering::SeqCst), 2);
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(
+                    failure.code,
+                    if known_rejection {
+                        ErrorCode::PermissionDenied
+                    } else {
+                        ErrorCode::BackendFailed
+                    }
+                );
+                assert_eq!(failure.outcome_known, known_rejection);
+                assert!(matches!(
+                    failure.receipt,
+                    WorkflowReceiptObservation::NotChecked
+                ));
+                assert_eq!(phase_attempts.load(Ordering::SeqCst), 3);
+            }
+            assert_eq!(count(&f.calls), 1);
+            assert_eq!(count(&f.effects), if known_rejection { 0 } else { 1 });
+            // The harness inspects persisted state independently; the closed
+            // helper was not allowed to perform that additional observation.
+            let receipts = f.service.production_receipts(f.project.id, 20).unwrap();
+            assert_eq!(receipts.len(), 2);
+            assert_eq!(
+                f.service
+                    .latest_production_receipt(f.project.id, "close-during-original-dispatch")
+                    .unwrap()
+                    .unwrap()
+                    .stage,
+                if success {
+                    "completed"
+                } else if known_rejection {
+                    "failed_known"
+                } else {
+                    "outcome_unknown"
+                }
+            );
+            assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+        }
+    }
+
+    #[tokio::test]
     async fn ambiguous_route_reopens_and_refuses_same_key_without_second_effect() {
         let f = fixture(
             WorkflowAction::RecordStart,
@@ -265,6 +408,7 @@ mod routed {
         );
         let consumed_grant = original_request.effect_grant;
         let original = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -303,6 +447,7 @@ mod routed {
         );
         consumed.effect_grant = consumed_grant;
         let consumed = execute_workflow_action(
+            &admit_fixture_phase,
             &reopened,
             &f.grants,
             &f.custody,
@@ -322,6 +467,7 @@ mod routed {
         assert_eq!(count(&f.effects), 1);
         // Explicit fresh test grant; no UI retry or new mutation identity.
         let refused = execute_workflow_action(
+            &admit_fixture_phase,
             &reopened,
             &f.grants,
             &f.custody,
@@ -351,6 +497,7 @@ mod routed {
         );
         changed.args = json!({"capture_values": true});
         let rejected = execute_workflow_action(
+            &admit_fixture_phase,
             &reopened,
             &f.grants,
             &f.custody,
@@ -383,6 +530,7 @@ mod routed {
         let f = fixture(WorkflowAction::RecordStart, Reply::Success, false);
         let key = "workflow-original-completed";
         let first = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -405,6 +553,7 @@ mod routed {
         drop(f.service);
         let reopened = StudioService::open(&f.database).unwrap();
         let second = execute_workflow_action(
+            &admit_fixture_phase,
             &reopened,
             &f.grants,
             &f.custody,
@@ -436,6 +585,7 @@ mod routed {
     async fn known_native_rejection_preserves_code_without_provider_message() {
         let f = fixture(WorkflowAction::RecordStart, Reply::KnownRejection, false);
         let failure = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -474,6 +624,7 @@ mod routed {
     async fn invalid_grant_and_stale_scope_are_rejected_before_dispatch() {
         let f = fixture(WorkflowAction::RecordStart, Reply::Success, false);
         let missing = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -500,6 +651,7 @@ mod routed {
         );
         wrong.action = WorkflowAction::RecordStart;
         let wrong = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -524,6 +676,7 @@ mod routed {
                 stale.revision += 1;
             }
             let stale = execute_workflow_action(
+                &admit_fixture_phase,
                 &f.service,
                 &f.grants,
                 &f.custody,
@@ -549,6 +702,7 @@ mod routed {
     async fn foreign_connection_and_invalid_identity_never_dispatch() {
         let f = fixture(WorkflowAction::RecordStart, Reply::Success, true);
         let foreign = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -571,6 +725,7 @@ mod routed {
             "x".repeat(129),
         ] {
             let invalid = execute_workflow_action(
+                &admit_fixture_phase,
                 &f.service,
                 &f.grants,
                 &f.custody,
@@ -615,8 +770,15 @@ mod routed {
         let custody = f.custody.clone();
         let connection = f.connection.clone();
         let task = tokio::spawn(async move {
-            execute_workflow_action(&service, &grants, &custody, Ok(Some(connection)), original)
-                .await
+            execute_workflow_action(
+                &admit_fixture_phase,
+                &service,
+                &grants,
+                &custody,
+                Ok(Some(connection)),
+                original,
+            )
+            .await
         });
         tokio::time::timeout(Duration::from_secs(5), async {
             while count(&f.effects) == 0 {
@@ -636,6 +798,7 @@ mod routed {
         drop(f.service);
         let reopened = StudioService::open(&f.database).unwrap();
         let refused = execute_workflow_action(
+            &admit_fixture_phase,
             &reopened,
             &f.grants,
             &f.custody,
@@ -675,6 +838,7 @@ mod routed {
             let canary = synthetic_canary();
             let key = "workflow-terminal-guard-original";
             let failure = execute_workflow_action(
+                &admit_fixture_phase,
                 &f.service,
                 &f.grants,
                 &f.custody,
@@ -735,6 +899,7 @@ mod routed {
             // The original durable intent must independently forbid a retry.
             let fresh_custody = ProductionReceiptCustody::default();
             let refused = execute_workflow_action(
+                &admit_fixture_phase,
                 &reopened,
                 &f.grants,
                 &fresh_custody,
@@ -767,6 +932,7 @@ mod routed {
     async fn readonly_plan_uses_current_scope_without_a_mutation_grant() {
         let f = fixture(WorkflowAction::ProposalPlan, Reply::Success, false);
         let refused = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,
@@ -784,6 +950,7 @@ mod routed {
         assert_eq!(refused.code, ErrorCode::InvalidArgument);
         assert_eq!(count(&f.calls), 0);
         let response = execute_workflow_action(
+            &admit_fixture_phase,
             &f.service,
             &f.grants,
             &f.custody,

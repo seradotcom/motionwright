@@ -281,11 +281,13 @@ fn require_identity(
 }
 
 fn current_connection(
+    owner: &crate::desktop_owner::DesktopOwner,
     service: &StudioService,
     connections: &RuntimeConnectionRegistry,
     request: &DoctorRequest<'_>,
     identity: &RuntimeIdentity,
 ) -> Result<(Project, ProductionConnection), String> {
+    let _phase = owner.phase()?;
     let project = service
         .project(request.project_id)
         .map_err(|_| "The current project could not be read for runtime diagnosis.".to_owned())?;
@@ -370,13 +372,17 @@ fn include_manim_observation(
 /// Called only after the Desktop validates its Native SDK contract. Every
 /// external read still uses ProductionClient's canonical authenticated route.
 pub(crate) async fn inspect(
+    owner: &crate::desktop_owner::DesktopOwner,
     service: &StudioService,
     connections: &RuntimeConnectionRegistry,
     request: DoctorRequest<'_>,
 ) -> Result<RuntimeDoctorReport, String> {
-    let current = service
-        .project(request.project_id)
-        .map_err(|_| "The current project could not be read for runtime diagnosis.".to_owned())?;
+    let current = {
+        let _phase = owner.phase()?;
+        service.project(request.project_id).map_err(|_| {
+            "The current project could not be read for runtime diagnosis.".to_owned()
+        })?
+    };
     require_scope(&current, request.expected)?;
     if request.cli != CliEvidence::VersionCompatible {
         return Ok(RuntimeDoctorReport {
@@ -397,17 +403,19 @@ pub(crate) async fn inspect(
             .ok_or_else(|| "The compatible CLI probe has no executable digest.".to_owned())?
             .to_owned(),
     };
-    let (_, connection) = current_connection(service, connections, &request, &identity)?;
-    let client = ProductionClient::new(connection)
-        .map_err(|_| "The selected canonical runtime connection was rejected.".to_owned())?;
-    let registry = client
-        .discover_renderer_registry(request.expected)
-        .await
-        .map_err(|_| {
-            "The authenticated Broker registry query failed; no renderer absence or readiness is inferred."
-                .to_owned()
-        })?;
-    let (current, _) = current_connection(service, connections, &request, &identity)?;
+    let (_, connection) = current_connection(owner, service, connections, &request, &identity)?;
+    let (client, registry) = {
+        let _phase = owner.phase()?;
+        let client = ProductionClient::new(connection)
+            .map_err(|_| "The selected canonical runtime connection was rejected.".to_owned())?;
+        let registry = client.discover_renderer_registry(request.expected).await;
+        (client, registry)
+    };
+    let registry = registry.map_err(|_| {
+        "The authenticated Broker registry query failed; no renderer absence or readiness is inferred."
+            .to_owned()
+    })?;
+    let (current, _) = current_connection(owner, service, connections, &request, &identity)?;
     let manim_generation = match registry.state_for("manim-community") {
         Some(RendererRegistryState::PresentConnected { generation }) => Some(generation),
         _ => None,
@@ -436,37 +444,41 @@ pub(crate) async fn inspect(
     )
     .map_err(str::to_owned)?;
     if let Some(generation) = manim_generation {
-        let observation = client
-            .observe_manim_runtime_version(request.expected)
-            .await
-            .map_err(|_| {
-                "The selected Driver Host runtime probe failed; its package availability and compatibility remain unobserved."
-                    .to_owned()
-            })?;
+        let observation = {
+            let _phase = owner.phase()?;
+            client.observe_manim_runtime_version(request.expected).await
+        }
+        .map_err(|_| {
+            "The selected Driver Host runtime probe failed; its package availability and compatibility remain unobserved."
+                .to_owned()
+        })?;
         // Do not attach a late result after an edit, a connection replacement,
         // or removal of the selected reference.
-        current_connection(service, connections, &request, &identity)?;
+        current_connection(owner, service, connections, &request, &identity)?;
         include_manim_observation(&mut report, request.expected, generation, &observation)?;
         manim_runtime_observation = Some(observation);
     }
     for (probe, generation) in native_generations {
         // Each read uses the original canonical client only while the selected
         // project and transport still have the original identity.
-        current_connection(service, connections, &request, &identity)?;
-        let result = match probe {
-            NativeProbe::Blender => {
-                client
-                    .observe_blender_runtime_version(request.expected)
-                    .await
-            }
-            NativeProbe::Mlt => client.observe_mlt_runtime_version(request.expected).await,
-            NativeProbe::MotionCanvas => {
-                client
-                    .observe_motion_canvas_runtime_version(request.expected)
-                    .await
+        current_connection(owner, service, connections, &request, &identity)?;
+        let result = {
+            let _phase = owner.phase()?;
+            match probe {
+                NativeProbe::Blender => {
+                    client
+                        .observe_blender_runtime_version(request.expected)
+                        .await
+                }
+                NativeProbe::Mlt => client.observe_mlt_runtime_version(request.expected).await,
+                NativeProbe::MotionCanvas => {
+                    client
+                        .observe_motion_canvas_runtime_version(request.expected)
+                        .await
+                }
             }
         };
-        current_connection(service, connections, &request, &identity)?;
+        current_connection(owner, service, connections, &request, &identity)?;
         match result {
             Ok(observation) => {
                 include_native_observation(
@@ -496,7 +508,7 @@ pub(crate) async fn inspect(
             }
         }
     }
-    current_connection(service, connections, &request, &identity)?;
+    current_connection(owner, service, connections, &request, &identity)?;
     report.runtime_version_detail = "Semwright CLI compatibility and the authenticated Broker registry were observed. Native version results below retain their own provider generation, scope and freshness; MLT declares no global compatibility policy. Rendering, font admission, installation and effect authority remain separate checks.";
     Ok(RuntimeDoctorReport {
         report,

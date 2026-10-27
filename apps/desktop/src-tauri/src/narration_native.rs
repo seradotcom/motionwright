@@ -42,6 +42,7 @@ pub struct NarrationCompareScope {
 }
 #[tauri::command]
 pub async fn native_narration_take_snapshot(
+    _owner: crate::desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: NarrationSourceScope,
 ) -> Result<Value, String> {
@@ -73,6 +74,7 @@ pub async fn native_narration_take_snapshot(
 }
 #[tauri::command]
 pub async fn native_narration_replacement_impact(
+    mut owner: crate::desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: NarrationCompareScope,
 ) -> Result<Value, String> {
@@ -84,15 +86,17 @@ pub async fn native_narration_replacement_impact(
     )?;
     let original = request.original;
     let expected_sha = request.expected_original_sha256;
-    let (impact, timeline) = tauri::async_runtime::spawn_blocking(move || {
-        let impact = propose_narration_replacement(&original, &expected_sha, &project)
-            .map_err(|e| e.to_string())?;
-        let timeline = assess_narration_timeline_dependents(&original, &expected_sha, &project)
-            .map_err(|e| e.to_string())?;
-        Ok::<_, String>((impact, timeline))
-    })
-    .await
-    .map_err(|_| "Narration impact calculation failed".to_string())??;
+    let (impact, timeline) =
+        crate::desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            let impact = propose_narration_replacement(&original, &expected_sha, &project)
+                .map_err(|e| e.to_string())?;
+            let timeline = assess_narration_timeline_dependents(&original, &expected_sha, &project)
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>((impact, timeline))
+        })
+        .await
+        .map_err(|_| "Narration impact calculation failed".to_string())??;
+    owner.begin_phase()?;
     current(
         &state,
         request.project_id,

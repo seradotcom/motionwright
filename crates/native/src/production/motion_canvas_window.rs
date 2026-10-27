@@ -524,7 +524,37 @@ fn require_uncaptured_identity(
 }
 
 impl ProductionCoordinator {
-    pub async fn render_motion_canvas_window(
+    /// Acceptance is synchronous, including a Future queued before first poll.
+    pub fn render_motion_canvas_window<'a>(
+        &'a self,
+        project_id: Uuid,
+        expected: &'a RevisionStamp,
+        request_id: &'a str,
+        request: &'a MotionCanvasWindowRequest,
+    ) -> impl std::future::Future<Output = NativeResult<MotionCanvasWindowEvidence>> + Send + 'a
+    {
+        let accepted = self.accept_retained_font_render(
+            project_id,
+            expected,
+            request_id,
+            ProductionFontInvocationKind::Window,
+        );
+        async move {
+            let mut work = accepted?;
+            if let Some(work) = work.as_mut() {
+                work.start_native()?;
+            }
+            let result = self
+                .render_motion_canvas_window_inner(project_id, expected, request_id, request)
+                .await;
+            if let Some(work) = work {
+                work.finish_native(&result);
+            }
+            result
+        }
+    }
+
+    async fn render_motion_canvas_window_inner(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
@@ -615,53 +645,67 @@ impl ProductionCoordinator {
         let cache_service = self.service.clone();
         let output_root = self.client.connection().output_root.clone();
         let cache_expected = expected.clone();
+        // Register before spawn; the actual blocking worker owns this guard if
+        // its async waiter is cancelled or dropped while caching continues.
+        let cache_work = self.accept_retained_font_window_cache()?;
         tokio::task::spawn_blocking(move || -> NativeResult<MotionCanvasWindowEvidence> {
-            let cache_started = std::time::Instant::now();
-            for (offset, frame) in selected.into_iter().enumerate() {
-                let key = frame_key(&evidence, offset as u64, &frame.sha256)?;
-                let path = output_artifact_path(&output_root, &frame.file, MAX_WINDOW_FRAME_BYTES)?;
-                // Compare the manifest descriptor during Store staging, before
-                // publishing the proxy payload or cache metadata.
-                let record = cache_service
-                    .put_render_window_proxy_verified(
-                        &key,
-                        &path,
-                        &motionwright_service::BlobDescriptor {
-                            sha256: frame.sha256.clone(),
-                            size_bytes: frame.bytes,
-                        },
-                        MAX_WINDOW_FRAME_BYTES,
-                        1,
-                    )
-                    .map_err(storage_error)?;
-                if record.blob_sha256 != frame.sha256 || record.size_bytes != frame.bytes {
+            let mut cache_work = cache_work;
+            if let Some(work) = cache_work.as_mut() {
+                work.start_native()?;
+            }
+            let result = (|| -> NativeResult<MotionCanvasWindowEvidence> {
+                let cache_started = std::time::Instant::now();
+                for (offset, frame) in selected.into_iter().enumerate() {
+                    let key = frame_key(&evidence, offset as u64, &frame.sha256)?;
+                    let path =
+                        output_artifact_path(&output_root, &frame.file, MAX_WINDOW_FRAME_BYTES)?;
+                    // Compare the manifest descriptor during Store staging, before
+                    // publishing the proxy payload or cache metadata.
+                    let record = cache_service
+                        .put_render_window_proxy_verified(
+                            &key,
+                            &path,
+                            &motionwright_service::BlobDescriptor {
+                                sha256: frame.sha256.clone(),
+                                size_bytes: frame.bytes,
+                            },
+                            MAX_WINDOW_FRAME_BYTES,
+                            1,
+                        )
+                        .map_err(storage_error)?;
+                    if record.blob_sha256 != frame.sha256 || record.size_bytes != frame.bytes {
+                        return Err(backend(
+                            "Native PNG changed while its original cache payload was retained",
+                        ));
+                    }
+                    evidence.cost.cache_payload_bytes_admitted = evidence
+                        .cost
+                        .cache_payload_bytes_admitted
+                        .checked_add(record.size_bytes)
+                        .ok_or_else(|| invalid("Native window cache bytes overflow"))?;
+                    evidence.cached_frames.push(MotionCanvasCachedWindowFrame {
+                        source_frame: key.source_window.start,
+                        segment_frame: frame.index,
+                        original_relative_path: frame.file,
+                        sha256: frame.sha256,
+                        bytes: frame.bytes,
+                        key,
+                        record,
+                    });
+                }
+                evidence.cost.cache_micros = elapsed_micros(cache_started);
+                current_project(&cache_service, project_id, &cache_expected)?;
+                if evidence.cached_frames.len() as u64 != frames {
                     return Err(backend(
-                        "Native PNG changed while its original cache payload was retained",
+                        "Native window did not retain every selected original PNG",
                     ));
                 }
-                evidence.cost.cache_payload_bytes_admitted = evidence
-                    .cost
-                    .cache_payload_bytes_admitted
-                    .checked_add(record.size_bytes)
-                    .ok_or_else(|| invalid("Native window cache bytes overflow"))?;
-                evidence.cached_frames.push(MotionCanvasCachedWindowFrame {
-                    source_frame: key.source_window.start,
-                    segment_frame: frame.index,
-                    original_relative_path: frame.file,
-                    sha256: frame.sha256,
-                    bytes: frame.bytes,
-                    key,
-                    record,
-                });
+                Ok(evidence)
+            })();
+            if let Some(work) = cache_work {
+                work.finish_native(&result);
             }
-            evidence.cost.cache_micros = elapsed_micros(cache_started);
-            current_project(&cache_service, project_id, &cache_expected)?;
-            if evidence.cached_frames.len() as u64 != frames {
-                return Err(backend(
-                    "Native window did not retain every selected original PNG",
-                ));
-            }
-            Ok(evidence)
+            result
         })
         .await
         .map_err(|_| {

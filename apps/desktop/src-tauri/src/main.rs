@@ -2,6 +2,7 @@ mod av_delivery;
 mod av_master;
 mod blender_product;
 mod caption_export;
+mod desktop_owner;
 mod effect_authority;
 mod effect_grants;
 mod file_import;
@@ -49,7 +50,9 @@ use motionwright_native::{
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
         MotionCanvasRenderEvidence, MotionCanvasWindowRequest, MotionCanvasWindowSummary,
-        ProductionClient, ProductionConnection, ProductionCoordinator, ProductionReceiptCustody,
+        ProductionClient, ProductionConnection, ProductionCoordinator,
+        ProductionFontInvocationKind, ProductionFontStagingCustody, ProductionFontStagingOwner,
+        ProductionFontStagingScope, ProductionReceiptCustody,
     },
 };
 use motionwright_service::{
@@ -73,7 +76,7 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use workflow_native::{WorkflowActionFailure, WorkflowActionRequest, WorkflowActionResponse};
 
-const SEMWRIGHT_REVISION: &str = "aa918f5b82eace7bc37ad5979f8d9eefff6a9aac";
+const SEMWRIGHT_REVISION: &str = "b80146de20d4eee7866ac0e8ac45917f7fe0d3d0";
 const SEMWRIGHT_VERSION: &str = "1.0.0";
 
 #[derive(Clone)]
@@ -84,6 +87,7 @@ struct AppState {
     workspace_session: Uuid,
     effect_grants: EffectGrantRegistry,
     production_receipt_custody: ProductionReceiptCustody,
+    production_font_staging_custody: ProductionFontStagingCustody,
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
@@ -433,6 +437,7 @@ struct BundlePlanResponse {
 
 #[tauri::command]
 fn bootstrap(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: Option<BootstrapRequest>,
 ) -> Result<BootstrapResponse, String> {
@@ -457,6 +462,7 @@ fn bootstrap(
 
 #[tauri::command]
 fn list_projects(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_library::ListProjectsRequest,
 ) -> Result<project_library::ProjectLibraryPage, String> {
@@ -465,6 +471,7 @@ fn list_projects(
 
 #[tauri::command]
 fn open_project(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_library::OpenProjectRequest,
 ) -> Result<Project, String> {
@@ -473,33 +480,40 @@ fn open_project(
 
 #[tauri::command]
 async fn project_projection_head(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_projection::Head,
 ) -> Result<motionwright_service::ProjectionHead, motionwright_service::ProjectionFailure> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || project_projection::head(&service, request))
-        .await
-        .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_projection::head(&service, request)
+    })
+    .await
+    .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
 }
 
 #[tauri::command]
 async fn project_scene_page(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_projection::Scenes,
 ) -> Result<motionwright_service::ScenePage, motionwright_service::ProjectionFailure> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || project_projection::scenes(&service, request))
-        .await
-        .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_projection::scenes(&service, request)
+    })
+    .await
+    .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
 }
 
 #[tauri::command]
 async fn semantic_graph_authoring_context(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: motionwright_service::SemanticGraphContextRequest,
 ) -> Result<motionwright_domain::GraphAuthoringContext, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         project_projection::semantic_graph_context(&service, request)
     })
     .await
@@ -509,17 +523,21 @@ async fn semantic_graph_authoring_context(
 
 #[tauri::command]
 async fn project_scene_nodes(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_projection::Nodes,
 ) -> Result<motionwright_service::NodePage, motionwright_service::ProjectionFailure> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || project_projection::nodes(&service, request))
-        .await
-        .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_projection::nodes(&service, request)
+    })
+    .await
+    .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
 }
 
 #[tauri::command]
 fn issue_project_creation_grant(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     request: ProjectCreationIntent,
@@ -535,6 +553,7 @@ fn issue_project_creation_grant(
 
 #[tauri::command]
 fn create_project(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     request: project_library::CreateProjectRequest,
@@ -551,6 +570,7 @@ fn create_project(
 
 #[tauri::command]
 fn recover_project_creation(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ProjectCreationIntent,
 ) -> Result<Option<ProjectCreationOutcome>, String> {
@@ -568,6 +588,7 @@ fn checked_effect_scope(
 
 #[tauri::command]
 fn issue_effect_grant(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: IssueEffectGrantRequest,
 ) -> Result<EffectGrantReceipt, String> {
@@ -578,6 +599,7 @@ fn issue_effect_grant(
 /// filesystem plugin inputs from WebView; verifies app-owned CAS bytes only.
 #[tauri::command]
 async fn asset_integrity_page(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: AssetIntegrityRequest,
 ) -> Result<AssetIntegrityPage, String> {
@@ -595,7 +617,7 @@ async fn asset_integrity_page(
     let project_id = request.project_id;
     let generation = request.generation;
     let revision = request.revision;
-    let report = tauri::async_runtime::spawn_blocking(move || {
+    let report = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         service
             .asset_integrity_page(
                 project_id,
@@ -607,6 +629,7 @@ async fn asset_integrity_page(
     })
     .await
     .map_err(|_| "Asset integrity inspection task failed.".to_string())??;
+    owner.begin_phase()?;
     let after = state.service.project(project_id).map_err(sanitized)?;
     if after.generation != generation || after.revision != revision {
         return Err("Project changed during its asset integrity inspection.".into());
@@ -616,6 +639,7 @@ async fn asset_integrity_page(
 
 #[tauri::command]
 fn project_history(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: HistoryRequest,
 ) -> Result<Vec<ProjectEvent>, String> {
@@ -627,6 +651,7 @@ fn project_history(
 
 #[tauri::command]
 fn project_history_recent(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: RecentHistoryRequest,
 ) -> Result<Vec<ProjectEvent>, String> {
@@ -638,6 +663,7 @@ fn project_history_recent(
 
 #[tauri::command]
 fn model_request_preflight(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ModelRequestPreflightRequest,
 ) -> Result<ModelRequestPreflight, String> {
@@ -663,6 +689,7 @@ fn selected_connection_path(state: &AppState, project_id: Uuid) -> Result<Option
 /// digest/protocol checks; this does not install or bootstrap a provider.
 #[tauri::command]
 async fn choose_semwright_connection(
+    mut owner: desktop_owner::OwnerInvocation,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
@@ -675,7 +702,7 @@ async fn choose_semwright_connection(
         return Err("Project changed; refresh before selecting a Semwright connection.".into());
     }
     let handle = app.clone();
-    let selected = tauri::async_runtime::spawn_blocking(move || {
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         handle
             .dialog()
             .file()
@@ -688,6 +715,7 @@ async fn choose_semwright_connection(
     let Some(selected) = selected else {
         return Ok(false); // cancel is not an error or a hidden connection change
     };
+    owner.begin_phase()?;
     let path = selected
         .into_path()
         .map_err(|_| "This native selection is not a local connection file".to_string())?;
@@ -706,6 +734,7 @@ async fn choose_semwright_connection(
             "Selected Semwright runtime does not match the pinned supported version.".into(),
         );
     }
+    owner.begin_phase()?;
     let current = state
         .service
         .project(request.project_id)
@@ -724,6 +753,7 @@ async fn choose_semwright_connection(
 /// This does not create a Host mount or replace the provider's MediaRO admission.
 #[tauri::command]
 async fn choose_brand_font_media_root(
+    mut owner: desktop_owner::OwnerInvocation,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
@@ -744,7 +774,7 @@ async fn choose_brand_font_media_root(
         return Err("Selected Semwright connection belongs to another project resource.".into());
     }
     let handle = app.clone();
-    let selected = tauri::async_runtime::spawn_blocking(move || {
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         handle
             .dialog()
             .file()
@@ -759,6 +789,7 @@ async fn choose_brand_font_media_root(
     let media_root = selected
         .into_path()
         .map_err(|_| "The selected font staging folder is not local".to_owned())?;
+    owner.begin_phase()?;
     let current = state
         .service
         .project(request.project_id)
@@ -788,6 +819,7 @@ async fn choose_brand_font_media_root(
 /// disable a separately configured environment override, or delete artifacts.
 #[tauri::command]
 fn clear_saved_semwright_connection(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
 ) -> Result<bool, String> {
@@ -803,6 +835,7 @@ fn clear_saved_semwright_connection(
 
 #[tauri::command]
 async fn production_runtime_status(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ProductionRuntimeStatusRequest,
 ) -> Result<ProductionRuntimeStatusResponse, String> {
@@ -867,6 +900,7 @@ async fn production_runtime_status(
     let probe = client.probe_runtime(SEMWRIGHT_VERSION).await;
     // A CLI probe is asynchronous; a creative edit during the probe must not
     // attribute the result to the old source revision.
+    owner.begin_phase()?;
     let current = state
         .service
         .project(request.project_id)
@@ -917,6 +951,7 @@ async fn production_runtime_status(
 
 #[tauri::command]
 async fn creative_runtime_doctor(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
 ) -> Result<runtime_doctor::RuntimeDoctorReport, String> {
@@ -925,7 +960,9 @@ async fn creative_runtime_doctor(
     let initial = service.project(request.project_id).map_err(sanitized)?;
     require_doctor_scope(&initial, request.generation, request.revision).map_err(str::to_owned)?;
     let expected = initial.stamp();
+    owner.finish_phase();
     let status = production_runtime_status(
+        owner.renew()?,
         state,
         ProductionRuntimeStatusRequest {
             project_id: request.project_id,
@@ -934,11 +971,14 @@ async fn creative_runtime_doctor(
         },
     )
     .await?;
+    owner.begin_phase()?;
     let current = service.project(request.project_id).map_err(sanitized)?;
     require_doctor_scope(&current, request.generation, request.revision).map_err(str::to_owned)?;
     build_application(service.clone())
         .map_err(|_| "Native SDK creative contract validation failed".to_string())?;
+    let owner_lifetime = owner.worker_owner();
     runtime_doctor::inspect(
+        &owner_lifetime,
         &service,
         &runtime_connections,
         runtime_doctor::DoctorRequest {
@@ -955,6 +995,7 @@ async fn creative_runtime_doctor(
 
 #[tauri::command]
 async fn workflow_overview(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: WorkflowOverviewRequest,
 ) -> Result<WorkflowOverviewResponse, String> {
@@ -1003,6 +1044,7 @@ async fn workflow_overview(
         .get("data")
         .cloned()
         .unwrap_or(Value::Null);
+    owner.begin_phase()?;
     let candidates = client
         .execute("workflow.candidates.list", serde_json::json!({}), false)
         .await
@@ -1011,6 +1053,7 @@ async fn workflow_overview(
         .get("data")
         .cloned()
         .unwrap_or(Value::Null);
+    owner.begin_phase()?;
     let patterns = client
         .execute(
             "workflow.patterns.list",
@@ -1023,6 +1066,7 @@ async fn workflow_overview(
         .get("data")
         .cloned()
         .unwrap_or(Value::Null);
+    owner.begin_phase()?;
     let suggestions = client
         .execute(
             "workflow.suggestions.list",
@@ -1035,6 +1079,7 @@ async fn workflow_overview(
         .get("data")
         .cloned()
         .unwrap_or(Value::Null);
+    owner.begin_phase()?;
     let proposals = client
         .execute(
             "workflow.proposals.list",
@@ -1047,6 +1092,7 @@ async fn workflow_overview(
         .get("data")
         .cloned()
         .unwrap_or(Value::Null);
+    owner.begin_phase()?;
     let promotions = client
         .execute("workflow.promotions.list", serde_json::json!({}), false)
         .await
@@ -1072,11 +1118,14 @@ async fn workflow_overview(
 
 #[tauri::command]
 async fn workflow_action(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: WorkflowActionRequest,
 ) -> Result<WorkflowActionResponse, WorkflowActionFailure> {
     let selected = selected_connection_path(&state, request.project_id);
+    let owner_lifetime = owner.worker_owner();
     workflow_native::execute_workflow_action(
+        &|| owner_lifetime.phase(),
         &state.service,
         &state.effect_grants,
         &state.production_receipt_custody,
@@ -1088,6 +1137,7 @@ async fn workflow_action(
 
 #[tauri::command]
 fn production_jobs(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ProductionJobsRequest,
 ) -> Result<Vec<ProductionJobProjection>, String> {
@@ -1100,11 +1150,12 @@ fn production_jobs(
 /// Read-only inventory of native MLT project lifetime receipts.
 #[tauri::command]
 async fn mlt_cleanup_inventory(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
 ) -> Result<MltCleanupInventory, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         service
             .mlt_cleanup_inventory_snapshot(
                 request.project_id,
@@ -1122,6 +1173,7 @@ async fn mlt_cleanup_inventory(
 /// provider permission or a new job identity. No render.start or result/verify.
 #[tauri::command]
 async fn read_original_native_job_status(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: OwnerNativeStatusRequest,
 ) -> Result<OwnerMotionStatusObservation, String> {
@@ -1141,7 +1193,7 @@ async fn read_original_native_job_status(
     // claim that some job exists. Do not block the Tauri main UI on a
     // potentially large bounded local SQLite projection.
     let (origin, watermark, resource) =
-        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || -> Result<_, String> {
             let project = service.project(project_id).map_err(sanitized)?;
             if project.generation != generation || project.revision != revision {
                 return Err("Native job observation belongs to a stale project revision.".into());
@@ -1197,6 +1249,7 @@ async fn read_original_native_job_status(
     // The connection is selected and verified by the trusted desktop backend,
     // not passed in from JavaScript. The pinned client itself checks the
     // Broker/Driver Host provenance and executable hash.
+    owner.begin_phase()?;
     let path = selected_connection_path(&state, project_id)?
         .ok_or_else(|| "Owner Semwright runtime connection is not configured.".to_owned())?;
     let connection = ProductionConnection::load(&path)
@@ -1217,6 +1270,7 @@ async fn read_original_native_job_status(
         )
         .await;
 
+    owner.begin_phase()?;
     let current = state.service.project(project_id).map_err(sanitized)?;
     if current.generation != generation
         || current.revision != revision
@@ -1246,6 +1300,7 @@ async fn read_original_native_job_status(
 /// status receipts arrive independently of the creative revision.
 #[tauri::command]
 async fn production_jobs_history(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ProductionJobsHistoryRequest,
 ) -> Result<ProductionJobsHistoryPage, String> {
@@ -1263,7 +1318,7 @@ async fn production_jobs_history(
     let project_id = request.project_id;
     let generation = request.generation;
     let revision = request.revision;
-    let page = tauri::async_runtime::spawn_blocking(move || {
+    let page = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         let watermark = service
             .production_receipt_watermark(project_id)
             .map_err(sanitized)?;
@@ -1316,6 +1371,7 @@ async fn production_jobs_history(
     })
     .await
     .map_err(|_| "Production history task failed.".to_string())??;
+    owner.begin_phase()?;
     let current = state.service.project(project_id).map_err(sanitized)?;
     let latest_watermark = state
         .service
@@ -1332,6 +1388,7 @@ async fn production_jobs_history(
 
 #[tauri::command]
 async fn native_blender_product_source(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: blender_product::BlenderProductReadRequest,
 ) -> Result<
@@ -1339,17 +1396,21 @@ async fn native_blender_product_source(
     blender_product::BlenderProductReadFailure,
 > {
     let service = state.service.clone();
-    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         blender_product::read_source(&service, &request)
     })
     .await
     .map_err(|_| blender_product::read_task_failure())??;
+    owner
+        .begin_phase()
+        .map_err(|_| blender_product::read_task_failure())?;
     blender_product::ensure_read_current(&state.service, &snapshot.project)?;
     Ok(snapshot)
 }
 
 #[tauri::command]
 async fn native_blender_product_attempt(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: blender_product::BlenderProductAttemptReadRequest,
 ) -> Result<
@@ -1357,17 +1418,21 @@ async fn native_blender_product_attempt(
     blender_product::BlenderProductReadFailure,
 > {
     let service = state.service.clone();
-    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         blender_product::read_attempt(&service, &request)
     })
     .await
     .map_err(|_| blender_product::read_task_failure())??;
+    owner
+        .begin_phase()
+        .map_err(|_| blender_product::read_task_failure())?;
     blender_product::ensure_read_current(&state.service, &snapshot.project)?;
     Ok(snapshot)
 }
 
 #[tauri::command]
 async fn motion_canvas_preflight(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: FilmPreflightRequest,
 ) -> Result<FilmPreflightResponse, String> {
@@ -1380,7 +1445,7 @@ async fn motion_canvas_preflight(
     }
     let resource = project.resource_key();
     let project_id = request.project_id;
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         let projected =
             build_motion_canvas_segments(&project, request.deliverable_id, &request.options);
         let unsupported = |reason: String| FilmPreflightResponse {
@@ -1429,6 +1494,7 @@ async fn motion_canvas_preflight(
     .map_err(|_| "Canonical Film semantic preflight task failed.".to_string())?;
     // The result is a read-only projection, but cannot be labeled current
     // if any concurrent project edit occurred during the preflight.
+    owner.begin_phase()?;
     let latest = state.service.project(project_id).map_err(sanitized)?;
     if latest.generation != result.generation || latest.revision != result.revision {
         return Err(
@@ -1438,8 +1504,49 @@ async fn motion_canvas_preflight(
     Ok(result)
 }
 
+/// Accept the current owner selection before any native future can run. The
+/// resolved object is moved once; its PathBuf is only the independent MediaRO
+/// provenance. Registry selection changes do not revoke an accepted custody.
+fn motion_canvas_production_coordinator(
+    state: &AppState,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    request_id: &str,
+    connection: ProductionConnection,
+    kind: ProductionFontInvocationKind,
+) -> Result<(ProductionCoordinator, Option<ProductionFontStagingOwner>), String> {
+    let retained = state
+        .runtime_connections
+        .resolve_font_staging(project_id, expected.generation, &connection)?
+        .map(|resolved| resolved.into_retained_root(&state.runtime_connections, &connection))
+        .transpose()?;
+    let coordinator = ProductionCoordinator::with_receipt_custody(
+        state.service.clone(),
+        connection,
+        &state.production_receipt_custody,
+    )
+    .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    if let Some((path, root)) = retained {
+        let scope = ProductionFontStagingScope::new(project_id, expected.clone(), request_id)
+            .map_err(|_| "Retained font invocation scope was rejected".to_string())?;
+        coordinator
+            .with_retained_brand_font_media_root(
+                scope,
+                path,
+                root,
+                &state.production_font_staging_custody,
+                kind,
+            )
+            .map(|(coordinator, owner)| (coordinator, Some(owner)))
+            .map_err(|_| "Retained font owner custody was rejected".to_string())
+    } else {
+        Ok((coordinator, None))
+    }
+}
+
 #[tauri::command]
 async fn render_motion_canvas(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: MotionCanvasRenderRequest,
 ) -> Result<NativePreviewRenderResponse, String> {
@@ -1467,12 +1574,20 @@ async fn render_motion_canvas(
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     let output_root = connection.output_root.clone();
     let owner_resource = connection.resource.clone();
-    let coordinator = ProductionCoordinator::with_receipt_custody(
-        state.service.clone(),
+    let (coordinator, mut font_owner) = motion_canvas_production_coordinator(
+        &state,
+        request.project_id,
+        &expected,
+        &request.request_id,
         connection,
-        &state.production_receipt_custody,
-    )
-    .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+        ProductionFontInvocationKind::Full,
+    )?;
+    // Register the actual caller work before the native Future can run.
+    let preview_work = font_owner
+        .as_mut()
+        .map(ProductionFontStagingOwner::accept_full_preview)
+        .transpose()
+        .map_err(|_| "Retained font preview admission was rejected".to_string())?;
     let evidence = coordinator
         .render_motion_canvas_segments(
             request.project_id,
@@ -1491,11 +1606,41 @@ async fn render_motion_canvas(
     let registry = state.preview.clone();
     let for_grants = evidence.clone();
     let source_options = request.options.clone();
-    let preview = tauri::async_runtime::spawn_blocking(move || {
-        registry.register_with_options(&output_root, &owner_resource, &for_grants, &source_options)
+    let preview = match desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let register = || {
+            registry.register_with_options(
+                &output_root,
+                &owner_resource,
+                &for_grants,
+                &source_options,
+            )
+        };
+        match preview_work {
+            Some(work) => work.run(register),
+            None => register(),
+        }
     })
     .await
-    .unwrap_or_default();
+    {
+        Ok(preview) => {
+            // Only this invocation's unique owner can retire after the actual
+            // Full render and preview worker returned. Refusal preserves the
+            // known render result and retains its existing custody.
+            // A closed desktop cannot start the later retirement phase.
+            // Keep the completed native result and its retained font custody.
+            if owner.begin_phase().is_ok() {
+                if let Some(font_owner) = font_owner {
+                    font_owner.retire_after_success(&coordinator);
+                }
+            }
+            preview
+        }
+        Err(_) => {
+            // Preserve the existing empty preview response, but a failed task
+            // cannot confirm the owner postcheck or retire its font custody.
+            Vec::new()
+        }
+    };
     Ok(NativePreviewRenderResponse { evidence, preview })
 }
 
@@ -1503,6 +1648,7 @@ async fn render_motion_canvas(
 /// Both retain the existing RenderLocal scope and one-use request grant.
 #[tauri::command]
 async fn render_motion_canvas_window(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: MotionCanvasWindowRenderRequest,
 ) -> Result<NativeWindowRenderResponse, String> {
@@ -1527,10 +1673,12 @@ async fn render_motion_canvas_window(
     )?;
     let expected = RevisionStamp::from(&project);
     let registry = state.preview.clone();
+    let mut retained_font_owner = None;
+    let mut currency_work = None;
     let (evidence, preview) = if let Some(token) = request.reuse_token {
         let original_project = project.clone();
         let window = request.window.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || {
             registry.reuse_window(&original_project, token, &window)
         })
         .await
@@ -1542,30 +1690,63 @@ async fn render_motion_canvas_window(
             "Canonical Semwright window connection could not be loaded.".to_string()
         })?;
         let owner_resource = connection.resource.clone();
-        let coordinator = ProductionCoordinator::with_receipt_custody(
-            state.service.clone(),
+        let (coordinator, mut font_owner) = motion_canvas_production_coordinator(
+            &state,
+            request.project_id,
+            &expected,
+            &request.request_id,
             connection,
-            &state.production_receipt_custody,
-        )
-        .map_err(|_| "Canonical Semwright window connection was rejected.".to_string())?;
+            ProductionFontInvocationKind::Window,
+        )?;
+        let registry_work = font_owner
+            .as_mut()
+            .map(ProductionFontStagingOwner::accept_window_registry)
+            .transpose()
+            .map_err(|_| "Retained font window registry admission was rejected".to_string())?;
+        currency_work = font_owner
+            .as_mut()
+            .map(ProductionFontStagingOwner::accept_window_currency)
+            .transpose()
+            .map_err(|_| "Retained font window currency admission was rejected".to_string())?;
         let evidence = coordinator.render_motion_canvas_window(request.project_id,&expected,
             &request.request_id,&request.window).await
             .map_err(|error| format!("Native window capture did not complete ({:?}, outcome_known={}); inspect the original operation before another capture.",error.code,error.outcome_known))?;
         let service = state.service.clone();
         let for_registry = evidence.clone();
-        let preview = tauri::async_runtime::spawn_blocking(move || {
-            registry.register_window(&service, &owner_resource, &for_registry)
+        let preview = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            let register = || registry.register_window(&service, &owner_resource, &for_registry);
+            match registry_work {
+                Some(work) => work.run_result(register),
+                None => register(),
+            }
         })
         .await
-        .map_err(|_| "Native window registration task failed.".to_string())??;
+        .map_err(|_| "Native window capture completed and its original result is retained, but registration could not be confirmed. Inspect the original request; do not repeat this capture automatically.".to_string())??;
+        if let Some(owner) = font_owner {
+            retained_font_owner = Some((coordinator, owner));
+        }
         (evidence, preview)
     };
-    let latest = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    if latest.generation != request.generation || latest.revision != request.revision {
-        return Err("Project changed during native window capture or reuse.".into());
+    owner.begin_phase().map_err(|_|
+        "The native window result is retained, but the desktop closed before its current-source check. Inspect the original request before another capture; do not repeat it automatically.".to_owned()
+    )?;
+    let check_currency = || -> Result<(), String> {
+        let latest = state
+            .service
+            .project(request.project_id)
+            .map_err(sanitized)?;
+        if latest.generation != request.generation || latest.revision != request.revision {
+            return Err("Project changed during native window capture or reuse.".into());
+        }
+        Ok(())
+    };
+    match currency_work {
+        Some(work) => work.run_result(check_currency)?,
+        None => check_currency()?,
+    }
+    if let Some((coordinator, owner)) = retained_font_owner {
+        // Reuse creates no owner and cannot retire an earlier invocation.
+        owner.retire_after_success(&coordinator);
     }
     Ok(NativeWindowRenderResponse {
         window: evidence.summary(),
@@ -1577,6 +1758,7 @@ async fn render_motion_canvas_window(
 /// dispatch or any WebView access to the trusted output-root paths.
 #[tauri::command]
 async fn preflight_multi_segment_mlt_readiness(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: MultiSegmentReadinessRequest,
 ) -> Result<MultiSegmentReadinessResponse, String> {
@@ -1595,7 +1777,7 @@ async fn preflight_multi_segment_mlt_readiness(
     let project_id = project.id;
     let source_generation = project.generation;
     let source_revision = project.revision;
-    let preflight = tauri::async_runtime::spawn_blocking(move || {
+    let preflight = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         preflight_multi_segment_mlt(&project, request.deliverable_id, &options, &evidence, &root)
             .map_err(|error| {
                 format!(
@@ -1606,6 +1788,7 @@ async fn preflight_multi_segment_mlt_readiness(
     })
     .await
     .map_err(|_| "Native multi-segment preflight failed to complete.".to_owned())??;
+    owner.begin_phase()?;
     let current = state.service.project(project_id).map_err(sanitized)?;
     if current.generation != source_generation || current.revision != source_revision {
         return Err("Creative revision changed during source preflight; retry.".into());
@@ -1638,6 +1821,7 @@ async fn preflight_multi_segment_mlt_readiness(
 /// caller-provided paths, no general-purpose filesystem or network capability.
 #[tauri::command]
 async fn assemble_av_master(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: AssembleAvMasterRequest,
 ) -> Result<NativeAvMasterResponse, String> {
@@ -1683,12 +1867,17 @@ async fn assemble_av_master(
         motion.frame_rate.den,
     )?;
 
-    let saved_mix =
-        original_mix_native::saved_mix_for_master(&state.service, &project, request.deliverable_id)
-            .await?;
+    let saved_mix = original_mix_native::saved_mix_for_master(
+        owner.worker_owner(),
+        &state.service,
+        &project,
+        request.deliverable_id,
+    )
+    .await?;
 
     // This is a production mutation and consumes only the corresponding
     // one-time revision/request-scoped local render effect capability.
+    owner.begin_phase()?;
     state.effect_grants.consume(
         request.effect_grant,
         EffectKind::RenderLocal,
@@ -1736,7 +1925,7 @@ async fn assemble_av_master(
     let track = request.voice_track_id;
     let base = expected.clone();
     let stable_identity = canonical_request_id.clone();
-    let audio = tauri::async_runtime::spawn_blocking(move || {
+    let audio = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         if let Some(mix) = saved_mix {
             let latest = service.project(id).map_err(sanitized)?;
             mix.verify_project(&latest, mix.plan().deliverable_profile_id)
@@ -1751,6 +1940,7 @@ async fn assemble_av_master(
     })
     .await
     .map_err(|_| "Verified WAV preparation task failed.".to_string())??;
+    owner.begin_phase()?;
     let coordinator = ProductionCoordinator::with_receipt_custody(
         state.service.clone(),
         connection,
@@ -1775,6 +1965,15 @@ async fn assemble_av_master(
             )
             .await
             .map_err(|_| "Measured AV mastering did not return a complete current result. Original receipts and any produced master are retained; this attempt must not be repeated automatically.".to_string())?;
+        if owner.begin_phase().is_err() {
+            return Ok(NativeAvMasterResponse {
+                evidence: measured.master,
+                export_token: None,
+                audio_qc: NativeAvAudioQcResponse::unavailable(
+                    AudioQcUnavailableReason::SessionUnavailable,
+                ),
+            });
+        }
         let audio_qc = NativeAvAudioQcResponse::from_measurements(
             &measured.audio_measurements,
             &coordinator,
@@ -1794,6 +1993,15 @@ async fn assemble_av_master(
             .map_err(|error| format!("Canonical AV mastering failed: {}", error.message))?;
         (evidence, NativeAvAudioQcResponse::NotRequested)
     };
+    if owner.begin_phase().is_err() {
+        // The producer completed. Preserve that known outcome without a new
+        // Store read, registry write, effect grant or automatic native retry.
+        return Ok(NativeAvMasterResponse {
+            evidence,
+            export_token: None,
+            audio_qc,
+        });
+    }
     let token = if let Some(identity) = audio_connection_identity.as_deref() {
         state.av_delivery.register_measured(
             &export_root,
@@ -1818,6 +2026,7 @@ async fn assemble_av_master(
 /// This is distinct from single-segment assemble_av_master above.
 #[tauri::command]
 async fn assemble_multisegment_av_master(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: AssembleAvMasterRequest,
 ) -> Result<NativeMultisegmentAvResponse, String> {
@@ -1889,7 +2098,7 @@ async fn assemble_multisegment_av_master(
     let preflight_render = render.clone();
     let preflight_options = film_options.clone();
     let profile_id = request.deliverable_id;
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         preflight_multi_segment_mlt(
             &preflight_project,
             profile_id,
@@ -1902,12 +2111,17 @@ async fn assemble_multisegment_av_master(
     .await
     .map_err(|_| "Multisegment source preflight task failed.".to_string())??;
 
-    let saved_mix =
-        original_mix_native::saved_mix_for_master(&state.service, &project, request.deliverable_id)
-            .await?;
+    let saved_mix = original_mix_native::saved_mix_for_master(
+        owner.worker_owner(),
+        &state.service,
+        &project,
+        request.deliverable_id,
+    )
+    .await?;
 
     // This is a mutating native production request. Authorization is a
     // scoped, short-lived, single-use desktop effect grant.
+    owner.begin_phase()?;
     state.effect_grants.consume(
         request.effect_grant,
         EffectKind::RenderLocal,
@@ -1952,7 +2166,7 @@ async fn assemble_multisegment_av_master(
     let source = expected.clone();
     let id = project.id;
     let stable = canonical.clone();
-    let staged = tauri::async_runtime::spawn_blocking(move || {
+    let staged = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         if let Some(mix) = saved_mix {
             let latest = service.project(id).map_err(sanitized)?;
             mix.verify_project(&latest, mix.plan().deliverable_profile_id)
@@ -1968,6 +2182,7 @@ async fn assemble_multisegment_av_master(
     .await
     .map_err(|_| "Native multisegment source WAV staging failed.".to_string())??;
 
+    owner.begin_phase()?;
     let output_root = connection.output_root.clone();
     let coordinator = ProductionCoordinator::with_receipt_custody(
         state.service.clone(),
@@ -1991,6 +2206,9 @@ async fn assemble_multisegment_av_master(
                 error.message
             )
         })?;
+    owner.begin_phase().map_err(|_|
+        "Visual assembly completed, but the desktop closed before AV mastering. Preserve the original request and inspect its retained result; do not retry automatically.".to_owned()
+    )?;
     let master_request = MltMultisegmentAvMasterRequest {
         request_id: &native_request_id,
         deliverable_id: request.deliverable_id,
@@ -2008,6 +2226,9 @@ async fn assemble_multisegment_av_master(
             )
             .await
             .map_err(|_| "Measured multisegment mastering did not return a complete current result. Original receipts and any produced master are retained; this attempt must not be repeated automatically.".to_string())?;
+        owner.begin_phase().map_err(|_|
+            "Native mastering completed, but the desktop closed before QC and delivery registration. The original result is retained; no new token was issued. Do not repeat this operation automatically.".to_owned()
+        )?;
         let audio_qc = NativeAvAudioQcResponse::from_measurements(
             &measured.audio_measurements,
             &coordinator,
@@ -2030,6 +2251,9 @@ async fn assemble_multisegment_av_master(
             })?;
         (master, NativeAvAudioQcResponse::NotRequested)
     };
+    owner.begin_phase().map_err(|_|
+        "Native mastering completed, but the desktop closed before delivery registration. The original result is retained; no new token was issued. Do not repeat this operation automatically.".to_owned()
+    )?;
     let export_token = if let Some(identity) = audio_connection_identity.as_deref() {
         state.av_delivery.register_measured_multisegment(
             &output_root,
@@ -2079,6 +2303,7 @@ async fn assemble_multisegment_av_master(
 /// than any WebView-provided path, and files are created without overwrite.
 #[tauri::command]
 async fn export_native_av_master(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: MasterExportRequest,
 ) -> Result<MasterExportReceipt, String> {
@@ -2110,11 +2335,19 @@ async fn export_native_av_master(
     )?;
     let destination = request.destination;
     let write_integrity = request.include_integrity_manifest;
-    let receipt = tauri::async_runtime::spawn_blocking(move || {
+    let receipt = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         source.copy_with_integrity(&destination, write_integrity, SEMWRIGHT_REVISION)
     })
     .await
     .map_err(|_| "Native master export task failed.".to_string())??;
+    // Delivery already completed. A closed owner cannot read a new Store
+    // phase, but the known file result must not become an unknown mutation.
+    if owner.begin_phase().is_err() {
+        return Ok(MasterExportReceipt {
+            source_current: false,
+            ..receipt
+        });
+    }
     let latest = state
         .service
         .project(request.project_id)
@@ -2134,9 +2367,10 @@ async fn export_native_av_master(
 /// Pure read-only content comparison: this grants no delivery or publisher authority.
 #[tauri::command]
 async fn verify_local_media_integrity(
+    mut owner: desktop_owner::OwnerInvocation,
     request: VerifyPortableMediaRequest,
 ) -> Result<PortableMediaVerification, String> {
-    tauri::async_runtime::spawn_blocking(move || verify_portable_media(request))
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || verify_portable_media(request))
         .await
         .map_err(|_| "Portable media verification task failed.".to_string())?
 }
@@ -2144,6 +2378,7 @@ async fn verify_local_media_integrity(
 /// Read a completed, owner-verified native AV master, bounded to 16 MiB.
 #[tauri::command]
 async fn review_native_av_master(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: MasterReviewRequest,
 ) -> Result<tauri::ipc::Response, String> {
@@ -2155,9 +2390,10 @@ async fn review_native_av_master(
         return Err("Native AV preview belongs to a previous project revision.".into());
     }
     let source = state.av_delivery.resolve(&project, request.export_token)?;
-    let data = tauri::async_runtime::spawn_blocking(move || source.review_bytes())
+    let data = desktop_owner::spawn_blocking(owner.worker_owner(), move || source.review_bytes())
         .await
         .map_err(|_| "Native AV preview read task failed.".to_string())??;
+    owner.begin_phase()?;
     let latest = state
         .service
         .project(request.project_id)
@@ -2173,6 +2409,7 @@ async fn review_native_av_master(
 /// accepts private request/lane/connection selectors from the WebView.
 #[tauri::command]
 async fn read_native_av_audio_qc(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: MasterReviewRequest,
 ) -> Result<NativeAvAudioQcResponse, String> {
@@ -2209,13 +2446,14 @@ async fn read_native_av_audio_qc(
     let initial_connection_path = connection_path.clone();
     let service = state.service.clone();
     let custody = state.production_receipt_custody.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         source.read_audio_qc(&project, service, connection_path.as_deref(), &custody)
     })
     .await
     .unwrap_or_else(|_| {
         NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::MeasurementUnavailable)
     });
+    owner.begin_phase()?;
     match state.service.project(request.project_id) {
         Ok(latest)
             if latest.generation == request.generation && latest.revision == request.revision => {}
@@ -2234,6 +2472,7 @@ async fn read_native_av_audio_qc(
 /// Current receipt references only; never a media or execution capability.
 #[tauri::command]
 async fn native_av_audio_qc_receipt_inventory(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: av_delivery::AudioQcInventoryRequest,
 ) -> Result<av_delivery::NativeAvAudioQcInventoryResponse, String> {
@@ -2261,7 +2500,7 @@ async fn native_av_audio_qc_receipt_inventory(
     let initial_path = path.clone();
     let service = state.service.clone();
     let custody = state.production_receipt_custody.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         av_delivery::read_audio_qc_inventory(
             &project,
             request.deliverable_id,
@@ -2274,6 +2513,7 @@ async fn native_av_audio_qc_receipt_inventory(
     .unwrap_or(Response::Unavailable {
         reason: AudioQcUnavailableReason::MeasurementUnavailable,
     });
+    owner.begin_phase()?;
     Ok(
         match audio_read_still_current(
             &state,
@@ -2292,6 +2532,7 @@ async fn native_av_audio_qc_receipt_inventory(
 /// recovery alone reconstructs the original proof; this path creates no token.
 #[tauri::command]
 async fn recover_native_av_audio_qc(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: av_delivery::AudioQcRecoveryRequest,
 ) -> Result<NativeAvAudioQcResponse, String> {
@@ -2320,13 +2561,14 @@ async fn recover_native_av_audio_qc(
         (request.project_id, request.generation, request.revision);
     let service = state.service.clone();
     let custody = state.production_receipt_custody.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         av_delivery::recover_audio_qc(&project, &request, service, path.as_deref(), &custody)
     })
     .await
     .unwrap_or_else(|_| {
         NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::MeasurementUnavailable)
     });
+    owner.begin_phase()?;
     Ok(
         match audio_read_still_current(&state, project_id, generation, revision, initial_path) {
             Ok(()) => result,
@@ -2354,6 +2596,7 @@ fn audio_read_still_current(
 
 #[tauri::command]
 async fn preview_native_frame(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: NativeFrameRequest,
 ) -> Result<tauri::ipc::Response, String> {
@@ -2368,10 +2611,12 @@ async fn preview_native_frame(
     let generation = request.generation;
     let revision = request.revision;
     let registry = state.preview.clone();
-    let bytes =
-        tauri::async_runtime::spawn_blocking(move || registry.read_frame(&before, &request))
-            .await
-            .map_err(|_| "Native preview read task failed.".to_string())??;
+    let bytes = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        registry.read_frame(&before, &request)
+    })
+    .await
+    .map_err(|_| "Native preview read task failed.".to_string())??;
+    owner.begin_phase()?;
     let after = state.service.project(project_id).map_err(sanitized)?;
     if after.generation != generation || after.revision != revision {
         return Err("Project changed while the native preview was read.".into());
@@ -2388,11 +2633,12 @@ fn file_import_error(error: file_import::FileImportError) -> String {
 
 #[tauri::command]
 async fn prepare_file_import(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::FileImportPrepareRequest,
 ) -> Result<file_import::PreparedFileImport, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::prepare_file_import(&service, request).map_err(file_import_error)
     })
     .await
@@ -2401,13 +2647,14 @@ async fn prepare_file_import(
 
 #[tauri::command]
 async fn import_asset_file(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::FileImportDispatchRequest,
 ) -> Result<file_import::FileImportReceipt, String> {
     let service = state.service.clone();
     // The clone shares the existing registry; it does not create new authority.
     let grants = state.effect_grants.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::import_asset_file(&service, &grants, request).map_err(file_import_error)
     })
     .await
@@ -2419,12 +2666,13 @@ async fn import_asset_file(
 
 #[tauri::command]
 async fn import_voice_file(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::FileImportDispatchRequest,
 ) -> Result<file_import::FileImportReceipt, String> {
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::import_voice_file(&service, &grants, request).map_err(file_import_error)
     })
     .await
@@ -2436,11 +2684,12 @@ async fn import_voice_file(
 
 #[tauri::command]
 async fn recover_file_import(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::FileImportRecoveryRequest,
 ) -> Result<Option<file_import::FileImportReceipt>, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::recover_file_import(&service, request).map_err(file_import_error)
     })
     .await
@@ -2451,11 +2700,12 @@ async fn recover_file_import(
 
 #[tauri::command]
 async fn prepare_native_capsule_source_file(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::NativeCapsuleSourcePrepareRequest,
 ) -> Result<file_import::PreparedFileImport, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::prepare_native_capsule_source_file(&service, request)
             .map_err(file_import_error)
     })
@@ -2465,13 +2715,14 @@ async fn prepare_native_capsule_source_file(
 
 #[tauri::command]
 async fn import_native_capsule_source_file(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::FileImportDispatchRequest,
 ) -> Result<file_import::FileImportReceipt, String> {
     let service = state.service.clone();
     // Shares the existing one-time import grant registry and atomic service.
     let grants = state.effect_grants.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::import_native_capsule_source_file(&service, &grants, request)
             .map_err(file_import_error)
     })
@@ -2484,11 +2735,12 @@ async fn import_native_capsule_source_file(
 
 #[tauri::command]
 async fn recover_native_capsule_source_file(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: file_import::FileImportRecoveryRequest,
 ) -> Result<Option<file_import::FileImportReceipt>, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         file_import::recover_native_capsule_source_file(&service, request)
             .map_err(file_import_error)
     })
@@ -2500,11 +2752,12 @@ async fn recover_native_capsule_source_file(
 
 #[tauri::command]
 async fn waveform_page(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: WaveformPageRequest,
 ) -> Result<WaveformPage, String> {
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         service
             .waveform_page(
                 request.project_id,
@@ -2520,6 +2773,7 @@ async fn waveform_page(
 
 #[tauri::command]
 fn export_project_bundle(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportBundleRequest,
 ) -> Result<BundleExportResponse, String> {
@@ -2528,6 +2782,7 @@ fn export_project_bundle(
 
 #[tauri::command]
 fn export_caption_sidecar(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportCaptionRequest,
 ) -> Result<CaptionExportResponse, String> {
@@ -2536,6 +2791,7 @@ fn export_caption_sidecar(
 
 #[tauri::command]
 fn export_otio(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportOtioRequest,
 ) -> Result<OtioExportResponse, String> {
@@ -2544,6 +2800,7 @@ fn export_otio(
 
 #[tauri::command]
 fn inspect_project_bundle(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: BundlePathRequest,
 ) -> Result<BundlePlanResponse, String> {
@@ -2568,6 +2825,7 @@ fn inspect_project_bundle(
 
 #[tauri::command]
 fn import_project_bundle(
+    _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ImportBundleRequest,
 ) -> Result<Project, String> {
@@ -2586,6 +2844,7 @@ fn import_project_bundle(
 
 #[tauri::command]
 async fn apply_change(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ApplyRequest,
 ) -> Result<Project, String> {
@@ -2611,7 +2870,7 @@ async fn apply_change(
     }
 
     let service = state.service.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         let current = project_library::open_project(
             &service,
             project_library::OpenProjectRequest {
@@ -2640,8 +2899,12 @@ async fn apply_change(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(desktop_owner::lifecycle_plugin())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let owner = desktop_owner::DesktopOwner::new();
+            app.manage(owner.clone());
+            desktop_owner::validate_configuration(app)?;
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -2663,10 +2926,12 @@ fn main() {
                 workspace_session: Uuid::now_v7(),
                 effect_grants: EffectGrantRegistry::default(),
                 production_receipt_custody: ProductionReceiptCustody::default(),
+                production_font_staging_custody: ProductionFontStagingCustody::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
             });
+            desktop_owner::install_owner_window(app, &owner)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

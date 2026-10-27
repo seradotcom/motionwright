@@ -65,17 +65,27 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Both craft layouts use the real domain merge, including a layout change.
     // These are source/serialization oracles, not a SQLite or renderer receipt.
     let mut craft_three_way_merge_cases = Vec::new();
-    for config in configs.iter().filter(|config| matches!(
-        config.layout, HeroLayout::ContrastComparison | HeroLayout::EditorialQuote
-    )) {
+    for config in configs.iter().filter(|config| {
+        matches!(
+            config.layout,
+            HeroLayout::ContrastComparison | HeroLayout::EditorialQuote
+        )
+    }) {
         let base = realize_product_hero(id, config, 1920, 1080)?;
         let mut current = base.clone();
         let eyebrow = hero_node_id(id, "eyebrow");
         let body = hero_node_id(id, "body");
-        current.iter_mut().find(|node| node.id == eyebrow).unwrap().text =
-            Some("Human-authored context".into());
-        current.iter_mut().find(|node| node.id == body).unwrap().style.fill =
-            Some("#FFE0A0".into());
+        current
+            .iter_mut()
+            .find(|node| node.id == eyebrow)
+            .unwrap()
+            .text = Some("Human-authored context".into());
+        current
+            .iter_mut()
+            .find(|node| node.id == body)
+            .unwrap()
+            .style
+            .fill = Some("#FFE0A0".into());
         let incoming_config = HeroConfig {
             layout: if config.layout == HeroLayout::ContrastComparison {
                 HeroLayout::EditorialQuote
@@ -88,18 +98,38 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         };
         let incoming = realize_product_hero(id, &incoming_config, 1920, 1080)?;
         let expected = merge_component_nodes(&base, &current, &incoming)?;
-        assert_eq!(expected.iter().find(|node| node.id == eyebrow).unwrap().text.as_deref(),
-                   Some("Human-authored context"));
-        assert_eq!(expected.iter().find(|node| node.id == body).unwrap().style.fill.as_deref(),
-                   Some("#FFE0A0"));
-        assert_eq!(expected.iter().map(|node| node.id).collect::<Vec<_>>(),
-                   base.iter().map(|node| node.id).collect::<Vec<_>>());
+        assert_eq!(
+            expected
+                .iter()
+                .find(|node| node.id == eyebrow)
+                .unwrap()
+                .text
+                .as_deref(),
+            Some("Human-authored context")
+        );
+        assert_eq!(
+            expected
+                .iter()
+                .find(|node| node.id == body)
+                .unwrap()
+                .style
+                .fill
+                .as_deref(),
+            Some("#FFE0A0")
+        );
+        assert_eq!(
+            expected.iter().map(|node| node.id).collect::<Vec<_>>(),
+            base.iter().map(|node| node.id).collect::<Vec<_>>()
+        );
         let serialized_roundtrip: Vec<CanvasNode> =
             serde_json::from_str(&serde_json::to_string(&expected)?)?;
         assert_eq!(serialized_roundtrip, expected);
         let mut conflict = incoming.clone();
-        conflict.iter_mut().find(|node| node.id == eyebrow).unwrap().text =
-            Some("Conflicting generated context".into());
+        conflict
+            .iter_mut()
+            .find(|node| node.id == eyebrow)
+            .unwrap()
+            .text = Some("Conflicting generated context".into());
         let conflict_error = merge_component_nodes(&base, &current, &conflict)
             .expect_err("a conflicting craft copy update must be rejected")
             .to_string();

@@ -142,10 +142,16 @@ fn failure(
     }
 }
 
-fn observe_receipt(
+fn observe_receipt<Phase: Send>(
+    admit_phase: &(impl Fn() -> Result<Phase, String> + Sync),
     service: &StudioService,
     request: &WorkflowActionRequest,
 ) -> WorkflowReceiptObservation {
+    let Ok(_phase) = admit_phase() else {
+        // Closure forbids a new Store read. It does not replace the original
+        // invocation's known result, error code or outcome certainty.
+        return WorkflowReceiptObservation::NotChecked;
+    };
     match service.latest_production_receipt(request.project_id, &request.request_id) {
         Ok(Some(receipt)) => WorkflowReceiptObservation::Recorded {
             identity: Box::new(WorkflowReceiptIdentity {
@@ -168,10 +174,14 @@ fn observe_receipt(
 /// the WebView request. Current project scope and the connection are checked
 /// before consuming the existing one-time mutation grant.
 ///
+/// The phase factory is mandatory. Desktop supplies its native owner's phase
+/// admission; this shared helper does not manufacture an owner or a permit.
+///
 /// This fixes local desktop dispatch lineage. It does not claim authentic
 /// Broker-session receipt binding; that remains the canonical actor/recovery
 /// contract, and connection.identity() is never substituted for that actor.
-pub async fn execute_workflow_action(
+pub async fn execute_workflow_action<Phase: Send>(
+    admit_phase: &(impl Fn() -> Result<Phase, String> + Sync),
     service: &StudioService,
     grants: &EffectGrantRegistry,
     custody: &ProductionReceiptCustody,
@@ -187,6 +197,12 @@ pub async fn execute_workflow_action(
             WorkflowReceiptObservation::NotChecked,
         )
     };
+    let preparation_phase = admit_phase().map_err(|_| {
+        rejected(
+            ErrorCode::PermissionDenied,
+            "The native desktop owner is unavailable. Reopen the application to continue.",
+        )
+    })?;
     if !valid_request_id(&request.request_id) {
         return Err(rejected(
             ErrorCode::InvalidArgument,
@@ -214,7 +230,7 @@ pub async fn execute_workflow_action(
             code,
             true,
             message,
-            observe_receipt(service, &request),
+            observe_receipt(admit_phase, service, &request),
         )
     };
     let connection_path = selected_connection
@@ -253,6 +269,15 @@ pub async fn execute_workflow_action(
         )?;
     let command = request.action.command();
     let mutation = request.action.mutation();
+    drop(preparation_phase);
+    // Admit the actual effect phase before consuming its one-time grant.
+    // An already admitted dispatch retains its canonical outcome after close.
+    let dispatch_phase = admit_phase().map_err(|_| {
+        rejected(
+            ErrorCode::PermissionDenied,
+            "The native desktop owner is unavailable. Reopen the application to continue.",
+        )
+    })?;
     if mutation {
         let token = request.effect_grant.ok_or_else(|| {
             observed_rejection(
@@ -292,27 +317,28 @@ pub async fn execute_workflow_action(
             request.args.clone(),
             mutation,
         )
-        .await
-        .map_err(|error| {
-            failure(
-                &request,
-                error.code,
-                error.outcome_known,
-                if error.outcome_known {
-                    "The workflow action did not complete successfully. Inspect its original receipt."
-                } else {
-                    "The workflow outcome is unknown. Preserve this request and inspect its receipt; do not repeat the mutation."
-                },
-                observe_receipt(service, &request),
-            )
-        })?;
+        .await;
+    drop(dispatch_phase);
+    let reply = reply.map_err(|error| {
+        failure(
+            &request,
+            error.code,
+            error.outcome_known,
+            if error.outcome_known {
+                "The workflow action did not complete successfully. Inspect its original receipt."
+            } else {
+                "The workflow outcome is unknown. Preserve this request and inspect its receipt; do not repeat the mutation."
+            },
+            observe_receipt(admit_phase, service, &request),
+        )
+    })?;
     let malformed_reply = || {
         failure(
             &request,
             ErrorCode::BackendFailed,
             !mutation,
             "The workflow reply could not be projected. Preserve and inspect the original request.",
-            observe_receipt(service, &request),
+            observe_receipt(admit_phase, service, &request),
         )
     };
     let identity: WorkflowReceiptIdentity = reply

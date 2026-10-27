@@ -51,11 +51,13 @@ fn required_optional_sfx_asset<'de, D: Deserializer<'de>>(
 /// Existing public requests retain their shape; production intent is saved by
 /// the existing SetDeliveryRecipe operation, never by an audition side effect.
 pub(crate) async fn saved_mix_for_master(
+    owner: crate::desktop_owner::DesktopOwner,
     service: &StudioService,
     project: &Project,
     profile_id: Uuid,
 ) -> Result<Option<PreparedOriginalMix>, String> {
     saved_mix_with_budget(
+        owner,
         service,
         project,
         profile_id,
@@ -67,6 +69,7 @@ pub(crate) async fn saved_mix_for_master(
 // The existing audition and master share one source factory. Their budgets
 // are explicit native policy; WebView cannot widen either through request data.
 async fn saved_mix_with_budget(
+    owner: crate::desktop_owner::DesktopOwner,
     service: &StudioService,
     project: &Project,
     profile_id: Uuid,
@@ -95,7 +98,7 @@ async fn saved_mix_with_budget(
     let service = service.clone();
     let project_id = project.id;
     let expected = RevisionStamp::from(project);
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::desktop_owner::spawn_blocking(owner, move || {
         prepare_saved_original_mix_with_budget(&service, project_id, &expected, profile_id, budget)
             .map(Some)
             .map_err(|error| error.to_string())
@@ -138,6 +141,7 @@ fn validate_saved_audition_request(
 
 #[tauri::command]
 pub async fn native_original_mix_audition(
+    mut owner: crate::desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: NativeOriginalMixPreviewRequest,
 ) -> Result<tauri::ipc::Response, String> {
@@ -149,6 +153,7 @@ pub async fn native_original_mix_audition(
     )?;
     validate_saved_audition_request(&project, &request)?;
     let mix = saved_mix_with_budget(
+        owner.worker_owner(),
         &state.service,
         &project,
         request.deliverable_profile_id,
@@ -163,6 +168,7 @@ pub async fn native_original_mix_audition(
     {
         return Err("Unmastered local audition exceeded its source/authority budget.".into());
     }
+    owner.begin_phase()?;
     current(
         &state,
         request.project_id,
@@ -362,10 +368,14 @@ pub(crate) mod tests {
     fn shared_master_preparation_returns_exact_saved_factory_mix_without_mutation() {
         let (root, service, project) = saved_mix_fixture();
         let profile_id = project.deliverables[0].id;
-        let prepared =
-            tauri::async_runtime::block_on(saved_mix_for_master(&service, &project, profile_id))
-                .unwrap()
-                .expect("The persisted recipe must use the shared opaque factory.");
+        let prepared = tauri::async_runtime::block_on(saved_mix_for_master(
+            crate::desktop_owner::source_test_owner(),
+            &service,
+            &project,
+            profile_id,
+        ))
+        .unwrap()
+        .expect("The persisted recipe must use the shared opaque factory.");
         let direct = prepare_saved_original_mix(
             &service,
             project.id,
@@ -393,10 +403,14 @@ pub(crate) mod tests {
     fn master_full_cut_budget_does_not_widen_the_fifteen_second_audition() {
         let (_root, service, project) = saved_mix_fixture_seconds(16);
         let profile_id = project.deliverables[0].id;
-        let master =
-            tauri::async_runtime::block_on(saved_mix_for_master(&service, &project, profile_id))
-                .unwrap()
-                .unwrap();
+        let master = tauri::async_runtime::block_on(saved_mix_for_master(
+            crate::desktop_owner::source_test_owner(),
+            &service,
+            &project,
+            profile_id,
+        ))
+        .unwrap()
+        .unwrap();
         assert_eq!(master.plan().sample_frames, 16 * 48_000);
         let direct = prepare_saved_original_mix_with_budget(
             &service,
@@ -410,6 +424,7 @@ pub(crate) mod tests {
         assert_eq!(master.wav_sha256(), direct.wav_sha256());
         assert!(
             tauri::async_runtime::block_on(saved_mix_with_budget(
+                crate::desktop_owner::source_test_owner(),
                 &service,
                 &project,
                 profile_id,
@@ -437,9 +452,14 @@ pub(crate) mod tests {
             },
         );
         assert!(
-            tauri::async_runtime::block_on(saved_mix_for_master(&service, &project, profile_id))
-                .unwrap()
-                .is_none()
+            tauri::async_runtime::block_on(saved_mix_for_master(
+                crate::desktop_owner::source_test_owner(),
+                &service,
+                &project,
+                profile_id
+            ))
+            .unwrap()
+            .is_none()
         );
         let neutral = project.audio.mix.clone();
         for index in 0..3 {
@@ -457,7 +477,10 @@ pub(crate) mod tests {
                 Change::SetMixIntent { mix },
             );
             let error = tauri::async_runtime::block_on(saved_mix_for_master(
-                &service, &project, profile_id,
+                crate::desktop_owner::source_test_owner(),
+                &service,
+                &project,
+                profile_id,
             ))
             .err()
             .expect("An authored gain or target cannot silently become voice-only audio.");
@@ -500,10 +523,14 @@ pub(crate) mod tests {
             "persist-unsupported-voice-only-cue",
             Change::UpsertSemanticSfx { cue },
         );
-        let error =
-            tauri::async_runtime::block_on(saved_mix_for_master(&service, &project, profile_id))
-                .err()
-                .expect("A saved cue must not disappear through the voice-only path.");
+        let error = tauri::async_runtime::block_on(saved_mix_for_master(
+            crate::desktop_owner::source_test_owner(),
+            &service,
+            &project,
+            profile_id,
+        ))
+        .err()
+        .expect("A saved cue must not disappear through the voice-only path.");
         assert_eq!(
             error,
             "Save a supported source mix before mastering authored gains/SFX; unmeasured loudness targets remain unsupported."
@@ -529,9 +556,14 @@ pub(crate) mod tests {
             Change::UpsertDeliverable { profile },
         );
         assert!(
-            tauri::async_runtime::block_on(saved_mix_for_master(&service, &project, profile_id))
-                .unwrap()
-                .is_none()
+            tauri::async_runtime::block_on(saved_mix_for_master(
+                crate::desktop_owner::source_test_owner(),
+                &service,
+                &project,
+                profile_id
+            ))
+            .unwrap()
+            .is_none()
         );
         assert_eq!(service.project(project.id).unwrap(), project);
         drop(service);
@@ -556,10 +588,14 @@ pub(crate) mod tests {
             },
         );
         assert!(project.revision > captured.revision);
-        let error =
-            tauri::async_runtime::block_on(saved_mix_for_master(&service, &captured, profile_id))
-                .err()
-                .expect("A captured stale Project cannot select newly persisted mix inputs.");
+        let error = tauri::async_runtime::block_on(saved_mix_for_master(
+            crate::desktop_owner::source_test_owner(),
+            &service,
+            &captured,
+            profile_id,
+        ))
+        .err()
+        .expect("A captured stale Project cannot select newly persisted mix inputs.");
         assert_eq!(error, "Saved mix source revision or generation changed");
         assert_eq!(service.project(project.id).unwrap(), project);
         drop(service);
@@ -643,6 +679,7 @@ pub(crate) mod tests {
         assert!(request.sfx_asset_id.is_none());
         validate_saved_audition_request(&project, &request).unwrap();
         let prepared = tauri::async_runtime::block_on(saved_mix_with_budget(
+            crate::desktop_owner::source_test_owner(),
             &service,
             &project,
             profile_id,

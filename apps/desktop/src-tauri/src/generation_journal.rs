@@ -45,6 +45,7 @@ pub struct PaidGenerationReservationRequest {
 /// provider or billing/charging anything. No capability proof is forged.
 #[tauri::command]
 pub async fn native_paid_generation_preflight(
+    _owner: crate::desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: PaidGenerationIntentRequest,
 ) -> Result<Value, String> {
@@ -93,6 +94,7 @@ pub async fn native_paid_generation_preflight(
 /// CAS. This is an accounting record, not permission to contact a paid API.
 #[tauri::command]
 pub async fn native_paid_generation_reserve_preflight(
+    _owner: crate::desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: PaidGenerationReservationRequest,
 ) -> Result<Value, String> {
@@ -144,6 +146,7 @@ pub async fn native_paid_generation_reserve_preflight(
 }
 #[tauri::command]
 pub async fn native_paid_generation_journal(
+    _owner: crate::desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: PaidGenerationJournalScope,
 ) -> Result<Value, String> {

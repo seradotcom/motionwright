@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-26",
+  "generated_at": "2026-10-27",
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "aa918f5b82eace7bc37ad5979f8d9eefff6a9aac",
+      "revision": "b80146de20d4eee7866ac0e8ac45917f7fe0d3d0",
       "version": "1.0.0",
       "native_sdk_package": "semwright-native-sdk",
       "driver_sdk_package": "semwright-driver-sdk",
@@ -18,17 +18,17 @@
         "schema": "motionwright.source-verification/1",
         "status": "verified",
         "repository": "https://github.com/seradotcom/semwright",
-        "revision": "aa918f5b82eace7bc37ad5979f8d9eefff6a9aac",
+        "revision": "b80146de20d4eee7866ac0e8ac45917f7fe0d3d0",
         "evidence": {
-          "path": "third_party/semwright-source-evidence/aa918f5b82eace7bc37ad5979f8d9eefff6a9aac/evidence.json",
-          "sha256": "deb36f9179267506b0f358890294cb79e5bbc30cc71940ae4181760970728ce7"
+          "path": "third_party/semwright-source-evidence/b80146de20d4eee7866ac0e8ac45917f7fe0d3d0/evidence.json",
+          "sha256": "6fb4a5c899646b4d657862797ef1253352110c03ed76dbbbcf7444ae40c7bcdb"
         }
       }
     }
   },
   "notes": [
     "Motionwright is an external consumer. It does not copy Semwright Core crates into this repository.",
-    "The exact Semwright 1.0.0 release-preparation revision is used for reproducible CI and must be intentionally updated.",
+    "The exact Semwright source revision is used for reproducible CI and must be intentionally updated.",
     "Motionwright uses Native SDK for application cooperation and public Driver SDK for the bounded Manim Community renderer provider.",
     "Application state, transactions, revisions and receipts remain Motionwright-owned.",
     "Source verification records consistency of the retained upstream metadata and license bytes at the pinned revision. Runtime validation and distribution authorization are assessed separately."

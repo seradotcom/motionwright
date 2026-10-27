@@ -3,11 +3,15 @@ use motionwright_domain::{
     Change, MAX_MUSIC_CONFORM_TARGETS, MusicConformTarget, Project, RevisionStamp,
 };
 use motionwright_service::{ProductionReceiptWatermark, StudioService};
-use motionwright_storage::StorageError;
+use motionwright_storage::{
+    APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyResultObservation, StorageError,
+    apply_request_digest_v1,
+};
 use semwright_native_sdk::cooperation::{
     Application, CallContext, CancellationSemantics, CommitSemantics, Completion, ObservationPage,
-    ObservationProvider, OperationContract, OperationHandler, PageCursor, Query, ResourceVersion,
-    RetrySemantics, RevisionToken, TargetRequirement, UndoSemantics,
+    ObservationProvider, OperationContract, OperationHandler, PageCursor, Query, RecoveryProvider,
+    RecoveryRecord, RequestIdentity, ResourceVersion, RetrySemantics, RevisionToken,
+    TargetRequirement, UndoSemantics,
 };
 use semwright_native_sdk::{
     CommandDescriptor, Error, ErrorCode, Idempotency, Result as NativeResult, Risk, Value, json,
@@ -734,25 +738,256 @@ impl ObservationProvider for MotionwrightObserver {
     }
 }
 
+// Private candidate application contract: epoch 1 is one nonexpiring namespace.
+// It is not APPLY_REQUEST_ENCODING_V1 and is never advanced to invent expiry.
+// The qualified key is a deterministic selector over verified V1 receipt facts,
+// not an issuance registry, authentication token, or permission to retry.
+const APPLY_RECOVERY_EPOCH: u64 = 1;
+const APPLY_RECOVERY_PREFIX: &str = "mw1:";
+const MAX_APPLY_RECOVERY_RAW_KEY_BYTES: usize = 87;
+
+fn validate_apply_recovery_raw_key(raw: &str) -> NativeResult<()> {
+    if raw.is_empty()
+        || raw.len() > MAX_APPLY_RECOVERY_RAW_KEY_BYTES
+        || raw.chars().any(char::is_control)
+    {
+        return Err(Error::invalid(
+            "Recovery requires a request key of 1..=87 UTF-8 bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn apply_recovery_requested(args: &Value, raw_key: &str) -> NativeResult<bool> {
+    let requested = match args.get("include_recovery") {
+        None | Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) => true,
+        Some(_) => return Err(Error::invalid("include_recovery must be a boolean")),
+    };
+    // Legacy calls retain their complete existing request-key behavior.
+    if requested {
+        validate_apply_recovery_raw_key(raw_key)?;
+    }
+    Ok(requested)
+}
+
+fn apply_recovery_identity(
+    id: Uuid,
+    generation: Uuid,
+    raw_key: &str,
+    change: &Change,
+) -> NativeResult<RequestIdentity> {
+    validate_apply_recovery_raw_key(raw_key)?;
+    if id.is_nil() || generation.is_nil() {
+        return Err(Error::invalid(
+            "Recovery requires a nonnil project and generation",
+        ));
+    }
+    let identity = RequestIdentity {
+        resource: format!("project:{id}"),
+        epoch: APPLY_RECOVERY_EPOCH,
+        key: format!("{APPLY_RECOVERY_PREFIX}{generation}:{raw_key}"),
+        request_sha256: apply_request_digest_v1(id, change).map_err(storage_error)?,
+    };
+    identity.validate()?;
+    Ok(identity)
+}
+
+fn decode_apply_recovery_identity(request: &RequestIdentity) -> NativeResult<(Uuid, Uuid, &str)> {
+    request.validate()?;
+    if request.epoch != APPLY_RECOVERY_EPOCH {
+        return Err(Error::invalid(
+            "Unsupported Motionwright recovery namespace epoch",
+        ));
+    }
+    let project_id = project_id_from_resource(&request.resource)?;
+    if project_id.is_nil() || request.resource != format!("project:{project_id}") {
+        return Err(Error::invalid(
+            "Recovery requires a canonical project resource",
+        ));
+    }
+    let (generation, raw_key) = request
+        .key
+        .strip_prefix(APPLY_RECOVERY_PREFIX)
+        .and_then(|qualified| qualified.split_once(':'))
+        .ok_or_else(|| Error::invalid("Malformed Motionwright recovery key"))?;
+    let parsed =
+        Uuid::parse_str(generation).map_err(|_| Error::invalid("Malformed recovery generation"))?;
+    if parsed.is_nil() || parsed.to_string() != generation {
+        return Err(Error::invalid(
+            "Recovery generation must be a canonical nonnil UUID",
+        ));
+    }
+    validate_apply_recovery_raw_key(raw_key)?;
+    Ok((project_id, parsed, raw_key))
+}
+
+fn apply_result_value(outcome: &motionwright_storage::ApplyOutcome) -> Value {
+    json!({
+        "resource": outcome.project.resource_key(),
+        "generation": outcome.project.generation.to_string(),
+        "revision": outcome.project.revision.to_string(),
+        "previous_revision": outcome.previous_revision.to_string(),
+        "request_id": outcome.request_id,
+        "replayed": outcome.replayed,
+        "project": outcome.project
+    })
+}
+
 fn apply_completion(
     result: std::result::Result<motionwright_storage::ApplyOutcome, StorageError>,
 ) -> Completion {
     match result {
-        Ok(outcome) => Completion::Applied(json!({
-            "resource": outcome.project.resource_key(),
-            "generation": outcome.project.generation.to_string(),
-            "revision": outcome.project.revision.to_string(),
-            "previous_revision": outcome.previous_revision.to_string(),
-            "request_id": outcome.request_id,
-            "replayed": outcome.replayed,
-            "project": outcome.project
-        })),
+        Ok(outcome) => Completion::Applied(apply_result_value(&outcome)),
         // The stored result may describe an already committed original call.
         // Failing to authenticate it is not evidence that the call did not apply.
         Err(error @ StorageError::InvalidApplyReceipt(_)) => {
             Completion::Uncertain(storage_error(error))
         }
         Err(error) => Completion::NotApplied(storage_error(error)),
+    }
+}
+
+// Constructed only by preflight from the actual writer inputs. Its metadata is
+// fully validated and serialized before any Store apply or Graph permit effect.
+// The completion path introduces no fallible decode, qualifier or new refusal.
+struct PreparedApplyRecovery {
+    metadata: Value,
+}
+
+fn prepare_apply_recovery(
+    id: Uuid,
+    generation: Uuid,
+    raw_key: &str,
+    change: &Change,
+) -> NativeResult<PreparedApplyRecovery> {
+    let identity = apply_recovery_identity(id, generation, raw_key, change)?;
+    Ok(PreparedApplyRecovery {
+        metadata: serde_json::to_value(identity)?,
+    })
+}
+
+fn apply_completion_with_recovery(
+    result: std::result::Result<motionwright_storage::ApplyOutcome, StorageError>,
+    recovery: Option<PreparedApplyRecovery>,
+) -> Completion {
+    // The original canonical Store/Graph path binds the same project,
+    // generation, request key and typed Change. Preserve its actual terminal.
+    match apply_completion(result) {
+        Completion::Applied(mut value) => {
+            if let Some(prepared) = recovery {
+                // The emission flag is not persisted or part of the intent hash.
+                // This infallible attachment changes none of the seven commit
+                // fields, including the original invocation's replayed flag.
+                value["recovery"] = prepared.metadata;
+            }
+            Completion::Applied(value)
+        }
+        original => original,
+    }
+}
+
+// Translate only an already obtained canonical Store observation. This helper
+// supplies no authority: MotionwrightRecovery performs the genuine current
+// resource/generation checks and reads the admitted Store before calling it.
+fn apply_recovery_record(
+    request: &RequestIdentity,
+    observation: ApplyResultObservation,
+) -> NativeResult<RecoveryRecord> {
+    let record = match observation {
+        ApplyResultObservation::KnownVerifiedV1 { outcome, .. } => {
+            // Historical output is exactly the original seven-field projection.
+            // Optional response metadata never becomes part of stored history.
+            RecoveryRecord::Recorded {
+                identity: request.clone(),
+                result: apply_result_value(&outcome),
+            }
+        }
+        ApplyResultObservation::NotFound => RecoveryRecord::OutcomeUnknown {
+            identity: request.clone(),
+        },
+        ApplyResultObservation::LegacyUnverified => {
+            // This is a known refusal of this read, not a statement that the
+            // historical mutation did not apply or permission to retry it.
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Historical receipt lacks a verified V1 binding",
+            ));
+        }
+        ApplyResultObservation::AuthorityMismatch => {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Historical project generation is no longer current",
+            ));
+        }
+        ApplyResultObservation::Invalid { reason } => {
+            return Err(match reason {
+                ApplyReceiptInvalid::RequestMismatch => {
+                    Error::new(ErrorCode::Conflict, "Historical request digest differs")
+                }
+                ApplyReceiptInvalid::ReceiptIntegrity => Error::new(
+                    ErrorCode::BackendFailed,
+                    "Historical receipt validation failed",
+                ),
+                ApplyReceiptInvalid::UnsupportedContract => Error::new(
+                    ErrorCode::Unsupported,
+                    "Historical receipt contract is unsupported",
+                ),
+            });
+        }
+    };
+    // Validate the complete existing SDK record without truncating the stored
+    // ApplyOutcome. A bounded read refusal never authorizes a mutation replay.
+    record.validate_for(request)?;
+    Ok(record)
+}
+
+struct MotionwrightRecovery {
+    service: StudioService,
+}
+
+#[async_trait]
+impl RecoveryProvider for MotionwrightRecovery {
+    async fn lookup(
+        &self,
+        request: &RequestIdentity,
+        context: &CallContext,
+    ) -> NativeResult<RecoveryRecord> {
+        context.check_cancelled()?;
+        let (project_id, generation, raw_key) = decode_apply_recovery_identity(request)?;
+        let current = context.expected().ok_or_else(|| {
+            Error::new(
+                ErrorCode::StaleReference,
+                "Recovery requires a current observed project",
+            )
+        })?;
+        current.validate()?;
+        if current.resource != request.resource || current.generation != generation.to_string() {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Historical request and current project generation differ",
+            ));
+        }
+        context.check_cancelled()?;
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        graph_store_provider::trace_native_recovery_lookup(request, context)?;
+        let observation = {
+            let shared = self.service.store();
+            let mut store = shared.lock();
+            store
+                .lookup_apply_result_v1(
+                    project_id,
+                    generation,
+                    raw_key,
+                    &request.request_sha256,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .map_err(storage_error)?
+        };
+        context.check_cancelled()?;
+        let record = apply_recovery_record(request, observation)?;
+        context.check_cancelled()?;
+        Ok(record)
     }
 }
 
@@ -858,6 +1093,10 @@ impl OperationHandler for ApplyHandler {
         if args.get("ref").and_then(Value::as_str).is_none() {
             return Completion::NotApplied(Error::invalid("Project ref is required"));
         }
+        let include_recovery = match apply_recovery_requested(&args, context.request_id()) {
+            Ok(value) => value,
+            Err(error) => return Completion::NotApplied(error),
+        };
         // The caller's ref is an opaque Native SDK marker. NativeDriver validates and
         // binds it before invoking this handler; application code must never parse it
         // as a Motionwright resource. The Host-bound ResourceVersion is the authority
@@ -888,9 +1127,23 @@ impl OperationHandler for ApplyHandler {
             return Completion::NotApplied(error);
         }
 
-        apply_completion(
+        let recovery = if include_recovery {
+            match prepare_apply_recovery(
+                project_id,
+                expected.generation,
+                context.request_id(),
+                &change,
+            ) {
+                Ok(identity) => Some(identity),
+                Err(error) => return Completion::NotApplied(error),
+            }
+        } else {
+            None
+        };
+        apply_completion_with_recovery(
             self.service
                 .apply(project_id, &expected, context.request_id(), &change),
+            recovery,
         )
     }
 }
@@ -1717,7 +1970,8 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
     }
 }
 
-fn descriptor(name: &str, description: &str, input_schema: Value) -> OperationContract {
+fn descriptor(name: &str, description: &str, mut input_schema: Value) -> OperationContract {
+    input_schema["properties"]["include_recovery"] = json!({"type":"boolean"});
     OperationContract {
         descriptor: CommandDescriptor {
             name: format!("driver.{APP_ID}.{name}"),
@@ -1734,7 +1988,18 @@ fn descriptor(name: &str, description: &str, input_schema: Value) -> OperationCo
                     "previous_revision": {"type": "string"},
                     "request_id": {"type": "string"},
                     "replayed": {"type": "boolean"},
-                    "project": {"type": "object"}
+                    "project": {"type": "object"},
+                    "recovery": {
+                        "type":"object",
+                        "required":["resource","epoch","key","request_sha256"],
+                        "properties": {
+                            "resource":{"type":"string","minLength":1,"maxLength":512},
+                            "epoch":{"const":1},
+                            "key":{"type":"string","minLength":1,"maxLength":128},
+                            "request_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+                        },
+                        "additionalProperties":false
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -1768,7 +2033,10 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
     let observer = Arc::new(MotionwrightObserver::new(service.clone()));
     let mut app = Application::new(APP_ID, APP_VERSION)?
         .require_resource_read_scope()
-        .with_observer(observer);
+        .with_observer(observer)
+        .with_recovery(Arc::new(MotionwrightRecovery {
+            service: service.clone(),
+        }));
 
     let operations = [
         (
@@ -3669,6 +3937,8 @@ mod graph_store_provider {
         #[serde(rename = "ref")]
         reference: String,
         graph: SemanticGraph,
+        #[serde(default)]
+        include_recovery: bool,
     }
 
     struct GraphStoreDeniedHandler;
@@ -3748,6 +4018,25 @@ mod graph_store_provider {
                 graph: Box::new(input.graph),
             };
 
+            let recovery = if input.include_recovery {
+                let generation = match Uuid::parse_str(&bound.generation) {
+                    Ok(value) if !value.is_nil() && value.to_string() == bound.generation => value,
+                    _ => {
+                        return Completion::NotApplied(Error::new(
+                            ErrorCode::StaleReference,
+                            "Observed recovery generation is invalid",
+                        ));
+                    }
+                };
+                match prepare_apply_recovery(project_id, generation, context.request_id(), &change)
+                {
+                    Ok(identity) => Some(identity),
+                    Err(error) => return Completion::NotApplied(error),
+                }
+            } else {
+                None
+            };
+
             // No project load, Store mutex, or local mutation precedes this await.
             // The owner already selected the resource/mount for this invocation.
             let permit = match context.acquire_operation_permit().await {
@@ -3789,7 +4078,7 @@ mod graph_store_provider {
             if let Some(error) = admission.failure.take() {
                 return native_failure(error);
             }
-            apply_completion(result)
+            apply_completion_with_recovery(result, recovery)
         }
     }
 
@@ -3934,6 +4223,14 @@ mod graph_store_provider {
     #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
     pub(super) fn trace_native_observer(query: &Query, context: &CallContext) -> NativeResult<()> {
         owner_fixture::trace_native_observer(query, context)
+    }
+
+    #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+    pub(super) fn trace_native_recovery_lookup(
+        request: &RequestIdentity,
+        context: &CallContext,
+    ) -> NativeResult<()> {
+        owner_fixture::trace_native_recovery_lookup(request, context)
     }
 
     // This module is absent from normal builds. It supplies byte-limited
@@ -4097,6 +4394,43 @@ mod graph_store_provider {
                     "provider_process_id":std::process::id(),
                     "resource":query.resource,"scope":query.scope,
                     "native_authority":false
+                }),
+            )?;
+            context.check_cancelled()
+        }
+
+        pub(super) fn trace_native_recovery_lookup(
+            request: &RequestIdentity,
+            context: &CallContext,
+        ) -> NativeResult<()> {
+            // Bounded pre-lookup diagnostic; never an actor or authority oracle.
+            if context.driver_context().is_err() {
+                return Ok(());
+            }
+            let root = workspace_mount(CONTROL)?;
+            match read_optional(&root.join("native-read-mode"), 32)?.as_deref() {
+                None => return Ok(()),
+                Some(b"trace\n") => (),
+                _ => return Err(Error::invalid("Unknown native read fixture mode")),
+            }
+            context.check_cancelled()?;
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if serial == 0 || serial > 256 {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "Native recovery lookup fixture entry budget exceeded",
+                ));
+            }
+            publish(
+                &root,
+                &format!("lookup-entry-{serial:04}.json"),
+                &json!({
+                    "schema":"motionwright.sec07-recovery-lookup-entry/1",
+                    "request_id":context.request_id(),
+                    "provider_process_id":std::process::id(),
+                    "resource":request.resource,"key":request.key,"epoch":request.epoch,
+                    "request_sha256":request.request_sha256,"native_authority":false
                 }),
             )?;
             context.check_cancelled()
@@ -4696,7 +5030,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.brand-campaign.owner-rollout"));
         assert!(names.contains(&"driver.motionwright.narration.take.record"));
         assert!(names.contains(&"driver.motionwright.narration.take.release"));
-        assert_eq!(capabilities.len(), 81);
+        assert!(names.contains(&"driver.motionwright.operation.get"));
+        assert_eq!(capabilities.len(), 82);
     }
 
     #[test]
@@ -6303,5 +6638,280 @@ mod qualified_audio_boundary_tests {
                 assert!(requires_qualified_audio_boundary(&change));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod apply_recovery_candidate_tests {
+    use super::*;
+    use motionwright_storage::{ApplyReceiptObservation, Store};
+
+    fn applied(completion: Completion) -> Value {
+        match completion {
+            Completion::Applied(value) => value,
+            other => panic!("expected actual local Store completion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_opt_in_preserves_legacy_key_behavior_and_exact_old_result() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("legacy-key.sqlite3")).unwrap();
+        let original = store.create_named_project("Legacy request key").unwrap();
+        let key = "k".repeat(256);
+        assert!(!apply_recovery_requested(&json!({}), &key).unwrap());
+        assert!(!apply_recovery_requested(&json!({"include_recovery":false}), &key).unwrap());
+        assert!(apply_recovery_requested(&json!({"include_recovery":true}), &key).is_err());
+        assert!(apply_recovery_requested(&json!({"include_recovery":null}), "valid").is_err());
+        let outcome = store
+            .apply(
+                original.id,
+                &original.stamp(),
+                &key,
+                &Change::RenameProject {
+                    title: "Actual legacy commit".into(),
+                },
+            )
+            .unwrap();
+        let expected = applied(apply_completion(Ok(outcome.clone())));
+        let actual = applied(apply_completion_with_recovery(Ok(outcome), None));
+        assert_eq!(actual, expected);
+        assert_eq!(actual["request_id"], key);
+        assert!(actual.get("recovery").is_none());
+        assert_eq!(actual.as_object().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn recovery_namespace_uses_full_generation_and_utf8_byte_budget() {
+        let id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let generation = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let change = Change::RenameProject {
+            title: "Namespace control".into(),
+        };
+        for raw in [
+            "a".repeat(87),
+            format!("{}x", "é".repeat(43)),
+            "part:with:colons".into(),
+        ] {
+            let identity = apply_recovery_identity(id, generation, &raw, &change).unwrap();
+            let (observed_id, observed_generation, observed_raw) =
+                decode_apply_recovery_identity(&identity).unwrap();
+            assert_eq!(
+                (observed_id, observed_generation, observed_raw),
+                (id, generation, raw.as_str())
+            );
+            assert_eq!(identity.key.len(), 41 + raw.len());
+            assert!(identity.key.len() <= 128);
+            assert_eq!(identity.epoch, 1);
+        }
+        for raw in [
+            String::new(),
+            "a".repeat(88),
+            "é".repeat(44),
+            "control\nkey".into(),
+        ] {
+            assert!(apply_recovery_identity(id, generation, &raw, &change).is_err());
+        }
+        let identity = apply_recovery_identity(id, generation, "valid", &change).unwrap();
+        for key in [
+            format!("mw1:{}:valid", generation.to_string().to_uppercase()),
+            format!("mw1:{}:valid", Uuid::nil()),
+            format!("mw2:{generation}:valid"),
+            format!("mw1:{}:valid", generation.simple()),
+        ] {
+            let mut changed = identity.clone();
+            changed.key = key;
+            assert!(decode_apply_recovery_identity(&changed).is_err());
+        }
+        for epoch in [0, 2] {
+            let mut changed = identity.clone();
+            changed.epoch = epoch;
+            assert!(decode_apply_recovery_identity(&changed).is_err());
+        }
+    }
+
+    #[test]
+    fn opted_in_commit_identity_matches_actual_writer_binding_and_seven_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("identity.sqlite3")).unwrap();
+        let original = store
+            .create_named_project("Original native result")
+            .unwrap();
+        let change = Change::RenameProject {
+            title: "Actual bound digest".into(),
+        };
+        let identity =
+            apply_recovery_identity(original.id, original.generation, "actual-key", &change)
+                .unwrap();
+        let prepared =
+            prepare_apply_recovery(original.id, original.generation, "actual-key", &change)
+                .unwrap();
+        let outcome = store
+            .apply(original.id, &original.stamp(), "actual-key", &change)
+            .unwrap();
+        let mut emitted = applied(apply_completion_with_recovery(
+            Ok(outcome.clone()),
+            Some(prepared),
+        ));
+        let metadata = emitted.as_object_mut().unwrap().remove("recovery").unwrap();
+        assert_eq!(metadata, serde_json::to_value(&identity).unwrap());
+        assert_eq!(emitted, applied(apply_completion(Ok(outcome.clone()))));
+        assert_eq!(emitted.as_object().unwrap().len(), 7);
+        let ApplyReceiptObservation::KnownVerifiedV1 { binding } = store
+            .observe_apply_receipt_v1(
+                original.id,
+                &original.stamp(),
+                "actual-key",
+                &change,
+                APPLY_REQUEST_ENCODING_V1,
+            )
+            .unwrap()
+        else {
+            panic!("actual writer must leave verified V1 evidence")
+        };
+        assert_eq!(identity.request_sha256, binding.request_sha256);
+        assert_eq!(binding.generation, original.generation.to_string());
+        let ApplyResultObservation::KnownVerifiedV1 {
+            outcome: historical,
+            ..
+        } = store
+            .lookup_apply_result_v1(
+                original.id,
+                original.generation,
+                "actual-key",
+                &identity.request_sha256,
+                APPLY_REQUEST_ENCODING_V1,
+            )
+            .unwrap()
+        else {
+            panic!("actual historical result must be present")
+        };
+        assert_eq!(*historical, outcome);
+        assert_eq!(apply_result_value(&historical), emitted);
+    }
+
+    #[test]
+    fn opted_in_replay_keeps_invocation_flag_and_historical_original_separate() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("replay.sqlite3")).unwrap();
+        let original = store
+            .create_named_project("Original replay control")
+            .unwrap();
+        let change = Change::RenameProject {
+            title: "Single actual commit".into(),
+        };
+        let identity =
+            apply_recovery_identity(original.id, original.generation, "replay", &change).unwrap();
+        let first = store
+            .apply(original.id, &original.stamp(), "replay", &change)
+            .unwrap();
+        let prepared =
+            prepare_apply_recovery(original.id, original.generation, "replay", &change).unwrap();
+        let second = store
+            .apply(original.id, &original.stamp(), "replay", &change)
+            .unwrap();
+        assert!(!first.replayed);
+        assert!(second.replayed);
+        let returned = applied(apply_completion_with_recovery(Ok(second), Some(prepared)));
+        assert_eq!(returned["replayed"], true);
+        assert_eq!(
+            returned["recovery"],
+            serde_json::to_value(&identity).unwrap()
+        );
+        let ApplyResultObservation::KnownVerifiedV1 { outcome, .. } = store
+            .lookup_apply_result_v1(
+                original.id,
+                original.generation,
+                "replay",
+                &identity.request_sha256,
+                APPLY_REQUEST_ENCODING_V1,
+            )
+            .unwrap()
+        else {
+            panic!("actual original receipt must remain verified")
+        };
+        assert_eq!(*outcome, first);
+        assert!(!outcome.replayed);
+        assert_eq!(
+            store.load_project(original.id).unwrap().revision,
+            first.project.revision
+        );
+    }
+
+    #[test]
+    fn prepared_recovery_preserves_actual_store_success_and_refusal_terminals() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("terminal-custody.sqlite3")).unwrap();
+        let original = store
+            .create_named_project("Original committed control")
+            .unwrap();
+        let change = Change::RenameProject {
+            title: "Commit remains real".into(),
+        };
+        let prepared =
+            prepare_apply_recovery(original.id, original.generation, "original-key", &change)
+                .unwrap();
+        let committed = store
+            .apply(original.id, &original.stamp(), "original-key", &change)
+            .unwrap();
+        let mut returned = applied(apply_completion_with_recovery(
+            Ok(committed.clone()),
+            Some(prepared),
+        ));
+        assert!(
+            returned
+                .as_object_mut()
+                .unwrap()
+                .remove("recovery")
+                .is_some()
+        );
+        assert_eq!(returned, apply_result_value(&committed));
+
+        // A genuine canonical request-reuse refusal must retain its original
+        // known rejection. Prepared metadata never replaces an error terminal.
+        let changed = Change::RenameProject {
+            title: "Rejected different intent".into(),
+        };
+        let prepared =
+            prepare_apply_recovery(original.id, original.generation, "original-key", &changed)
+                .unwrap();
+        let actual = store.apply(
+            original.id,
+            &committed.project.stamp(),
+            "original-key",
+            &changed,
+        );
+        assert!(matches!(&actual, Err(StorageError::RequestReuse)));
+        let error = apply_completion_with_recovery(actual, Some(prepared))
+            .into_result()
+            .unwrap_err();
+        assert!(error.outcome_known);
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(store.load_project(original.id).unwrap(), committed.project);
+
+        // Break the actual owned receipt after its real commit. The shared
+        // checker, not metadata formatting, supplies this uncertain terminal.
+        let peer = rusqlite::Connection::open(store.path()).unwrap();
+        peer.execute(
+            "UPDATE receipts SET result_json='{}' WHERE request_id='original-key'",
+            [],
+        )
+        .unwrap();
+        let prepared =
+            prepare_apply_recovery(original.id, original.generation, "original-key", &change)
+                .unwrap();
+        let actual = store.apply(
+            original.id,
+            &committed.project.stamp(),
+            "original-key",
+            &change,
+        );
+        assert!(matches!(&actual, Err(StorageError::InvalidApplyReceipt(_))));
+        let error = apply_completion_with_recovery(actual, Some(prepared))
+            .into_result()
+            .unwrap_err();
+        assert!(!error.outcome_known);
+        assert_eq!(error.code, ErrorCode::BackendFailed);
+        assert_eq!(store.load_project(original.id).unwrap(), committed.project);
     }
 }

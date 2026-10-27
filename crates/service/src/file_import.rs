@@ -45,6 +45,60 @@ fn verify_expected_source(
     Ok(())
 }
 
+/// Both inputs converge before interpretation, immutable publication and apply.
+/// Captured bytes are data; this enum is not an authorization capability.
+#[derive(Clone, Copy)]
+enum ImportSource<'a> {
+    File(&'a Path),
+    Captured(&'a [u8]),
+}
+
+impl ImportSource<'_> {
+    fn descriptor(self, maximum: u64) -> Result<BlobDescriptor> {
+        match self {
+            Self::File(path) => {
+                motionwright_storage::Store::file_import_source_descriptor_with_limit(path, maximum)
+            }
+            Self::Captured(bytes) => {
+                let size_bytes = bytes.len() as u64;
+                if size_bytes > maximum {
+                    return Err(StorageError::BlobTooLarge {
+                        size: size_bytes,
+                        limit: maximum,
+                    });
+                }
+                Ok(BlobDescriptor {
+                    sha256: hex::encode(Sha256::digest(bytes)),
+                    size_bytes,
+                })
+            }
+        }
+    }
+
+    fn svg_extension(self) -> bool {
+        match self {
+            Self::File(path) => path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("svg")),
+            // Shared validation still checks the declared type and sniffs the
+            // immutable capture; no caller pathname is consulted.
+            Self::Captured(_) => false,
+        }
+    }
+
+    fn stage(
+        self,
+        store: &motionwright_storage::Store,
+        maximum: u64,
+    ) -> Result<motionwright_storage::StagedFileImport> {
+        match self {
+            Self::File(path) => store.stage_file_import_with_limit(path, maximum),
+            Self::Captured(bytes) => store.stage_file_import_bytes_with_limit(bytes, maximum),
+        }
+    }
+}
+
 impl StudioService {
     /// Import immutable source and bind its capsule in one canonical revision.
     ///
@@ -96,6 +150,44 @@ impl StudioService {
         intent: FileImportIntent,
         expected_source: Option<&BlobDescriptor>,
     ) -> Result<ApplyOutcome> {
+        self.import_source_with_identity(
+            project_id,
+            expected,
+            request_id,
+            ImportSource::File(source),
+            intent,
+            expected_source,
+        )
+    }
+
+    pub(crate) fn import_bytes_with_identity(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        bytes: &[u8],
+        intent: FileImportIntent,
+        expected_source: &BlobDescriptor,
+    ) -> Result<ApplyOutcome> {
+        self.import_source_with_identity(
+            project_id,
+            expected,
+            request_id,
+            ImportSource::Captured(bytes),
+            intent,
+            Some(expected_source),
+        )
+    }
+
+    fn import_source_with_identity(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: ImportSource<'_>,
+        intent: FileImportIntent,
+        expected_source: Option<&BlobDescriptor>,
+    ) -> Result<ApplyOutcome> {
         // Current scope and new-request revision are checked before source IO.
         let recorded = self
             .store
@@ -104,11 +196,7 @@ impl StudioService {
         if let Some(recorded) = recorded {
             // Known replay does not ingest or repair CAS, and never remeasures
             // a voice take. A normal file import still binds the supplied bytes.
-            let source_descriptor =
-                motionwright_storage::Store::file_import_source_descriptor_with_limit(
-                    source,
-                    self.import_limits.source_bytes(),
-                )?;
+            let source_descriptor = source.descriptor(self.import_limits.source_bytes())?;
             if source_descriptor.sha256 != recorded.source_sha256 {
                 return Err(StorageError::RequestReuse);
             }
@@ -136,10 +224,7 @@ impl StudioService {
         {
             return Err(invalid_import("voice import requires an audio media type"));
         }
-        let svg_extension = source
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+        let svg_extension = source.svg_extension();
         let max_bytes = match &intent {
             FileImportIntent::Asset { media_type, .. }
             | FileImportIntent::NativeCapsuleSource {
@@ -149,10 +234,7 @@ impl StudioService {
             }
             _ => self.import_limits.source_bytes(),
         };
-        let staged = self
-            .store
-            .lock()
-            .stage_file_import_with_limit(source, max_bytes)?;
+        let staged = source.stage(&self.store.lock(), max_bytes)?;
         // The descriptor is measured by this same retained capture. A mismatch
         // drops only its private stage before publication, decoding or apply.
         verify_expected_source(staged.descriptor(), expected_source)?;
@@ -823,6 +905,456 @@ mod verified_source_tests {
                 .unwrap(),
             bytes
         );
+    }
+
+    mod captured_bytes {
+        use super::*;
+
+        #[test]
+        fn captured_original_survives_replaced_then_removed_provider_path_and_reopen() {
+            let (root, service, project) = fixture();
+            let path = source(root.path(), b"original independently captured bytes A");
+            let captured = fs::read(&path).unwrap();
+            let expected = descriptor(&captured);
+            let before = state(&service, project.id);
+            fs::write(&path, b"replacement provider bytes B").unwrap();
+            // Causal control: the pathname API necessarily sees the replacement
+            // and must reject it; it cannot carry this earlier retained capture.
+            let error = service
+                .import_file_verified(
+                    project.id,
+                    &project.stamp(),
+                    "path-cannot-carry-original-capture",
+                    &path,
+                    &expected,
+                    asset_intent(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, StorageError::Domain(DomainError::Invalid(message))
+                if message.contains("expected SHA-256 or byte count"))
+            );
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &expected);
+            fs::remove_file(&path).unwrap();
+
+            let adopted = service
+                .import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-original-once",
+                    &captured,
+                    &expected,
+                    asset_intent(),
+                )
+                .unwrap();
+            assert!(!adopted.replayed);
+            assert_eq!(adopted.project.revision, project.revision + 1);
+            assert_eq!(adopted.project.assets.len(), 1);
+            assert_eq!(
+                service.history(project.id, 0, 256).unwrap().len(),
+                before.1.len() + 1
+            );
+            assert!(!path.exists());
+            assert_eq!(
+                service
+                    .store()
+                    .lock()
+                    .read_blob(&expected.sha256, expected.size_bytes,)
+                    .unwrap(),
+                captured
+            );
+            drop(service);
+            let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+            assert_eq!(reopened.project(project.id).unwrap(), adopted.project);
+            assert_eq!(
+                reopened
+                    .store()
+                    .lock()
+                    .read_blob(&expected.sha256, expected.size_bytes,)
+                    .unwrap(),
+                captured
+            );
+            let mut recorded = adopted;
+            recorded.replayed = true;
+            assert_eq!(
+                reopened
+                    .recover_file_import(
+                        project.id,
+                        &recorded.project.stamp(),
+                        "captured-original-once",
+                        &asset_intent(),
+                    )
+                    .unwrap(),
+                Some(recorded)
+            );
+        }
+
+        #[test]
+        fn captured_hash_size_and_reduced_byte_budget_reject_before_publication() {
+            let root = tempfile::tempdir().unwrap();
+            let service = StudioService::open_with_import_limits(
+                root.path().join("bounded.sqlite3"),
+                crate::ImportLimits::default().with_source_bytes(8).unwrap(),
+            )
+            .unwrap();
+            let project = service.create_project("Bounded byte capture").unwrap();
+            let bytes = b"12345678";
+            let actual = descriptor(bytes);
+            let before = state(&service, project.id);
+            for (request, expected) in [
+                (
+                    "captured-wrong-hash",
+                    BlobDescriptor {
+                        sha256: "0".repeat(64),
+                        ..actual.clone()
+                    },
+                ),
+                (
+                    "captured-wrong-size",
+                    BlobDescriptor {
+                        size_bytes: actual.size_bytes - 1,
+                        ..actual.clone()
+                    },
+                ),
+            ] {
+                let error = service
+                    .import_bytes_verified(
+                        project.id,
+                        &project.stamp(),
+                        request,
+                        bytes,
+                        &expected,
+                        asset_intent(),
+                    )
+                    .unwrap_err();
+                assert!(
+                    matches!(error, StorageError::Domain(DomainError::Invalid(message))
+                    if message.contains("expected SHA-256 or byte count"))
+                );
+                assert_eq!(state(&service, project.id), before);
+                no_published_blob(&service, &actual);
+            }
+            let oversized = b"123456789";
+            assert!(matches!(
+                service.import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-over-budget",
+                    oversized,
+                    &descriptor(oversized),
+                    asset_intent(),
+                ),
+                Err(StorageError::BlobTooLarge { size: 9, limit: 8 })
+            ));
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &descriptor(oversized));
+            let accepted = service
+                .import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-exact-budget",
+                    bytes,
+                    &actual,
+                    asset_intent(),
+                )
+                .unwrap();
+            assert_eq!(accepted.project.revision, project.revision + 1);
+            assert_eq!(
+                service.store().lock().read_blob(&actual.sha256, 8).unwrap(),
+                bytes
+            );
+        }
+
+        #[test]
+        fn captured_scope_and_revision_guards_precede_descriptor_or_capture_work() {
+            let (_root, service, project) = fixture();
+            let advanced = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "advance-before-bytes",
+                    &Change::RenameProject {
+                        title: "Current local owner head".into(),
+                    },
+                )
+                .unwrap()
+                .project;
+            let bytes = b"exact capture must still pass project admission";
+            let wrong = BlobDescriptor {
+                sha256: "0".repeat(64),
+                size_bytes: 1,
+            };
+            let before = state(&service, project.id);
+            assert!(matches!(service.import_bytes_verified(
+                project.id, &project.stamp(), "stale-captured", bytes, &wrong, asset_intent(),
+            ), Err(StorageError::Conflict { expected, actual })
+                if expected == project.revision && actual == advanced.revision));
+            for foreign in [
+                RevisionStamp {
+                    generation: Uuid::from_u128(7),
+                    ..advanced.stamp()
+                },
+                RevisionStamp {
+                    resource: "project:foreign".into(),
+                    ..advanced.stamp()
+                },
+            ] {
+                assert!(matches!(
+                    service.import_bytes_verified(
+                        project.id,
+                        &foreign,
+                        "foreign-captured",
+                        bytes,
+                        &wrong,
+                        asset_intent(),
+                    ),
+                    Err(StorageError::GenerationConflict)
+                ));
+            }
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &descriptor(bytes));
+        }
+
+        #[test]
+        fn captured_and_file_replays_share_receipt_without_cas_repair_or_new_revision() {
+            let (root, service, project) = fixture();
+            let bytes = b"same immutable source across both existing import inputs";
+            let expected = descriptor(bytes);
+            let path = source(root.path(), bytes);
+            let original = service
+                .import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-shared-receipt",
+                    bytes,
+                    &expected,
+                    asset_intent(),
+                )
+                .unwrap();
+            let advanced = service
+                .apply(
+                    project.id,
+                    &original.project.stamp(),
+                    "advance-captured-receipt",
+                    &Change::RenameProject {
+                        title: "Do not rewind current project".into(),
+                    },
+                )
+                .unwrap()
+                .project;
+            let blob = service
+                .store()
+                .lock()
+                .verified_blob_path(&expected.sha256)
+                .unwrap();
+            fs::remove_file(&blob).unwrap();
+            let before = state(&service, project.id);
+            let mut historical = original;
+            historical.replayed = true;
+            let from_path = service
+                .import_file_verified(
+                    project.id,
+                    &advanced.stamp(),
+                    "captured-shared-receipt",
+                    &path,
+                    &expected,
+                    asset_intent(),
+                )
+                .unwrap();
+            fs::remove_file(path).unwrap();
+            let from_capture = service
+                .import_bytes_verified(
+                    project.id,
+                    &advanced.stamp(),
+                    "captured-shared-receipt",
+                    bytes,
+                    &expected,
+                    asset_intent(),
+                )
+                .unwrap();
+            assert_eq!(from_path, historical);
+            assert_eq!(from_capture, historical);
+            assert_eq!(state(&service, project.id), before);
+            assert!(
+                !blob.exists(),
+                "known replay must never repair missing original CAS"
+            );
+            let changed = b"changed original is request reuse";
+            assert!(matches!(
+                service.import_bytes_verified(
+                    project.id,
+                    &advanced.stamp(),
+                    "captured-shared-receipt",
+                    changed,
+                    &descriptor(changed),
+                    asset_intent(),
+                ),
+                Err(StorageError::RequestReuse)
+            ));
+            assert_eq!(state(&service, project.id), before);
+        }
+
+        #[test]
+        fn captured_data_keeps_cross_chunk_credential_and_hidden_svg_admission() {
+            let (_root, service, project) = fixture();
+            let before = state(&service, project.id);
+            // This is a scanner sentinel, never an actual private key.
+            let mut marker = vec![b'x'; 128 * 1024 - 8];
+            marker.extend_from_slice(concat!("-----BEGIN ", "PRIVATE KEY-----").as_bytes());
+            let expected = descriptor(&marker);
+            assert!(matches!(
+                service.import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-secret-pattern",
+                    &marker,
+                    &expected,
+                    asset_intent(),
+                ),
+                Err(StorageError::InvalidBackup(_))
+            ));
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &expected);
+            let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(1)</script></svg>"#;
+            let expected = descriptor(svg);
+            assert!(matches!(
+                service.import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-hidden-active-svg",
+                    svg,
+                    &expected,
+                    FileImportIntent::Asset {
+                        name: "poster.png".into(),
+                        media_type: "image/png".into(),
+                    },
+                ),
+                Err(StorageError::Domain(DomainError::Invalid(_)))
+            ));
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &expected);
+        }
+
+        #[test]
+        fn captured_voice_is_measured_from_the_shared_immutable_stage() {
+            let (_root, service, project) = fixture();
+            let voice = FileImportIntent::Voice {
+                name: "captured-original.wav".into(),
+                media_type: "audio/wav".into(),
+                label: "Captured original with measured PCM".into(),
+            };
+            let bad = b"malformed original WAV";
+            let before = state(&service, project.id);
+            assert!(
+                service
+                    .import_bytes_verified(
+                        project.id,
+                        &project.stamp(),
+                        "captured-malformed-voice",
+                        bad,
+                        &descriptor(bad),
+                        voice.clone(),
+                    )
+                    .is_err()
+            );
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &descriptor(bad));
+            let bytes = synthetic_stereo_wav();
+            let expected = descriptor(&bytes);
+            let outcome = service
+                .import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-measured-voice",
+                    &bytes,
+                    &expected,
+                    voice,
+                )
+                .unwrap();
+            assert_eq!(outcome.project.audio.voice_tracks.len(), 1);
+            let track = &outcome.project.audio.voice_tracks[0];
+            assert_eq!(track.sample_rate_hz, 48_000);
+            assert_eq!(track.channels, 2);
+            assert_eq!(track.measured_duration, RationalTime::new(1, 1).unwrap());
+            assert_eq!(track.source_sha256, expected.sha256);
+            assert_eq!(
+                service
+                    .store()
+                    .lock()
+                    .read_blob(&expected.sha256, expected.size_bytes,)
+                    .unwrap(),
+                bytes
+            );
+        }
+
+        #[test]
+        fn captured_capsule_preserves_scene_guards_and_unavailable_native_fidelity() {
+            let (_root, service, project) = fixture();
+            let project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "captured-source-scene",
+                    &Change::AddScene {
+                        name: "Captured source".into(),
+                        objective: "Preserve source data only".into(),
+                        duration_seconds: 6,
+                    },
+                )
+                .unwrap()
+                .project;
+            let bytes = br#"{"OTIO_SCHEMA":"Timeline.1","name":"captured original"}"#;
+            let expected = descriptor(bytes);
+            let spec = NativeCapsuleSourceSpec {
+                name: "captured.otio".into(),
+                media_type: "application/vnd.opentimelineio+json".into(),
+                capsule_id: Uuid::from_u128(42),
+                scene_id: project.scenes[0].id,
+                label: "Captured data without native acceptance".into(),
+                editable_parameters: Vec::new(),
+                native_editor_hint: "OpenTimelineIO".into(),
+            };
+            let before = state(&service, project.id);
+            let mut invalid = spec.clone();
+            invalid.scene_id = Uuid::from_u128(43);
+            assert!(
+                service
+                    .import_bytes_verified(
+                        project.id,
+                        &project.stamp(),
+                        "captured-missing-scene",
+                        bytes,
+                        &expected,
+                        FileImportIntent::NativeCapsuleSource { spec: invalid },
+                    )
+                    .is_err()
+            );
+            assert_eq!(state(&service, project.id), before);
+            no_published_blob(&service, &expected);
+            let outcome = service
+                .import_bytes_verified(
+                    project.id,
+                    &project.stamp(),
+                    "captured-native-source",
+                    bytes,
+                    &expected,
+                    FileImportIntent::NativeCapsuleSource { spec },
+                )
+                .unwrap();
+            let capsule = &outcome.project.production_design.capsules[0];
+            assert_eq!(capsule.source_sha256, expected.sha256);
+            assert_eq!(capsule.source_asset_id, outcome.project.assets[0].id);
+            for fidelity in [
+                &capsule.fidelity.visual,
+                &capsule.fidelity.temporal,
+                &capsule.fidelity.structural,
+                &capsule.fidelity.editable,
+            ] {
+                assert_eq!(fidelity, &Fidelity::Unavailable);
+            }
+            assert!(capsule.fidelity.evidence_sha256.is_none());
+        }
     }
 
     #[test]
