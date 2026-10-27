@@ -506,3 +506,160 @@ fn bounded_orbits_retain_all_nodes_and_stage_boundaries_across_seed_extremes() {
         }
     }
 }
+
+fn edge_config(origin_y: u16, reveal_step_frames: u8) -> ProceduralConfig {
+    ProceduralConfig {
+        count: 1,
+        columns: 1,
+        distribution: FieldDistribution::Grid,
+        origin_x: 0,
+        origin_y,
+        area_width: 8,
+        area_height: 8,
+        size: 8,
+        reveal_step_frames,
+        reveal_duration_frames: 12,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn clipped_new_entrances_reject_without_mutating_empty_or_human_edited_projects() {
+    let mut saved = project();
+    upsert(&mut saved, ProceduralConfig::default()).unwrap();
+    let first = saved.scenes[0].nodes[0].clone();
+    saved
+        .apply_change(&Change::UpdateCanvasStyle {
+            scene_id: saved.scenes[0].id,
+            node_id: first.id,
+            style: NodeStyle {
+                fill: Some("#FFAA22".into()),
+                ..first.style
+            },
+        })
+        .unwrap();
+    for distribution in [
+        FieldDistribution::Grid,
+        FieldDistribution::Staggered,
+        FieldDistribution::Scatter,
+        FieldDistribution::Radial,
+        FieldDistribution::Spiral,
+    ] {
+        let config = ProceduralConfig {
+            distribution,
+            area_width: 16,
+            area_height: 16,
+            ..edge_config(1064, 1)
+        };
+        let legacy_nodes = realize_procedural_field(instance_id(), &config).unwrap();
+        assert!(
+            legacy_nodes
+                .iter()
+                .all(|node| node.y + node.height <= 1080.0)
+        );
+        assert!(legacy_nodes.iter().any(|node| {
+            node.keyframes
+                .iter()
+                .any(|key| key.property == MotionProperty::Y && key.value + node.height > 1080.0)
+        }));
+        for mut current in [project(), saved.clone()] {
+            let before = current.clone();
+            let error = upsert(&mut current, config.clone()).unwrap_err();
+            assert!(error.to_string().contains("entrance exceeds"));
+            assert_eq!(current, before);
+        }
+    }
+}
+
+#[test]
+fn static_edge_and_exact_animated_edge_keep_authored_positions_and_times() {
+    let mut still = project();
+    upsert(&mut still, edge_config(1072, 0)).unwrap();
+    assert_eq!(
+        still.scenes[0].nodes[0].y + still.scenes[0].nodes[0].height,
+        1080.0
+    );
+    assert!(still.scenes[0].nodes[0].keyframes.is_empty());
+    let exact = edge_config(1060, 1);
+    let mut fitting = project();
+    upsert(&mut fitting, exact.clone()).unwrap();
+    assert_eq!(fitting.production_design.procedural_fields[0].config, exact);
+    let node = &fitting.scenes[0].nodes[0];
+    assert_eq!((node.y, node.height), (1060.0, 8.0));
+    assert_eq!(
+        node.keyframes
+            .iter()
+            .filter(|key| key.property == MotionProperty::Y)
+            .map(|key| (key.at, key.value))
+            .collect::<Vec<_>>(),
+        vec![
+            (RationalTime::ZERO, 1072.0),
+            (RationalTime::new(2, 5).unwrap(), 1060.0)
+        ]
+    );
+    let before = fitting.clone();
+    assert!(
+        upsert(&mut fitting, edge_config(1061, 1))
+            .unwrap_err()
+            .to_string()
+            .contains("entrance exceeds")
+    );
+    assert_eq!(fitting, before);
+}
+
+#[test]
+fn historical_clipped_v1_baseline_reopens_validates_and_detaches_without_migration() {
+    let config = edge_config(1072, 1);
+    let baseline = realize_procedural_field(instance_id(), &config).unwrap();
+    let mut legacy = project();
+    legacy.scenes[0].nodes = baseline.clone();
+    legacy.production_design.procedural_fields.push(
+        serde_json::from_value(serde_json::json!({
+            "id": instance_id(),
+            "scene_id": legacy.scenes[0].id,
+            "generator_version": 1,
+            "config": config.clone(),
+            "baseline": baseline.clone(),
+        }))
+        .unwrap(),
+    );
+    legacy.validate().unwrap();
+    let bytes = serde_json::to_string(&legacy).unwrap();
+    let mut reopened: Project = serde_json::from_str(&bytes).unwrap();
+    reopened.validate().unwrap();
+    assert_eq!(reopened, legacy);
+    assert_eq!(serde_json::to_string(&reopened).unwrap(), bytes);
+    assert_eq!(
+        realize_procedural_field(
+            instance_id(),
+            &reopened.production_design.procedural_fields[0].config
+        )
+        .unwrap(),
+        baseline
+    );
+    assert_eq!(
+        baseline[0]
+            .keyframes
+            .iter()
+            .find(|key| key.property == MotionProperty::Y)
+            .unwrap()
+            .value,
+        1084.0
+    );
+    let before = reopened.clone();
+    assert!(
+        upsert(&mut reopened, config)
+            .unwrap_err()
+            .to_string()
+            .contains("entrance exceeds")
+    );
+    assert_eq!(reopened, before);
+    reopened
+        .apply_change(&Change::DetachProceduralField {
+            instance_id: instance_id(),
+        })
+        .unwrap();
+    assert!(reopened.production_design.procedural_fields.is_empty());
+    assert_eq!(reopened.scenes[0].nodes, baseline);
+    reopened.validate().unwrap();
+}

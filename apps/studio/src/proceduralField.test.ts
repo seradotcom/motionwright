@@ -3,7 +3,7 @@ import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
 import { brandDigest } from "./brandGovernance";
-import { defaultProceduralConfig, proceduralNodeId, realizeProceduralField } from "./proceduralField";
+import { defaultProceduralConfig, proceduralNodeId, realizeProceduralField, validateProceduralAuthoringBounds } from "./proceduralField";
 import type { Project } from "./types";
 import { rationalSeconds } from "./types";
 
@@ -194,5 +194,64 @@ describe("procedural orbit and shape conformance",()=>{
     const old=structuredClone(defaultProceduralConfig());
     delete old.shape;
     expect(await realizeProceduralField(ID,old)).toEqual(await realizeProceduralField(ID,defaultProceduralConfig()));
+  });
+});
+
+describe("procedural entrance authoring bounds without v1 migration",()=>{
+  it("rejects clipped new entrances in every distribution and preserves prior human edits",async()=>{
+    let saved=await upsert(project());
+    const first=saved.scenes[0].nodes[0];
+    saved=await applyChange(saved,{type:"update_canvas_style",scene_id:saved.scenes[0].id,
+      node_id:first.id,style:{...first.style,fill:"#FFAA22"}});
+    for(const distribution of ["grid","staggered","scatter","radial","spiral"] as const){
+      const config={...defaultProceduralConfig(),count:1,columns:1,distribution,
+        origin_x:0,origin_y:1064,area_width:16,area_height:16,size:8,
+        reveal_step_frames:1,reveal_duration_frames:12};
+      const legacyNodes=await realizeProceduralField(ID,config);
+      expect(legacyNodes.every(node=>node.y+node.height<=1080)).toBe(true);
+      expect(()=>validateProceduralAuthoringBounds(legacyNodes)).toThrow("entrance exceeds");
+      for(const current of [project(),saved]){
+        const before=structuredClone(current);
+        await expect(upsert(current,config)).rejects.toThrow("entrance exceeds");
+        expect(current).toEqual(before);
+      }
+    }
+  });
+  it("accepts static edge content and the exact animated edge without shifting or retiming",async()=>{
+    const base={...defaultProceduralConfig(),count:1,columns:1,distribution:"grid" as const,
+      origin_x:0,origin_y:1072,area_width:8,area_height:8,size:8};
+    const still=await upsert(project(),base);
+    expect(still.scenes[0].nodes[0].y+still.scenes[0].nodes[0].height).toBe(1080);
+    expect(still.scenes[0].nodes[0].keyframes).toEqual([]);
+    const exact={...base,origin_y:1060,reveal_step_frames:1,reveal_duration_frames:12};
+    const fitting=await upsert(project(),exact),node=fitting.scenes[0].nodes[0];
+    expect(fitting.production_design?.procedural_fields?.[0].config).toEqual(exact);
+    expect(node.y).toBe(1060);expect(node.height).toBe(8);
+    expect(node.keyframes.filter(key=>key.property==="y").map(key=>[key.at,key.value])).toEqual([
+      [{num:"0",den:"1"},1072],[{num:"2",den:"5"},1060],
+    ]);
+    const before=structuredClone(fitting);
+    await expect(upsert(fitting,{...exact,origin_y:1061})).rejects.toThrow("entrance exceeds");
+    expect(fitting).toEqual(before);
+  });
+  it("keeps a serialized legacy clipped baseline readable and detachable",async()=>{
+    const legacy=await upsert(project());
+    const config={...defaultProceduralConfig(),count:1,columns:1,distribution:"grid" as const,
+      origin_x:0,origin_y:1072,area_width:8,area_height:8,size:8,
+      reveal_step_frames:1,reveal_duration_frames:12};
+    const baseline=await realizeProceduralField(ID,config);
+    legacy.scenes[0].nodes=structuredClone(baseline);
+    legacy.production_design!.procedural_fields=[{id:ID,scene_id:legacy.scenes[0].id,
+      generator_version:1,config:structuredClone(config),baseline:structuredClone(baseline)}];
+    const bytes=JSON.stringify(legacy),reopened=JSON.parse(bytes) as Project;
+    expect(JSON.stringify(reopened)).toBe(bytes);
+    expect(await realizeProceduralField(ID,reopened.production_design!.procedural_fields![0].config)).toEqual(baseline);
+    expect(baseline[0].keyframes.find(key=>key.property==="y")?.value).toBe(1084);
+    const before=structuredClone(reopened);
+    await expect(upsert(reopened,config)).rejects.toThrow("entrance exceeds");
+    expect(reopened).toEqual(before);
+    const detached=await applyChange(reopened,{type:"detach_procedural_field",instance_id:ID});
+    expect(detached.production_design?.procedural_fields).toHaveLength(0);
+    expect(detached.scenes[0].nodes).toEqual(baseline);
   });
 });

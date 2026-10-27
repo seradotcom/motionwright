@@ -143,6 +143,12 @@ export async function realizeProceduralField(id:string,input:ProceduralConfig):P
   }
   return nodes;
 }
+/** New authoring must fit the entire declared entrance. Keep the v1 generator
+ * unchanged so stored baselines remain readable and detachable without migration. */
+export function validateProceduralAuthoringBounds(nodes:readonly CanvasNode[]):void {
+  if(nodes.some(node=>node.keyframes.some(key=>key.property==="y" && key.value+node.height>1080)))
+    throw new Error("Procedural entrance exceeds 1920x1080 authored stage; move the field upward or disable sequencing.");
+}
 type ProceduralChange =
   | {type:"upsert_procedural_field";instance_id:string;scene_id:string;config:ProceduralConfig}
   | {type:"detach_procedural_field";instance_id:string};
@@ -173,6 +179,7 @@ export async function applyProceduralChange(p:Project,change:ProceduralChange):P
       throw new Error("Procedural sequence exceeds scene duration; shorten step/duration or extend scene.");
   }
   const baseline=await realizeProceduralField(change.instance_id,config);
+  validateProceduralAuthoringBounds(baseline);
   let result=structuredClone(scene.nodes);
   if(existing){
     if(existing.generator_version!==1 || !sameValue(existing.baseline,await realizeProceduralField(existing.id,existing.config)))

@@ -177,6 +177,26 @@ describe("creative workbench verified custody and uncertain outcome review",()=>
     const key=workbenchCopyKey(draft.scope,fork);store.setItem(key,"{corrupt");expect(readWorkbenchCopies(store,draft.scope).entries.find(value=>value.key===key)?.value).toBeNull();expect(store.getItem(key)).toBe("{corrupt");
     expect(()=>decodeWorkbenchCopy(owner.expectedRaw!,draft.scope+"-other",writer)).toThrow();
   });
+  it("accepts boolean focus snapshots and preserves invalid submitted-only recovery bytes",async()=>{
+    const {project,source:draft}=await armed(),input=draft.input;
+    if(input.kind!=="stage")throw new Error("Missing stage input");
+    for(const animate_focus of [false,true]){
+      const configured=editWorkbenchDraft(draft,{...input,config:{...input.config,animate_focus}});
+      const {draft:pending}=await prepareWorkbenchSubmission(configured,project,requestId,"save");
+      const raw=encodeWorkbenchCopy({schema:"motionwright.creative-workbench-recovery/1",scope:pending.scope,writerId:writer,updatedAt:1,draft:pending});
+      const restored=decodeWorkbenchCopy(raw,pending.scope,writer).draft;
+      expect(restored).toEqual(pending);expect(restored.pending?.outcome).toBe("UNKNOWN");
+      for(const malformed of ["false",0,null]){
+        // Only the comparison Change is altered; the author input stays valid.
+        const invalid=JSON.parse(raw);invalid.draft.pending.submitted.config.animate_focus=malformed;
+        const corrupt=JSON.stringify(invalid),store=new MemoryStorage(),key=workbenchCopyKey(pending.scope,writer);
+        store.setItem(key,corrupt);
+        expect(()=>decodeWorkbenchCopy(corrupt,pending.scope,writer)).toThrow("Unreadable workbench comparison snapshot.");
+        expect(readWorkbenchCopies(store,pending.scope)).toEqual({entries:[{key,writerId:writer,raw:corrupt,value:null}],limited:false});
+        expect(store.getItem(key)).toBe(corrupt);expect(store.length).toBe(1);
+      }
+    }
+  });
   it("a full recovery budget blocks saving without deleting any previous author bytes",async()=>{
     const {prepared}=await armed(),store=new MemoryStorage(),pointers=new MemoryStorage();for(let index=0;index<64;index++)store.setItem(WORKBENCH_RECOVERY_PREFIX+"older-"+index,"Retained bytes");
     expect(()=>writeWorkbenchCopy(store,pointers,prepared.draft,custody())).toThrow("full");expect(store.length).toBe(64);expect(pointers.length).toBe(0);

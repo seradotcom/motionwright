@@ -121,7 +121,9 @@ export function draftEditorDirty(draft: ScopedChangeDraft): boolean {
   return draft.editor.source !== null && !sameValue(editorValue(draft.editor, draft.editor.kind), sourceValue(draft.editor.source, draft.editor.kind));
 }
 function editorFieldHasInput(draft: ScopedChangeDraft, editor: DraftEditor, kind: DraftEdit["kind"]): boolean {
-  if (!editor.source) return false;
+  // Without original values, recovered raw input cannot be classified as
+  // unchanged. Keep it recoverable; queueing still requires its source.
+  if (!editor.source) return kind === "transform" && editor.transformRaw !== undefined;
   const value = editorValue(editor, kind);
   const queued = draft.edits.find(edit => edit.node_id === editor.nodeId && edit.kind === kind);
   return !sameValue(value, sourceValue(editor.source, kind)) || (queued !== undefined && !sameValue(value, editValue(queued)));
@@ -207,6 +209,8 @@ export function continueDraftManually(draft: ScopedChangeDraft): ScopedChangeDra
   return { ...draft, nativeSource: null, rationale: draft.rationale + "\n\n" + context };
 }
 function refreshEditor(draft: ScopedChangeDraft, editor: DraftEditor, node: CanvasNode): DraftEditor {
+  // A receipt for other queued work cannot reconstruct a recovered source.
+  if (!editor.source) return editor;
   const keepTransform = editorFieldHasInput(draft, editor, "transform");
   const next = { ...editor, source: sourceNode(node),
     text: editorFieldHasInput(draft, editor, "text") ? editor.text : node.text ?? "",

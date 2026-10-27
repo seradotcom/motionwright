@@ -77,6 +77,17 @@ describe("ProductStage generic original UI grammar",()=>{
     p=await commit(p,{...config,screen_heading:"A better original UI study"});
     expect(p.scenes[0].nodes[10]).toEqual(focus);
   });
+  it("rejects untyped focus flags before realization or browser-demo mutation",async()=>{
+    const project=seed(),before=structuredClone(project);
+    for(const animate_focus of ["false",0,null]){
+      const config={...ready(),animate_focus} as unknown as ProductStageConfig;
+      expect(()=>validateProductStageConfig(config)).toThrow(/focus animation.*boolean/);
+      await expect(realizeProductStage(id,config)).rejects.toThrow(/focus animation.*boolean/);
+      await expect(commit(project,config)).rejects.toThrow(/focus animation.*boolean/);
+      expect(project).toEqual(before);
+      expect(config.animate_focus).toBe(animate_focus);
+    }
+  });
   it("requires original-content declaration; rejects external media, logos and deletion of disclosure",async()=>{
     const p=seed();
     await expect(commit(p,defaultProductStageConfig())).rejects.toThrow(/attestation/);

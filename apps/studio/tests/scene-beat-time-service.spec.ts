@@ -139,6 +139,87 @@ test("copy-only scene beat edits retain exact fractional frame times in SQLite a
       expect(await observe("new service process and actual App reload")).toEqual(saved);
       expect(await service.history(baseline.id, baseline.revision)).toEqual(journal);
       expect(applied(service)).toHaveLength(applyCount + 2);
+
+      // Continue through the actual profile and timeline controls. A fractional
+      // frame marker must survive service persistence just like the beat above.
+      await button(page, "Deliver").click();
+      const profileApplyCount = applied(service).length;
+      await button(page, "New profile").click();
+      // New profile persists its defaults; Save profile is a second upsert.
+      await revision(page, saved.revision + 1);
+      const created = await observe("default profile persisted before NTSC metadata edits");
+      const newProfiles = created.deliverables.filter(profile => !saved.deliverables.some(prior => prior.id === profile.id));
+      expect(newProfiles).toHaveLength(1);
+      const createdProfile = newProfiles[0];
+      expect(createdProfile).toMatchObject({ name: "Delivery " + (saved.deliverables.length + 1), frame_rate: r("30") });
+      expect(created.deliverables).toHaveLength(saved.deliverables.length + 1);
+      expect(created.deliverables.filter(profile => profile.id !== createdProfile.id)).toEqual(saved.deliverables);
+      expect(created.scenes).toEqual(saved.scenes);
+      expect(created.markers).toEqual(saved.markers);
+      expect(applied(service)).toHaveLength(profileApplyCount + 1);
+      await expect(page.getByLabel("Profile name")).toHaveValue(createdProfile.name);
+      await page.getByLabel("Profile name").fill("Exact marker NTSC");
+      await page.getByLabel("Frame rate", { exact: true }).selectOption("30000/1001");
+      await button(page, "Save profile").click();
+      await revision(page, saved.revision + 2);
+      const beforeMarker = await observe("NTSC metadata saved on the newly persisted profile before marker authoring");
+      const ntscProfile = { ...createdProfile, name: "Exact marker NTSC", frame_rate: r("30000", "1001") };
+      expect(beforeMarker.deliverables.find(profile => profile.id === createdProfile.id)).toEqual(ntscProfile);
+      expect(beforeMarker.deliverables).toHaveLength(saved.deliverables.length + 1);
+      expect(beforeMarker.deliverables.filter(profile => profile.id !== createdProfile.id)).toEqual(saved.deliverables);
+      expect(beforeMarker.scenes).toEqual(saved.scenes);
+      expect(beforeMarker.markers).toEqual(saved.markers);
+      const profileJournal = await service.history(baseline.id, saved.revision);
+      expect(profileJournal.map(event => event.revision)).toEqual([saved.revision + 1, saved.revision + 2]);
+      expect(profileJournal.map(event => event.change)).toEqual([
+        { type: "upsert_deliverable", profile: createdProfile },
+        { type: "upsert_deliverable", profile: ntscProfile },
+      ]);
+      expect(applied(service)).toHaveLength(profileApplyCount + 2);
+      await page.getByLabel("Editor preview timebase").selectOption({ label: "Exact marker NTSC · 29.97 fps NDF" });
+      await button(page, "Timeline").click();
+      const zeroScene = beforeMarker.scenes.find(scene => scene.start.num === "0");
+      if (!zeroScene) throw new Error("The observed service project has no scene at zero for the frame-step check.");
+      await page.locator(".timeline-clip").filter({ has: page.getByText(zeroScene.name, { exact: true }) }).click();
+      const timecode = page.locator(".timeline-header .timecode");
+      await expect(timecode).toHaveText("00:00:00");
+      await button(page, "Step forward one frame").click();
+      await expect(timecode).toHaveText("00:00:01");
+      const markerApplyCount = applied(service).length;
+      await button(page, "Marker").click();
+      await revision(page, beforeMarker.revision + 1);
+      const withMarker = await observe("first NTSC frame marker committed through actual App and service");
+      const newMarkers = withMarker.markers.filter(marker => !beforeMarker.markers.some(prior => prior.id === marker.id));
+      expect(newMarkers).toHaveLength(1);
+      expect(withMarker.markers).toHaveLength(beforeMarker.markers.length + 1);
+      const marker = newMarkers[0];
+      expect(marker.at).toEqual(r("1001", "30000"));
+      expect(withMarker.scenes).toEqual(beforeMarker.scenes);
+      const markerJournal = await service.history(baseline.id, beforeMarker.revision);
+      expect(markerJournal.map(event => event.change)).toEqual([
+        { type: "add_marker", at: r("1001", "30000"), label: marker.label },
+      ]);
+      expect(applied(service)).toHaveLength(markerApplyCount + 1);
+
+      await button(page, "Step forward one frame").click();
+      await expect(timecode).toHaveText("00:00:02");
+      const markerButton = button(page, "Marker: " + marker.label);
+      await markerButton.click();
+      await expect(markerButton).toHaveAttribute("aria-pressed", "true");
+      await expect(timecode).toHaveText("00:00:01");
+      await revision(page, withMarker.revision);
+      expect(await observe("saved marker selection returned to its frame without a project edit")).toEqual(withMarker);
+      expect(applied(service)).toHaveLength(markerApplyCount + 1);
+
+      await service.close(); await service.start(); await page.reload();
+      await revision(page, withMarker.revision);
+      await page.getByLabel("Editor preview timebase").selectOption({ label: "Exact marker NTSC · 29.97 fps NDF" });
+      await markerButton.click();
+      await expect(timecode).toHaveText("00:00:01");
+      await expect(markerButton).toHaveAttribute("aria-pressed", "true");
+      expect(await observe("exact marker after SQLite close, new process and actual App reload")).toEqual(withMarker);
+      expect(await service.history(baseline.id, beforeMarker.revision)).toEqual(markerJournal);
+      expect(applied(service)).toHaveLength(markerApplyCount + 1);
     });
 });
 

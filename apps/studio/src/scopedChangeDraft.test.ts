@@ -574,6 +574,88 @@ describe("a matching stored receipt clears only reviewed work", () => {
 });
 
 describe("untrusted session draft decoding", () => {
+  it("keeps recovered raw input without granting a missing source or silently emptying its backup", () => {
+    const { project, scene, first, second } = source();
+    const draft = rawTransformInput(createScopedDraft(project, scene), "x", "1e");
+    const saved = JSON.parse(encodeScopedDraft(draft));
+    // A damaged recovery record is accepted by the nullable-source schema.
+    // This does not pretend that the disabled live controls authored it.
+    saved.editor.source = null;
+    const restored = decodeScopedDraft(JSON.stringify(saved), draft.scope);
+    expect(restored.editor.source).toBeNull();
+    expect(draftTransformInput(restored, "x")).toBe("1e");
+    expect(scopedDraftHasWork(restored)).toBe(true);
+    expect(unqueuedInputCount(restored)).toBe(1);
+    expect(() => queueDraftEdit(restored)).toThrow("Select an object from the draft's source revision.");
+    expect(scopedDraftConflicts(restored, scene)).toEqual([
+      expect.objectContaining({ nodeId: first.id, kind: "transform", reason: "missing", before: null }),
+    ]);
+    expect(() => rebaseScopedDraft(restored, { ...project, revision: project.revision + 1 }, scene)).toThrow("overlapping");
+    expect(decodeScopedDraft(encodeScopedDraft(restored), draft.scope)).toEqual(restored);
+
+    const parked = selectDraftNode(restored, second);
+    expect(scopedDraftHasWork(parked)).toBe(true);
+    const returned = selectDraftNode(decodeScopedDraft(encodeScopedDraft(parked), draft.scope), first);
+    expect(returned.editor.source).toBeNull();
+    expect(draftTransformInput(returned, "x")).toBe("1e");
+    expect(() => queueDraftEdit(returned)).toThrow("Select an object from the draft's source revision.");
+    expect(draftPatch(returned, scene.id).edits).toEqual([]);
+
+    const completed = updateDraftTransformInput(returned, "x", "1e2");
+    expect(draftTransformInvalidFields(completed)).toEqual([]);
+    expect(scopedDraftHasWork(completed)).toBe(true);
+    expect(unqueuedInputCount(completed)).toBe(1);
+    expect(decodeScopedDraft(encodeScopedDraft(completed), draft.scope)).toEqual(completed);
+    const completedParked = selectDraftNode(completed, second);
+    expect(scopedDraftHasWork(completedParked)).toBe(true);
+    const completedReturned = selectDraftNode(decodeScopedDraft(encodeScopedDraft(completedParked), draft.scope), first);
+    expect(completedReturned.editor.source).toBeNull();
+    expect(draftTransformInput(completedReturned, "x")).toBe("1e2");
+    expect(unqueuedInputCount(completedReturned)).toBe(1);
+    expect(scopedDraftConflicts(completedReturned, scene)).toEqual([
+      expect.objectContaining({ nodeId: first.id, kind: "transform", reason: "missing", before: null }),
+    ]);
+    expect(() => rebaseScopedDraft(completedReturned, { ...project, revision: project.revision + 1 }, scene)).toThrow("overlapping");
+    expect(() => queueDraftEdit(completedReturned)).toThrow("Select an object from the draft's source revision.");
+    expect(scopedDraftHasWork(createScopedDraft(project, { ...scene, nodes: [] }))).toBe(false);
+  });
+
+  it("does not infer a recovered input's missing source from another object's matching receipt", () => {
+    const { scene, second, draft: initial, reviewed, committed } = matchingTransformReceipt();
+    const draft = rawTransformInput(selectDraftNode(initial, second), "x", "1e");
+    const saved = JSON.parse(encodeScopedDraft(draft));
+    saved.editor.source = null;
+    const restored = decodeScopedDraft(JSON.stringify(saved), draft.scope);
+    expect(reviewedChangeWasCommitted(committed, reviewed)).toBe(true);
+    const retained = retainUnqueuedInputs(restored, committed, committed.scenes[0]);
+    expect(retained.baseRevision).toBe(committed.revision);
+    expect(retained.edits).toEqual([]);
+    expect(retained.origins).toEqual([]);
+    expect(retained.editor.source).toBeNull();
+    expect(draftTransformInput(retained, "x")).toBe("1e");
+    expect(scopedDraftHasWork(retained)).toBe(true);
+    expect(unqueuedInputCount(retained)).toBe(1);
+    expect(decodeScopedDraft(encodeScopedDraft(retained), draft.scope)).toEqual(retained);
+
+    const completed = updateDraftTransformInput(retained, "x", "1e2");
+    expect(draftTransformInvalidFields(completed)).toEqual([]);
+    expect(scopedDraftHasWork(completed)).toBe(true);
+    expect(unqueuedInputCount(completed)).toBe(1);
+    expect(decodeScopedDraft(encodeScopedDraft(completed), draft.scope)).toEqual(completed);
+    const parked = selectDraftNode(completed, committed.scenes[0].nodes[0]);
+    expect(scopedDraftHasWork(parked)).toBe(true);
+    const returned = selectDraftNode(decodeScopedDraft(encodeScopedDraft(parked), draft.scope), second);
+    expect(returned.editor.source).toBeNull();
+    expect(draftTransformInput(returned, "x")).toBe("1e2");
+    expect(unqueuedInputCount(returned)).toBe(1);
+    expect(scopedDraftConflicts(returned, committed.scenes[0])).toEqual([
+      expect.objectContaining({ nodeId: second.id, kind: "transform", reason: "missing", before: null }),
+    ]);
+    expect(() => rebaseScopedDraft(returned, committed, committed.scenes[0])).toThrow("overlapping");
+    expect(() => queueDraftEdit(returned)).toThrow("Select an object from the draft's source revision.");
+    expect(draftPatch(retained, scene.id).edits).toEqual([]);
+  });
+
   it("restores typed editing fields and discards injected previews, commands and grants at every depth", () => {
     const { project, scene, draft } = queuedCopy();
     const injected = JSON.parse(encodeScopedDraft(updateDraftTransformInput(draft, "x", String(draft.editor.transform.x))));
