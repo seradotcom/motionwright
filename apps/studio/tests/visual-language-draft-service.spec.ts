@@ -830,8 +830,11 @@ test("a saved ink token changes the actual SVG text paint across revisions and r
     await visualCommit(page).click();
     const final = await currentAfterUi(proof, overridden.revision + 1, "later global palette edit preserves the explicit object ink");
     const expectedVisual = structuredClone(overridden.visual_language);
+    expectedVisual.version = overridden.visual_language.version + 1;
     expectedVisual.palette[0].value = "#B6D4E2";
     expect(final).toEqual({ ...overridden, revision: overridden.revision + 1,
+      branches: overridden.branches.map(branch => branch.id === overridden.active_branch
+        ? { ...branch, head_revision: overridden.revision + 1 } : branch),
       updated_at: final.updated_at, visual_language: expectedVisual });
     expect(final.scenes.find(scene => scene.id === authoredScene.id)?.nodes.find(node => node.id === authoredText.id)?.style.fill)
       .toBe("#A1B2C3");
