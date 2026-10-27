@@ -4334,7 +4334,11 @@ mod editable_cycle_tests {
         assert_eq!(row.index, Some(0));
         assert_eq!(row.generation, generation);
         assert_eq!(epoch.generation, Some(generation));
-        let (projection, _) = fixture_spec();
+        let projection = crate::blender_product_scene::project_product_scene(
+            &ProductScene::vessel("fixture", CameraCurve::Linear),
+        )
+        .expect("closed product projection");
+        ValidatedProductSpec::decode(&projection).expect("pinned SDK decoder");
         let step = projection
             .before_create
             .iter()
@@ -4458,7 +4462,11 @@ mod editable_cycle_tests {
             panic!("original reply is a singleton");
         };
         // The real closed projection's named assignment remains strict.
-        let (projection, _) = fixture_spec();
+        let projection = crate::blender_product_scene::project_product_scene(
+            &ProductScene::vessel("fixture", CameraCurve::Linear),
+        )
+        .expect("closed product projection");
+        ValidatedProductSpec::decode(&projection).expect("pinned SDK decoder");
         let assignment = projection
             .after_create
             .iter()
