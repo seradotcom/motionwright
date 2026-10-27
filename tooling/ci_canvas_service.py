@@ -906,32 +906,101 @@ CLAIM_SOURCE_RUST_CASES = {'domain': ('source_only_edit_preserves_claim_id_order
              'explicit_source_withdrawal_is_durable_and_a_rejected_noop_adds_no_content_event',
              'immutable_capture_bindings_survive_direct_service_rejections_and_durable_reopen',
              'invalid_fields_assets_future_sources_and_missing_review_targets_have_no_partial_commit')}
+# Retained pre-closeout catalogues are historical inputs, never current PASS.
+HISTORICAL_DEFAULT_SERVICE_SELECTIONS = (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS,
+                                         *BRANCH_CLAIM_SELECTIONS)
+HISTORICAL_CREATIVE_PRODUCTION_SELECTIONS = CREATIVE_PRODUCTION_SELECTIONS
+HISTORICAL_BRANCH_CLAIM_SELECTIONS = BRANCH_CLAIM_SELECTIONS
+HISTORICAL_REVIEW_SERVICE_SELECTIONS = tuple(row for row in PROJECT_AUTHORING_SELECTIONS if row[0] == "review")
+CLOSEOUT_SERVICE_ADDITIONS = {'canvas': ('saved Canvas font drives the read-only Delivery choice through real SQLite restart and rejects '
+            'a mixed-font source',
+            'explicit Canvas world and local reparent preserve authored channels through real SQLite reopen',
+            'an uncertain Canvas reparent cannot be acknowledged by a matching peer revision and forks '
+            'retained input explicitly'),
+ 'review': ('selected review deliverable, language and rational range persist through actual App reload and '
+            'SQLite restart',
+            'later explicit empty review profile survives a held original reply and saves separately to '
+            'SQLite',
+            'lost reply keeps original selected review profile UNKNOWN while a later empty selection '
+            'survives actual SQLite recovery',
+            'pre-dispatch review transport interruption keeps the saved base UNKNOWN until an independent '
+            'SQLite peer advances it without replay'),
+ 'production-design': ('Production retries an initial pointer read for ordinary input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production retries an initial pointer read for UNKNOWN input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production retries an initial copy read for ordinary input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production retries an initial copy read for UNKNOWN input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production confirms an empty pointer after an initial read failure while retaining '
+                       'the input typed during the blocker',
+                       'Production component retains its first observed UNKNOWN bytes when a failed recovery '
+                       'read is followed by a same-writer replacement',
+                       'Production plan retains its first observed UNKNOWN bytes when a failed recovery read '
+                       'is followed by a same-writer replacement',
+                       'opaque source attachment raw input and a silent pointer failure preserve the '
+                       'existing asset before one explicit SQLite attachment',
+                       'opaque source attachment late real ACK retains two scene drafts and permits only a '
+                       'separate explicit later attachment',
+                       'opaque source attachment lost committed service reply preserves the exact submitted '
+                       'capsule and later cleared input without replay',
+                       'opaque source attachment pre-dispatch delivery interruption stays UNKNOWN on N until '
+                       'a real peer advances SQLite, with no original replay',
+                       'Scene boundary explicit source binding, Draft and Explicit saves preserve authored '
+                       'objects and assets through SQLite reopen and journalled removal',
+                       'Scene boundary keeps invalid raw endpoint JSON and its prior source when a real peer '
+                       'makes explicit rebind stale'),
+ 'branch-authoring': ('an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, '
+                      'preserving later input without replay',),
+ 'branch-combination': ('two real strategies produce a persisted inactive candidate, then editable undo '
+                        'preserves peer style and historical reviews',
+                        'lost original reply preserves late choices and UNKNOWN through reload, exact read '
+                        'and explicit separate intent',
+                        'an independent peer wins CAS after preview; rejected combination retains raw and '
+                        'never adds a phantom candidate')}
+CANVAS_TITLES = (*CANVAS_TITLES, *CLOSEOUT_SERVICE_ADDITIONS["canvas"])
+REVIEW_TITLES = (*REVIEW_TITLES, *CLOSEOUT_SERVICE_ADDITIONS["review"])
+PROJECT_AUTHORING_SELECTIONS = tuple(
+    (label, filename, CANVAS_TITLES if label == "canvas" else REVIEW_TITLES if label == "review" else titles)
+    for label, filename, titles in PROJECT_AUTHORING_SELECTIONS
+)
+CREATIVE_PRODUCTION_SELECTIONS = tuple(
+    (label, filename, (*titles, *CLOSEOUT_SERVICE_ADDITIONS.get(label, ())))
+    for label, filename, titles in CREATIVE_PRODUCTION_SELECTIONS
+)
+BRANCH_CLAIM_SELECTIONS = (*tuple(
+    (label, filename, (*titles, *CLOSEOUT_SERVICE_ADDITIONS.get(label, ())))
+    for label, filename, titles in BRANCH_CLAIM_SELECTIONS
+), ("branch-combination", "branch-combination-service.spec.ts", CLOSEOUT_SERVICE_ADDITIONS["branch-combination"]))
 SELECTIONS = (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
 
 # Each per-file process limit includes every declared test timeout and the
 # configured 120s server startup. Only an original run establishes actual timing.
 SELECTION_GROUPS = {
-    "branch-claim": {"labels": ("branch-authoring", "claim-source"), "required_tests": 31},
+    "branch-claim": {"labels": ("branch-authoring", "claim-source", "branch-combination"), "required_tests": 35},
     "project-authoring": {"labels": tuple(row[0] for row in PROJECT_AUTHORING_SELECTIONS),
-                          "required_tests": 136},
+                          "required_tests": 143},
+    "project-authoring-core": {"labels": tuple(row[0] for row in PROJECT_AUTHORING_SELECTIONS if row[0] != "review"), "required_tests": 132},
     "creative-production": {"labels": ("production-design", "creative-workbench"),
-                            "required_tests": 17},
+                            "required_tests": 30},
     "complete-authoring": {
         "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review",
                    "inspector", "profile-metadata", "profile-authority"),
-        "required_tests": 65,
+        "required_tests": 69,
     },
     "authoring-drafts": {
         "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review"),
-        "required_tests": 39,
+        "required_tests": 43,
     },
 }
 SELECTION_TIMEOUTS = {
-    "branch-authoring": 2220,
+    "branch-authoring": 2340,
     "claim-source": 1860,
-    "production-design": 1140,
+    "branch-combination": 540,
+    "production-design": 2700,
     "creative-workbench": 1260,
-    "canvas": 1800,
+    "canvas": 2160,
     "ink": 180,
     "program": 600,
     "brief": 900,
@@ -945,7 +1014,7 @@ SELECTION_TIMEOUTS = {
     'beat-time': 660,
     'delivery-recipe': 1260,
     'recipe-authority': 780,
-    'review': 1020,
+    'review': 1500,
     'inspector': 900,
     'profile-metadata': 1500,
     'profile-authority': 900,
@@ -3230,7 +3299,7 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
-# Additive partial technical oracles. Historical all184 and Studio68 stay separate.
+# Additive partial technical oracles. Historical all184 and Studio68 remain separate from the current all208 roster.
 # A listed title is not an execution or a contractual/human acceptance decision.
 PARTIAL_ORACLE_SCOPE = "criterion-partials"
 PARTIAL_ORACLE_SELECTIONS = (('criterion-graph', 'semantic-graph-service.spec.ts', ('Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing',)), ('criterion-visual', 'visual-language-draft-service.spec.ts', ('pending visual name and palette survive a real project style-lock revision', 'visual input survives a real process restart and remains editable after a second reopen', 'an empty motion-duration input stays raw and cannot silently become a saved zero', 'ten real peer revisions preserve pending visual choices and every unrelated saved decision')), ('criterion-caption', 'caption-continuity-service.spec.ts', ('fourteen authored revisions retain multi-frame caption spans, output variants and exact sidecars through portable reopen',)))
@@ -3608,21 +3677,26 @@ def selected_selections(selection):
         return partial_oracle_selections()
     require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
             and len(PROJECT_AUTHORING_SELECTIONS) == 19
-            and sum(len(row[2]) for row in PROJECT_AUTHORING_SELECTIONS) == 136
+            and sum(len(row[2]) for row in PROJECT_AUTHORING_SELECTIONS) == 143
             and len(HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 19
             and sum(len(row[2]) for row in HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 135
             and len(CREATIVE_PRODUCTION_SELECTIONS) == 2
-            and sum(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == 17
-            and len(BRANCH_CLAIM_SELECTIONS) == 2
+            and sum(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == 30
+            and len(BRANCH_CLAIM_SELECTIONS) == 3
             and tuple((label, filename, len(titles)) for label, filename, titles in BRANCH_CLAIM_SELECTIONS) == (
-                ("branch-authoring", "branch-authoring-service.spec.ts", 17),
-                ("claim-source", "claim-source-service.spec.ts", 14))
+                ("branch-authoring", "branch-authoring-service.spec.ts", 18),
+                ("claim-source", "claim-source-service.spec.ts", 14),
+                ("branch-combination", "branch-combination-service.spec.ts", 3))
             and all(isinstance(titles, tuple) and len(set(titles)) == len(titles)
                     and all(isinstance(title, str) and title for title in titles)
                     for _, _, titles in BRANCH_CLAIM_SELECTIONS),
             "service catalogue differs from its closed historical and composed scopes")
     if selection == "all":
         return SELECTIONS
+    if selection == "project-authoring-core":
+        require(SELECTION_GROUPS.get(selection) == {
+            "labels": tuple(row[0] for row in PROJECT_AUTHORING_SELECTIONS if row[0] != "review"),
+            "required_tests": 132}, "bounded project partition differs from its exact source catalogue")
     if selection in SELECTION_GROUPS:
         group = SELECTION_GROUPS[selection]
         labels, expected = group.get("labels"), group.get("required_tests")
@@ -3650,7 +3724,7 @@ def selection_plan(selection):
                 "not_selected": [{"label": label, "file": filename, "titles": list(titles),
                                   "status": "NOT_SELECTED", "technical_credit": "NONE"}
                                  for label, filename, titles in SELECTIONS if label != "camera"],
-                "required_tests": 8, "full_default_tests": 184, "existing_camera_cases": 7,
+                "required_tests": 8, "full_default_tests": 208, "existing_camera_cases": 7,
                 "added_v2_cases": 1, "discovery_required_before_execution": True,
                 "execution_platform": "Linux", "independent_archive_reopen": False,
                 "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
@@ -3661,7 +3735,7 @@ def selection_plan(selection):
                 "not_selected": [{"label": label, "file": filename, "titles": list(titles),
                                   "status": "NOT_SELECTED", "technical_credit": "NONE"}
                                  for label, filename, titles in SELECTIONS],
-                "required_tests": 6, "full_default_tests": 184,
+                "required_tests": 6, "full_default_tests": 208,
                 "discovery_required_before_execution": True, "execution_platform": "Linux",
                 "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
     if is_browser_scope(selection):
@@ -3750,6 +3824,32 @@ def write_new(path, value):
         require(stream.write(body) == len(body), "short evidence write")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+BRANCH_COMBINATION_SOURCE_PATHS = ('apps/desktop/src-tauri/build.rs',
+ 'apps/desktop/src-tauri/capabilities/desktop-owner.json',
+ 'apps/desktop/src-tauri/src/main.rs',
+ 'apps/studio/src/App.tsx',
+ 'apps/studio/src/BranchCombinationEditor.tsx',
+ 'apps/studio/src/CreativeAlternativesPanel.tsx',
+ 'apps/studio/src/ReviewWorkspace.tsx',
+ 'apps/studio/src/api.ts',
+ 'apps/studio/src/branchCombinationDraft.test.ts',
+ 'apps/studio/src/branchCombinationDraft.ts',
+ 'apps/studio/src/branchCombinationReview.test.ts',
+ 'apps/studio/src/branchCombinationReview.ts',
+ 'apps/studio/src/branchDraft.ts',
+ 'apps/studio/src/types.ts',
+ 'apps/studio/src/useBranchDraft.tsx',
+ 'apps/studio/tests/branch-combination-service.spec.ts',
+ 'crates/domain/src/branch_combination.rs',
+ 'crates/domain/src/history.rs',
+ 'crates/domain/src/lib.rs',
+ 'crates/domain/tests/branch_combination.rs',
+ 'crates/service/examples/studio_review_session.rs',
+ 'crates/service/src/branch_combination.rs',
+ 'crates/service/src/lib.rs',
+ 'crates/service/tests/branch_combination.rs')
 
 
 def source_observation(repo, selection=None):
@@ -3892,6 +3992,7 @@ def source_observation(repo, selection=None):
         "tooling/tests/test_ci_canvas_service.py",
     )
     paths = tuple(dict.fromkeys((*paths, *CREATIVE_PRODUCTION_SOURCE_PATHS, *BRANCH_CLAIM_SOURCE_PATHS,
+                                 *BRANCH_COMBINATION_SOURCE_PATHS,
                                  "tooling/vite_editor_security_probe.mjs")))
     if is_browser_scope(selection):
         paths = tuple(dict.fromkeys((*paths, *BROWSER_SOURCE_PATHS)))
@@ -3921,6 +4022,8 @@ def source_observation(repo, selection=None):
         result["camera_eight_binding"] = camera_eight_source_binding(repo, result)
     return result
 
+
+BRANCH_COMBINATION_ADMISSION_ENV = "MOTIONWRIGHT_BRANCH_COMBINATION_ADMITTED"
 
 PROCESS_ENVIRONMENT_KEYS = ("CARGO_TARGET_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE",
                             "MOTIONWRIGHT_SERVICE_TEST_BIN", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR")
@@ -3984,12 +4087,20 @@ def require_observed_command(command):
 
 
 def execute(argv, cwd, env, output, label, timeout):
+    env = dict(env)
+    if label == "branch-combination":
+        require(env.get(BRANCH_COMBINATION_ADMISSION_ENV) == "1", "branch combination admission is absent")
+    else:
+        # Never inherit the admission into a build, unrelated selector or helper.
+        env.pop(BRANCH_COMBINATION_ADMISSION_ENV, None)
+    observed_environment = (*PROCESS_ENVIRONMENT_KEYS, *((BRANCH_COMBINATION_ADMISSION_ENV,)
+                            if label == "branch-combination" else ()))
     owned_group = os.name == "posix"
     command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat(),
                "process_observation_schema": PROCESS_OBSERVATION_SCHEMA,
                "process_boundary": "OWNED_POSIX_SESSION_GROUP" if owned_group else "DIRECT_PROCESS_ONLY",
                "pid": None, "owned_group_after_wait": "NOT_OBSERVED", "escaped_descendants": "NOT_OBSERVED",
-               "selected_environment": {key: env.get(key) for key in PROCESS_ENVIRONMENT_KEYS},
+               "selected_environment": {key: env.get(key) for key in observed_environment},
                "cleanup_errors": []}
     process = None
     try:
@@ -4188,7 +4299,7 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
     """Bind every new service case to its original closed store and final oracle."""
     known = {row["manifest"] for row in captures}
     require(isinstance(required_labels, set) and required_labels
-            and required_labels <= ({row[0] for row in CREATIVE_PRODUCTION_SELECTIONS} | {"review", "branch-authoring", "claim-source"}),
+            and required_labels <= ({row[0] for row in CREATIVE_PRODUCTION_SELECTIONS} | {"review", "branch-authoring", "claim-source", "branch-combination"}),
             "unknown case/store binding scope")
     bound, used = [], set()
     for selection in selections:
@@ -4206,7 +4317,7 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
         collect(document["suites"])
         for case in cases:
             attachments = case["tests"][0]["results"][0].get("attachments", [])
-            evidence_name = "branch-authoring-evidence" if label == "branch-authoring" else label + "-service-evidence"
+            evidence_name = label + "-evidence" if label in ("branch-authoring", "branch-combination") else label + "-service-evidence"
             originals = {}
             for name in ("closed-store-outcomes", evidence_name):
                 found = [item for item in attachments if item.get("name") == name]
@@ -4261,7 +4372,8 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
             evidence_path, evidence = originals[evidence_name]
             require(evidence_path.rsplit("/", 1)[0] == case_root
                     and evidence.get("primaryFailure") is None and evidence.get("failures") == []
-                    and evidence.get("canonicalOracle") == oracle and evidence.get("final") == oracle["project"],
+                    and evidence.get("oracle" if label == "branch-combination" else "canonicalOracle") == oracle
+                    and evidence.get("final") == oracle["project"],
                     "service case final Project or original failure differs")
             # These specs explicitly choose info.outputPath('service', 'studio.sqlite3').
             # Their configured TMPDIR is retained in the invocation, but is not the DB location.
@@ -4274,8 +4386,21 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
                 "an unknown Production plan committed result survives reload without replay and needs a fresh history review",
                 "an unknown Production plan matching-peer result survives reload without replay and needs a fresh history review",
             }
+            peer_titles.update(('opaque source attachment pre-dispatch delivery interruption stays UNKNOWN on N until a real peer advances SQLite, with no original replay', 'Scene boundary keeps invalid raw endpoint JSON and its prior source when a real peer makes explicit rebind stale'))
             participants = 2 if label == "production-design" and case["title"] in peer_titles else 1
-            if label in ("review", "branch-authoring", "claim-source"):
+            if label == "branch-combination":
+                participants = 2 if case["title"] in ('two real strategies produce a persisted inactive candidate, then editable undo preserves peer style and historical reviews', 'an independent peer wins CAS after preview; rejected combination retains raw and never adds a phantom candidate') else 1
+            if (label, case["title"]) in (
+                ("review", "pre-dispatch review transport interruption keeps the saved base UNKNOWN until an independent SQLite peer advances it without replay"),
+                ("branch-authoring", "an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, preserving later input without replay"),
+            ):
+                participants = 2
+            if label == "branch-combination" or (label in ("review", "branch-authoring") and participants == 2):
+                require(isinstance(evidence.get("service"), dict) and isinstance(evidence.get("peers"), list)
+                        and len(evidence["peers"]) == participants - 1 and "services" not in evidence,
+                        "service and original peer participant schema differs")
+                services = [evidence["service"], *evidence["peers"]]
+            elif label in ("review", "branch-authoring", "claim-source"):
                 require(isinstance(evidence.get("service"), dict) and "services" not in evidence,
                         "Review original singular service authority differs")
                 services = [evidence["service"]]
@@ -4887,10 +5012,21 @@ def observed_tool(path):
 
 
 def service_environment_binding(target, output=None, label=None, binary=None):
-    return {"CARGO_TARGET_DIR": str(target),
+    value = {"CARGO_TARGET_DIR": str(target),
             "PLAYWRIGHT_JSON_OUTPUT_FILE": str(output / (label + ".json")) if label is not None else None,
             "MOTIONWRIGHT_SERVICE_TEST_BIN": str(binary) if label is not None else None,
             "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
+    if label == "branch-combination":
+        value[BRANCH_COMBINATION_ADMISSION_ENV] = "1"
+    return value
+
+
+def branch_combination_environment(repo, before, binary, retained_binary, identity):
+    """Bind the explicit branch selector to this observed source and built bytes."""
+    require(source_observation(repo) == before, "branch combination source changed before dispatch")
+    require(digest(binary) == digest(retained_binary) == identity,
+            "branch combination binary changed before dispatch")
+    return {BRANCH_COMBINATION_ADMISSION_ENV: "1"}
 
 
 def service_command(node, cli, output, selection, *, listing=False, scope=None):
@@ -5374,6 +5510,7 @@ def main():
         env = dict(os.environ)
         for variable in PROCESS_ENVIRONMENT_KEYS:
             env.pop(variable, None)
+        env.pop(BRANCH_COMBINATION_ADMISSION_ENV, None)
         env["CARGO_TARGET_DIR"] = str(target)
         build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
                          "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])],
@@ -5430,6 +5567,9 @@ def main():
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
+            if label == "branch-combination":
+                case_env.update(branch_combination_environment(repo, before, binary, retained_binary,
+                    {key: report["service_binary"][key] for key in ("bytes", "sha256")}))
             argv = service_command(node, cli, output, (label, filename, titles),
                                    scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
             if camera_mode:

@@ -75,8 +75,9 @@ async function withCombination(page:Page,info:TestInfo,run:(context:Scenario)=>P
         oracle:custody?.oracle,primaryFailure:primary?errorDetail(primary):null,failures:failures.map(errorDetail),
         service:{databasePath:service.databasePath,binaryPath:service.binaryPath,transcript:service.transcript,
           processExits:service.processExits,lifecycleTaints:service.lifecycleTaints,stderr:service.stderr},
-        peers:peers.map(peer=>({transcript:peer.transcript,processExits:peer.processExits,lifecycleTaints:peer.lifecycleTaints,stderr:peer.stderr}))},null,2));
+        peers:peers.map(peer=>({databasePath:peer.databasePath,binaryPath:peer.binaryPath,transcript:peer.transcript,processExits:peer.processExits,lifecycleTaints:peer.lifecycleTaints,stderr:peer.stderr}))},null,2));
       await info.attach("branch-combination-evidence",{path,contentType:"application/json"});
+      await info.attach("closed-store-outcomes",{path:info.outputPath("closed-store-outcomes.json"),contentType:"application/json"});
     }catch(reason){failures.push(reason);}
     if(failures.length===1)throw failures[0];if(failures.length>1)throw new AggregateError(failures,"Combination scenario and closure failures remain separate",{cause:primary});
   }

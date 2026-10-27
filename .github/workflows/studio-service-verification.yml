@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       selection:
-        description: Run a closed selection; all requires all three same-source service groups (136 plus 17 plus 31)
+        description: Run a closed selection; all requires four bounded same-source shards (132 plus 11 plus 30 plus 35)
         type: choice
         required: true
         default: authoring-drafts
@@ -271,10 +271,11 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        selection: ${{ fromJSON(inputs.selection == 'all' && '["project-authoring","creative-production","branch-claim"]' || inputs.selection == 'review' && '["review-browser","review"]' || format('["{0}"]', inputs.selection)) }}
+        selection: ${{ fromJSON(inputs.selection == 'all' && '["project-authoring-core","review","creative-production","branch-claim"]' || inputs.selection == 'project-authoring' && '["project-authoring-core","review"]' || inputs.selection == 'review' && '["review-browser","review"]' || format('["{0}"]', inputs.selection)) }}
     # Each child keeps every original per-case bound; all requires every child.
-    timeout-minutes: ${{ matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120 || matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring' && 360 || contains(fromJSON('["creative-production","production-design","creative-workbench","branch-claim","branch-authoring","claim-source"]'), matrix.selection) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}
+    timeout-minutes: ${{ matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120 || matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring-core' && 360 || matrix.selection == 'creative-production' && 110 || matrix.selection == 'review' && 70 || contains(fromJSON('["creative-production","production-design","creative-workbench","branch-claim","branch-authoring","claim-source"]'), matrix.selection) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t

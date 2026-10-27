@@ -61,6 +61,7 @@ async function ownCopy(page: Page, project: Project, resource: string) {
 const detail = (reason: unknown) => reason instanceof Error
   ? { name: reason.name, message: reason.message, stack: reason.stack } : { message: String(reason) };
 interface ReviewCase {
+  peers: ScopedChangeService[];
   service: ScopedChangeService; baseline: Project; sceneId: string; sceneName: string; reviewId: string; alternativeId: string;
   applyCount: number; observations: Record<string, unknown>; cleanup: (() => Promise<unknown>)[];
   observe(label: string): Promise<Project>;
@@ -69,6 +70,7 @@ interface ReviewCase {
 async function withReview(page: Page, info: TestInfo, run: (value: ReviewCase) => Promise<void>) {
   const service = await ScopedChangeService.create({ databasePath: info.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   const observations: Record<string, unknown> = {}, cleanup: (() => Promise<unknown>)[] = [], failures: unknown[] = [];
+  const peers: ScopedChangeService[] = [];
   let final: Project | undefined, projectId: string | undefined, primary: { reason: unknown } | undefined, custody: StoreFinalization | undefined;
   page.on("dialog", dialog => dialog.accept());
   try {
@@ -103,13 +105,13 @@ async function withReview(page: Page, info: TestInfo, run: (value: ReviewCase) =
       await service.close(); await service.start(); await page.reload(); await revision(page, expected.revision); await openReview(page, sceneName);
       expect(await observe("new service process and actual App reopen")).toEqual(expected);
     };
-    await run({ service, baseline, sceneId: scene.id, sceneName, reviewId, alternativeId,
+    await run({ service, peers, baseline, sceneId: scene.id, sceneName, reviewId, alternativeId,
       applyCount: applies(service).length, observations, cleanup, observe, restart });
   } catch (reason) { primary = { reason }; failures.push(reason); }
   finally {
     for (const action of cleanup) { try { await action(); } catch (reason) { failures.push(reason); } }
     if (projectId) { try { final = await service.project(projectId); } catch (reason) { failures.push(reason); } }
-    try { custody = await service.finalizeClosedStore(info.outputPath("closed-store"), final, [], [() => page.close()]); }
+    try { custody = await service.finalizeClosedStore(info.outputPath("closed-store"), final, peers, [() => page.close()]); }
     catch (reason) { failures.push(reason); }
     try {
       const path = info.outputPath("review-service-evidence.json");
@@ -120,6 +122,8 @@ async function withReview(page: Page, info: TestInfo, run: (value: ReviewCase) =
         observations, final, canonicalOracle: custody?.oracle, primaryFailure: primary === undefined ? null : detail(primary.reason),
         failures: failures.map(detail), service: { databasePath: service.databasePath, binaryPath: service.binaryPath,
           transcript: service.transcript, processExits: service.processExits, lifecycleTaints: service.lifecycleTaints, stderr: service.stderr },
+        peers: peers.map(peer => ({ databasePath: peer.databasePath, binaryPath: peer.binaryPath,
+          transcript: peer.transcript, processExits: peer.processExits, lifecycleTaints: peer.lifecycleTaints, stderr: peer.stderr })),
       }, null, 2));
       await info.attach("review-service-evidence", { path, contentType: "application/json" });
       await info.attach("closed-store-outcomes", { path: info.outputPath("closed-store-outcomes.json"), contentType: "application/json" });
@@ -438,7 +442,7 @@ test("lost reply keeps original selected review profile UNKNOWN while a later em
 });
 
 test("pre-dispatch review transport interruption keeps the saved base UNKNOWN until an independent SQLite peer advances it without replay", async ({ page }, info) => {
-  await withReview(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observations, cleanup, observe, restart }) => {
+  await withReview(page, info, async ({ service, peers, baseline, sceneId, sceneName, applyCount, observations, cleanup, observe, restart }) => {
     const profile = baseline.deliverables[0];
     if (!profile) throw new Error("The real service fixture must provide a deliverable for review.");
     const grantCount = (instance: ScopedChangeService) => instance.transcript.filter(entry => entry.direction === "request"
@@ -482,7 +486,7 @@ test("pre-dispatch review transport interruption keeps the saved base UNKNOWN un
     expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
     expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
 
-    const peer = await service.peer();
+    const peer = await service.peer(); peers.push(peer);
     cleanup.push(async () => {
       try { await peer.close(); }
       finally { observations.independentPeer = { transcript: peer.transcript, processExits: peer.processExits, lifecycleTaints: peer.lifecycleTaints }; }

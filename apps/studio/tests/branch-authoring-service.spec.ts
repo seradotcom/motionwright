@@ -52,6 +52,7 @@ function holdCreate(service: ScopedChangeService) {
 const detail = (reason: unknown) => reason instanceof Error
   ? { name: reason.name, message: reason.message, stack: reason.stack } : { message: String(reason) };
 interface BranchCase {
+  peers: ScopedChangeService[];
   service: ScopedChangeService; baseline: Project; applyCount: number;
   cleanup: (() => Promise<unknown>)[]; observations: Record<string, unknown>;
   observe(label: string): Promise<Project>;
@@ -60,6 +61,7 @@ interface BranchCase {
 async function withBranch(page: Page, info: TestInfo, run: (value: BranchCase) => Promise<void>) {
   const service = await ScopedChangeService.create({ databasePath: info.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   const observations: Record<string, unknown> = {}, cleanup: (() => Promise<unknown>)[] = [], failures: unknown[] = [];
+  const peers: ScopedChangeService[] = [];
   let final: Project | undefined, projectId: string | undefined, primary: { reason: unknown } | undefined, custody: StoreFinalization | undefined;
   page.on("dialog", dialog => dialog.accept());
   try {
@@ -76,12 +78,12 @@ async function withBranch(page: Page, info: TestInfo, run: (value: BranchCase) =
       await service.close(); await service.start(); await page.reload(); await revision(page, expected.revision); await openChanges(page);
       expect(await observe("new service process and App reopen")).toEqual(expected);
     };
-    await run({ service, baseline, applyCount: applies(service).length, cleanup, observations, observe, restart });
+    await run({ service, peers, baseline, applyCount: applies(service).length, cleanup, observations, observe, restart });
   } catch (reason) { primary = { reason }; failures.push(reason); }
   finally {
     for (const action of cleanup) { try { await action(); } catch (reason) { failures.push(reason); } }
     if (projectId) { try { final = await service.project(projectId); } catch (reason) { failures.push(reason); } }
-    try { custody = await service.finalizeClosedStore(info.outputPath("closed-store"), final, [], [() => page.close()]); }
+    try { custody = await service.finalizeClosedStore(info.outputPath("closed-store"), final, peers, [() => page.close()]); }
     catch (reason) { failures.push(reason); }
     try {
       const path = info.outputPath("branch-authoring-evidence.json");
@@ -92,6 +94,8 @@ async function withBranch(page: Page, info: TestInfo, run: (value: BranchCase) =
         canonicalOracle: custody?.oracle, primaryFailure: primary ? detail(primary.reason) : null,
         failures: failures.map(detail), service: { databasePath: service.databasePath, binaryPath: service.binaryPath,
           transcript: service.transcript, processExits: service.processExits, lifecycleTaints: service.lifecycleTaints, stderr: service.stderr },
+        peers: peers.map(peer => ({ databasePath: peer.databasePath, binaryPath: peer.binaryPath,
+          transcript: peer.transcript, processExits: peer.processExits, lifecycleTaints: peer.lifecycleTaints, stderr: peer.stderr })),
       }, null, 2));
       await info.attach("branch-authoring-evidence", { path, contentType: "application/json" });
       await info.attach("closed-store-outcomes", { path: info.outputPath("closed-store-outcomes.json"), contentType: "application/json" });
@@ -571,7 +575,7 @@ test("a failed initial pointer read can recover an empty session without discard
 });
 
 test("an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, preserving later input without replay", async ({ page }, info) => {
-  await withBranch(page, info, async ({ service, baseline, applyCount, cleanup, observations, observe, restart }) => {
+  await withBranch(page, info, async ({ service, peers, baseline, applyCount, cleanup, observations, observe, restart }) => {
     const grantCount = (instance: ScopedChangeService) => instance.transcript.filter(entry => entry.direction === "request"
       && "command" in entry.payload && entry.payload.command === "issue_effect_grant").length;
     const grants = grantCount(service), original = service.invoke.bind(service), intercepted: ApplyArgs[] = [];
@@ -614,7 +618,7 @@ test("an unchanged SQLite branch base stays UNKNOWN until a real peer advances i
     expect(await observe("same saved revision cannot release UNKNOWN")).toEqual(baseline);
     expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
 
-    const peer = await service.peer();
+    const peer = await service.peer(); peers.push(peer);
     cleanup.push(async () => {
       try { await peer.close(); }
       finally { observations.independentPeer = { transcript: peer.transcript, processExits: peer.processExits, lifecycleTaints: peer.lifecycleTaints }; }

@@ -52,7 +52,8 @@ def synthetic_process_fields(env=None):
             "owned_group_after_wait": "ABSENT", "escaped_descendants": "NOT_OBSERVED",
             "selected_environment": {key: (env or {}).get(key) for key in (
                 "CARGO_TARGET_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE",
-                "MOTIONWRIGHT_SERVICE_TEST_BIN", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR")}}
+                "MOTIONWRIGHT_SERVICE_TEST_BIN", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR")},
+            **({"selected_environment": dict(env)} if env and gate.BRANCH_COMBINATION_ADMISSION_ENV in env else {})}
 
 
 def report():
@@ -88,8 +89,8 @@ class CanvasServiceReportTests(unittest.TestCase):
     def test_original_pass_has_exact_inventory(self):
         observed = self.check(report())
         self.assertEqual(observed, {"passed": 1, "skipped": 0, "retries": 0, "titles": [gate.INK_TITLE]})
-        self.assertEqual(len(gate.CANVAS_TITLES), 19)
-        self.assertEqual(len(set(gate.CANVAS_TITLES)), 19)
+        self.assertEqual(len(gate.CANVAS_TITLES), 22)
+        self.assertEqual(len(set(gate.CANVAS_TITLES)), 22)
         self.assertEqual(len(gate.PROGRAM_TITLES), 3)
         self.assertEqual(len(set(gate.PROGRAM_TITLES)), 3)
         self.assertEqual(len(gate.BRIEF_TITLES), 7)
@@ -101,10 +102,10 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(len(set(gate.CAMERA_TITLES)), 7)
         self.assertEqual(len(gate.GESTURE_TITLES), 7)
         self.assertEqual(len(set(gate.GESTURE_TITLES)), 7)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:7]), 43)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:9]), 57)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:10]), 65)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 184)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:7]), 46)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:9]), 60)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:10]), 68)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 208)
         self.assertEqual(
             [(label, filename) for label, filename, _ in gate.SELECTIONS],
             [("canvas", "canvas-draft-service.spec.ts"),
@@ -130,6 +131,7 @@ class CanvasServiceReportTests(unittest.TestCase):
              ('creative-workbench', 'creative-workbench-service.spec.ts'),
              ('branch-authoring', 'branch-authoring-service.spec.ts'),
              ('claim-source', 'claim-source-service.spec.ts'),
+             ('branch-combination', 'branch-combination-service.spec.ts'),
              ],
         )
 
@@ -141,8 +143,8 @@ class CanvasServiceReportTests(unittest.TestCase):
                 self.assertEqual(verified, {"passed": len(titles), "skipped": 0,
                                             "retries": 0, "titles": list(titles)})
                 observed.extend((filename, title) for title in verified["titles"])
-        self.assertEqual(len(observed), 57)
-        self.assertEqual(len(set(observed)), 57)
+        self.assertEqual(len(observed), 60)
+        self.assertEqual(len(set(observed)), 60)
 
     def test_camera_and_gesture_counts_cannot_substitute_named_inventory(self):
         for label, filename, titles in (row for row in gate.SELECTIONS if row[0] in {"camera", "gesture"}):
@@ -179,22 +181,23 @@ class CanvasServiceReportTests(unittest.TestCase):
 
     def test_selection_time_bounds_preserve_original_limits_and_new_case_budgets(self):
         self.assertEqual(gate.SELECTION_TIMEOUTS, {
-            "canvas": 1800, "ink": 180, "program": 600, "brief": 900,
+            "canvas": 2160, "ink": 180, "program": 600, "brief": 900,
             "brief-recovery": 180, "brief-uncertain": 900, "active-voice": 900,
             "camera": 1200, "gesture": 900, "narrative": 1200,
             'beat-draft': 1500,
             'beat-time': 660,
             'delivery-recipe': 1260,
             'recipe-authority': 780,
-            'review': 1020,
+            'review': 1500,
             'inspector': 900,
             'profile-metadata': 1500,
             'profile-authority': 900,
             'projection-navigation': 1260,
-            'production-design': 1140,
+            'production-design': 2700,
             'creative-workbench': 1260,
-            'branch-authoring': 2220,
+            'branch-authoring': 2340,
             'claim-source': 1860,
+            'branch-combination': 540,
         })
         self.assertEqual(set(gate.SELECTION_TIMEOUTS), {label for label, _, _ in gate.SELECTIONS})
         self.assertGreater(gate.SELECTION_TIMEOUTS["camera"], 7 * 120 + 120)
@@ -490,12 +493,12 @@ class SelectedServiceScopeTests(unittest.TestCase):
     def test_narrative_scope_preserves_full_default_and_declares_every_omission(self):
         plan = gate.selection_plan("narrative")
         self.assertEqual(plan["required_tests"], 8)
-        self.assertEqual(plan["full_default_tests"], 184)
+        self.assertEqual(plan["full_default_tests"], 208)
         self.assertEqual(plan["scope"], "EXPLICIT_SELECTED_SERVICE_CASES")
         self.assertEqual(len(plan["required"]), 1)
         self.assertEqual(plan["required"][0]["file"], "narrative-service.spec.ts")
         self.assertEqual(plan["required"][0]["titles"], list(gate.NARRATIVE_TITLES))
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 176)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 200)
         self.assertEqual({row["label"] for row in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS if row[0] != "narrative"})
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
@@ -560,11 +563,11 @@ class AuthoringServiceScopeTests(unittest.TestCase):
             ("beat-time", "scene-beat-time-service.spec.ts", 4),
             ("delivery-recipe", "delivery-recipe.spec.ts", 12),
             ("recipe-authority", "delivery-recipe-authority-service.spec.ts", 5),
-            ("review", "review-service.spec.ts", 7),
+            ("review", "review-service.spec.ts", 11),
         ])
-        self.assertEqual(plan["required_tests"], 39)
-        self.assertEqual(plan["full_default_tests"], 184)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 145)
+        self.assertEqual(plan["required_tests"], 43)
+        self.assertEqual(plan["full_default_tests"], 208)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 165)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[15:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
@@ -578,14 +581,14 @@ class AuthoringServiceScopeTests(unittest.TestCase):
                 plan = gate.selection_plan(label)
                 self.assertEqual(plan["required_tests"], len(titles))
                 self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]),
-                                 184 - len(titles))
+                                 208 - len(titles))
                 verified = gate.validate_report(selection_report(filename, titles), filename, titles)
                 self.assertEqual(verified["passed"], len(titles))
                 cases.extend((filename, title) for title in verified["titles"])
                 per_case = 90 if label == "delivery-recipe" else 120
                 self.assertGreater(gate.SELECTION_TIMEOUTS[label], len(titles) * per_case + 120)
-        self.assertEqual(len(cases), 39)
-        self.assertEqual(len(set(cases)), 39)
+        self.assertEqual(len(cases), 43)
+        self.assertEqual(len(set(cases)), 43)
 
     def test_authoring_totals_cannot_hide_missing_duplicate_foreign_or_mock_results(self):
         for label, filename, titles in gate.selected_selections("authoring-drafts"):
@@ -652,11 +655,11 @@ class AuthoringServiceScopeTests(unittest.TestCase):
 
     def test_full_default_keeps_old_sixty_five_and_new_thirty_eight_distinct_cases(self):
         plan = gate.selection_plan("all")
-        self.assertEqual(plan["required_tests"], 184)
+        self.assertEqual(plan["required_tests"], 208)
         self.assertEqual(plan["not_selected"], [])
         cases = [(x["file"], title) for x in plan["required"] for title in x["titles"]]
-        self.assertEqual(len(cases), 184)
-        self.assertEqual(len(set(cases)), 184)
+        self.assertEqual(len(cases), 208)
+        self.assertEqual(len(set(cases)), 208)
         self.assertEqual(gate.selected_selections("all"), gate.SELECTIONS)
 
 
@@ -669,21 +672,21 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
             ("beat-time", "scene-beat-time-service.spec.ts", 4),
             ("delivery-recipe", "delivery-recipe.spec.ts", 12),
             ("recipe-authority", "delivery-recipe-authority-service.spec.ts", 5),
-            ("review", "review-service.spec.ts", 7),
+            ("review", "review-service.spec.ts", 11),
             ("inspector", "scene-inspector-service.spec.ts", 6),
             ("profile-metadata", "delivery-profile-preservation.spec.ts", 14),
             ("profile-authority", "delivery-profile-authority-service.spec.ts", 6),
         ])
-        self.assertEqual(plan["required_tests"], 65)
-        self.assertEqual(plan["full_default_tests"], 184)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 119)
+        self.assertEqual(plan["required_tests"], 69)
+        self.assertEqual(plan["full_default_tests"], 208)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 139)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[18:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
                             for x in plan["not_selected"]))
         self.assertFalse(plan["formal_acceptance"])
-        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 39)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:15]), 104)
+        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 43)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:15]), 111)
 
     def test_inspector_and_profile_results_require_exact_files_names_and_one_original_result(self):
         observed = []
@@ -838,18 +841,18 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(filename, "project-projection-service.spec.ts")
         plan = gate.selection_plan(label)
         self.assertEqual(plan["required_tests"], 6)
-        self.assertEqual(plan["full_default_tests"], 184)
+        self.assertEqual(plan["full_default_tests"], 208)
         self.assertEqual(plan["required"], [{"label": label, "file": filename, "titles": list(declared)}])
         omitted = [(row["file"], title) for row in plan["not_selected"] for title in row["titles"]]
-        self.assertEqual(len(omitted), 178)
-        self.assertEqual(len(set(omitted)), 178)
+        self.assertEqual(len(omitted), 202)
+        self.assertEqual(len(set(omitted)), 202)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
                             for row in plan["not_selected"]))
         self.assertFalse(plan["formal_acceptance"])
         verified = gate.validate_report(selection_report(filename, declared), filename, titles)
         self.assertEqual(verified, {"passed": 6, "skipped": 0, "retries": 0, "titles": list(declared)})
-        self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 65)
-        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 39)
+        self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 69)
+        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 43)
 
     def test_projection_success_totals_cannot_hide_missing_extra_duplicate_or_foreign_cases(self):
         _, filename, titles = self.selection()
@@ -1481,12 +1484,12 @@ class BrowserContractSelectionTests(unittest.TestCase):
         rows = gate.selected_selections("browser-contracts")
         self.assertEqual(len(rows), 33)
         self.assertEqual(sum(len(row[2]) for row in rows), 206)
-        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 184)
-        self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 65)
-        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 39)
+        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 208)
+        self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 69)
+        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 43)
         plan = gate.selection_plan("browser-contracts")
         self.assertEqual(plan["scope"], "EXPLICIT_SYNTHETIC_BROWSER_CONTRACTS")
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 184 + 29 + 60)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 208 + 29 + 60)
         self.assertEqual(len(plan["excluded_service_cases"]), 4)
         self.assertTrue(all(row["technical_credit"] == "NONE"
                             for row in plan["not_selected"] + plan["excluded_service_cases"]))
@@ -2001,6 +2004,59 @@ HISTORICAL_SERVICE_ROSTER_SHA256 = '45e92a6df5f4b1e470954a487ba57580cc63376883eb
 HISTORICAL_BROWSER_ROSTER_SHA256 = 'a59c5db069b10483e1b2ee34671941ae9fcc45c5399f048bff00e29bbbd4c275'
 
 
+EXPECTED_CLOSEOUT_SERVICE_ADDITIONS = {'canvas': ('saved Canvas font drives the read-only Delivery choice through real SQLite restart and rejects '
+            'a mixed-font source',
+            'explicit Canvas world and local reparent preserve authored channels through real SQLite reopen',
+            'an uncertain Canvas reparent cannot be acknowledged by a matching peer revision and forks '
+            'retained input explicitly'),
+ 'review': ('selected review deliverable, language and rational range persist through actual App reload and '
+            'SQLite restart',
+            'later explicit empty review profile survives a held original reply and saves separately to '
+            'SQLite',
+            'lost reply keeps original selected review profile UNKNOWN while a later empty selection '
+            'survives actual SQLite recovery',
+            'pre-dispatch review transport interruption keeps the saved base UNKNOWN until an independent '
+            'SQLite peer advances it without replay'),
+ 'production-design': ('Production retries an initial pointer read for ordinary input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production retries an initial pointer read for UNKNOWN input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production retries an initial copy read for ordinary input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production retries an initial copy read for UNKNOWN input without replacing raw '
+                       'intent or replaying a real operation',
+                       'Production confirms an empty pointer after an initial read failure while retaining '
+                       'the input typed during the blocker',
+                       'Production component retains its first observed UNKNOWN bytes when a failed recovery '
+                       'read is followed by a same-writer replacement',
+                       'Production plan retains its first observed UNKNOWN bytes when a failed recovery read '
+                       'is followed by a same-writer replacement',
+                       'opaque source attachment raw input and a silent pointer failure preserve the '
+                       'existing asset before one explicit SQLite attachment',
+                       'opaque source attachment late real ACK retains two scene drafts and permits only a '
+                       'separate explicit later attachment',
+                       'opaque source attachment lost committed service reply preserves the exact submitted '
+                       'capsule and later cleared input without replay',
+                       'opaque source attachment pre-dispatch delivery interruption stays UNKNOWN on N until '
+                       'a real peer advances SQLite, with no original replay',
+                       'Scene boundary explicit source binding, Draft and Explicit saves preserve authored '
+                       'objects and assets through SQLite reopen and journalled removal',
+                       'Scene boundary keeps invalid raw endpoint JSON and its prior source when a real peer '
+                       'makes explicit rebind stale'),
+ 'branch-authoring': ('an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, '
+                      'preserving later input without replay',),
+ 'branch-combination': ('two real strategies produce a persisted inactive candidate, then editable undo '
+                        'preserves peer style and historical reviews',
+                        'lost original reply preserves late choices and UNKNOWN through reload, exact read '
+                        'and explicit separate intent',
+                        'an independent peer wins CAS after preview; rejected combination retains raw and '
+                        'never adds a phantom candidate')}
+HISTORICAL_EXPECTED_CREATIVE_SERVICE = EXPECTED_CREATIVE_SERVICE
+EXPECTED_CREATIVE_SERVICE = tuple(
+    (label, filename, (*titles, *EXPECTED_CLOSEOUT_SERVICE_ADDITIONS.get(label, ())))
+    for label, filename, titles in EXPECTED_CREATIVE_SERVICE
+)
+
 class CreativeProductionScopeTests(unittest.TestCase):
     """Closed catalogues and original custody controls; no product runtime executes."""
 
@@ -2008,7 +2064,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(gate.CREATIVE_PRODUCTION_SELECTIONS, EXPECTED_CREATIVE_SERVICE)
         self.assertEqual(gate.CREATIVE_PRODUCTION_BROWSER_SELECTIONS, EXPECTED_CREATIVE_BROWSER)
         self.assertEqual(gate.CREATIVE_PRODUCTION_UNITS, EXPECTED_CREATIVE_UNITS)
-        self.assertEqual([len(row[2]) for row in EXPECTED_CREATIVE_SERVICE], [8, 9])
+        self.assertEqual([len(row[2]) for row in EXPECTED_CREATIVE_SERVICE], [21, 9])
         self.assertEqual([len(row[2]) for row in EXPECTED_CREATIVE_BROWSER], [21, 37])
         self.assertEqual([len(row[1]) for row in EXPECTED_CREATIVE_UNITS], [29, 38])
 
@@ -2019,16 +2075,16 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(digest(gate.HISTORICAL_BROWSER_SELECTIONS), HISTORICAL_BROWSER_ROSTER_SHA256)
         old = gate.selected_selections("project-authoring")
         added = gate.selected_selections("creative-production")
-        self.assertEqual((len(old), sum(len(row[2]) for row in old)), (19, 136))
-        self.assertEqual((len(added), sum(len(row[2]) for row in added)), (2, 17))
+        self.assertEqual((len(old), sum(len(row[2]) for row in old)), (19, 143))
+        self.assertEqual((len(added), sum(len(row[2]) for row in added)), (2, 30))
         branch_claim = gate.selected_selections("branch-claim")
         self.assertEqual(old + added + branch_claim, gate.selected_selections("all"))
         self.assertFalse({row[0] for row in old + added}.intersection(row[0] for row in branch_claim))
         self.assertFalse({row[0] for row in old}.intersection(row[0] for row in added))
-        for selection, count in (("project-authoring", 136), ("creative-production", 17), ("branch-claim", 31), ("all", 184)):
+        for selection, count in (("project-authoring", 143), ("creative-production", 30), ("branch-claim", 35), ("all", 208)):
             plan = gate.selection_plan(selection)
             self.assertEqual(plan["required_tests"], count)
-            self.assertEqual(plan["full_default_tests"], 184)
+            self.assertEqual(plan["full_default_tests"], 208)
             self.assertFalse(plan["formal_acceptance"])
         self.assertEqual(sum(len(row[2]) for row in gate.HISTORICAL_BROWSER_SELECTIONS), 148)
         self.assertEqual(len(gate.browser_selections()), 33)
@@ -2040,7 +2096,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(plan["required_tests"], 58)
         self.assertEqual(plan["discovery_tests"], 58)
         self.assertEqual(plan["excluded_service_cases"], [])
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 184 + 148 + 29 + 60)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 208 + 148 + 29 + 60)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
                             for row in plan["not_selected"]))
         for selection in ("creative-production-browser ", "browser-creative-production", "creative-production-browser,all"):
@@ -2217,7 +2273,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
 
     def test_new_deadlines_preserve_per_case_bounds_and_all_is_two_same_source_jobs(self):
         self.assertEqual({label: gate.SELECTION_TIMEOUTS[label] for label, _, _ in EXPECTED_CREATIVE_SERVICE},
-                         {"production-design": 1140, "creative-workbench": 1260})
+                         {"production-design": 2700, "creative-workbench": 1260})
         for label, _, titles in EXPECTED_CREATIVE_SERVICE:
             self.assertEqual(gate.SELECTION_TIMEOUTS[label], len(titles) * 120 + 180)
         self.assertEqual({label: gate.BROWSER_SELECTION_TIMEOUTS[label] for label, _, _ in EXPECTED_CREATIVE_BROWSER},
@@ -2227,7 +2283,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
         service = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         self.assertIn("fail-fast: false", service)
-        self.assertIn("inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]'", service)
+        self.assertIn("inputs.selection == 'all' && '[\"project-authoring-core\",\"review\",\"creative-production\",\"branch-claim\"]'", service)
         self.assertIn('REQUESTED_SELECTION: ${{ matrix.selection }}', service)
         self.assertIn('studio-service-${{ matrix.selection }}-${{ github.sha }}-', service)
         self.assertIn('studio-service-unsealed-${{ matrix.selection }}-${{ github.sha }}-', service)
@@ -2239,8 +2295,12 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertIn("needs: g0", unit)
         self.assertIn("studio-${{ inputs.selection == 'branch-claim' && 'branch-claim' || inputs.selection == 'workflow-preview-browser' && 'workflow-preview' || inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-", unit)
         self.assertNotIn('npm test', unit)
-        self.assertGreater(360 * 60, 1200 + sum(gate.SELECTION_TIMEOUTS[row[0]] for row in gate.PROJECT_AUTHORING_SELECTIONS) + 1200)
-        self.assertGreater(90 * 60, 1200 + 1140 + 1260 + 1200)
+        self.assertIn("inputs.selection == 'project-authoring' && '[\"project-authoring-core\",\"review\"]'", service)
+        self.assertIn("max-parallel: 1", service)
+        self.assertIn("matrix.selection == 'project-authoring-core' && 360", service)
+        self.assertIn("matrix.selection == 'creative-production' && 110", service)
+        self.assertGreater(360 * 60, 1200 + sum(gate.SELECTION_TIMEOUTS[row[0]] for row in gate.selected_selections("project-authoring-core")) + 1200)
+        self.assertGreater(110 * 60, 1200 + sum(gate.SELECTION_TIMEOUTS[row[0]] for row in EXPECTED_CREATIVE_SERVICE) + 1200)
         self.assertGreater(75 * 60, 180 + 810 + 1260 + 1200)
 
 
@@ -2274,7 +2334,11 @@ class CreativeProductionStoreTests(unittest.TestCase):
                         entry["path"] = "studio.sqlite3"
                 manifest["databaseRelativePath"] = "studio.sqlite3"
                 manifest["sourceDirectory"] = str(folder / "service")
-                participants = 2 if label == "production-design" and index in (4, 5) else 1
+                participants = 2 if label == "production-design" and index in (4, 5, 18, 20) else 1
+                if label == "branch-combination":
+                    participants = 2 if index in (0, 2) else 1
+                if (label, index) in (("review", 10), ("branch-authoring", 17)):
+                    participants = 2
                 manifest["lifecycle"] = [
                     {"databasePath": str(folder / "service/studio.sqlite3"), "taints": [],
                      "exits": [{"processId": 1000 + index * 10 + participant, "code": 0, "signal": None}]}
@@ -2300,9 +2364,14 @@ class CreativeProductionStoreTests(unittest.TestCase):
                             "services": [{"binaryPath": receipt["service_binary"]["path"],
                                           "databasePath": row["databasePath"], "processExits": row["exits"],
                                           "lifecycleTaints": row["taints"]} for row in manifest["lifecycle"]]}
-                if label in ("review", "branch-authoring", "claim-source"):
+                if label == "branch-combination" or (label in ("review", "branch-authoring") and participants == 2):
+                    services = evidence.pop("services")
+                    evidence["service"], evidence["peers"] = services[0], services[1:]
+                    if label == "branch-combination":
+                        evidence["oracle"] = evidence.pop("canonicalOracle")
+                elif label in ("review", "branch-authoring", "claim-source"):
                     evidence["service"] = evidence.pop("services")[0]
-                name = "branch-authoring-evidence" if label == "branch-authoring" else label + "-service-evidence"
+                name = label + "-evidence" if label in ("branch-authoring", "branch-combination") else label + "-service-evidence"
                 gate.write_new(folder / (name + ".json"), evidence)
                 spec["tests"][0]["results"][0]["attachments"] = [
                     {"name": item, "contentType": "application/json", "path": str(folder / (item + ".json"))}
@@ -2355,9 +2424,9 @@ class CreativeProductionStoreTests(unittest.TestCase):
             self.assertEqual(result["status"], "PASS", result)
             self.assertEqual(result["custody"], "VERIFIED_ORIGINAL_TREE_COPY")
             cases = result["bindings"]["review_cases"]
-            self.assertEqual(len(cases), 7)
-            self.assertEqual(len({row["manifest"] for row in cases}), 7)
-            self.assertEqual(sum(row["services"] for row in cases), 7)
+            self.assertEqual(len(cases), 11)
+            self.assertEqual(len({row["manifest"] for row in cases}), 11)
+            self.assertEqual(sum(row["services"] for row in cases), 12)
             self.assertNotIn("creative_production_cases", result["bindings"])
             self.assertEqual(
                 [(row["label"], row["file"], row["title"]) for row in cases],
@@ -2380,9 +2449,9 @@ class CreativeProductionStoreTests(unittest.TestCase):
             self.assertEqual(result["status"], "PASS", result)
             self.assertEqual(result["custody"], "VERIFIED_ORIGINAL_TREE_COPY")
             cases = result["bindings"]["creative_production_cases"]
-            self.assertEqual(len(cases), 17)
-            self.assertEqual(len({row["manifest"] for row in cases}), 17)
-            self.assertEqual(sum(row["services"] for row in cases), 19)
+            self.assertEqual(len(cases), 30)
+            self.assertEqual(len({row["manifest"] for row in cases}), 30)
+            self.assertEqual(sum(row["services"] for row in cases), 34)
             for row in cases:
                 folder = row["manifest"].rsplit("/closed-store/", 1)[0]
                 self.assertEqual(row["outcomes"], folder + "/closed-store-outcomes.json")
@@ -2479,9 +2548,9 @@ class CreativeProductionStoreTests(unittest.TestCase):
             result = ClosedStudioArchiveTests().retained(root, source)
             self.assertEqual(result["status"], "PASS", result)
             cases = result["bindings"]["creative_production_cases"]
-            self.assertEqual(len(cases), 17)
-            self.assertEqual(len({row["manifest"] for row in cases}), 17)
-            self.assertEqual(sum(row["services"] for row in cases), 19)
+            self.assertEqual(len(cases), 30)
+            self.assertEqual(len({row["manifest"] for row in cases}), 30)
+            self.assertEqual(sum(row["services"] for row in cases), 34)
             self.assertTrue(all(row["database_path"] == str(Path(row["source_directory"]) / "studio.sqlite3")
                                 for row in cases))
             self.assertEqual([(row["file"], row["title"]) for row in cases],
@@ -2725,20 +2794,20 @@ class ReviewScopeTests(unittest.TestCase):
                          "058f9321286e82c1ba818df050a2a02d019647bcc8a0da1513e6add2dc5e4b36")
         self.assertEqual(digest(gate.REVIEW_BROWSER_SELECTIONS),
                          "14b1893b6ed67f47bfbecc18ed150a1afc14827495bea3e236818ab12f156fa7")
-        self.assertEqual(digest(gate.selected_selections("review")),
+        self.assertEqual(digest(gate.HISTORICAL_REVIEW_SERVICE_SELECTIONS),
                          "ef5acb89447654f1a4b3ca6d353a5c00b480b7d48b3750a7a2074c9e8b1b5ecb")
         self.assertEqual(sum(len(row[1]) for row in gate.REVIEW_UNITS), 72)
         self.assertEqual(gate.selection_plan("review-browser")["required_tests"], 29)
-        self.assertEqual(gate.selection_plan("review")["required_tests"], 7)
+        self.assertEqual(gate.selection_plan("review")["required_tests"], 11)
         self.assertEqual(sum(len(row[2]) for row in gate.HISTORICAL_PROJECT_AUTHORING_SELECTIONS), 135)
-        self.assertEqual(gate.selection_plan("project-authoring")["required_tests"], 136)
-        self.assertEqual(gate.selection_plan("all")["required_tests"], 184)
+        self.assertEqual(gate.selection_plan("project-authoring")["required_tests"], 143)
+        self.assertEqual(gate.selection_plan("all")["required_tests"], 208)
         self.assertEqual(sum(len(row[1]) for row in gate.CREATIVE_PRODUCTION_UNITS), 67)
         self.assertEqual(gate.selection_plan("creative-production-browser")["required_tests"], 58)
-        self.assertEqual(gate.selection_plan("creative-production")["required_tests"], 17)
+        self.assertEqual(gate.selection_plan("creative-production")["required_tests"], 30)
         plan = gate.selection_plan("review-browser")
         self.assertEqual(plan["discovery_tests"], 29)
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 184 + 206 + 60)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 208 + 206 + 60)
         self.assertEqual(plan["excluded_service_cases"], [])
         self.assertTrue(all(row["technical_credit"] == "NONE" for row in plan["not_selected"]))
         with self.assertRaises(ValueError):
@@ -2866,9 +2935,9 @@ class ReviewScopeTests(unittest.TestCase):
             result = ClosedStudioArchiveTests().retained(root, source)
             self.assertEqual(result["status"], "PASS", result)
             rows = result["bindings"]["review_cases"]
-            self.assertEqual(len(rows), 7)
-            self.assertEqual(len({row["manifest"] for row in rows}), 7)
-            self.assertEqual(sum(row["services"] for row in rows), 7)
+            self.assertEqual(len(rows), 11)
+            self.assertEqual(len({row["manifest"] for row in rows}), 11)
+            self.assertEqual(sum(row["services"] for row in rows), 12)
             self.assertNotIn("creative_production_cases", result["bindings"])
             self.assertEqual([row["title"] for row in rows], list(gate.REVIEW_TITLES))
             self.assertTrue(all(row["database_path"] == str(Path(row["source_directory"]) / "studio.sqlite3")
@@ -2930,21 +2999,22 @@ class ReviewScopeTests(unittest.TestCase):
         self.assertIn("default: authoring-drafts", workflow)
         self.assertIn("branches: ['verify/studio-service-*']", workflow)
         self.assertIn("""inputs.selection == 'review' && '["review-browser","review"]'""", workflow)
-        self.assertIn("""inputs.selection == 'all' && '["project-authoring","creative-production","branch-claim"]'""", workflow)
+        self.assertIn("""inputs.selection == 'all' && '["project-authoring-core","review","creative-production","branch-claim"]'""", workflow)
         unit = workflow.split("  creative-unit-build:\n", 1)[1].split("  real-service:\n", 1)[0]
         self.assertIn("needs: g0", unit)
         self.assertIn("github.event_name == 'workflow_dispatch'", unit)
         self.assertIn('REQUESTED_UNIT_SELECTION:', unit)
         self.assertIn('--selection "$REQUESTED_UNIT_SELECTION"', unit)
         self.assertIn("retention-days: 14", unit)
-        self.assertEqual(gate.SELECTION_TIMEOUTS["review"], 7 * 120 + 120 + 60)
+        self.assertEqual(gate.SELECTION_TIMEOUTS["review"], 11 * 120 + 120 + 60)
         self.assertEqual(gate.BROWSER_SELECTION_TIMEOUTS["browser-review"], 29 * 30 + 180)
         self.assertEqual(gate.SELECTION_TIMEOUTS["creative-workbench"], 1260)
         self.assertEqual(gate.BROWSER_SELECTION_TIMEOUTS["browser-creative-workbench"], 1260)
         self.assertEqual(sum(gate.BROWSER_SELECTION_TIMEOUTS[row[0]]
                              for row in gate.browser_selections("browser-contracts")), 12090)
         self.assertEqual(gate.selection_plan("browser-contracts")["discovery_tests"], 210)
-        self.assertGreater(60 * 60, 1200 + gate.SELECTION_TIMEOUTS["review"] + 1200)
+        self.assertIn("matrix.selection == 'review' && 70", workflow)
+        self.assertGreater(70 * 60, 1200 + gate.SELECTION_TIMEOUTS["review"] + 1200)
         self.assertGreater(60 * 60, 180 + gate.BROWSER_SELECTION_TIMEOUTS["browser-review"] + 1200)
 
     def test_review_source_observation_covers_product_tests_and_original_authority_helper(self):
@@ -3145,18 +3215,18 @@ class BranchClaimScopeTests(unittest.TestCase):
     def test_exact_service_and_unit_rosters_preserve_every_historical_group(self):
         digest = lambda value: gate.hashlib.sha256(gate.json.dumps(
             value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-        self.assertEqual(digest(gate.BRANCH_CLAIM_SELECTIONS), '9ff817b358e4ea886f67314b57e16a271a3192b1d292624bb07076bce39ad94c')
+        self.assertEqual(digest(gate.HISTORICAL_BRANCH_CLAIM_SELECTIONS), '9ff817b358e4ea886f67314b57e16a271a3192b1d292624bb07076bce39ad94c')
         self.assertEqual(digest(gate.BRANCH_CLAIM_UNITS), '3b3cb7ad95ac6808b6049249b7aaed115f5966fdd193f45cccf1fd69f8a353e0')
         self.assertEqual(digest(gate.CLAIM_SOURCE_RUST_CASES), '135431fa4213c8648db78e198b93f674a111d0b32dce2fda148c8f19c1c9b174')
-        self.assertEqual([len(row[2]) for row in gate.BRANCH_CLAIM_SELECTIONS], [17, 14])
+        self.assertEqual([len(row[2]) for row in gate.BRANCH_CLAIM_SELECTIONS], [18, 14, 3])
         self.assertEqual([len(row[1]) for row in gate.selected_unit_inventory("branch-claim")], [65, 69])
-        self.assertEqual(gate.selection_plan("all")["required_tests"], 184)
-        self.assertEqual(gate.selection_plan("project-authoring")["required_tests"], 136)
-        self.assertEqual(gate.selection_plan("creative-production")["required_tests"], 17)
-        self.assertEqual(gate.selection_plan("review")["required_tests"], 7)
+        self.assertEqual(gate.selection_plan("all")["required_tests"], 208)
+        self.assertEqual(gate.selection_plan("project-authoring")["required_tests"], 143)
+        self.assertEqual(gate.selection_plan("creative-production")["required_tests"], 30)
+        self.assertEqual(gate.selection_plan("review")["required_tests"], 11)
         plan = gate.selection_plan("branch-claim")
-        self.assertEqual(plan["required_tests"], 31)
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 153)
+        self.assertEqual(plan["required_tests"], 35)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 173)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
                             for row in plan["not_selected"]))
         for selection in ("branch", "branch-claim ", "branch-claim,review", "claim-source-browser"):
@@ -3250,9 +3320,9 @@ class BranchClaimScopeTests(unittest.TestCase):
             self.assertEqual(result["status"], "PASS", result)
             self.assertEqual(result["custody"], "VERIFIED_ORIGINAL_TREE_COPY")
             cases = result["bindings"]["branch_claim_cases"]
-            self.assertEqual(len(cases), 31)
-            self.assertEqual(len({row["manifest"] for row in cases}), 31)
-            self.assertEqual(sum(row["services"] for row in cases), 31)
+            self.assertEqual(len(cases), 35)
+            self.assertEqual(len({row["manifest"] for row in cases}), 35)
+            self.assertEqual(sum(row["services"] for row in cases), 38)
             self.assertEqual([(row["label"], row["file"], row["title"]) for row in cases],
                 [(label, filename, title) for label, filename, titles in gate.BRANCH_CLAIM_SELECTIONS for title in titles])
             self.assertNotIn("creative_production_cases", result["bindings"])
@@ -3399,7 +3469,7 @@ class BranchClaimScopeTests(unittest.TestCase):
 
     def test_new_workflow_keeps_all_three_service_groups_and_complete_budgets(self):
         workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
-        self.assertIn("inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]'", workflow)
+        self.assertIn("inputs.selection == 'all' && '[\"project-authoring-core\",\"review\",\"creative-production\",\"branch-claim\"]'", workflow)
         self.assertIn("matrix.selection == 'branch-claim' && 120", workflow)
         self.assertIn("inputs.selection == 'branch-claim' && 105", workflow)
         self.assertIn('ci_canvas_service.py claim-source-contracts --repo . --output ../v/claim-contracts', workflow)
@@ -3971,7 +4041,7 @@ class Studio68SourceContracts(unittest.TestCase):
                 gate.studio68_readback_journal(altered, report)
 
     def test_new_manual_profile_keeps_old_defaults_matrix_and_distinct_G_F_checkouts(self):
-        workflow = (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_text(encoding="utf-8")
+        workflow = closeout_previous_workflow((PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes()).decode("utf-8")
         legacy, selected = workflow.split("  studio-service-68:\n", 1)
         self.assertIn("default: authoring-drafts", legacy)
         self.assertIn("inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]'", legacy)
@@ -4043,10 +4113,10 @@ class PartialCriterionServiceSelectionTests(unittest.TestCase):
             ("criterion-caption", "caption-continuity-service.spec.ts", 1)])
         self.assertEqual(sum(len(titles) for _, _, titles in rows), 6)
         self.assertEqual(gate.selected_selections("all"), gate.SELECTIONS)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 184)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 208)
         plan = gate.selection_plan("criterion-partials")
         self.assertEqual(plan["required_tests"], 6)
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 184)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 208)
         self.assertTrue(plan["discovery_required_before_execution"])
         self.assertEqual(plan["execution_platform"], "Linux")
         self.assertFalse(plan["formal_acceptance"])
@@ -5228,7 +5298,7 @@ class WindowFrontendSelectionTests(unittest.TestCase):
                          "75a718d5f483403191850e99510f12bc369ca1490a4a9b204647d1775b47d683")
         self.assertEqual(sum(name.startswith("saved Film font source selection at the existing API boundary ")
                              for name in rows[-1][1]), 13)
-        self.assertEqual(gate.selection_plan("all")["required_tests"], 184)
+        self.assertEqual(gate.selection_plan("all")["required_tests"], 208)
         self.assertEqual(gate.selection_plan("browser-contracts")["required_tests"], 206)
         self.assertEqual(gate.selection_plan(gate.PARTIAL_ORACLE_SCOPE)["required_tests"], 6)
         self.assertEqual(len(gate.STUDIO68_CASES), 68)
@@ -5570,7 +5640,7 @@ class CameraEightSourceTests(unittest.TestCase):
         v2 = sources["apps/studio/tests/camera-reframe-v2-service.spec.ts"].decode("utf-8")
         self.assertEqual(re.findall(r'\btest\("([^"\n]+)"', v2), list(gate.CAMERA_EIGHT_SELECTIONS[1][2]))
         self.assertEqual(len(gate.selected_selections("camera")[0][2]), 7)
-        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 184)
+        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 208)
         self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["required_tests"], 8)
         self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["not_selected"],
                          [{"label": label, "file": name, "titles": list(titles), "status": "NOT_SELECTED", "technical_credit": "NONE"}
@@ -6076,7 +6146,35 @@ class CameraEightSourceTests(unittest.TestCase):
 WINDOW_BASE_WORKFLOW_REVERT_PAIRS = (("      - name: Observe the exact single-parent Window base in this same job\n        if: inputs.selection == 'window-frontend'\n        timeout-minutes: 2\n        env:\n          CI: 'true'\n          MOTIONWRIGHT_CANDIDATE_BUILD: '0'\n          NODE_OPTIONS: '--max-old-space-size=384'\n          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/v/pw\n        run: |\n          set -euo pipefail\n          python -B -I tooling/ci_canvas_service.py window-base --repo . \\\n            --output ../v/tools/window-base\n      - name: Bind Window source and hosted resource inputs before dependencies\n", '      - name: Bind Window source and hosted resource inputs before dependencies\n'), ('          test -d ../v/tools/window-base\n          test ! -e ../v/tools/node.txt\n          test ! -e ../v/tools/npm.txt\n          test ! -e ../v/tools/python.txt\n          node --version > ../v/tools/node.txt\n', '          test ! -e ../v/tools\n          mkdir ../v/tools\n          node --version > ../v/tools/node.txt\n'), ("          ref: ${{ github.sha }}\n          fetch-depth: ${{ inputs.selection == 'window-frontend' && 2 || 1 }}\n          persist-credentials: false\n", '          ref: ${{ github.sha }}\n          persist-credentials: false\n'))
 
 
+
+CLOSEOUT_WORKFLOW_REVERT_PAIRS = (('description: Run a closed selection; all requires four bounded same-source shards (132 plus 11 plus 30 '
+  'plus 35)',
+  'description: Run a closed selection; all requires all three same-source service groups (136 plus 17 plus '
+  '31)'),
+ ('      fail-fast: false\n      max-parallel: 1\n      matrix:\n',
+  '      fail-fast: false\n      matrix:\n'),
+ ("inputs.selection == 'all' && "
+  '\'["project-authoring-core","review","creative-production","branch-claim"]\' || inputs.selection == '
+  '\'project-authoring\' && \'["project-authoring-core","review"]\'',
+  'inputs.selection == \'all\' && \'["project-authoring","creative-production","branch-claim"]\''),
+ ("matrix.selection == 'project-authoring-core' && 360 || matrix.selection == 'creative-production' && 110 "
+  "|| matrix.selection == 'review' && 70 || contains(",
+  "matrix.selection == 'project-authoring' && 360 || contains("))
+
+def closeout_previous_workflow(raw):
+    """Accept only the exact bounded dispatch delta; preserve every old workflow pin."""
+    if gate.hashlib.sha256(raw).hexdigest() != "3c14f7eae2eb29c43f5434731f4f0e66bd0c688003d68454ad25a3a82dbdfa43":
+        raise ValueError("bounded service workflow differs from the reviewed postimage")
+    for added, previous in CLOSEOUT_WORKFLOW_REVERT_PAIRS:
+        if raw.count(added.encode()) != 1:
+            raise ValueError("bounded service workflow delta is missing or duplicated")
+        raw = raw.replace(added.encode(), previous.encode(), 1)
+    if gate.hashlib.sha256(raw).hexdigest() != "e1e3ff831d96934317cec81e8f0055b23bdce39665cdbfb2b25bfd8f5ebcdc64":
+        raise ValueError("an existing workflow byte changed outside the bounded dispatch delta")
+    return raw
+
 def window_base_previous_workflow(raw):
+    raw = closeout_previous_workflow(raw)
     for added, previous in WINDOW_BASE_WORKFLOW_REVERT_PAIRS:
         if raw.count(added.encode()) != 1:
             raise ValueError("Window base acquisition is not the exact reviewed delta")
@@ -6358,6 +6456,250 @@ class WindowBaseObjectSourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 window_base_previous_workflow(changed)
 
+
+
+class CloseoutServiceRosterTests(unittest.TestCase):
+    """Inert controls for the current roster proposal; no product case executes."""
+
+    def test_bounded_workflow_partition_preserves_exact_project143_all208_and_rejects_omission(self):
+        flatten = lambda rows: [(filename, title) for _, filename, titles in rows for title in titles]
+        for logical, partitions, count in (
+            ("project-authoring", ("project-authoring-core", "review"), 143),
+            ("all", ("project-authoring-core", "review", "creative-production", "branch-claim"), 208),
+        ):
+            expected = flatten(gate.selected_selections(logical))
+            actual = [pair for part in partitions for pair in flatten(gate.selected_selections(part))]
+            self.assertEqual(len(actual), count)
+            self.assertEqual(len(set(actual)), count)
+            self.assertEqual(set(actual), set(expected))
+        self.assertEqual(gate.selection_plan("project-authoring-core")["required_tests"], 132)
+        original = copy.deepcopy(gate.SELECTION_GROUPS["project-authoring-core"])
+        for mutation in ("missing", "extra", "duplicate", "foreign", "count"):
+            changed = copy.deepcopy(original)
+            if mutation == "missing": changed["labels"] = changed["labels"][:-1]
+            elif mutation == "extra": changed["labels"] = (*changed["labels"], "review")
+            elif mutation == "duplicate": changed["labels"] = (*changed["labels"][:-1], changed["labels"][0])
+            elif mutation == "foreign": changed["labels"] = (*changed["labels"][:-1], "claim-source")
+            else: changed["required_tests"] = 131
+            with self.subTest(mutation=mutation), mock.patch.dict(gate.SELECTION_GROUPS, {"project-authoring-core":changed}), self.assertRaises(ValueError):
+                gate.selected_selections("project-authoring-core")
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        self.assertEqual(gate.hashlib.sha256(closeout_previous_workflow(raw)).hexdigest(),
+                         "e1e3ff831d96934317cec81e8f0055b23bdce39665cdbfb2b25bfd8f5ebcdc64")
+        for changed in (
+            raw.replace(b'["project-authoring-core","review","creative-production","branch-claim"]',
+                        b'["project-authoring-core","creative-production","branch-claim"]', 1),
+            raw.replace(b'["project-authoring-core","review","creative-production","branch-claim"]',
+                        b'["project-authoring-core","review","review","creative-production","branch-claim"]', 1),
+            raw.replace(b'max-parallel: 1', b'max-parallel: 2', 1),
+            raw.replace(b"matrix.selection == 'project-authoring-core' && 360", b"matrix.selection == 'project-authoring-core' && 365", 1),
+            raw.replace(b'fail-fast: false', b'fail-fast: true', 1),
+        ):
+            self.assertNotEqual(changed, raw)
+            with self.assertRaises(ValueError): closeout_previous_workflow(changed)
+
+    def test_current_closed_catalogue_preserves_184_and_adds_only_24_named_cases(self):
+        digest = lambda value: gate.hashlib.sha256(gate.json.dumps(
+            value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        historical = gate.HISTORICAL_DEFAULT_SERVICE_SELECTIONS
+        self.assertEqual(digest(historical), "49fbdfb10b8dabf82711fbadd127d87da44f90353240c4ad7782172d135cc12a")
+        self.assertEqual(sum(len(row[2]) for row in historical), 184)
+        self.assertEqual(digest(gate.HISTORICAL_CREATIVE_PRODUCTION_SELECTIONS),
+                         "87836908df1b9a38fb6f1b1a237a50708757b5f293b816aefda2f8826a77cbf0")
+        old = {(label, filename): tuple(titles) for label, filename, titles in historical}
+        extras = {}
+        for label, filename, titles in gate.selected_selections("all"):
+            prior = old.get((label, filename), ())
+            self.assertEqual(tuple(titles[:len(prior)]), prior)
+            added = tuple(titles[len(prior):])
+            if added:
+                extras[label] = added
+        self.assertEqual(extras, EXPECTED_CLOSEOUT_SERVICE_ADDITIONS)
+        self.assertEqual(sum(map(len, extras.values())), 24)
+        self.assertEqual(gate.selection_plan("all")["required_tests"], 208)
+        self.assertEqual(gate.HISTORICAL_REVIEW_TITLES,
+                         next(row[2] for row in gate.HISTORICAL_PROJECT_AUTHORING_SELECTIONS if row[0] == "review"))
+
+    def test_each_affected_roster_rejects_skips_retries_and_count_preserving_substitution(self):
+        for label in EXPECTED_CLOSEOUT_SERVICE_ADDITIONS:
+            _, filename, titles = gate.selected_selections(label)[0]
+            self.assertEqual(gate.validate_report(selection_report(filename, titles), filename, titles)["passed"], len(titles))
+            for mutation in ("missing", "foreign", "duplicate", "skip", "retry", "repeat", "wrong-count"):
+                with self.subTest(label=label, mutation=mutation):
+                    value = selection_report(filename, titles)
+                    rows = value["suites"][0]["suites"][0]["specs"]
+                    result = rows[-1]["tests"][0]
+                    if mutation == "missing": rows.pop()
+                    elif mutation == "foreign": rows[-1]["title"] = "unreviewed same-count addition"
+                    elif mutation == "duplicate": rows[-1] = copy.deepcopy(rows[0])
+                    elif mutation == "skip": result["expectedStatus"] = "skipped"
+                    elif mutation == "retry": result["results"][0]["retry"] = 1
+                    elif mutation == "repeat": result["results"].append(copy.deepcopy(result["results"][0]))
+                    else: value["stats"]["expected"] -= 1
+                    with self.assertRaises(ValueError):
+                        gate.validate_report(value, filename, titles)
+
+    def test_admission_never_leaks_into_build_or_other_selector_environment(self):
+        flag = gate.BRANCH_COMBINATION_ADMISSION_ENV
+        for label in ("build", *(row[0] for row in gate.SELECTIONS if row[0] != "branch-combination")):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env = {"PATH": "synthetic path", flag: "1", "CARGO_TARGET_DIR": str(root / "target")}
+                original = dict(env)
+                process = mock.Mock(pid=123, wait=mock.Mock(return_value=0))
+                with mock.patch.object(gate.subprocess, "Popen", return_value=process) as spawn, \
+                     mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"):
+                    command = gate.execute(["synthetic-unused"], root, env, root, label, 1)
+                self.assertEqual(env, original)
+                self.assertNotIn(flag, spawn.call_args.kwargs["env"])
+                self.assertEqual(set(command["selected_environment"]), set(gate.PROCESS_ENVIRONMENT_KEYS))
+                self.assertNotIn(flag, gate.service_environment_binding(root, root, label, root / "binary"))
+
+    def test_branch_selector_requires_explicit_flag_and_retains_exact_environment(self):
+        flag = gate.BRANCH_COMBINATION_ADMISSION_ENV
+        for value in (None, "0", "true", "inherited but unapproved", 1):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with mock.patch.object(gate.subprocess, "Popen") as spawn, self.assertRaises(ValueError):
+                    gate.execute(["synthetic-unused"], root, {flag: value}, root, "branch-combination", 1)
+                spawn.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = gate.service_environment_binding(root / "target", root, "branch-combination", root / "binary")
+            process = mock.Mock(pid=123, wait=mock.Mock(return_value=0))
+            with mock.patch.object(gate.subprocess, "Popen", return_value=process) as spawn, \
+                 mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"):
+                command = gate.execute(["synthetic-unused"], root, env, root, "branch-combination", 1)
+            self.assertEqual(command["selected_environment"], env)
+            self.assertEqual(spawn.call_args.kwargs["env"][flag], "1")
+            self.assertEqual(len(command["selected_environment"]), 5)
+
+    def test_main_binds_branch_admission_after_exact_build_and_rejects_stale_source_or_binary(self):
+        flag = gate.BRANCH_COMBINATION_ADMISSION_ENV
+        for mutation in (None, "source", "binary", "retained-binary"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                repo, output, target = root / "repo", root / "out", root / "target"
+                repo.mkdir()
+                for name in ("cargo", "node"):
+                    (repo / name).write_bytes(b"inert tool identity; never executed")
+                cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+                cli.parent.mkdir(parents=True)
+                cli.write_bytes(b"inert CLI identity; never executed")
+                binary = target / "debug/examples/studio_review_session"
+                if gate.os.name == "nt": binary = binary.with_suffix(".exe")
+                source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "only"}}
+                queries, calls = [], []
+
+                def observe(_repo):
+                    queries.append("source")
+                    if len(queries) == 3:
+                        if mutation == "source": return {**source, "checkout": "c" * 40}
+                        if mutation == "binary": binary.write_bytes(b"stale foreign bytes")
+                        if mutation == "retained-binary":
+                            retained = output / ("executed-studio-service.exe" if gate.os.name == "nt" else "executed-studio-service")
+                            retained.write_bytes(b"stale retained bytes")
+                    return source
+
+                def execute(argv, cwd, env, destination, label, timeout):
+                    calls.append(label)
+                    if label == "build":
+                        self.assertNotIn(flag, env)
+                        self.assertEqual(len(queries), 1)
+                        binary.parent.mkdir(parents=True)
+                        binary.write_bytes(b"inert matching executable; never executed")
+                    else:
+                        self.assertEqual(label, "branch-combination")
+                        self.assertEqual(env[flag], "1")
+                        self.assertEqual(len(queries), 3)
+                        _, filename, titles = gate.selected_selections(label)[0]
+                        gate.write_new(destination / (label + ".json"), selection_report(filename, titles))
+                    return {"argv": argv, "cwd": str(cwd), "exit_code": 0,
+                            **synthetic_process_fields(gate.service_environment_binding(target) if label == "build" else
+                                gate.service_environment_binding(target, output, label, binary)),
+                            "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+
+                argv = ["ci_canvas_service.py", "--repo", str(repo), "--output", str(output),
+                        "--target", str(target), "--selection", "branch-combination"]
+                with mock.patch("sys.argv", argv), mock.patch("sys.stdout", new=io.StringIO()), \
+                     mock.patch.object(gate, "source_observation", side_effect=observe), \
+                     mock.patch.object(gate.shutil, "which", side_effect=lambda name: str(repo / name)), \
+                     mock.patch.object(gate, "execute", side_effect=execute), \
+                     mock.patch.dict(gate.os.environ, {flag: "inherited value must be discarded"}):
+                    code = gate.main()
+                receipt = gate.json.loads((output / "receipt.json").read_bytes())
+                self.assertEqual(code, 0 if mutation is None else 1, receipt)
+                self.assertEqual(calls, ["build", "branch-combination"] if mutation is None else ["build"])
+                if mutation is not None:
+                    self.assertFalse((output / "branch-combination.json").exists())
+                    self.assertEqual(receipt["selections"], [])
+
+    def test_branch_combination_source_closure_rejects_missing_or_changed_actual_q1_inputs(self):
+        required = {
+            "apps/desktop/src-tauri/build.rs", "apps/desktop/src-tauri/capabilities/desktop-owner.json",
+            "apps/desktop/src-tauri/src/main.rs", "apps/studio/src/App.tsx",
+            "apps/studio/src/BranchCombinationEditor.tsx", "apps/studio/src/CreativeAlternativesPanel.tsx",
+            "apps/studio/src/ReviewWorkspace.tsx", "apps/studio/src/api.ts",
+            "apps/studio/src/branchCombinationDraft.test.ts", "apps/studio/src/branchCombinationDraft.ts",
+            "apps/studio/src/branchCombinationReview.test.ts", "apps/studio/src/branchCombinationReview.ts",
+            "apps/studio/src/branchDraft.ts", "apps/studio/src/types.ts", "apps/studio/src/useBranchDraft.tsx",
+            "apps/studio/tests/branch-combination-service.spec.ts", "crates/domain/src/branch_combination.rs",
+            "crates/domain/src/history.rs", "crates/domain/src/lib.rs", "crates/domain/tests/branch_combination.rs",
+            "crates/service/examples/studio_review_session.rs", "crates/service/src/branch_combination.rs",
+            "crates/service/src/lib.rs", "crates/service/tests/branch_combination.rs",
+        }
+        self.assertEqual(set(gate.BRANCH_COMBINATION_SOURCE_PATHS), required)
+        self.assertEqual(len(gate.BRANCH_COMBINATION_SOURCE_PATHS), 24)
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git, before = ProjectionNavigationScopeTests().source_fixture(repo)
+            self.assertTrue(required.issubset(before["files"]))
+            with mock.patch.object(gate.subprocess, "check_output", side_effect=git), \
+                 mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                for name in sorted(required):
+                    path = repo / name
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(original + b"hidden local change")
+                        with self.subTest(path=name, fault="changed"), self.assertRaises(ValueError):
+                            gate.source_observation(repo)
+                        path.unlink()
+                        with self.subTest(path=name, fault="missing"), self.assertRaises(ValueError):
+                            gate.source_observation(repo)
+                    finally:
+                        path.write_bytes(original)
+
+    def test_new_real_peer_custody_cannot_close_with_singular_foreign_or_uncertain_authority(self):
+        for scope, label, index in (("review", "review", 10), ("branch-claim", "branch-authoring", 17),
+                                     ("branch-claim", "branch-combination", 0)):
+            for mutation in ("missing-peers", "missing-binary", "foreign-database", "unknown-exit", "tainted", "coherent-singular"):
+                with self.subTest(label=label, mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                    root, source = CreativeProductionStoreTests().fixture(directory, scope)
+                    folder = root / "e" / (label + "-test-results") / ("case-" + str(index))
+                    name = "review-service-evidence" if label == "review" else label + "-evidence"
+                    path = folder / (name + ".json")
+                    value = gate.json.loads(path.read_bytes())
+                    self.assertEqual(len(value["peers"]), 1)
+                    if mutation == "missing-peers": value.pop("peers")
+                    elif mutation == "missing-binary": value["peers"][0].pop("binaryPath")
+                    elif mutation == "foreign-database": value["peers"][0]["databasePath"] += ".foreign"
+                    elif mutation == "unknown-exit": value["peers"][0]["processExits"][0]["code"] = None
+                    elif mutation == "tainted": value["peers"][0]["lifecycleTaints"] = ["unknown original outcome"]
+                    else:
+                        value["peers"] = []
+                        manifest_path = folder / "closed-store/manifest.json"
+                        manifest = gate.json.loads(manifest_path.read_bytes())
+                        manifest["lifecycle"] = manifest["lifecycle"][:1]
+                        manifest_path.write_text(gate.json.dumps(manifest))
+                        outcome_path = folder / "closed-store-outcomes.json"
+                        outcome = gate.json.loads(outcome_path.read_bytes())
+                        outcome["capture"] = manifest
+                        outcome["closures"] = outcome["closures"][:1]
+                        outcome_path.write_text(gate.json.dumps(outcome))
+                    path.write_text(gate.json.dumps(value))
+                    result = ClosedStudioArchiveTests().retained(root, source)
+                    self.assertEqual(result["status"], "FAIL", result)
+                    self.assertFalse((root / "retained/closed-evidence.tar").exists())
 
 if __name__ == "__main__":
     unittest.main()
