@@ -35,7 +35,11 @@ def admit_patched_glib(root: Path) -> dict:
     patch = manifest.get("patch", {})
     require(isinstance(patch, dict) and
             isinstance(patch.get("crates-io"), dict) and
-            patch["crates-io"] == {"glib": {"path": VENDOR}},
+            patch["crates-io"] in (
+                {"glib": {"path": VENDOR}},
+                {"glib": {"path": VENDOR},
+                 "tauri": {"path": "vendor/tauri-2.12.1"}},
+            ),
             "unexpected_cargo_source_override")
     lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
     packages = lock.get("package")

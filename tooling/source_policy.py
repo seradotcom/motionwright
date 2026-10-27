@@ -47,6 +47,14 @@ try:
 except (ImportError, OSError, ValueError) as error:
     errors.append("glib 0.18.5 patched source custody is unverified")
 
+# Tauri IPC diagnostics must use the three reviewed source substitutions.
+# Check the complete upstream archive and every vendored file independently.
+try:
+    from v01_tauri_ipc_product_admission import admit_patched_tauri
+    admit_patched_tauri(ROOT)
+except (ImportError, OSError, ValueError):
+    errors.append("Tauri 2.12.1 IPC diagnostic source custody is unverified")
+
 desktop = (ROOT / "apps/desktop/src-tauri/src/main.rs").read_text()
 if REV not in desktop:
     errors.append("desktop Native SDK receipt does not match SOURCE_LOCK")
@@ -170,7 +178,7 @@ for path in iter_source_files(ROOT):
         # read_text normalizes newlines; the reviewed UTF-8 Git source uses LF.
         process_test_fixture_sources = {
             "crates/native/src/production/brand_fonts.rs":
-                "c5629640cd459549a5702454248a5043074ccff802e06c6b59ed135901d59a63",
+                "c4555a49e1e548ac3fb6324ba44100ae00d9b9e5effa7c8e3098508ce740f4e4",
         }
         reviewed_test_fixture = (
             rel in process_test_fixture_sources

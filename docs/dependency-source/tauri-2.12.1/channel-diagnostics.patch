@@ -1,0 +1,33 @@
+diff --git a/src/ipc/channel.rs b/src/ipc/channel.rs
+--- a/src/ipc/channel.rs
++++ b/src/ipc/channel.rs
+@@ -313,13 +313,13 @@
+                 .insert_if(webview.label(), body, || webview.is_registered())
+             else {
+               return Ok(());
+             };
+ 
+             webview.eval(format!(
+-              "window.__TAURI_INTERNALS__.invoke('{FETCH_CHANNEL_DATA_COMMAND}', null, {{ headers: {{ '{CHANNEL_ID_HEADER_NAME}': '{data_id}' }} }}).then((response) => window.__TAURI_INTERNALS__.runCallback({callback_id}, {{ message: response, index: {current_index} }})).catch(console.error)",
++              "window.__TAURI_INTERNALS__.invoke('{FETCH_CHANNEL_DATA_COMMAND}', null, {{ headers: {{ '{CHANNEL_ID_HEADER_NAME}': '{data_id}' }} }}).then((response) => window.__TAURI_INTERNALS__.runCallback({callback_id}, {{ message: response, index: {current_index} }})).catch(() => console.error('IPC channel response delivery failed'))",
+             ))?;
+           }
+         }
+ 
+         Ok(())
+       }),
+@@ -435,13 +435,13 @@
+                 .insert_if(webview.label(), body, || webview.is_registered())
+             else {
+               return Ok(());
+             };
+ 
+             webview.eval(format!(
+-              "window.__TAURI_INTERNALS__.invoke('{FETCH_CHANNEL_DATA_COMMAND}', null, {{ headers: {{ '{CHANNEL_ID_HEADER_NAME}': '{data_id}' }} }}).then((response) => window.__TAURI_INTERNALS__.runCallback({callback_id}, response)).catch(console.error)",
++              "window.__TAURI_INTERNALS__.invoke('{FETCH_CHANNEL_DATA_COMMAND}', null, {{ headers: {{ '{CHANNEL_ID_HEADER_NAME}': '{data_id}' }} }}).then((response) => window.__TAURI_INTERNALS__.runCallback({callback_id}, response)).catch(() => console.error('IPC channel response delivery failed'))",
+             ))?;
+           }
+         }
+ 
+         Ok(())
+       }),

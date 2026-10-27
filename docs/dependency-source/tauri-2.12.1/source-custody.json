@@ -1,0 +1,71 @@
+{
+  "schema": "motionwright.tauri-ipc-source-custody/1",
+  "dependency": {
+    "name": "tauri",
+    "version": "2.12.1",
+    "repository": "https://github.com/tauri-apps/tauri",
+    "upstream_url": "https://static.crates.io/crates/tauri/tauri-2.12.1.crate",
+    "upstream_path": "tooling/upstream-crates/tauri-2.12.1.crate",
+    "bytes": 324974,
+    "sha256": "ed99ee9694a2deb776d91cae48ac7411ddfc89ecae2f9b5041111d8c88f2ace9",
+    "files": 142
+  },
+  "vendor_path": "vendor/tauri-2.12.1",
+  "patches": [
+    {
+      "path": "ipc-diagnostics.patch",
+      "bytes": 7726,
+      "sha256": "783b6863e7bcd4f55bdc74706f1b3d75266480c0526969dfe85ffca0f21d7387"
+    },
+    {
+      "path": "channel-diagnostics.patch",
+      "bytes": 1851,
+      "sha256": "1ce39b996455da0c769bbe43d62a068005ca885578c36f986252ba516fa4e346"
+    }
+  ],
+  "modified_files": [
+    {
+      "path": "src/webview/mod.rs",
+      "before": {
+        "bytes": 96498,
+        "sha256": "b5319b171c09a8e652d75585be39d92b387df370340ca90b58141b501c17009a"
+      },
+      "after": {
+        "bytes": 96378,
+        "sha256": "c9b3bde0579a02390a229c47fc1eec237f3d5d3d0320f728ed7e7a73ec52b941"
+      }
+    },
+    {
+      "path": "src/ipc/protocol.rs",
+      "before": {
+        "bytes": 24671,
+        "sha256": "e4b16a8800a249011753665eb28a004d8d6712af66c2fedbff094bc4fb99515e"
+      },
+      "after": {
+        "bytes": 24314,
+        "sha256": "5abef2714df16351b79292f352579dd09c235411aa2b6d633b22ebf3b094e119"
+      }
+    },
+    {
+      "path": "src/ipc/channel.rs",
+      "before": {
+        "bytes": 20293,
+        "sha256": "9d20fad897f8377484c7bd7f63b030653501a08b36f03def9cc5123c2a98623e"
+      },
+      "after": {
+        "bytes": 20385,
+        "sha256": "797331db70ed3391384c8b9636c46909436a6bcf94bf69e364467313c7b0f23a"
+      }
+    }
+  ],
+  "all_other_files_exact_upstream": true,
+  "license_files": [
+    "LICENSE-APACHE-2.0",
+    "LICENSE-MIT"
+  ],
+  "scope": "Fixed diagnostics replace invoke keys, request/response payloads and channel callback errors; authorization, ACLs, callbacks and authorized response bodies are unchanged.",
+  "verification_command": "python tooling/v01_tauri_ipc_product_admission.py --root .",
+  "target_compilation_verified": false,
+  "runtime_diagnostic_sink_closure_verified": false,
+  "release_authorized": false
+}

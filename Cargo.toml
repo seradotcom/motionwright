@@ -54,3 +54,5 @@ semwright-driver-motion-canvas = { git = "https://github.com/seradotcom/semwrigh
 # path with a registry 0.18.5 or treat its version as an advisory waiver.
 [patch.crates-io]
 glib = { path = "vendor/glib-0.18.5" }
+# Exact Tauri IPC diagnostics source patch; independently verified by source_policy.
+tauri = { path = "vendor/tauri-2.12.1" }
