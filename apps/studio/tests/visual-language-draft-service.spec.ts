@@ -253,7 +253,8 @@ async function scenario(page: Page, info: TestInfo, body: (proof: Proof) => Prom
     const evidence = {
       schema: "motionwright.visual-language-service-evidence/1", fixture: "synthetic_authored_content",
       test: info.title, case_result: caseFailure ? "failed" : "completed", failure: caseFailure,
-      runner_source_revision_operator_supplied: "30e5666e526ed9ea3cc06b13a84f0d2cb4283b3e",
+      // The runner supplies the source identity from its actual service build receipt.
+      runner_source_revision_operator_supplied: process.env.MOTIONWRIGHT_SERVICE_TEST_SOURCE_REVISION ?? null,
       ui_source_revision_operator_supplied: process.env.MOTIONWRIGHT_TEST_UI_REVISION ?? null,
       ui_sources: { start: sourceAtStart, end: sourceAtEnd, unchanged_during_case: sourceUnchanged },
       test_source_sha256: digest(await readFile(new URL("./visual-language-draft-service.spec.ts", import.meta.url))),
@@ -782,7 +783,8 @@ test("a saved ink token changes the actual SVG text paint across revisions and r
     if (!authoredScene) throw new Error("No original root text in this real service Project.");
     const authoredText = authoredScene.nodes.find(node => node.kind === "text" && !node.parent_id)!;
     proof.intentions.push({ concept: "real_project_palette_inherited_ink", sourceNodeId: authoredText.id,
-      explicitOriginalFill: authoredText.style.fill, authorInk1: "#F7EAD7", authorInk2: "#D8C2A0" });
+      explicitOriginalFill: authoredText.style.fill, authorInk1: "#F7EAD7", authorInk2: "#D8C2A0",
+      authorInkAfterObjectOverride: "#B6D4E2", objectOverride: "#A1B2C3" });
     const textFill = page.getByLabel("Canvas fill", { exact: true });
     await textFill.fill("");
     await button(page, "Commit style").click();
@@ -818,16 +820,28 @@ test("a saved ink token changes the actual SVG text paint across revisions and r
     await openCanvas(page);
     await page.getByLabel("Canvas fill", { exact: true }).fill("#A1B2C3");
     await button(page, "Commit style").click();
-    const final = await currentAfterUi(proof, secondInk.revision + 1, "explicit object ink overrides project palette");
+    const overridden = await currentAfterUi(proof, secondInk.revision + 1, "explicit object ink overrides project palette");
+    expect(overridden.scenes.find(scene => scene.id === authoredScene.id)?.nodes.find(node => node.id === authoredText.id)?.style.fill)
+      .toBe("#A1B2C3");
+    expect(await beforeTextSvgFill()).toBe("#A1B2C3");
+
+    await openCanvas(page);
+    await field(page, "Palette tokens value 1").fill("#B6D4E2");
+    await visualCommit(page).click();
+    const final = await currentAfterUi(proof, overridden.revision + 1, "later global palette edit preserves the explicit object ink");
+    const expectedVisual = structuredClone(overridden.visual_language);
+    expectedVisual.palette[0].value = "#B6D4E2";
+    expect(final).toEqual({ ...overridden, revision: overridden.revision + 1,
+      updated_at: final.updated_at, visual_language: expectedVisual });
     expect(final.scenes.find(scene => scene.id === authoredScene.id)?.nodes.find(node => node.id === authoredText.id)?.style.fill)
       .toBe("#A1B2C3");
     expect(await beforeTextSvgFill()).toBe("#A1B2C3");
 
     const journal = await proof.service.history(proof.initial.id, proof.initial.revision);
     expect(journal.map(event => event.change.type)).toEqual([
-      "update_canvas_style", "set_visual_language", "set_visual_language", "update_canvas_style",
+      "update_canvas_style", "set_visual_language", "set_visual_language", "update_canvas_style", "set_visual_language",
     ]);
-    expect(applied(proof.service)).toHaveLength(4);
+    expect(applied(proof.service)).toHaveLength(5);
     await proof.service.close();
     await proof.service.start();
     await page.reload();
@@ -835,11 +849,12 @@ test("a saved ink token changes the actual SVG text paint across revisions and r
     expect(await beforeTextSvgFill()).toBe("#A1B2C3");
     expect(await proof.service.project(proof.initial.id)).toEqual(final);
     expect(await proof.service.history(proof.initial.id, proof.initial.revision)).toEqual(journal);
-    expect(applied(proof.service)).toHaveLength(4);
+    expect(applied(proof.service)).toHaveLength(5);
     proof.observations.push({ label: "real_saved_ink_affects_actual_SVG_before_composition",
       project: final.id, revision: final.revision, textNode: authoredText.id,
       projectPalette: final.visual_language.palette[0].value, renderedExplicitInk: "#A1B2C3",
       earlierRenderedInheritedInk: ["#F7EAD7", "#D8C2A0"],
+      laterGlobalPalettePreservesObjectOverrideAndAllOtherProjectFields: true,
       postRestartProjectAndJournalEqual: true,
       excludes: ["native_Film_pixels", "installed_fonts", "human_approval"],
     });
