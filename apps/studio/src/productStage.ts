@@ -54,6 +54,7 @@ export function validateProductStageConfig(config:ProductStageConfig):void{
   if(expected.length!==actual.length || expected.some((key,index)=>actual[index]!==key))
     throw new Error("Unknown or missing ProductStage input; external assets and executable UI are not admitted.");
   if(!["browser","flat_panel","generic_handset"].includes(config.frame))throw new Error("ProductStage frame must be original and generic.");
+  if(typeof config.animate_focus!=="boolean")throw new Error("ProductStage focus animation must be a boolean.");
   for(const [name,text,max] of [
     ["screen heading",config.screen_heading,40],
     ["screen detail",config.screen_detail,80],
