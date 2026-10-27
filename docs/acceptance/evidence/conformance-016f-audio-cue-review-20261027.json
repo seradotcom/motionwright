@@ -1,0 +1,50 @@
+{
+  "capture_delta_peer_sha256": "cd2b8557de13b671096fd8ba20d5ee40b2c4a54d588a735b57370e0fced71be1",
+  "decision": "sufficient",
+  "field_ids": [
+    "CR-AUDIO-04#/statement"
+  ],
+  "finite_oracle_peer_sha256": "128c51b8730d4840780a7f7a0b18ed8ddc837a16d6be8d7c9ca580aba0fef2e0",
+  "human_review_invented": false,
+  "human_review_required": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "One required statement field with its preserved separate source and unit obligations. Word-move/anchor-migration acceptance is not admitted by this component.",
+    "Six actual Node units exercise the complete byte-exact current Studio audio module and original fixture/type modules. Voice and acknowledgement snapshots are synthetic unit inputs, not measured audio or a service implementation.",
+    "Six current source predicates and the retained technical reading establish identifier separation and editor identity routing; no Rust test, compilation, Host grant or native audio execution is claimed.",
+    "Node native erasable TypeScript is not Vitest, TypeScript typechecking, a full Studio build, browser interaction, persistence, SQLite, actual service acknowledgement or installed product evidence.",
+    "The first Node attempt retained six passing assertions but failed its after-hook input capture. It remains NOT_ADMITTED. This second attempt requires complete same-input fragments, observations, terminal and source/load closure; no earlier result is relabelled.",
+    "Historical A4 Vitest evidence remains at its original source/run identity. No historical47-case file aggregate is presented as a current execution.",
+    "The complete criterion flag belongs to a composition of source and actual unit evidence, not to six unit counts alone. No complete requirement or scenario acceptance follows.",
+    "This staging producer does not change ledgers. Exact current-source intake must preserve all historical records and pass full privacy, schema, compatibility and history gates before integration.",
+    "No authenticated human reviewer, product acceptance readiness or release authorization is asserted."
+  ],
+  "obligations": [
+    {
+      "basis": "Six byte-bound current source checks and the retained source reading establish independent canonical and Studio cue identity, identity-carrying changes, stable-ID lookup/submission, explicit creation identity, collision rejection and next-ID rotation after matching acknowledgement input. These are source checks, not Rust or Host executions.",
+      "id": "identity_independent_of_text_position",
+      "status": "pass"
+    },
+    {
+      "basis": "Six individually named real Node units preserve cue ID and segment anchor across text/reordering and retiming, reserve explicit new identity, rotate only the next identity after a synthetic acknowledgement snapshot, and reject collision/removal/foreign scope without mutating input snapshots. Complete original input fragments, observations, PID/terminal, exact source and load closure are retained.",
+      "id": "editor_identity_preserved_or_allocated_explicitly",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "480b4563ac12c142e82bdc234c74d1442b9e22d9905ac9b19e4b30fed7efe956",
+  "original_unit_receipt_sha256": "15990119c793bde3e5bb6c4c23bbc275eb7227b92ac510ead1155d6bbd27a1e1",
+  "original_unit_terminal_sha256": "bc2a10b7307bc8719a8bfc7df65b7462d5861b2f8eca27a08604b0fd13e97abd",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-27T06:26:01.790620+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.audio04-objective-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "94fbc9a59a93618c1b318687f2d3239c0022f45c01c74f9db1a8df6975aa9426",
+  "source_review_sha256": "1c47f531e71b829b60dea1f5cf260e90c550284ce8ded4b7a1044cd4dcaf2e44",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

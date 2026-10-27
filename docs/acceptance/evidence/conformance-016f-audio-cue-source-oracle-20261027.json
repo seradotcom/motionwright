@@ -1,0 +1,53 @@
+{
+  "compiler_or_Rust_execution_claimed": false,
+  "criterion_id": "CR-AUDIO-04#/statement",
+  "definition_kind": "Six exact-file source predicates plus technical source inspection",
+  "execution_profile": "audio-current-source-boundaries",
+  "predicates": [
+    {
+      "basis": "The current canonical cue has an independent UUID, label, rational time and optional segment UUID.",
+      "id": "canonical_identity_and_position_are_separate",
+      "path": "crates/domain/src/creative.rs",
+      "source_sha256": "e01edcef2c460191f14c318ba0c308b7f2cf1cd74464c86dfaabae69298653f0"
+    },
+    {
+      "basis": "Canonical source validates referenced segment identity and rejects duplicate cue IDs; no Rust runtime test is inferred.",
+      "id": "canonical_references_and_duplicates_are_checked",
+      "path": "crates/domain/src/creative.rs",
+      "source_sha256": "e01edcef2c460191f14c318ba0c308b7f2cf1cd74464c86dfaabae69298653f0"
+    },
+    {
+      "basis": "Studio and change types carry the cue identity independently of label and time.",
+      "id": "studio_change_types_carry_identity",
+      "path": "apps/studio/src/types.ts",
+      "source_sha256": "83f2d7992d14744e6b05b53c548bedd3a8f18913fcfaf8864742f0b4308794e6"
+    },
+    {
+      "basis": "Existing cue lookup and submission use stable identity; a new cue uses its reserved draft identity.",
+      "id": "editor_lookup_and_submission_preserve_existing_identity",
+      "path": "apps/studio/src/audioDraft.ts",
+      "source_sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511"
+    },
+    {
+      "basis": "A new draft reserves an explicit identity and a retained identity cannot silently overwrite an existing cue.",
+      "id": "new_editor_identity_is_explicit_and_collision_checked",
+      "path": "apps/studio/src/audioDraft.ts",
+      "source_sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511"
+    },
+    {
+      "basis": "The editor rotates the next identity only through the matching acknowledgement comparison; this remains source and synthetic unit evidence.",
+      "id": "next_identity_changes_only_after_matching_unit_acknowledgement",
+      "path": "apps/studio/src/audioDraft.ts",
+      "source_sha256": "930745580fc323887a364917d5d89c9188eeae92583b40daa75b4d802fba8511"
+    }
+  ],
+  "runtime_behavior_requires_separate_unit_evidence": true,
+  "schema": "motionwright.audio04-source-oracle-definition/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_review_sha256": "1c47f531e71b829b60dea1f5cf260e90c550284ce8ded4b7a1044cd4dcaf2e44",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}
