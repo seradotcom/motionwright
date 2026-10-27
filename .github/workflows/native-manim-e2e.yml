@@ -533,7 +533,7 @@ jobs:
                   all_ids, grouped = [], {}
                   for row in SUITES:
                       grouped.setdefault(row[1], []).append(row)
-                  need(len(SUITES) == 13 and len(grouped) == 10, "Reviewed suite/report closure differs")
+                  need(len(SUITES) == 14 and len(grouped) == 10, "Reviewed suite/report closure differs")
                   for directory, rows in grouped.items():
                       folder = temporary / directory
                       expected_files = {"report.json"} | {f"report-{i:02d}-{stream}.log" for i in range(len(rows)) for stream in ("stdout", "stderr")}
