@@ -1,0 +1,52 @@
+{
+  "canonical_origin_packet_sha256": "5af7648c7c4c617e9cbaa42d2afa97b213a76617837708d1e80330659b66f86e",
+  "composition_receipt_sha256": "aea3490f6a957b9dbd186d337af031d1a5b3101ee54bb06cc6d00198a8e69843",
+  "composition_report_sha256": "b4d5230a533ce9829dd9342a9d4f11dddcc1cb2cbd9bff014a06e50f5b6a7404",
+  "custodian_method": "Read back the real Windows composition/source receipts and canonical HTTP originals, retain their hashes and preceding partial finding, authenticate all 101 D4 source/import inputs and original clause/profile identities, then bind the new source record. No human signature or product execution is inferred.",
+  "field_ids": [
+    "CR-SDK-01#/statement"
+  ],
+  "identity_authentication": "not_asserted",
+  "individual_field_obligations": {
+    "CR-SDK-01#/statement": [
+      {
+        "basis": "Actual D4 manifests/lock/import inventory use the exact canonical Git source with no SDK path/patch substitution. Fresh canonical repository/commit/license/package/PR213 originals establish public source provenance and the accepted Native SDK contribution at the declared license boundary. This is source consumption, not a registry release, consumer compilation or runtime acceptance.",
+        "id": "canonical_public_dependency_source_and_authorized_pin",
+        "status": "pass"
+      }
+    ]
+  },
+  "limits": [
+    "One statement clause only; CR-SDK-01 acceptance still requires actual clean external consumer compilation.",
+    "Source facts do not prove symbol typechecking, runtime authorization, native production, installed package or product acceptance.",
+    "No assertion that SDK01d4 is current main, is a descendant of PR213 merge, or has a cryptographic/human signature is made.",
+    "The accepted canonical public API/source boundary does not authorize distributing any particular installer or other separately licensed payload.",
+    "The frozen D4 tree and complete Git namespace inventory are part of scope. A new tree/new source file requires fresh inventory; unchanged listed manifests alone cannot transfer this PASS.",
+    "The original source-facts report and its PARTIAL decision remain intact as preceding history; this report is a new composition with additional originals.",
+    "Root must authenticate and retain actual process receipts and complete independent sufficiency review before ledger admission.",
+    "Only one exact-D4 source statement is admitted; the separate clean external consumer compile remains pending.",
+    "The 6455074 parent changes ledgers and public evidence only; it does not replace D4 as the product source.",
+    "The requirement aggregate remains branch/partial/open; no complete scenario, positive readiness or release authorization follows.",
+    "Raw canonical API responses and private original reports/receipts remain in private custody; public projections bind their original digests."
+  ],
+  "oracle_profile_sha256": "163ffcd7b3e0f1e25b1693fce6a5f4d31eeb6aba0d8de802fbc14a5caea74ac9",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-26T23:06:03.971986+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.sdk01-source-sufficiency-review/1",
+  "scope_counts": {
+    "conditional": 0,
+    "optional": 0,
+    "required": 1
+  },
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+    "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+  },
+  "source_clause_sha256": "326b4f60ba2cbd051eb7cc163c53694be1ace6fe8af65ecac177ef009b913516",
+  "source_facts_receipt_sha256": "8e2280cec5977f160c374e7402f326621843c2c2676359b03500a0984ffc71c2",
+  "source_facts_report_sha256": "6560fb587e01cb4f9b62b8e1f2ef7384525d2a745da0c3755c7ad1a65de46b3e",
+  "tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+}

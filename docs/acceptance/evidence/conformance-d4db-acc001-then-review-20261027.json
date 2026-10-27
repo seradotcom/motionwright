@@ -1,0 +1,46 @@
+{
+  "D4_product_was_compiled": false,
+  "composition_receipt_sha256": "c1ada32790efb351fe58425ff80ad729061de60c275f9957962ccbe6deb35636",
+  "composition_report_sha256": "a427de5e758e80179062b06e5e9b61570acacb4992a498d0f061cf0c360e2cae",
+  "field_ids": [
+    "ACC-001#/then"
+  ],
+  "formal_scenario_acceptance": false,
+  "frozen_sufficiency_review_sha256": "27bbffb7af1ced2e8bc08a1a0f9a9f5ba4176af0f6ad7c83b84ac535d585b83a",
+  "golden_tests_executed_by_review": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "One ACC001 then field: current source retention of explicit canonical-owner mappings and the public dependency boundary, using the original qualified external SDK consumer. No D4 build, new golden-vector test, native run, whole scenario or FOUND requirement acceptance is inferred.",
+    "The two source records are profile views of one real composition, not two product or test executions.",
+    "The original d339 consumer compilation retains its own SHA, tree, run, environment and nine source differences; it is not relabelled D4.",
+    "Static expected-vector definitions are retained source observations. No old unit result becomes a current execution.",
+    "Motion-authoring Film and video-domain render intent remain distinct; app DTOs project to owner operations without creating owner authority.",
+    "Current mapping retention does not assert native DTO acceptance, audiovisual fidelity, installed behavior or complete FOUND03 acceptance.",
+    "The whole ACC001 scenario and unrelated original fields remain open. No human observation, product readiness or release authorization is granted.",
+    "Private original specifications, catalogue clauses, raw process arguments and filesystem paths are not published."
+  ],
+  "obligations": [
+    {
+      "basis": "The current source retains typed motion-authoring/media-time mappings, app-only Graph/Effects candidates, and explicit bounded DTO projections to canonical MLT entity and render operations. Owner-returned references/revisions and deterministic expected-vector definitions remain present. This is source mapping retention; golden tests and native operations were not executed here.",
+      "id": "current_owner_mapping_is_retained",
+      "status": "pass"
+    },
+    {
+      "basis": "The admitted D4 canonical-source record and original source composition authenticate public SDK01d consumption. Independent consumer d339 actually compiled that pinned SDK and its typed adapter in run40391417663/1/job121813084882. Eight current binding inputs match that qualification. Together with the present mapping review this completes only the two then-field obligations; D4 was not rebuilt.",
+      "id": "public_consumer_boundary_resolves",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "70aa8c88773fcfa111219239417712d29bd41ca212d8e2d5539b3dce77d919dc",
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-27T00:25:46.271677+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.acc001-then-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+    "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+  },
+  "source_clause_sha256": "928c9e1c746edf0f182d7150cf37d7f2c59ca4ee860b5d084f08da3ee42dd7bb",
+  "tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+}

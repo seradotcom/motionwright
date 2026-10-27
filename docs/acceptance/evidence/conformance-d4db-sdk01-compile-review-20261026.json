@@ -1,0 +1,41 @@
+{
+  "D4_product_was_compiled": false,
+  "composition_receipt_sha256": "1295fd2bd2b31e1e992b12a89a4e0c2f629abe931e110b28cddf8da584862449",
+  "composition_report_sha256": "17ee43e4bf528d66ece5a168054a52b1980db0e5506d92fe830a002aae6a2a8d",
+  "field_ids": [
+    "CR-SDK-01#/acceptance_criterion"
+  ],
+  "frozen_sufficiency_review_sha256": "080fe73385a5a7ffc59a326768086f72c97303b9703e7632594a4690a18f0e7f",
+  "full_product_source_equivalence_claimed": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "One SDK01 acceptance field: current qualification of canonical SDK01d by the original independent external consumer d339. No D4 build, whole-product equivalence, native runtime, current A1 candidate, formal requirement or release acceptance is inferred.",
+    "The d339 run, source, tree, commands, step and all nine D4 differences remain original evidence; no original result is retagged.",
+    "The current source execution is one read-only composition, not a new Cargo or product run; its process identity comes from a separate original broker receipt.",
+    "The previous source-facts report and its then-pending compile finding are preserved intact; later evidence is added separately.",
+    "The original build has no retained per-command PID or binary digest. Exit zero is inferred from the unguarded command, its Finished terminal and the successful bash -e step.",
+    "Clean canonical consumption does not introduce a requirement that all runner caches be empty. The recorded action reported no cache hit.",
+    "The requirement remains branch/partial/open; source qualification does not grant positive product readiness or release authorization.",
+    "Private original reports, runner paths, catalogue prose and raw API responses remain private; public projections bind their original digests."
+  ],
+  "obligations": [
+    {
+      "basis": "The current source composition authenticates original run40391417663/1/job121813084882: external consumer d339 compiled the canonical Native SDK01d and its typed adapter. D4 consumes that same qualified SDK. This qualifies the pinned dependency only; D4 was not rebuilt.",
+      "id": "external_consumer_compiles_from_public_locked_sdk_source",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "a0c16d2252afaef2598083fb8e699b0ea40ec896887818d2e567461069d02041",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-26T23:58:26.725162+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.sdk01-compile-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+    "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+  },
+  "source_clause_sha256": "dad26dd7e362d0f45425e690562fe2d088e3251e920add586c6dbb8f441bfa64",
+  "tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+}

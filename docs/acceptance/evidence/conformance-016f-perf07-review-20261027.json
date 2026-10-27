@@ -1,0 +1,46 @@
+{
+  "composition_receipt_sha256": "aef0e3b499805d7ee5608516cdd4e532a03e4179b003cf908177d4eb4ab02636",
+  "composition_report_sha256": "6a5972973642adcf5351211b9ff0d37c2d56d82ee96dc1927501a589f6b948b6",
+  "field_ids": [
+    "CR-PERF-07#/acceptance_criterion"
+  ],
+  "human_review_required_preserved": true,
+  "human_review_status_modified": false,
+  "human_statement_accepted": false,
+  "identity_authentication": "not_asserted",
+  "limitations": [
+    "One objective no-participant reporting clause only. The separate human-study statement and its human-review requirement remain open and unchanged.",
+    "Seven real Python controls executed once on an exact four-file016f source projection with synthetic measurements; no full product build, actual performance benchmark, participant, native renderer or installed application was exercised.",
+    "The new source composition authenticates the original016f unit invocation and seven byte-identical reviewed report-route inputs. It executes no test or Rust benchmark.",
+    "Historical D4 and earlier records, reviews, decisions and evidence retain their original identities. No original execution is relabelled or inherited as a current run.",
+    "The prepared component cannot be applied to the D4 index. Controlled intake must preserve all history, verify the actual candidate source and unchanged clause/profile/contract, and run exact privacy, schema, compatibility and history gates.",
+    "This evidence neither completes the whole requirement nor grants product readiness, human approval or release authorization. A later source needs its own applicability decision."
+  ],
+  "obligations": [
+    {
+      "basis": "One new exact016f Windows seven-selector invocation on a four-file source projection rejects fabricated human feedback, superiority and work, and preserves unobserved human/native/installed outcomes. Its measurements are explicitly synthetic; it is not a participant study or full product build.",
+      "id": "forged_human_feedback_rejected",
+      "status": "pass"
+    },
+    {
+      "basis": "The source composition joins the original016f unit receipt with seven exact reviewed producer/consumer/workflow blobs. Historical and normative Rust report routes retain NOT_RUN human feedback before serialization; no Rust benchmark is executed and technical PASS is not a human score.",
+      "id": "no_participant_report_branch",
+      "status": "pass"
+    }
+  ],
+  "oracle_profile_sha256": "f43b7ef8781367e06e267a7eb2eba063b07e527a5d0434f924932e043af539c5",
+  "original_unit_receipt_sha256": "643ea7398f24322798e50e35f4a83fbd491edcaa12d7115e02151ebbcb4a6a3e",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "reviewed_at_utc": "2026-10-27T02:38:42.843710+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "motionwright.perf07-objective-sufficiency-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_clause_sha256": "24dd23fb2b06c071f50d67c9a13f05c28558a57b4a644791bec8b78ca9b2454e",
+  "source_review_sha256": "a30e83b3e4594825bac5fe0414a0ba2badfbd6a3d3ec14817cc2dcc1d1e64839",
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

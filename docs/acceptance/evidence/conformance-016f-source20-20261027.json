@@ -1,0 +1,1207 @@
+{
+  "contractual_rows_accepted": 0,
+  "field_count": 20,
+  "fields": [
+    {
+      "basis": "The actual candidate Git identity/tree and full tracked path roster are inspectable. SOURCE_LOCK identifies the exact external Semwright revision and the captured workspace manifests expose the matching canonical dependency pins. This is the source/pins precondition only: no consumer build, public API resolution or installed runtime is claimed.",
+      "criterion_id": "ACC-001#/given",
+      "decision": "sufficient_source_only",
+      "execution_profile": "scenario-inspectable-source-and-pins",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The actual candidate Git identity/tree and full tracked path roster are inspectable. SOURCE_LOCK identifies the exact external Semwright revision and the captured workspace manifests expose the matching canonical dependency pins. This is the source/pins precondition only: no consumer build, public API resolution or installed runtime is claimed.",
+          "execution_profile": "scenario-inspectable-source-and-pins",
+          "id": "inspectable_exact_application_source",
+          "status": "pass"
+        },
+        {
+          "basis": "The actual candidate Git identity/tree and full tracked path roster are inspectable. SOURCE_LOCK identifies the exact external Semwright revision and the captured workspace manifests expose the matching canonical dependency pins. This is the source/pins precondition only: no consumer build, public API resolution or installed runtime is claimed.",
+          "execution_profile": "scenario-inspectable-source-and-pins",
+          "id": "inspectable_external_dependency_pins",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "34ce93bf84b0a48085e1d692ccfb55678a89211d2b5a40a730b853a4d8b3419c",
+      "priority": null,
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "fcea7fdd9c4f173d71ec3e86ce8c4e0f80a80b6ac25ef20122fe5c096ac2cc02",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "aef2e74147b96f58b5a4cdf6fbada538a8cae4c4854d5d2f2116fd344a847276"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "6fe648c58666246315f61b38a2a19c10a6da08dab529a55b067a7f6205a19542"
+        }
+      ],
+      "source_record_sha256": "098f60301d6e98ff28beffc4d3adcd8d5a86e9caecedef4ddb27a446e1fcbc8d"
+    },
+    {
+      "basis": "Exact016f opening constructs local Store/SQLite, empty bounded registries and the canonical SDKAA application map. The new resource-read-scope method sets only its immutable boolean; new font staging state defaults to an empty BTreeMap. No provider/installer/model download is invoked. This covers the opening negative source clause only; renderer discovery, live availability and installed startup remain separate.",
+      "criterion_id": "CR-DELIVER-02#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "desktop-and-sandbox-static-source-boundaries",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "Exact016f opening constructs local Store/SQLite, empty bounded registries and the canonical SDKAA application map. The new resource-read-scope method sets only its immutable boolean; new font staging state defaults to an empty BTreeMap. No provider/installer/model download is invoked. This covers the opening negative source clause only; renderer discovery, live availability and installed startup remain separate.",
+          "execution_profile": "desktop-and-sandbox-static-source-boundaries",
+          "id": "opening_does_not_implicitly_download_heavy_apps_or_models",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "02cbcd2c58c6520b29b527f73908a815bd546ea9a76c46d0da42521da1d72e7c",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "8beebce78cbd25f5d77f754b3bcf3537f5cff5860b54607a84f1ba8ba62f4093",
+      "source_group": "deliver02",
+      "source_inputs": [
+        {
+          "path": "Cargo.lock",
+          "sha256": "455c72c93acaf90d1161f8f5c0c0fac70fb8c162f751ff3a8b65574f0209c448"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "aef2e74147b96f58b5a4cdf6fbada538a8cae4c4854d5d2f2116fd344a847276"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/desktop/src-tauri/Cargo.toml",
+          "sha256": "c7f8fcd2170cba6b344df1e0cc78c0f1f24e599ffb0a56b98754ed2991d2c485"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/av_delivery.rs",
+          "sha256": "02701735c237f6a00a9a759594adee0cee8d0a480a83de9dc49a113bd54dfbe4"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/effect_grants.rs",
+          "sha256": "f7f4dc31d5a70ef9d39f0f4c45e4e50e923c0193c51eaa8373be09a7ab623af3"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/main.rs",
+          "sha256": "f6871618ab53b4d7db25c997fc38c7009d9afc4fabbeb3ec8f0698cca53f64cb"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/native_preview.rs",
+          "sha256": "b4c7f340550137decdbcf51b0986d6dc08278ec995f5ddf38994113a8fc62b24"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/project_library.rs",
+          "sha256": "668f4a76678084c6629305cf9549d47c6411f92135397ae6a85aff0ab9cb524a"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/runtime_setup.rs",
+          "sha256": "79c0834ac761dd0257ba20b0e922fd6bbfa150b356da3d574c511e1f915a5920"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/runtime_setup/font_staging.rs",
+          "sha256": "0d7dca50a05c8c8f905f509c6c9de4f15d96f4743232c65074060004bc3ae5dc"
+        },
+        {
+          "path": "apps/desktop/src-tauri/tauri.conf.json",
+          "sha256": "7fc9ea927dc375bcfafe39fb0cc47033c12053294d1534b7e76687192b9e9f33"
+        },
+        {
+          "path": "apps/studio/src/App.tsx",
+          "sha256": "408b79acb38e8f4fb455e8d962f700b9c64ad05780e5bcc6373398b8d382615c"
+        },
+        {
+          "path": "apps/studio/src/api.ts",
+          "sha256": "de7faa18b2e3ad44b779e0f38587e45786ab473f576963b25f0868ebe9a82541"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/native/src/production.rs",
+          "sha256": "8c5073595fe3924b6b41ac6a6eff72aaf475e974d554bd15798e3c08b3f9e666"
+        },
+        {
+          "path": "crates/native/src/production/receipt_custody.rs",
+          "sha256": "25a8146eb44cd1817532354647a943da194d27c4bc7eedf174b4afd8d5de9c9f"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        }
+      ],
+      "source_record_sha256": "a95a3e807f248f6dafd4131011aa7f06f0c469a9434b1560471f9b43e86788a7"
+    },
+    {
+      "basis": "The product delivery and installed-candidate guides expressly retain OS protections, reject Gatekeeper bypass/ad-hoc fixes and avoid launching unsigned macOS applications. All 27 matches in the complete current Git Markdown OS-bypass risk-term inventory were separately reviewed: they describe restrictions, negative tests or non-OS product boundaries, never instructions to defeat an OS protection. No actual installation/signing/notarization is inferred.",
+      "criterion_id": "CR-DELIVER-06#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "delivery-current-source-documentation",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The product delivery and installed-candidate guides expressly retain OS protections, reject Gatekeeper bypass/ad-hoc fixes and avoid launching unsigned macOS applications. All 27 matches in the complete current Git Markdown OS-bypass risk-term inventory were separately reviewed: they describe restrictions, negative tests or non-OS product boundaries, never instructions to defeat an OS protection. No actual installation/signing/notarization is inferred.",
+          "execution_profile": "delivery-current-source-documentation",
+          "id": "installation-instruction-no-os-bypass-review",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "48beec75e8ce1acda74cea7de2921fe998eaf6c307b56f60f3f804a4373a13c3",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "e7aa3a817a5975d09f69edc68f31e73a035218c56638734e0c73449468555c25",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": ".gitignore",
+          "sha256": "321a27e6f2b7866ced83d9e8648e5dcdd4e1e046d395a63c0ced09c186893178"
+        },
+        {
+          "path": "README.md",
+          "sha256": "bb3b4000d091c200356722872873601c2e480c7342907d80987f1afcc9442141"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "docs/delivery.md",
+          "sha256": "3389038c99c51a7e88d7af2f33231887dae248c79bacac7204dc51db5b3f51a5"
+        },
+        {
+          "path": "docs/installed-candidate-smoke.md",
+          "sha256": "ad3f3e3abb02f8fcf04a26dd5f8aa7d95ebffed6897862204bc3b8933c36cd76"
+        },
+        {
+          "path": "tooling/public_surface_policy.py",
+          "sha256": "854dc104e56ab3501b0379ee2e58f7b58090da47edead47258eb999f3eaf0c8c"
+        },
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "40d8d764021d01d9e12651535118c0956e4f3553539609a405614fcebaa0706d"
+        }
+      ],
+      "source_record_sha256": "6e008d8d64ea8797383ab4c966d111d8efe6827f12b29d233138c20b805e0fcd"
+    },
+    {
+      "basis": "The complete candidate tracked-path roster contains no development-local kit roots or instruction filenames according to the existing canonical public-surface scanner. The expected ignores are present, and README links separate user/API product guides. The broader secret/placeholder-free acceptance field is not promoted from this narrower separation proof.",
+      "criterion_id": "CR-DELIVER-08#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "delivery-current-source-documentation",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The complete candidate tracked-path roster contains no development-local kit roots or instruction filenames according to the existing canonical public-surface scanner. The expected ignores are present, and README links separate user/API product guides. The broader secret/placeholder-free acceptance field is not promoted from this narrower separation proof.",
+          "execution_profile": "delivery-current-source-documentation",
+          "id": "product-api-guides-separated-from-private-agent-kit",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "ed188c78d84379c3ead71366d39dc6dbea5d2327e6b39701cfdca1924558fed2",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "7a9e051cda5dc2afa07dfddcc2683a83b5a9929b3a7e7c10b8f380ebce7b28f9",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": ".gitignore",
+          "sha256": "321a27e6f2b7866ced83d9e8648e5dcdd4e1e046d395a63c0ced09c186893178"
+        },
+        {
+          "path": "README.md",
+          "sha256": "bb3b4000d091c200356722872873601c2e480c7342907d80987f1afcc9442141"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "docs/delivery.md",
+          "sha256": "3389038c99c51a7e88d7af2f33231887dae248c79bacac7204dc51db5b3f51a5"
+        },
+        {
+          "path": "docs/installed-candidate-smoke.md",
+          "sha256": "ad3f3e3abb02f8fcf04a26dd5f8aa7d95ebffed6897862204bc3b8933c36cd76"
+        },
+        {
+          "path": "tooling/public_surface_policy.py",
+          "sha256": "854dc104e56ab3501b0379ee2e58f7b58090da47edead47258eb999f3eaf0c8c"
+        },
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "40d8d764021d01d9e12651535118c0956e4f3553539609a405614fcebaa0706d"
+        }
+      ],
+      "source_record_sha256": "14a23956c4debcf140a2aede5ef144ecdca2f2f12c61df3f877bc835c708a0c8"
+    },
+    {
+      "basis": "The actual product source explicitly excludes interactive players from shipped capabilities, so a player specification is not presented as an interactive product delivery. No interactive-player implementation is claimed.",
+      "criterion_id": "CR-EXT-07#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "extensions-current-future-profile-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The actual product source explicitly excludes interactive players from shipped capabilities, so a player specification is not presented as an interactive product delivery. No interactive-player implementation is claimed.",
+          "execution_profile": "extensions-current-future-profile-source",
+          "id": "future-capability-declaration-exact-source",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "4ed9fd465a7e20f62eb366d1d603982a04479b79ca01d06e8a42f772be7b1a96",
+      "priority": "OPTIONAL",
+      "row_or_scenario_accepted": false,
+      "scope": "optional",
+      "source_clause_sha256": "7915af445152f13def525cb4a55f7b2f6f899b37dee071cbeb47e691eb09d16b",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/IntegrationsWorkspace.tsx",
+          "sha256": "89d124daa56f7bb4f85cdd45eff746a2c205b5651cd92f164a861acf95337517"
+        }
+      ],
+      "source_record_sha256": "4f0e14336334234619088b32e3e9ac88dfb1a7ce47fa1cfd64ec27dca285885d"
+    },
+    {
+      "basis": "The actual Integrations source contains Future profiles stay future and expressly lists interactive players as capabilities not presented as shipped. This is the optional expansion declaration only.",
+      "criterion_id": "CR-EXT-07#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "extensions-current-future-profile-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The actual Integrations source contains Future profiles stay future and expressly lists interactive players as capabilities not presented as shipped. This is the optional expansion declaration only.",
+          "execution_profile": "extensions-current-future-profile-source",
+          "id": "future-capability-declaration-exact-source",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "4ed9fd465a7e20f62eb366d1d603982a04479b79ca01d06e8a42f772be7b1a96",
+      "priority": "OPTIONAL",
+      "row_or_scenario_accepted": false,
+      "scope": "optional",
+      "source_clause_sha256": "d90d87dc20544e8d77b7bd18b332ec94c5ec048dbc3f32562aae7325ba0578e4",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/IntegrationsWorkspace.tsx",
+          "sha256": "89d124daa56f7bb4f85cdd45eff746a2c205b5651cd92f164a861acf95337517"
+        }
+      ],
+      "source_record_sha256": "4f0e14336334234619088b32e3e9ac88dfb1a7ce47fa1cfd64ec27dca285885d"
+    },
+    {
+      "basis": "The current Integrations source explicitly places monetization among future profiles not presented as shipped capabilities. This is the optional future-commercial-decision declaration only; actual billing/licensing/plan authority is not inferred.",
+      "criterion_id": "CR-EXT-08#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "extensions-current-future-profile-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The current Integrations source explicitly places monetization among future profiles not presented as shipped capabilities. This is the optional future-commercial-decision declaration only; actual billing/licensing/plan authority is not inferred.",
+          "execution_profile": "extensions-current-future-profile-source",
+          "id": "future-capability-declaration-exact-source",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "4ed9fd465a7e20f62eb366d1d603982a04479b79ca01d06e8a42f772be7b1a96",
+      "priority": "OPTIONAL",
+      "row_or_scenario_accepted": false,
+      "scope": "optional",
+      "source_clause_sha256": "d8bc06123df0b24ef0462069d4a0943cc69776c4203ebd02a5b0ef913b2f763e",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/IntegrationsWorkspace.tsx",
+          "sha256": "89d124daa56f7bb4f85cdd45eff746a2c205b5651cd92f164a861acf95337517"
+        }
+      ],
+      "source_record_sha256": "0ba1a80d538cb95b83af38ef9e92bad0e452fed586296b6b074513e62004e90e"
+    },
+    {
+      "basis": "The required UI scope remains in the actual Studio source: the navigation mounts Storyboard and Canvas, the Timeline preview is selected through the same workspace switch, and the editable Timeline component remains mounted in the editor. The original canonical scope remains required. This is retained source/UI surface, not a live desktop or durable editing test.",
+      "criterion_id": "CR-FOUND-04#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "creative-editor-surface-source-inspection",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The required UI scope remains in the actual Studio source: the navigation mounts Storyboard and Canvas, the Timeline preview is selected through the same workspace switch, and the editable Timeline component remains mounted in the editor. The original canonical scope remains required. This is retained source/UI surface, not a live desktop or durable editing test.",
+          "execution_profile": "creative-editor-surface-source-inspection",
+          "id": "required_editor_surfaces_retained",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "7053fa0f54a333b87e1e73c1c2c4a9b5bc83deba35be66b5b8346e378e00c937",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "1e06d8de30c9cb3e182c339f16f95a762edf800c974909852c0f8019e9cdaaac",
+      "source_group": "remaining5",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/App.tsx",
+          "sha256": "408b79acb38e8f4fb455e8d962f700b9c64ad05780e5bcc6373398b8d382615c"
+        }
+      ],
+      "source_record_sha256": "8bac4ea85db98794424e4a6f7e4148ac06b78e5d54d044720df2816cad5f2ade"
+    },
+    {
+      "basis": "All nine current workspace manifests exactly match resolved lock dependency sets. The canonical fixed public NativeSDK forward edge is present; complete dependency resolution and reachability from every Semwright node finds no reverse Motionwright edge.",
+      "criterion_id": "CR-FOUND-06#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "creative-core-dependency-graph",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "All nine current workspace manifests exactly match resolved lock dependency sets. The canonical fixed public NativeSDK forward edge is present; complete dependency resolution and reachability from every Semwright node finds no reverse Motionwright edge.",
+          "execution_profile": "creative-core-dependency-graph",
+          "id": "creative_is_a_fixed_core_consumer",
+          "status": "pass"
+        },
+        {
+          "basis": "All nine current workspace manifests exactly match resolved lock dependency sets. The canonical fixed public NativeSDK forward edge is present; complete dependency resolution and reachability from every Semwright node finds no reverse Motionwright edge.",
+          "execution_profile": "creative-core-dependency-graph",
+          "id": "no_reverse_locked_dependency_path",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "f7a72dc513dc43e80790b38761d47090aaf9fe0ad9f589ef338988e83c86ad71",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "6fb2ad3feb1b4477a12264b2045271ce8a91a00e767ccd8efe75720e82af0744",
+      "source_group": "dependency",
+      "source_inputs": [
+        {
+          "path": "Cargo.lock",
+          "sha256": "455c72c93acaf90d1161f8f5c0c0fac70fb8c162f751ff3a8b65574f0209c448"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "aef2e74147b96f58b5a4cdf6fbada538a8cae4c4854d5d2f2116fd344a847276"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/desktop/src-tauri/Cargo.toml",
+          "sha256": "c7f8fcd2170cba6b344df1e0cc78c0f1f24e599ffb0a56b98754ed2991d2c485"
+        },
+        {
+          "path": "crates/domain/Cargo.toml",
+          "sha256": "a51b9e586c664f95d40a537b8933304c0cf27716e3c0b30069a0e37247c50e7d"
+        },
+        {
+          "path": "crates/driver-hyperframes/Cargo.toml",
+          "sha256": "9b6621fd4c19d4418729a59df57289e57b8e42065ba90f6d1c8b1f6e407972e9"
+        },
+        {
+          "path": "crates/driver-manim-community/Cargo.toml",
+          "sha256": "cb6e4f375cd6ab367fcd1c825d93f7ec0391df9aa8c5e36637bb50b856e0ecdd"
+        },
+        {
+          "path": "crates/hyperframes-profile/Cargo.toml",
+          "sha256": "7036ceeaca95e1774865133e1acb66d23cb606dab2c451da9b1b7e9743461dcb"
+        },
+        {
+          "path": "crates/manim-profile/Cargo.toml",
+          "sha256": "1c8ee6eb41b8aff0d5763ef6b204433d77759319110a8b905b5aa24c0d4bcb2c"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "6fe648c58666246315f61b38a2a19c10a6da08dab529a55b067a7f6205a19542"
+        },
+        {
+          "path": "crates/service/Cargo.toml",
+          "sha256": "162fc38c13f44c4ca6cf11f8ac261c31bb1411c4a4ca02cb6d767b6c87ed8bf1"
+        },
+        {
+          "path": "crates/storage/Cargo.toml",
+          "sha256": "a9be4261b741cec63c55f8e5bfbcfaa36ebd8e230526c62e327e1161604044a2"
+        }
+      ],
+      "source_record_sha256": "537a0824b45e5cbc419f5c26aa40f2c9f13a0dbef770f80a8d975dadb0ad830d"
+    },
+    {
+      "basis": "Both receipt transactions commit before owned return to the single remote dispatch await. Every44hit in the complete Native/desktop Store/Transaction inventory is bound to exact reviewed source. The new cache-reader hit is synchronous and returns owned PNG bytes with no remote dispatch; custody handles do not retain application DB/transaction guards.",
+      "criterion_id": "CR-JOBS-07#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "native-await-transaction-lifetime-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "Both receipt transactions commit before owned return to the single remote dispatch await. Every44hit in the complete Native/desktop Store/Transaction inventory is bound to exact reviewed source. The new cache-reader hit is synchronous and returns owned PNG bytes with no remote dispatch; custody handles do not retain application DB/transaction guards.",
+          "execution_profile": "native-await-transaction-lifetime-source",
+          "id": "application_transactions_commit_before_remote_await",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "4933a9fb473158c1d7a13eafd900399494011b9f2875a8f823dc161860568908",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "3cdba693ca89e2364cc69054be4425301fd69f74e9a6c1e6213861cb9ceebb22",
+      "source_group": "jobs07",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/file_import.rs",
+          "sha256": "dcdc0eb0bcf0a78d341e08436abe53d95bf014127f611c57b7416bbc34e8c05e"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/main.rs",
+          "sha256": "f6871618ab53b4d7db25c997fc38c7009d9afc4fabbeb3ec8f0698cca53f64cb"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/project_export.rs",
+          "sha256": "2998ea0114ad7182a1fec909389f39faf67f39d708944c52bb8e8166bec99bd9"
+        },
+        {
+          "path": "crates/native/src/apply_receipt_completion_tests.rs",
+          "sha256": "32ad63016e48721b725836b4ffd4731ae0e6c9493f9598b2025f487e30338d84"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/native/src/manim_camera_projection.rs",
+          "sha256": "17a8bbd2d87c01fd15897b69109d605106e8e195147d9788742ead457f5f0688"
+        },
+        {
+          "path": "crates/native/src/manim_editable_projection.rs",
+          "sha256": "733ddb6b2ce512ae58c278a3d74d074442e3787d1d0986219263e3e51fd07c72"
+        },
+        {
+          "path": "crates/native/src/manim_graph_projection.rs",
+          "sha256": "c3208085706cd62dfe6d706a77b18fe5ac8dd2855144abab56c55fd31c596fd9"
+        },
+        {
+          "path": "crates/native/src/manim_static_projection.rs",
+          "sha256": "8979af179ff52bf658e346840e3a96bef5323eac5c88fc5b1f28dd9a6261b334"
+        },
+        {
+          "path": "crates/native/src/original_mix/semantic_bus.rs",
+          "sha256": "9dae36c456f993252388afa763e9c06d507d4dd78e011cb36953f5d558121756"
+        },
+        {
+          "path": "crates/native/src/production.rs",
+          "sha256": "8c5073595fe3924b6b41ac6a6eff72aaf475e974d554bd15798e3c08b3f9e666"
+        },
+        {
+          "path": "crates/native/src/production/audio_analysis.rs",
+          "sha256": "3b237923416ed3b5ec7d16cb425e4be7bb711394b369315b6525ce4f6e2961a0"
+        },
+        {
+          "path": "crates/native/src/production/audio_analysis/tests/receipt_history.rs",
+          "sha256": "54709ad8e6bac8d4ae870e33bc19f8ac794bd55812f3e9d20a7eba7cfa566e7d"
+        },
+        {
+          "path": "crates/native/src/production/blender_product_consumer.rs",
+          "sha256": "f238be4fcd2ca303a431933f231fb4b2aa1abeb58b8aaed7052057ee2b0a9c34"
+        },
+        {
+          "path": "crates/native/src/production/blender_product_cycle.rs",
+          "sha256": "446b2c67d248f92da65bf2fcd37a13dd17ee6e282f893925aa16e2314a29327c"
+        },
+        {
+          "path": "crates/native/src/production/blender_product_lineage.rs",
+          "sha256": "6cba46b5b9d1734309750c2f56b7de16921e89026ca286f1191c39b82af63bfe"
+        },
+        {
+          "path": "crates/native/src/production/manim_graph.rs",
+          "sha256": "09116c3011e052cb9fcf020df7aed79a8d9b4fd9209709655da661c2bf590649"
+        },
+        {
+          "path": "crates/native/src/production/motion_canvas_window.rs",
+          "sha256": "da1f545528b367a5b973b84f378dbd1f383e4262d7a9584afa31cd495e89efbb"
+        },
+        {
+          "path": "crates/native/src/production/receipt_custody.rs",
+          "sha256": "25a8146eb44cd1817532354647a943da194d27c4bc7eedf174b4afd8d5de9c9f"
+        },
+        {
+          "path": "crates/native/src/production/transport_custody.rs",
+          "sha256": "6bc226f7fbe5c95f0ff54faf36b7c6e142d78bc7d66313b8298f5128ec0f6c45"
+        },
+        {
+          "path": "crates/native/src/production/voice_alignment.rs",
+          "sha256": "0b20e5056a12be7982b62a1c2d23824282aa2d65c1682b0a4fba1383604791ac"
+        },
+        {
+          "path": "crates/native/src/production/voice_alignment/caller_tests.rs",
+          "sha256": "b6de5965c6c193ec90a2dd5dc19b234e196de884c763fef59ca08f741ec529df"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        },
+        {
+          "path": "crates/storage/src/production.rs",
+          "sha256": "47e4300d66379da592091e7afe8af629c368924d31cac0cb8fd83ab8206b151c"
+        }
+      ],
+      "source_record_sha256": "8e7d0fc74d607f9faad1161d3a0e29144eb53344a04aebe445e3d5442387fcb9"
+    },
+    {
+      "basis": "The current Integrations source labels Remote Semwright Platform as UPSTREAM GATE and expressly says no mock account is promoted to live. The architecture guide preserves that external gate. This proves the fixture/live label restriction, not live SSO, tenants, accounts or authorization.",
+      "criterion_id": "CR-PLATFORM-02#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "platform-current-remote-boundary-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The current Integrations source labels Remote Semwright Platform as UPSTREAM GATE and expressly says no mock account is promoted to live. The architecture guide preserves that external gate. This proves the fixture/live label restriction, not live SSO, tenants, accounts or authorization.",
+          "execution_profile": "platform-current-remote-boundary-source",
+          "id": "current-source-fixture-and-live-label-separation",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "e87a54e3cc47e82a32eb4da400ebf1a6208afa79cfd55e9208fb0a2445488ca6",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "conditional",
+      "source_clause_sha256": "ec18d1952a9b61f7a7e5eca60d6dbae1f5a17628f565b6d378623bff9b3e8bfa",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/IntegrationsWorkspace.tsx",
+          "sha256": "89d124daa56f7bb4f85cdd45eff746a2c205b5651cd92f164a861acf95337517"
+        },
+        {
+          "path": "docs/architecture.md",
+          "sha256": "58a94844fea1c1045b8e0fa4de21e5500017ff48531bae131078c63c99ea8769"
+        }
+      ],
+      "source_record_sha256": "10f342ddcb4aeb9929f9c8d9557146b495b27bf05696559b461adc973ef25493"
+    },
+    {
+      "basis": "The actual Integrations label and architecture guide distinguish local bindings from an authorized remote public-service exchange and explicitly keep remote Platform behind an upstream gate. A harness/binding contract is not presented as live integration; real service/credential behavior remains unverified.",
+      "criterion_id": "CR-PLATFORM-08#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "platform-current-remote-boundary-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The actual Integrations label and architecture guide distinguish local bindings from an authorized remote public-service exchange and explicitly keep remote Platform behind an upstream gate. A harness/binding contract is not presented as live integration; real service/credential behavior remains unverified.",
+          "execution_profile": "platform-current-remote-boundary-source",
+          "id": "current-source-fixture-and-live-label-separation",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "e87a54e3cc47e82a32eb4da400ebf1a6208afa79cfd55e9208fb0a2445488ca6",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "conditional",
+      "source_clause_sha256": "6ed475aa16493f00f898c41655d8aaa701a4adc4b6831071116006cf1084b89f",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/IntegrationsWorkspace.tsx",
+          "sha256": "89d124daa56f7bb4f85cdd45eff746a2c205b5651cd92f164a861acf95337517"
+        },
+        {
+          "path": "docs/architecture.md",
+          "sha256": "58a94844fea1c1045b8e0fa4de21e5500017ff48531bae131078c63c99ea8769"
+        }
+      ],
+      "source_record_sha256": "3ffbed3a67562ed5b88ef0b71052b5a6aa23caebb5ad205cfe8f7f5cad3157bc"
+    },
+    {
+      "basis": "Motionwright owns StudioService and its Arc<Mutex<Store>>, Store owns its rusqlite Connection and application Project values. Native Application receives an observer and handlers that use that same service; desktop startup opens its application SQLite path. The additional Graph boundary calls the same Store.apply. No Native SDK reference store becomes the authority. No simultaneous-client runtime acceptance is inferred.",
+      "criterion_id": "CR-PROJECT-04#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "app-owned-store-sdk-service-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "Motionwright owns StudioService and its Arc<Mutex<Store>>, Store owns its rusqlite Connection and application Project values. Native Application receives an observer and handlers that use that same service; desktop startup opens its application SQLite path. The additional Graph boundary calls the same Store.apply. No Native SDK reference store becomes the authority. No simultaneous-client runtime acceptance is inferred.",
+          "execution_profile": "app-owned-store-sdk-service-source",
+          "id": "application_owns_domain_and_transactional_storage",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "c3d4ade88d0a0617c21338fa168fdf6f799138c0f70b0312f3eb6961fdb153e8",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "8a0b8485ba2e98e9ac5a08ccb87fd037f9166ea515687e81e645e19ce059963c",
+      "source_group": "remaining5",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/main.rs",
+          "sha256": "f6871618ab53b4d7db25c997fc38c7009d9afc4fabbeb3ec8f0698cca53f64cb"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/service/src/semantic_graph_admission.rs",
+          "sha256": "323659c24e861cd5daf3d7d7376f0d7be539042cea8c11412c14f0d37587b08b"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        }
+      ],
+      "source_record_sha256": "68234569fa8bd9ad1a737c82d609139d6af638d5c8d7d8b0f1ba1a3ef936e13a"
+    },
+    {
+      "basis": "Ordinary Native handlers delegate to StudioService.apply with the Host-derived project stamp and original request ID; StudioService delegates to application Store.apply. The dedicated Graph handler obtains its Host permit first and then calls the trusted service admission seam, which preserves that request and uses the same Store transaction. This is the actual source delegation path, not proof of Host authorization behavior or UI/native concurrency.",
+      "criterion_id": "CR-SDK-02#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "app-owned-store-sdk-service-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "Ordinary Native handlers delegate to StudioService.apply with the Host-derived project stamp and original request ID; StudioService delegates to application Store.apply. The dedicated Graph handler obtains its Host permit first and then calls the trusted service admission seam, which preserves that request and uses the same Store transaction. This is the actual source delegation path, not proof of Host authorization behavior or UI/native concurrency.",
+          "execution_profile": "app-owned-store-sdk-service-source",
+          "id": "adapter_delegates_to_owned_transaction_service",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "b7e34a0515d3df7a3f23fc932f8c0d22496ea84b2c06a14503a10c1de5f6493e",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "b0f0a700950099effe51b5714fd12d7fc891925972028ac1fc85b049aa96b7ae",
+      "source_group": "remaining5",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/service/src/semantic_graph_admission.rs",
+          "sha256": "323659c24e861cd5daf3d7d7376f0d7be539042cea8c11412c14f0d37587b08b"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        }
+      ],
+      "source_record_sha256": "184d1bad8da03883f831fe0593ec6a0705fb23320fa7a65f2abb16c67a53ca74"
+    },
+    {
+      "basis": "All80 document operations and the Graph operation use the actual explicit source contract: mutating risk, durable request-key idempotency/retry,15000ms timeout declaration, dry_run false and undo none. Each forwards the original SDK request identity to the application Store transaction. This is declaration/source proof, not runtime enforcement or a consumer compile.",
+      "criterion_id": "CR-SDK-05#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "native-document-operation-contracts-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "All80 document operations and the Graph operation use the actual explicit source contract: mutating risk, durable request-key idempotency/retry,15000ms timeout declaration, dry_run false and undo none. Each forwards the original SDK request identity to the application Store transaction. This is declaration/source proof, not runtime enforcement or a consumer compile.",
+          "execution_profile": "native-document-operation-contracts-source",
+          "id": "no_registered_mutation_is_advertised_as_undoable_by_default",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "a19c956fac1b5ff8b6a5a34840db5d85682a46820e0f90cf7b60f1caa6d32472",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "7257c9bcf3775a380e7fbeddef016ead7918893be718d7d9ba2aff6e01625d26",
+      "source_group": "sdk05",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/native/src/production.rs",
+          "sha256": "8c5073595fe3924b6b41ac6a6eff72aaf475e974d554bd15798e3c08b3f9e666"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/service/src/semantic_graph_admission.rs",
+          "sha256": "323659c24e861cd5daf3d7d7376f0d7be539042cea8c11412c14f0d37587b08b"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        }
+      ],
+      "source_record_sha256": "0be628d3e256aa21cd7f7838a54217451a528f5eb3276bfc22d330e8536b5f27"
+    },
+    {
+      "basis": "All80 document operations and the Graph operation use the actual explicit source contract: mutating risk, durable request-key idempotency/retry,15000ms timeout declaration, dry_run false and undo none. Each forwards the original SDK request identity to the application Store transaction. This is declaration/source proof, not runtime enforcement or a consumer compile.",
+      "criterion_id": "CR-SDK-05#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "native-document-operation-contracts-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "All80 document operations and the Graph operation use the actual explicit source contract: mutating risk, durable request-key idempotency/retry,15000ms timeout declaration, dry_run false and undo none. Each forwards the original SDK request identity to the application Store transaction. This is declaration/source proof, not runtime enforcement or a consumer compile.",
+          "execution_profile": "native-document-operation-contracts-source",
+          "id": "every_registered_operation_declares_risk_retry_timeout_and_dry_run",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "d7c7d47201e876e330cc1b6183f23619692e88d4ab4870201b420653d0539049",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "cb7e2e310a8364030cc4421dad50e04941fe6025effce2e58c1b656143295264",
+      "source_group": "sdk05",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/native/src/production.rs",
+          "sha256": "8c5073595fe3924b6b41ac6a6eff72aaf475e974d554bd15798e3c08b3f9e666"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/service/src/semantic_graph_admission.rs",
+          "sha256": "323659c24e861cd5daf3d7d7376f0d7be539042cea8c11412c14f0d37587b08b"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        }
+      ],
+      "source_record_sha256": "0be628d3e256aa21cd7f7838a54217451a528f5eb3276bfc22d330e8536b5f27"
+    },
+    {
+      "basis": "Aesthetic review resolution is a project Change delegated to the owned transaction service; desktop apply requires ProjectEdit. That service does not possess EffectGrantRegistry. The only registry issuer rejects RemoteEgress, UploadExternal, InstallRuntime and PublishExternal before inserting any grant, regardless of approval fields. This closes the two static separation obligations only; it is not a CR-SEC-07 owner/foreign/revoked resource execution.",
+      "criterion_id": "CR-SEC-03#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "typed-local-effect-handler-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "Aesthetic review resolution is a project Change delegated to the owned transaction service; desktop apply requires ProjectEdit. That service does not possess EffectGrantRegistry. The only registry issuer rejects RemoteEgress, UploadExternal, InstallRuntime and PublishExternal before inserting any grant, regardless of approval fields. This closes the two static separation obligations only; it is not a CR-SEC-07 owner/foreign/revoked resource execution.",
+          "execution_profile": "typed-local-effect-handler-source",
+          "id": "aesthetic_approval_and_review_resolution_do_not_issue_external_authority",
+          "status": "pass"
+        },
+        {
+          "basis": "Aesthetic review resolution is a project Change delegated to the owned transaction service; desktop apply requires ProjectEdit. That service does not possess EffectGrantRegistry. The only registry issuer rejects RemoteEgress, UploadExternal, InstallRuntime and PublishExternal before inserting any grant, regardless of approval fields. This closes the two static separation obligations only; it is not a CR-SEC-07 owner/foreign/revoked resource execution.",
+          "execution_profile": "typed-local-effect-handler-source",
+          "id": "remote_egress_upload_and_publication_grants_are_unissuable_regardless_of_approval",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "502ddb5375be9b6d3a7336daaf7868639c799524a05b19f1dfc34553873edc5f",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "e07b05bd2c8a16f5d7b4c6a1fa977646e032c2184eb4a16bb511a2ace4f1749f",
+      "source_group": "remaining5",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/effect_grants.rs",
+          "sha256": "f7f4dc31d5a70ef9d39f0f4c45e4e50e923c0193c51eaa8373be09a7ab623af3"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/main.rs",
+          "sha256": "f6871618ab53b4d7db25c997fc38c7009d9afc4fabbeb3ec8f0698cca53f64cb"
+        },
+        {
+          "path": "crates/native/src/lib.rs",
+          "sha256": "c8ba06bdaafbb745cca4401dea902e69db45d6371baa303e6c4a43c0444a583f"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "040ad686f41ba9a4a54a02f301a2b9196c89d72583ee734f0b9c1f98b871d247"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "21c86c201d95ef7a165b6ea3f7731cdba17cd81b112be6c801e08083f7009e8c"
+        }
+      ],
+      "source_record_sha256": "692a5e7bcaf7d9556428ab89bb800bded7d54fa1abe47f3754c987e93e0471e1"
+    },
+    {
+      "basis": "The current UI expressly states promotion does not make creative output deterministic; the workflow guide applies the same restriction to compilation and promotion. This is the exact no-determinism-claim obligation, not proof of runtime workflow execution.",
+      "criterion_id": "CR-WORKFLOW-06#/acceptance_criterion",
+      "decision": "sufficient_source_only",
+      "execution_profile": "workflow-ai-disclosure-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The current UI expressly states promotion does not make creative output deterministic; the workflow guide applies the same restriction to compilation and promotion. This is the exact no-determinism-claim obligation, not proof of runtime workflow execution.",
+          "execution_profile": "workflow-ai-disclosure-source",
+          "id": "no_creative_determinism_claim_from_recipe",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "cb19197163ddd4db06d4951b7a7a346e549c2f2c15fe108a3c65045cec08f717",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "d0967aaafbbd710e435e5e11cb2268111a2c085a7e9187e1a4eee693e2c6e1cf",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/WorkflowWorkspace.tsx",
+          "sha256": "5ba73d498052d98f7260ec2dd392407ef9b31ce4671404c777c8d59c6562acf2"
+        },
+        {
+          "path": "docs/workflows.md",
+          "sha256": "5f689ff93e87f1d334e435987b43f37d51ad683f2f3b4c5a8181650db478e61c"
+        }
+      ],
+      "source_record_sha256": "cd1270980624c15c7ed19cfc22c110b3f3640b5c544d1d6f6a7fe71fef4fcc51"
+    },
+    {
+      "basis": "The actual WorkflowWorkspace candidate console visibly declares that AI-backed steps remain stochastic, and the product workflow guide explicitly states creative outputs may vary. The obligation is a declaration in current source and documentation; no workflow replay is inferred.",
+      "criterion_id": "CR-WORKFLOW-06#/statement",
+      "decision": "sufficient_source_only",
+      "execution_profile": "workflow-ai-disclosure-source",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "The actual WorkflowWorkspace candidate console visibly declares that AI-backed steps remain stochastic, and the product workflow guide explicitly states creative outputs may vary. The obligation is a declaration in current source and documentation; no workflow replay is inferred.",
+          "execution_profile": "workflow-ai-disclosure-source",
+          "id": "ui_and_documentation_disclose_ai_variation",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "932d00f905bffbdacd838d008675bbac17031f3051d39736ea841348690d7301",
+      "priority": "MUST",
+      "row_or_scenario_accepted": false,
+      "scope": "required",
+      "source_clause_sha256": "18c65973bf1a6cec740bad4f071190f9fb2cc7d9afd9c10f6e8fb07ed96524f1",
+      "source_group": "static10",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/WorkflowWorkspace.tsx",
+          "sha256": "5ba73d498052d98f7260ec2dd392407ef9b31ce4671404c777c8d59c6562acf2"
+        },
+        {
+          "path": "docs/workflows.md",
+          "sha256": "5f689ff93e87f1d334e435987b43f37d51ad683f2f3b4c5a8181650db478e61c"
+        }
+      ],
+      "source_record_sha256": "cd1270980624c15c7ed19cfc22c110b3f3640b5c544d1d6f6a7fe71fef4fcc51"
+    },
+    {
+      "basis": "PaidGenerationSpec hashes the semantic proposed request to prevent duplicated attempts; it does not derive or promise generated media bytes. The actual paid journal UI expressly disclaims live execution/output, while the current workflow UI and guide explicitly keep AI outputs stochastic even under automation. This is the optional negative source contract, not a provider execution, paid-charge proof or repeatability test.",
+      "criterion_id": "MW05-E12-01#/negative_case",
+      "decision": "sufficient_source_only",
+      "execution_profile": "e12e13-paid-source-boundaries",
+      "human_review_performed": false,
+      "obligations": [
+        {
+          "basis": "PaidGenerationSpec hashes the semantic proposed request to prevent duplicated attempts; it does not derive or promise generated media bytes. The actual paid journal UI expressly disclaims live execution/output, while the current workflow UI and guide explicitly keep AI outputs stochastic even under automation. This is the optional negative source contract, not a provider execution, paid-charge proof or repeatability test.",
+          "execution_profile": "e12e13-paid-source-boundaries",
+          "id": "attempt_identity_is_not_a_media_reproduction_promise",
+          "status": "pass"
+        },
+        {
+          "basis": "PaidGenerationSpec hashes the semantic proposed request to prevent duplicated attempts; it does not derive or promise generated media bytes. The actual paid journal UI expressly disclaims live execution/output, while the current workflow UI and guide explicitly keep AI outputs stochastic even under automation. This is the optional negative source contract, not a provider execution, paid-charge proof or repeatability test.",
+          "execution_profile": "e12e13-paid-source-boundaries",
+          "id": "explicit_current_stochastic_output_contract",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "17a4620bda501acf65f02348abbdeb32468d52ef810e169a9c654d171136b9cc",
+      "priority": null,
+      "row_or_scenario_accepted": false,
+      "scope": "optional",
+      "source_clause_sha256": "df7e6bf3f34ea325ec1e6a96d115fb62f834caa5d17ef585db72b9cf5670873c",
+      "source_group": "remaining5",
+      "source_inputs": [
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+        },
+        {
+          "path": "apps/studio/src/PaidGenerationWorkspace.tsx",
+          "sha256": "917dd4a0fe84c0c39881a08bf472ab679bf6f9c318c65684f42c6a983cb2b0c0"
+        },
+        {
+          "path": "apps/studio/src/WorkflowWorkspace.tsx",
+          "sha256": "5ba73d498052d98f7260ec2dd392407ef9b31ce4671404c777c8d59c6562acf2"
+        },
+        {
+          "path": "crates/domain/src/paid_generation.rs",
+          "sha256": "87edaafc3f4b2c3b979c2b1e4a184a61640a2c674bd33eb533a8d59f40c54074"
+        },
+        {
+          "path": "docs/workflows.md",
+          "sha256": "5f689ff93e87f1d334e435987b43f37d51ad683f2f3b4c5a8181650db478e61c"
+        }
+      ],
+      "source_record_sha256": "9997106da2aefe2d145b33a2e39e8b5df0508cb484b02934852a7aec06979bbb"
+    }
+  ],
+  "full_public_disclosure_gate": "PENDING_EXACT_STAGED_ARTIFACT_SCAN",
+  "historical_runs_retagged": false,
+  "input_blob_count": 60,
+  "invocation": {
+    "capture_complete": true,
+    "count_scope": "One actual source invocation; six source-oracle groups, zero product tests.",
+    "ended_at_utc": "2026-10-27T05:17:37.779734+00:00",
+    "environment": {
+      "OS": "Windows-10-10.0.26200-SP0",
+      "pid": 36272,
+      "python": "3.11.5"
+    },
+    "exit_code": 0,
+    "helper_sha256": "a446ac164a649aeb2960501cb1eee0c7db9e360cfb5599a49f68e718dda35ed7",
+    "new_product_tests": 0,
+    "original_argv_sha256": "6b593b9f658a6bf9f9d60df4ccead88e77b1a915f26841d559082287c14dcd55",
+    "original_receipt_sha256": "53643ddd362cad0b5a870c6272cc77bdb603e21ef974094b898b592a130be5cb",
+    "original_report_sha256": "3e77beb3e08538dba181c3cd86f61933f58b4308fd5801d297f2eabce19aba1a",
+    "outer_ended_at_utc": "2026-10-27T05:17:37.921715+00:00",
+    "outer_intent_sha256": "cec6115aef3bb5164fbf6521dfbd781ce7d7cc427a40a68e22952c334cc8f240",
+    "outer_receipt_sha256": "ee017b9626a845e4bc83d397a5da3c9a78768110abe4e0df186f79ea2096c5d8",
+    "outer_started_at_utc": "2026-10-27T05:17:34.052217+00:00",
+    "outer_terminal_sha256": "945a05c1948fe1845e90abee4f8ca88f3eba4597ce162d353e30a55bad84e47d",
+    "pid": 36272,
+    "producer_sha256": "cba41faf8a4447bfbb267a36a633f3c9868f2aced51d27562901d5f7815b64fb",
+    "source_groups": 6,
+    "started_at_utc": "2026-10-27T05:17:34.322634+00:00",
+    "streams": {
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 1091,
+        "sha256": "d2fe7b58a301c939827992715803fa1a088eeea19c201058210faf67c8ae1cc5"
+      }
+    }
+  },
+  "limitations": [
+    "Only20 exact original source clauses are proposed. Thirteen profile records refer to one actual six-group source invocation, not13 executions or20 accepted requirements.",
+    "No product build, unit test, native renderer, installed startup, live UI, Host permission run, audiovisual judgment or human approval is performed by this composition.",
+    "CR-DELIVER-02 covers only its opening negative source clause. Renderer discovery, availability, compatibility and user-visible operation remain separate obligations.",
+    "CR-SEC-03 static authority separation does not establish CR-SEC-07 own/foreign/missing/revoked permission behavior.",
+    "SDK01 canonical authorization, current consumer compilation and ACC-001 then are not admitted by this component.",
+    "Optional and conditional contracts retain their exact scope and priority; no field is promoted to whole-row contractual acceptance.",
+    "The original D4 results retain their identity and history. A later product source requires its own applicability decision.",
+    "This staging performs only a narrow disclosure check. Full exact private-source/public-policy/schema/compatibility/history gates remain required before integration.",
+    "Technical source sufficiency does not grant PRODUCT_ACCEPTANCE_READY or RELEASE_AUTHORIZED; no ledger is modified here."
+  ],
+  "producer_source_sha256": "cba41faf8a4447bfbb267a36a633f3c9868f2aced51d27562901d5f7815b64fb",
+  "product_acceptance_ready": false,
+  "profiles": 13,
+  "release_authorized": false,
+  "schema": "motionwright.a5.source20-acceptance-public/1",
+  "sdk_constructor": {
+    "authorization_inferred_from_origin": false,
+    "constructor_path": "crates/native-sdk/src/cooperation.rs",
+    "constructor_sha256": "f0d0532acb0ec219cbd3df4ecddbea87d03fa56d87488c963989bbc8aab51aa9",
+    "sha": "aa918f5b82eace7bc37ad5979f8d9eefff6a9aac",
+    "tree": "47cb75d13ec68bcd75d7024f55d58cce7d565ee6"
+  },
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "016fb46f51ca0d8eef26f34c89cbba5eecc40943",
+    "source_lock_sha256": "47365035b354d99a24cc6a123b18ced150074cded7d49776a9bf256b7606606c"
+  },
+  "source_groups": [
+    {
+      "criterion_ids": [
+        "CR-DELIVER-02#/acceptance_criterion"
+      ],
+      "id": "deliver02",
+      "source_assertion_groups": [
+        "desktop_setup_no_implicit_dispatch",
+        "sdk_registration_is_in_memory",
+        "runtime_registry_local_identity_only",
+        "startup_registries_and_install_authority",
+        "bootstrap_uses_local_store_reads",
+        "frontend_packaged_ipc_startup",
+        "current_SDK_read_scope_flag_and_empty_font_state_have_no_implicit_provider_open"
+      ],
+      "status": "pass"
+    },
+    {
+      "criterion_ids": [
+        "CR-FOUND-06#/acceptance_criterion"
+      ],
+      "id": "dependency",
+      "source_assertion_groups": [
+        "all_manifests_equal_actual_lock_edges",
+        "canonical_exact_external_consumer_pin",
+        "every_dependency_reference_resolves_unambiguously",
+        "no_reverse_path_from_any_Semwright_node"
+      ],
+      "status": "pass"
+    },
+    {
+      "criterion_ids": [
+        "CR-JOBS-07#/statement"
+      ],
+      "id": "jobs07",
+      "source_assertion_groups": [
+        "jobs07.reviewed_source_bytes_exact",
+        "jobs07.dispatch_storage_admission_finishes_before_single_remote_await",
+        "jobs07_both_receipt_transactions_commit_before_return",
+        "jobs07_service_guard_and_project_snapshot_are_synchronous_owned_boundaries",
+        "jobs07_reservations_hold_custody_handles_not_database_or_mutex_guards",
+        "jobs07_native_client_and_recheck_do_not_retain_application_transaction",
+        "jobs07_captured_application_entrypoints_do_not_wrap_remote_wait_in_store_guard",
+        "jobs07_complete_guard_inventory_and_reviewed_lifetimes_are_exact",
+        "jobs07_new_window_cache_Store_guard_remains_synchronous_owned_return"
+      ],
+      "status": "pass"
+    },
+    {
+      "criterion_ids": [
+        "CR-FOUND-04#/statement",
+        "CR-PROJECT-04#/statement",
+        "CR-SDK-02#/statement",
+        "CR-SEC-03#/acceptance_criterion",
+        "MW05-E12-01#/negative_case"
+      ],
+      "id": "remaining5",
+      "source_assertion_groups": [
+        "required_three_editor_surface_mounts",
+        "owned_service_and_Store_path",
+        "same_transaction_delegate_and_request_identity",
+        "review_changes_cannot_grant_external_effects",
+        "semantic_request_identity_does_not_promise_repeatable_generated_bytes"
+      ],
+      "status": "pass"
+    },
+    {
+      "criterion_ids": [
+        "CR-SDK-05#/acceptance_criterion",
+        "CR-SDK-05#/statement"
+      ],
+      "id": "sdk05",
+      "source_assertion_groups": [
+        "sdk05.inputs_exact_016f",
+        "sdk05.all_80_document_operations_registered_once",
+        "sdk05.each_contract_declares_risk_idempotency_timeout_dry_run_and_retry",
+        "sdk05.provider_graph_operation_also_uses_explicit_contract",
+        "sdk05.none_of_81_registered_mutations_is_advertised_as_undoable",
+        "sdk05_document_idempotency_has_durable_request_routing_in_source",
+        "sdk05_graph_save_has_same_request_scoped_store_replay_route",
+        "sdk05_external_production_calls_not_reclassified_by_document_registry"
+      ],
+      "status": "pass"
+    },
+    {
+      "criterion_ids": [
+        "ACC-001#/given",
+        "CR-DELIVER-06#/acceptance_criterion",
+        "CR-DELIVER-08#/statement",
+        "CR-EXT-07#/acceptance_criterion",
+        "CR-EXT-07#/statement",
+        "CR-EXT-08#/statement",
+        "CR-PLATFORM-02#/acceptance_criterion",
+        "CR-PLATFORM-08#/acceptance_criterion",
+        "CR-WORKFLOW-06#/acceptance_criterion",
+        "CR-WORKFLOW-06#/statement"
+      ],
+      "id": "static10",
+      "source_assertion_groups": [
+        "current_source_and_locked_pin",
+        "exact_public_path_separation",
+        "AI_stochastic_and_promotion_disclosure",
+        "upstream_platform_gate_labels",
+        "future_interactive_and_monetization_labels",
+        "complete_no_OS_bypass_instruction_inventory"
+      ],
+      "status": "pass"
+    }
+  ],
+  "technical_scope": "exact_current_source_only",
+  "tool_baseline_hashes": {
+    "deliver02": "b01591f035cf4e66d292a3034745e5d756b89484905e37cefe8c8935755be8d5",
+    "dependency": "2025c92a46c5b8252f34fe4e5daf9503209b23803427e116edb72d3820c354b6",
+    "jobs07": "6c65c7be5e7b67d3c52123e479263e72f19192e467bbf5e3e67950ce385023aa",
+    "remaining5": "4080508c5160844518fd312b80294ed7c757e99b9dd745203dfe0cb06fa2919e",
+    "sdk05": "813240a1e6e7826582ae679f60611f1f36518ffa9e24b82adf77a197bd7f3535",
+    "static10": "18c45d160cc3b21389604bc3b438b8adacf35f411cce421c643614df585b548d"
+  },
+  "tree": "de5fd1ddfcfc91a0ba7ac090b49dbcc2fa584058"
+}

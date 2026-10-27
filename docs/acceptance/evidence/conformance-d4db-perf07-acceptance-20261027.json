@@ -1,0 +1,215 @@
+{
+  "actual_python_unit": {
+    "ended_at_utc": "2026-10-27T00:07:18.894646+00:00",
+    "environment": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]"
+    },
+    "exit_code": 0,
+    "failed": 0,
+    "kind": "unit",
+    "original_argv_published": false,
+    "original_argv_sha256": "6bf54e4705a836ac9b071636af6c95e7851d44c3cc28c52f9991e0c18c782b77",
+    "original_receipt_sha256": "4058cb05e051501d670cb3de36457079ace1689c2c6df442e4e65db82e501a82",
+    "passed": 7,
+    "pid": 24020,
+    "profile": "performance-claim-seven-controls-current",
+    "selectors": [
+      "test_creative_stage_cost.StageCostSafetyTests.test_false_human_feedback_rejected",
+      "test_creative_stage_cost.StageCostSafetyTests.test_false_competitor_superiority_rejected",
+      "test_creative_stage_cost.StageCostSafetyTests.test_savings_and_native_approval_never_inferred",
+      "test_creative_stage_cost.StageCostSafetyTests.test_forged_avoided_work_units_rejected",
+      "test_creative_stage_cost.StageCostSafetyTests.test_wrong_cache_kind_cannot_claim_renderer_savings",
+      "test_first_scene_reuse.FirstSceneSafetyTests.test_false_human_feedback_rejected",
+      "test_first_scene_reuse.FirstSceneSafetyTests.test_user_value_and_installed_first_frame_are_not_fabricated"
+    ],
+    "skipped": 0,
+    "started_at_utc": "2026-10-27T00:07:17.437435+00:00",
+    "streams": {
+      "stderr.original.log": {
+        "bytes": 1121,
+        "sha256": "a1441877dd94feb650c04e1889705a5d17806d6808f7570020810ac6f62bbfaa"
+      },
+      "stdout.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "synthetic_inputs": true
+  },
+  "complete_criterion_ids": [
+    "CR-PERF-07#/acceptance_criterion"
+  ],
+  "criterion_id": "CR-PERF-07#/acceptance_criterion",
+  "decision": "sufficient",
+  "human_statement_accepted": false,
+  "limitations": [
+    "One objective no-participant-report acceptance field only; no participant study, human statement, performance score, native run, installed result, product acceptance, or release authorization.",
+    "The seven controls execute real Python reporting code with explicitly synthetic measurements; they are not seven people, projects, performance runs or accepted requirements.",
+    "The source composition authenticates that exact retained Python invocation and reviews the current report routes; it does not rerun the controls or compile/execute either Rust benchmark.",
+    "Historical executions remain tied to their original source. The new unit evidence is the brokered exact-D4 invocation only.",
+    "CR-PERF-07 statement, human review, requirement completion and the row's branch/partial/open state are preserved.",
+    "The admission is scoped to product source D4. It is not transferred to a later A1 candidate."
+  ],
+  "observations": [
+    {
+      "basis": "The default/historical branch constructs a typed technical report whose human_feedback is the fixed NOT_RUN value. Its measured rows contain operation, persistence and cache values, with no participant score. The same report is retained and serialized; the later budget/source-identity checks do not promote it to a human result. Invalid configuration emits FAIL, not a human score.",
+      "id": "historical_report_does_not_create_human_ratings",
+      "locations": [
+        "BenchmarkReport:137-154",
+        "main:757-773",
+        "report construction and serialization:874-931"
+      ],
+      "paths": [
+        "crates/service/examples/acceptance_bench.rs"
+      ]
+    },
+    {
+      "basis": "The normative early return is closed through the inline support module. acceptance_main calls entry(false), responsiveness_main calls entry(true), and both reach suite. After all case work and before retention/stdout serialization, suite overwrites human_feedback with a fixed NOT_RUN value that explicitly disclaims participants, ratings and consent. The suite technical PASS/FAIL status belongs to measured technical cases, not a participant study. Configuration failures emit a FAIL error report without a human rating.",
+      "id": "normative_and_responsiveness_routes_keep_human_feedback_not_run",
+      "locations": [
+        "acceptance_bench:1-2,758-759",
+        "responsiveness_bench:support::suite1502-1620",
+        "entry1622-1635",
+        "acceptance_main2121-2123",
+        "responsiveness_main2118-2120"
+      ],
+      "paths": [
+        "crates/service/examples/acceptance_bench.rs",
+        "crates/service/examples/responsiveness_bench.rs"
+      ]
+    },
+    {
+      "basis": "checked_input requires a NOT_RUN human_feedback string and NONE comparative claims; the first-scene consumer reuses that guard. Both output constructors select explicit technical fields, retain human evaluation as NOT_RUN, keep installed/usefulness and native savings unmeasured, and do not copy arbitrary participant-score fields from input.",
+      "id": "consumer_rejects_fabricated_human_feedback",
+      "locations": [
+        "creative_stage_cost.checked_input",
+        "creative_stage_cost.build_stage_report",
+        "first_scene_reuse.first_scene_report"
+      ],
+      "paths": [
+        "tooling/creative_stage_cost.py",
+        "tooling/first_scene_reuse.py"
+      ]
+    },
+    {
+      "basis": "Two false-feedback controls mutate only the synthetic human_feedback to PASS and require the specific rejection code. The retained benign controls assert human/renderer/installed outcomes remain NOT_RUN or NOT_MEASURED and positive release/value claims stay false. Three further negatives reject fabricated superiority, invented work units and renderer-cache substitution. The seven selectors were executed once by root on exact D4 code; this review does not rerun them.",
+      "id": "exact_seven_controls_cover_negative_and_benign_outputs",
+      "locations": [
+        "seven original selectors recorded in the actual broker receipt"
+      ],
+      "paths": [
+        "tooling/tests/test_creative_stage_cost.py",
+        "tooling/tests/test_first_scene_reuse.py"
+      ]
+    },
+    {
+      "basis": "The test fixtures expressly manufacture nine synthetic measurement rows using a synthetic forty-character a digest. That digest labels fixture data, not the code execution source. Python import closure is stdlib plus these four exact files. Selected tests have no Cargo, provider, network or subprocess calls; their only temporary directories are redirected under the repository by the actual broker.",
+      "id": "fixture_and_import_scope_is_explicit",
+      "locations": [
+        "test module imports,benchmark(),setUp()",
+        "producer imports"
+      ],
+      "paths": [
+        "tooling/creative_stage_cost.py",
+        "tooling/first_scene_reuse.py",
+        "tooling/tests/test_creative_stage_cost.py",
+        "tooling/tests/test_first_scene_reuse.py"
+      ]
+    },
+    {
+      "basis": "The historical workflow explicitly selects historical mode and asserts NOT_RUN for human feedback. Its reporting stages separately reject false human feedback and preserve unobserved native/installed boundaries. Reading the workflow is not evidence that any current benchmark or native job ran.",
+      "id": "workflow_distinguishes_technical_reports_from_human_acceptance",
+      "locations": [
+        "historical environment declaration:56",
+        "report assertions143,218",
+        "consumer assertions238-263"
+      ],
+      "paths": [
+        ".github/workflows/performance-acceptance.yml"
+      ]
+    }
+  ],
+  "oracle_profile_sha256": "f43b7ef8781367e06e267a7eb2eba063b07e527a5d0434f924932e043af539c5",
+  "product_acceptance_ready": false,
+  "release_authorized": false,
+  "rust_benchmarks_executed": 0,
+  "schema": "motionwright.perf07-objective-reporting-public/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "d4db295131f1bf672274f48b33e99c823b9966a1",
+    "source_lock_sha256": "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"
+  },
+  "source_clause_sha256": "24dd23fb2b06c071f50d67c9a13f05c28558a57b4a644791bec8b78ca9b2454e",
+  "source_composition": {
+    "ended_at_utc": "2026-10-27T00:17:45.473904+00:00",
+    "environment": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.5 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:26:23) [MSC v.1916 64 bit (AMD64)]"
+    },
+    "exit_code": 0,
+    "failed": 0,
+    "kind": "source",
+    "new_product_execution": false,
+    "original_argv_published": false,
+    "original_argv_sha256": "e0eb965e2628f9b83535f64b2a8490c4711d4a55a86b1010bd9b13ea5eaf11e3",
+    "original_receipt_sha256": "5217519c9d060b39c5ef73d1c90ee7910b4b8893ecb59c46d6cbc81e772c6504",
+    "original_report_sha256": "bd7c1d70696a1fc6f7b34b7ad45ab0bd6512e79dc2299738498e0ddac69a1c64",
+    "original_unit_receipt_sha256": "4058cb05e051501d670cb3de36457079ace1689c2c6df442e4e65db82e501a82",
+    "passed": 1,
+    "pid": 17256,
+    "producer_sha256": "260bfbcabaee60eff0cad29f136dbb79b48d0d8a770b755f6fe71387e7cdbb96",
+    "profile": "performance-unobserved-study-source",
+    "skipped": 0,
+    "started_at_utc": "2026-10-27T00:17:41.695652+00:00",
+    "streams": {
+      "stderr.original.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout.original.log": {
+        "bytes": 292,
+        "sha256": "2b66ea42e7b7c275960d95e367213310fe72bac99e77139750d9a42d7eeffd20"
+      }
+    }
+  },
+  "source_inputs": [
+    {
+      "bytes": 13037,
+      "path": "tooling/creative_stage_cost.py",
+      "sha256": "bd3c832311257809fd2fde30f274049dea2f3174704a8721fb3d815a2814a74d"
+    },
+    {
+      "bytes": 6356,
+      "path": "tooling/first_scene_reuse.py",
+      "sha256": "cdfd24950fae06ca424a6ccd2026c11e4dfca659c0e8c5a7b1eefc8fcce0f072"
+    },
+    {
+      "bytes": 12782,
+      "path": "tooling/tests/test_creative_stage_cost.py",
+      "sha256": "52ad006147496e039a45b20068e9dfdf0c6f5e89dfdb8a5454c4955b149fff70"
+    },
+    {
+      "bytes": 9940,
+      "path": "tooling/tests/test_first_scene_reuse.py",
+      "sha256": "16e5eef1bc7bd095f86a32b09178dec0400793735639c35c2b1d5d1df046c998"
+    },
+    {
+      "bytes": 42728,
+      "path": "crates/service/examples/acceptance_bench.rs",
+      "sha256": "96d00ee1f7fd04b53720d04332ea975f4c460eed111c4ad6d5e249ae085decfa"
+    },
+    {
+      "bytes": 92652,
+      "path": "crates/service/examples/responsiveness_bench.rs",
+      "sha256": "baec2bcffe0e1eaa24ec463b70dfa562804110e6e992691237a7a1f54e25ae92"
+    },
+    {
+      "bytes": 52727,
+      "path": ".github/workflows/performance-acceptance.yml",
+      "sha256": "9b94f55a5a265528d797b7d0c71f8fd3e7687cedf2febe298b890ff88cb7c77c"
+    }
+  ],
+  "source_review_sha256": "a30e83b3e4594825bac5fe0414a0ba2badfbd6a3d3ec14817cc2dcc1d1e64839",
+  "tree": "d0af42982f0856fa4dc1e0c84d0e843e623ae4f0"
+}
