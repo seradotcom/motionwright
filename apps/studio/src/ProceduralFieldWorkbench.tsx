@@ -4,7 +4,7 @@ import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { realizeProceduralField } from "./proceduralField";
+import { realizeProceduralField, validateProceduralAuthoringBounds } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
 import { proceduralConfig, workbenchScope } from "./creativeWorkbenchDraft";
 import type { ProceduralRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
@@ -40,6 +40,7 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
   useEffect(()=>{
     let active=true;setPreviewLoading(true);setPreviewError(null);
     Promise.resolve().then(()=>realizeProceduralField(stored?.id??previewIdentity,proceduralConfig(draft))).then(items=>{
+      validateProceduralAuthoringBounds(items);
       if(active){setNodes(items);setPreviewLoading(false);}
     }).catch(e=>{
       if(active){setNodes([]);setPreviewError(e instanceof Error?e.message:String(e));setPreviewLoading(false);}

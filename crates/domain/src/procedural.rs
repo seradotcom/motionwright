@@ -372,6 +372,17 @@ impl Project {
             }
         }
         let baseline = realize_procedural_field(id, config)?;
+        // Enforce new authoring here, not in the versioned generator: historical
+        // v1 baselines must still validate, reopen and detach without changed nodes.
+        if baseline.iter().any(|node| {
+            node.keyframes
+                .iter()
+                .any(|key| key.property == MotionProperty::Y && key.value + node.height > 1080.0)
+        }) {
+            return Err(DomainError::Invalid(
+                "procedural entrance exceeds 1920x1080 authored stage; move the field upward or disable sequencing".into(),
+            ));
+        }
         let existing = self
             .production_design
             .procedural_fields
