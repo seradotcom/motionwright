@@ -25,7 +25,7 @@ from pathlib import Path
 from native_av_failure_guard import run_sanitized_json
 from native_mlt_caption_pixels import prove_native_captioned_master
 from native_mlt_public_artifact import (
-    PublicationError, SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
+    MODES, PublicationError, SOURCE_WAV_NAME, mode_contract, read_synthetic_source_wav,
     verify_source_unchanged, verify_staged_source_receipt,
 )
 
@@ -42,7 +42,7 @@ GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-mlt-sequence-e2e" / GITHUB_SHA
 MODE = os.environ.get("MOTIONWRIGHT_MLT_MODE", "pcm")
 HYBRID = MODE == "hybrid-av"
-if MODE not in {"pcm", "video-only", "final-mp4", "captioned-mp4", "hybrid-av"}:
+if MODE not in MODES:
     raise SystemExit("Only closed native MLT smoke modes are accepted")
 CONTRACT = mode_contract(MODE)
 VIDEO_ONLY = MODE in {"video-only", "final-mp4", "captioned-mp4"}

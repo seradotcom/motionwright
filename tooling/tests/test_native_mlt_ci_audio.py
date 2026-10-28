@@ -242,6 +242,57 @@ class NativeSourceWavCustodyTests(unittest.TestCase):
             inspect_decoded_ci_stereo(original_pcm(), mode="original-mix-mp4")
 
 
+class NativeModeAdmissionTests(unittest.TestCase):
+    def test_hybrid_execution_is_refused_before_g2_or_native_effects(self):
+        import runpy
+        import native_mlt_sequence_e2e as wrapper
+        from native_mlt_g2_observation import G2Session
+
+        blocked = AssertionError("unimplemented hybrid consumer reached an effect")
+        with patch.dict(os.environ, {"MOTIONWRIGHT_MLT_MODE": "hybrid-av"}), \
+             patch.object(sys, "argv", [wrapper.__file__, "--hybrid-inputs",
+                                        "unused-private-hybrid-inputs.json"]), \
+             patch.object(G2Session, "prepare_hybrid", side_effect=blocked) as prepare, \
+             patch("subprocess.Popen", side_effect=blocked) as popen, \
+             patch("subprocess.run", side_effect=blocked) as run, \
+             patch("subprocess.check_output", side_effect=blocked) as check_output:
+            with self.assertRaisesRegex(SystemExit,
+                                        "Only closed native MLT smoke modes are accepted"):
+                runpy.run_path(wrapper.__file__, run_name="__main__")
+        for effect in (prepare, popen, run, check_output):
+            effect.assert_not_called()
+
+    def test_hybrid_publication_is_refused_before_any_path_access(self):
+        for status in sorted(pub.VALID_STATUS):
+            for entry in ("dispatcher", "direct"):
+                with self.subTest(status=status, entry=entry):
+                    root = mock.Mock(spec=pathlib.Path)
+                    output = mock.Mock(spec=pathlib.Path)
+                    output.exists.side_effect = AssertionError("output inspected before admission")
+                    root.resolve.side_effect = AssertionError("private source inspected before admission")
+                    with self.assertRaisesRegex(pub.PublicationError, "^invalid_mlt_mode$"):
+                        if entry == "dispatcher":
+                            pub.publish_mlt(root, output, "hybrid-av", "a" * 40, "b" * 40, status)
+                        else:
+                            pub.publish_hybrid_observation(root, output, "a" * 40, "b" * 40, status)
+                    self.assertEqual(root.mock_calls, [])
+                    self.assertEqual(output.mock_calls, [])
+
+    def test_hybrid_public_cli_is_refused_before_lock_or_evidence_read(self):
+        blocked = AssertionError("unsupported mode reached publication setup")
+        with patch.object(pathlib.Path, "read_bytes", side_effect=blocked) as read, \
+             patch.object(pub, "publish_mlt", side_effect=blocked) as publish, \
+             patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                pub.main(["--source-sha", "a" * 40, "--mode", "hybrid-av",
+                          "--evidence-root", "unused-private-hybrid-source",
+                          "--output-root", "unused-public-hybrid-output",
+                          "--job-status", "success"])
+        self.assertEqual(raised.exception.code, 2)
+        read.assert_not_called()
+        publish.assert_not_called()
+
+
 class _GrowingHashReader(io.BytesIO):
     """Never EOF, with an independent guard so a broken hash loop cannot hang."""
 

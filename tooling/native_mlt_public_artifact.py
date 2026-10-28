@@ -23,7 +23,8 @@ from cross_app_public_artifact import (
 
 SCHEMA = "motionwright.v01-native-mlt-public-evidence/1"
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
-MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4", "hybrid-av"}
+# Execution and publication require an implemented native consumer.
+MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4"}
 VALID_STATUS = {"success", "failure", "cancelled", "skipped"}
 NO_CLEANUP = "not_requested_requires_foreground_broker_consent"
 SCOPES = {
@@ -87,8 +88,9 @@ class MltModeContract:
         return 44 + self.pcm_frames * self.channels * 2
 
 
-# Active consumers only. A future 60-frame / 96000-sample OriginalMix fixture
-# needs its own reviewed source identity and native consumer before admission.
+# Readback contracts include prepared hybrid metadata. This does not admit
+# execution or publication until its native consumer is reviewed and present.
+# A future 60-frame / 96000-sample OriginalMix also needs its own source identity.
 MODE_CONTRACTS = {
     "hybrid-av": MltModeContract(180, (60,60,60), width=1920, height=1080, scene_count=3),
     "pcm": MltModeContract(33, (32, 1)),
@@ -102,11 +104,12 @@ MODE_CONTRACTS = {
         source_wav_sha256=LEGACY_VOICE_WAV_SHA256,
     ),
 }
-assert set(MODE_CONTRACTS) == MODES
+assert set(MODE_CONTRACTS) == MODES | {"hybrid-av"}
 
 
 def mode_contract(mode: str) -> MltModeContract:
-    require(type(mode) is str and mode in MODES, "invalid_mlt_mode")
+    """Return readback metadata; execution and publication are admitted by MODES."""
+    require(type(mode) is str and mode in MODE_CONTRACTS, "invalid_mlt_mode")
     return MODE_CONTRACTS[mode]
 
 
@@ -451,6 +454,7 @@ def validate_hybrid_public_source(source, *, source_sha, semwright_sha):
 
 def publish_hybrid_observation(root,output,source_sha,semwright_sha,job_status):
     """Publish only this closed summary. Original audio/media/errors stay private."""
+    require("hybrid-av" in MODES, "invalid_mlt_mode")
     require(job_status in VALID_STATUS and bool(SHA40.fullmatch(source_sha))
             and bool(SHA40.fullmatch(semwright_sha)),"hybrid_public_context")
     require(not output.exists(),"public_artifact_already_exists")
@@ -488,9 +492,9 @@ def publish_hybrid_observation(root,output,source_sha,semwright_sha,job_status):
 
 def publish_mlt(root: Path, output: Path, mode: str, source_sha: str,
                 semwright_sha: str, job_status: str) -> dict:
+    require(mode in MODES, "invalid_mlt_mode")
     if mode == "hybrid-av":
         return publish_hybrid_observation(root,output,source_sha,semwright_sha,job_status)
-    require(mode in MODES, "invalid_mlt_mode")
     require(job_status in VALID_STATUS, "invalid_ci_job_status")
     require(bool(SHA40.fullmatch(source_sha))
             and bool(SHA40.fullmatch(semwright_sha)), "invalid_source_pin")

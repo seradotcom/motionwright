@@ -320,12 +320,11 @@ class NativeHybridOriginalReadbackTests(unittest.TestCase):
                 (root/name).write_bytes(original);record[key]=hashlib.sha256(original).hexdigest()
             (root/"hybrid-public-source.json").write_text(json.dumps(record))
             (root/"native-original.mp4").write_bytes(b"PRIVATE-MEDIA")
-            result=public.publish_mlt(root,output,"hybrid-av","a"*40,"b"*40,"success")
-            self.assertEqual(result["ci_native_mlt_evidence"],"READBACK_OBSERVED")
-            self.assertEqual(result["included_files"],[])
-            self.assertFalse(result["physical_acceptance"])
-            self.assertEqual([p.name for p in output.iterdir()],["public-evidence.json"])
-            self.assertNotIn("PRIVATE",(output/"public-evidence.json").read_text())
+            originals={path.name:path.read_bytes() for path in root.iterdir()}
+            with self.assertRaisesRegex(public.PublicationError,"^invalid_mlt_mode$"):
+                public.publish_mlt(root,output,"hybrid-av","a"*40,"b"*40,"success")
+            self.assertFalse(output.exists())
+            self.assertEqual({path.name:path.read_bytes() for path in root.iterdir()},originals)
 
 
     @staticmethod
