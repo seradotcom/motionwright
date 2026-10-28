@@ -1,7 +1,8 @@
-//! Backend-only seam for one admitted Graph source save.
+//! Backend-only seam for admitted Graph source inspection and save.
 //!
-//! This module supplies no admission issuer and makes no runtime/Ready claim.
+//! This module supplies no admission issuer and makes no native runtime claim.
 //! The ordinary StudioService::apply and Graph context remain fail-closed.
+use crate::semantic_graph::SemanticGraphContextRequest;
 use crate::{StorageResult, StudioService};
 use motionwright_domain::{
     Change, DomainError, GraphSourceSnapshot, Project, RevisionStamp, SemanticGraph,
@@ -60,6 +61,27 @@ impl SemanticGraphWriteScope<'_> {
 /// await, call back into StudioService, or acquire another Store mutex here.
 /// The native adapter is intentionally not implemented by this module.
 pub trait SemanticGraphAdmission {
+    /// Inspect source-authoring availability for the exact persisted selection.
+    /// Service has checked all snapshot fields, scene/profile membership and
+    /// renderer before calling this synchronous method under its Store mutex.
+    ///
+    /// The real native adapter must check current authenticated owner access,
+    /// the canonical Graph consumer and its source/font constraints. Do not
+    /// reenter Service or acquire a Store mutex. This observation issues no
+    /// write permit: acquire() must independently validate the actual change,
+    /// including future labels/fonts, and retain real authority through apply.
+    /// Existing adapters deny inspection until they explicitly implement it.
+    fn inspect_authoring(
+        &self,
+        _project: &Project,
+        _request: &SemanticGraphContextRequest,
+    ) -> StorageResult<()> {
+        Err(DomainError::Invalid(
+            "Semantic Graph authoring inspection requires the real native admission adapter".into(),
+        )
+        .into())
+    }
+
     fn acquire<'a>(
         &'a self,
         scope: &'a SemanticGraphWriteScope<'a>,

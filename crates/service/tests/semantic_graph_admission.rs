@@ -485,3 +485,477 @@ fn ordinary_apply_removal_and_other_changes_cannot_enter_this_seam() {
     assert_eq!(admission.checks.load(Ordering::SeqCst), 0);
     unchanged(&service, &before, &events);
 }
+
+// These inspection adapters exercise the Service contract with real SQLite.
+// They are unit-test doubles, not deployed Host identity or native/font proof.
+// The production adapter and its installed route require separate evidence.
+#[derive(Clone, Copy)]
+enum InspectionMode {
+    Admit,
+    Reject,
+    EditThroughIndependentStore,
+}
+
+struct TestAuthoringAdmission {
+    writer: TestAdmission,
+    project: Project,
+    request: SemanticGraphContextRequest,
+    mode: InspectionMode,
+    inspections: AtomicUsize,
+}
+
+fn authoring_request(project: &Project) -> SemanticGraphContextRequest {
+    SemanticGraphContextRequest {
+        source_snapshot: GraphSourceSnapshot::from_project(project),
+        scene_id: project.scenes[0].id,
+        variant_profile_ref: project.deliverables[0].id,
+    }
+}
+
+impl TestAuthoringAdmission {
+    fn new(
+        service: &StudioService,
+        path: &Path,
+        project: &Project,
+        writer_mode: Mode,
+        mode: InspectionMode,
+    ) -> Self {
+        Self {
+            writer: TestAdmission::new(service, path, project, writer_mode),
+            project: project.clone(),
+            request: authoring_request(project),
+            mode,
+            inspections: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl SemanticGraphAdmission for TestAuthoringAdmission {
+    fn inspect_authoring(
+        &self,
+        project: &Project,
+        request: &SemanticGraphContextRequest,
+    ) -> StorageResult<()> {
+        assert!(self.writer.store.try_lock().is_none());
+        assert_eq!(project, &self.project);
+        assert_eq!(request, &self.request);
+        self.inspections.fetch_add(1, Ordering::SeqCst);
+        if matches!(self.mode, InspectionMode::Reject) || self.writer.revoked.load(Ordering::SeqCst)
+        {
+            return Err(denied());
+        }
+        if matches!(self.mode, InspectionMode::EditThroughIndependentStore) {
+            // Model an independent writer during the observation. This uses
+            // another SQLite connection, never reenters the locked Service,
+            // and preserves the independent writer's real event and receipt.
+            let mut independent = Store::open(&self.writer.path)?;
+            let outcome = independent.apply(
+                project.id,
+                &project.stamp(),
+                "independent-edit-during-graph-inspection",
+                &Change::RenameProject {
+                    title: "Independent edit during Graph inspection".into(),
+                },
+            )?;
+            assert_eq!(outcome.project.revision, project.revision + 1);
+        }
+        Ok(())
+    }
+
+    fn acquire<'a>(
+        &'a self,
+        scope: &'a SemanticGraphWriteScope<'a>,
+    ) -> StorageResult<Box<dyn SemanticGraphWriteLease + 'a>> {
+        self.writer.acquire(scope)
+    }
+}
+
+#[test]
+fn existing_write_adapter_denies_authoring_inspection_by_default_without_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-default-inspection-denial.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let request = authoring_request(&before);
+    let admission = TestAdmission::new(&service, &path, &before, Mode::Admit);
+    let error = service
+        .semantic_graph_authoring_context_with_admission(&request, &admission)
+        .unwrap_err();
+    assert!(error.to_string().contains("real native admission adapter"));
+    assert!(admission.seen.lock().unwrap().is_empty());
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.checks.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        service
+            .semantic_graph_authoring_context(&request)
+            .unwrap()
+            .availability,
+        GraphAvailability::Blocked
+    );
+    unchanged(&service, &before, &events);
+}
+
+#[test]
+fn admitted_authoring_context_preserves_exact_eleven_fields_without_acquiring_write_lease() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-admitted-context-shape.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let request = authoring_request(&before);
+    let admission =
+        TestAuthoringAdmission::new(&service, &path, &before, Mode::Admit, InspectionMode::Admit);
+    let ordinary = service.semantic_graph_authoring_context(&request).unwrap();
+    let admitted = service
+        .semantic_graph_authoring_context_with_admission(&request, &admission)
+        .unwrap();
+    assert_eq!(admitted.availability, GraphAvailability::Ready);
+    assert!(admitted.blocking_reasons.is_empty());
+    let wire = serde_json::to_value(&admitted).unwrap();
+    let expected_fields: std::collections::BTreeSet<&str> = [
+        "schema",
+        "source_snapshot",
+        "scene_id",
+        "variant_profile_ref",
+        "component_version",
+        "native_profile",
+        "font_weight",
+        "font_selection",
+        "availability",
+        "blocking_reasons",
+        "dependencies",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        wire.as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected_fields
+    );
+    let mut expected = serde_json::to_value(&ordinary).unwrap();
+    expected["availability"] = serde_json::json!("ready");
+    expected["blocking_reasons"] = serde_json::json!([]);
+    assert_eq!(wire, expected);
+    assert_eq!(
+        admitted.schema,
+        "motionwright.semantic-graph-authoring-context/1"
+    );
+    assert_eq!(admitted.component_version, SEMANTIC_GRAPH_COMPONENT_VERSION);
+    assert_eq!(admitted.native_profile, SEMANTIC_GRAPH_PROFILE);
+    assert_eq!(admitted.font_weight, 400);
+    assert_eq!(
+        admitted.font_selection.primary_family,
+        "Instrument Sans Variable"
+    );
+    assert_eq!(admitted.font_selection.mono_family, "IBM Plex Mono");
+    assert_eq!(admission.inspections.load(Ordering::SeqCst), 1);
+    assert!(admission.writer.seen.lock().unwrap().is_empty());
+    assert_eq!(admission.writer.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.writer.checks.load(Ordering::SeqCst), 0);
+    unchanged(&service, &before, &events);
+}
+
+#[test]
+fn admitted_context_rejects_foreign_or_stale_source_and_selection_before_inspection() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-admitted-context-stale.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let original = authoring_request(&before);
+    let admission =
+        TestAuthoringAdmission::new(&service, &path, &before, Mode::Admit, InspectionMode::Admit);
+    for field in [
+        "project",
+        "generation",
+        "branch",
+        "revision",
+        "scene",
+        "profile",
+    ] {
+        let mut request = original.clone();
+        match field {
+            "project" => request.source_snapshot.project_id = Uuid::new_v4(),
+            "generation" => request.source_snapshot.generation = Uuid::new_v4(),
+            "branch" => request.source_snapshot.branch_id = Uuid::new_v4(),
+            "revision" => request.source_snapshot.revision += 1,
+            "scene" => request.scene_id = Uuid::new_v4(),
+            "profile" => request.variant_profile_ref = Uuid::new_v4(),
+            _ => unreachable!(),
+        }
+        assert!(
+            service
+                .semantic_graph_authoring_context_with_admission(&request, &admission)
+                .is_err(),
+            "mismatched {field} must not reach the native adapter"
+        );
+        assert_eq!(admission.inspections.load(Ordering::SeqCst), 0);
+        unchanged(&service, &before, &events);
+    }
+}
+
+#[test]
+fn incompatible_renderer_stays_blocked_without_inspecting_native_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-context-incompatible-renderer.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let created = service
+        .create_project("Incompatible Graph renderer")
+        .unwrap();
+    let before = service
+        .apply(
+            created.id,
+            &created.stamp(),
+            "seed-default-renderer-scene",
+            &Change::AddScene {
+                name: "Default renderer scene".into(),
+                objective: "Keep unsupported source blocked".into(),
+                duration_seconds: 6,
+            },
+        )
+        .unwrap()
+        .project;
+    assert_ne!(before.scenes[0].renderer, RendererKind::ManimCommunity);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission =
+        TestAuthoringAdmission::new(&service, &path, &before, Mode::Admit, InspectionMode::Admit);
+    let context = service
+        .semantic_graph_authoring_context_with_admission(&authoring_request(&before), &admission)
+        .unwrap();
+    assert_eq!(context.availability, GraphAvailability::Blocked);
+    assert_eq!(
+        context.blocking_reasons,
+        vec![GraphBlockReason::ProfileUnsupported]
+    );
+    assert_eq!(admission.inspections.load(Ordering::SeqCst), 0);
+    unchanged(&service, &before, &events);
+}
+
+#[test]
+fn deliverable_excluding_the_scene_stays_blocked_without_native_inspection() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-context-excluded-scene.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let seeded = seed(&service);
+    let with_other_scene = service
+        .apply(
+            seeded.id,
+            &seeded.stamp(),
+            "add-other-profile-scene",
+            &Change::AddScene {
+                name: "Different selected scene".into(),
+                objective: "Limit the delivery profile to another scene".into(),
+                duration_seconds: 6,
+            },
+        )
+        .unwrap()
+        .project;
+    let mut profile = with_other_scene.deliverables[0].clone();
+    profile.included_scene_ids = vec![with_other_scene.scenes[1].id];
+    let before = service
+        .apply(
+            with_other_scene.id,
+            &with_other_scene.stamp(),
+            "exclude-graph-scene-from-profile",
+            &Change::UpsertDeliverable { profile },
+        )
+        .unwrap()
+        .project;
+    assert_eq!(before.scenes[0].renderer, RendererKind::ManimCommunity);
+    assert_eq!(
+        before.deliverables[0].included_scene_ids,
+        vec![before.scenes[1].id]
+    );
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission =
+        TestAuthoringAdmission::new(&service, &path, &before, Mode::Admit, InspectionMode::Admit);
+    let context = service
+        .semantic_graph_authoring_context_with_admission(&authoring_request(&before), &admission)
+        .unwrap();
+    assert_eq!(context.availability, GraphAvailability::Blocked);
+    assert_eq!(
+        context.blocking_reasons,
+        vec![GraphBlockReason::ProfileUnsupported]
+    );
+    assert_eq!(admission.inspections.load(Ordering::SeqCst), 0);
+    unchanged(&service, &before, &events);
+}
+
+#[test]
+fn rejected_inspection_cannot_return_ready_or_create_an_event() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-context-inspection-rejected.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission = TestAuthoringAdmission::new(
+        &service,
+        &path,
+        &before,
+        Mode::Admit,
+        InspectionMode::Reject,
+    );
+    assert!(
+        service
+            .semantic_graph_authoring_context_with_admission(
+                &authoring_request(&before),
+                &admission
+            )
+            .is_err()
+    );
+    assert_eq!(admission.inspections.load(Ordering::SeqCst), 1);
+    assert!(admission.writer.seen.lock().unwrap().is_empty());
+    unchanged(&service, &before, &events);
+}
+
+#[test]
+fn independent_store_change_during_inspection_is_preserved_and_prevents_ready() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-context-independent-writer.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission = TestAuthoringAdmission::new(
+        &service,
+        &path,
+        &before,
+        Mode::Admit,
+        InspectionMode::EditThroughIndependentStore,
+    );
+    let error = service
+        .semantic_graph_authoring_context_with_admission(&authoring_request(&before), &admission)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Graph source changed during authoring inspection")
+    );
+    assert_eq!(admission.inspections.load(Ordering::SeqCst), 1);
+    assert!(admission.writer.seen.lock().unwrap().is_empty());
+    let current = service.project(before.id).unwrap();
+    assert_eq!(current.revision, before.revision + 1);
+    assert_eq!(current.title, "Independent edit during Graph inspection");
+    let latest_events = service.history(before.id, 0, 1024).unwrap();
+    assert_eq!(latest_events.len(), events.len() + 1);
+    assert_eq!(&latest_events[..events.len()], events.as_slice());
+    assert_eq!(
+        latest_events.last().unwrap().change,
+        Change::RenameProject {
+            title: "Independent edit during Graph inspection".into(),
+        }
+    );
+    let reopened = StudioService::open(&path).unwrap();
+    assert_eq!(reopened.project(before.id).unwrap(), current);
+    assert_eq!(reopened.history(before.id, 0, 1024).unwrap(), latest_events);
+}
+
+#[test]
+fn ready_context_does_not_authorize_ordinary_or_denied_source_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-context-is-not-permission.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission = TestAuthoringAdmission::new(
+        &service,
+        &path,
+        &before,
+        Mode::Reject,
+        InspectionMode::Admit,
+    );
+    let request = authoring_request(&before);
+    let context = service
+        .semantic_graph_authoring_context_with_admission(&request, &admission)
+        .unwrap();
+    assert_eq!(context.availability, GraphAvailability::Ready);
+    let change = upsert(&before);
+    assert!(
+        service
+            .apply(before.id, &before.stamp(), "ordinary-after-ready", &change)
+            .is_err()
+    );
+    assert!(
+        service
+            .apply_semantic_graph_with_admission("denied-after-ready", &change, &admission)
+            .is_err()
+    );
+    assert_eq!(admission.inspections.load(Ordering::SeqCst), 1);
+    assert_eq!(admission.writer.seen.lock().unwrap().len(), 1);
+    assert_eq!(admission.writer.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.writer.checks.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        service
+            .semantic_graph_authoring_context(&request)
+            .unwrap()
+            .availability,
+        GraphAvailability::Blocked
+    );
+    unchanged(&service, &before, &events);
+}
+
+#[test]
+fn revocation_after_ready_is_rechecked_before_apply_and_prevents_further_inspection() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("graph-context-revoked-before-apply.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission =
+        TestAuthoringAdmission::new(&service, &path, &before, Mode::Admit, InspectionMode::Admit);
+    let request = authoring_request(&before);
+    assert_eq!(
+        service
+            .semantic_graph_authoring_context_with_admission(&request, &admission)
+            .unwrap()
+            .availability,
+        GraphAvailability::Ready
+    );
+    admission.writer.revoked.store(true, Ordering::SeqCst);
+    assert!(
+        service
+            .apply_semantic_graph_with_admission(
+                "revoked-after-ready",
+                &upsert(&before),
+                &admission
+            )
+            .is_err()
+    );
+    assert_eq!(admission.writer.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.writer.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *admission.writer.dropped.lock().unwrap(),
+        vec![DroppedLease {
+            request_id: "revoked-after-ready".into(),
+            revision: before.revision,
+            events: events.len(),
+        }]
+    );
+    assert!(
+        service
+            .semantic_graph_authoring_context_with_admission(&request, &admission)
+            .is_err()
+    );
+    unchanged(&service, &before, &events);
+}
