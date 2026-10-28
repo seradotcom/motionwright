@@ -109,6 +109,9 @@ def safe_member(value):
 
 
 def validate_dispatch(raw, current, *, scenario="repaired-g2"):
+    if scenario == "fixedtxt-v4-one-fixture":
+        from native_fixedtxt_g2_admission import validate_dispatch as fixedtxt_dispatch
+        return fixedtxt_dispatch(raw, current)
     require(scenario in {"repaired-g2", FILM_SCOPE}, "dispatch_scenario")
     schemas = (FILM_DISPATCH_SCHEMA,) if scenario == FILM_SCOPE else (DISPATCH_SCHEMA, SOURCE_DISPATCH_SCHEMA)
     value = strict(raw)

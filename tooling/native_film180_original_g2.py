@@ -83,7 +83,14 @@ def checked_plan(attempt=None) -> dict:
     fixed = getattr(attempt, "fixedtxt_admitted_plan", None)
     if fixed is not None:
         import native_mlt_evidence_selection as selected
-        selected.fixedtxt_owner_selection_guard()
+        external = getattr(attempt, "fixedtxt_external", None)
+        if external is None:
+            selected.fixedtxt_owner_selection_guard()
+        else:
+            import native_fixedtxt_g2_admission as fixed_external
+            fixed_external.admit_inputs(external.dispatch_raw, external.plan_raw,
+                external.runtime_raw, external.cycle_raw,
+                current=attempt.fixedtxt_originals["current"], runner_temp=os.environ["RUNNER_TEMP"])
         from native_film180_evidence_selection import FIXEDTXT_SCOPE
     else:
         FIXEDTXT_SCOPE = None
@@ -831,10 +838,21 @@ class FilmAttempt:
         self.fixed_text_v4 = None
         self.fixedtxt_admitted_plan = None
         self.fixedtxt_originals = None
+        self.fixedtxt_external = None
 
     @classmethod
-    def prepare(cls, path: Path, *, fixedtxt_originals=None):
-        if fixedtxt_originals is None:
+    def prepare(cls, path: Path, *, fixedtxt_originals=None, external_fixedtxt=None):
+        if external_fixedtxt is not None:
+            import native_fixedtxt_g2_admission as fixed_external
+            from native_fixedtxt_g2_supervisor import require_work_containment
+            require(fixedtxt_originals is None, "FixedTxt_admission_paths_are_exclusive")
+            fixedtxt_originals = fixed_external.owner_input_view(external_fixedtxt, environment=os.environ)
+            held = fixedtxt_originals
+            require(str(path) == held["layout"]["runtime"], "FixedTxt_runtime_argument_changed")
+            require_work_containment(held["current"], source_root=str(ROOT))
+            admitted_plan, data = held["plan"], held["runtime"]
+            runner = observed.admission.disposable_linux_runner()
+        elif fixedtxt_originals is None:
             require(os.environ.get("MOTIONWRIGHT_APPROVED_FILM180_G2") == "1"
                     and os.environ.get("MW_MLT_SCOPE") == custody.FILM_SCOPE,
                     "Film180_explicit_manual_selection_required")
@@ -876,6 +894,7 @@ class FilmAttempt:
         result.melt_alias_observation = alias
         result.fixedtxt_admitted_plan = admitted_plan
         result.fixedtxt_originals = fixedtxt_originals
+        result.fixedtxt_external = external_fixedtxt
         receipt = {
             "schema": data["schema"], "motionwright_sha": RUN_SHA, "semwright_sha": PIN,
             "source_compiler": closure, "installed_melt_alias": alias,
@@ -1930,14 +1949,23 @@ def fixed_owner_close(daemon, source, evidence, attempt, original_identity):
     require(valid, "FixedTxt_actual_original_receiver_close_incomplete_or_losses")
 
 
-def execute_fixed_text_v4(input_path, fixed_input_path, *, selected_fixture=None):
+def execute_fixed_text_v4(input_path, fixed_input_path, *, selected_fixture=None, external_g2=False):
     selected_keys = fixed_selected_fixture_keys(selected_fixture)
     from native_film180_evidence_selection import FIXEDTXT_SCOPE
     guarded = selected_fixture is not None or os.environ.get("MW_MLT_SCOPE") == FIXEDTXT_SCOPE
-    originals = (admit_fixedtxt_wrapper_originals(input_path, fixed_input_path, selected_fixture=selected_fixture)
-                 if guarded else None)
+    external = None
+    if external_g2:
+        import native_fixedtxt_g2_admission as fixed_external
+        external = fixed_external.acquire_wrapper_inputs(os.environ,
+            runtime_input_path=str(input_path), cycle_input_path=str(fixed_input_path),
+            selected_fixture=selected_fixture, source_root=str(ROOT))
+        originals = fixed_external.owner_input_view(external, environment=os.environ)
+    else:
+        originals = (admit_fixedtxt_wrapper_originals(input_path, fixed_input_path, selected_fixture=selected_fixture)
+                     if guarded else None)
     selected_decode_count = sum(len(fixed_samples(key)) for key in selected_keys)
-    attempt = (FilmAttempt.prepare(input_path, fixedtxt_originals=originals) if originals is not None
+    attempt = (FilmAttempt.prepare(input_path, external_fixedtxt=external) if external is not None
+               else FilmAttempt.prepare(input_path, fixedtxt_originals=originals) if originals is not None
                else FilmAttempt.prepare(input_path))
     attempt.fixed_text_v4 = {"arm": None, "fixtures": list(selected_keys)}
     original_error = None
@@ -2035,7 +2063,10 @@ def parse_cli(argv=None):
     parser.add_argument("--g2-inputs", type=str, required=True)
     parser.add_argument("--fixed-text-v4-inputs", type=str)
     parser.add_argument("--fixed-text-v4-fixture", choices=FIXED_TEXT_KEYS)
+    parser.add_argument("--fixedtxt-external-g2", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.fixedtxt_external_g2 and arguments.fixed_text_v4_fixture is None:
+        parser.error("--fixedtxt-external-g2 requires exactly one --fixed-text-v4-fixture")
     if arguments.fixed_text_v4_fixture is not None and arguments.fixed_text_v4_inputs is None:
         parser.error("--fixed-text-v4-fixture requires --fixed-text-v4-inputs")
     if arguments.fixed_text_v4_fixture is not None:
@@ -2056,7 +2087,8 @@ if __name__ == "__main__":
             execute(arguments.g2_inputs)
         else:
             execute_fixed_text_v4(arguments.g2_inputs, arguments.fixed_text_v4_inputs,
-                                  selected_fixture=arguments.fixed_text_v4_fixture)
+                                  selected_fixture=arguments.fixed_text_v4_fixture,
+                                  external_g2=arguments.fixedtxt_external_g2)
     except NativeCommandFailure as error:
         # Closed vocabulary only, never stderr, tickets, paths or input media.
         print(json.dumps({
