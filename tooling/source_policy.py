@@ -179,6 +179,9 @@ for path in iter_source_files(ROOT):
         process_test_fixture_sources = {
             "crates/native/src/production/brand_fonts.rs":
                 "898dbb96ea14e2a24698bd2a97442eaa61debb55b91e627fd40a3ecb9ff14d4c",
+            # Retained SQLite identity uses a bounded child only in cfg(test).
+            "crates/storage/src/sqlite_identity.rs":
+                "332d6b4789a2a9e00785030ceb965189a90f57f55857388014eeec763b00274c",
         }
         reviewed_test_fixture = (
             rel in process_test_fixture_sources

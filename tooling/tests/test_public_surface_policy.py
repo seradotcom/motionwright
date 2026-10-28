@@ -377,6 +377,44 @@ class SourcePolicyConsumerTests(GitFixtureTests):
             cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
 
+    def sqlite_process_fixture(self, relative, suffix=""):
+        root = self.policy_repo(relative)
+        name = "crates/storage/src/sqlite_identity.rs"
+        source = (SOURCE_ROOT / name).read_text(encoding="utf-8")
+        self.write(root, name, source + suffix)
+        self.git(root, "add", "--", name)
+        return root
+
+    def test_reviewed_sqlite_child_fixture_source_passes(self):
+        result = self.run_policy(self.sqlite_process_fixture("sqlite-reviewed"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("source-policy=ok", result.stdout)
+
+    def test_sqlite_fixture_change_requires_fresh_source_review(self):
+        root = self.sqlite_process_fixture(
+            "sqlite-changed", "\n// Changed fixture requires an exact source review.\n"
+        )
+        result = self.run_policy(root)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "unreviewed first-party process execution primitive found: "
+            "crates/storage/src/sqlite_identity.rs",
+            result.stderr,
+        )
+
+    def test_sqlite_production_process_is_not_path_allowlisted(self):
+        root = self.sqlite_process_fixture(
+            "sqlite-runtime",
+            "\nfn runtime_process() { let _ = std::process::Command::new(\"tool\"); }\n",
+        )
+        result = self.run_policy(root)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "unreviewed first-party process execution primitive found: "
+            "crates/storage/src/sqlite_identity.rs",
+            result.stderr,
+        )
+
     def test_valid_minimal_consumer_fixture_passes(self):
         result = self.run_policy(self.policy_repo())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
