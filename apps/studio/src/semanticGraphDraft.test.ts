@@ -5,9 +5,10 @@ import { emptyProductionDesign } from "./creativeProduction";
 import { graphSame, graphSourceSnapshot, graphToRaw, newSemanticGraph } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphProject, GraphRaw, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, encodeGraphCopy,
-  failGraphSubmission, forkGraphCopy, graphCopyKey, graphDownload, graphOutcomeMatches, graphPointerKey, inspectGraphOutcome, mergeGraphDraft,
+  failGraphSubmission, rejectGraphSubmission, forkGraphCopy, graphCopyKey, graphDownload, graphOutcomeMatches, graphPointerKey, inspectGraphOutcome, mergeGraphDraft,
   prepareGraphSubmission, readGraphCopies, readGraphRecoverySource, reconcileGraphDraft, recoverGraphRead, releaseGraphOutcome, reviewGraphDraft, validateGraphRaw, writeGraphCopy } from "./semanticGraphDraft";
 import type { GraphCustody, GraphDraft, GraphRecoveryObservation, GraphStorage } from "./semanticGraphDraft";
+import { GRAPH_MUTATION_REJECTED_MESSAGE } from "./semanticGraphMutationError";
 
 class Memory implements GraphStorage {
   data = new Map<string, string>(); reads = 0; writes = 0; drop = false; corrupt = false;
@@ -612,4 +613,43 @@ describe("Graph unchanged-base uncertainty and exact backup confirmation", () =>
     expect(held.local.getItem(key)).toBe(raw); expect(held.local.writes).toBe(writes); expect(held.custody).toEqual(owner);
     expect(held.pointers.getItem(pointer)).toBeNull();
   });
+});
+
+
+describe("live Graph rejection and restored uncertainty", () => {
+  for (const operation of ["save", "remove"] as const) {
+    it(`${operation} retains the exact rejected attempt until explicit same-base review and copy fork`, async () => {
+      const { project, draft, context } = source();
+      const id = crypto.randomUUID(), prepared = await prepareGraphSubmission(draft, project, context, id, operation);
+      const rejected = rejectGraphSubmission(prepared.draft, id), held = copy(rejected), original = held.custody.expectedRaw!;
+      expect(rejected.pending).toEqual({ ...prepared.draft.pending, outcome: "REJECTED", diagnostic: GRAPH_MUTATION_REJECTED_MESSAGE });
+      expect(decodeGraphCopy(original, draft.scope, held.custody.writerId, false).draft.pending?.outcome).toBe("REJECTED");
+      expect(rejectGraphSubmission(rejected, crypto.randomUUID())).toBe(rejected);
+      await expect(prepareGraphSubmission(rejected, project, context, crypto.randomUUID(), operation)).rejects.toThrow(/earlier Graph operation/);
+      const transport = { readProject: vi.fn(async () => structuredClone(project)), readHistory: vi.fn(async () => []) };
+      const review = await inspectGraphOutcome(rejected, project, transport), next = releaseGraphOutcome(rejected, project, review);
+      expect(next.pending).toBeNull(); expect(next.input).toEqual(rejected.input);
+      expect(rejected.pending?.outcome).toBe("REJECTED"); expect(rejected.pending?.submitted).toEqual(prepared.change);
+      forkGraphCopy(held.local, held.pointers, rejected, next, held.custody, crypto.randomUUID());
+      expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(original);
+      expect(transport.readProject).toHaveBeenCalledTimes(2);
+    });
+
+    it(`${operation} a stored rejection is UNKNOWN and cannot release an unchanged base`, async () => {
+      const { project, draft, context } = source();
+      const id = crypto.randomUUID(), prepared = await prepareGraphSubmission(draft, project, context, id, operation);
+      const rejected = rejectGraphSubmission(prepared.draft, id), held = copy(rejected), original = held.custody.expectedRaw!;
+      const recovered = decodeGraphCopy(original, draft.scope, held.custody.writerId).draft;
+      expect(recovered.pending?.outcome).toBe("UNKNOWN"); expect(recovered.pending?.diagnostic).toBeNull();
+      expect(recovered.pending?.id).toBe(id); expect(recovered.pending?.submitted).toEqual(prepared.change);
+      expect(recovered.pending?.input).toEqual(prepared.draft.pending?.input);
+      const review = await inspectGraphOutcome(recovered, project, {
+        readProject: async () => structuredClone(project), readHistory: async () => [],
+      });
+      expect(() => releaseGraphOutcome(recovered, project, review)).toThrow(/could still commit/);
+      expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(original);
+      expect(recoverGraphRead(draft, rejected, []).pending?.outcome).toBe("UNKNOWN");
+      expect(recoverGraphRead(draft, rejected, []).pending?.diagnostic).toBeNull();
+    });
+  }
 });

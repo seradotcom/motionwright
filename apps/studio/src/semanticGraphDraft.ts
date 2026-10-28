@@ -3,10 +3,11 @@ import type { Project, ProjectEvent } from "./types";
 import { graphExact, graphRecord, graphSame, graphUuid, graphSourceSnapshot, graphFromRaw, graphToRaw,
   graphLockIssue, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphRaw, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
+import { GRAPH_MUTATION_REJECTED_MESSAGE } from "./semanticGraphMutationError";
 
 export interface GraphPending {
   id: string; revision: number; sequence: number; submitted: SemanticGraphChange; input: GraphRaw;
-  outcome: "UNKNOWN" | "NOT_SENT"; diagnostic: string | null;
+  outcome: "UNKNOWN" | "NOT_SENT" | "REJECTED"; diagnostic: string | null;
 }
 export interface GraphDraft {
   schema: "motionwright.semantic-graph-draft/1";
@@ -152,6 +153,16 @@ export async function prepareGraphSubmission(draft: GraphDraft, project: Project
 export function failGraphSubmission(draft: GraphDraft, id: string, diagnostic: string, notSent = false): GraphDraft {
   return draft.pending?.id === id ? { ...draft, pending: { ...draft.pending, diagnostic, outcome: notSent ? "NOT_SENT" : "UNKNOWN" } } : draft;
 }
+/** Only the original invocation's validated same-key known failure may call this.
+ * Stored author copies never preserve this live rejection authority on restore. */
+export function rejectGraphSubmission(draft: GraphDraft, id: string): GraphDraft {
+  return draft.pending?.id === id ? { ...draft, pending: { ...draft.pending,
+    outcome: "REJECTED", diagnostic: GRAPH_MUTATION_REJECTED_MESSAGE } } : draft;
+}
+function restoreGraphPending(pending: GraphPending | null): GraphPending | null {
+  return pending ? { ...clone(pending), outcome: "UNKNOWN",
+    diagnostic: pending.outcome === "REJECTED" ? null : pending.diagnostic } : null;
+}
 export function submittedGraphMatches(project: Project, change: SemanticGraphChange): boolean {
   if (change.type === "remove_semantic_graph") return !semanticGraphs(project).some(item => item.id === change.graph_id);
   return graphSame(semanticGraphs(project).find(item => item.id === change.graph.id), change.graph);
@@ -255,7 +266,7 @@ function cleanGraphDraft(value: unknown, scope: string, restored: boolean): Grap
   if (value.pending !== null) {
     graphExact(value.pending, ["id", "revision", "sequence", "submitted", "input", "outcome", "diagnostic"], "Graph pending comparison"); const p = value.pending;
     if (!graphUuid(p.id) || !integer(p.revision) || p.revision !== value.baseRevision || !integer(p.sequence) || p.sequence > (value.sequence as number)
-      || !["UNKNOWN", "NOT_SENT"].includes(String(p.outcome)) || (p.diagnostic !== null && typeof p.diagnostic !== "string")) error("Unreadable Graph pending comparison.");
+      || !["UNKNOWN", "NOT_SENT", "REJECTED"].includes(String(p.outcome)) || (p.diagnostic !== null && typeof p.diagnostic !== "string")) error("Unreadable Graph pending comparison.");
     validateGraphRaw(p.input); if (p.input.id !== value.graphId || p.input.scene_id !== value.sceneId) error("Foreign pending Graph input.");
     if (!graphRecord(p.submitted)) error("Unreadable submitted Graph change."); const submitted = p.submitted as Record<string, unknown>;
     if (submitted.type === "upsert_semantic_graph") { graphExact(submitted, ["type", "graph"], "Submitted Graph"); validateSemanticGraphShape(submitted.graph); if (submitted.graph.id !== value.graphId || submitted.graph.scene_id !== value.sceneId || submitted.graph.authorship.source_snapshot.revision !== p.revision) error("Foreign submitted Graph comparison."); }
@@ -263,7 +274,8 @@ function cleanGraphDraft(value: unknown, scope: string, restored: boolean): Grap
     else error("Unsupported submitted Graph change.");
     const stamp = submitted.type === "upsert_semantic_graph" ? (submitted.graph as SemanticGraph).authorship.source_snapshot : submitted.source_snapshot;
     if (!graphRecord(stamp) || stamp.project_id !== (parts as string[])[0] || stamp.generation !== (parts as string[])[1] || stamp.branch_id !== (parts as string[])[2]) error("The pending Graph comparison belongs to another source.");
-    pending = { ...(clone(p) as unknown as GraphPending), outcome: restored ? "UNKNOWN" : p.outcome as GraphPending["outcome"] };
+    pending = clone(p) as unknown as GraphPending;
+    if (restored) pending = restoreGraphPending(pending);
   }
   return { ...(clone(value) as unknown as GraphDraft), pending };
 }
@@ -310,7 +322,7 @@ export function recoverGraphRead(current: GraphDraft, recovered: GraphDraft, edi
   if (current.pending && !graphSame(attempt(current.pending), attempt(recovered.pending)))
     error("Another unconfirmed Graph operation is already retained.");
   const paths = [...new Set(editedPaths)];
-  if (!paths.length) return { ...clone(recovered), pending: recovered.pending ? { ...clone(recovered.pending), outcome: "UNKNOWN" } : null };
+  if (!paths.length) return { ...clone(recovered), pending: restoreGraphPending(recovered.pending) };
   const sequence = Math.max(current.sequence, recovered.sequence) + 1;
   if (!integer(sequence)) error("Graph edit sequence exhausted; preserve this input before continuing.");
   const overlay = (target: unknown, source: unknown, parts: string[]): unknown => {
@@ -349,7 +361,7 @@ export function recoverGraphRead(current: GraphDraft, recovered: GraphDraft, edi
   }
   validateGraphRaw(input);
   return { ...clone(recovered), input, sequence, edited,
-    pending: recovered.pending ? { ...clone(recovered.pending), outcome: "UNKNOWN" } : null };
+    pending: restoreGraphPending(recovered.pending) };
 }
 export function encodeGraphCopy(copy: GraphCopy): string { const raw = JSON.stringify(copy); decodeGraphCopy(raw, copy.scope, copy.writerId, false); return raw; }
 export function graphDownload(draft: GraphDraft): string { return JSON.stringify({ schema: "motionwright.semantic-graph-author-file/1", exportedAt: Date.now(), draft: cleanGraphDraft(draft, draft.scope, false) }, null, 2); }
@@ -359,7 +371,7 @@ export function writeGraphCopy(storage: GraphStorage, pointers: Pick<Storage, "g
     if (storage.getItem(key) !== custody.expectedRaw) error("Another runtime changed the Graph copy. Earlier bytes were retained."); };
   check(); let raw = encodeGraphCopy({ schema: "motionwright.semantic-graph-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft });
   // Confirming identical input must preserve its original bytes, including a
-  // live caller's NOT_SENT. Recovery normalization belongs to recovery reads.
+  // live caller's NOT_SENT/REJECTED. Recovery normalization belongs to recovery reads.
   if (custody.expectedRaw !== null && graphSame(decodeGraphCopy(custody.expectedRaw, draft.scope, custody.writerId, false).draft, draft)) raw = custody.expectedRaw;
   let total = size(key) + size(raw), count = 1;
   for (let index = 0; index < storage.length; index++) { const other = storage.key(index); if (!other?.startsWith(GRAPH_RECOVERY_PREFIX) || other === key) continue; total += size(other) + size(storage.getItem(other) ?? ""); count++; }

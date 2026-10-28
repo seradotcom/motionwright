@@ -13,6 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
+import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError";
 import type { FileImportInput, FileImportReceipt, PreparedFileImport } from "../../src/fileImport";
 import type {
   StudioBootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
@@ -54,7 +55,7 @@ function projectionFailure(command: string, value: unknown): value is ServicePro
 
 export type ServiceRpcResponse<T = unknown> =
   | { id: RpcId; ok: true; result: T }
-  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure };
+  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure | GraphMutationError };
 
 export interface ServiceStartup extends StudioBootstrap {
   test_transport: "service-test-jsonl";
@@ -75,6 +76,8 @@ export interface ServiceStartup extends StudioBootstrap {
 export interface ServiceBootstrap extends ServiceStartup { project: Project }
 
 export interface ScopedChangeServiceOptions {
+  /** Absolute source-built JSONL executable; retained by peers, not an authority claim. */
+  binaryPath?: string;
   /** Existing or new absolute test SQLite path; never deleted by this helper. */
   databasePath?: string;
   timeoutMs?: number;
@@ -91,8 +94,23 @@ export interface ServiceTranscriptEntry {
   payload: ServiceRpcRequest | ServiceRpcResponse;
 }
 
+interface PendingGraphMutation {
+  requestId: string;
+  changeType: "upsert_semantic_graph" | "remove_semantic_graph";
+}
+function serializedGraphMutation(request: ServiceRpcRequest): Readonly<PendingGraphMutation> | null {
+  if (request.command !== "apply_change") return null;
+  const input = request.args?.request;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const value = input as Record<string, unknown>, change = value.change;
+  if (typeof value.request_id !== "string" || typeof change !== "object" || change === null || Array.isArray(change)) return null;
+  const type = (change as Record<string, unknown>).type;
+  return type === "upsert_semantic_graph" || type === "remove_semantic_graph"
+    ? Object.freeze({ requestId: value.request_id, changeType: type }) : null;
+}
 interface PendingRequest {
   command: string;
+  graphMutation: Readonly<PendingGraphMutation> | null;
   resolve: (response: ServiceRpcResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -214,9 +232,9 @@ export class ScopedChangeService {
   }
 
   static async create(options: ScopedChangeServiceOptions = {}): Promise<ScopedChangeService> {
-    const configured = process.env.MOTIONWRIGHT_SERVICE_TEST_BIN;
+    const configured = options.binaryPath ?? process.env.MOTIONWRIGHT_SERVICE_TEST_BIN;
     if (!configured?.trim() || !isAbsolute(configured)) {
-      throw new Error("Set MOTIONWRIGHT_SERVICE_TEST_BIN to the absolute path of the built studio_review_session executable; no service fixture fallback is available");
+      throw new Error("Set binaryPath or MOTIONWRIGHT_SERVICE_TEST_BIN to the absolute path of the source-built JSONL test executable; no service fixture fallback is available");
     }
     if (options.databasePath && !isAbsolute(options.databasePath)) {
       throw new Error("databasePath must identify an absolute, isolated test SQLite file");
@@ -276,11 +294,13 @@ export class ScopedChangeService {
       }
       const key = JSON.stringify(response.id);
       const pending = this.pending.get(key);
-      // Structured failures require this exact still-pending projection command.
-      // Legacy strings, late legacy responses and lifecycle custody keep their
-      // existing behavior; unrecognized objects are terminal protocol failures.
+      // Structured failures require the exact still-pending command. Graph
+      // failures additionally bind to the original serialized Graph key/type.
+      // Legacy strings retain their behavior; unrecognized objects fail closed.
       if (response.ok ? !("result" in response)
-        : !(typeof response.error === "string" || (pending && projectionFailure(pending.command, response.error)))) {
+        : !(typeof response.error === "string" || (pending && projectionFailure(pending.command, response.error))
+          || (pending?.command === "apply_change" && pending.graphMutation
+            && decodeGraphMutationError(response.error, pending.graphMutation.requestId)))) {
         throw new Error("Response lacks its declared result/error payload");
       }
       this.transcript.push({ at: new Date().toISOString(), processId: child.pid, direction: "response", payload: response });
@@ -375,8 +395,10 @@ export class ScopedChangeService {
     const key = JSON.stringify(id);
     if (this.usedIds.has(key)) throw new Error(`RPC id ${key} was already used by this process; use another correlation id`);
     const wire = JSON.stringify({ id, command: request.command, args: request.args ?? {} });
+    const serialized = JSON.parse(wire) as ServiceRpcRequest;
+    const graphMutation = serializedGraphMutation(serialized);
     this.usedIds.add(key);
-    this.transcript.push({ at: new Date().toISOString(), processId: child.pid, direction: "request", payload: JSON.parse(wire) as ServiceRpcRequest });
+    this.transcript.push({ at: new Date().toISOString(), processId: child.pid, direction: "request", payload: serialized });
     return new Promise<ServiceRpcResponse<T>>((resolveResponse, rejectResponse) => {
       const timer = setTimeout(() => {
         this.taint("request_timeout", `StudioService ${request.command} (id ${key}) timed out after ${this.timeoutMs} ms; its outcome is unconfirmed`, child);
@@ -385,7 +407,8 @@ export class ScopedChangeService {
         rejectResponse(this.failure(`StudioService ${request.command} (id ${key}) timed out after ${this.timeoutMs} ms; the request was not retried and may already have committed`));
       }, this.timeoutMs);
       this.pending.set(key, {
-        command: request.command,
+        command: serialized.command,
+        graphMutation,
         resolve: response => resolveResponse(response as ServiceRpcResponse<T>),
         reject: rejectResponse,
         timer,
@@ -555,7 +578,7 @@ export class ScopedChangeService {
 
   /** An independent process and grant registry, sharing only the SQLite/CAS. */
   peer(): Promise<ScopedChangeService> {
-    return ScopedChangeService.create({ databasePath: this.databasePath, timeoutMs: this.timeoutMs,
+    return ScopedChangeService.create({ binaryPath: this.binaryPath, databasePath: this.databasePath, timeoutMs: this.timeoutMs,
       seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture });
   }
 

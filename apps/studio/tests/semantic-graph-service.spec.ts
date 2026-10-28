@@ -104,6 +104,12 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
     };
     await field(page, "Vertex 1 label").fill("Committed once"); await button(page, "Save semantic Graph").click(); await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
     latest = await service.project(initial.id); expect(latest.revision).toBe(initial.revision + 1); expect(graphRequests(service)).toHaveLength(1);
+    const sent = (graphRequests(service)[0].payload as { args: { request: { request_id: string } } }).args.request;
+    const retainedKeys = await page.evaluate(() => Object.keys(localStorage)
+      .filter(key => key.startsWith("motionwright.semantic-graph-recovery.v1:"))
+      .map(key => (JSON.parse(localStorage.getItem(key)!) as { draft: { pending?: { id: string } | null } }).draft.pending?.id)
+      .filter((key): key is string => typeof key === "string"));
+    expect(retainedKeys).toEqual([sent.request_id]);
     await field(page, "Vertex 1 label").fill("New human intention after lost reply"); await page.reload(); await open(page, setup.sceneId);
     await expect(field(page, "Vertex 1 label")).toHaveValue("New human intention after lost reply"); await expect(button(page, "Save Graph changes")).toBeDisabled(); expect(graphRequests(service)).toHaveLength(1);
     await button(page, "Inspect saved Graph outcome").click(); await button(page, "Continue Graph as a new reviewed intention").click(); expect(graphRequests(service)).toHaveLength(1);

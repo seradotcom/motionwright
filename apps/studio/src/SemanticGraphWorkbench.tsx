@@ -5,14 +5,16 @@ import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime
   graphSame, graphSourceSnapshot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
-  forkGraphCopy, graphDraftScope, graphDownload, graphHasWork, graphOutcomeMatches, graphUnconfirmed,
+  forkGraphCopy, graphDraftScope, graphDownload, graphHasWork, graphOutcomeMatches, graphUnconfirmed, rejectGraphSubmission,
   inspectGraphOutcome, mergeGraphDraft, prepareGraphSubmission, readGraphCopies, readGraphRecoverySource, reconcileGraphDraft, recoverGraphRead, releaseGraphOutcome,
   reviewGraphDraft, writeGraphCopy, GRAPH_RECOVERY_PREFIX } from "./semanticGraphDraft";
 import type { GraphCustody, GraphDraft, GraphOutcomeReview, GraphOutcomeTransport, GraphRecoveryEntry, GraphRecoveryObservation } from "./semanticGraphDraft";
+import { settleGraphMutation, unknownGraphMutationFailure } from "./semanticGraphMutationError";
+import type { GraphMutationFailure } from "./semanticGraphMutationError";
 
 export interface SemanticGraphWorkbenchProps {
   project: Project; scene: Scene | null; displayProfile: DeliverableProfile | null; busy: boolean;
-  commit: (change: SemanticGraphChange) => Promise<Project>;
+  commit: (change: SemanticGraphChange, requestId: string) => Promise<Project>;
   /** Actual service read model through the existing transport; null means unsupported. */
   readContext: ((project: Project, sceneId: string, profileId: string) => Promise<GraphAuthoringContext>) | null;
   outcomeTransport: GraphOutcomeTransport;
@@ -172,18 +174,33 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } catch (reason) { session.error = message(reason); if (session.draft.pending?.id === id) session.draft = failGraphSubmission(session.draft, id, message(reason), true); return; }
     finally { session.preparing = false; notify(session); }
     session.inFlight = true; notify(session);
-    try {
-      const receipt = await current.current.commit(prepared.change);
+    const retainFailure = (failure: GraphMutationFailure) => {
       if (session.draft.pending?.id !== id) return;
-      const next = acknowledgeGraphDraft(session.draft, id, receipt);
-      session.observedAck = { id, receipt: clone(receipt) };
-      const custody = forkGraphCopy(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
-      session.custody = custody; session.draft = next; session.observedAck = null; session.backupError = null;
-      session.notice = "Saved Graph at r" + receipt.revision + "." + (Object.keys(next.edited).length ? " Later author input remains pending." : ""); copies(session);
-    } catch (reason) {
-      session.error = message(reason);
-      if (session.observedAck) session.backupError = "The original reply was observed, but its local custody transfer was not confirmed. Saving remains blocked; retain both copies and inspect the saved source.";
-      else { session.draft = failGraphSubmission(session.draft, id, message(reason)); backup(session); }
+      // An already-observed ACK cannot be turned into a rejected operation by
+      // a later local validation/custody exception.
+      if (session.observedAck) {
+        session.error = unknownGraphMutationFailure().diagnostic;
+        session.backupError = "The original reply was observed, but its local custody transfer was not confirmed. Saving remains blocked; retain both copies and inspect the saved source.";
+      } else {
+        session.error = failure.diagnostic;
+        session.draft = failure.outcome === "REJECTED" ? rejectGraphSubmission(session.draft, id)
+          : failGraphSubmission(session.draft, id, failure.diagnostic);
+        backup(session);
+      }
+    };
+    try {
+      const result = await settleGraphMutation(current.current.commit(prepared.change, id), id, receipt => {
+        if (session.draft.pending?.id !== id) return;
+        const next = acknowledgeGraphDraft(session.draft, id, receipt);
+        session.observedAck = { id, receipt: clone(receipt) };
+        const custody = forkGraphCopy(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
+        session.custody = custody; session.draft = next; session.observedAck = null; session.backupError = null;
+        session.notice = "Saved Graph at r" + receipt.revision + "." + (Object.keys(next.edited).length ? " Later author input remains pending." : ""); copies(session);
+      });
+      if (!result.ok) retainFailure(result.failure);
+    } catch {
+      // A synchronous callback/transport failure supplies no proven outcome.
+      retainFailure(unknownGraphMutationFailure());
     } finally { session.inFlight = false; notify(session); }
   }
   async function readOutcome() {
@@ -360,7 +377,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
         {merge?.conflicts.map(conflict => <label className="production-field" key={conflict.path}><span>{conflict.path || "Graph identity"}</span><select aria-label={"Resolve Graph " + (conflict.path || "identity")} value={choices[conflict.path] ?? ""} onChange={e => setChoices(old => ({ ...old, [conflict.path]: e.target.value as "current" | "input" }))}><option value="">Choose explicitly</option><option value="input">Keep my input</option><option value="current">Use current saved value</option></select><small>Saved: {JSON.stringify(conflict.current)} · Input: {JSON.stringify(conflict.input)}</small></label>)}
         <button className="secondary-button" disabled={busy} onClick={reconcile}>Review current Graph and keep unrelated changes</button>
       </section>}
-      {pending && <section aria-label="Unconfirmed Graph submission"><h3>{graphUnconfirmed(draft) ? "Graph save outcome is unconfirmed" : "Graph change was not sent"}</h3>
+      {pending && <section aria-label="Unconfirmed Graph submission"><h3>{graphUnconfirmed(draft) ? "Graph save outcome is unconfirmed" : draft.pending?.outcome === "REJECTED" ? "Graph change was rejected" : "Graph change was not sent"}</h3>
         <p>The original attempt and later input are retained. A matching saved value or history entry does not acknowledge the original Promise.</p>
         <button className="secondary-button" disabled={busy} onClick={() => void refresh()}>Refresh saved Project</button>
         <button className="secondary-button" disabled={busy || reviewing} onClick={() => void readOutcome()}>Inspect saved Graph outcome</button>

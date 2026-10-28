@@ -5,7 +5,7 @@ import { resolveTimelineSelection, timelineSelectionScope, type TimelineSelectio
 import { timelineMarkerTime } from "./timelineMarkerTime";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
-import { graphReviewAnchor, graphSame } from "./semanticGraph";
+import { graphReviewAnchor, graphSame, type SemanticGraphChange } from "./semanticGraph";
 import { readSemanticGraphContext } from "./semanticGraphService";
 import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
 import {
@@ -2129,6 +2129,10 @@ export default function App() {
   const commitCamera = useCallback((change: Change): Promise<Project> =>
     transactProject(source => applyChange(source, change)), [transactProject]);
 
+  // The Graph draft, grant and native request retain one application key.
+  const commitGraph = useCallback((change: SemanticGraphChange, requestId: string): Promise<Project> =>
+    transactProject(source => applyChange(source, change, requestId)), [transactProject]);
+
   // Read real selected source through the existing coordinator. A context read
   // can report blocked; it does not grant a write or acknowledge an UNKNOWN.
   const openGraphReview = useCallback((anchor: ReviewAnchor) => {
@@ -2329,6 +2333,7 @@ export default function App() {
       case "Production":
         return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
           sourceServices={{ saveSource: ingestNativeSource, refreshProject: refreshGraphProject }} graphServices={{
+          commit: commitGraph,
           readContext: readSemanticGraphContext,
           outcomeTransport: {
             readProject: async id => {

@@ -26,6 +26,7 @@ import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { assertWorkflowResponse, readWorkflowPayload, workflowCommand, workflowDiagnostic, workflowGrantToken, WorkflowNotDispatchedError } from "./workflowActionDraft";
 import { openProjectFromLibrary } from "./projectLibrary";
+import { graphUuid } from "./semanticGraph";
 import {
   importFileWithRetention, recoverFileImportWithRetention,
   type FileImportTransport, type RetainedFileImport, type NativeCapsuleSourceSpec7,
@@ -1188,8 +1189,15 @@ export async function previewBranchCombination(project: Project, input: BranchCo
   return invoke<unknown>("preview_branch_combination", { request });
 }
 
-export async function applyChange(project: Project, change: Change): Promise<Project> {
-  const requestId = crypto.randomUUID();
+export async function applyChange(project: Project, change: Change, retainedGraphRequestId?: string): Promise<Project> {
+  const graphChange = change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph";
+  // Graph persists its original application key before requesting a grant.
+  // Never replace that key during dispatch or recovery of an uncertain result.
+  if (graphChange && (!graphUuid(retainedGraphRequestId) || retainedGraphRequestId.length !== 36))
+    throw new Error("Retain the original Graph request identity before dispatch.");
+  if (!graphChange && retainedGraphRequestId !== undefined)
+    throw new Error("A retained Graph request identity cannot authorize another editor change.");
+  const requestId = retainedGraphRequestId ?? crypto.randomUUID();
   if (isTauri()) {
     const grant = await issueEffectGrant("project_edit", project, requestId);
     return invoke<Project>("apply_change", {
