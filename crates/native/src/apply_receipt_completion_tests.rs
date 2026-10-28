@@ -554,10 +554,30 @@ mod recovery_consumer_tests {
                     )
                 }
                 "contract" => {
-                    oracle.execute(
+                    // Inject a future-version corruption through this fixture
+                    // connection only; keep the production CHECK unchanged.
+                    oracle
+                        .execute_batch("PRAGMA ignore_check_constraints=ON")
+                        .unwrap();
+                    assert_eq!(oracle.execute(
                         "UPDATE receipts SET apply_binding_version=2 WHERE project_id=?1 AND request_id='known-original'",
                         [f.base.id.to_string()],
-                    ).unwrap();
+                    ).unwrap(), 1);
+                    oracle
+                        .execute_batch("PRAGMA ignore_check_constraints=OFF")
+                        .unwrap();
+                    let checks_ignored: bool = oracle
+                        .pragma_query_value(None, "ignore_check_constraints", |row| row.get(0))
+                        .unwrap();
+                    assert!(!checks_ignored);
+                    let injected_version: i64 = oracle
+                        .query_row(
+                            "SELECT apply_binding_version FROM receipts WHERE project_id=?1 AND request_id='known-original'",
+                            [f.base.id.to_string()],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(injected_version, 2);
                     (
                         ApplyResultObservation::Invalid {
                             reason: ApplyReceiptInvalid::UnsupportedContract,
