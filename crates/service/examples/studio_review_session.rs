@@ -1077,9 +1077,10 @@ mod graph_backend_tests {
                 serde_json::to_value(context_request(&project)).unwrap(),
             ));
             assert_eq!(response["ok"], true);
-            let context: GraphAuthoringContext =
-                serde_json::from_value(response["result"].clone()).unwrap();
-            assert_eq!(context.availability, GraphAvailability::Blocked);
+            assert_eq!(
+                response["result"]["availability"],
+                serde_json::to_value(GraphAvailability::Blocked).unwrap()
+            );
             assert!(session.graph_backend.is_none());
         }
         let change = Change::UpsertSemanticGraph {
