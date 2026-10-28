@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: authoring-drafts
-        options: [studio-service-68, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source]
+        options: [studio-service-68, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source, branch-combination]
 permissions:
   contents: read
 concurrency:
