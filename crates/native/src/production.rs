@@ -6,7 +6,10 @@ use motionwright_domain::{
     AudioCodec, OutputColorSpace, OutputContainer, RevisionStamp, VideoCodec,
 };
 use motionwright_manim_profile::ManimRenderProfile;
-use motionwright_service::StudioService;
+use motionwright_service::{
+    MAX_BRAND_FONT_BYTES, RootBudgetUnits, RootDispatchBudgetInput, RootDispatchBudgetOutcome,
+    RootOperationBudget, RootOperationBudgetInput, StudioService,
+};
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput};
 use semwright_media_time::Rate;
 use semwright_native_sdk::{
@@ -110,6 +113,13 @@ const MOTION_RENDER_TIMEOUT_MS: u64 = 300_000;
 const MOTION_RENDER_POLL_DEADLINE_SECS: u64 = 330;
 const MOTION_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MOTION_PLAN_MAX_OPERATIONS: u32 = 4_096;
+// Match the independent frame byte ceiling used by native source-window
+// verification. This is a maximal reserved output, not measured disk usage.
+const MOTION_ROOT_FRAME_RESERVE_MIN_BYTES: u64 = 24 * 1024 * 1024;
+// One full scene has at most two selected managed font imports, optional
+// project creation, one apply and one render start. The remaining allowance
+// covers bounded immutable plan/status/result/verify observations.
+const MOTION_ROOT_NON_POLL_ATTEMPTS_PER_SEGMENT: u64 = 16;
 const MLT_MEZZANINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MLT_MASTER_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const BLENDER_GLTF_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -2038,6 +2048,92 @@ fn require_no_unresolved_scene_history(
     Ok(())
 }
 
+// A native accounting root is neither a Provider grant nor an authenticated
+// principal. This private scope is derived solely from the original committed
+// project/Film, then every native child must debit SQLite before dispatch.
+#[derive(Debug, Clone)]
+struct MotionRootBudgetScope {
+    root_id: Uuid,
+    max_render_frames: u64,
+    max_frame_bytes: u64,
+}
+
+impl MotionRootBudgetScope {
+    fn units_for(
+        &self,
+        command: &str,
+        args: &Value,
+        mutation: bool,
+    ) -> NativeResult<RootBudgetUnits> {
+        if !MOTION_CANVAS_COMMANDS.contains(&command) {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "A retained Motion Canvas root cannot dispatch another provider",
+            ));
+        }
+        // SQLite schema6 requires a debit even for a new read-only native
+        // observation once the project has a root. Only effect-bearing calls
+        // additionally reserve frames and output bytes.
+        let mut units = RootBudgetUnits {
+            attempts: 1,
+            model_calls: 0,
+            render_frames: 0,
+            output_bytes: 0,
+        };
+        match command {
+            "driver.motion-canvas.render.start" => {
+                if !mutation {
+                    return Err(invalid("Render start requires a mutating SDK permit"));
+                }
+                let first = args
+                    .pointer("/profile/first_frame")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| invalid("Native render start has no first frame"))?;
+                let end = args
+                    .pointer("/profile/end_frame_exclusive")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| invalid("Native render start has no exclusive end"))?;
+                if first != 0 || end <= first || end > self.max_render_frames {
+                    return Err(invalid("Native render starts outside retained root frames"));
+                }
+                units.render_frames = end - first;
+                units.output_bytes = units
+                    .render_frames
+                    .checked_mul(self.max_frame_bytes)
+                    .ok_or_else(|| invalid("Native frame byte reservation overflow"))?;
+            }
+            "driver.motion-canvas.asset.import" => {
+                if !mutation {
+                    return Err(invalid(
+                        "Managed font import requires a mutating SDK permit",
+                    ));
+                }
+                // Source admission already bounds each verified font blob.
+                units.output_bytes = MAX_BRAND_FONT_BYTES;
+            }
+            "driver.motion-canvas.project.create"
+            | "driver.motion-canvas.composition.apply"
+            | "driver.motion-canvas.render.cancel" => {
+                if !mutation {
+                    return Err(invalid(
+                        "Native source mutation requires a mutating SDK permit",
+                    ));
+                }
+                // Reserve nonzero native source/output capacity before the
+                // mutation. Actual output readback still requires G2.
+                units.output_bytes = MOTION_ROOT_FRAME_RESERVE_MIN_BYTES;
+            }
+            _ if mutation => {
+                return Err(invalid(
+                    "Unclassified Motion Canvas effect has no root debit",
+                ));
+            }
+            _ => {}
+        }
+        Ok(units)
+    }
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -2046,6 +2142,14 @@ pub struct ProductionCoordinator {
     brand_font_media_root: Option<PathBuf>,
     retained_brand_font_root: Option<std::sync::Arc<brand_font_staging::RetainedFontRoot>>,
     scene_boundary_scope: Option<std::sync::Arc<crate::native_scene_boundary::ExecutionScope>>,
+    // Clones share one private identity cache. SQLite, not this process memory,
+    // is authoritative for cumulative debits and spent UNKNOWN capacity.
+    // Pair the retained operation with its original Film-options digest.
+    // A fresh process cannot silently reuse or remint the persisted root.
+    motion_budget_roots: std::sync::Arc<
+        std::sync::Mutex<std::collections::BTreeMap<String, (RootOperationBudget, String)>>,
+    >,
+    active_motion_budget: Option<MotionRootBudgetScope>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -2069,6 +2173,10 @@ impl ProductionCoordinator {
             brand_font_media_root: None,
             retained_brand_font_root: None,
             scene_boundary_scope: None,
+            motion_budget_roots: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+            active_motion_budget: None,
             #[cfg(test)]
             before_dispatch_admission: None,
         })
@@ -2109,8 +2217,134 @@ impl ProductionCoordinator {
             options,
             scene_ids,
         )?;
+        // Admission to this private accounting identity must be bound to the
+        // original project connection before it can write a durable root.
+        // This does not replace genuine authenticated Host/SDK permission.
+        if self.client.connection().resource != project.resource_key() {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Native root provider binding differs from the original project",
+            ));
+        }
+        let _bound_connection = self.client.connection().identity()?;
+
+        // Replan from the exact committed project before constructing ANY
+        // Motion Canvas provider effect. No client JSON supplies root/limits.
+        let segments = plan_motion_canvas_segments(project, deliverable_id, options)?;
+        if segments.is_empty() {
+            return Err(invalid(
+                "Budgeted Motion Canvas root has no native segments",
+            ));
+        }
+        let segment_count = u64::try_from(segments.len())
+            .map_err(|_| invalid("Too many Motion Canvas budget segments"))?;
+        let mut total_frames = 0_u64;
+        let mut frame_reservation = MOTION_ROOT_FRAME_RESERVE_MIN_BYTES;
+        for segment in &segments {
+            if segment.frame_count == 0
+                || segment.film.output.width == 0
+                || segment.film.output.height == 0
+            {
+                return Err(invalid("Budgeted Motion Canvas Film is empty"));
+            }
+            total_frames = total_frames
+                .checked_add(segment.frame_count)
+                .ok_or_else(|| invalid("Motion Canvas cumulative frame overflow"))?;
+            let frame_pixels = u64::from(segment.film.output.width)
+                .checked_mul(u64::from(segment.film.output.height))
+                .ok_or_else(|| invalid("Motion Canvas output pixel count overflow"))?;
+            let frame_rgba = frame_pixels
+                .checked_mul(4)
+                .and_then(|count| count.checked_add(1_048_576))
+                .ok_or_else(|| invalid("Motion Canvas frame reservation overflow"))?;
+            frame_reservation = frame_reservation.max(frame_rgba);
+        }
+        // Polling is bounded by this producer's real timeout and interval.
+        let bounded_polls = MOTION_RENDER_POLL_DEADLINE_SECS
+            .checked_mul(1_000)
+            .and_then(|duration| duration.checked_div(MOTION_RENDER_POLL_INTERVAL_MS))
+            .and_then(|polls| polls.checked_add(MOTION_ROOT_NON_POLL_ATTEMPTS_PER_SEGMENT))
+            .ok_or_else(|| invalid("Motion Canvas poll budget overflow"))?;
+        let attempts = segment_count
+            .checked_mul(bounded_polls)
+            .ok_or_else(|| invalid("Motion Canvas attempt budget overflow"))?;
+        let render_bytes = total_frames
+            .checked_mul(frame_reservation)
+            .ok_or_else(|| invalid("Motion Canvas render budget byte overflow"))?;
+        let font_bytes = segment_count
+            .checked_mul(2)
+            .and_then(|count| count.checked_mul(MAX_BRAND_FONT_BYTES))
+            .ok_or_else(|| invalid("Motion Canvas font budget overflow"))?;
+        let source_bytes = segment_count
+            .checked_mul(3)
+            .and_then(|stages| stages.checked_mul(MOTION_ROOT_FRAME_RESERVE_MIN_BYTES))
+            .ok_or_else(|| invalid("Motion Canvas source mutation budget overflow"))?;
+        let output_bytes = render_bytes
+            .checked_add(font_bytes)
+            .and_then(|bytes| bytes.checked_add(source_bytes))
+            .ok_or_else(|| invalid("Motion Canvas cumulative byte budget overflow"))?;
+        let limits = RootBudgetUnits {
+            attempts,
+            model_calls: 0,
+            render_frames: total_frames,
+            output_bytes,
+        };
+        // The operation key deliberately excludes per-stage and caller request
+        // IDs: changing a retry label cannot mint a new root for this revision.
+        let operation_key = format!(
+            "motion-canvas/{}/{}/{}/{}",
+            project.id, project.generation, project.revision, deliverable_id
+        );
+        // Do not vary the durable root key with input options: different
+        // options must not mint fresh budget for the same project revision.
+        let source_digest = request_digest("motion-canvas.original-film-options", &json!(options))?;
+        let mut cache = self
+            .motion_budget_roots
+            .lock()
+            .map_err(|_| backend("Native budget root ownership is unavailable"))?;
+        let retained = if let Some((previous, bound_source)) = cache.get(&operation_key) {
+            if bound_source != &source_digest {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Original Motion Canvas Film options differ from retained budget source",
+                ));
+            }
+            self.service
+                .root_operation_budget(project.id, previous.root_id)
+                .map_err(storage_error)?
+        } else {
+            let created = self
+                .service
+                .create_root_operation_budget(RootOperationBudgetInput {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    operation_key: operation_key.clone(),
+                    limits,
+                })
+                .map_err(storage_error)?;
+            cache.insert(operation_key.clone(), (created.clone(), source_digest));
+            created
+        };
+        if retained.operation_key != operation_key
+            || retained.generation != project.generation
+            || retained.revision != project.revision
+            || retained.limits != limits
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "Native root no longer identifies the same retained Film budget",
+            ));
+        }
+        drop(cache);
+
         let mut scoped = self.clone();
         scoped.scene_boundary_scope = Some(std::sync::Arc::new(scope));
+        scoped.active_motion_budget = Some(MotionRootBudgetScope {
+            root_id: retained.root_id,
+            max_render_frames: total_frames,
+            max_frame_bytes: frame_reservation,
+        });
         Ok(scoped)
     }
 
@@ -4107,22 +4341,57 @@ impl ProductionCoordinator {
             self.receipt_custody
                 .reserve(mutation, request_id, command, job_ref.as_deref())?;
 
-        self.service
-            .append_production_receipt(ProductionReceiptInput {
-                project_id,
-                generation: project.generation,
-                revision: project.revision,
-                request_id: request_id.into(),
-                request_sha256: digest.clone(),
-                command: command.into(),
-                stage: "dispatching".into(),
-                payload: with_context(json!({
-                    "mutation": mutation,
-                    "connection": self.client.connection().identity()?,
-                    "job_ref": job_ref.clone()
-                })),
-            })
-            .map_err(storage_error)?;
+        let intent = ProductionReceiptInput {
+            project_id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: request_id.into(),
+            request_sha256: digest.clone(),
+            command: command.into(),
+            stage: "dispatching".into(),
+            payload: with_context(json!({
+                "mutation": mutation,
+                "connection": self.client.connection().identity()?,
+                "job_ref": job_ref.clone()
+            })),
+        };
+        if let Some(root) = &self.active_motion_budget {
+            // One SQLite IMMEDIATE transaction writes both the debit and
+            // original dispatching receipt before ANY Driver SDK invocation.
+            // Failed, interrupted and UNKNOWN attempts do not refund credit.
+            let units = root.units_for(command, &args, mutation)?;
+            match self
+                .service
+                .admit_root_operation_dispatch(RootDispatchBudgetInput {
+                    root_id: root.root_id,
+                    receipt: intent,
+                    units,
+                })
+                .map_err(storage_error)?
+            {
+                RootDispatchBudgetOutcome::Admitted(_) => {}
+                RootDispatchBudgetOutcome::AlreadyCompleted(prior) => {
+                    let previous_result =
+                        prior.payload.get("result").cloned().ok_or_else(|| {
+                            backend("Stored native replay has no original result")
+                        })?;
+                    return Ok(ReceiptExecutionOutcome {
+                        origin: ReceiptExecutionOrigin::ReceiptReplay(json!({
+                            "replayed": true,
+                            "result": previous_result,
+                            "receipt": prior
+                        })),
+                    });
+                }
+            }
+        } else {
+            // Existing unscoped read/legacy paths remain subject to the
+            // SQLite root trigger. Once a project adopts a root, no uncharged
+            // alternate producer can append a fresh dispatching receipt.
+            self.service
+                .append_production_receipt(intent)
+                .map_err(storage_error)?;
+        }
 
         let dispatched = match media_binding {
             Some(binding) => {
@@ -4259,6 +4528,105 @@ impl ProductionCoordinator {
                 Err(error)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod native_motion_root_budget_tests {
+    use super::*;
+
+    fn scope() -> MotionRootBudgetScope {
+        MotionRootBudgetScope {
+            root_id: Uuid::nil(),
+            max_render_frames: 24,
+            max_frame_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn read_only_children_consume_one_durable_attempt_unit() {
+        let units = scope()
+            .units_for(
+                "driver.motion-canvas.render.status",
+                &json!({"job_ref": "scoped-fixture"}),
+                false,
+            )
+            .unwrap();
+        assert_eq!(units.attempts, 1);
+        assert_eq!(units.model_calls, 0);
+        assert_eq!(units.render_frames, 0);
+        assert_eq!(units.output_bytes, 0);
+    }
+
+    #[test]
+    fn render_start_reserves_original_frames_and_bytes() {
+        let units = scope()
+            .units_for(
+                "driver.motion-canvas.render.start",
+                &json!({"profile":{"first_frame":0,"end_frame_exclusive":12}}),
+                true,
+            )
+            .unwrap();
+        assert_eq!(units.attempts, 1);
+        assert_eq!(units.render_frames, 12);
+        assert_eq!(units.output_bytes, 12 * 1024);
+        assert_eq!(units.model_calls, 0);
+    }
+
+    #[test]
+    fn font_import_reserves_owner_verified_source_ceiling() {
+        let units = scope()
+            .units_for("driver.motion-canvas.asset.import", &json!({}), true)
+            .unwrap();
+        assert_eq!(units.attempts, 1);
+        assert_eq!(units.output_bytes, MAX_BRAND_FONT_BYTES);
+        assert_eq!(units.render_frames, 0);
+    }
+
+    #[test]
+    fn project_source_mutations_consume_reserved_output_bytes() {
+        for command in [
+            "driver.motion-canvas.project.create",
+            "driver.motion-canvas.composition.apply",
+            "driver.motion-canvas.render.cancel",
+        ] {
+            let units = scope().units_for(command, &json!({}), true).unwrap();
+            assert_eq!(units.attempts, 1);
+            assert_eq!(units.output_bytes, MOTION_ROOT_FRAME_RESERVE_MIN_BYTES);
+            assert_eq!(units.render_frames, 0);
+        }
+    }
+
+    #[test]
+    fn over_budget_or_undocumented_effect_is_denied_before_native_dispatch() {
+        assert!(
+            scope()
+                .units_for(
+                    "driver.motion-canvas.render.start",
+                    &json!({"profile":{"first_frame":0,"end_frame_exclusive":25}}),
+                    true,
+                )
+                .is_err()
+        );
+        assert!(
+            scope()
+                .units_for(
+                    "driver.motion-canvas.render.start",
+                    &json!({"profile":{"first_frame":0,"end_frame_exclusive":4}}),
+                    false,
+                )
+                .is_err()
+        );
+        assert!(
+            scope()
+                .units_for("driver.blender.object.create", &json!({}), true)
+                .is_err()
+        );
+        assert!(
+            scope()
+                .units_for("driver.motion-canvas.scene.unknown", &json!({}), true)
+                .is_err()
+        );
     }
 }
 
