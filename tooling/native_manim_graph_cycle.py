@@ -129,8 +129,90 @@ def new_phase_inputs(context, evidence, database, output_root, env, *, capture, 
             "saved_path": saved_path, "saved": saved, "input_path": None, "input_descriptor": None}
 
 
-def provider_manifest(prepared, paths, source_binary, *, digest, evidence):
+def graph_probe_configuration(runtime_manifest_path, sealed_tools, *, digest):
+    """Narrow the existing owner's real Manim profile for native Graph probes.
+
+    This runs during owner setup, before Host launch. No operation JSON may
+    choose a tool, pin, mount or resource allowance through this function.
+    """
+    original = read(runtime_manifest_path)
+    runtime = object_bytes(original)
+    require(runtime.get("id") == "manim-community"
+            and type(runtime.get("manifest_version")) is int and runtime["manifest_version"] == 1
+            and type(runtime.get("protocol")) is int and runtime["protocol"] == 8
+            and runtime.get("interfaces", {}).get("host_tools") is True
+            and runtime.get("network") is False
+            and runtime.get("nvidia_gpu", False) is False,
+            "graph_probe_original_runtime_profile")
+    mount_modes = {"manim-runtime": True, "manim-work": False, "fontconfig": True}
+    source_mounts = runtime.get("mounts")
+    require(type(source_mounts) is list and all(type(row) is dict for row in source_mounts),
+            "graph_probe_original_mount_roster")
+    for name, read_only in mount_modes.items():
+        rows = [row for row in source_mounts if row.get("root") == name]
+        require(len(rows) == 1 and rows[0].get("read_only") is read_only,
+                "graph_probe_original_mount_mode")
+    specifications = (
+        ("manim-runner", "manim-runner-root", ["python3", "ffmpeg"]),
+        ("python3", "python-root", []),
+        ("ffmpeg", "ffmpeg-root", []),
+    )
+    require(type(sealed_tools) is dict
+            and set(sealed_tools) == {row[0] for row in specifications},
+            "graph_probe_sealed_tool_paths")
+    source_tools = runtime.get("tools")
+    require(type(source_tools) is list and len(source_tools) == len(specifications)
+            and all(type(row) is dict for row in source_tools),
+            "graph_probe_original_tool_roster")
+    tools, identities = [], []
+    for name, root, dependencies in specifications:
+        rows = [row for row in source_tools if row.get("name") == name]
+        require(len(rows) == 1, "graph_probe_original_tool_duplicate")
+        row, path = rows[0], sealed_tools[name]
+        require(isinstance(path, Path) and path.is_absolute()
+                and path.is_file() and not path.is_symlink()
+                and path.resolve(strict=True) == path,
+                "graph_probe_original_tool_file")
+        observed = digest(path)
+        require(row.get("root") == root and type(row.get("sha256")) is str
+                and SHA.fullmatch(row["sha256"]) is not None
+                and observed == row["sha256"]
+                and row.get("dependencies") == dependencies
+                and row.get("system_config", []) == []
+                and row.get("nvidia_gpu", False) is False
+                and row.get("resources") is None,
+                "graph_probe_original_tool_binding")
+        delegated = list(mount_modes) if name == "manim-runner" else []
+        expected_source_mounts = ["manim-runtime", "manim-work", "manim-output", "fontconfig"] if delegated else []
+        require(row.get("mounts") == expected_source_mounts,
+                "graph_probe_original_tool_mounts")
+        tools.append({"root": root, "name": name, "sha256": observed,
+                      "mounts": delegated, "dependencies": dependencies})
+        identities.append({"name": name, "root": root, "sha256": observed,
+                           "original_path": str(path)})
+    resources = runtime.get("resources")
+    resource_keys = {"open_files", "processes", "cpu_seconds", "operation_cpu_seconds",
+                     "address_space_bytes", "file_size_bytes"}
+    require(type(resources) is dict and set(resources) == resource_keys
+            and all(type(value) is int and value >= 0 for value in resources.values()),
+            "graph_probe_original_resource_profile")
+    # The native child inherits the enclosing provider's resources. Reuse the
+    # selected Manim profile exactly; SDK per-tool overrides are Blender-only.
+    result = {
+        "mounts": [{"root": name, "read_only": mode} for name, mode in mount_modes.items()],
+        "tools": tools, "resources": copy.deepcopy(resources),
+        "runtime_manifest_sha256": sha(original), "sealed_tools": identities,
+    }
+    require(read(runtime_manifest_path) == original
+            and all(digest(sealed_tools[row["name"]]) == row["sha256"] for row in identities),
+            "graph_probe_original_configuration_changed")
+    return result
+
+
+def provider_manifest(prepared, paths, source_binary, *, digest, evidence,
+                      runtime_manifest_path, sealed_tools):
     """Describe the normal provider; a manifest is not an admission issuer."""
+    probe = graph_probe_configuration(runtime_manifest_path, sealed_tools, digest=digest)
     require(source_binary.is_absolute() and source_binary.resolve(strict=True) == source_binary
             and source_binary.is_file() and not source_binary.is_symlink(),
             "graph_normal_provider_original")
@@ -149,16 +231,15 @@ def provider_manifest(prepared, paths, source_binary, *, digest, evidence):
         "executable": str(target), "sha256": original_sha,
         "application": {"desktop_id": None, "process_names": [], "supported_versions": []},
         "transport": "stdio_v1",
-        "mounts": [{"root": "motionwright-data", "read_only": False, "execute": False}],
-        "system_config": [], "secrets": [], "tools": [], "network": False,
+        "mounts": [{"root": "motionwright-data", "read_only": False, "execute": False},
+                   *probe["mounts"]],
+        "system_config": [], "secrets": [], "tools": probe["tools"], "network": False,
         "nvidia_gpu": False, "loopback_port": None,
-        "resources": {"open_files": 128, "processes": 16, "cpu_seconds": 60,
-                      "operation_cpu_seconds": 0, "address_space_bytes": 536870912,
-                      "file_size_bytes": 67108864},
-        "request_timeout_ms": 15000,
+        "resources": probe["resources"],
+        "request_timeout_ms": 30000,
         "interfaces": {"dynamic_capabilities": False, "cooperative_cancellation": True,
                        "events": False, "progress": False, "artifacts": False, "health": True,
-                       "native_refs": True, "host_tools": False},
+                       "native_refs": True, "host_tools": True},
     }
     path = paths["config"] / "motionwright-driver.json"
     private_json(path, value)
@@ -166,6 +247,9 @@ def provider_manifest(prepared, paths, source_binary, *, digest, evidence):
         "application": "motionwright", "application_version": prepared["application_version"],
         "binary_sha256": original_sha, "manifest_sha256": sha(read(path)),
         "selected_database": str(paths["motionwright-data"] / "motionwright.sqlite3"),
+        "probe_runtime_manifest_sha256": probe["runtime_manifest_sha256"],
+        "probe_sealed_tools": probe["sealed_tools"],
+        "probe_resources_from_original_manim_manifest": probe["resources"],
         "serialized_authority_used": False,
     })
     return path

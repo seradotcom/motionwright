@@ -948,6 +948,12 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
             profile="graph" if graph else "editable" if editable else "camera",
         ) as camera_custody:
             runtime_inventory_sha256 = retain_runtime_inventory(evidence)
+            if graph:
+                from native_manim_graph_runtime_intake import prepare_graph_runtime
+                graph_runtime_intake_path = evidence / "graph-runtime-source-closure.json"
+                graph_runtime_intake = prepare_graph_runtime(
+                    ROOT, MANIM_RUNTIME, graph_runtime_intake_path,
+                )
             phase_root = root
             if source_cycle is not None:
                 phase_root = root / "edited1040"
@@ -1049,6 +1055,8 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     "runner_uid": os.geteuid(), "manim_version": MANIM_VERSION,
                     "source_lock_sha256": digest(ROOT / "SOURCE_LOCK.json"),
                     "runtime_inventory_sha256": runtime_inventory_sha256,
+                    "graph_runtime_source_closure_sha256": graph_runtime_intake["source_closure_sha256"],
+                    "graph_runtime_intake_receipt_sha256": digest(graph_runtime_intake_path),
                     "binaries": {name: digest(path) for name, path in {
                         "native_example": MW_EXAMPLE, "native_provider": MW_GRAPH_PROVIDER,
                         "driver": MW_DRIVER, "runner": MW_RUNNER,
@@ -1177,6 +1185,8 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                 from native_manim_graph_cycle import provider_manifest
                 graph_manifest = provider_manifest(
                     prepared_graph, paths, MW_GRAPH_PROVIDER, digest=digest, evidence=evidence,
+                    runtime_manifest_path=manifest_path,
+                    sealed_tools={"manim-runner": runner, "python3": PYTHON, "ffmpeg": FFMPEG},
                 )
                 driver_manifests.append(graph_manifest)
 

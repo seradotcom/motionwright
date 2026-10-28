@@ -168,6 +168,24 @@ def gather_snapshot(roots, *, preserve_partial=False):
                                          "followed_or_opened": False})
                         continue
                     if stat.S_ISDIR(observed.st_mode):
+                        # The closed Graph runner reserves this directory
+                        # before its first intent write. Preserve that observed
+                        # reservation even if a failure leaves it empty. Its
+                        # regular members are already captured by this same
+                        # recursive collector; no synthetic files or outcomes.
+                        relative = path.relative_to(root).as_posix()
+                        if label == "owner" and re.fullmatch(
+                                r"(?:g[1-4]/)?work/\.graph-text-probe-[0-9a-f]{64}", relative):
+                            require(path.resolve(strict=True) == path
+                                    and metadata_identity(path.lstat()) == metadata_identity(observed),
+                                    "snapshot_graph_probe_directory_changed")
+                            captured.append({"archive_path": name, "kind": "metadata-only-directory",
+                                             "mode": observed.st_mode, "device": observed.st_dev,
+                                             "inode": observed.st_ino, "uid": observed.st_uid,
+                                             "gid": observed.st_gid,
+                                             "scope": "observed-graph-probe-attempt-reservation",
+                                             "native_completion_claimed": False,
+                                             "automatic_retry": False})
                         continue
                     require(len(entries) < MAX_FILES, "snapshot_file_count")
                     data, observation = regular(path, MAX_FILE)
