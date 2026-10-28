@@ -106,7 +106,7 @@ class PublicIntakeTests(unittest.TestCase):
         tool = {**binary, "relative_path": "tools/original"}
         value = {
             "schema": intake.SCHEMA,
-            "context": {"source_sha": "a" * 40, "semwright_sha": actions.stages.SEMWRIGHT,
+            "context": {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
                         "run_id": "123", "run_attempt": "1", "scenario": actions.SCENARIO},
             "status": "RUNTIME_FINALIZED", "source_bindings_sha256": "2" * 64,
             "hyperframes_version": "0.8.181",

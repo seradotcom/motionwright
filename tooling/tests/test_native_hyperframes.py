@@ -1,7 +1,9 @@
-"""G0 contracts only: all synthetic originals are in memory; no CLI/render ran."""
+"""G0 contracts only: synthetic originals; no native CLI or render ran."""
 import copy
+import hashlib
 import json
 from pathlib import Path
+import tempfile
 import types
 import sys
 import unittest
@@ -11,12 +13,97 @@ import native_hyperframes_evidence as e
 import native_hyperframes_projection as p
 import native_hyperframes_e2e as controller
 from native_evidence_projection import project,SelectionError,_checked_spec
+from source_lock_admission import SourceAdmissionError
 
 PIN="9"*64
+SDK_FIXTURE_REVISION="b"*40
 GEN="00000000-0000-4000-8000-000000000002"
 PROJECT="00000000-0000-4000-8000-000000000001"
 PROFILE="00000000-0000-4000-8000-000000000003"
 def encoded(value):return (json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"))+"\n").encode()
+
+def source_lock_fixture(root, revision=SDK_FIXTURE_REVISION):
+    """Retained synthetic metadata for the real offline source-admission reader."""
+    repository = "https://github.com/seradotcom/semwright"
+    version = "0.0.0-fixture"
+    license_expression = "MIT OR Apache-2.0"
+    payloads = {
+        "Cargo.toml": (f'[workspace.package]\nversion = "{version}"\n'
+                       f'license = "{license_expression}"\n').encode(),
+        "LICENSE-MIT": b"G0 synthetic retained MIT license bytes\n",
+        "LICENSE-APACHE": b"G0 synthetic retained Apache license bytes\n",
+    }
+    records = []
+    for name, raw in payloads.items():
+        relative = "evidence/semwright/" + name
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        records.append({"upstream_path": name, "path": relative, "bytes": len(raw),
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "git_blob_sha1": hashlib.sha1(
+                            b"blob " + str(len(raw)).encode() + b"\0" + raw,
+                            usedforsecurity=False).hexdigest()})
+    evidence = encoded({"schema": "motionwright.source-evidence/1",
+                        "repository": repository, "revision": revision,
+                        "version": version, "license_expression": license_expression,
+                        "files": records})
+    evidence_path = "evidence/semwright/record.json"
+    (root / evidence_path).write_bytes(evidence)
+    lock = {"schema_version": 1, "dependencies": {"semwright": {
+        "repository": repository, "revision": revision, "version": version,
+        "license_observed": license_expression, "verification": {
+            "schema": "motionwright.source-verification/1", "status": "verified",
+            "repository": repository, "revision": revision,
+            "evidence": {"path": evidence_path,
+                         "sha256": hashlib.sha256(evidence).hexdigest()}}}}}
+    (root / "SOURCE_LOCK.json").write_bytes(encoded(lock))
+    return lock
+
+
+class SourceAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.lock = source_lock_fixture(self.root)
+        self.environment = {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ATTEMPT": "1",
+                            "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123"}
+        self.args = types.SimpleNamespace(source_root=self.root, source_sha="a" * 40,
+                                          sem_sha=SDK_FIXTURE_REVISION,
+                                          stage="prepare-original")
+
+    def test_selected_revision_follows_verified_source_lock(self):
+        for revision in (SDK_FIXTURE_REVISION, "c" * 40):
+            with self.subTest(revision=revision):
+                source_lock_fixture(self.root, revision)
+                self.assertEqual(controller.selected_semwright_revision(self.root), revision)
+
+    def assert_refused_before_stage(self, error, code):
+        with patch.dict(controller.os.environ, self.environment), \
+             patch.object(controller, "new_json") as write, \
+             patch.object(controller.Attempt, "command") as command, \
+             self.assertRaisesRegex(error, code):
+            controller.run(self.args)
+        write.assert_not_called()
+        command.assert_not_called()
+
+    def test_caller_sdk_must_equal_the_selected_revision_before_stage_intent(self):
+        self.args.sem_sha = "c" * 40
+        self.assert_refused_before_stage(e.HyperframesEvidenceRejected, "exact_build_sources")
+
+    def test_unverified_selected_sdk_cannot_start_a_stage(self):
+        self.lock["dependencies"]["semwright"]["verification"]["status"] = "unverified"
+        (self.root / "SOURCE_LOCK.json").write_bytes(encoded(self.lock))
+        self.assert_refused_before_stage(SourceAdmissionError, "source_admission_unverified")
+
+    def test_changed_retained_source_bytes_cannot_start_a_stage(self):
+        path = self.root / "evidence/semwright/LICENSE-MIT"
+        raw = path.read_bytes()
+        path.write_bytes(b"X" + raw[1:])
+        self.assert_refused_before_stage(SourceAdmissionError, "source_admission_evidence_hash_mismatch")
+
+
 def composition():
     values=[(0,30,40,40,240,120,"#E53935",1000,0),(0,30,100,70,120,60,"#FFFFFF",500,1),
             (30,60,320,180,240,120,"#1E88E5",1000,0),(30,60,380,210,120,60,"#FFFFFF",500,1)]
@@ -183,7 +270,7 @@ class SelectionSpecTests(unittest.TestCase):
         args=types.SimpleNamespace(source_root=Path("/checkout"),records=Path("/records"),data_root=Path("/database"),
             direct_project=Path("/direct-source"),mediated_project=Path("/mediated-source"),direct_output=Path("/direct-output"),
             mediated_output=Path("/mediated-output"),dependencies=Path("/dependencies"),runtime_lock_sha256=PIN)
-        context={"source_sha":"a"*40,"semwright_sha":controller.SEMWRIGHT,"run_id":"123","run_attempt":"1","scenario":"hyperframes-first-party-direct-mediated-edit"}
+        context={"source_sha":"a"*40,"semwright_sha":SDK_FIXTURE_REVISION,"run_id":"123","run_attempt":"1","scenario":"hyperframes-first-party-direct-mediated-edit"}
         bindings=[{"path":path,"sha256":"3"*64} for path in controller.SOURCE_PATHS];documents={};files={}
         def put(path,value):
             documents[str(path)]=value;files[str(path)]=encoded(value)

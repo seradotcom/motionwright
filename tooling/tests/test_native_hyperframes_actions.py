@@ -1,7 +1,8 @@
-"""G0 caller/custody contracts. Synthetic memory originals; no native execution."""
+"""G0 caller/custody contracts. Synthetic originals; no native execution."""
 import copy
 from pathlib import Path
 import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 import sys
@@ -15,6 +16,43 @@ import native_hyperframes_projection as projection
 from native_hyperframes_evidence import HyperframesEvidenceRejected, sha
 from native_evidence_projection import SelectionError, project
 import test_native_hyperframes as existing
+
+
+class SourceAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        existing.source_lock_fixture(self.root)
+        self.environment = {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ATTEMPT": "1",
+                            "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123",
+                            "RUNNER_OS": "Linux"}
+
+    def test_actions_context_uses_verified_selected_sdk_without_a_historical_pin(self):
+        for revision in (existing.SDK_FIXTURE_REVISION, "c" * 40):
+            with self.subTest(revision=revision):
+                existing.source_lock_fixture(self.root, revision)
+                with patch.object(actions, "ROOT", self.root), \
+                     patch.object(actions.sys, "platform", "linux"), \
+                     patch.dict(actions.os.environ, self.environment):
+                    self.assertEqual(actions.context(), {
+                        "source_sha": "a" * 40, "semwright_sha": revision,
+                        "run_id": "123", "run_attempt": "1", "scenario": actions.SCENARIO})
+
+    def test_changed_source_evidence_stops_actions_before_native_effects(self):
+        path = self.root / "evidence/semwright/LICENSE-MIT"
+        raw = path.read_bytes()
+        path.write_bytes(b"X" + raw[1:])
+        with patch.object(actions, "ROOT", self.root), \
+             patch.object(actions.sys, "platform", "linux"), \
+             patch.dict(actions.os.environ, self.environment), \
+             patch.object(actions.custody, "new_json") as write, \
+             patch.object(actions.subprocess, "Popen") as process, \
+             self.assertRaisesRegex(existing.SourceAdmissionError,
+                                    "source_admission_evidence_hash_mismatch"):
+            actions.run(SimpleNamespace())
+        write.assert_not_called()
+        process.assert_not_called()
 
 
 def memory(files):
@@ -534,7 +572,7 @@ class DirectBindingTests(unittest.TestCase):
 class CaptureOrderingTests(unittest.TestCase):
     def test_failure_capture_is_sealed_once_and_cannot_claim_complete(self):
         args = SimpleNamespace(records=Path("/records"))
-        current = {"source_sha": "a" * 40, "semwright_sha": stages.SEMWRIGHT,
+        current = {"source_sha": "a" * 40, "semwright_sha": existing.SDK_FIXTURE_REVISION,
                    "run_id": "123", "run_attempt": "1", "scenario": actions.SCENARIO}
         with patch.object(actions, "extended_spec", return_value=({"G0": "spec"}, {}, {})), \
              patch.object(actions.selection, "capture_selected_originals",
@@ -552,7 +590,7 @@ class CaptureOrderingTests(unittest.TestCase):
 
     def test_failed_independent_readback_does_not_discard_or_repeat_the_first_seal(self):
         args = SimpleNamespace(records=Path("/records"))
-        current = {"source_sha": "a" * 40, "semwright_sha": stages.SEMWRIGHT,
+        current = {"source_sha": "a" * 40, "semwright_sha": existing.SDK_FIXTURE_REVISION,
                    "run_id": "123", "run_attempt": "1", "scenario": actions.SCENARIO}
         with patch.object(actions, "extended_spec", return_value=({"G0": "spec"}, {}, {})), \
              patch.object(actions.selection, "capture_selected_originals",

@@ -17,15 +17,15 @@ from ci_private_evidence import new_bytes,new_json,regular,json_bytes
 from native_av_failure_guard import run_sanitized_json
 from native_evidence_projection import strict,verify_source_bindings,member_path,excluded
 from native_hyperframes_evidence import (sha,require,source_inventory,verify_pair,verify_edit)
+from source_lock_admission import load_source_lock, verify_source_lock
 
-SEMWRIGHT="4849b3c1dcee9b37438801b4264f59480bff9e40"
 SOURCE_PATHS=("Cargo.toml","Cargo.lock","crates/native/Cargo.toml","crates/native/src/lib.rs","crates/native/src/production.rs",
  "crates/native/src/hyperframes.rs","crates/native/src/production/hyperframes.rs","crates/native/examples/native-hyperframes-e2e.rs",
  "crates/hyperframes-profile/Cargo.toml","crates/hyperframes-profile/src/lib.rs","crates/driver-hyperframes/Cargo.toml",
  "crates/driver-hyperframes/src/lib.rs","crates/driver-hyperframes/src/main.rs","crates/driver-hyperframes/src/store.rs","crates/driver-hyperframes/src/driver.rs",
  "native/hyperframes/semwright-hyperframes-runner.mjs","tooling/native_hyperframes_evidence.py","tooling/native_hyperframes_e2e.py",
  "tooling/native_hyperframes_projection.py","tooling/native_evidence_projection.py","tooling/ci_private_evidence.py","tooling/native_av_failure_guard.py",
- "tooling/mlt_official_runtime_intake.py","SOURCE_LOCK.json",
+ "tooling/mlt_official_runtime_intake.py","tooling/source_lock_admission.py","SOURCE_LOCK.json",
  "crates/driver-hyperframes/examples/native-hyperframes-direct-reference.rs",
  "tooling/native_hyperframes_actions.py","tooling/native_hyperframes_runtime_intake.py",
  "tooling/tests/test_native_hyperframes_actions.py","tooling/tests/test_native_hyperframes_runtime_intake.py",
@@ -41,9 +41,16 @@ STAGES=("prepare-original","render-original","compare-original","prepare-edited"
 
 def original(path,maximum=8*1024*1024):return regular(Path(path),maximum)[0]
 def document(path):return strict(original(path))
+
+def selected_semwright_revision(source_root):
+    lock = load_source_lock(source_root)
+    verify_source_lock(source_root, lock)
+    return lock["dependencies"]["semwright"]["revision"]
+
 def context(args):
     require(os.environ.get("GITHUB_ACTIONS")=="true" and os.environ.get("GITHUB_RUN_ATTEMPT")=="1","original_actions_attempt_required")
-    require(args.source_sha==os.environ.get("GITHUB_SHA") and re.fullmatch(r"[0-9a-f]{40}",args.source_sha) and args.sem_sha==SEMWRIGHT,"exact_build_sources")
+    require(args.source_sha==os.environ.get("GITHUB_SHA") and re.fullmatch(r"[0-9a-f]{40}",args.source_sha)
+        and args.sem_sha==selected_semwright_revision(args.source_root),"exact_build_sources")
     roots=(args.records,args.data_root,args.direct_project,args.mediated_project,args.direct_output,args.mediated_output,args.dependencies)
     for root in (*roots,args.source_root,args.private_config):
         require(root.is_absolute() and root.resolve(strict=True)==root and root.is_dir(),"canonical_existing_root")

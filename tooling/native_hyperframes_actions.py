@@ -85,10 +85,8 @@ def context():
             and re.fullmatch(r"[0-9a-f]{40}", source)
             and re.fullmatch(r"[1-9][0-9]{0,19}", run_id),
             "original_linux_actions_attempt_required")
-    lock = stages.document(ROOT / "SOURCE_LOCK.json")
-    require(lock["dependencies"]["semwright"]["revision"] == stages.SEMWRIGHT,
-            "reviewed_sdk_source_pin")
-    return {"source_sha": source, "semwright_sha": stages.SEMWRIGHT,
+    semwright_sha = stages.selected_semwright_revision(ROOT)
+    return {"source_sha": source, "semwright_sha": semwright_sha,
             "run_id": run_id, "run_attempt": "1", "scenario": SCENARIO}
 
 
