@@ -2289,7 +2289,14 @@ mod tests {
         fs::create_dir(&fontconfig_root).unwrap();
         fs::write(
             runtime_root.join("runtime.json"),
-            serde_json::to_vec(&json!({"schema":1,"manim_version":MANIM_VERSION})).unwrap(),
+            serde_json::to_vec(&json!({
+                "schema": 2,
+                "manim_version": MANIM_VERSION,
+                "pyav_version": "15.0.0",
+                "source_color_policy": "srgb-rgba8-opaque-v1",
+                "color_recipe": "srgb-to-rec709-full12-v2",
+            }))
+            .unwrap(),
         )
         .unwrap();
         fs::write(fontconfig_root.join("fonts.conf"), b"synthetic fixture").unwrap();
