@@ -479,10 +479,11 @@ impl Session {
             encoded(backend.authoring_context(&self.service, &self.database, &request)?)
                 .map_err(Value::String)
         } else {
-            encoded(project_projection::semantic_graph_context(
-                &self.service,
-                request,
-            )?)
+            encoded(
+                self.service
+                    .semantic_graph_authoring_context(&request)
+                    .map_err(|error| Value::String(error.to_string()))?,
+            )
             .map_err(Value::String)
         }
     }
