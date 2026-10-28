@@ -54,12 +54,20 @@ def digest(path: Path, maximum: int, expected: str) -> str:
     before = path.stat()
     require(0 < before.st_size <= maximum, "original_media_byte_budget")
     sha = hashlib.sha256()
+    consumed = 0
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        while True:
+            # One extra byte detects growth without following an unbounded EOF.
+            chunk = stream.read(min(1024 * 1024, before.st_size - consumed + 1))
+            if not chunk:
+                break
+            consumed += len(chunk)
+            require(consumed <= before.st_size, "original_media_changed_during_read")
             sha.update(chunk)
+    require(consumed == before.st_size, "original_media_changed_during_read")
     after = path.stat()
-    require((before.st_ino, before.st_size, before.st_mtime_ns)
-            == (after.st_ino, after.st_size, after.st_mtime_ns),
+    require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
             "original_media_changed_during_read")
     result = sha.hexdigest()
     require(result == expected, "original_media_sha256_changed")

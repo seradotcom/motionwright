@@ -12,11 +12,13 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import patch
 import wave
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from native_mlt_sequence_e2e import inspect_decoded_ci_stereo, retain_native_master_source
+from native_mlt_sequence_e2e import digest as native_file_digest
 import native_mlt_public_artifact as pub
 
 
@@ -238,6 +240,98 @@ class NativeSourceWavCustodyTests(unittest.TestCase):
             pub.MltModeContract(1, (1,), fps_num=30000, fps_den=1001)
         with self.assertRaises(AssertionError):
             inspect_decoded_ci_stereo(original_pcm(), mode="original-mix-mp4")
+
+
+class _GrowingHashReader(io.BytesIO):
+    """Never EOF, with an independent guard so a broken hash loop cannot hang."""
+
+    def __init__(self):
+        super().__init__()
+        self.read_requests = []
+        self.bytes_returned = 0
+        self.iteration_guard_triggered = False
+
+    def read(self, size=-1):
+        self.read_requests.append(size)
+        if len(self.read_requests) > 16:
+            self.iteration_guard_triggered = True
+            raise AssertionError("growing-reader guard reached; hashing did not stop")
+        if size <= 0:
+            raise AssertionError("a positive read size is required")
+        chunk = b"x" * min(size, 3)
+        self.bytes_returned += len(chunk)
+        return chunk
+
+
+class NativeFileHashReadBoundsTests(unittest.TestCase):
+    @staticmethod
+    def _path_with_stream(stream, initial_size):
+        path = mock.Mock(spec=pathlib.Path)
+        path.stat.return_value = mock.Mock(
+            st_dev=1, st_ino=2, st_size=initial_size, st_mtime_ns=3,
+        )
+        path.open.return_value = stream
+        return path
+
+    def test_growing_file_rejected_after_initial_size_plus_one_bytes(self):
+        initial_size = 7
+        stream = _GrowingHashReader()
+        path = self._path_with_stream(stream, initial_size)
+        with self.assertRaisesRegex(ValueError, "^native_mlt_file_changed_during_hash$"):
+            native_file_digest(path)
+        self.assertEqual(stream.bytes_returned, initial_size + 1)
+        self.assertFalse(stream.iteration_guard_triggered)
+        self.assertTrue(stream.closed)
+        self.assertEqual(path.stat.call_count, 1)
+
+    def test_eof_must_match_initial_size(self):
+        data = b"short"
+        stream = io.BytesIO(data)
+        path = self._path_with_stream(stream, len(data) + 1)
+        with self.assertRaisesRegex(ValueError, "^native_mlt_file_changed_during_hash$"):
+            native_file_digest(path)
+        self.assertTrue(stream.closed)
+        self.assertEqual(path.stat.call_count, 1)
+
+    def test_nonempty_short_reads_can_reach_the_exact_initial_size(self):
+        class PartialReader(io.BytesIO):
+            def read(self, size=-1):
+                return super().read(min(size, 3))
+
+        data = b"stable fragmented input"
+        stream = PartialReader(data)
+        path = self._path_with_stream(stream, len(data))
+        self.assertEqual(native_file_digest(path), hashlib.sha256(data).hexdigest())
+        self.assertTrue(stream.closed)
+
+    def test_stable_physical_files_including_empty_retain_their_digest(self):
+        with tempfile.TemporaryDirectory(prefix="native-file-reader-hash-") as directory:
+            path = pathlib.Path(directory) / "media.bin"
+            for size in (0, 1, 1024 * 1024, 1024 * 1024 + 7):
+                with self.subTest(size=size):
+                    data = b"x" * size
+                    path.write_bytes(data)
+                    self.assertEqual(native_file_digest(path), hashlib.sha256(data).hexdigest())
+
+    def test_all_final_identity_fields_are_checked(self):
+        data = b"stable source"
+        fields = {"st_dev": 1, "st_ino": 2, "st_size": len(data), "st_mtime_ns": 3}
+        for changed_field in fields:
+            with self.subTest(field=changed_field):
+                path = self._path_with_stream(io.BytesIO(data), len(data))
+                after = dict(fields)
+                after[changed_field] += 1
+                path.stat.side_effect = [path.stat.return_value, mock.Mock(**after)]
+                with self.assertRaisesRegex(ValueError,
+                                            "^native_mlt_file_changed_during_hash$"):
+                    native_file_digest(path)
+
+    def test_negative_initial_size_is_rejected_before_open(self):
+        path = self._path_with_stream(io.BytesIO(b"x"), -1)
+        with self.assertRaisesRegex(ValueError, "^native_mlt_file_size_invalid$"):
+            native_file_digest(path)
+        path.open.assert_not_called()
+        path.open.return_value.close()
 
 
 if __name__ == "__main__":

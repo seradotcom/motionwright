@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_film180_media_readback as verifier
@@ -316,6 +318,118 @@ class Film180ReadbackContracts(unittest.TestCase):
             path.write_bytes(data + b" ")
             with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "media_sha256_changed"):
                 verifier.load_json(path, original)
+
+
+class _GrowingHashReader(io.BytesIO):
+    """Never EOF, with an independent guard so a broken hash loop cannot hang."""
+
+    def __init__(self):
+        super().__init__()
+        self.read_requests = []
+        self.bytes_returned = 0
+        self.iteration_guard_triggered = False
+
+    def read(self, size=-1):
+        self.read_requests.append(size)
+        if len(self.read_requests) > 16:
+            self.iteration_guard_triggered = True
+            raise AssertionError("growing-reader guard reached; hashing did not stop")
+        if size <= 0:
+            raise AssertionError("a positive read size is required")
+        chunk = b"x" * min(size, 3)
+        self.bytes_returned += len(chunk)
+        return chunk
+
+
+class Film180HashReadBoundsTests(unittest.TestCase):
+    @staticmethod
+    def _path_with_stream(stream, initial_size):
+        path = mock.Mock(spec=Path)
+        path.is_absolute.return_value = True
+        path.is_file.return_value = True
+        path.is_symlink.return_value = False
+        path.parents = ()
+        path.stat.return_value = mock.Mock(
+            st_dev=1, st_ino=2, st_size=initial_size, st_mtime_ns=3,
+        )
+        path.open.return_value = stream
+        return path
+
+    def test_growing_file_rejected_after_initial_size_plus_one_bytes(self):
+        initial_size = 7
+        stream = _GrowingHashReader()
+        path = self._path_with_stream(stream, initial_size)
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^original_media_changed_during_read$"):
+            verifier.digest(path, 100, "0" * 64)
+        self.assertEqual(stream.bytes_returned, initial_size + 1)
+        self.assertFalse(stream.iteration_guard_triggered)
+        self.assertTrue(stream.closed)
+        self.assertEqual(path.stat.call_count, 1)
+
+    def test_eof_must_match_initial_size_even_when_shorter_bytes_match_digest(self):
+        data = b"short"
+        stream = io.BytesIO(data)
+        path = self._path_with_stream(stream, len(data) + 1)
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^original_media_changed_during_read$"):
+            verifier.digest(path, 100, hashlib.sha256(data).hexdigest())
+        self.assertTrue(stream.closed)
+        self.assertEqual(path.stat.call_count, 1)
+
+    def test_nonempty_short_reads_can_reach_the_exact_initial_size(self):
+        class PartialReader(io.BytesIO):
+            def read(self, size=-1):
+                return super().read(min(size, 3))
+
+        data = b"stable fragmented input"
+        stream = PartialReader(data)
+        path = self._path_with_stream(stream, len(data))
+        expected = hashlib.sha256(data).hexdigest()
+        self.assertEqual(verifier.digest(path, 100, expected), expected)
+        self.assertTrue(stream.closed)
+
+    def test_stable_physical_files_retain_their_digest(self):
+        with tempfile.TemporaryDirectory(prefix="film180-reader-hash-") as directory:
+            path = Path(directory) / "media.bin"
+            for size in (1, 1024 * 1024, 1024 * 1024 + 7):
+                with self.subTest(size=size):
+                    data = b"x" * size
+                    path.write_bytes(data)
+                    expected = hashlib.sha256(data).hexdigest()
+                    self.assertEqual(verifier.digest(path, size, expected), expected)
+
+    def test_stable_physical_file_with_wrong_digest_still_fails(self):
+        with tempfile.TemporaryDirectory(prefix="film180-reader-hash-") as directory:
+            path = Path(directory) / "media.bin"
+            path.write_bytes(b"stable source")
+            with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                        "^original_media_sha256_changed$"):
+                verifier.digest(path, 100, "0" * 64)
+
+    def test_initial_size_cap_is_checked_before_open(self):
+        maximum = 100
+        for size in (0, maximum + 1):
+            with self.subTest(size=size):
+                path = self._path_with_stream(io.BytesIO(b"x"), size)
+                with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                            "^original_media_byte_budget$"):
+                    verifier.digest(path, maximum, "0" * 64)
+                path.open.assert_not_called()
+                path.open.return_value.close()
+
+    def test_all_final_identity_fields_are_checked(self):
+        data = b"stable source"
+        fields = {"st_dev": 1, "st_ino": 2, "st_size": len(data), "st_mtime_ns": 3}
+        for changed_field in fields:
+            with self.subTest(field=changed_field):
+                path = self._path_with_stream(io.BytesIO(data), len(data))
+                after = dict(fields)
+                after[changed_field] += 1
+                path.stat.side_effect = [path.stat.return_value, mock.Mock(**after)]
+                with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                            "^original_media_changed_during_read$"):
+                    verifier.digest(path, 100, hashlib.sha256(data).hexdigest())
 
 
 if __name__ == "__main__":
