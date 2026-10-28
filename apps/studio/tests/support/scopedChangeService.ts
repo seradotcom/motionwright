@@ -75,7 +75,18 @@ export interface ServiceStartup extends StudioBootstrap {
 
 export interface ServiceBootstrap extends ServiceStartup { project: Project }
 
+/** Actual external owner lifecycle for native service tests, not an authority DTO.
+ * Every launch obtains its own authenticated client environment. The owner must
+ * observe all of its Host/provider writers terminal before assertClosed passes. */
+export interface ServiceProcessOwner {
+  environmentForNewClient(): Promise<NodeJS.ProcessEnv>;
+  closeAfterClients(): Promise<void>;
+  assertClosed(): void;
+}
+
 export interface ScopedChangeServiceOptions {
+  /** Shared by peers; ordinary service tests have no external owner. */
+  processOwner?: ServiceProcessOwner;
   /** Absolute source-built JSONL executable; retained by peers, not an authority claim. */
   binaryPath?: string;
   /** Existing or new absolute test SQLite path; never deleted by this helper. */
@@ -145,6 +156,7 @@ export interface StoreFinalization {
   oracle: StoredProjectOracle | null;
   preparation: { index: number; status: "fulfilled" | "rejected"; error?: string }[];
   closures: { databasePath: string; status: "fulfilled" | "rejected"; error?: string; exits: ServiceProcessExit[]; taints: ServiceLifecycleTaint[] }[];
+  externalClosures: { index: number; status: "fulfilled" | "rejected"; error?: string }[];
   errors: string[];
   capture: ClosedStoreCapture | null;
 }
@@ -205,6 +217,7 @@ export class ScopedChangeService {
   private readonly seedFixture: boolean;
   private readonly desktopInvokeFixture: boolean;
   private readonly ownsDirectory: boolean;
+  private readonly processOwner: ServiceProcessOwner | undefined;
   private child: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<this> | null = null;
   private closing: Promise<void> | null = null;
@@ -222,6 +235,7 @@ export class ScopedChangeService {
     this.databasePath = databasePath;
     this.directory = dirname(databasePath);
     this.ownsDirectory = ownsDirectory;
+    this.processOwner = options.processOwner;
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.seedFixture = options.seedFixture ?? true;
     this.desktopInvokeFixture = options.desktopInvokeFixture ?? false;
@@ -335,7 +349,11 @@ export class ScopedChangeService {
     const args = ["--database", this.databasePath];
     if (this.seedFixture) args.push("--synthetic-fixture");
     if (this.desktopInvokeFixture) args.push("--desktop-invoke-fixture");
-    const child = spawn(this.binaryPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    // A restarted session and each peer need a fresh authenticated client.
+    // Never mutate the worker's global environment or reuse a bootstrap binding.
+    const environment = this.processOwner
+      ? { ...process.env, ...await this.processOwner.environmentForNewClient() } : undefined;
+    const child = spawn(this.binaryPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: environment });
     this.child = child;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => { this.stderrText = (this.stderrText + chunk).slice(-16_384); });
@@ -579,7 +597,7 @@ export class ScopedChangeService {
   /** An independent process and grant registry, sharing only the SQLite/CAS. */
   peer(): Promise<ScopedChangeService> {
     return ScopedChangeService.create({ binaryPath: this.binaryPath, databasePath: this.databasePath, timeoutMs: this.timeoutMs,
-      seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture });
+      seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture, processOwner: this.processOwner });
   }
 
   /** Install before page.goto; every invoke crosses into the real process. */
@@ -670,16 +688,17 @@ export class ScopedChangeService {
 
   /**
    * One finalization per store: quiesce browser/gates, observe the full oracle,
-   * attempt every peer's close, retain every outcome, then capture only if clean.
+   * attempt every peer's close, close external writers, retain every outcome,
+   * then capture only if all known producers are clean and terminal.
    * The caller's runner still seals the complete capture before returning.
    */
   async finalizeClosedStore(destination: string, expected: Project | undefined, peers: ScopedChangeService[] = [], prepare: (() => Promise<unknown>)[] = []): Promise<StoreFinalization> {
     const participants = this.storeParticipants(peers);
-    const result: StoreFinalization = { schemaVersion: 1, oracle: null, preparation: [], closures: [], errors: [], capture: null };
+    const result: StoreFinalization = { schemaVersion: 1, oracle: null, preparation: [], closures: [], externalClosures: [], errors: [], capture: null };
     const prepared = await Promise.allSettled(prepare.map(action => Promise.resolve().then(action)));
     result.preparation = prepared.map((outcome, index) => outcome.status === "fulfilled"
       ? { index, status: "fulfilled" } : { index, status: "rejected", error: String(outcome.reason) });
-    result.errors.push(...result.preparation.flatMap(outcome => outcome.error ? [outcome.error] : []));
+    result.errors.push(...result.preparation.flatMap(outcome => outcome.status === "rejected" ? [outcome.error ?? ""] : []));
     try {
       if (!expected) throw new Error("No final Project oracle was observed by the test before closure");
       // A final read drains each running peer's earlier JSONL requests; closed
@@ -693,7 +712,17 @@ export class ScopedChangeService {
     result.closures = closed.map((outcome, index) => ({ databasePath: participants[index].databasePath,
       status: outcome.status, ...(outcome.status === "rejected" ? { error: String(outcome.reason) } : {}),
       exits: structuredClone(participants[index].processExits), taints: structuredClone(participants[index].lifecycleTaints) }));
-    result.errors.push(...result.closures.flatMap(outcome => outcome.error ? [outcome.error] : []));
+    result.errors.push(...result.closures.flatMap(outcome => outcome.status === "rejected" ? [outcome.error ?? ""] : []));
+    // This barrier must follow EVERY client close, including on failed oracles.
+    // Prepare callbacks run before reads and cannot close an external writer.
+    const owners = [...new Set(participants.map(service => service.processOwner).filter((owner): owner is ServiceProcessOwner => !!owner))];
+    const external = await Promise.allSettled(owners.map(async owner => {
+      await owner.closeAfterClients();
+      owner.assertClosed();
+    }));
+    result.externalClosures = external.map((outcome, index) => outcome.status === "fulfilled"
+      ? { index, status: "fulfilled" } : { index, status: "rejected", error: String(outcome.reason) });
+    result.errors.push(...result.externalClosures.flatMap(outcome => outcome.status === "rejected" ? [outcome.error ?? ""] : []));
     await mkdir(dirname(destination), { recursive: true });
     const outcomePath = destination + "-outcomes.json";
     await writeFile(outcomePath, JSON.stringify(result, null, 2), { flag: "wx" });
@@ -733,6 +762,8 @@ export class ScopedChangeService {
         throw new Error(`Close every service peer cleanly and without lifecycle taint before capturing ${service.databasePath}`);
       }
     }
+    // Direct capture callers cannot bypass the external-writer barrier.
+    for (const owner of new Set(participants.map(service => service.processOwner))) owner?.assertClosed();
     const before = await storeTree(sourceDirectory);
     await mkdir(dirname(target), { recursive: true });
     await mkdir(target); // Fails if anything already occupies this destination.
@@ -765,6 +796,7 @@ export class ScopedChangeService {
   /** Call after peers close; only helper-created temporary directories are removed. */
   async dispose(): Promise<void> {
     await this.close();
+    this.processOwner?.assertClosed();
     if (this.ownsDirectory) await rm(this.directory, { recursive: true, force: true });
   }
 }

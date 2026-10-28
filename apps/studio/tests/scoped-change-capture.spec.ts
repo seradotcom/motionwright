@@ -4,7 +4,7 @@ import { cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test, type TestInfo } from "@playwright/test";
-import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
+import { ScopedChangeService, type ServiceProcessOwner, type StoreFinalization } from "./support/scopedChangeService";
 
 // Transport faults and deliberately damaged copies of real SQLite stores are
 // explicit negative fixtures. RPC responses and process results are real.
@@ -17,8 +17,8 @@ function childOf(service: ScopedChangeService): ChildProcessWithoutNullStreams {
   if (!child) throw new Error("The fault fixture requires a running real service");
   return child;
 }
-async function create(testInfo: TestInfo, timeoutMs = 10_000) {
-  return ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), timeoutMs });
+async function create(testInfo: TestInfo, timeoutMs = 10_000, processOwner?: ServiceProcessOwner) {
+  return ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), timeoutMs, processOwner });
 }
 async function record(testInfo: TestInfo, services: ScopedChangeService[], observed?: unknown) {
   const path = testInfo.outputPath("capture-lifecycle-negative.json");
@@ -286,8 +286,21 @@ test("an unobserved process close cannot be promoted to proof by a later timeout
 });
 
 test("finalization attempts every peer and retains every outcome when preparation and one close fail", async ({}, testInfo) => {
-  const service = await create(testInfo);
   let peer: ScopedChangeService | undefined;
+  let externalClosed = false, externalCloseCalls = 0, clientEnvironmentCalls = 0;
+  // This callback fixture tests cleanup ordering only. It creates no Host,
+  // authority, Graph context or native success; both service processes are real.
+  const owner: ServiceProcessOwner = {
+    async environmentForNewClient() { clientEnvironmentCalls += 1; return {}; },
+    async closeAfterClients() {
+      externalCloseCalls += 1;
+      if (!service.processExits.length || !peer?.processExits.length)
+        throw new Error("External close ran before every real client exit was observed");
+      externalClosed = true;
+    },
+    assertClosed() { if (!externalClosed) throw new Error("External closure was not observed"); },
+  };
+  const service = await create(testInfo, 10_000, owner);
   let attemptedSecondPreparation = false;
   try {
     peer = await service.peer();
@@ -305,6 +318,9 @@ test("finalization attempts every peer and retains every outcome when preparatio
     const result = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
     expect(attemptedSecondPreparation).toBe(true);
     expect(result.preparation.map(outcome => outcome.status)).toEqual(["rejected", "fulfilled"]);
+    expect(clientEnvironmentCalls).toBe(2);
+    expect(externalCloseCalls).toBe(1); expect(externalClosed).toBe(true);
+    expect(result.externalClosures).toEqual([{ index: 0, status: "fulfilled" }]);
     expect(result.oracle?.project).toEqual(final);
     expect(result.oracle?.journalComplete).toBe(true);
     expect(result.closures.map(outcome => outcome.status)).toEqual(["fulfilled", "rejected"]);
@@ -318,3 +334,33 @@ test("finalization attempts every peer and retains every outcome when preparatio
     await record(testInfo, peer ? [service, peer] : [service]);
   }
 });
+
+for (const phase of ["preparation", "client", "external"] as const) {
+  test(`finalization rejects an empty-message ${phase} failure after actual service closure`, async ({}, testInfo) => {
+    let externalClosed = false, externalCalls = 0;
+    // Only the rejection is injected; the service process and its close are real.
+    const owner: ServiceProcessOwner = {
+      async environmentForNewClient() { return {}; },
+      async closeAfterClients() { externalCalls++; externalClosed = true; if (phase === "external") throw ""; },
+      assertClosed() { if (!externalClosed) throw new Error("External callback did not finish"); },
+    };
+    const service = await create(testInfo, 10_000, owner), originalClose = service.close.bind(service);
+    try {
+      const final = (await service.fixtureBootstrap()).project;
+      if (phase === "client") service.close = async () => { await originalClose(); throw ""; };
+      const destination = testInfo.outputPath("empty-rejection-finalization");
+      await expect(service.finalizeClosedStore(destination, final, [], phase === "preparation" ? [async () => { throw ""; }] : []))
+        .rejects.toThrow("all peer close outcomes were retained");
+      const result = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
+      const selected = phase === "preparation" ? result.preparation : phase === "client" ? result.closures : result.externalClosures;
+      expect(selected).toHaveLength(1); expect(selected[0]).toMatchObject({ status: "rejected", error: "" });
+      expect(result.errors).toContain(""); expect(result.capture).toBeNull();
+      expect(service.processExits).toHaveLength(1); expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
+      expect(service.lifecycleTaints).toEqual([]); expect(externalClosed).toBe(true); expect(externalCalls).toBe(1);
+      await expect(readFile(join(destination, "manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      service.close = originalClose;
+      await service.close(); await record(testInfo, [service], { phase, injectedRejection: "" });
+    }
+  });
+}
