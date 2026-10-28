@@ -24,7 +24,7 @@ from cross_app_public_artifact import (
 SCHEMA = "motionwright.v01-native-mlt-public-evidence/1"
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 # Execution and publication require an implemented native consumer.
-MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4"}
+MODES = {"pcm", "video-only", "final-mp4", "captioned-mp4", "hybrid-av"}
 VALID_STATUS = {"success", "failure", "cancelled", "skipped"}
 NO_CLEANUP = "not_requested_requires_foreground_broker_consent"
 SCOPES = {
@@ -88,8 +88,8 @@ class MltModeContract:
         return 44 + self.pcm_frames * self.channels * 2
 
 
-# Readback contracts include prepared hybrid metadata. This does not admit
-# execution or publication until its native consumer is reviewed and present.
+# The hybrid consumer owns its original MC / Manim / MC source and budget.
+# Its readback metadata does not grant runtime access or physical acceptance.
 # A future 60-frame / 96000-sample OriginalMix also needs its own source identity.
 MODE_CONTRACTS = {
     "hybrid-av": MltModeContract(180, (60,60,60), width=1920, height=1080, scene_count=3),
@@ -104,7 +104,7 @@ MODE_CONTRACTS = {
         source_wav_sha256=LEGACY_VOICE_WAV_SHA256,
     ),
 }
-assert set(MODE_CONTRACTS) == MODES | {"hybrid-av"}
+assert set(MODE_CONTRACTS) == MODES
 
 
 def mode_contract(mode: str) -> MltModeContract:

@@ -117,27 +117,65 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
 
 
 def parse_glb(path: Path) -> dict:
-    data = path.read_bytes()
-    if len(data) <= 20:
-        raise AssertionError("GLB is too small")
+    # This is structural readback of the embedded static mesh container.
+    # Source geometry, native editability and Host authority need separate gates.
+    maximum = 8 * 1024 * 1024
+    with path.open("rb") as stream:
+        data = stream.read(maximum + 1)
+    if not 28 <= len(data) <= maximum:
+        raise AssertionError("GLB byte count is outside the static mesh profile")
     magic, version, total = struct.unpack_from("<4sII", data, 0)
     if magic != b"glTF" or version != 2 or total != len(data):
         raise AssertionError("GLB header is invalid")
-    chunk_length, chunk_type = struct.unpack_from("<I4s", data, 12)
-    if chunk_type != b"JSON":
-        raise AssertionError("GLB first chunk is not JSON")
-    end = 20 + chunk_length
-    if end > len(data):
-        raise AssertionError("GLB JSON chunk exceeds file bounds")
-    model = json.loads(data[20:end].rstrip(b" \t\r\n\x00").decode("utf-8"))
-    if str(model.get("asset", {}).get("version")) != "2.0":
+    chunks: list[tuple[bytes, bytes]] = []
+    offset = 12
+    while offset < len(data):
+        if offset + 8 > len(data):
+            raise AssertionError("GLB chunk header is truncated")
+        length, kind = struct.unpack_from("<I4s", data, offset)
+        offset += 8
+        end = offset + length
+        if length == 0 or length % 4 != 0 or end > len(data):
+            raise AssertionError("GLB chunk length is invalid")
+        chunks.append((kind, data[offset:end]))
+        offset = end
+    if len(chunks) != 2 or [kind for kind, _ in chunks] != [b"JSON", b"BIN\x00"]:
+        raise AssertionError("GLB requires one JSON and one embedded BIN chunk")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise AssertionError("GLB JSON contains a duplicate object key")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise AssertionError(f"GLB JSON contains a nonfinite number: {value}")
+
+    try:
+        model = json.loads(chunks[0][1].decode("utf-8"),
+                           object_pairs_hook=unique_object,
+                           parse_constant=reject_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AssertionError("GLB JSON is invalid") from error
+    if (type(model) is not dict or type(model.get("asset")) is not dict
+            or model["asset"].get("version") != "2.0"):
         raise AssertionError("GLB asset version is not 2.0")
-    if len(model.get("nodes", [])) < 2:
-        raise AssertionError("GLB has fewer than two nodes")
-    if len(model.get("meshes", [])) < 2:
-        raise AssertionError("GLB has fewer than two meshes")
-    if len(model.get("materials", [])) < 2:
-        raise AssertionError("GLB has fewer than two materials")
+    buffers = model.get("buffers")
+    if (type(buffers) is not list or len(buffers) != 1
+            or type(buffers[0]) is not dict or "uri" in buffers[0]):
+        raise AssertionError("GLB requires one embedded buffer without a URI")
+    logical = buffers[0].get("byteLength")
+    binary = chunks[1][1]
+    if type(logical) is not int or logical <= 0 or not 0 <= len(binary) - logical <= 3:
+        raise AssertionError("GLB embedded buffer length differs from BIN")
+    if any(binary[logical:]):
+        raise AssertionError("GLB BIN padding must contain zero bytes")
+    for section in ("nodes", "meshes", "materials"):
+        rows = model.get(section)
+        if type(rows) is not list or len(rows) < 2 or not all(type(row) is dict for row in rows):
+            raise AssertionError(f"GLB has fewer than two valid {section}")
     return model
 
 

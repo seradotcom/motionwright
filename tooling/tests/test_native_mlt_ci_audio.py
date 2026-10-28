@@ -232,7 +232,9 @@ class NativeSourceWavCustodyTests(unittest.TestCase):
         proposed_clock = pub.MltModeContract(60, (32, 28))
         self.assertEqual(proposed_clock.pcm_frames, 96000)
         self.assertEqual(proposed_clock.wav_bytes, 384044)
-        self.assertEqual(pub.MODES, {"pcm", "video-only", "final-mp4", "captioned-mp4"})
+        self.assertEqual(pub.MODES, {"pcm", "video-only", "final-mp4", "captioned-mp4", "hybrid-av"})
+        self.assertEqual(pub.mode_contract("hybrid-av").source_segment_frames, (60, 60, 60))
+        self.assertEqual(pub.mode_contract("hybrid-av").pcm_frames, 288000)
         for mode in ("original-mix-mp4", "original-sfx-mp4"):
             with self.subTest(mode=mode), self.assertRaises(pub.PublicationError):
                 pub.mode_contract(mode)
@@ -243,13 +245,14 @@ class NativeSourceWavCustodyTests(unittest.TestCase):
 
 
 class NativeModeAdmissionTests(unittest.TestCase):
-    def test_hybrid_execution_is_refused_before_g2_or_native_effects(self):
+    def test_inactive_hybrid_execution_is_refused_before_g2_or_native_effects(self):
         import runpy
         import native_mlt_sequence_e2e as wrapper
         from native_mlt_g2_observation import G2Session
 
-        blocked = AssertionError("unimplemented hybrid consumer reached an effect")
-        with patch.dict(os.environ, {"MOTIONWRIGHT_MLT_MODE": "hybrid-av"}), \
+        blocked = AssertionError("inactive hybrid consumer reached an effect")
+        with patch.object(pub, "MODES", pub.MODES - {"hybrid-av"}), \
+             patch.dict(os.environ, {"MOTIONWRIGHT_MLT_MODE": "hybrid-av"}), \
              patch.object(sys, "argv", [wrapper.__file__, "--hybrid-inputs",
                                         "unused-private-hybrid-inputs.json"]), \
              patch.object(G2Session, "prepare_hybrid", side_effect=blocked) as prepare, \
@@ -262,10 +265,11 @@ class NativeModeAdmissionTests(unittest.TestCase):
         for effect in (prepare, popen, run, check_output):
             effect.assert_not_called()
 
-    def test_hybrid_publication_is_refused_before_any_path_access(self):
+    def test_inactive_hybrid_publication_is_refused_before_any_path_access(self):
         for status in sorted(pub.VALID_STATUS):
             for entry in ("dispatcher", "direct"):
-                with self.subTest(status=status, entry=entry):
+                with self.subTest(status=status, entry=entry), \
+                     patch.object(pub, "MODES", pub.MODES - {"hybrid-av"}):
                     root = mock.Mock(spec=pathlib.Path)
                     output = mock.Mock(spec=pathlib.Path)
                     output.exists.side_effect = AssertionError("output inspected before admission")
@@ -278,9 +282,10 @@ class NativeModeAdmissionTests(unittest.TestCase):
                     self.assertEqual(root.mock_calls, [])
                     self.assertEqual(output.mock_calls, [])
 
-    def test_hybrid_public_cli_is_refused_before_lock_or_evidence_read(self):
+    def test_inactive_hybrid_public_cli_is_refused_before_lock_or_evidence_read(self):
         blocked = AssertionError("unsupported mode reached publication setup")
-        with patch.object(pathlib.Path, "read_bytes", side_effect=blocked) as read, \
+        with patch.object(pub, "MODES", pub.MODES - {"hybrid-av"}), \
+             patch.object(pathlib.Path, "read_bytes", side_effect=blocked) as read, \
              patch.object(pub, "publish_mlt", side_effect=blocked) as publish, \
              patch.object(sys, "stderr", io.StringIO()):
             with self.assertRaises(SystemExit) as raised:
@@ -291,6 +296,47 @@ class NativeModeAdmissionTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         read.assert_not_called()
         publish.assert_not_called()
+
+    def test_active_hybrid_wrapper_reaches_original_g2_admission_before_native_process(self):
+        import runpy
+        import native_mlt_sequence_e2e as wrapper
+        from native_mlt_g2_observation import G2Session
+
+        stopped = RuntimeError("unit fixture: original G2 admission was reached")
+        blocked = AssertionError("native process reached before original G2 admission")
+        with patch.dict(os.environ, {"MOTIONWRIGHT_MLT_MODE": "hybrid-av"}), \
+             patch.object(sys, "argv", [wrapper.__file__, "--hybrid-inputs",
+                                        "unused-private-hybrid-inputs.json"]), \
+             patch.object(G2Session, "prepare_hybrid", side_effect=stopped) as prepare, \
+             patch("subprocess.Popen", side_effect=blocked) as popen, \
+             patch("subprocess.run", side_effect=blocked) as run, \
+             patch("subprocess.check_output", side_effect=blocked) as check_output:
+            with self.assertRaises(RuntimeError) as raised:
+                runpy.run_path(wrapper.__file__, run_name="__main__")
+        self.assertIs(raised.exception, stopped)
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.args, (pathlib.Path("unused-private-hybrid-inputs.json"),))
+        for effect in (popen, run, check_output):
+            effect.assert_not_called()
+
+    def test_inactive_hybrid_direct_g2_refuses_before_runtime_or_files(self):
+        import native_mlt_g2_observation as observed
+
+        blocked = AssertionError("inactive hybrid reached runtime or files")
+        with patch.object(pub, "MODES", pub.MODES - {"hybrid-av"}), \
+             patch.object(observed.admission, "disposable_linux_runner", side_effect=blocked) as runtime, \
+             patch.object(observed.admission, "checked_bytes", side_effect=blocked) as reader, \
+             patch.object(pathlib.Path, "read_bytes", side_effect=blocked) as read, \
+             patch.object(pathlib.Path, "mkdir", side_effect=blocked) as mkdir:
+            self.assertEqual(pub.mode_contract("hybrid-av").pcm_frames, 288000)
+            with self.assertRaisesRegex(observed.G2Unverified, "^hybrid_native_mode_not_admitted$"):
+                observed.G2Session.prepare_hybrid(
+                    pathlib.Path("unused-original-hybrid-inputs.json"),
+                    source_sha="a" * 40, semwright_sha="b" * 40,
+                    source_root=pathlib.Path("unused-source"),
+                )
+        for effect in (runtime, reader, read, mkdir):
+            effect.assert_not_called()
 
 
 class _GrowingHashReader(io.BytesIO):

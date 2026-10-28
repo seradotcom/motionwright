@@ -2239,6 +2239,7 @@ dependencies = [
  "semwright-platform-services",
  "semwright-project-graph",
  "semwright-semantic-composition",
+ "semwright-video-domain",
  "serde",
  "serde_json",
  "sha2 0.10.9",

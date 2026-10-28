@@ -45,7 +45,11 @@ pub use brand_font_staging::{
 pub use graph_authoring::{
     NativeGraphRecipeClient, NativeGraphRecipeResult, NativeGraphSaveReceipt,
 };
+mod hybrid_budget;
+mod hybrid_mlt;
 mod hyperframes;
+pub use hybrid_budget::HybridNativeSources;
+pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};
 mod manim_graph;
 mod manim_graph_profile;
 pub use hyperframes::HyperframesSourceEvidence;
@@ -2405,6 +2409,9 @@ pub struct ProductionCoordinator {
     motion_budget_roots:
         std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, RetainedMotionRoot>>>,
     active_motion_budget: Option<MotionRootBudgetScope>,
+    // The mixed-renderer route owns one preflighted root across MC, static
+    // Manim and its closed MLT continuation. No scoped client is public.
+    active_hybrid_budget: Option<hybrid_budget::HybridRootBudgetScope>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -2432,6 +2439,7 @@ impl ProductionCoordinator {
                 std::collections::BTreeMap::new(),
             )),
             active_motion_budget: None,
+            active_hybrid_budget: None,
             #[cfg(test)]
             before_dispatch_admission: None,
         })
@@ -2482,6 +2490,13 @@ impl ProductionCoordinator {
             ));
         }
         let _bound_connection = self.client.connection().identity()?;
+
+        if let Some(hybrid) = &self.active_hybrid_budget {
+            hybrid.require_motion_selection(self, project, deliverable_id, options, scene_ids)?;
+            let mut scoped = self.clone();
+            scoped.scene_boundary_scope = Some(std::sync::Arc::new(scope));
+            return Ok(scoped);
+        }
 
         // Replan from the exact committed project before constructing ANY
         // Motion Canvas provider effect. No client JSON supplies root/limits.
@@ -2739,6 +2754,9 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         rendered: &MotionCanvasRenderEvidence,
     ) -> NativeResult<()> {
+        if let Some(hybrid) = &self.active_hybrid_budget {
+            return hybrid.verify_motion_output(self, project, deliverable_id, rendered);
+        }
         let key = format!(
             "motion-canvas/{}/{}/{}/{}",
             project.id, project.generation, project.revision, deliverable_id
@@ -4983,15 +5001,26 @@ impl ProductionCoordinator {
                 "job_ref": job_ref.clone()
             })),
         };
-        if let Some(root) = &self.active_motion_budget {
+        let budget = match (&self.active_hybrid_budget, &self.active_motion_budget) {
+            (Some(_), Some(_)) => {
+                return Err(invalid(
+                    "Native dispatch cannot attach two accounting roots",
+                ));
+            }
+            (Some(root), None) => {
+                Some(root.dispatch_budget(self, &project, request_id, command, &args, mutation)?)
+            }
+            (None, Some(root)) => Some((root.root_id, root.units_for(command, &args, mutation)?)),
+            (None, None) => None,
+        };
+        if let Some((root_id, units)) = budget {
             // One SQLite IMMEDIATE transaction writes both the debit and
             // original dispatching receipt before ANY Driver SDK invocation.
             // Failed, interrupted and UNKNOWN attempts do not refund credit.
-            let units = root.units_for(command, &args, mutation)?;
             match self
                 .service
                 .admit_root_operation_dispatch(RootDispatchBudgetInput {
-                    root_id: root.root_id,
+                    root_id,
                     receipt: intent,
                     units,
                 })
@@ -5022,6 +5051,11 @@ impl ProductionCoordinator {
         }
 
         let dispatched = async {
+            if let Some(hybrid) = &self.active_hybrid_budget {
+                // The original WAV is staged only by its closed producer,
+                // after this request's immutable debit and intent exist.
+                hybrid.stage_after_admission(self, request_id, command)?;
+            }
             if let Some(staging) = audio_staging {
                 // Admission above durably charged the original root before
                 // either the bounded input copy or any SDK/provider effect.

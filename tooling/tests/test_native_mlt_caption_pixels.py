@@ -321,9 +321,17 @@ class NativeHybridOriginalReadbackTests(unittest.TestCase):
             (root/"hybrid-public-source.json").write_text(json.dumps(record))
             (root/"native-original.mp4").write_bytes(b"PRIVATE-MEDIA")
             originals={path.name:path.read_bytes() for path in root.iterdir()}
-            with self.assertRaisesRegex(public.PublicationError,"^invalid_mlt_mode$"):
-                public.publish_mlt(root,output,"hybrid-av","a"*40,"b"*40,"success")
-            self.assertFalse(output.exists())
+            receipt=public.publish_mlt(root,output,"hybrid-av","a"*40,"b"*40,"success")
+            self.assertEqual(receipt["ci_native_mlt_evidence"],"READBACK_OBSERVED")
+            self.assertEqual(receipt["native_video_frames"],180)
+            self.assertEqual({path.name for path in output.iterdir()},{"public-evidence.json"})
+            self.assertEqual(receipt["included_files"],[])
+            for key in ("physical_acceptance","human_approval","v01_release_authorized",
+                        "Host_receiver_closure_proved","packet_PTS_and_AAC_priming_verified",
+                        "source_audio_or_media_uploaded","private_errors_or_original_receipts_uploaded",
+                        "native_mutations_replayed_by_publisher"):
+                self.assertIs(receipt[key],False)
+            self.assertNotIn("PRIVATE",(output/"public-evidence.json").read_text())
             self.assertEqual({path.name:path.read_bytes() for path in root.iterdir()},originals)
 
 

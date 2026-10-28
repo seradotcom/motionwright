@@ -36,6 +36,7 @@ async-trait = "0.1"
 symphonia = { version = "0.6.1", features = ["all"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync"] }
 semwright-audio-domain = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-audio-domain" }
+semwright-video-domain = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-video-domain" }
 semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-native-sdk" }
 semwright-platform-api = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-platform-api" }
 semwright-platform-services = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-platform-services" }

@@ -944,7 +944,7 @@ HYBRID_INPUT_KEYS = RUNTIME_INPUT_KEYS | {
     "schema","original_wav_path","original_wav_sha256","private_evidence_dir","source_bindings",
     "original_film180_source_dir","source_producer_binary_sha256",
 }
-HYBRID_SOURCE_PATHS = {
+HYBRID_SOURCE_PATHS = frozenset({
     "tooling/native_evidence_projection.py","tooling/native_mlt_sequence_e2e.py",
     "tooling/native_mlt_g2_observation.py","tooling/native_mlt_public_artifact.py",
     "tooling/native_mlt_caption_pixels.py","tooling/native_direct_mediated_parity.py",
@@ -954,7 +954,41 @@ HYBRID_SOURCE_PATHS = {
     "tooling/native_av_failure_guard.py",
     "tooling/native_film180_original_g2.py","crates/native/examples/native-film180-e2e.rs",
     "tooling/ci_private_evidence.py","tooling/mlt_official_runtime_intake.py",
-}
+    "tooling/source_lock_admission.py",
+    # The current Rust endpoint and its real closed native producers must be
+    # bound too. Python observers and the independent Film180 WAV producer do
+    # not establish the identity of the MC/Manim/MLT implementation.
+    "crates/native/examples/native-mlt-sequence-e2e.rs",
+    "crates/native/examples/native_mlt_sequence_hybrid/mod.rs",
+    "crates/native/src/lib.rs","crates/native/src/production.rs",
+    "crates/native/src/production/hybrid_budget.rs",
+    "crates/native/src/production/hybrid_mlt.rs",
+    "crates/native/src/production/mlt_multisegment_av.rs",
+    "crates/native/src/film.rs","crates/native/src/manim_static_projection.rs",
+    "crates/native/src/native_scene_boundary.rs",
+    "crates/manim-profile/src/lib.rs","crates/service/src/lib.rs",
+    "crates/storage/src/root_operation_budget.rs",
+    # Bind the selected dependency inputs and executing producer definition.
+    # These are source-byte checks, not proof of compiler execution or of the
+    # provenance of an already existing target/debug executable.
+    "Cargo.toml","Cargo.lock","SOURCE_LOCK.json","rust-toolchain.toml",
+    "crates/native/Cargo.toml","crates/manim-profile/Cargo.toml",
+    ".github/workflows/native-mlt-sequence-e2e.yml",
+})
+
+
+def verify_hybrid_source_closure(source_root, source_sha, source_bindings):
+    """Require the closed producer roster, then verify Git AND actual bytes."""
+    import native_evidence_projection as core
+    require(type(source_bindings) is list
+            and all(type(row) is dict and type(row.get("path")) is str
+                    for row in source_bindings)
+            and HYBRID_SOURCE_PATHS <= {row["path"] for row in source_bindings},
+            "hybrid_source_closure_incomplete")
+    # Existing Core still rejects duplicate paths, malformed rows/digests,
+    # missing committed members and physical bytes that differ from that Git
+    # object. Additional declared bindings retain those same strict checks.
+    return core.verify_source_bindings(source_root, source_sha, source_bindings)
 
 
 def hybrid_source_wave(raw, expected_sha):
@@ -1420,6 +1454,8 @@ class G2Session:
 
     @classmethod
     def prepare_hybrid(cls,path,*,source_sha,semwright_sha,source_root):
+        from native_mlt_public_artifact import MODES
+        require("hybrid-av" in MODES, "hybrid_native_mode_not_admitted")
         import native_evidence_projection as core
         from ci_private_evidence import regular
         from native_mlt_caption_pixels import HYBRID_PIXEL_CONTRACT
@@ -1428,10 +1464,7 @@ class G2Session:
         require(set(data)==HYBRID_INPUT_KEYS and data["schema"]==HYBRID_INPUT_SCHEMA,"hybrid_inputs_schema")
         closure,alias=verify_runtime_inputs({key:data[key] for key in RUNTIME_INPUT_KEYS},
                                           source_sha=source_sha,semwright_sha=semwright_sha)
-        require(type(data["source_bindings"]) is list
-                and HYBRID_SOURCE_PATHS <= {row.get("path") for row in data["source_bindings"] if type(row) is dict},
-                "hybrid_source_closure_incomplete")
-        source_binding=core.verify_source_bindings(source_root,source_sha,data["source_bindings"])
+        source_binding=verify_hybrid_source_closure(source_root,source_sha,data["source_bindings"])
         source=Path(data["original_wav_path"])
         source_dir=Path(data["original_film180_source_dir"])
         binary=Path(source_root)/"target/debug/examples/native-film180-e2e"

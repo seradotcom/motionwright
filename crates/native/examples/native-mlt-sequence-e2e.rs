@@ -25,10 +25,15 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_mlt_sequence_hybrid/mod.rs"]
+mod hybrid;
+
 fn arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> PathBuf {
     args.next().map(PathBuf::from).unwrap_or_else(|| {
         eprintln!(
-            "usage: native-mlt-sequence-e2e seed DATABASE | assemble DATABASE CONNECTION EVIDENCE"
+            "usage: native-mlt-sequence-e2e seed DATABASE | assemble DATABASE CONNECTION EVIDENCE | \
+             seed-hybrid FRESH_DATABASE ORIGINAL_FILM180_WAV WAV_SHA256 WAV_BYTES NEW_PROJECT_JSON | \
+             assemble-hybrid EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_PROJECT_SHA256 NEW_EVIDENCE_DIRECTORY"
         );
         std::process::exit(2);
     })
@@ -706,6 +711,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let action = args.next().ok_or("Missing command")?;
     let database = arg(&mut args);
     match action.to_str().ok_or("Non UTF-8 action")? {
+        "seed-hybrid" => {
+            let source = arg(&mut args);
+            let sha256 = args
+                .next()
+                .ok_or("Missing original hybrid WAV digest")?
+                .into_string()
+                .map_err(|_| "Non UTF-8 original hybrid WAV digest")?;
+            let bytes = args
+                .next()
+                .ok_or("Missing original hybrid WAV byte count")?
+                .into_string()
+                .map_err(|_| "Non UTF-8 original hybrid WAV byte count")?
+                .parse::<u64>()?;
+            let source_project = arg(&mut args);
+            if args.next().is_some() {
+                return Err("Unexpected seed-hybrid argument".into());
+            }
+            hybrid::seed(&database, &source, &sha256, bytes, &source_project)
+        }
+        "assemble-hybrid" => {
+            let connection = arg(&mut args);
+            let project_sha256 = args
+                .next()
+                .ok_or("Missing original hybrid project digest")?
+                .into_string()
+                .map_err(|_| "Non UTF-8 original hybrid project digest")?;
+            let output = arg(&mut args);
+            if args.next().is_some() {
+                return Err("Unexpected assemble-hybrid argument".into());
+            }
+            hybrid::assemble(&database, &connection, &project_sha256, &output).await
+        }
         "seed" => seeded_database(&database),
         "assemble" => {
             let connection = arg(&mut args);
