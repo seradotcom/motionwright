@@ -125,6 +125,25 @@ class OriginalPcmSourceFidelityTests(unittest.TestCase):
         with self.assertRaisesRegex(PcmContentError,"decoded_pcm_duration_budget"):
             witness(self.wave,self.source[:-4])
 
+    def test_single_frame_terminal_remainder_preserves_identical_authored_pcm(self):
+        count=52_737
+        raw=self.source[:count*4]
+        got=witness(source_wave(raw),raw)
+        self.assertEqual(got["source_stereo_frames"],count)
+        self.assertEqual(got["decoded_stereo_frames"],count)
+        self.assertEqual(got["source_window_temporal_identity_checked_by_channel"],[207,207])
+        self.assertEqual(got["minimum_source_window_correlation"],[1,1])
+        self.assertEqual(got["terminal_source_window_informative_by_channel"],[True,True])
+        self.assertEqual(got["last_informative_window_by_channel"][1]["to"],count)
+
+    def test_single_frame_terminal_right_dropout_is_still_rejected(self):
+        count=52_737
+        raw=self.source[:count*4]
+        altered=silent_right(raw,count-1,count)
+        with self.assertRaisesRegex(PcmContentError,
+                 r"source_audio_content_missing_or_scaled:channel=1:start=52736:end=52737:"):
+            witness(source_wave(raw),altered)
+
     def test_arbitrary_nonperiodic_original_source_passes_and_reordered_block_fails(self):
         # The product gate must not be limited to the historical 400/600Hz
         # periodic MLT CI waveform. This exercises a separate seeded, bounded

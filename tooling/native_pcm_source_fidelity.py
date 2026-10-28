@@ -155,7 +155,11 @@ def inspect_source_pcm16_stereo_content(
             # 256-frame segment has exactly the same channel L1 energy but is
             # not the authored waveform. The legacy five-point identity test
             # missed such corruption between its sparse anchors.
-            corr=_correlation(x,y,first,final,channel,channel)
+            # One terminal frame cannot define a correlation by itself. Keep
+            # its own energy check above, and include it with the preceding
+            # complete window for waveform identity; no source frame is skipped.
+            correlation_first=max(0,first-WINDOW_FRAMES) if sample_count==1 else first
+            corr=_correlation(x,y,correlation_first,final,channel,channel)
             insist(corr>=MIN_CORRELATION,
                    f"source_audio_content_temporally_changed:channel={channel}:"
                    f"start={first}:end={final}:correlation={corr:.6f}")
