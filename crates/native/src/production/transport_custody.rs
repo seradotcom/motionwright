@@ -10,7 +10,7 @@ use std::{
     process::ExitStatus,
     sync::{Arc, Mutex, MutexGuard},
 };
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const MAX_CAPTURE_SLOTS: usize = 8;
 const MAX_CAPTURE_ARG_BYTES: usize = 2 * (MAX_ARGS_BYTES + 64 * 1024);
@@ -33,6 +33,7 @@ struct RetainedTransport {
     executable: Value,
     argv: Vec<Value>,
     args_json: Vec<u8>,
+    graph_stdin: Option<GraphStdinCapture>,
     started: bool,
     pid: Option<u32>,
     process_exit: Option<Value>,
@@ -47,6 +48,25 @@ struct StreamCapture {
     bytes: Vec<u8>,
     eof_observed: bool,
     read_error_observed: bool,
+}
+
+#[derive(Default)]
+struct GraphStdinCapture {
+    write_started: bool,
+    accepted_by_pipe_bytes: usize,
+    write_return_lengths: Vec<usize>,
+    write_error_kind: Option<String>,
+    shutdown_attempted: bool,
+    shutdown_completed: bool,
+    shutdown_error_kind: Option<String>,
+    writer_returned: Option<bool>,
+    writer_dropped_without_return: bool,
+    transport_deadline_elapsed_observed: bool,
+}
+
+struct GraphStdinObservation<'a> {
+    capture: Option<&'a CaptureReservation>,
+    active: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +142,7 @@ impl ProductionTransportCustody {
             executable: os_argument(program),
             argv: argv.map(os_argument).collect(),
             args_json: args_json.to_vec(),
+            graph_stdin: None,
             started: false,
             pid: None,
             process_exit: None,
@@ -135,6 +156,44 @@ impl ProductionTransportCustody {
             index,
             active: true,
         })
+    }
+
+    /// The fixed Graph route alone writes its already retained JSON arguments
+    /// to stdin. Legacy reservations retain their original null-input shape.
+    pub(super) fn reserve_graph_recipe<'a>(
+        &self,
+        mutation: bool,
+        connection: &ProductionConnection,
+        program: &'a OsStr,
+        argv: impl Iterator<Item = &'a OsStr> + Clone,
+        args_json: &[u8],
+    ) -> NativeResult<CaptureReservation> {
+        let expected = [
+            OsStr::new("--socket"),
+            connection.socket.as_os_str(),
+            OsStr::new("--session-file"),
+            connection.session_file.as_os_str(),
+            OsStr::new("--json"),
+            OsStr::new("execute"),
+            OsStr::new(super::graph_authoring::RECIPE_COMMAND),
+            OsStr::new("--args-file"),
+            OsStr::new("-"),
+        ];
+        if program != connection.executable.as_os_str() || !argv.clone().eq(expected) {
+            return Err(Error::invalid(
+                "Graph stdin custody requires the fixed CLI route",
+            ));
+        }
+        let reservation = self.reserve(
+            super::graph_authoring::RECIPE_COMMAND,
+            mutation,
+            connection,
+            program,
+            argv,
+            args_json,
+        )?;
+        self.lock().entries[reservation.index].graph_stdin = Some(GraphStdinCapture::default());
+        Ok(reservation)
     }
 
     /// Lossless private projection of the original argv, JSON argument bytes and
@@ -156,7 +215,7 @@ impl ProductionTransportCustody {
                         "pending"
                     }}),
                 };
-                json!({
+                let mut value = json!({
                     "sequence":index,
                     "command":entry.command,
                     "mutation":entry.mutation,
@@ -165,7 +224,11 @@ impl ProductionTransportCustody {
                     "executable":entry.executable,
                     "argv":entry.argv,
                     "args_json":bytes_projection(&entry.args_json),
-                    "stdin_mode":"null",
+                    "stdin_mode":if entry.graph_stdin.is_some() {
+                        "piped_graph_recipe_json"
+                    } else {
+                        "null"
+                    },
                     "process_started":entry.started,
                     "pid":entry.pid,
                     "process_exit":entry.process_exit,
@@ -173,7 +236,32 @@ impl ProductionTransportCustody {
                     "stderr":stream_projection(&entry.stderr),
                     "transport_terminal":terminal,
                     "automatic_retry":false,
-                })
+                });
+                if let Some(stdin) = &entry.graph_stdin {
+                    value["stdin"] = json!({
+                        "intended":bytes_projection(&entry.args_json),
+                        "write_started":stdin.write_started,
+                        "accepted_by_pipe_prefix":bytes_projection(
+                            &entry.args_json[..stdin.accepted_by_pipe_bytes]
+                        ),
+                        "accepted_by_pipe_bytes":stdin.accepted_by_pipe_bytes,
+                        "write_return_lengths":stdin.write_return_lengths,
+                        "all_intended_bytes_accepted_by_pipe":stdin.write_started
+                            && stdin.accepted_by_pipe_bytes == entry.args_json.len(),
+                        "write_error_kind":stdin.write_error_kind,
+                        "shutdown_attempted":stdin.shutdown_attempted,
+                        "shutdown_completed":stdin.shutdown_completed,
+                        "shutdown_error_kind":stdin.shutdown_error_kind,
+                        "writer_returned":stdin.writer_returned,
+                        "writer_dropped_without_return":stdin.writer_dropped_without_return,
+                        "transport_deadline_elapsed_observed":stdin.transport_deadline_elapsed_observed,
+                        "child_input_consumption_observed":false,
+                        "child_eof_read_observed":false,
+                        "pipe_acceptance_is_child_consumption":false,
+                        "automatic_retry":false,
+                    });
+                }
+                value
             })
             .collect();
         json!({
@@ -264,6 +352,12 @@ impl CaptureReservation {
         self.custody.lock().entries[self.index].process_exit = Some(exit_projection(status));
     }
 
+    pub(super) fn transport_deadline_elapsed(&self) {
+        if let Some(stdin) = &mut self.custody.lock().entries[self.index].graph_stdin {
+            stdin.transport_deadline_elapsed_observed = true;
+        }
+    }
+
     fn with_stream(&self, stream: Stream, operation: impl FnOnce(&mut StreamCapture)) {
         let mut state = self.custody.lock();
         let entry = &mut state.entries[self.index];
@@ -302,6 +396,137 @@ impl Drop for CaptureReservation {
             self.custody.lock().entries[self.index].dropped_without_return = true;
         }
     }
+}
+
+impl<'a> GraphStdinObservation<'a> {
+    fn begin(capture: Option<&'a CaptureReservation>, intended: &[u8]) -> std::io::Result<Self> {
+        if intended.len() > MAX_ARGS_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Graph stdin exceeds the original argument budget",
+            ));
+        }
+        if let Some(capture) = capture {
+            let mut state = capture.custody.lock();
+            let entry = &mut state.entries[capture.index];
+            if entry.args_json != intended {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Graph stdin differs from the reserved original arguments",
+                ));
+            }
+            let stdin = entry.graph_stdin.as_mut().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Null-input custody cannot observe Graph stdin",
+                )
+            })?;
+            if stdin.write_started {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Graph stdin writer cannot be restarted",
+                ));
+            }
+            stdin.write_started = true;
+        }
+        Ok(Self {
+            capture,
+            active: true,
+        })
+    }
+
+    fn update(&self, operation: impl FnOnce(&mut GraphStdinCapture)) {
+        if let Some(capture) = self.capture {
+            let mut state = capture.custody.lock();
+            if let Some(stdin) = &mut state.entries[capture.index].graph_stdin {
+                operation(stdin);
+            }
+        }
+    }
+
+    fn accepted(&self, length: usize) {
+        // The writer validates each return against the exact remaining slice.
+        // Positive returns consume at least one byte; zero returns terminate.
+        // Thus the list is bounded by MAX_ARGS_BYTES + 1, without eviction.
+        self.update(|stdin| {
+            stdin.accepted_by_pipe_bytes += length;
+            stdin.write_return_lengths.push(length);
+        });
+    }
+
+    fn returned(&mut self, result: &std::io::Result<()>) {
+        self.update(|stdin| stdin.writer_returned = Some(result.is_ok()));
+        self.active = false;
+    }
+}
+
+impl Drop for GraphStdinObservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.update(|stdin| stdin.writer_dropped_without_return = true);
+        }
+    }
+}
+
+/// Observe bounded writes to the fixed Graph pipe under the caller's one
+/// deadline. A completed write is only pipe acceptance; it never proves that
+/// the child read, parsed or executed those bytes. Cancellation preserves the
+/// confirmed prefix and cannot manufacture a writer or process terminal.
+pub(super) async fn write_graph_recipe_stdin<W>(
+    mut writer: W,
+    intended: &[u8],
+    capture: Option<&CaptureReservation>,
+) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut observation = GraphStdinObservation::begin(capture, intended)?;
+    let result = async {
+        let mut offset = 0;
+        while offset < intended.len() {
+            match writer.write(&intended[offset..]).await {
+                Ok(length) if length <= intended.len() - offset => {
+                    observation.accepted(length);
+                    if length == 0 {
+                        observation
+                            .update(|stdin| stdin.write_error_kind = Some("WriteZero".into()));
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "Graph stdin write accepted no bytes",
+                        ));
+                    }
+                    offset += length;
+                }
+                Ok(_) => {
+                    observation.update(|stdin| stdin.write_error_kind = Some("InvalidData".into()));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Graph stdin writer returned an impossible byte count",
+                    ));
+                }
+                Err(error) => {
+                    observation.update(|stdin| {
+                        stdin.write_error_kind = Some(format!("{:?}", error.kind()));
+                    });
+                    return Err(error);
+                }
+            }
+        }
+        observation.update(|stdin| stdin.shutdown_attempted = true);
+        match writer.shutdown().await {
+            Ok(()) => observation.update(|stdin| stdin.shutdown_completed = true),
+            Err(error) => {
+                observation.update(|stdin| {
+                    stdin.shutdown_error_kind = Some(format!("{:?}", error.kind()));
+                });
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    .await;
+    observation.returned(&result);
+    result
 }
 
 pub(super) async fn read_bounded_with_capture<R>(
@@ -365,6 +590,282 @@ mod tests {
                 b"{}",
             )
             .unwrap()
+    }
+
+    fn reserve_graph(custody: &ProductionTransportCustody, intended: &[u8]) -> CaptureReservation {
+        let connection = connection();
+        let argv = [
+            OsStr::new("--socket"),
+            connection.socket.as_os_str(),
+            OsStr::new("--session-file"),
+            connection.session_file.as_os_str(),
+            OsStr::new("--json"),
+            OsStr::new("execute"),
+            OsStr::new("recipe.run"),
+            OsStr::new("--args-file"),
+            OsStr::new("-"),
+        ];
+        custody
+            .reserve_graph_recipe(
+                true,
+                &connection,
+                connection.executable.as_os_str(),
+                argv.into_iter(),
+                intended,
+            )
+            .unwrap()
+    }
+
+    enum WriteAction {
+        Accept(usize),
+        Fail(std::io::ErrorKind),
+    }
+
+    struct ControlledWriter {
+        actions: std::collections::VecDeque<WriteAction>,
+        accepted: Arc<Mutex<Vec<u8>>>,
+        shutdown_error: Option<std::io::ErrorKind>,
+    }
+
+    impl AsyncWrite for ControlledWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            input: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            match this
+                .actions
+                .pop_front()
+                .unwrap_or(WriteAction::Accept(input.len()))
+            {
+                WriteAction::Accept(maximum) => {
+                    let accepted = maximum.min(input.len());
+                    this.accepted
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(&input[..accepted]);
+                    std::task::Poll::Ready(Ok(accepted))
+                }
+                WriteAction::Fail(kind) => std::task::Poll::Ready(Err(std::io::Error::from(kind))),
+            }
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.shutdown_error {
+                Some(kind) => Err(std::io::Error::from(kind)),
+                None => Ok(()),
+            })
+        }
+    }
+
+    fn writer(
+        actions: impl IntoIterator<Item = WriteAction>,
+    ) -> (ControlledWriter, Arc<Mutex<Vec<u8>>>) {
+        let accepted = Arc::new(Mutex::new(Vec::new()));
+        (
+            ControlledWriter {
+                actions: actions.into_iter().collect(),
+                accepted: accepted.clone(),
+                shutdown_error: None,
+            },
+            accepted,
+        )
+    }
+
+    #[test]
+    fn graph_stdin_mode_rejects_other_cli_routes_before_reserving_custody() {
+        let custody = ProductionTransportCustody::default();
+        let connection = connection();
+        assert!(
+            custody
+                .reserve_graph_recipe(
+                    true,
+                    &connection,
+                    connection.executable.as_os_str(),
+                    [OsStr::new("--args-json"), OsStr::new("{}")].into_iter(),
+                    b"{}"
+                )
+                .is_err()
+        );
+        assert_eq!(custody.private_snapshot()["entries"], json!([]));
+        drop(reserve(&custody));
+        let snapshot = custody.private_snapshot();
+        assert_eq!(snapshot["entries"][0]["stdin_mode"], "null");
+        assert!(snapshot["entries"][0].get("stdin").is_none());
+    }
+
+    #[tokio::test]
+    async fn graph_stdin_short_writes_preserve_exact_intended_and_confirmed_prefixes() {
+        let custody = ProductionTransportCustody::default();
+        let intended = b"{\"key\":\"original\"}";
+        let reservation = reserve_graph(&custody, intended);
+        let (writer, accepted) = writer([WriteAction::Accept(3), WriteAction::Accept(1)]);
+        write_graph_recipe_stdin(writer, intended, Some(&reservation))
+            .await
+            .unwrap();
+        assert_eq!(*accepted.lock().unwrap(), intended);
+        let snapshot = custody.private_snapshot();
+        let stdin = &snapshot["entries"][0]["stdin"];
+        assert_eq!(stdin["intended"]["value"], hex::encode(intended));
+        assert_eq!(
+            stdin["accepted_by_pipe_prefix"]["value"],
+            hex::encode(intended)
+        );
+        assert_eq!(
+            stdin["write_return_lengths"],
+            json!([3, 1, intended.len() - 4])
+        );
+        assert_eq!(stdin["writer_returned"], true);
+        assert_eq!(stdin["shutdown_completed"], true);
+        assert_eq!(stdin["child_input_consumption_observed"], false);
+        assert_eq!(stdin["child_eof_read_observed"], false);
+        assert_eq!(snapshot["entries"][0]["process_exit"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn graph_stdin_write_error_keeps_only_confirmed_bytes_and_does_not_claim_shutdown() {
+        let custody = ProductionTransportCustody::default();
+        let intended = b"original-input";
+        let reservation = reserve_graph(&custody, intended);
+        let (writer, accepted) = writer([
+            WriteAction::Accept(4),
+            WriteAction::Fail(std::io::ErrorKind::BrokenPipe),
+        ]);
+        let error = write_graph_recipe_stdin(writer, intended, Some(&reservation))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(*accepted.lock().unwrap(), b"orig");
+        let snapshot = custody.private_snapshot();
+        let stdin = &snapshot["entries"][0]["stdin"];
+        assert_eq!(stdin["intended"]["value"], hex::encode(intended));
+        assert_eq!(
+            stdin["accepted_by_pipe_prefix"]["value"],
+            hex::encode(b"orig")
+        );
+        assert_eq!(stdin["write_return_lengths"], json!([4]));
+        assert_eq!(stdin["write_error_kind"], "BrokenPipe");
+        assert_eq!(stdin["shutdown_attempted"], false);
+        assert_eq!(stdin["writer_returned"], false);
+        assert_eq!(stdin["writer_dropped_without_return"], false);
+    }
+
+    #[tokio::test]
+    async fn graph_stdin_zero_write_is_finite_and_preserves_the_observed_zero_return() {
+        let custody = ProductionTransportCustody::default();
+        let intended = b"original-input";
+        let reservation = reserve_graph(&custody, intended);
+        let (writer, accepted) = writer([WriteAction::Accept(4), WriteAction::Accept(0)]);
+        let error = write_graph_recipe_stdin(writer, intended, Some(&reservation))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
+        assert_eq!(*accepted.lock().unwrap(), b"orig");
+        let snapshot = custody.private_snapshot();
+        let stdin = &snapshot["entries"][0]["stdin"];
+        assert_eq!(stdin["write_return_lengths"], json!([4, 0]));
+        assert_eq!(stdin["write_error_kind"], "WriteZero");
+        assert_eq!(stdin["shutdown_completed"], false);
+    }
+
+    #[tokio::test]
+    async fn graph_stdin_shutdown_failure_does_not_erase_pipe_acceptance_or_claim_consumption() {
+        let custody = ProductionTransportCustody::default();
+        let intended = b"{\"key\":1}";
+        let reservation = reserve_graph(&custody, intended);
+        let (mut writer, _) = writer([]);
+        writer.shutdown_error = Some(std::io::ErrorKind::BrokenPipe);
+        assert!(
+            write_graph_recipe_stdin(writer, intended, Some(&reservation))
+                .await
+                .is_err()
+        );
+        let snapshot = custody.private_snapshot();
+        let stdin = &snapshot["entries"][0]["stdin"];
+        assert_eq!(stdin["all_intended_bytes_accepted_by_pipe"], true);
+        assert_eq!(stdin["shutdown_attempted"], true);
+        assert_eq!(stdin["shutdown_completed"], false);
+        assert_eq!(stdin["shutdown_error_kind"], "BrokenPipe");
+        assert_eq!(stdin["writer_returned"], false);
+        assert_eq!(stdin["child_input_consumption_observed"], false);
+    }
+
+    #[tokio::test]
+    async fn graph_stdin_deadline_preserves_real_pipe_backpressure_without_a_terminal() {
+        let custody = ProductionTransportCustody::default();
+        let intended = b"original-input";
+        let reservation = reserve_graph(&custody, intended);
+        let (writer, reader) = tokio::io::duplex(3);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                write_graph_recipe_stdin(writer, intended, Some(&reservation))
+            )
+            .await
+            .is_err()
+        );
+        reservation.transport_deadline_elapsed();
+        drop(reservation);
+        let snapshot = custody.private_snapshot();
+        let entry = &snapshot["entries"][0];
+        assert_eq!(
+            entry["stdin"]["accepted_by_pipe_prefix"]["value"],
+            hex::encode(b"ori")
+        );
+        assert_eq!(entry["stdin"]["write_return_lengths"], json!([3]));
+        assert_eq!(entry["stdin"]["writer_returned"], Value::Null);
+        assert_eq!(entry["stdin"]["writer_dropped_without_return"], true);
+        assert_eq!(entry["stdin"]["transport_deadline_elapsed_observed"], true);
+        assert_eq!(entry["stdin"]["shutdown_completed"], false);
+        assert_eq!(
+            entry["transport_terminal"]["kind"],
+            "future_dropped_without_return"
+        );
+        assert_eq!(entry["process_exit"], Value::Null);
+        drop(reader);
+    }
+
+    #[tokio::test]
+    async fn graph_stdin_changed_original_or_second_writer_is_rejected_before_writes() {
+        let custody = ProductionTransportCustody::default();
+        let intended = b"{\"key\":1}";
+        let reservation = reserve_graph(&custody, intended);
+        let (wrong_writer, wrong_bytes) = writer([]);
+        assert!(
+            write_graph_recipe_stdin(wrong_writer, b"changed", Some(&reservation))
+                .await
+                .is_err()
+        );
+        assert!(wrong_bytes.lock().unwrap().is_empty());
+        assert_eq!(
+            custody.private_snapshot()["entries"][0]["stdin"]["write_started"],
+            false
+        );
+        let (first_writer, first_bytes) = writer([]);
+        write_graph_recipe_stdin(first_writer, intended, Some(&reservation))
+            .await
+            .unwrap();
+        let before = custody.private_snapshot();
+        let (second_writer, second_bytes) = writer([]);
+        assert!(
+            write_graph_recipe_stdin(second_writer, intended, Some(&reservation))
+                .await
+                .is_err()
+        );
+        assert!(second_bytes.lock().unwrap().is_empty());
+        assert_eq!(*first_bytes.lock().unwrap(), intended);
+        assert_eq!(custody.private_snapshot(), before);
     }
 
     #[test]

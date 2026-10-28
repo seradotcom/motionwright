@@ -259,16 +259,16 @@ fn production_cursor(
 pub struct MotionwrightObserver {
     service: StudioService,
     // Only the private owner-mounted provider composition enables this read.
-    // This flag creates no authority; each request still requires real Host
-    // resource admission, a current observation and exact native font probes.
-    mounted_graph_store: bool,
+    // The physical identity is evidence of the retained Store, never authority;
+    // each request still requires real Host admission and exact native probes.
+    mounted_graph_store: Option<graph_store_provider::MountedStoreIdentity>,
 }
 
 impl MotionwrightObserver {
     pub fn new(service: StudioService) -> Self {
         Self {
             service,
-            mounted_graph_store: false,
+            mounted_graph_store: None,
         }
     }
 }
@@ -282,18 +282,24 @@ impl ObservationProvider for MotionwrightObserver {
         graph_store_provider::trace_native_observer(query, context)?;
         context.check_cancelled()?;
         let project_id = project_id_from_resource(&query.resource)?;
-        let project = self.service.project(project_id).map_err(storage_error)?;
+        let project = match (&self.mounted_graph_store, query.scope.as_str()) {
+            (Some(identity), "summary" | "graph-authoring") => {
+                identity.current_project(&self.service, project_id)?
+            }
+            _ => self.service.project(project_id).map_err(storage_error)?,
+        };
         let version = resource_version(&project)?;
 
         if query.scope == "graph-authoring" {
-            if !self.mounted_graph_store {
-                return Err(Error::new(
+            let identity = self.mounted_graph_store.as_ref().ok_or_else(|| {
+                Error::new(
                     ErrorCode::PermissionDenied,
                     "Graph native inspection requires the owner-mounted Store",
-                ));
-            }
+                )
+            })?;
             return graph_store_provider::observe_authoring_context(
                 &self.service,
+                identity,
                 query,
                 context,
                 &project,
@@ -661,7 +667,7 @@ impl ObservationProvider for MotionwrightObserver {
                 },
             )?,
             "summary" => paginate_project_observation(query, &version, 1, |_| {
-                json!({
+                let mut summary = json!({
                     "id": project.id.to_string(),
                     "title": project.title,
                     "project_schema": project.schema_version,
@@ -673,7 +679,13 @@ impl ObservationProvider for MotionwrightObserver {
                     "asset_count": project.assets.len(),
                     "lock_count": project.locks.len(),
                     "deliverable_count": project.deliverables.len()
-                })
+                });
+                if let Some(identity) = &self.mounted_graph_store {
+                    // current_project checked the retained connection against
+                    // the original baseline before this private field is exposed.
+                    summary["store_identity"] = json!(identity.as_str());
+                }
+                summary
             })?,
             "timeline" => {
                 paginate_project_observation(query, &version, project.scenes.len(), |index| {
@@ -755,7 +767,10 @@ impl ObservationProvider for MotionwrightObserver {
         };
         // An agent must never observe a slice as "current" if another editor
         // committed while this page was being constructed.
-        let latest = self.service.project(project_id).map_err(storage_error)?;
+        let latest = match (&self.mounted_graph_store, query.scope.as_str()) {
+            (Some(identity), "summary") => identity.current_project(&self.service, project_id)?,
+            _ => self.service.project(project_id).map_err(storage_error)?,
+        };
         if latest.generation != project.generation || latest.revision != project.revision {
             return Err(Error::new(
                 ErrorCode::StaleReference,
@@ -972,6 +987,35 @@ fn apply_recovery_record(
 
 struct MotionwrightRecovery {
     service: StudioService,
+    mounted_graph_store: Option<graph_store_provider::MountedStoreIdentity>,
+}
+
+impl MotionwrightRecovery {
+    fn lookup_from_current_store(
+        &self,
+        project_id: Uuid,
+        generation: Uuid,
+        raw_key: &str,
+        request_sha256: &str,
+    ) -> NativeResult<ApplyResultObservation> {
+        let shared = self.service.store();
+        let mut store = shared.lock();
+        if let Some(identity) = &self.mounted_graph_store {
+            // Authenticate the retained file at the actual receipt lookup
+            // boundary, under this same guard. A refusal says nothing about
+            // whether the original historical mutation applied.
+            identity.check_store(&store)?;
+        }
+        store
+            .lookup_apply_result_v1(
+                project_id,
+                generation,
+                raw_key,
+                request_sha256,
+                APPLY_REQUEST_ENCODING_V1,
+            )
+            .map_err(storage_error)
+    }
 }
 
 #[async_trait]
@@ -999,19 +1043,12 @@ impl RecoveryProvider for MotionwrightRecovery {
         context.check_cancelled()?;
         #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
         graph_store_provider::trace_native_recovery_lookup(request, context)?;
-        let observation = {
-            let shared = self.service.store();
-            let mut store = shared.lock();
-            store
-                .lookup_apply_result_v1(
-                    project_id,
-                    generation,
-                    raw_key,
-                    &request.request_sha256,
-                    APPLY_REQUEST_ENCODING_V1,
-                )
-                .map_err(storage_error)?
-        };
+        let observation = self.lookup_from_current_store(
+            project_id,
+            generation,
+            raw_key,
+            &request.request_sha256,
+        )?;
         context.check_cancelled()?;
         let record = apply_recovery_record(request, observation)?;
         context.check_cancelled()?;
@@ -2059,22 +2096,23 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 pub fn build_application(service: StudioService) -> NativeResult<Application> {
-    build_application_with_graph_store(service, false)
+    build_application_with_graph_store(service, None)
 }
 
 fn build_application_with_graph_store(
     service: StudioService,
-    mounted_graph_store: bool,
+    mounted_graph_store: Option<graph_store_provider::MountedStoreIdentity>,
 ) -> NativeResult<Application> {
     let observer = Arc::new(MotionwrightObserver {
         service: service.clone(),
-        mounted_graph_store,
+        mounted_graph_store: mounted_graph_store.clone(),
     });
     let mut app = Application::new(APP_ID, APP_VERSION)?
         .require_resource_read_scope()
         .with_observer(observer)
         .with_recovery(Arc::new(MotionwrightRecovery {
             service: service.clone(),
+            mounted_graph_store,
         }));
 
     let operations = [
@@ -3878,11 +3916,80 @@ mod graph_store_provider {
         requested.is_none_or(|path| path.as_os_str() == derived.as_os_str())
     }
 
+    /// A snapshot of the retained SQLite connection at the owner mount boundary.
+    /// Never serialized as authority, rebound to a new Store, or retained as a
+    /// Store borrow. Public request strings cannot construct this value.
+    #[derive(Clone)]
+    pub(super) struct MountedStoreIdentity(String);
+
+    impl MountedStoreIdentity {
+        fn capture(service: &StudioService) -> NativeResult<Self> {
+            let shared = service.store();
+            let store = shared.lock();
+            let identity = store.database_file_identity().map_err(storage_error)?;
+            if identity.is_empty() {
+                return Err(Error::new(
+                    ErrorCode::Internal,
+                    "The retained SQLite connection returned an empty physical identity",
+                ));
+            }
+            Ok(Self(identity))
+        }
+
+        pub(super) fn as_str(&self) -> &str {
+            &self.0
+        }
+
+        fn check_expected(&self, expected: &str) -> NativeResult<()> {
+            check_physical_store_identity(expected, self.as_str())
+        }
+
+        pub(super) fn check_store(&self, store: &motionwright_storage::Store) -> NativeResult<()> {
+            // This callback consumes only a borrow of the Store already locked
+            // by its caller. It neither reopens a path nor acquires another lock.
+            let current = store.database_file_identity().map_err(storage_error)?;
+            check_physical_store_identity(self.as_str(), &current)
+        }
+
+        fn check_selected_store(
+            &self,
+            expected: &str,
+            store: &motionwright_storage::Store,
+        ) -> NativeResult<()> {
+            self.check_expected(expected)?;
+            self.check_store(store)
+        }
+
+        pub(super) fn current_project(
+            &self,
+            service: &StudioService,
+            project_id: Uuid,
+        ) -> NativeResult<Project> {
+            let shared = service.store();
+            let store = shared.lock();
+            self.check_store(&store)?;
+            store.load_project(project_id).map_err(storage_error)
+        }
+    }
+
+    fn check_physical_store_identity(expected: &str, actual: &str) -> NativeResult<()> {
+        // Identity strings are opaque OS/SQLite evidence. No path, UUID,
+        // generation, case folding or normalization substitutes for exact bytes.
+        if expected.is_empty() || expected != actual {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Graph physical Store differs from its original mounted identity",
+            ));
+        }
+        Ok(())
+    }
+
     /// Not serializable or publicly constructible. A database with equal
     /// project UUID/generation/revision is not evidence of this Store binding.
     #[derive(Clone)]
     struct GraphStoreBinding {
         service: StudioService,
+        identity: MountedStoreIdentity,
     }
 
     impl GraphStoreBinding {
@@ -3900,7 +4007,8 @@ mod graph_store_provider {
             // Open the path derived above, never the caller's equal-looking path.
             // This is the only production construction site for this binding.
             let service = StudioService::open(derived).map_err(storage_error)?;
-            Ok(Some(Self { service }))
+            let identity = MountedStoreIdentity::capture(&service)?;
+            Ok(Some(Self { service, identity }))
         }
     }
 
@@ -3930,8 +4038,10 @@ mod graph_store_provider {
                 Self::Mounted(binding) => {
                     // The existing observer and the dedicated Graph handler share
                     // clones of this one StudioService, hence the same Store mutex.
-                    let mut app =
-                        build_application_with_graph_store(binding.service.clone(), true)?;
+                    let mut app = build_application_with_graph_store(
+                        binding.service.clone(),
+                        Some(binding.identity.clone()),
+                    )?;
                     // Only the owner-mounted runtime enables sealed tool negotiation.
                     // Availability still requires actual observations on each request.
                     if crate::graph_native_probe::owner_probe_mounts_present() {
@@ -4026,12 +4136,19 @@ mod graph_store_provider {
 
     pub(super) async fn observe_authoring_context(
         service: &StudioService,
+        identity: &MountedStoreIdentity,
         query: &Query,
         context: &CallContext,
         project: &Project,
     ) -> NativeResult<ObservationPage> {
         context.driver_context()?;
         context.check_cancelled()?;
+        if identity.current_project(service, project.id)? != *project {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Graph source changed before its native font inspection",
+            ));
+        }
         let selected = graph_context_selection(query, project)?;
         let version = resource_version(project)?;
         let Some(request) = selected else {
@@ -4061,29 +4178,31 @@ mod graph_store_provider {
                 request.variant_profile_ref,
             )
             .is_ok();
-        let value = if can_inspect {
+        let fonts = if can_inspect {
             // All awaits occur outside the Store mutex. Service receives the
             // original decoded request, not a request rebound to a newer state.
-            let fonts =
+            Some(
                 crate::graph_native_probe::observe_authoring_fonts(context, project, &request)
-                    .await?;
-            let inspection = NativeGraphAuthoringInspection {
-                context,
-                original_request: &request,
-                fonts,
-                failure: RefCell::new(None),
-            };
-            let result =
-                service.semantic_graph_authoring_context_with_admission(&request, &inspection);
-            if let Some(error) = inspection.failure.take() {
-                return Err(error);
-            }
-            result.map_err(storage_error)?
+                    .await?,
+            )
         } else {
-            service
-                .semantic_graph_authoring_context(&request)
-                .map_err(storage_error)?
+            None
         };
+        // Even a context without font observations passes through the same
+        // final Store guard. It cannot escape physical binding through the
+        // ordinary unmounted context path, or turn absent probes into Ready.
+        let inspection = NativeGraphAuthoringInspection {
+            context,
+            identity,
+            original_request: &request,
+            fonts,
+            failure: RefCell::new(None),
+        };
+        let result = service.semantic_graph_authoring_context_with_admission(&request, &inspection);
+        if let Some(error) = inspection.failure.take() {
+            return Err(error);
+        }
+        let value = result.map_err(storage_error)?;
         let page = ObservationPage {
             version,
             scope: query.scope.clone(),
@@ -4100,12 +4219,19 @@ mod graph_store_provider {
 
     struct NativeGraphAuthoringInspection<'a> {
         context: &'a CallContext,
+        identity: &'a MountedStoreIdentity,
         original_request: &'a SemanticGraphContextRequest,
-        fonts: crate::graph_native_probe::AuthoringFonts,
+        fonts: Option<crate::graph_native_probe::AuthoringFonts>,
         failure: RefCell<Option<Error>>,
     }
 
     impl SemanticGraphAdmission for NativeGraphAuthoringInspection<'_> {
+        fn inspect_store(&self, store: &motionwright_storage::Store) -> StorageResult<()> {
+            self.identity
+                .check_store(store)
+                .map_err(|error| retain_admission_error(&self.failure, error))
+        }
+
         fn inspect_authoring(
             &self,
             project: &Project,
@@ -4126,7 +4252,13 @@ mod graph_store_provider {
                     request.scene_id,
                     request.variant_profile_ref,
                 )?;
-                self.fonts.check(self.context, project, request)
+                let fonts = self.fonts.as_ref().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Unsupported,
+                        "Mounted Graph authoring requires original native font observations",
+                    )
+                })?;
+                fonts.check(self.context, project, request)
             };
             check().map_err(|error| retain_admission_error(&self.failure, error))
         }
@@ -4150,12 +4282,13 @@ mod graph_store_provider {
                 json!({
                     "ref": {"type":"string","minLength":1,"maxLength":512},
                     "graph": {"type":"object"},
+                    "expected_store": {"type":"string","minLength":1},
                     "request_id": {
                         "type":"string","minLength":1,"maxLength":256,
                         "description":"Optional application request key: 1..=256 UTF-8 bytes without control characters; recovery accepts at most 87 bytes."
                     }
                 }),
-                &["ref", "graph"],
+                &["ref", "graph", "expected_store"],
             ),
         );
         contract.descriptor.timeout_ms = 30_000;
@@ -4177,10 +4310,17 @@ mod graph_store_provider {
                 json!({
                     "ref":{"type":"string","minLength":1,"maxLength":512},
                     "request_id":{"type":"string","minLength":1,"maxLength":256},
+                    "expected_store":{"type":"string","minLength":1},
                     "graph_id":{"type":"string"}, "scene_id":{"type":"string"},
                     "source_snapshot":snapshot, "include_recovery":{"type":"boolean"}
                 }),
-                &["ref", "graph_id", "scene_id", "source_snapshot"],
+                &[
+                    "ref",
+                    "graph_id",
+                    "scene_id",
+                    "source_snapshot",
+                    "expected_store",
+                ],
             ),
         );
         contract.descriptor.timeout_ms = 30_000;
@@ -4192,6 +4332,7 @@ mod graph_store_provider {
     struct GraphRemoveArgs {
         #[serde(rename = "ref")]
         reference: String,
+        expected_store: String,
         #[serde(default, deserialize_with = "deserialize_graph_application_request_id")]
         request_id: Option<String>,
         graph_id: Uuid,
@@ -4225,6 +4366,7 @@ mod graph_store_provider {
                 &self.binding,
                 context,
                 &input.reference,
+                &input.expected_store,
                 input.request_id.as_deref(),
                 input.include_recovery,
                 change,
@@ -4238,6 +4380,7 @@ mod graph_store_provider {
     struct GraphUpsertArgs {
         #[serde(rename = "ref")]
         reference: String,
+        expected_store: String,
         graph: SemanticGraph,
         #[serde(default, deserialize_with = "deserialize_graph_application_request_id")]
         request_id: Option<String>,
@@ -4339,7 +4482,7 @@ mod graph_store_provider {
                 Ok(value) => value,
                 Err(_) => {
                     return Completion::NotApplied(Error::invalid(
-                        "Graph source saving requires ref and typed graph source only",
+                        "Graph source saving requires ref, physical Store identity and typed graph source",
                     ));
                 }
             };
@@ -4350,6 +4493,7 @@ mod graph_store_provider {
                 &self.binding,
                 context,
                 &input.reference,
+                &input.expected_store,
                 input.request_id.as_deref(),
                 input.include_recovery,
                 change,
@@ -4377,6 +4521,7 @@ mod graph_store_provider {
         binding: &GraphStoreBinding,
         context: &CallContext,
         reference: &str,
+        expected_store: &str,
         application_key: Option<&str>,
         include_recovery: bool,
         change: Change,
@@ -4387,6 +4532,9 @@ mod graph_store_provider {
         };
         if reference.is_empty() {
             return Completion::NotApplied(Error::invalid("Project ref is required"));
+        }
+        if let Err(error) = binding.identity.check_expected(expected_store) {
+            return Completion::NotApplied(error);
         }
         let request_id = match graph_application_request_id(
             application_key,
@@ -4450,9 +4598,12 @@ mod graph_store_provider {
 
         // The current project is read only after reserving the actual
         // operation. Release its Store lock before the bounded native probe.
-        let current = match binding.service.project(project_id) {
+        let current = match binding
+            .identity
+            .current_project(&binding.service, project_id)
+        {
             Ok(value) => value,
-            Err(error) => return Completion::NotApplied(storage_error(error)),
+            Err(error) => return native_failure(error),
         };
         let is_fresh = match check_fresh_graph_reference(bound, &current, source) {
             Ok(value) => value,
@@ -4484,6 +4635,8 @@ mod graph_store_provider {
         let admission = NativeGraphAdmission {
             context,
             permit: &permit,
+            identity: &binding.identity,
+            expected_store,
             original_request_id: request_id,
             original_change: &change,
             proposed_fonts,
@@ -4505,6 +4658,8 @@ mod graph_store_provider {
     struct NativeGraphAdmission<'a> {
         context: &'a CallContext,
         permit: &'a OperationPermit,
+        identity: &'a MountedStoreIdentity,
+        expected_store: &'a str,
         original_request_id: &'a str,
         original_change: &'a Change,
         proposed_fonts: Option<crate::graph_native_probe::ProposedFonts>,
@@ -4613,6 +4768,12 @@ mod graph_store_provider {
     }
 
     impl SemanticGraphAdmission for NativeGraphAdmission<'_> {
+        fn inspect_store(&self, store: &motionwright_storage::Store) -> StorageResult<()> {
+            self.identity
+                .check_selected_store(self.expected_store, store)
+                .map_err(|error| retain_admission_error(&self.failure, error))
+        }
+
         fn acquire<'a>(
             &'a self,
             scope: &'a SemanticGraphWriteScope<'a>,
@@ -5110,6 +5271,7 @@ mod graph_store_provider {
 
     #[cfg(test)]
     mod tests {
+        const WIRE_STORE_IDENTITY: &str = "opaque-physical-store-test-selector";
         use super::*;
         use motionwright_storage::Store;
         use semwright_native_sdk::Driver;
@@ -5164,6 +5326,350 @@ mod graph_store_provider {
             let error = completion.into_result().unwrap_err();
             assert_eq!(error.code, ErrorCode::PermissionDenied);
             assert!(error.outcome_known);
+        }
+
+        #[test]
+        fn physical_identity_comparison_preserves_exact_opaque_bytes() {
+            let original = "os:retained-identity:é";
+            check_physical_store_identity(original, original).unwrap();
+            for changed in [
+                "".to_owned(),
+                "os:retained-identity:e\u{301}".to_owned(),
+                original.to_uppercase(),
+                format!(" {original}"),
+                format!("{original} "),
+                format!("{original}\0"),
+            ] {
+                let error = check_physical_store_identity(original, &changed).unwrap_err();
+                assert_eq!(error.code, ErrorCode::StaleReference);
+                assert!(error.outcome_known);
+            }
+            assert!(check_physical_store_identity("", "").is_err());
+        }
+
+        #[tokio::test]
+        async fn mounted_summary_rejects_a_logical_clone_after_service_store_swap() {
+            let root = tempfile::tempdir().unwrap();
+            let original_path = root.path().join("original.sqlite3");
+            let clone_path = root.path().join("logical-clone.sqlite3");
+            let project = seed_database(&original_path);
+            // seed_database closes the connection before copying its bytes.
+            std::fs::copy(&original_path, &clone_path).unwrap();
+            let service = StudioService::open(&original_path).unwrap();
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
+            let independently_opened = StudioService::open(&original_path).unwrap();
+            assert_eq!(
+                identity
+                    .current_project(&independently_opened, project.id)
+                    .unwrap(),
+                project
+            );
+            let observer = MotionwrightObserver {
+                service: service.clone(),
+                mounted_graph_store: Some(identity.clone()),
+            };
+            let query = Query {
+                resource: project.resource_key(),
+                scope: "summary".into(),
+                limit: 1,
+                cursor: None,
+            };
+            // An application-local read checks only physical evidence. It is
+            // never a Host admission, a readiness result or a successful write.
+            let context = CallContext::application_local("physical-summary-only").unwrap();
+            let original = observer.observe(&query, &context).await.unwrap();
+            assert_eq!(original.items[0]["store_identity"], identity.as_str());
+            let replacement = motionwright_storage::Store::open(&clone_path).unwrap();
+            assert_eq!(replacement.load_project(project.id).unwrap(), project);
+            assert_eq!(
+                identity.check_store(&replacement).unwrap_err().code,
+                ErrorCode::StaleReference
+            );
+            let shared = service.store();
+            *shared.lock() = replacement;
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert_eq!(
+                observer.observe(&query, &context).await.unwrap_err().code,
+                ErrorCode::StaleReference
+            );
+            // The retained mount baseline survives the failed query unchanged.
+            assert_eq!(original.items[0]["store_identity"], identity.as_str());
+        }
+
+        #[test]
+        fn mounted_recovery_rejects_a_cloned_receipt_under_the_lookup_guard() {
+            let root = tempfile::tempdir().unwrap();
+            let original_path = root.path().join("receipt-original.sqlite3");
+            let clone_path = root.path().join("receipt-clone.sqlite3");
+            let project = seed_database(&original_path);
+            std::fs::copy(&original_path, &clone_path).unwrap();
+            let service = StudioService::open(&original_path).unwrap();
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
+            let recovery = MotionwrightRecovery {
+                service: service.clone(),
+                mounted_graph_store: Some(identity),
+            };
+            let change = Change::SetSceneRenderer {
+                scene_id: project.scenes[0].id,
+                renderer: motionwright_domain::RendererKind::ManimCommunity,
+            };
+            let request = apply_recovery_identity(
+                project.id,
+                project.generation,
+                "seed-graph-renderer",
+                &change,
+            )
+            .unwrap();
+            // Exercise the private Store lookup, not an invented Host context.
+            // The production RecoveryProvider still performs its original
+            // current-ref, generation and cancellation checks before this call.
+            let lookup = |recovery: &MotionwrightRecovery| {
+                recovery.lookup_from_current_store(
+                    project.id,
+                    project.generation,
+                    "seed-graph-renderer",
+                    &request.request_sha256,
+                )
+            };
+            assert!(matches!(
+                lookup(&recovery).unwrap(),
+                ApplyResultObservation::KnownVerifiedV1 { .. }
+            ));
+            let shared = service.store();
+            *shared.lock() = Store::open(&clone_path).unwrap();
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert_eq!(
+                lookup(&recovery).unwrap_err().code,
+                ErrorCode::StaleReference
+            );
+            // Ordinary recovery remains unchanged, even when the bytes contain
+            // the exact same historical receipt as the mounted original.
+            let ordinary = MotionwrightRecovery {
+                service,
+                mounted_graph_store: None,
+            };
+            assert!(matches!(
+                lookup(&ordinary).unwrap(),
+                ApplyResultObservation::KnownVerifiedV1 { .. }
+            ));
+        }
+
+        #[test]
+        fn authoring_final_store_guard_rejects_a_clone_before_readiness() {
+            let root = tempfile::tempdir().unwrap();
+            let original_path = root.path().join("context-original.sqlite3");
+            let clone_path = root.path().join("context-clone.sqlite3");
+            let project = seed_database(&original_path);
+            std::fs::copy(&original_path, &clone_path).unwrap();
+            let service = StudioService::open(&original_path).unwrap();
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
+            let request = SemanticGraphContextRequest {
+                source_snapshot: GraphSourceSnapshot::from_project(&project),
+                scene_id: project.scenes[0].id,
+                variant_profile_ref: Uuid::new_v4(),
+            };
+            let context = CallContext::application_local("context-identity-denial-only").unwrap();
+            let inspection = NativeGraphAuthoringInspection {
+                context: &context,
+                identity: &identity,
+                original_request: &request,
+                fonts: None,
+                failure: RefCell::new(None),
+            };
+            let shared = service.store();
+            *shared.lock() = Store::open(&clone_path).unwrap();
+            assert!(
+                service
+                    .semantic_graph_authoring_context_with_admission(&request, &inspection)
+                    .is_err()
+            );
+            // Physical refusal must happen before loading/validating the
+            // selected profile or inspecting fonts. No Host is manufactured.
+            let original_error = inspection.failure.take().unwrap();
+            assert_eq!(original_error.code, ErrorCode::StaleReference);
+            assert!(original_error.outcome_known);
+            assert_eq!(service.project(project.id).unwrap(), project);
+        }
+
+        #[test]
+        fn graph_write_final_store_guard_rejects_clone_before_lease_acquisition() {
+            struct PhysicalCheckThenDeny<'a> {
+                identity: &'a MountedStoreIdentity,
+                expected: &'a str,
+                acquired: std::cell::Cell<bool>,
+                failure: RefCell<Option<Error>>,
+            }
+            impl SemanticGraphAdmission for PhysicalCheckThenDeny<'_> {
+                fn inspect_store(&self, store: &Store) -> StorageResult<()> {
+                    self.identity
+                        .check_selected_store(self.expected, store)
+                        .map_err(|error| retain_admission_error(&self.failure, error))
+                }
+
+                fn acquire<'a>(
+                    &'a self,
+                    _scope: &'a SemanticGraphWriteScope<'a>,
+                ) -> StorageResult<Box<dyn SemanticGraphWriteLease + 'a>> {
+                    self.acquired.set(true);
+                    // A physical identity match never creates a write permit.
+                    Err(
+                        DomainError::Invalid("No native lease is issued by this test".into())
+                            .into(),
+                    )
+                }
+            }
+            let root = tempfile::tempdir().unwrap();
+            let original_path = root.path().join("write-original.sqlite3");
+            let clone_path = root.path().join("write-clone.sqlite3");
+            let project = seed_database(&original_path);
+            std::fs::copy(&original_path, &clone_path).unwrap();
+            let service = StudioService::open(&original_path).unwrap();
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
+            let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            let changes = [
+                Change::RemoveSemanticGraph {
+                    graph_id: graph.id,
+                    scene_id: graph.scene_id,
+                    source_snapshot: graph.authorship.source_snapshot.clone(),
+                },
+                Change::UpsertSemanticGraph {
+                    graph: Box::new(graph),
+                },
+            ];
+            let admission = PhysicalCheckThenDeny {
+                identity: &identity,
+                expected: identity.as_str(),
+                acquired: std::cell::Cell::new(false),
+                failure: RefCell::new(None),
+            };
+            assert!(
+                service
+                    .apply_semantic_graph_with_admission(
+                        "physical-denial-only",
+                        &changes[1],
+                        &admission,
+                    )
+                    .is_err()
+            );
+            assert!(admission.acquired.replace(false));
+            assert!(admission.failure.borrow().is_none());
+            let shared = service.store();
+            *shared.lock() = Store::open(&clone_path).unwrap();
+            for change in &changes {
+                assert!(
+                    service
+                        .apply_semantic_graph_with_admission(
+                            "physical-denial-only",
+                            change,
+                            &admission,
+                        )
+                        .is_err()
+                );
+                assert!(!admission.acquired.get());
+                assert_eq!(
+                    admission.failure.take().unwrap().code,
+                    ErrorCode::StaleReference
+                );
+            }
+            assert_eq!(service.project(project.id).unwrap(), project);
+        }
+
+        #[test]
+        fn graph_writes_require_a_string_physical_store_selector() {
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            let upsert = json!({
+                "ref":"native:opaque-test-marker", "graph":graph,
+                "expected_store":WIRE_STORE_IDENTITY
+            });
+            let remove = json!({
+                "ref":"native:opaque-test-marker", "graph_id":graph.id,
+                "scene_id":graph.scene_id,
+                "source_snapshot":graph.authorship.source_snapshot,
+                "expected_store":WIRE_STORE_IDENTITY
+            });
+            assert!(serde_json::from_value::<GraphUpsertArgs>(upsert.clone()).is_ok());
+            assert!(serde_json::from_value::<GraphRemoveArgs>(remove.clone()).is_ok());
+            for value in [
+                None,
+                Some(Value::Null),
+                Some(json!(true)),
+                Some(json!(7)),
+                Some(json!([])),
+                Some(json!({})),
+            ] {
+                let mut changed_upsert = upsert.clone();
+                let mut changed_remove = remove.clone();
+                for changed in [&mut changed_upsert, &mut changed_remove] {
+                    match &value {
+                        None => {
+                            changed.as_object_mut().unwrap().remove("expected_store");
+                        }
+                        Some(value) => changed["expected_store"] = value.clone(),
+                    }
+                }
+                assert!(serde_json::from_value::<GraphUpsertArgs>(changed_upsert).is_err());
+                assert!(serde_json::from_value::<GraphRemoveArgs>(changed_remove).is_err());
+            }
+            for contract in [graph_contract(), graph_remove_contract()] {
+                let input = contract.descriptor.input_schema;
+                assert!(
+                    input["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("expected_store"))
+                );
+                assert_eq!(input["properties"]["expected_store"]["type"], "string");
+            }
+        }
+
+        #[test]
+        fn physical_store_selector_never_changes_domain_source_or_recovery_identity() {
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            let mut previous = None;
+            for selector in ["first-physical-file", "second-physical-file"] {
+                let input: GraphUpsertArgs = serde_json::from_value(json!({
+                    "ref":"native:opaque-test-marker", "graph":graph,
+                    "expected_store":selector, "request_id":"same-original-key",
+                    "include_recovery":true
+                }))
+                .unwrap();
+                assert_eq!(input.expected_store, selector);
+                let removal: GraphRemoveArgs = serde_json::from_value(json!({
+                    "ref":"native:opaque-test-marker", "graph_id":graph.id,
+                    "scene_id":graph.scene_id,
+                    "source_snapshot":graph.authorship.source_snapshot,
+                    "expected_store":selector, "request_id":"same-original-key",
+                    "include_recovery":true
+                }))
+                .unwrap();
+                assert_eq!(removal.expected_store, selector);
+                let changes = [
+                    Change::UpsertSemanticGraph {
+                        graph: Box::new(input.graph),
+                    },
+                    Change::RemoveSemanticGraph {
+                        graph_id: removal.graph_id,
+                        scene_id: removal.scene_id,
+                        source_snapshot: removal.source_snapshot,
+                    },
+                ];
+                let facts = changes.map(|change| {
+                    let recovery = prepare_apply_recovery(
+                        project.id,
+                        project.generation,
+                        input.request_id.as_deref().unwrap(),
+                        &change,
+                    )
+                    .unwrap();
+                    (serde_json::to_value(&change).unwrap(), recovery.metadata)
+                });
+                if let Some(original) = &previous {
+                    assert_eq!(original, &facts);
+                }
+                previous = Some(facts);
+            }
         }
 
         #[test]
@@ -5285,6 +5791,7 @@ mod graph_store_provider {
                 .await
                 .unwrap();
             assert_eq!(page.version, resource_version(&original).unwrap());
+            assert!(page.items[0].get("store_identity").is_none());
             let graph = crate::semantic_graph_source_fixture::graph_for(&before, false);
             let app = database.into_application().unwrap();
             let handler = app.handler(GRAPH_COMMAND).unwrap();
@@ -5323,15 +5830,17 @@ mod graph_store_provider {
             let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
             // A private unit-test arrangement supplies no authority. It verifies
             // rejection, never the genuine mounted constructor or a successful write.
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
             let handler = GraphUpsertHandler {
                 binding: GraphStoreBinding {
                     service: service.clone(),
+                    identity: identity.clone(),
                 },
             };
             assert_denied(
                 handler
                     .invoke(
-                        json!({"ref":"native:untrusted-test-marker","graph":graph}),
+                        json!({"ref":"native:untrusted-test-marker","expected_store":identity.as_str(),"graph":graph}),
                         &CallContext::application_local("local-graph-denied").unwrap(),
                     )
                     .await,
@@ -5460,6 +5969,7 @@ mod graph_store_provider {
             let project = crate::semantic_graph_source_fixture::seed_domain();
             let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
             let args = json!({"ref":"native:untrusted-test-marker", "request_id":"remove-original",
+                "expected_store":WIRE_STORE_IDENTITY,
                 "graph_id":graph.id, "scene_id":graph.scene_id,
                 "source_snapshot":graph.authorship.source_snapshot, "include_recovery":true});
             let parsed: GraphRemoveArgs = serde_json::from_value(args.clone()).unwrap();
@@ -5494,15 +6004,17 @@ mod graph_store_provider {
             let project = seed_database(&path);
             let service = StudioService::open(path).unwrap();
             let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
             let handler = GraphRemoveHandler {
                 binding: GraphStoreBinding {
                     service: service.clone(),
+                    identity: identity.clone(),
                 },
             };
             assert_denied(
                 handler
                     .invoke(
-                        json!({"ref":"native:untrusted-test-marker",
+                        json!({"ref":"native:untrusted-test-marker","expected_store":identity.as_str(),
                 "graph_id":graph.id, "scene_id":graph.scene_id,
                 "source_snapshot":graph.authorship.source_snapshot}),
                         &CallContext::application_local("remove-no-host").unwrap(),
@@ -5515,7 +6027,7 @@ mod graph_store_provider {
         #[test]
         fn graph_arguments_reject_serialized_readiness_or_authority_fields() {
             let graph = crate::semantic_graph_source_fixture::raw_graph(false);
-            let source = json!({"ref":"native:opaque-test-marker","graph":graph});
+            let source = json!({"ref":"native:opaque-test-marker","graph":graph,"expected_store":WIRE_STORE_IDENTITY});
             assert!(serde_json::from_value::<GraphUpsertArgs>(source.clone()).is_ok());
             for key in [
                 "grant",
@@ -5540,7 +6052,7 @@ mod graph_store_provider {
         fn graph_application_key_is_optional_in_the_existing_contract() {
             let contract = graph_contract();
             let input = &contract.descriptor.input_schema;
-            assert_eq!(input["required"], json!(["ref", "graph"]));
+            assert_eq!(input["required"], json!(["ref", "graph", "expected_store"]));
             assert_eq!(input["properties"]["request_id"]["type"], "string");
             assert_eq!(input["properties"]["request_id"]["minLength"], 1);
             assert_eq!(input["properties"]["request_id"]["maxLength"], 256);
@@ -5555,7 +6067,7 @@ mod graph_store_provider {
         fn absent_graph_application_key_preserves_the_legacy_context_key() {
             let graph = crate::semantic_graph_source_fixture::raw_graph(false);
             let input: GraphUpsertArgs = serde_json::from_value(json!({
-                "ref":"native:opaque-test-marker","graph":graph
+                "ref":"native:opaque-test-marker","graph":graph,"expected_store":WIRE_STORE_IDENTITY
             }))
             .unwrap();
             let context = CallContext::application_local("original-wire-call").unwrap();
@@ -5587,7 +6099,7 @@ mod graph_store_provider {
             ] {
                 let graph = crate::semantic_graph_source_fixture::raw_graph(false);
                 let input: GraphUpsertArgs = serde_json::from_value(json!({
-                    "ref":"native:opaque-test-marker","graph":graph,"request_id":raw
+                    "ref":"native:opaque-test-marker","graph":graph,"expected_store":WIRE_STORE_IDENTITY,"request_id":raw
                 }))
                 .unwrap();
                 let selected = graph_application_request_id(
@@ -5626,7 +6138,7 @@ mod graph_store_provider {
             for value in [Value::Null, json!(true), json!(7), json!([]), json!({})] {
                 assert!(
                     serde_json::from_value::<GraphUpsertArgs>(json!({
-                        "ref":"native:opaque-test-marker","graph":graph,"request_id":value
+                        "ref":"native:opaque-test-marker","graph":graph,"expected_store":WIRE_STORE_IDENTITY,"request_id":value
                     }))
                     .is_err()
                 );

@@ -1,24 +1,11 @@
 //! Read-only desktop adapters over the revision-bound StudioService projections.
 //! Request identities are read markers; no mutation or consent is inferred.
-use motionwright_domain::GraphAuthoringContext;
-use motionwright_service::SemanticGraphContextRequest;
 use motionwright_service::{
     NodePage, NodePageCursor, ProjectionFailure, ProjectionHead, ProjectionIdentity, ScenePage,
     ScenePageCursor, SceneRef, StudioService,
 };
 use serde::Deserialize;
 use uuid::Uuid;
-
-/// Read-only Graph inspection. It does not issue an effect grant or promote
-/// the source to native readiness; admission remains in StudioService.
-pub fn semantic_graph_context(
-    service: &StudioService,
-    request: SemanticGraphContextRequest,
-) -> Result<GraphAuthoringContext, String> {
-    service
-        .semantic_graph_authoring_context(&request)
-        .map_err(|error| error.to_string())
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

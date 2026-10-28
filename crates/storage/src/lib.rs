@@ -677,8 +677,10 @@ fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Re
 fn checked_sqlite_storage_path(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty()
         || path
-            .to_str()
-            .is_some_and(|name| name.to_ascii_lowercase().starts_with("file:"))
+            .as_os_str()
+            .as_encoded_bytes()
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"file:"))
     {
         return Err(StorageError::UnsafeSourcePath(
             "SQLite storage requires an ordinary filesystem path".into(),
@@ -807,7 +809,11 @@ impl Store {
         };
         #[cfg(not(target_os = "macos"))]
         let sqlite_path = path.clone();
-        let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        // The retained-file identity probe temporarily changes this connection's mmap cap.
+        // A private pager prevents other connections from observing or racing that cap.
+        let flags = OpenFlags::default()
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE;
         let mut conn = Connection::open_with_flags(&sqlite_path, flags)?;
         // Register the schema6 connection fence before any transactional writer.
         // Earlier binaries have no such per-connection function, including
@@ -2139,6 +2145,24 @@ mod credential_stream_tests {
 mod tests {
     use super::*;
     use motionwright_domain::{Asset, Change};
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_uri_prefix_with_non_utf8_bytes_is_denied_before_filesystem_access() {
+        use std::os::unix::ffi::OsStrExt;
+
+        for bytes in [
+            b"file:motionwright-\xff?cache=shared".as_slice(),
+            b"FiLe:motionwright-\xff?cache=shared".as_slice(),
+        ] {
+            let path = Path::new(std::ffi::OsStr::from_bytes(bytes));
+            assert!(path.to_str().is_none());
+            assert!(matches!(
+                checked_sqlite_storage_path(path),
+                Err(StorageError::UnsafeSourcePath(_))
+            ));
+        }
+    }
 
     #[test]
     fn save_reopen_and_replay_are_exact() {

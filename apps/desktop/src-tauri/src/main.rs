@@ -16,6 +16,9 @@ mod project_library;
 mod project_projection;
 mod runtime_doctor;
 mod runtime_setup;
+mod semantic_graph_custody;
+mod semantic_graph_mutation_error;
+mod semantic_graph_recovery;
 mod workflow_native;
 
 use av_delivery::{
@@ -50,7 +53,7 @@ use motionwright_native::{
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
         MotionCanvasRenderEvidence, MotionCanvasWindowRequest, MotionCanvasWindowSummary,
-        ProductionClient, ProductionConnection, ProductionCoordinator,
+        NativeGraphRecipeClient, ProductionClient, ProductionConnection, ProductionCoordinator,
         ProductionFontInvocationKind, ProductionFontStagingCustody, ProductionFontStagingOwner,
         ProductionFontStagingScope, ProductionReceiptCustody,
     },
@@ -67,6 +70,9 @@ use project_export::{
 };
 use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
+use semantic_graph_custody::{GraphExchangeJournal, GraphExchangeRetention};
+use semantic_graph_mutation_error::GraphInvokeFailure;
+use semantic_graph_recovery::{GraphRecoveryRequest, GraphRecoveryResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -91,6 +97,7 @@ struct AppState {
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
+    graph_exchange_custody: GraphExchangeJournal,
 }
 
 #[derive(Debug, Serialize)]
@@ -513,12 +520,122 @@ async fn semantic_graph_authoring_context(
     request: motionwright_service::SemanticGraphContextRequest,
 ) -> Result<motionwright_domain::GraphAuthoringContext, String> {
     let service = state.service.clone();
+    let connections = state.runtime_connections.clone();
+    let source = request.source_snapshot.clone();
+    let client = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        graph_client_for_source(&service, &connections, &source, true)
+    })
+    .await
+    .map_err(|_| "Graph source inspection is unavailable".to_owned())??;
+
+    owner.begin_phase()?;
+    let attempt = state.graph_exchange_custody.begin("context", None)?;
+    let client = client.with_transport_custody(attempt.custody());
+    let result = client.authoring_context(&request).await;
+    if !matches!(
+        attempt.retain_result(&result),
+        GraphExchangeRetention::Published
+    ) {
+        return Err("Graph source inspection could not retain its original evidence".into());
+    }
+    let report = result.map_err(|_| "Graph source inspection is unavailable".to_owned())?;
+    let context = report
+        .outcome()
+        .map_err(|_| "Graph source inspection is unavailable".to_owned())?
+        .clone();
+
+    // A completed read supplies no later phase or write authority. Re-admit
+    // the owner and check the original snapshot before exposing this context.
+    let service = state.service.clone();
     desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        project_projection::semantic_graph_context(&service, request)
+        let current = project_library::open_project(
+            &service,
+            project_library::OpenProjectRequest {
+                project_id: request.source_snapshot.project_id,
+            },
+        )
+        .map_err(sanitized)?;
+        request
+            .source_snapshot
+            .require_current(&current)
+            .map_err(sanitized)?;
+        Ok(context)
     })
     .await
     .map_err(|_| "Graph source inspection is unavailable".to_owned())?
-    .map_err(sanitized)
+}
+
+/// Resolve a connection provisioned or configured by the trusted backend and
+/// bind the actual held Store.
+/// Historical writes/recovery retain their original revision and branch; a
+/// context read additionally requires that exact source to remain current.
+fn graph_client_for_source(
+    service: &StudioService,
+    connections: &RuntimeConnectionRegistry,
+    source: &motionwright_domain::GraphSourceSnapshot,
+    require_current: bool,
+) -> Result<NativeGraphRecipeClient, String> {
+    let project = project_library::open_project(
+        service,
+        project_library::OpenProjectRequest {
+            project_id: source.project_id,
+        },
+    )
+    .map_err(sanitized)?;
+    if project.generation != source.generation {
+        return Err("Graph source belongs to another project generation".into());
+    }
+    if require_current {
+        source.require_current(&project).map_err(sanitized)?;
+    }
+    let path = connections
+        .resolve(project.id, project.generation)?
+        .ok_or_else(|| "Select an owner-provisioned native Graph connection".to_owned())?;
+    let connection = ProductionConnection::load(&path)
+        .map_err(|_| "Native Graph connection is unavailable".to_owned())?;
+    NativeGraphRecipeClient::new(connection, service)
+        .map_err(|_| "Native Graph connection is unavailable".to_owned())
+}
+
+/// Read the original operation through the same authenticated connection and
+/// physical Store. This command consumes no edit grant and performs no retry.
+#[tauri::command]
+async fn semantic_graph_operation_recovery(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: GraphRecoveryRequest,
+) -> Result<GraphRecoveryResponse, String> {
+    let prepared = request.prepare().map_err(|error| error.to_string())?;
+    let source = prepared.source_snapshot().clone();
+    let service = state.service.clone();
+    let connections = state.runtime_connections.clone();
+    let client = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        graph_client_for_source(&service, &connections, &source, false)
+    })
+    .await
+    .map_err(|_| "Graph recovery read is unavailable".to_owned())??;
+
+    owner.begin_phase()?;
+    // Resolve publication of retained originals only. This performs no Native
+    // call and cannot replay the original mutation; recovery stays read-only.
+    state.graph_exchange_custody.publish_retained()?;
+    let attempt = state
+        .graph_exchange_custody
+        .begin("recovery", Some(prepared.request_id()))?;
+    let client = client.with_transport_custody(attempt.custody());
+    let result = client.operation_recovery(prepared.identity()).await;
+    if !matches!(
+        attempt.retain_result(&result),
+        GraphExchangeRetention::Published
+    ) {
+        return Err("Graph recovery read could not retain its original evidence".into());
+    }
+    let report = result.map_err(|_| "Graph recovery read is unavailable".to_owned())?;
+    // Read errors never classify the original mutation. Only the closed
+    // historical receipt decoder can reconcile a Recorded response.
+    prepared
+        .decode_read(report.outcome())
+        .map_err(|error| error.to_string())
 }
 
 /// Source-bound canonical inspection only; no grant, write or renderer authority.
@@ -2885,26 +3002,36 @@ async fn apply_change(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ApplyRequest,
-) -> Result<Project, String> {
+) -> Result<Project, Value> {
+    if matches!(
+        &request.change,
+        Change::UpsertSemanticGraph { .. } | Change::RemoveSemanticGraph { .. }
+    ) {
+        return apply_semantic_graph_change(owner, state, request).await;
+    }
     let scope = checked_effect_scope(
         &state,
         request.project_id,
         request.generation,
         request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::ProjectEdit,
-        scope,
-        request.request_id.trim(),
-    )?;
+    )
+    .map_err(Value::String)?;
+    state
+        .effect_grants
+        .consume(
+            request.effect_grant,
+            EffectKind::ProjectEdit,
+            scope,
+            request.request_id.trim(),
+        )
+        .map_err(Value::String)?;
     let trusted_audio_evidence =
         motionwright_native::requires_qualified_audio_boundary(&request.change);
     if trusted_audio_evidence {
-        return Err(
+        return Err(Value::String(
             "Measured audio evidence can only enter through the qualified audio import/alignment boundary."
                 .into(),
-        );
+        ));
     }
 
     let service = state.service.clone();
@@ -2932,7 +3059,106 @@ async fn apply_change(
             .map_err(sanitized)
     })
     .await
-    .map_err(|_| "Motionwright project mutation task failed".to_string())?
+    .map_err(|_| Value::String("Motionwright project mutation task failed".to_owned()))?
+    .map_err(Value::String)
+}
+
+fn graph_failure_value(
+    failure: Result<GraphInvokeFailure, semantic_graph_mutation_error::InvalidGraphRequestId>,
+) -> Value {
+    failure
+        .map(|failure| failure.to_value())
+        .unwrap_or_else(|error| Value::String(error.to_string()))
+}
+
+async fn apply_semantic_graph_change(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: ApplyRequest,
+) -> Result<Project, Value> {
+    GraphInvokeFailure::validate_request_id(&request.request_id)
+        .map_err(|error| Value::String(error.to_string()))?;
+    let rejected = || graph_failure_value(GraphInvokeFailure::before_dispatch(&request.request_id));
+    let source = match &request.change {
+        Change::UpsertSemanticGraph { graph } => graph.authorship.source_snapshot.clone(),
+        Change::RemoveSemanticGraph {
+            source_snapshot, ..
+        } => source_snapshot.clone(),
+        _ => return Err(rejected()),
+    };
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )
+    .map_err(|_| rejected())?;
+    state
+        .effect_grants
+        .consume(
+            request.effect_grant,
+            EffectKind::ProjectEdit,
+            scope,
+            &request.request_id,
+        )
+        .map_err(|_| rejected())?;
+    if source.project_id != request.project_id || source.generation != request.generation {
+        return Err(rejected());
+    }
+
+    let service = state.service.clone();
+    let connections = state.runtime_connections.clone();
+    let client = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        graph_client_for_source(&service, &connections, &source, false)
+    })
+    .await
+    .map_err(|_| rejected())?
+    .map_err(|_| rejected())?;
+    owner.begin_phase().map_err(|_| rejected())?;
+    let operation = match &request.change {
+        Change::UpsertSemanticGraph { .. } => "upsert",
+        Change::RemoveSemanticGraph { .. } => "remove",
+        _ => return Err(rejected()),
+    };
+    let attempt = state
+        .graph_exchange_custody
+        .begin(operation, Some(&request.request_id))
+        .map_err(|_| rejected())?;
+    let client = client.with_transport_custody(attempt.custody());
+    let result = match &request.change {
+        Change::UpsertSemanticGraph { graph } => client.upsert(&request.request_id, graph).await,
+        Change::RemoveSemanticGraph {
+            graph_id,
+            scene_id,
+            source_snapshot,
+        } => {
+            client
+                .remove(&request.request_id, *graph_id, *scene_id, source_snapshot)
+                .await
+        }
+        _ => return Err(rejected()),
+    };
+    // Retain both outer failures and complete reports before interpreting any
+    // result. A local custody failure cannot certify the original mutation.
+    if !matches!(
+        attempt.retain_result(&result),
+        GraphExchangeRetention::Published
+    ) {
+        return Err(graph_failure_value(GraphInvokeFailure::unknown(
+            &request.request_id,
+        )));
+    }
+    let report = result.map_err(|error| {
+        graph_failure_value(GraphInvokeFailure::from_native(&request.request_id, &error))
+    })?;
+    report
+        .outcome()
+        .map(|receipt| receipt.project().clone())
+        .map_err(|error| {
+            graph_failure_value(GraphInvokeFailure::from_native(&request.request_id, error))
+        })
+    // The original receipt Project is the ACK, including replay. Do not load
+    // a later Project or start another owner/effect phase after this result.
 }
 
 fn main() {
@@ -2959,15 +3185,17 @@ fn main() {
             build_application(service.clone())
                 .map_err(|error| format!("Native SDK contract invalid: {error}"))?;
 
+            let workspace_session = Uuid::now_v7();
             app.manage(AppState {
                 service,
-                workspace_session: Uuid::now_v7(),
+                workspace_session,
                 effect_grants: EffectGrantRegistry::default(),
                 production_receipt_custody: ProductionReceiptCustody::default(),
                 production_font_staging_custody: ProductionFontStagingCustody::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
+                graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
             });
             desktop_owner::install_owner_window(app, &owner)?;
             Ok(())
@@ -2980,6 +3208,7 @@ fn main() {
             project_scene_page,
             project_scene_nodes,
             semantic_graph_authoring_context,
+            semantic_graph_operation_recovery,
             scene_boundary_authoring_context,
             preview_branch_combination,
             issue_project_creation_grant,

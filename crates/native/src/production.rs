@@ -37,9 +37,13 @@ mod blender_original;
 mod blender_render;
 mod brand_font_staging;
 mod brand_fonts;
+pub mod graph_authoring;
 pub use brand_font_staging::{
     ProductionFontInvocationKind, ProductionFontPostcheck, ProductionFontStagingCustody,
     ProductionFontStagingOwner, ProductionFontStagingScope,
+};
+pub use graph_authoring::{
+    NativeGraphRecipeClient, NativeGraphRecipeResult, NativeGraphSaveReceipt,
 };
 mod hyperframes;
 mod manim_graph;
@@ -1343,12 +1347,26 @@ impl ProductionClient {
         // Existing optional transport custody owns original binary stdout/stderr.
         let retain_original_core = authority.is_some();
         let mut capture: Option<transport_custody::CaptureReservation> = None;
+        let mut recipe_terminal_error: Option<Error> = None;
         let result = async {
             let expected = authority
                 .or_else(|| expected_authority(command))
                 .ok_or_else(|| {
                     Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
                 })?;
+            // Only the backend-owned fixed Graph recipes select this private
+            // route. The public command allowlist does not enable recipe.run.
+            let recipe_stdin = command == graph_authoring::RECIPE_COMMAND
+                && retain_original_core
+                && expected.provider == "semwright-core"
+                && expected.source == SourceKind::Builtin
+                && binding.is_none();
+            if command == graph_authoring::RECIPE_COMMAND && !recipe_stdin {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    "Graph recipe transport requires the fixed backend route",
+                ));
+            }
             let mutation = mutation
                 || WORKFLOW_MUTATING_COMMANDS.contains(&command)
                 || HYPERFRAMES_MUTATING_COMMANDS.contains(&command)
@@ -1372,13 +1390,22 @@ impl ProductionClient {
                 .arg(&self.connection.session_file)
                 .arg("--json")
                 .arg("execute")
-                .arg(command)
-                .arg("--args-json")
-                .arg(
-                    std::str::from_utf8(&encoded)
-                        .map_err(|_| invalid("Production arguments are not UTF-8 JSON"))?,
-                )
-                .stdin(std::process::Stdio::null())
+                .arg(command);
+            if recipe_stdin {
+                child
+                    .arg("--args-file")
+                    .arg("-")
+                    .stdin(std::process::Stdio::piped());
+            } else {
+                child
+                    .arg("--args-json")
+                    .arg(
+                        std::str::from_utf8(&encoded)
+                            .map_err(|_| invalid("Production arguments are not UTF-8 JSON"))?,
+                    )
+                    .stdin(std::process::Stdio::null());
+            }
+            child
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
@@ -1400,14 +1427,24 @@ impl ProductionClient {
             if let Some(custody) = &self.transport_custody {
                 let process = child.as_std();
                 let argv: Vec<_> = process.get_args().collect();
-                capture = Some(custody.reserve(
-                    command,
-                    mutation,
-                    &self.connection,
-                    process.get_program(),
-                    argv.iter().copied(),
-                    &encoded,
-                )?);
+                capture = Some(if recipe_stdin {
+                    custody.reserve_graph_recipe(
+                        mutation,
+                        &self.connection,
+                        process.get_program(),
+                        argv.iter().copied(),
+                        &encoded,
+                    )?
+                } else {
+                    custody.reserve(
+                        command,
+                        mutation,
+                        &self.connection,
+                        process.get_program(),
+                        argv.iter().copied(),
+                        &encoded,
+                    )?
+                });
             }
             let deadline = Instant::now() + Duration::from_secs(budget_secs);
             let mut child = child.spawn().map_err(|_| {
@@ -1421,6 +1458,14 @@ impl ProductionClient {
             let post_spawn_error = |error: Error| {
                 if mutation { error.uncertain() } else { error }
             };
+            let stdin =
+                if recipe_stdin {
+                    Some(child.stdin.take().ok_or_else(|| {
+                        post_spawn_error(backend("Semwright CLI stdin unavailable"))
+                    })?)
+                } else {
+                    None
+                };
             let stdout = child
                 .stdout
                 .take()
@@ -1464,12 +1509,31 @@ impl ProductionClient {
                             post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
                         })
                     },
+                    async {
+                        if let Some(stdin) = stdin {
+                            transport_custody::write_graph_recipe_stdin(
+                                stdin,
+                                &encoded,
+                                capture.as_ref(),
+                            )
+                            .await
+                            .map_err(|_| {
+                                post_spawn_error(backend(
+                                    "Semwright CLI recipe input could not be completed",
+                                ))
+                            })?;
+                        }
+                        Ok::<_, Error>(())
+                    },
                 )
             })
             .await;
-            let (status, stdout, stderr) = match captured {
+            let (status, stdout, stderr, ()) = match captured {
                 Ok(result) => result?,
                 Err(_) => {
+                    if let Some(capture) = capture.as_ref() {
+                        capture.transport_deadline_elapsed();
+                    }
                     let error =
                         Error::new(ErrorCode::Timeout, "Canonical production command timed out");
                     return Err(post_spawn_error(error));
@@ -1498,6 +1562,26 @@ impl ProductionClient {
                 return Err(post_spawn_error(backend(
                     "Semwright CLI response command does not match the request",
                 )));
+            }
+            if recipe_stdin {
+                // The typed consumer authenticates this exact Core envelope and
+                // retains errors as well as successes. No nested envelope or
+                // provenance is reconstructed from recipe step data.
+                let original = original_core.ok_or_else(|| {
+                    post_spawn_error(backend("Original Graph recipe envelope is absent"))
+                })?;
+                if !status.success() || !envelope.ok {
+                    recipe_terminal_error = Some(envelope.error.clone().unwrap_or_else(|| {
+                        post_spawn_error(backend("Graph recipe failed without a typed error"))
+                    }));
+                }
+                return Ok(BrokerResult {
+                    value: json!({
+                        "original_envelope": original,
+                        "transport_status_success": status.success(),
+                    }),
+                    request_id: envelope.request_id,
+                });
             }
             if !status.success() || !envelope.ok {
                 let error = envelope.error.unwrap_or_else(|| {
@@ -1539,7 +1623,14 @@ impl ProductionClient {
         }
         .await;
         if let Some(capture) = capture.as_mut() {
-            capture.finish(&result);
+            if let Some(error) = recipe_terminal_error {
+                // Returning the original error envelope for typed inspection
+                // must not turn UNKNOWN/failure into successful custody metadata.
+                let terminal: NativeResult<BrokerResult> = Err(error);
+                capture.finish(&terminal);
+            } else {
+                capture.finish(&result);
+            }
         }
         result
     }
