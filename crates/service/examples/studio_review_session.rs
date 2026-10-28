@@ -56,6 +56,29 @@ use uuid::Uuid;
 const FIXTURE_LABEL: &str = "synthetic_test_fixture";
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
+fn source_locked_sdk_revision() -> Result<&'static str, String> {
+    static REVISION: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    match REVISION.get_or_init(|| {
+        let lock: Value = serde_json::from_str(include_str!("../../../SOURCE_LOCK.json"))
+            .map_err(|_| "Compiled source lock is invalid".to_owned())?;
+        let revision = lock
+            .pointer("/dependencies/semwright/revision")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Compiled source lock has no Semwright revision".to_owned())?;
+        if revision.len() != 40
+            || !revision
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("Compiled source lock has an invalid Semwright revision".to_owned());
+        }
+        Ok(revision.to_owned())
+    }) {
+        Ok(revision) => Ok(revision.as_str()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
 /// Private-process configuration seam for the native-owned test executable.
 /// This trait neither issues native authority nor exposes a JSON capability.
 ///
@@ -553,7 +576,7 @@ impl Session {
                     "project_selection": project_selection,
                     "native_sdk": {
                         "application": "motionwright",
-                        "pinned_revision": "4849b3c1dcee9b37438801b4264f59480bff9e40",
+                        "pinned_revision": source_locked_sdk_revision()?,
                         "version": "1.0.0",
                         // Selects UI routes for the explicit browser fixture;
                         // it is not a claim that this process hosts Tauri.
@@ -1225,6 +1248,46 @@ mod graph_backend_tests {
         assert!(
             !seen.changes[0].4,
             "The callback must receive the replacement Store"
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_lock_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_reports_compiled_source_locked_sdk() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = Session::open(
+            directory.path().join("source-bound-bootstrap.sqlite3"),
+            false,
+        )
+        .unwrap();
+        let response = session.handle(json!({"id": 1, "command": "bootstrap", "args": {}}));
+        assert_eq!(response["ok"], true);
+        let lock: Value = serde_json::from_str(include_str!("../../../SOURCE_LOCK.json")).unwrap();
+        let expected = lock["dependencies"]["semwright"]["revision"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            response["result"]["native_sdk"]["pinned_revision"],
+            expected
+        );
+        let sdk_packages: Vec<_> = include_str!("../../../Cargo.lock")
+            .split("[[package]]")
+            .filter(|package| {
+                package
+                    .lines()
+                    .any(|line| line.trim() == "name = \"semwright-native-sdk\"")
+            })
+            .collect();
+        assert_eq!(sdk_packages.len(), 1);
+        let suffix = format!("#{expected}\"");
+        assert!(
+            sdk_packages[0].lines().any(|line| {
+                line.trim_start().starts_with("source = ") && line.ends_with(&suffix)
+            })
         );
     }
 }
