@@ -40,6 +40,8 @@ test("Lost Graph reply survives reload and requires fresh explicit review before
   await field(page, "Vertex 1 label").fill("Later authored successor"); await page.evaluate(() => window.__GRAPH_AUTHORITY__.reject(1, "Synthetic lost reply after commit", true));
   await page.reload(); await expect(field(page, "Vertex 1 label")).toHaveValue("Later authored successor"); await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
   expect(await requestCount(page)).toBe(1); await button(page, "Refresh saved Project").click(); await button(page, "Inspect saved Graph outcome").click();
+  const pending = page.getByRole("region", { name: "Unconfirmed Graph submission" });
+  await expect(pending).toContainText("The original operation has a recorded saved result");
   await button(page, "Continue Graph as a new reviewed intention").click(); await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toHaveCount(0);
   await expect(field(page, "Vertex 1 label")).toHaveValue("Later authored successor"); expect(await requestCount(page)).toBe(1);
   await button(page, "Inspect current Graph support and sources").click(); await expect(button(page, "Save Graph changes")).toBeEnabled();
@@ -52,8 +54,9 @@ test("A real third-value source conflict remains explicit while a peer edge is p
   await button(page, "Save Graph changes").click(); await expect.poll(() => requestCount(page)).toBe(2);
   await page.evaluate(async () => {
     const next = window.__GRAPH_AUTHORITY__.project(); next.revision++; const graph = next.production_design!.semantic_graphs![0]; graph.content.vertices[0].label = "Peer concept"; graph.content.edges[0].label = "Peer relation";
-    await window.__GRAPH_AUTHORITY__.publish(next); await window.__GRAPH_AUTHORITY__.reject(2, "Synthetic stale CAS");
+    await window.__GRAPH_AUTHORITY__.publish(next); await window.__GRAPH_AUTHORITY__.rejectKnown(2);
   });
+  await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toContainText("Graph change was rejected");
   await button(page, "Inspect saved Graph outcome").click(); await button(page, "Continue Graph as a new reviewed intention").click();
   await expect(page.getByRole("region", { name: "Graph source reconciliation" })).toBeVisible(); await expect(field(page, "Vertex 1 label")).toHaveValue("Local concept");
   const conflict = page.getByLabel(/^Resolve Graph \/content\/vertices\/.*\/label$/); await expect(conflict).toHaveCount(1); await conflict.selectOption("input");
@@ -265,12 +268,17 @@ test("Graph same-revision UNKNOWN remains blocked until an explicit newer-source
   const continuation = button(page, "Continue Graph as a new reviewed intention");
   await expect(pending).toContainText("Read current source at r" + initial.revision + ". 0 history entries inspected");
   await expect(continuation, "GRAPH_UNCHANGED_BASE_REMAINS_UNKNOWN").toBeDisabled();
-  await expect(pending.getByRole("status")).toContainText("original Graph request can still commit");
+  await expect(pending.getByRole("status")).toContainText("No recorded result is available for the original operation");
   await expect(button(page, "Save semantic Graph")).toBeDisabled(); expect(await requestCount(page)).toBe(1);
   expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(initial);
   expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
-  // This existing component fixture explicitly publishes synthetic props. It
-  // does not stand in for Graph service, SQLite, renderer or native evidence.
+  // The original backend result is now observed independently of its lost
+  // Promise; no second author dispatch or invented ACK occurs.
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.recordLateOriginal(1));
+  const historical = await page.evaluate(() => window.__GRAPH_AUTHORITY__.project());
+  expect(historical.revision).toBe(initial.revision + 1);
+  // This explicitly synthetic peer then advances another revision. A newer
+  // head alone did not resolve UNKNOWN; only original recorded recovery may.
   await page.evaluate(async () => {
     const peer = window.__GRAPH_AUTHORITY__.project(); peer.revision++; peer.title = "Independent component-fixture Graph revision";
     const branch = peer.branches.find(item => item.id === peer.active_branch);
@@ -279,18 +287,20 @@ test("Graph same-revision UNKNOWN remains blocked until an explicit newer-source
     await window.__GRAPH_AUTHORITY__.publish(peer);
   });
   const advanced = await page.evaluate(() => window.__GRAPH_AUTHORITY__.project());
-  expect(advanced.revision).toBe(initial.revision + 1);
+  expect(advanced.revision).toBe(initial.revision + 2);
   expect(advanced.branches.find(item => item.id === advanced.active_branch)?.head_revision).toBe(advanced.revision);
   await button(page, "Inspect saved Graph outcome").click();
-  await expect(pending).toContainText("Read current source at r" + advanced.revision + "."); await expect(continuation).toBeEnabled();
+  await expect(pending).toContainText("Read current source at r" + advanced.revision + ".");
+  await expect(pending.getByRole("status")).toContainText("recorded saved result at r" + historical.revision);
+  await expect(continuation).toBeEnabled();
   await continuation.click(); await expect(pending).toHaveCount(0);
   await expect(field(page, "Vertex 1 label")).toHaveValue("Later Graph concept retained");
   expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
   expect(await requestCount(page)).toBe(1); expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(advanced);
-  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  await expect(button(page, "Save Graph changes")).toBeDisabled();
   await button(page, "Review current Graph and keep unrelated changes").click();
   await button(page, "Inspect current Graph support and sources").click();
-  await expect(button(page, "Save semantic Graph")).toBeEnabled(); expect(await requestCount(page)).toBe(1);
+  await expect(button(page, "Save Graph changes")).toBeEnabled(); expect(await requestCount(page)).toBe(1);
   expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
   await page.reload(); await expect(field(page, "Vertex 1 label")).toHaveValue("Later Graph concept retained");
   await expect(pending).toHaveCount(0); expect(await requestCount(page)).toBe(1);
@@ -325,7 +335,7 @@ for (const recovered of [false, true]) {
     const continuation = button(page, "Continue Graph as a new reviewed intention");
     if (recovered) {
       await expect(continuation, "RECOVERED_GRAPH_NOT_SENT_REMAINS_UNKNOWN").toBeDisabled();
-      await expect(pending.getByRole("status")).toContainText("original Graph request can still commit");
+      await expect(pending.getByRole("status")).toContainText("No recorded result is available for the original operation");
       await expect(button(page, "Save semantic Graph")).toBeDisabled();
     } else {
       await expect(continuation).toBeEnabled(); await continuation.click(); await expect(pending).toHaveCount(0);

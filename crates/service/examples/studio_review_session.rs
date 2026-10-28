@@ -46,6 +46,7 @@ use motionwright_domain::{
 use motionwright_service::{BundleFingerprint, SemanticGraphContextRequest, StudioService};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::{
     fs,
     io::{self, BufRead, Read, Write},
@@ -443,6 +444,25 @@ impl Session {
 
     fn dispatch_wire(&mut self, command: &str, args: Value) -> Result<Value, Value> {
         match command {
+            // Private test transport only. The fingerprint comes from the
+            // live SQLite pager, not a filename or a caller-owned identity.
+            // It grants no Native permission, ownership, or readiness.
+            "opened_store_identity_witness" => {
+                if !args.is_null() {
+                    return Err(Value::String(
+                        "Opened SQLite identity witness accepts no arguments".into(),
+                    ));
+                }
+                let identity = self
+                    .service
+                    .store()
+                    .lock()
+                    .database_file_identity()
+                    .map_err(|_| Value::String("Opened SQLite identity unavailable".into()))?;
+                Ok(Value::String(hex::encode(sha2::Sha256::digest(
+                    identity.as_bytes(),
+                ))))
+            }
             "semantic_graph_authoring_context" => self.graph_context(args),
             "semantic_graph_operation_recovery" => self.graph_operation_recovery(args),
             "apply_change" => self.apply_change(args),
@@ -1446,6 +1466,74 @@ mod graph_backend_tests {
         assert_eq!(observed[0].original, original);
         assert_eq!(observed[0].database, session.database);
         assert!(!observed[0].same_store);
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn read_only_witness_comes_from_held_store_and_rebinds_on_reopen() {
+        let (_directory, mut session, project, _calls) = injected_session();
+        let original = session
+            .service
+            .store()
+            .lock()
+            .database_file_identity()
+            .unwrap();
+        let expected = hex::encode(sha2::Sha256::digest(original.as_bytes()));
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        let read = session.handle(json!({
+            "id": "held-descriptor",
+            "command": "opened_store_identity_witness",
+            "args": null
+        }));
+        assert_eq!(read["id"], json!("held-descriptor"));
+        assert_eq!(read["ok"], true);
+        assert_eq!(read["result"], json!(expected));
+        assert_eq!(expected.len(), 64);
+        assert_ne!(read["result"], json!(original));
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+
+        // Caller-supplied file paths or fabricated admission are not accepted.
+        let denied = session.handle(json!({
+            "id": "injected-path",
+            "command": "opened_store_identity_witness",
+            "args": {"path": session.database, "ready": true}
+        }));
+        assert_eq!(denied["ok"], false);
+        assert_eq!(
+            denied["error"],
+            json!("Opened SQLite identity witness accepts no arguments")
+        );
+        assert!(denied.get("result").is_none());
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+
+        let reopened = session.handle(wire("reopen", json!({"project_id":project.id})));
+        assert_eq!(reopened["ok"], true);
+        let current = session
+            .service
+            .store()
+            .lock()
+            .database_file_identity()
+            .unwrap();
+        assert_eq!(current, original);
+        let fresh = session.handle(json!({
+            "id": "fresh-descriptor",
+            "command": "opened_store_identity_witness"
+        }));
+        assert_eq!(fresh["ok"], true);
+        assert_eq!(fresh["result"], json!(expected));
         assert_eq!(session.service.project(project.id).unwrap(), project);
         assert_eq!(
             session.service.history(project.id, 0, 1024).unwrap(),
