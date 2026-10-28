@@ -88,9 +88,10 @@ fn source_locked_sdk_revision() -> Result<&'static str, String> {
 /// Context and writes must use the real Native client and current read/write
 /// admission; a previous Ready response supplies no write permission.
 ///
-/// Errors must be the shared, sanitized GraphInvokeFailure wire value from the
-/// Desktop codec, preserving code/outcome_known. Original SDK diagnostics and
-/// envelopes remain private. Session passes this existing value unchanged.
+/// Mutation errors use the shared, sanitized GraphInvokeFailure Desktop codec,
+/// preserving code/outcome_known. Recovery errors describe only that read and
+/// are sanitized ordinary strings; they cannot establish the original effect's
+/// outcome. Original SDK diagnostics and envelopes remain private.
 pub trait GraphBackend {
     fn authoring_context(
         &mut self,
@@ -111,6 +112,21 @@ pub trait GraphBackend {
         request_id: &str,
         change: &Change,
     ) -> Result<Project, Value>;
+
+    /// Read the original operation through current authenticated Native authority.
+    /// The Native adapter parses the exact shared Desktop GraphRecoveryRequest,
+    /// derives its original identity without effects, and validates the historical
+    /// response with that same codec. Session introduces no recovery DTO or grant.
+    /// Every callback, including after reopen, must bind the actual current Store.
+    /// No mutation, new request key, Project refresh or automatic retry belongs here.
+    fn operation_recovery(
+        &mut self,
+        _service: &StudioService,
+        _database: &Path,
+        _request: Value,
+    ) -> Result<Value, Value> {
+        Err(Value::String("Graph recovery read is unavailable.".into()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -428,6 +444,7 @@ impl Session {
     fn dispatch_wire(&mut self, command: &str, args: Value) -> Result<Value, Value> {
         match command {
             "semantic_graph_authoring_context" => self.graph_context(args),
+            "semantic_graph_operation_recovery" => self.graph_operation_recovery(args),
             "apply_change" => self.apply_change(args),
             "project_projection_head" => projection_encoded(project_projection::head(
                 &self.service,
@@ -468,6 +485,24 @@ impl Session {
             )?)
             .map_err(Value::String)
         }
+    }
+
+    fn graph_operation_recovery(&mut self, args: Value) -> Result<Value, Value> {
+        // Unwrap only the existing JSONL invoke envelope. The exact original
+        // payload, including invalid/unknown fields, reaches the one shared
+        // Native/Desktop decoder; nothing is normalized or silently removed.
+        let original: Value =
+            request(args).map_err(|_| Value::String("Invalid Graph recovery request.".into()))?;
+        let backend = self
+            .graph_backend
+            .as_mut()
+            .ok_or_else(|| Value::String("Graph recovery read is unavailable.".into()))?;
+        backend
+            .operation_recovery(&self.service, &self.database, original)
+            // A read failure can never prove that the original write failed.
+            // Keep backend originals private even if an adapter returns an
+            // unexpected mutation error object or sensitive diagnostic string.
+            .map_err(|_| Value::String("Graph recovery read could not be completed.".into()))
     }
 
     fn apply_change(&mut self, args: Value) -> Result<Value, Value> {
@@ -1222,6 +1257,198 @@ mod graph_backend_tests {
         assert_eq!(seen.contexts.len(), 1);
         assert_eq!(seen.contexts[0].0, session.database);
         assert_eq!(seen.contexts[0].1, serde_json::to_value(request).unwrap());
+    }
+
+    struct RecoveryCall {
+        database: PathBuf,
+        original: Value,
+        same_store: bool,
+    }
+
+    struct RefusingRecoveryBackend {
+        origin: StudioService,
+        calls: Arc<Mutex<Vec<RecoveryCall>>>,
+    }
+
+    impl GraphBackend for RefusingRecoveryBackend {
+        fn authoring_context(
+            &mut self,
+            _service: &StudioService,
+            _database: &Path,
+            _request: &SemanticGraphContextRequest,
+        ) -> Result<GraphAuthoringContext, Value> {
+            panic!("A recovery read must not request authoring readiness")
+        }
+
+        fn apply_change(
+            &mut self,
+            _service: &StudioService,
+            _database: &Path,
+            _project: &Project,
+            _request_id: &str,
+            _change: &Change,
+        ) -> Result<Project, Value> {
+            panic!("A recovery read must not dispatch a mutation")
+        }
+
+        fn operation_recovery(
+            &mut self,
+            service: &StudioService,
+            database: &Path,
+            original: Value,
+        ) -> Result<Value, Value> {
+            self.calls.lock().unwrap().push(RecoveryCall {
+                database: database.to_owned(),
+                original,
+                same_store: Arc::ptr_eq(&self.origin.store(), &service.store()),
+            });
+            // Deliberately wrong private diagnostic shape proves that Session
+            // cannot expose it as a known failure of the original mutation.
+            Err(json!({
+                "outcome_known": true,
+                "private_original": "do-not-expose-recovery-diagnostic"
+            }))
+        }
+    }
+
+    fn recovery_backend(session: &mut Session) -> Arc<Mutex<Vec<RecoveryCall>>> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        session.graph_backend = Some(Box::new(RefusingRecoveryBackend {
+            origin: session.service.clone(),
+            calls: calls.clone(),
+        }));
+        calls
+    }
+
+    #[test]
+    fn recovery_without_a_native_implementation_is_an_ordinary_read_refusal() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        let original = json!({
+            "request_id": Uuid::now_v7().to_string(),
+            "change": Change::UpsertSemanticGraph {
+                graph: Box::new(semantic_graph_source_fixture::graph_for(&project, false)),
+            },
+        });
+        for has_default_backend in [true, false] {
+            if !has_default_backend {
+                session.graph_backend = None;
+            }
+            let response =
+                session.handle(wire("semantic_graph_operation_recovery", original.clone()));
+            assert_eq!(response["ok"], false);
+            assert!(response["error"].is_string());
+            assert!(response["error"].get("outcome_known").is_none());
+            assert_eq!(session.service.project(project.id).unwrap(), project);
+            assert_eq!(
+                session.service.history(project.id, 0, 1024).unwrap(),
+                journal
+            );
+        }
+        let observed = calls.lock().unwrap();
+        assert!(observed.contexts.is_empty());
+        assert!(observed.changes.is_empty());
+    }
+
+    #[test]
+    fn recovery_preserves_original_payload_without_current_revision_or_grant_requirements() {
+        let (_directory, mut session, project, _) = injected_session();
+        let calls = recovery_backend(&mut session);
+        let original = json!({
+            "request_id": Uuid::now_v7().to_string().to_uppercase(),
+            "change": Change::UpsertSemanticGraph {
+                graph: Box::new(semantic_graph_source_fixture::graph_for(&project, false)),
+            },
+        });
+        let current = session
+            .service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "later-ordinary-edit",
+                &Change::RenameProject {
+                    title: "Later live project".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(current.revision > project.revision);
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        let unused_grant = issue_edit(&mut session, &current, "grant-survives-recovery");
+        let response = session.handle(wire("semantic_graph_operation_recovery", original.clone()));
+        assert_eq!(response["ok"], false);
+        assert_eq!(
+            response["error"],
+            "Graph recovery read could not be completed."
+        );
+        assert!(!response.to_string().contains("do-not-expose"));
+        assert_eq!(session.service.project(project.id).unwrap(), current);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+        {
+            let observed = calls.lock().unwrap();
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].original, original);
+            assert_eq!(observed[0].database, session.database);
+            assert!(observed[0].same_store);
+        }
+        // Recovery neither needs nor consumes a write grant.
+        let rename = Change::RenameProject {
+            title: "Grant was not consumed".into(),
+        };
+        assert_eq!(
+            session.handle(apply_wire(
+                &current,
+                "grant-survives-recovery",
+                unused_grant,
+                &rename,
+            ))["ok"],
+            true
+        );
+    }
+
+    #[test]
+    fn recovery_after_reopen_uses_current_store_and_preserves_invalid_fields_for_shared_decoder() {
+        let (_directory, mut session, project, _) = injected_session();
+        let calls = recovery_backend(&mut session);
+        let graph = semantic_graph_source_fixture::graph_for(&project, false);
+        let original = json!({
+            "request_id": Uuid::now_v7().to_string(),
+            "change": Change::RemoveSemanticGraph {
+                graph_id: graph.id,
+                scene_id: graph.scene_id,
+                source_snapshot: GraphSourceSnapshot::from_project(&project),
+            },
+            // The shared Native decoder must reject this field. Session must
+            // not drop it and turn an invalid request into a valid one.
+            "forged_authority": {"ready": true},
+        });
+        let malformed_envelope = session.handle(json!({
+            "id": 1, "command": "semantic_graph_operation_recovery", "args": {}
+        }));
+        assert_eq!(malformed_envelope["ok"], false);
+        assert!(malformed_envelope["error"].is_string());
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(
+            session.handle(wire("reopen", json!({"project_id": project.id}),))["ok"],
+            true
+        );
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        let response = session.handle(wire("semantic_graph_operation_recovery", original.clone()));
+        assert_eq!(response["ok"], false);
+        assert!(response["error"].is_string());
+        let observed = calls.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].original, original);
+        assert_eq!(observed[0].database, session.database);
+        assert!(!observed[0].same_store);
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
     }
 
     #[test]
