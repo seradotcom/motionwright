@@ -686,8 +686,13 @@ fn retain_original_receipts(
     )?;
     evidence.json(
         "native-production-receipts.private.json",
-        &json!({"watermark":watermark,"receipts":receipts,"original_receipt_order_preserved":true,
-            "automatic_retry":false,"Host_receiver_closure_proved":false}),
+        &json!({
+            "watermark": {"latest_id": watermark.latest_id, "count": watermark.count},
+            "receipts": receipts,
+            "original_receipt_order_preserved": true,
+            "automatic_retry": false,
+            "Host_receiver_closure_proved": false,
+        }),
     )
 }
 pub(super) async fn assemble(
