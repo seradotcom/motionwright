@@ -115,6 +115,124 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
   } finally { await service.finalizeClosedStore(info.outputPath("closed-graph-lost-reply-store"), latest, [], [() => page.close()]); }
 });
 
+test("Graph removal rejects a prior-session grant and stale base, then removes once through the real UI and survives SQLite restart", async ({ page }, info) => {
+  const service = await ScopedChangeService.create({ databasePath: info.outputPath("store", "semantic-graph-removal.sqlite3"), desktopInvokeFixture: true });
+  const originalInvoke = service.invoke.bind(service);
+  let latest: Project | undefined, bodyFailed = false, primaryFailure: unknown;
+  const observations: Record<string, unknown>[] = [];
+  const successfulRemovals: { request: Record<string, unknown>; reply: Project }[] = [];
+  try {
+    const setup = await arrange(service), initial = setup.project; latest = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId);
+    await prepare(page, "causal_diagram"); await field(page, "Vertex 1 label").fill("Remove me");
+    await button(page, "Save semantic Graph").click();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 1));
+    const saved = await service.project(initial.id); latest = saved;
+    const graph = (saved as GraphProject).production_design?.semantic_graphs?.find(item => item.scene_id === setup.sceneId);
+    if (!graph) throw new Error("The actual Graph Upsert did not persist the source to remove.");
+    const remove = (project: Project) => ({ type: "remove_semantic_graph" as const, graph_id: graph.id, scene_id: setup.sceneId,
+      source_snapshot: { project_id: project.id, generation: project.generation, branch_id: project.active_branch, revision: project.revision } });
+    const savedJournal = await service.history(initial.id, initial.revision);
+    expect(savedJournal.map(event => event.change.type)).toEqual(["upsert_semantic_graph"]);
+    expect(graphRequests(service)).toHaveLength(1);
+
+    const revokedId = randomUUID(), revokedGrant = await service.grant("project_edit", saved, revokedId);
+    await service.close(); await service.start();
+    expect(await service.project(initial.id)).toEqual(saved);
+    await expect(service.invoke("apply_change", { request: { project_id: saved.id, generation: saved.generation,
+      revision: saved.revision, request_id: revokedId, effect_grant: revokedGrant.token, change: remove(saved) } })).rejects.toThrow(/Effect grant is missing, expired, or outside its exact scope/);
+    expect(await service.project(initial.id)).toEqual(saved);
+    expect(await service.history(initial.id, initial.revision)).toEqual(savedJournal);
+    observations.push({ stage: "prior_session_grant_denied", requestId: revokedId, source: remove(saved).source_snapshot, project: saved, journal: savedJournal });
+
+    const staleId = randomUUID(), staleGrant = await service.grant("project_edit", saved, staleId);
+    const peerTitle = "Unrelated rename survives Graph removal";
+    latest = await service.apply(saved, { type: "rename_project", title: peerTitle });
+    const beforeRemove = latest, peerJournal = await service.history(initial.id, initial.revision);
+    expect(beforeRemove.revision).toBe(saved.revision + 1);
+    await expect(service.invoke("apply_change", { request: { project_id: saved.id, generation: saved.generation,
+      revision: saved.revision, request_id: staleId, effect_grant: staleGrant.token, change: remove(saved) } })).rejects.toThrow(/Effect grant scope is stale/);
+    expect(await service.project(initial.id)).toEqual(beforeRemove);
+    expect(await service.history(initial.id, initial.revision)).toEqual(peerJournal);
+    expect((beforeRemove as GraphProject).production_design?.semantic_graphs?.find(item => item.id === graph.id)).toEqual(graph);
+    expect(peerJournal.map(event => event.change.type)).toEqual(["upsert_semantic_graph", "rename_project"]);
+    expect(graphRequests(service)).toHaveLength(3);
+    observations.push({ stage: "stale_remove_denied", requestId: staleId, source: remove(saved).source_snapshot, project: beforeRemove, journal: peerJournal });
+
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const reply = await originalInvoke<T>(command, args);
+      const request = args.request as Record<string, unknown> | undefined;
+      if (command === "apply_change" && (request?.change as { type?: string } | undefined)?.type === "remove_semantic_graph") {
+        const { effect_grant: _grant, ...observedRequest } = request!;
+        successfulRemovals.push({ request: structuredClone(observedRequest), reply: structuredClone(reply as unknown as Project) });
+      }
+      return reply;
+    };
+    await page.reload(); await open(page, setup.sceneId); await field(page, "Graph source").selectOption(graph.id);
+    await expect(field(page, "Vertex 1 label")).toHaveValue("Remove me");
+    await button(page, "Inspect current Graph support and sources").click();
+    await expect(button(page, "Remove saved Graph")).toBeEnabled(); await button(page, "Remove saved Graph").click();
+    await expect.poll(() => successfulRemovals.length).toBe(1);
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (beforeRemove.revision + 1));
+    latest = await service.project(initial.id);
+    const actual = successfulRemovals[0], expectedChange = remove(beforeRemove);
+    expect(actual.request.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect([revokedId, staleId]).not.toContain(actual.request.request_id);
+    expect(actual.request).toMatchObject({ project_id: beforeRemove.id, generation: beforeRemove.generation,
+      revision: beforeRemove.revision, change: expectedChange });
+    expect(actual.request.change).toEqual(expectedChange); expect(actual.reply).toEqual(latest);
+    const serializedRequests = graphRequests(service).map(entry => {
+      if (!("command" in entry.payload) || entry.payload.command !== "apply_change" || !entry.payload.args?.request)
+        throw new Error("The original Graph request was not retained in the real service transcript.");
+      const { effect_grant: _grant, ...request } = entry.payload.args.request as Record<string, unknown>; return request;
+    });
+    expect(serializedRequests).toHaveLength(4); expect(serializedRequests.at(-1)).toEqual(actual.request);
+    for (const request of serializedRequests) expect(request.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(new Set(serializedRequests.map(request => request.request_id)).size).toBe(4);
+    expect(latest.revision).toBe(beforeRemove.revision + 1); expect(latest.title).toBe(peerTitle);
+    expect(beforeRemove.branches.find(branch => branch.id === beforeRemove.active_branch)?.head_revision).toBe(beforeRemove.revision);
+    expect(latest.branches.find(branch => branch.id === latest!.active_branch)?.head_revision).toBe(latest.revision);
+    const beforeTimestamp = Date.parse(beforeRemove.updated_at), afterTimestamp = Date.parse(latest.updated_at);
+    expect(Number.isFinite(beforeTimestamp)).toBe(true); expect(Number.isFinite(afterTimestamp)).toBe(true); expect(afterTimestamp).toBeGreaterThanOrEqual(beforeTimestamp);
+    const preserved = (project: Project) => ({ ...project, revision: 0, updated_at: "",
+      branches: project.branches.map(branch => branch.id === project.active_branch ? { ...branch, head_revision: 0 } : branch),
+      production_design: { ...project.production_design,
+      semantic_graphs: ((project as GraphProject).production_design?.semantic_graphs ?? []).filter(item => item.id !== graph.id) } });
+    expect(preserved(latest)).toEqual(preserved(beforeRemove));
+    expect(((latest as GraphProject).production_design?.semantic_graphs ?? []).some(item => item.id === graph.id)).toBe(false);
+    const removedJournal = await service.history(initial.id, initial.revision);
+    expect(removedJournal.slice(0, -1)).toEqual(peerJournal);
+    expect(removedJournal.at(-1)?.revision).toBe(latest.revision); expect(removedJournal.at(-1)?.change).toEqual(expectedChange);
+    expect(graphRequests(service)).toHaveLength(4);
+    observations.push({ stage: "original_ui_remove_committed", ...actual, journal: removedJournal });
+    const committedOracle = await service.observeStoredProject(latest);
+    await service.close(); await service.start(); await page.reload(); await open(page, setup.sceneId);
+    await expect(field(page, "Graph source").locator(`option[value="${graph.id}"]`)).toHaveCount(0);
+    expect(await service.project(initial.id)).toEqual(latest); expect(await service.history(initial.id, initial.revision)).toEqual(removedJournal);
+    const reopenedOracle = await service.observeStoredProject(latest);
+    expect(reopenedOracle.project).toEqual(committedOracle.project); expect(reopenedOracle.journal).toEqual(committedOracle.journal);
+    expect(graphRequests(service)).toHaveLength(4); expect(successfulRemovals).toHaveLength(1);
+    observations.push({ stage: "removed_source_reopened", oracle: reopenedOracle, graphRequests: 4, successfulRemovals: 1 });
+  } catch (error) { bodyFailed = true; primaryFailure = error; throw error; }
+  finally {
+    service.invoke = originalInvoke;
+    const cleanupErrors: unknown[] = [];
+    let finalization: Awaited<ReturnType<ScopedChangeService["finalizeClosedStore"]>> | null = null;
+    const destination = info.outputPath("closed-graph-removal-store");
+    try { finalization = await service.finalizeClosedStore(destination, latest, [], [() => page.close()]); } catch (error) { cleanupErrors.push(error); }
+    try { await info.attach("closed-graph-removal-outcomes", { path: destination + "-outcomes.json", contentType: "application/json" }); } catch (error) { cleanupErrors.push(error); }
+    try {
+      const path = info.outputPath("graph-removal-service-evidence.json");
+      await writeFile(path, JSON.stringify({ scope: "Actual App + admitted service + SQLite only", testBodyCompleted: !bodyFailed,
+        primaryFailure: bodyFailed ? String(primaryFailure) : null, cleanupErrors: cleanupErrors.map(String), observations, finalization,
+        excludes: ["installed Tauri", "native rendered pixels", "human creative acceptance"] }, null, 2), { flag: "wx" });
+      await info.attach("graph-removal-service-evidence", { path, contentType: "application/json" });
+    } catch (error) { cleanupErrors.push(error); }
+    if (cleanupErrors.length) throw new AggregateError(bodyFailed ? [primaryFailure, ...cleanupErrors] : cleanupErrors,
+      "Graph removal evidence or closure failed; the original failure and close outcomes are retained");
+  }
+});
+
 for (const kind of ["causal_diagram", "system_flow"] as const) {
   test(`Graph ${kind} follows the edge midpoint through real saves and restores manual placement after SQLite restart`, async ({ page }, info) => {
     const service = await ScopedChangeService.create({
