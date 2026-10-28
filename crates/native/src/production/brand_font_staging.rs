@@ -1658,6 +1658,24 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn queued_film_options(project: &motionwright_domain::Project) -> FilmBuildOptions {
+        FilmBuildOptions {
+            frame_rate: semwright_media_time::Rate::new(30, 1).unwrap(),
+            font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: project
+                .scenes
+                .iter()
+                .map(|scene| crate::film::SceneFilmIntent {
+                    scene_id: scene.id,
+                    role: semwright_motion_authoring::NarrativeRole::Mechanism,
+                    archetype: semwright_motion_authoring::Archetype::Statement,
+                })
+                .collect(),
+        }
+    }
+
+    #[cfg(unix)]
     fn require_ready_error<T>(future: impl std::future::Future<Output = NativeResult<T>>) -> Error {
         let mut future = std::pin::pin!(future);
         let waker = std::task::Waker::noop();
@@ -1705,7 +1723,7 @@ mod tests {
                 counter,
             } = queued_fixture(kind);
             let expected = RevisionStamp::from(&project);
-            let options = FilmBuildOptions::default();
+            let options = queued_film_options(&project);
             let request = MotionCanvasWindowRequest {
                 deliverable_id: project.deliverables[0].id,
                 source_scene_id: Uuid::new_v4(),
@@ -1966,7 +1984,7 @@ mod tests {
         let clone = coordinator.clone();
         assert!(owner.retire_after_success(&coordinator));
         let expected = RevisionStamp::from(&project);
-        let options = FilmBuildOptions::default();
+        let options = queued_film_options(&project);
         let error = require_ready_error(clone.render_motion_canvas_segments(
             project.id,
             &expected,
@@ -2095,7 +2113,7 @@ mod tests {
                 counter,
             } = queued_fixture(kind);
             let expected = RevisionStamp::from(&project);
-            let options = FilmBuildOptions::default();
+            let options = queued_film_options(&project);
             let request = MotionCanvasWindowRequest {
                 deliverable_id: project.deliverables[0].id,
                 source_scene_id: Uuid::new_v4(),
@@ -2157,7 +2175,7 @@ mod tests {
                 counter,
             } = queued_fixture(kind);
             let expected = RevisionStamp::from(&project);
-            let options = FilmBuildOptions::default();
+            let options = queued_film_options(&project);
             let absent_deliverable = Uuid::new_v4();
             assert!(
                 project
