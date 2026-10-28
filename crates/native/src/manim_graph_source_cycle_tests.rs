@@ -57,6 +57,125 @@ fn fixture() -> (Project, GraphPackage, BTreeMap<String, Vec<u8>>) {
     (project, package, assets)
 }
 
+fn proposal_fixture() -> (Project, motionwright_domain::SemanticGraph) {
+    let mut project = source::seed_domain();
+    let output = &mut project.deliverables[0];
+    output.width = 640;
+    output.height = 360;
+    output.container = OutputContainer::Mp4;
+    output.video_codec = VideoCodec::H264;
+    output.color_space = OutputColorSpace::Rec709;
+    output.burn_in_captions = false;
+    let mut graph = source::graph_for(&project, true);
+    graph.time_range.start = motionwright_domain::RationalTime::new(0, 1).unwrap();
+    graph.time_range.duration = project.scenes[0].duration;
+    (project, graph)
+}
+
+#[test]
+fn proposed_graph_source_accepts_current_source_without_mutating_the_project() {
+    let (project, graph) = proposal_fixture();
+    let before = project.clone();
+    let change = Change::UpsertSemanticGraph {
+        graph: Box::new(graph),
+    };
+    validate_proposed_manim_semantic_graph_source(&project, &change).unwrap();
+    assert_eq!(project, before);
+    assert!(project.production_design.semantic_graphs.is_empty());
+}
+
+#[test]
+fn proposed_graph_source_rejects_incompatible_scene_and_output() {
+    for case in 0..3 {
+        let (mut project, mut graph) = proposal_fixture();
+        match case {
+            0 => project.scenes[0].renderer = RendererKind::Blender,
+            1 => project.deliverables[0].burn_in_captions = true,
+            _ => {
+                project.deliverables[0].width = 641;
+                graph.reference_frame.width = 641;
+            }
+        }
+        project.validate().unwrap();
+        let before = project.clone();
+        let change = Change::UpsertSemanticGraph {
+            graph: Box::new(graph),
+        };
+        let error = validate_proposed_manim_semantic_graph_source(&project, &change).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported, "case {case}");
+        assert_eq!(project, before);
+    }
+}
+
+#[test]
+fn proposed_graph_source_rechecks_proposed_dependencies_after_scene_selection() {
+    for case in 0..3 {
+        let (project, mut graph) = proposal_fixture();
+        validate_manim_semantic_graph_scene_output(
+            &project,
+            &GraphSourceSnapshot::from_project(&project),
+            graph.scene_id,
+            graph.variant_profile_ref,
+        )
+        .unwrap();
+        match case {
+            0 => {
+                graph.subject_ref = motionwright_domain::GraphSubjectRef::Scene {
+                    scene_id: Uuid::new_v4(),
+                };
+            }
+            1 => graph.variant_profile_ref = Uuid::new_v4(),
+            _ => graph.reference_frame.width += 2,
+        }
+        let before = project.clone();
+        let change = Change::UpsertSemanticGraph {
+            graph: Box::new(graph),
+        };
+        assert!(
+            validate_proposed_manim_semantic_graph_source(&project, &change).is_err(),
+            "case {case}"
+        );
+        assert_eq!(project, before);
+    }
+}
+
+#[test]
+fn proposed_graph_source_requires_all_four_current_snapshot_fields() {
+    for field in 0..4 {
+        let (project, mut graph) = proposal_fixture();
+        let snapshot = &mut graph.authorship.source_snapshot;
+        match field {
+            0 => snapshot.project_id = Uuid::new_v4(),
+            1 => snapshot.generation = Uuid::new_v4(),
+            2 => snapshot.branch_id = Uuid::new_v4(),
+            _ => snapshot.revision += 1,
+        }
+        let change = Change::UpsertSemanticGraph {
+            graph: Box::new(graph),
+        };
+        let error = validate_proposed_manim_semantic_graph_source(&project, &change).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference, "field {field}");
+    }
+}
+
+#[test]
+fn proposed_graph_source_rejects_domain_valid_text_outside_the_compiler_profile() {
+    let (project, mut graph) = proposal_fixture();
+    let vertex_id = graph.content.vertices()[0].id;
+    *vertex_label_mut(&mut graph, vertex_id).unwrap() = "one\ntwo\nthree\nfour\nfive".into();
+    let change = Change::UpsertSemanticGraph {
+        graph: Box::new(graph),
+    };
+    // Source/domain validity alone must not bypass the closed source compiler.
+    let mut domain_candidate = project.clone();
+    domain_candidate.apply_change(&change).unwrap();
+    domain_candidate.validate().unwrap();
+    let before = project.clone();
+    let error = validate_proposed_manim_semantic_graph_source(&project, &change).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert_eq!(project, before);
+}
+
 fn edited(origin: &GraphPackage, assets: &BTreeMap<String, Vec<u8>>) -> GraphPackage {
     let mut plan = origin.plan.clone();
     let vertex_id = plan.source.content.vertices()[0].id;

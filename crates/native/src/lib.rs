@@ -3806,7 +3806,7 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
 /// can install the Graph writer, and even that writer requires a live Host permit.
 mod graph_store_provider {
     use super::*;
-    use motionwright_domain::{DomainError, SemanticGraph};
+    use motionwright_domain::{DomainError, GraphSourceSnapshot, SemanticGraph};
     use motionwright_service::{
         SemanticGraphAdmission, SemanticGraphWriteLease, SemanticGraphWriteScope,
     };
@@ -4150,6 +4150,17 @@ mod graph_store_provider {
                     ErrorCode::PermissionDenied,
                     "Graph Store admission lost its owner-selected logical mount",
                 ));
+            }
+            // Validate only a new, current proposal here. An older proposal may
+            // be an exact durable replay; Store.apply authenticates that receipt
+            // before freshness and rejects stale inputs for a new mutation.
+            // This pure candidate check does not acquire another Store lock,
+            // execute a runtime, attest fonts or replace the live Host permit.
+            if original_source == &GraphSourceSnapshot::from_project(current) {
+                crate::manim_graph_projection::validate_proposed_manim_semantic_graph_source(
+                    current,
+                    scope.change(),
+                )?;
             }
             Ok(())
         }

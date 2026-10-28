@@ -196,6 +196,52 @@ pub fn validate_manim_semantic_graph_scene_output(
     })
 }
 
+/// Validate one new Graph source proposal against the current supplied Project.
+///
+/// The candidate is an in-memory clone. This performs no Store access, native
+/// dispatch, font probe or mutation of the supplied Project, and grants no
+/// execution or write authority. A native adapter can call it synchronously
+/// while holding its existing Store mutex and operation admission.
+///
+/// This requires a current proposal. Exact historical receipt replay belongs
+/// to Store.apply and must be resolved without applying this freshness check
+/// to an old proposal.
+pub fn validate_proposed_manim_semantic_graph_source(
+    project: &Project,
+    change: &motionwright_domain::Change,
+) -> NativeResult<()> {
+    let motionwright_domain::Change::UpsertSemanticGraph { graph } = change else {
+        return Err(invalid(
+            "Graph source validation requires UpsertSemanticGraph",
+        ));
+    };
+    graph
+        .authorship
+        .source_snapshot
+        .require_current(project)
+        .map_err(|_| stale())?;
+    let mut candidate = project.clone();
+    candidate
+        .apply_change(change)
+        .map_err(|_| unsupported("Proposed Graph violates the canonical domain or a saved lock"))?;
+    let candidate_stamp = GraphSourceSnapshot::from_project(&candidate);
+    validate_manim_semantic_graph_scene_output(
+        &candidate,
+        &candidate_stamp,
+        graph.scene_id,
+        graph.variant_profile_ref,
+    )?;
+    let plan = build_manim_semantic_graph_source_plan(
+        &candidate,
+        &candidate_stamp,
+        graph.id,
+        graph.variant_profile_ref,
+    )?;
+    motionwright_manim_profile::semantic_graph_source::compile_graph_program_source_only(&plan)
+        .map(|_| ())
+        .map_err(|_| unsupported("Proposed Graph exceeds the closed source compiler profile"))
+}
+
 pub fn build_manim_semantic_graph_source_plan(
     project: &Project,
     expected: &GraphSourceSnapshot,
