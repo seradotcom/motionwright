@@ -1,3 +1,5 @@
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::{Change, HeroConfig, Project};
 use motionwright_storage::Store;
 use uuid::Uuid;
@@ -16,7 +18,7 @@ fn legacy_database_is_read_without_revision_changes_and_upgraded_only_on_success
     let mut old = serde_json::to_value(&created).unwrap();
     old["schema_version"] = serde_json::json!(1);
     old.as_object_mut().unwrap().remove("production_design");
-    let db = rusqlite::Connection::open(&path).unwrap();
+    let db = fixture::open_v6_writer(&path);
     db.execute(
         "UPDATE projects SET document_json=?1 WHERE id=?2",
         rusqlite::params![old.to_string(), created.id.to_string()],

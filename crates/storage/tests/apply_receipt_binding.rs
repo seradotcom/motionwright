@@ -1,6 +1,8 @@
 //! Owned SQLite regressions for durable known-request result integrity.
 //! These cases never retry an UNKNOWN operation or invoke a provider.
 
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::{Change, Project};
 use motionwright_storage::{ApplyOutcome, Store};
 use rusqlite::{Connection, params, types::Value};
@@ -62,7 +64,7 @@ fn reject_replaced_result(edit: impl FnOnce(&mut ApplyOutcome, &mut Store)) {
     let mut fixture = known_request();
     let mut replaced = fixture.original.clone();
     edit(&mut replaced, &mut fixture.store);
-    let oracle = Connection::open(fixture.store.path()).unwrap();
+    let oracle = fixture::open_v6_writer(fixture.store.path());
     assert_eq!(
         oracle
             .execute(
@@ -111,7 +113,7 @@ fn versioned_binding_rejects_same_change_from_a_later_execution() {
         assert_eq!(later.project.id, outcome.project.id);
         assert_eq!(later.project.generation, outcome.project.generation);
 
-        let oracle = Connection::open(store.path()).unwrap();
+        let oracle = fixture::open_v6_writer(store.path());
         let digests: (String, String) = oracle
             .query_row(
                 "SELECT a.request_sha256,b.request_sha256
@@ -179,7 +181,7 @@ fn raw_snapshot(connection: &Connection) -> RawSnapshot {
 }
 
 fn unchanged<T>(store: &mut Store, operation: impl FnOnce(&mut Store) -> T) -> T {
-    let oracle = Connection::open(store.path()).unwrap();
+    let oracle = fixture::open_v6_writer(store.path());
     oracle.pragma_update(None, "query_only", true).unwrap();
     let before = raw_snapshot(&oracle);
     let result = operation(store);
@@ -220,8 +222,7 @@ impl KnownRequest {
     }
 
     fn binding_json(&self) -> String {
-        Connection::open(self.store.path())
-            .unwrap()
+        fixture::open_v6_writer(self.store.path())
             .query_row(
                 "SELECT apply_binding_json FROM receipts WHERE project_id=?1 AND request_id=?2",
                 params![self.base.id.to_string(), &self.original.request_id],
@@ -231,7 +232,7 @@ impl KnownRequest {
     }
 
     fn replace_binding(&self, version: i64, json: Option<&str>) {
-        let oracle = Connection::open(self.store.path()).unwrap();
+        let oracle = fixture::open_v6_writer(self.store.path());
         oracle
             .pragma_update(None, "ignore_check_constraints", true)
             .unwrap();
@@ -521,7 +522,7 @@ fn malformed_or_oversized_binding_never_downgrades_or_repairs() {
             }
             "v0-nonnull" => fixture.replace_binding(0, Some("")),
             "changed-result" | "result-whitespace" => {
-                let oracle = Connection::open(fixture.store.path()).unwrap();
+                let oracle = fixture::open_v6_writer(fixture.store.path());
                 let result = if case == "changed-result" {
                     let mut changed = fixture.original.clone();
                     changed.project.title = "Valid but uncommitted title".into();
@@ -567,7 +568,7 @@ fn invalid_sqlite_receipt_types_and_utf8_are_content_failures() {
         "result_json=CAST(x'80' AS TEXT)",
     ] {
         let mut fixture = known_request();
-        let oracle = Connection::open(fixture.store.path()).unwrap();
+        let oracle = fixture::open_v6_writer(fixture.store.path());
         oracle
             .pragma_update(None, "ignore_check_constraints", true)
             .unwrap();
@@ -704,7 +705,7 @@ fn exact_revisions_survive_above_javascript_integer_range_and_reject_sqlite_over
         let mut original = store.create_named_project("Exact revision").unwrap();
         original.revision = revision;
         original.validate().unwrap();
-        let oracle = Connection::open(store.path()).unwrap();
+        let oracle = fixture::open_v6_writer(store.path());
         assert_eq!(
             oracle
                 .execute(
@@ -840,7 +841,7 @@ fn imported_binding_fixture() -> ImportedBindingFixture {
 fn imported_v1_result_and_event_kind_share_the_canonical_verifier() {
     for case in ["changed-result-title", "wrong-event-kind"] {
         let mut fixture = imported_binding_fixture();
-        let oracle = Connection::open(fixture.store.path()).unwrap();
+        let oracle = fixture::open_v6_writer(fixture.store.path());
         match case {
             "changed-result-title" => {
                 let mut changed = fixture.applied.clone();
@@ -982,7 +983,7 @@ fn typed_creation_rejects_generic_apply_binding_markers_without_repair() {
         };
         let original = store.create_project_with_intent(&intent).unwrap();
         assert!(store.recover_project_creation(&intent).unwrap().is_some());
-        let oracle = Connection::open(store.path()).unwrap();
+        let oracle = fixture::open_v6_writer(store.path());
         let (key, version, binding): (String, i64, Option<String>) = oracle.query_row(
             "SELECT request_id,apply_binding_version,apply_binding_json FROM receipts WHERE project_id=?1",
             [original.project.id.to_string()],

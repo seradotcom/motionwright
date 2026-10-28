@@ -144,6 +144,63 @@ END"#,
     ),
 ];
 
+// Test-only source-equivalent reconstruction: a predecessor database never
+// contained the schema-six owner-writer fences or operation-budget schema.
+// Validate every object before dropping; do not weaken runtime validators.
+#[cfg(test)]
+pub(crate) fn strip_schema_six_for_predecessor_fixture(conn: &Connection) {
+    let version: u32 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 6);
+    validate_schema(conn, 6).unwrap();
+    for table in ["production_operation_roots", "production_operation_debits"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "fixture cannot discard a spent budget");
+    }
+    for table in FENCED_TABLES {
+        for event in FENCED_EVENTS {
+            let name = fence_trigger_name(table, event);
+            let ddl: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name=?1 AND type='trigger'",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(is_canonical_writer_fence(&name, table, &ddl));
+            conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
+    }
+    for (name, kind, canonical_ddl) in SCHEMA.iter().rev() {
+        let (found_kind, ddl): (String, String) = conn
+            .query_row(
+                "SELECT type,sql FROM sqlite_master WHERE name=?1",
+                [name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(found_kind, *kind);
+        assert_eq!(
+            crate::normalized_schema_sql(&ddl),
+            crate::normalized_schema_sql(canonical_ddl)
+        );
+        let action = if *kind == "trigger" {
+            "DROP TRIGGER"
+        } else {
+            "DROP TABLE"
+        };
+        conn.execute_batch(&format!("{action} {name}")).unwrap();
+    }
+    // The original CAS tables and real data remain intact, with no v6 fences.
+    crate::cas_retention::validate_schema(conn, 5).unwrap();
+    validate_schema(conn, 5).unwrap();
+}
+
 // Installed SQLite triggers invoke this connection-scoped function. An older
 // writer that already opened the database cannot supply it; SQLite rejects its
 // statement after schema invalidation. Proper current Store connections keep

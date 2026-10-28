@@ -1433,6 +1433,7 @@ mod tests {
     fn install_order_extension(path: &std::path::Path, sql: &str, retained_v2: bool) {
         let db = rusqlite::Connection::open(path).unwrap();
         if retained_v2 {
+            crate::root_operation_budget::strip_schema_six_for_predecessor_fixture(&db);
             db.execute_batch(
                 "DROP TRIGGER production_receipt_order_append;
                  DROP TABLE production_receipt_order;

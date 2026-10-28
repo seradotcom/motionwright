@@ -808,6 +808,8 @@ fn binding_migration_ddl_rolls_back_after_abrupt_exit() {
             .apply(project.id, &project.stamp(), "legacy", &change)
             .unwrap();
         // Source-equivalent schema3 representation; not an old binary.
+        // Strip only source-verified future v6 fences and empty budget data.
+        crate::root_operation_budget::strip_schema_six_for_predecessor_fixture(&store.conn);
         store
             .conn
             .execute_batch(

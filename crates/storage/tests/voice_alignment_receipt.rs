@@ -1,5 +1,7 @@
 //! Controlled domain/SQLite tests. The silent WAV and locally constructed
 //! receipts do not represent authenticated native alignment or speech quality.
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::{
     AlignmentEvidence, Asset, AudioCue, Change, CueEvidence, Project, RationalTime, RevisionStamp,
     TranscriptSegment, VOICE_ALIGNMENT_PROFILE_V1, VoiceAlignmentApplication,
@@ -161,7 +163,7 @@ impl Fixture {
         }
     }
     fn connection(&self) -> Connection {
-        let connection = Connection::open(&self.database).unwrap();
+        let connection = fixture::open_v6_writer(&self.database);
         connection.busy_timeout(Duration::from_secs(2)).unwrap();
         connection
     }

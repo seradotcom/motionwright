@@ -1,3 +1,5 @@
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::{
     Change, Project, RenderImpactCause, RenderTailInspectRequest, RevisionStamp, SourceFrameWindow,
 };
@@ -392,7 +394,7 @@ fn interruption_after_sql_revocation_can_recover_physical_eviction() {
         .unwrap();
     let path = dir.path().join("project.sqlite3");
     let manifest = manifest_path(&dir, &k);
-    let conn = rusqlite::Connection::open(path).unwrap();
+    let conn = fixture::open_v6_writer(path);
     conn.execute_batch(
         "BEGIN IMMEDIATE;
          INSERT INTO render_window_cache_evictions

@@ -1,6 +1,8 @@
 //! Owned SQLite regressions for durable known-request result integrity.
 //! These cases never retry an UNKNOWN operation or invoke a provider.
 
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::{Change, Project};
 use motionwright_storage::{ApplyOutcome, Store};
 use rusqlite::{Connection, params, types::Value};
@@ -63,7 +65,7 @@ fn reject_replaced_result(edit: impl FnOnce(&mut ApplyOutcome, &mut Store)) {
     let mut fixture = known_request();
     let mut replaced = fixture.original.clone();
     edit(&mut replaced, &mut fixture.store);
-    let oracle = Connection::open(fixture.store.path()).unwrap();
+    let oracle = fixture::open_v6_writer(fixture.store.path());
     assert_eq!(
         oracle
             .execute(
@@ -203,7 +205,7 @@ enum EventDamage {
 
 fn reject_corrupt_event(damage: EventDamage) {
     let mut fixture = known_request();
-    let oracle = Connection::open(fixture.store.path()).unwrap();
+    let oracle = fixture::open_v6_writer(fixture.store.path());
     let revision = i64::try_from(fixture.original.project.revision).unwrap();
     let project_id = fixture.base.id.to_string();
     let changed = match damage {
@@ -289,7 +291,7 @@ fn known_request_replays_its_original_snapshot_after_later_edit_and_reopen() {
     assert!(later.project.revision > first.project.revision);
     drop(store);
 
-    let oracle = Connection::open(&path).unwrap();
+    let oracle = fixture::open_v6_writer(&path);
     oracle.execute_batch("PRAGMA query_only=ON").unwrap();
     let before = snapshot(&oracle);
     let mut reopened = Store::open(&path).unwrap();

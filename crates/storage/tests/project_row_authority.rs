@@ -1,3 +1,5 @@
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::Change;
 use motionwright_domain::{Asset, DomainError, Project};
 use motionwright_storage::Store;
@@ -54,7 +56,7 @@ fn ordinary_project_commits_replay_and_reopen_keep_their_own_identity() {
     let b = store.create_named_project("Project B").unwrap();
     assert_ne!(a.id, b.id);
     assert_ne!(a.generation, b.generation);
-    let oracle = Connection::open(&path).unwrap();
+    let oracle = fixture::open_v6_writer(&path);
     oracle.execute_batch("PRAGMA query_only=ON").unwrap();
     let change_a = Change::RenameProject {
         title: "Project A edited".into(),
@@ -105,7 +107,7 @@ fn a_valid_document_in_the_wrong_row_cannot_redirect_a_commit() {
     let b = store.create_named_project("Unrelated project B").unwrap();
     assert_ne!(a.id, b.id);
     b.validate().unwrap();
-    let oracle = Connection::open(&path).unwrap();
+    let oracle = fixture::open_v6_writer(&path);
     assert_eq!(
         oracle
             .execute(
@@ -153,7 +155,7 @@ fn fixture() -> (tempfile::TempDir, Store, Connection, Project, Project) {
         .create_named_project("  Requested project A  ")
         .unwrap();
     let b = store.create_named_project("Unrelated project B").unwrap();
-    let oracle = Connection::open(&path).unwrap();
+    let oracle = fixture::open_v6_writer(&path);
     (directory, store, oracle, a, b)
 }
 

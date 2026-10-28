@@ -1,6 +1,119 @@
 use motionwright_storage::{STORAGE_SCHEMA_VERSION, Store};
 use rusqlite::Connection;
 
+// Synthetic legacy fixtures must not carry the 27 future registered-writer
+// fences or the six schema-six budget triggers. Source-equivalent layout,
+// not evidence of executing an original schema2 or schema4 binary.
+fn strip_schema_six_for_predecessor_fixture(db: &Connection) {
+    let version: u32 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, STORAGE_SCHEMA_VERSION);
+    for table in ["production_operation_roots", "production_operation_debits"] {
+        let count: i64 = db
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "fixture cannot drop spent operation budget");
+    }
+    const TABLES: [&str; 9] = [
+        "projects",
+        "receipts",
+        "events",
+        "production_receipts",
+        "production_receipt_order",
+        "render_window_cache_entries",
+        "render_window_cache_evictions",
+        "cas_store_identity",
+        "cas_import_commits",
+    ];
+    const BUDGET_TRIGGERS: [&str; 6] = [
+        "production_operation_dispatch_gate",
+        "production_operation_root_immutable",
+        "production_operation_debit_immutable",
+        "production_operation_root_nodelete",
+        "production_operation_debit_nodelete",
+        "production_operation_debit_budget_gate",
+    ];
+    let mut expected = std::collections::BTreeSet::new();
+    let mut writer_fences = Vec::new();
+    for table in TABLES {
+        for event in ["INSERT", "UPDATE", "DELETE"] {
+            let name = format!("mw_writer_v6_{table}_{}", event.to_ascii_lowercase());
+            let expected_sql = format!(
+                "CREATE TRIGGER {name} BEFORE {event} ON {table} BEGIN
+                   SELECT RAISE(ABORT,'schema6 registered writer required')
+                   WHERE motionwright_writer_epoch_guard_v6() IS NOT 6;
+                 END"
+            );
+            let actual_sql: String = db
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name=?1 AND type='trigger'",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let normalized = |sql: &str| {
+                sql.trim_end_matches(';')
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_ascii_lowercase()
+            };
+            assert_eq!(normalized(&actual_sql), normalized(&expected_sql));
+            assert!(expected.insert(name.clone()));
+            writer_fences.push(name);
+        }
+    }
+    for name in BUDGET_TRIGGERS {
+        assert!(expected.insert(name.into()));
+    }
+    let actual: std::collections::BTreeSet<String> = {
+        let mut query = db
+            .prepare(
+                "SELECT name FROM sqlite_schema WHERE type='trigger'
+                 AND (name LIKE 'mw_writer_v6_%' OR name LIKE 'production_operation_%')",
+            )
+            .unwrap();
+        query
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(expected.len(), 33);
+    assert_eq!(
+        actual, expected,
+        "predecessor fixture must contain exact source-verified v6 triggers"
+    );
+    for name in expected {
+        assert!(name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'));
+        db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+    }
+    db.execute_batch(
+        "DROP TABLE production_operation_debits;
+         DROP TABLE production_operation_roots;",
+    )
+    .unwrap();
+}
+
+// A deliberately malformed *on-disk* schema-six fixture must use a registered
+// writer marker for its direct SQL corruption. This is a SQLite version marker,
+// not a Broker permission, native actor identity or product dispatch grant.
+fn register_fixture_writer_marker(db: &Connection) {
+    use rusqlite::functions::FunctionFlags;
+    db.create_scalar_function(
+        "motionwright_writer_epoch_guard_v6",
+        0,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |_| Ok(6_i64),
+    )
+    .unwrap();
+}
+
 fn table_names(db: &Connection) -> Vec<String> {
     let mut stmt = db
         .prepare(
@@ -144,6 +257,7 @@ fn retained_v2_store(
         .unwrap();
     drop(store);
     let legacy = Connection::open(path).unwrap();
+    strip_schema_six_for_predecessor_fixture(&legacy);
     legacy
         .execute_batch(
             "DROP TRIGGER production_receipt_order_append;
@@ -452,6 +566,7 @@ fn production_order_missing_mapping_is_never_silently_backfilled_or_hidden() {
         .append_production_receipt(receipt_input(&project, "original"))
         .unwrap();
     let raw = Connection::open(&path).unwrap();
+    register_fixture_writer_marker(&raw);
     raw.execute(
         "DELETE FROM production_receipt_order WHERE receipt_id=?1",
         [receipt.id.to_string()],
@@ -498,6 +613,7 @@ fn production_order_project_mismatch_is_rejected_from_both_scopes() {
         .append_production_receipt(receipt_input(&first, "original"))
         .unwrap();
     let raw = Connection::open(&path).unwrap();
+    register_fixture_writer_marker(&raw);
     raw.execute(
         "UPDATE production_receipt_order SET project_id=?1 WHERE receipt_id=?2",
         rusqlite::params![other.id.to_string(), receipt.id.to_string()],
@@ -619,6 +735,7 @@ fn cas_v4_upgrade_preserves_project_receipts_and_sequence_values() {
         .unwrap();
     drop(store);
     let legacy = Connection::open(&path).unwrap();
+    strip_schema_six_for_predecessor_fixture(&legacy);
     legacy
         .execute_batch(
             "DROP TABLE cas_import_commits; DROP TABLE cas_store_identity; PRAGMA user_version=4;",
@@ -729,6 +846,7 @@ fn committed_import_marker_survives_project_deletion_with_foreign_keys_enabled()
     drop(target);
     let database = Connection::open(&path).unwrap();
     database.pragma_update(None, "foreign_keys", "ON").unwrap();
+    register_fixture_writer_marker(&database);
     let marker: (String, String, String) = database
         .query_row(
             "SELECT operation_id,project_id,generation FROM cas_import_commits",

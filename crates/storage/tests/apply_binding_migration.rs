@@ -1,5 +1,8 @@
 //! Source-equivalent schema-3 fixtures and physical admission invariants.
 //! These are controlled SQLite histories, not execution of an older binary.
+#[path = "support/sqlite_predecessor.rs"]
+mod fixture;
+
 use motionwright_domain::{Change, Project};
 use motionwright_storage::{
     ApplyOutcome, ApplyReceiptObservation, ProjectCreationIntent, STORAGE_SCHEMA_VERSION, Store,
@@ -52,6 +55,7 @@ fn source_equivalent_schema3(path: &Path) -> LegacyHistory {
     drop(store);
     let conn = Connection::open(path).unwrap();
     let receipts = receipt_values(&conn);
+    fixture::strip_schema_six_for_predecessor_fixture(&conn);
     // Reconstruct the old source representation. Result/request JSON and event
     // history remain byte-identical; neither new column existed in schema 3.
     conn.execute_batch(
@@ -444,6 +448,7 @@ fn schema3_import_recovery_remains_source_free_and_unverified_after_migration() 
     let conn = Connection::open(&path).unwrap();
     let receipts = receipt_values(&conn);
     let original_event_values = raw_event_values(&conn);
+    fixture::strip_schema_six_for_predecessor_fixture(&conn);
     // Reconstruct schema 3 without altering either historical result or event.
     // A Store.apply call alone would create V1, even in a "legacy" fixture.
     conn.execute_batch(

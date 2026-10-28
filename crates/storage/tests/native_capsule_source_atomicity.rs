@@ -1,4 +1,6 @@
 //! Source-save authority and SQLite rollback through the public Store API.
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::{Asset, Change, NativeCapsuleSourceSpec, Project};
 use motionwright_storage::{FileImportIntent, StorageError, Store};
 use rusqlite::Connection;
@@ -161,7 +163,7 @@ fn altered_receipt_cannot_rebind_the_capsule_to_a_foreign_asset() {
         .unwrap();
     let mut forged = original.clone();
     forged.project.production_design.capsules[0].source_asset_id = Uuid::new_v4();
-    let observer = Connection::open(&f.database).unwrap();
+    let observer = fixture::open_v6_writer(&f.database);
     observer
         .execute(
             "UPDATE receipts SET result_json=?1 WHERE project_id=?2 AND request_id=?3",

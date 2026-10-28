@@ -1,5 +1,7 @@
 //! Credential-shaped canaries exercise the real receipt admission/read APIs.
 //! They are synthetic fixture data, never host credentials. No native effect runs.
+#[path = "support/sqlite_v6_corruptible.rs"]
+mod fixture;
 use motionwright_domain::Project;
 use motionwright_storage::{ProductionReceiptInput, StorageError, Store};
 use rusqlite::{Connection, OpenFlags, params, types::Value as SqlValue};
@@ -477,7 +479,7 @@ fn escaped_legacy_payload_is_not_exposed_by_any_receipt_read_api() {
     let decoded: Value = serde_json::from_str(&encoded).unwrap();
     assert!(decoded["diagnostic"] == canary());
     {
-        let writer = Connection::open(&fixture.path).unwrap();
+        let writer = fixture::open_v6_writer(&fixture.path);
         assert_eq!(
             writer
                 .execute(
@@ -506,7 +508,7 @@ fn rejected_legacy_text_field(sql: &str, changed_request_id: bool, witness: &'st
         .unwrap();
     let marker = canary();
     {
-        let writer = Connection::open(&fixture.path).unwrap();
+        let writer = fixture::open_v6_writer(&fixture.path);
         assert_eq!(
             writer
                 .execute(sql, params![&marker, accepted.id.to_string()])
