@@ -105,7 +105,8 @@ jobs:
         run: cargo test --locked -p motionwright-native --lib path_boundary_tests -- --nocapture
 
   windows-ntfs-owner-path:
-    needs: verify-native-sdk
+    needs: [verify-native-sdk, macos-owner-path-alias]
+    if: ${{ !cancelled() && needs.verify-native-sdk.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
