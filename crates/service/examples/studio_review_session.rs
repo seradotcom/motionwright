@@ -14,6 +14,10 @@
 //! The fixture flag creates explicitly synthetic editable content only when the
 //! selected database is empty. Every scene, node and asset is committed through
 //! StudioService; project IDs, revisions and event history are never canned.
+//!
+//! A native-owned test executable may reuse this same Session and JSONL runner
+//! with a GraphBackend constructed from actual Host authority and this opened
+//! Store. The standalone executable supplies none; no input flag installs one.
 
 #[path = "../../../apps/desktop/src-tauri/src/effect_grants.rs"]
 #[allow(dead_code)] // This transport deliberately exposes only the tested local subset.
@@ -36,10 +40,10 @@ mod file_import;
 
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
-    AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, HeroConfig, NodeStyle,
-    Project, RevisionStamp, hero_node_id,
+    AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, GraphAuthoringContext,
+    HeroConfig, NodeStyle, Project, RevisionStamp, hero_node_id,
 };
-use motionwright_service::{BundleFingerprint, StudioService};
+use motionwright_service::{BundleFingerprint, SemanticGraphContextRequest, StudioService};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -51,6 +55,40 @@ use uuid::Uuid;
 
 const FIXTURE_LABEL: &str = "synthetic_test_fixture";
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// Private-process configuration seam for the native-owned test executable.
+/// This trait neither issues native authority nor exposes a JSON capability.
+///
+/// The production adapter must bind this actual StudioService Store to the
+/// genuine owner mount before dispatch, including after Session reopens it.
+/// A database path or equal project UUID/generation/revision is insufficient.
+/// Context and writes must use the real Native client and current read/write
+/// admission; a previous Ready response supplies no write permission.
+///
+/// Errors must be the shared, sanitized GraphInvokeFailure wire value from the
+/// Desktop codec, preserving code/outcome_known. Original SDK diagnostics and
+/// envelopes remain private. Session passes this existing value unchanged.
+pub trait GraphBackend {
+    fn authoring_context(
+        &mut self,
+        service: &StudioService,
+        database: &Path,
+        request: &SemanticGraphContextRequest,
+    ) -> Result<GraphAuthoringContext, Value>;
+
+    /// Session has checked the current project and consumed its one-time grant.
+    /// Only the original UpsertSemanticGraph or RemoveSemanticGraph is passed.
+    /// The original request key/change must reach the native durable operation;
+    /// do not rebase the source, normalize the key or retry an UNKNOWN effect.
+    fn apply_change(
+        &mut self,
+        service: &StudioService,
+        database: &Path,
+        project: &Project,
+        request_id: &str,
+        change: &Change,
+    ) -> Result<Project, Value>;
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -304,10 +342,21 @@ pub struct Session {
     grants: EffectGrantRegistry,
     workspace_session: Uuid,
     desktop_invoke_fixture: bool,
+    graph_backend: Option<Box<dyn GraphBackend>>,
 }
 
 impl Session {
     pub fn open(database: impl AsRef<Path>, synthetic_fixture: bool) -> Result<Self, String> {
+        Self::open_with_graph_backend(database, synthetic_fixture, |_, _| Ok(None))
+    }
+
+    /// The native-owned adapter is configured from the actual opened Store,
+    /// before synthetic project seeding. No JSON request reaches this factory.
+    pub fn open_with_graph_backend(
+        database: impl AsRef<Path>,
+        synthetic_fixture: bool,
+        factory: impl FnOnce(&Path, &StudioService) -> Result<Option<Box<dyn GraphBackend>>, String>,
+    ) -> Result<Self, String> {
         let database = database.as_ref().to_owned();
         if !database.is_absolute() {
             return Err("Choose an absolute, isolated test database path".into());
@@ -317,6 +366,7 @@ impl Session {
             .ok_or("Test database needs a parent directory")?;
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         let service = StudioService::open(&database).map_err(|error| error.to_string())?;
+        let graph_backend = factory(&database, &service)?;
         if synthetic_fixture
             && service
                 .projects(1)
@@ -331,6 +381,7 @@ impl Session {
             grants: EffectGrantRegistry::default(),
             workspace_session: Uuid::now_v7(),
             desktop_invoke_fixture: false,
+            graph_backend,
         })
     }
 
@@ -353,6 +404,8 @@ impl Session {
 
     fn dispatch_wire(&mut self, command: &str, args: Value) -> Result<Value, Value> {
         match command {
+            "semantic_graph_authoring_context" => self.graph_context(args),
+            "apply_change" => self.apply_change(args),
             "project_projection_head" => projection_encoded(project_projection::head(
                 &self.service,
                 projection_request(args)?,
@@ -369,15 +422,108 @@ impl Session {
         }
     }
 
+    fn graph_context(&mut self, args: Value) -> Result<Value, Value> {
+        let request: SemanticGraphContextRequest = request(args)?;
+        if let Some(backend) = self.graph_backend.as_mut() {
+            let project = project_library::open_project(
+                &self.service,
+                project_library::OpenProjectRequest {
+                    project_id: request.source_snapshot.project_id,
+                },
+            )
+            .map_err(|error| Value::String(error.to_string()))?;
+            request
+                .source_snapshot
+                .require_current(&project)
+                .map_err(|error| Value::String(error.to_string()))?;
+            encoded(backend.authoring_context(&self.service, &self.database, &request)?)
+                .map_err(Value::String)
+        } else {
+            encoded(project_projection::semantic_graph_context(
+                &self.service,
+                request,
+            )?)
+            .map_err(Value::String)
+        }
+    }
+
+    fn apply_change(&mut self, args: Value) -> Result<Value, Value> {
+        let request: ApplyRequest = request(args)?;
+        let project =
+            self.checked_project(request.project_id, request.generation, request.revision)?;
+        self.grants.consume(
+            request.effect_grant,
+            EffectKind::ProjectEdit,
+            EffectScope::project(request.project_id, request.generation, request.revision),
+            request.request_id.trim(),
+        )?;
+        let trusted_audio_evidence = match &request.change {
+            Change::ApplyVoiceAlignment { .. }
+            | Change::ImportMeasuredVoice { .. }
+            | Change::AddVoiceTrack { .. } => true,
+            Change::AddTranscriptSegment { segment }
+            | Change::UpsertTranscriptSegment { segment } => {
+                matches!(segment.alignment, AlignmentEvidence::Measured { .. })
+            }
+            Change::AddAudioCue { cue } | Change::UpsertAudioCue { cue } => matches!(
+                cue.evidence,
+                CueEvidence::Measured | CueEvidence::TranscriptAligned
+            ),
+            _ => false,
+        };
+        if trusted_audio_evidence {
+            return Err("Measured audio evidence can only enter through the qualified audio import/alignment boundary.".into());
+        }
+        let source = match &request.change {
+            Change::UpsertSemanticGraph { graph } => Some(&graph.authorship.source_snapshot),
+            Change::RemoveSemanticGraph {
+                source_snapshot, ..
+            } => Some(source_snapshot),
+            _ => None,
+        };
+        if let (Some(source), Some(backend)) = (source, self.graph_backend.as_mut()) {
+            // The local grant must not authorize a native operation on another
+            // project/generation selected by the Graph payload. Revision/branch
+            // freshness and exact historical replay remain the native Store's job.
+            if source.project_id != project.id || source.generation != project.generation {
+                return Err(Value::String(
+                    "Graph source and effect grant project scope differ.".into(),
+                ));
+            }
+            return encoded(backend.apply_change(
+                &self.service,
+                &self.database,
+                &project,
+                &request.request_id,
+                &request.change,
+            )?)
+            .map_err(Value::String);
+        }
+        let expected = RevisionStamp {
+            resource: project.resource_key(),
+            generation: request.generation,
+            revision: request.revision,
+        };
+        encoded(
+            self.service
+                .apply(
+                    request.project_id,
+                    &expected,
+                    &request.request_id,
+                    &request.change,
+                )
+                .map_err(|error| error.to_string())?
+                .project,
+        )
+        .map_err(Value::String)
+    }
+
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
             "scene_boundary_authoring_context" => encoded(
                 self.service
                     .scene_boundary_authoring_context(&request(args)?)
                     .map_err(|error| error.to_string())?,
-            ),
-            "semantic_graph_authoring_context" => encoded(
-                project_projection::semantic_graph_context(&self.service, request(args)?)?,
             ),
             "export_caption_sidecar" => encoded(caption_export::export_caption_sidecar(
                 &self.service,
@@ -477,56 +623,15 @@ impl Session {
                         .issue(request.effect, scope, request.subject.trim())?,
                 )
             }
-            "apply_change" => {
-                let request: ApplyRequest = request(args)?;
-                let project =
-                    self.checked_project(request.project_id, request.generation, request.revision)?;
-                self.grants.consume(
-                    request.effect_grant,
-                    EffectKind::ProjectEdit,
-                    EffectScope::project(request.project_id, request.generation, request.revision),
-                    request.request_id.trim(),
-                )?;
-                let trusted_audio_evidence = match &request.change {
-                    Change::ApplyVoiceAlignment { .. }
-                    | Change::ImportMeasuredVoice { .. }
-                    | Change::AddVoiceTrack { .. } => true,
-                    Change::AddTranscriptSegment { segment }
-                    | Change::UpsertTranscriptSegment { segment } => {
-                        matches!(segment.alignment, AlignmentEvidence::Measured { .. })
-                    }
-                    Change::AddAudioCue { cue } | Change::UpsertAudioCue { cue } => matches!(
-                        cue.evidence,
-                        CueEvidence::Measured | CueEvidence::TranscriptAligned
-                    ),
-                    _ => false,
-                };
-                if trusted_audio_evidence {
-                    return Err("Measured audio evidence can only enter through the qualified audio import/alignment boundary.".into());
-                }
-                let expected = RevisionStamp {
-                    resource: project.resource_key(),
-                    generation: request.generation,
-                    revision: request.revision,
-                };
-                encoded(
-                    self.service
-                        .apply(
-                            request.project_id,
-                            &expected,
-                            &request.request_id,
-                            &request.change,
-                        )
-                        .map_err(|error| error.to_string())?
-                        .project,
-                )
-            }
             "get_project" | "reopen" => {
                 let request: ProjectRequest = request(args)?;
                 if command == "reopen" {
                     // Replace the connection from persisted SQLite state and discard all grants.
                     let mut replacement = Self::open(&self.database, false)?;
                     replacement.desktop_invoke_fixture = self.desktop_invoke_fixture;
+                    // Grants are replaced; Native must revalidate this new Store
+                    // origin before any later backend callback dispatches.
+                    replacement.graph_backend = self.graph_backend.take();
                     *self = replacement;
                 }
                 encoded(
@@ -696,7 +801,12 @@ impl Session {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Reuse the exact CLI parser, private Session gates and bounded JSONL loop.
+/// Native owns the factory and asynchronous client/runtime; Service does not
+/// depend on Native. A standalone run has no injected Graph backend.
+pub fn run_with_graph_backend(
+    factory: impl FnOnce(&Path, &StudioService) -> Result<Option<Box<dyn GraphBackend>>, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some("--database") {
         return Err(
@@ -714,7 +824,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err("Unknown or duplicate test transport option".into()),
         }
     }
-    let mut session = Session::open(database, synthetic)?;
+    let mut session = Session::open_with_graph_backend(database, synthetic, factory)?;
     session.desktop_invoke_fixture = desktop_invoke_fixture;
     let input = io::stdin();
     let mut input = input.lock();
@@ -745,4 +855,376 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output.flush()?;
     }
     Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_with_graph_backend(|_, _| Ok(None))
+}
+
+#[cfg(test)]
+#[path = "../../domain/tests/support/semantic_graph_source.rs"]
+mod semantic_graph_source_fixture;
+
+#[cfg(test)]
+mod graph_backend_tests {
+    use super::*;
+    use motionwright_domain::{GraphAvailability, GraphSourceSnapshot, RendererKind};
+    use std::sync::{Arc, Mutex};
+
+    // These are Session wiring/parser tests. The injected backend only refuses
+    // operations; it creates no Ready, NativeRef, Host permit or successful
+    // native mutation. Installed native evidence remains a separate gate.
+    #[derive(Default)]
+    struct Calls {
+        contexts: Vec<(PathBuf, Value)>,
+        changes: Vec<(PathBuf, Project, String, Change, bool)>,
+    }
+
+    struct RejectingBackend {
+        origin: StudioService,
+        calls: Arc<Mutex<Calls>>,
+    }
+
+    fn failure_sentinel() -> Value {
+        // An opaque transport sentinel, not another GraphInvokeFailure schema
+        // or a production error encoder. In production A1's shared codec owns it.
+        json!({"code":"test_transport_sentinel","outcome_known":false})
+    }
+
+    impl GraphBackend for RejectingBackend {
+        fn authoring_context(
+            &mut self,
+            _service: &StudioService,
+            database: &Path,
+            request: &SemanticGraphContextRequest,
+        ) -> Result<GraphAuthoringContext, Value> {
+            self.calls
+                .lock()
+                .unwrap()
+                .contexts
+                .push((database.to_owned(), serde_json::to_value(request).unwrap()));
+            Err(failure_sentinel())
+        }
+
+        fn apply_change(
+            &mut self,
+            service: &StudioService,
+            database: &Path,
+            project: &Project,
+            request_id: &str,
+            change: &Change,
+        ) -> Result<Project, Value> {
+            self.calls.lock().unwrap().changes.push((
+                database.to_owned(),
+                project.clone(),
+                request_id.to_owned(),
+                change.clone(),
+                Arc::ptr_eq(&self.origin.store(), &service.store()),
+            ));
+            Err(failure_sentinel())
+        }
+    }
+
+    fn seeded_project(service: &StudioService) -> Project {
+        let project = service.create_project("Session Graph wiring test").unwrap();
+        let project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "session-seed-scene",
+                &Change::AddScene {
+                    name: "Graph source selection".into(),
+                    objective: "Check transport guards without native authority".into(),
+                    duration_seconds: 6,
+                },
+            )
+            .unwrap()
+            .project;
+        service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "session-seed-renderer",
+                &Change::SetSceneRenderer {
+                    scene_id: project.scenes[0].id,
+                    renderer: RendererKind::ManimCommunity,
+                },
+            )
+            .unwrap()
+            .project
+    }
+
+    fn injected_session() -> (tempfile::TempDir, Session, Project, Arc<Mutex<Calls>>) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.sqlite3");
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let observed = calls.clone();
+        let session = Session::open_with_graph_backend(&path, false, move |_, service| {
+            let backend: Box<dyn GraphBackend> = Box::new(RejectingBackend {
+                origin: service.clone(),
+                calls: observed,
+            });
+            Ok(Some(backend))
+        })
+        .unwrap();
+        let project = seeded_project(&session.service);
+        (directory, session, project, calls)
+    }
+
+    fn wire(command: &str, payload: Value) -> Value {
+        json!({"id":Uuid::now_v7(),"command":command,"args":{"request":payload}})
+    }
+
+    fn issue_edit(session: &mut Session, project: &Project, key: &str) -> Uuid {
+        let response = session.handle(wire(
+            "issue_effect_grant",
+            json!({
+                "effect":"project_edit","project_id":project.id,
+                "generation":project.generation,"revision":project.revision,"subject":key
+            }),
+        ));
+        assert_eq!(response["ok"], true, "{response}");
+        serde_json::from_value(response["result"]["token"].clone()).unwrap()
+    }
+
+    fn apply_wire(project: &Project, key: &str, grant: Uuid, change: &Change) -> Value {
+        wire(
+            "apply_change",
+            json!({
+                "project_id":project.id,"generation":project.generation,
+                "revision":project.revision,"request_id":key,
+                "effect_grant":grant,"change":change
+            }),
+        )
+    }
+
+    fn context_request(project: &Project) -> SemanticGraphContextRequest {
+        SemanticGraphContextRequest {
+            source_snapshot: GraphSourceSnapshot::from_project(project),
+            scene_id: project.scenes[0].id,
+            variant_profile_ref: project.deliverables[0].id,
+        }
+    }
+
+    #[test]
+    fn standalone_and_desktop_fixture_flags_do_not_install_graph_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = Session::open(directory.path().join("ordinary.sqlite3"), false).unwrap();
+        let project = seeded_project(&session.service);
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        for desktop_fixture in [false, true] {
+            session.desktop_invoke_fixture = desktop_fixture;
+            let response = session.handle(wire(
+                "semantic_graph_authoring_context",
+                serde_json::to_value(context_request(&project)).unwrap(),
+            ));
+            assert_eq!(response["ok"], true);
+            let context: GraphAuthoringContext =
+                serde_json::from_value(response["result"].clone()).unwrap();
+            assert_eq!(context.availability, GraphAvailability::Blocked);
+            assert!(session.graph_backend.is_none());
+        }
+        let change = Change::UpsertSemanticGraph {
+            graph: Box::new(semantic_graph_source_fixture::graph_for(&project, false)),
+        };
+        let grant = issue_edit(&mut session, &project, "ordinary-graph");
+        let response = session.handle(apply_wire(&project, "ordinary-graph", grant, &change));
+        assert_eq!(response["ok"], false);
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+    }
+
+    #[test]
+    fn factory_observes_the_actual_open_store_before_synthetic_seeding() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("factory-refused.sqlite3");
+        let result = Session::open_with_graph_backend(&path, true, |database, service| {
+            assert_eq!(database, path.as_path());
+            assert!(service.projects(1).unwrap().is_empty());
+            Err("Test factory refuses configuration before seeding".into())
+        });
+        assert!(result.is_err());
+        let reopened = StudioService::open(&path).unwrap();
+        assert!(reopened.projects(1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn graph_delegation_consumes_one_grant_and_preserves_the_opaque_failure_and_original_change() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        let graph = semantic_graph_source_fixture::graph_for(&project, false);
+        let changes = [
+            Change::UpsertSemanticGraph {
+                graph: Box::new(graph.clone()),
+            },
+            Change::RemoveSemanticGraph {
+                graph_id: graph.id,
+                scene_id: graph.scene_id,
+                source_snapshot: GraphSourceSnapshot::from_project(&project),
+            },
+        ];
+        for (index, change) in changes.iter().enumerate() {
+            let key = format!(" original-domain-key-{index} ");
+            let grant = issue_edit(&mut session, &project, &key);
+            let input = apply_wire(&project, &key, grant, change);
+            let response = session.handle(input.clone());
+            assert_eq!(response["id"], input["id"]);
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"], failure_sentinel());
+            assert_eq!(session.handle(input)["ok"], false);
+            let seen = calls.lock().unwrap();
+            assert_eq!(seen.changes.len(), index + 1);
+            let (database, current, original_key, original_change, same_store) =
+                &seen.changes[index];
+            assert_eq!(database, &session.database);
+            assert_eq!(current, &project);
+            assert_eq!(original_key, &key);
+            assert_eq!(original_change, change);
+            assert!(*same_store);
+        }
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+    }
+
+    #[test]
+    fn stale_scope_and_missing_grant_never_reach_the_injected_backend() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let change = Change::UpsertSemanticGraph {
+            graph: Box::new(semantic_graph_source_fixture::graph_for(&project, false)),
+        };
+        let missing = session.handle(apply_wire(&project, "missing", Uuid::now_v7(), &change));
+        assert_eq!(missing["ok"], false);
+        let grant = issue_edit(&mut session, &project, "current-guard");
+        let mut stale = apply_wire(&project, "current-guard", grant, &change);
+        stale["args"]["request"]["revision"] = json!(project.revision + 1);
+        assert_eq!(session.handle(stale)["ok"], false);
+        assert!(calls.lock().unwrap().changes.is_empty());
+        // checked_project still precedes consume, so the valid scope can use
+        // the original unconsumed grant and reaches the refusing backend once.
+        let response = session.handle(apply_wire(&project, "current-guard", grant, &change));
+        assert_eq!(response["error"], failure_sentinel());
+        assert_eq!(calls.lock().unwrap().changes.len(), 1);
+    }
+
+    #[test]
+    fn graph_source_cannot_escape_the_consumed_grant_project_or_generation() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let journal = session.service.history(project.id, 0, 1024).unwrap();
+        for field in ["project", "generation"] {
+            let mut graph = semantic_graph_source_fixture::graph_for(&project, false);
+            match field {
+                "project" => graph.authorship.source_snapshot.project_id = Uuid::now_v7(),
+                "generation" => graph.authorship.source_snapshot.generation = Uuid::now_v7(),
+                _ => unreachable!(),
+            }
+            let key = format!("wrong-graph-{field}");
+            let change = Change::UpsertSemanticGraph {
+                graph: Box::new(graph),
+            };
+            let grant = issue_edit(&mut session, &project, &key);
+            assert_eq!(
+                session.handle(apply_wire(&project, &key, grant, &change))["ok"],
+                false
+            );
+        }
+        assert!(calls.lock().unwrap().changes.is_empty());
+        assert_eq!(session.service.project(project.id).unwrap(), project);
+        assert_eq!(
+            session.service.history(project.id, 0, 1024).unwrap(),
+            journal
+        );
+    }
+
+    #[test]
+    fn non_graph_edits_keep_the_service_route_and_historical_graph_source_is_not_rebased() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let original = Change::UpsertSemanticGraph {
+            graph: Box::new(semantic_graph_source_fixture::graph_for(&project, false)),
+        };
+        let rename = Change::RenameProject {
+            title: "Ordinary service edit".into(),
+        };
+        let grant = issue_edit(&mut session, &project, "ordinary-rename");
+        let response = session.handle(apply_wire(&project, "ordinary-rename", grant, &rename));
+        assert_eq!(response["ok"], true);
+        let current: Project = serde_json::from_value(response["result"].clone()).unwrap();
+        assert_eq!(current.revision, project.revision + 1);
+        assert!(calls.lock().unwrap().changes.is_empty());
+        let grant = issue_edit(&mut session, &current, "original-graph-key");
+        let response = session.handle(apply_wire(&current, "original-graph-key", grant, &original));
+        assert_eq!(response["error"], failure_sentinel());
+        let seen = calls.lock().unwrap();
+        assert_eq!(seen.changes[0].1, current);
+        assert_eq!(seen.changes[0].3, original);
+        assert_eq!(session.service.project(project.id).unwrap(), current);
+    }
+
+    #[test]
+    fn context_and_invoke_parsers_cannot_install_or_bypass_the_native_backend() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let request = context_request(&project);
+        let response = session.handle(wire(
+            "semantic_graph_authoring_context",
+            serde_json::to_value(&request).unwrap(),
+        ));
+        assert_eq!(response["error"], failure_sentinel());
+        let mut stale = request.clone();
+        stale.source_snapshot.branch_id = Uuid::now_v7();
+        assert_eq!(
+            session.handle(wire(
+                "semantic_graph_authoring_context",
+                serde_json::to_value(stale).unwrap()
+            ))["ok"],
+            false
+        );
+        let mut forged = serde_json::to_value(&request).unwrap();
+        forged["availability"] = json!("ready");
+        assert_eq!(
+            session.handle(wire("semantic_graph_authoring_context", forged))["ok"],
+            false
+        );
+        let mut forged_invoke = wire(
+            "semantic_graph_authoring_context",
+            serde_json::to_value(&request).unwrap(),
+        );
+        forged_invoke["graph_backend"] = json!({"ready":true});
+        assert_eq!(session.handle(forged_invoke)["ok"], false);
+        let seen = calls.lock().unwrap();
+        assert_eq!(seen.contexts.len(), 1);
+        assert_eq!(seen.contexts[0].0, session.database);
+        assert_eq!(seen.contexts[0].1, serde_json::to_value(request).unwrap());
+    }
+
+    #[test]
+    fn reopen_discards_grants_and_exposes_the_new_actual_store_to_the_backend() {
+        let (_directory, mut session, project, calls) = injected_session();
+        let change = Change::UpsertSemanticGraph {
+            graph: Box::new(semantic_graph_source_fixture::graph_for(&project, false)),
+        };
+        let previous_session = session.workspace_session;
+        let grant = issue_edit(&mut session, &project, "before-reopen");
+        let response = session.handle(wire("reopen", json!({"project_id":project.id})));
+        assert_eq!(response["ok"], true);
+        assert_ne!(session.workspace_session, previous_session);
+        assert_eq!(
+            session.handle(apply_wire(&project, "before-reopen", grant, &change))["ok"],
+            false
+        );
+        assert!(calls.lock().unwrap().changes.is_empty());
+        let grant = issue_edit(&mut session, &project, "after-reopen");
+        let response = session.handle(apply_wire(&project, "after-reopen", grant, &change));
+        assert_eq!(response["error"], failure_sentinel());
+        let seen = calls.lock().unwrap();
+        assert_eq!(seen.changes.len(), 1);
+        assert!(
+            !seen.changes[0].4,
+            "The callback must receive the replacement Store"
+        );
+    }
 }

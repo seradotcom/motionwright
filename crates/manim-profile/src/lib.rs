@@ -10,6 +10,7 @@ pub mod semantic_graph_profile_probe;
 pub mod semantic_graph_readback;
 pub mod semantic_graph_source;
 pub mod semantic_graph_text;
+pub mod semantic_graph_text_probe;
 
 pub const SCENE_CLASS: &str = "MotionwrightScene";
 pub const MAX_PRIMITIVES: usize = 512;

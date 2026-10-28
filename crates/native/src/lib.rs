@@ -26,6 +26,7 @@ mod component_text;
 pub mod creative_doctor;
 mod expressive;
 pub mod film;
+mod graph_native_probe;
 pub mod hyperframes;
 pub mod manim_camera_projection;
 pub mod manim_editable_projection;
@@ -254,11 +255,18 @@ fn production_cursor(
 #[derive(Clone)]
 pub struct MotionwrightObserver {
     service: StudioService,
+    // Only the private owner-mounted provider composition enables this read.
+    // This flag creates no authority; each request still requires real Host
+    // resource admission, a current observation and exact native font probes.
+    mounted_graph_store: bool,
 }
 
 impl MotionwrightObserver {
     pub fn new(service: StudioService) -> Self {
-        Self { service }
+        Self {
+            service,
+            mounted_graph_store: false,
+        }
     }
 }
 
@@ -273,6 +281,22 @@ impl ObservationProvider for MotionwrightObserver {
         let project_id = project_id_from_resource(&query.resource)?;
         let project = self.service.project(project_id).map_err(storage_error)?;
         let version = resource_version(&project)?;
+
+        if query.scope == "graph-authoring" {
+            if !self.mounted_graph_store {
+                return Err(Error::new(
+                    ErrorCode::PermissionDenied,
+                    "Graph native inspection requires the owner-mounted Store",
+                ));
+            }
+            return graph_store_provider::observe_authoring_context(
+                &self.service,
+                query,
+                context,
+                &project,
+            )
+            .await;
+        }
 
         // The Native SDK owns the page/version contract; Motionwright supplies
         // only version-bound application journal cursors, never authorization.
@@ -2032,7 +2056,17 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 pub fn build_application(service: StudioService) -> NativeResult<Application> {
-    let observer = Arc::new(MotionwrightObserver::new(service.clone()));
+    build_application_with_graph_store(service, false)
+}
+
+fn build_application_with_graph_store(
+    service: StudioService,
+    mounted_graph_store: bool,
+) -> NativeResult<Application> {
+    let observer = Arc::new(MotionwrightObserver {
+        service: service.clone(),
+        mounted_graph_store,
+    });
     let mut app = Application::new(APP_ID, APP_VERSION)?
         .require_resource_read_scope()
         .with_observer(observer)
@@ -3808,7 +3842,8 @@ mod graph_store_provider {
     use super::*;
     use motionwright_domain::{DomainError, GraphSourceSnapshot, SemanticGraph};
     use motionwright_service::{
-        SemanticGraphAdmission, SemanticGraphWriteLease, SemanticGraphWriteScope,
+        SemanticGraphAdmission, SemanticGraphContextRequest, SemanticGraphWriteLease,
+        SemanticGraphWriteScope,
     };
     use motionwright_storage::Result as StorageResult;
     use semwright_native_sdk::{
@@ -3842,6 +3877,7 @@ mod graph_store_provider {
 
     /// Not serializable or publicly constructible. A database with equal
     /// project UUID/generation/revision is not evidence of this Store binding.
+    #[derive(Clone)]
     struct GraphStoreBinding {
         service: StudioService,
     }
@@ -3891,14 +3927,30 @@ mod graph_store_provider {
                 Self::Mounted(binding) => {
                     // The existing observer and the dedicated Graph handler share
                     // clones of this one StudioService, hence the same Store mutex.
-                    let app = build_application(binding.service.clone())?;
-                    app.register(graph_contract(), Arc::new(GraphUpsertHandler { binding }))
+                    let mut app =
+                        build_application_with_graph_store(binding.service.clone(), true)?;
+                    // Only the owner-mounted runtime enables sealed tool negotiation.
+                    // Availability still requires actual observations on each request.
+                    if crate::graph_native_probe::owner_probe_mounts_present() {
+                        app = app.require_host_tools();
+                    }
+                    let app = app.register(
+                        graph_contract(),
+                        Arc::new(GraphUpsertHandler {
+                            binding: binding.clone(),
+                        }),
+                    )?;
+                    app.register(
+                        graph_remove_contract(),
+                        Arc::new(GraphRemoveHandler { binding }),
+                    )
                 }
                 Self::Ordinary(service) => {
                     // Ordinary reads/operations survive an override; Graph writes
                     // are a precise denial rather than an inferred Store binding.
                     build_application(service)?
-                        .register(graph_contract(), Arc::new(GraphStoreDeniedHandler))
+                        .register(graph_contract(), Arc::new(GraphStoreDeniedHandler))?
+                        .register(graph_remove_contract(), Arc::new(GraphStoreDeniedHandler))
                 }
             }
         }
@@ -3919,8 +3971,176 @@ mod graph_store_provider {
         serve(NativeDriver::new(app)?).await
     }
 
+    fn graph_context_selection(
+        query: &Query,
+        project: &Project,
+    ) -> NativeResult<Option<SemanticGraphContextRequest>> {
+        query.validate()?;
+        if query.scope != "graph-authoring"
+            || query.limit != 1
+            || query.resource != project.resource_key()
+        {
+            return Err(Error::invalid(
+                "Graph authoring observation requires its closed single-row scope",
+            ));
+        }
+        let Some(cursor) = &query.cursor else {
+            // NativeDriver remembers the scope but deliberately not this
+            // selection token. Its fresh() probe needs only the real version.
+            return Ok(None);
+        };
+        let request: SemanticGraphContextRequest =
+            serde_json::from_str(&cursor.token).map_err(|_| {
+                Error::invalid("Graph cursor requires the exact typed original selection")
+            })?;
+        if serde_json::to_string(&request)
+            .map_err(|_| Error::invalid("Graph selection encoding failed"))?
+            != cursor.token
+            || request.scene_id.is_nil()
+            || request.variant_profile_ref.is_nil()
+        {
+            return Err(Error::invalid(
+                "Graph cursor must preserve the compact original typed selection",
+            ));
+        }
+        request
+            .source_snapshot
+            .require_current(project)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::StaleReference,
+                    "Graph cursor source differs from the actual persisted project",
+                )
+            })?;
+        if cursor.version != resource_version(project)? {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Graph cursor differs from the genuine observed resource version",
+            ));
+        }
+        Ok(Some(request))
+    }
+
+    pub(super) async fn observe_authoring_context(
+        service: &StudioService,
+        query: &Query,
+        context: &CallContext,
+        project: &Project,
+    ) -> NativeResult<ObservationPage> {
+        context.driver_context()?;
+        context.check_cancelled()?;
+        let selected = graph_context_selection(query, project)?;
+        let version = resource_version(project)?;
+        let Some(request) = selected else {
+            // This is a partial version observation, not a Ready DTO, a font
+            // result or a manufactured selection. It can refresh genuine refs.
+            let page = ObservationPage {
+                version,
+                scope: query.scope.clone(),
+                items: vec![],
+                complete: false,
+                next: None,
+            };
+            page.validate_for(query)?;
+            return Ok(page);
+        };
+        if genuine_project_ref(context)? != &version {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Graph authoring source changed since the genuine observation",
+            ));
+        }
+        let can_inspect = crate::graph_native_probe::owner_probe_mounts_present()
+            && crate::manim_graph_projection::validate_manim_semantic_graph_scene_output(
+                project,
+                &request.source_snapshot,
+                request.scene_id,
+                request.variant_profile_ref,
+            )
+            .is_ok();
+        let value = if can_inspect {
+            // All awaits occur outside the Store mutex. Service receives the
+            // original decoded request, not a request rebound to a newer state.
+            let fonts =
+                crate::graph_native_probe::observe_authoring_fonts(context, project, &request)
+                    .await?;
+            let inspection = NativeGraphAuthoringInspection {
+                context,
+                original_request: &request,
+                fonts,
+                failure: RefCell::new(None),
+            };
+            let result =
+                service.semantic_graph_authoring_context_with_admission(&request, &inspection);
+            if let Some(error) = inspection.failure.take() {
+                return Err(error);
+            }
+            result.map_err(storage_error)?
+        } else {
+            service
+                .semantic_graph_authoring_context(&request)
+                .map_err(storage_error)?
+        };
+        let page = ObservationPage {
+            version,
+            scope: query.scope.clone(),
+            items: vec![
+                serde_json::to_value(value)
+                    .map_err(|_| Error::invalid("Graph context could not be encoded"))?,
+            ],
+            complete: true,
+            next: None,
+        };
+        page.validate_for(query)?;
+        Ok(page)
+    }
+
+    struct NativeGraphAuthoringInspection<'a> {
+        context: &'a CallContext,
+        original_request: &'a SemanticGraphContextRequest,
+        fonts: crate::graph_native_probe::AuthoringFonts,
+        failure: RefCell<Option<Error>>,
+    }
+
+    impl SemanticGraphAdmission for NativeGraphAuthoringInspection<'_> {
+        fn inspect_authoring(
+            &self,
+            project: &Project,
+            request: &SemanticGraphContextRequest,
+        ) -> StorageResult<()> {
+            let check = || -> NativeResult<()> {
+                if !std::ptr::eq(request, self.original_request)
+                    || genuine_project_ref(self.context)? != &resource_version(project)?
+                {
+                    return Err(Error::new(
+                        ErrorCode::StaleReference,
+                        "Graph inspection no longer selects its original observed Store source",
+                    ));
+                }
+                crate::manim_graph_projection::validate_manim_semantic_graph_scene_output(
+                    project,
+                    &request.source_snapshot,
+                    request.scene_id,
+                    request.variant_profile_ref,
+                )?;
+                self.fonts.check(self.context, project, request)
+            };
+            check().map_err(|error| retain_admission_error(&self.failure, error))
+        }
+
+        fn acquire<'a>(
+            &'a self,
+            _scope: &'a SemanticGraphWriteScope<'a>,
+        ) -> StorageResult<Box<dyn SemanticGraphWriteLease + 'a>> {
+            Err(DomainError::Invalid(
+                "A native authoring observation cannot authorize a Graph write".into(),
+            )
+            .into())
+        }
+    }
+
     fn graph_contract() -> OperationContract {
-        descriptor(
+        let mut contract = descriptor(
             "graph.upsert",
             "Save exact editable Semantic Graph source through the mounted Store and current Host operation",
             schema(
@@ -3934,7 +4154,80 @@ mod graph_store_provider {
                 }),
                 &["ref", "graph"],
             ),
-        )
+        );
+        contract.descriptor.timeout_ms = 30_000;
+        contract
+    }
+
+    fn graph_remove_contract() -> OperationContract {
+        let snapshot = schema(
+            json!({
+                "project_id":{"type":"string"}, "generation":{"type":"string"},
+                "branch_id":{"type":"string"}, "revision":{"type":"integer","minimum":0}
+            }),
+            &["project_id", "generation", "branch_id", "revision"],
+        );
+        let mut contract = descriptor(
+            "graph.remove",
+            "Remove one exact persisted Semantic Graph source",
+            schema(
+                json!({
+                    "ref":{"type":"string","minLength":1,"maxLength":512},
+                    "request_id":{"type":"string","minLength":1,"maxLength":256},
+                    "graph_id":{"type":"string"}, "scene_id":{"type":"string"},
+                    "source_snapshot":snapshot, "include_recovery":{"type":"boolean"}
+                }),
+                &["ref", "graph_id", "scene_id", "source_snapshot"],
+            ),
+        );
+        contract.descriptor.timeout_ms = 30_000;
+        contract
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct GraphRemoveArgs {
+        #[serde(rename = "ref")]
+        reference: String,
+        #[serde(default, deserialize_with = "deserialize_graph_application_request_id")]
+        request_id: Option<String>,
+        graph_id: Uuid,
+        scene_id: Uuid,
+        source_snapshot: GraphSourceSnapshot,
+        #[serde(default)]
+        include_recovery: bool,
+    }
+
+    struct GraphRemoveHandler {
+        binding: GraphStoreBinding,
+    }
+
+    #[async_trait]
+    impl OperationHandler for GraphRemoveHandler {
+        async fn invoke(&self, args: Value, context: &CallContext) -> Completion {
+            let input: GraphRemoveArgs = match serde_json::from_value(args) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Completion::NotApplied(Error::invalid(
+                        "Graph removal requires its exact source selection",
+                    ));
+                }
+            };
+            let change = Change::RemoveSemanticGraph {
+                graph_id: input.graph_id,
+                scene_id: input.scene_id,
+                source_snapshot: input.source_snapshot,
+            };
+            invoke_graph_source_write(
+                &self.binding,
+                context,
+                &input.reference,
+                input.request_id.as_deref(),
+                input.include_recovery,
+                change,
+            )
+            .await
+        }
     }
 
     #[derive(serde::Deserialize)]
@@ -4039,10 +4332,6 @@ mod graph_store_provider {
     #[async_trait]
     impl OperationHandler for GraphUpsertHandler {
         async fn invoke(&self, args: Value, context: &CallContext) -> Completion {
-            let bound = match genuine_project_ref(context) {
-                Ok(value) => value,
-                Err(error) => return native_failure(error),
-            };
             let input: GraphUpsertArgs = match serde_json::from_value(args) {
                 Ok(value) => value,
                 Err(_) => {
@@ -4051,94 +4340,163 @@ mod graph_store_provider {
                     ));
                 }
             };
-            if input.reference.is_empty() {
-                return Completion::NotApplied(Error::invalid("Project ref is required"));
-            }
-            let request_id = match graph_application_request_id(
-                input.request_id.as_deref(),
-                context.request_id(),
-                input.include_recovery,
-            ) {
-                Ok(value) => value,
-                Err(error) => return Completion::NotApplied(error),
-            };
-            // The marker was resolved by NativeDriver. It is never parsed into
-            // an application resource or compared with a caller-provided UUID.
-            let project_id = match project_id_from_resource(&bound.resource) {
-                Ok(value) => value,
-                Err(error) => return Completion::NotApplied(error),
-            };
-            if input.graph.authorship.source_snapshot.project_id != project_id {
-                return Completion::NotApplied(Error::new(
-                    ErrorCode::StaleReference,
-                    "Graph source and the observed project differ",
-                ));
-            }
             let change = Change::UpsertSemanticGraph {
                 graph: Box::new(input.graph),
             };
+            invoke_graph_source_write(
+                &self.binding,
+                context,
+                &input.reference,
+                input.request_id.as_deref(),
+                input.include_recovery,
+                change,
+            )
+            .await
+        }
+    }
 
-            let recovery = if input.include_recovery {
-                let generation = match Uuid::parse_str(&bound.generation) {
-                    Ok(value) if !value.is_nil() && value.to_string() == bound.generation => value,
-                    _ => {
-                        return Completion::NotApplied(Error::new(
-                            ErrorCode::StaleReference,
-                            "Observed recovery generation is invalid",
-                        ));
-                    }
-                };
-                match prepare_apply_recovery(project_id, generation, request_id, &change) {
-                    Ok(identity) => Some(identity),
-                    Err(error) => return Completion::NotApplied(error),
-                }
-            } else {
-                None
-            };
+    fn check_fresh_graph_reference(
+        bound: &ResourceVersion,
+        current: &Project,
+        source: &GraphSourceSnapshot,
+    ) -> NativeResult<bool> {
+        let fresh = source == &GraphSourceSnapshot::from_project(current);
+        if fresh && bound != &resource_version(current)? {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Fresh Graph source differs from its original native reference revision",
+            ));
+        }
+        Ok(fresh)
+    }
 
-            // No project load, Store mutex, or local mutation precedes this await.
-            // The owner already selected the resource/mount for this invocation.
-            let permit = match context.acquire_operation_permit().await {
-                Ok(value) => value,
-                Err(error) => return native_failure(error),
-            };
-            if permit.logical_mount() != DATA_MOUNT {
-                return Completion::NotApplied(Error::new(
-                    ErrorCode::PermissionDenied,
-                    "Graph source saving requires the motionwright-data operation",
+    async fn invoke_graph_source_write(
+        binding: &GraphStoreBinding,
+        context: &CallContext,
+        reference: &str,
+        application_key: Option<&str>,
+        include_recovery: bool,
+        change: Change,
+    ) -> Completion {
+        let bound = match genuine_project_ref(context) {
+            Ok(value) => value,
+            Err(error) => return native_failure(error),
+        };
+        if reference.is_empty() {
+            return Completion::NotApplied(Error::invalid("Project ref is required"));
+        }
+        let request_id = match graph_application_request_id(
+            application_key,
+            context.request_id(),
+            include_recovery,
+        ) {
+            Ok(value) => value,
+            Err(error) => return Completion::NotApplied(error),
+        };
+        let project_id = match project_id_from_resource(&bound.resource) {
+            Ok(value) => value,
+            Err(error) => return Completion::NotApplied(error),
+        };
+        let source = match &change {
+            Change::UpsertSemanticGraph { graph } => &graph.authorship.source_snapshot,
+            Change::RemoveSemanticGraph {
+                source_snapshot, ..
+            } => source_snapshot,
+            _ => {
+                return Completion::NotApplied(Error::invalid(
+                    "Only exact Graph source changes are admitted",
                 ));
             }
-
-            #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
-            let fixture = match owner_fixture::Checkpoint::load(context)
-                .and_then(|fixture| fixture.before_enter().map(|()| fixture))
-            {
-                Ok(value) => value,
-                Err(error) => return native_failure(error),
-            };
-
-            // A fresh adapter/error slot belongs to exactly this invocation.
-            // It never survives a retry or becomes part of the handler state.
-            let admission = NativeGraphAdmission {
-                context,
-                permit: &permit,
-                original_request_id: request_id,
-                original_change: &change,
-                failure: RefCell::new(None),
-                #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
-                fixture,
-            };
-            let result = self
-                .binding
-                .service
-                .apply_semantic_graph_with_admission(request_id, &change, &admission);
-            // The Service seam returns StorageError. Preserve the original SDK
-            // error, including uncertainty, instead of recoding denial/cancellation.
-            if let Some(error) = admission.failure.take() {
-                return native_failure(error);
-            }
-            apply_completion_with_recovery(result, recovery)
+        };
+        if source.project_id != project_id {
+            return Completion::NotApplied(Error::new(
+                ErrorCode::StaleReference,
+                "Graph source and observed project differ",
+            ));
         }
+        let recovery = if include_recovery {
+            let generation = match Uuid::parse_str(&bound.generation) {
+                Ok(value) if !value.is_nil() && value.to_string() == bound.generation => value,
+                _ => {
+                    return Completion::NotApplied(Error::new(
+                        ErrorCode::StaleReference,
+                        "Observed recovery generation is invalid",
+                    ));
+                }
+            };
+            match prepare_apply_recovery(project_id, generation, request_id, &change) {
+                Ok(identity) => Some(identity),
+                Err(error) => return Completion::NotApplied(error),
+            }
+        } else {
+            None
+        };
+
+        // No project load, Store mutex, or local mutation precedes this await.
+        // The owner already selected the resource/mount for this invocation.
+        let permit = match context.acquire_operation_permit().await {
+            Ok(value) => value,
+            Err(error) => return native_failure(error),
+        };
+        if permit.logical_mount() != DATA_MOUNT {
+            return Completion::NotApplied(Error::new(
+                ErrorCode::PermissionDenied,
+                "Graph source saving requires the motionwright-data operation",
+            ));
+        }
+
+        // The current project is read only after reserving the actual
+        // operation. Release its Store lock before the bounded native probe.
+        let current = match binding.service.project(project_id) {
+            Ok(value) => value,
+            Err(error) => return Completion::NotApplied(storage_error(error)),
+        };
+        let is_fresh = match check_fresh_graph_reference(bound, &current, source) {
+            Ok(value) => value,
+            Err(error) => return native_failure(error),
+        };
+        let proposed_fonts = if is_fresh && matches!(&change, Change::UpsertSemanticGraph { .. }) {
+            match crate::graph_native_probe::observe_proposed_fonts(context, &current, &change)
+                .await
+            {
+                Ok(value) => Some(value),
+                Err(error) => return native_failure(error),
+            }
+        } else {
+            // Historical exact replay resolves at Store; it never reruns a
+            // probe or uses a prior observation as current write authority.
+            None
+        };
+
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        let fixture = match owner_fixture::Checkpoint::load(context)
+            .and_then(|fixture| fixture.before_enter().map(|()| fixture))
+        {
+            Ok(value) => value,
+            Err(error) => return native_failure(error),
+        };
+
+        // A fresh adapter/error slot belongs to exactly this invocation.
+        // It never survives a retry or becomes part of the handler state.
+        let admission = NativeGraphAdmission {
+            context,
+            permit: &permit,
+            original_request_id: request_id,
+            original_change: &change,
+            proposed_fonts,
+            failure: RefCell::new(None),
+            #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+            fixture,
+        };
+        let result = binding
+            .service
+            .apply_semantic_graph_with_admission(request_id, &change, &admission);
+        // The Service seam returns StorageError. Preserve the original SDK
+        // error, including uncertainty, instead of recoding denial/cancellation.
+        if let Some(error) = admission.failure.take() {
+            return native_failure(error);
+        }
+        apply_completion_with_recovery(result, recovery)
     }
 
     struct NativeGraphAdmission<'a> {
@@ -4146,6 +4504,7 @@ mod graph_store_provider {
         permit: &'a OperationPermit,
         original_request_id: &'a str,
         original_change: &'a Change,
+        proposed_fonts: Option<crate::graph_native_probe::ProposedFonts>,
         failure: RefCell<Option<Error>>,
         #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
         fixture: owner_fixture::Checkpoint,
@@ -4164,25 +4523,38 @@ mod graph_store_provider {
 
     impl NativeGraphAdmission<'_> {
         fn check_scope(&self, scope: &SemanticGraphWriteScope<'_>) -> NativeResult<()> {
-            let Change::UpsertSemanticGraph { graph: original } = self.original_change else {
-                return Err(Error::invalid(
-                    "Graph admission accepts UpsertSemanticGraph only",
-                ));
-            };
-            // Immutable same-object binding excludes reconstructed or substituted
-            // requests/changes. Explicit source comparisons document all four
-            // snapshot fields plus the scene and deliverable selected by the source.
+            let (original_source, graph_id, scene_id, profile, original_graph) =
+                match self.original_change {
+                    Change::UpsertSemanticGraph { graph } => (
+                        &graph.authorship.source_snapshot,
+                        graph.id,
+                        graph.scene_id,
+                        Some(graph.variant_profile_ref),
+                        Some(graph.as_ref()),
+                    ),
+                    Change::RemoveSemanticGraph {
+                        graph_id,
+                        scene_id,
+                        source_snapshot,
+                    } => (source_snapshot, *graph_id, *scene_id, None, None),
+                    _ => {
+                        return Err(Error::invalid(
+                            "Graph admission accepts only canonical Graph source changes",
+                        ));
+                    }
+                };
             check_graph_application_scope_key(scope, self.original_request_id)?;
-            let original_source = &original.authorship.source_snapshot;
-            let scoped_source = scope.source_snapshot();
+            let same_graph = match (scope.graph(), original_graph) {
+                (Some(scoped), Some(original)) => std::ptr::eq(scoped, original),
+                (None, None) => true,
+                _ => false,
+            };
             if !std::ptr::eq(scope.change(), self.original_change)
-                || !std::ptr::eq(scope.graph(), original.as_ref())
-                || scoped_source.project_id != original_source.project_id
-                || scoped_source.generation != original_source.generation
-                || scoped_source.branch_id != original_source.branch_id
-                || scoped_source.revision != original_source.revision
-                || scope.scene_id() != original.scene_id
-                || scope.variant_profile_ref() != original.variant_profile_ref
+                || !same_graph
+                || scope.source_snapshot() != original_source
+                || scope.graph_id() != graph_id
+                || scope.scene_id() != scene_id
+                || scope.variant_profile_ref() != profile
             {
                 return Err(Error::new(
                     ErrorCode::PermissionDenied,
@@ -4214,11 +4586,18 @@ mod graph_store_provider {
             // before freshness and rejects stale inputs for a new mutation.
             // This pure candidate check does not acquire another Store lock,
             // execute a runtime, attest fonts or replace the live Host permit.
-            if original_source == &GraphSourceSnapshot::from_project(current) {
-                crate::manim_graph_projection::validate_proposed_manim_semantic_graph_source(
-                    current,
-                    scope.change(),
-                )?;
+            if check_fresh_graph_reference(bound, current, original_source)? {
+                if matches!(scope.change(), Change::UpsertSemanticGraph { .. }) {
+                    crate::manim_graph_projection::validate_proposed_manim_semantic_graph_source(
+                        current,
+                        scope.change(),
+                    )?;
+                    self.proposed_fonts.as_ref().ok_or_else(|| Error::new(ErrorCode::PermissionDenied,
+                        "A fresh Graph proposal requires its original native font observation"))?
+                        .check(self.context, current, scope.change())?;
+                }
+                // Remove has no new text or profile. Its exact source fields,
+                // scene/graph IDs and canonical domain mutation remain Store-owned.
             }
             Ok(())
         }
@@ -4952,6 +5331,176 @@ mod graph_store_provider {
                 serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
                 serde_json::to_value(project).unwrap()
             );
+        }
+
+        #[test]
+        fn fresh_graph_source_cannot_use_an_older_genuine_reference_revision() {
+            // Resource facts only: this test constructs no Host or write grant.
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let observed = resource_version(&project).unwrap();
+            let mut changed = project.clone();
+            changed.revision += 1;
+            let new_source = GraphSourceSnapshot::from_project(&changed);
+            let error = check_fresh_graph_reference(&observed, &changed, &new_source).unwrap_err();
+            assert_eq!(error.code, ErrorCode::StaleReference);
+            assert!(error.outcome_known);
+            assert!(
+                check_fresh_graph_reference(
+                    &resource_version(&changed).unwrap(),
+                    &changed,
+                    &new_source
+                )
+                .unwrap()
+            );
+            // An old source is not treated as a new mutation or reprobed here;
+            // Store still owns exact historical receipt authentication.
+            assert!(
+                !check_fresh_graph_reference(
+                    &resource_version(&changed).unwrap(),
+                    &changed,
+                    &GraphSourceSnapshot::from_project(&project)
+                )
+                .unwrap()
+            );
+        }
+
+        fn graph_context_query(project: &Project) -> (Query, SemanticGraphContextRequest) {
+            let request = SemanticGraphContextRequest {
+                source_snapshot: GraphSourceSnapshot::from_project(project),
+                scene_id: project.scenes[0].id,
+                variant_profile_ref: project.deliverables[0].id,
+            };
+            let query = Query {
+                resource: project.resource_key(),
+                scope: "graph-authoring".into(),
+                limit: 1,
+                cursor: Some(PageCursor {
+                    version: resource_version(project).unwrap(),
+                    scope: "graph-authoring".into(),
+                    token: serde_json::to_string(&request).unwrap(),
+                }),
+            };
+            (query, request)
+        }
+
+        #[test]
+        fn graph_authoring_cursor_preserves_original_source_and_selection() {
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let (mut query, original) = graph_context_query(&project);
+            assert_eq!(
+                graph_context_selection(&query, &project).unwrap(),
+                Some(original)
+            );
+            query.cursor = None;
+            assert!(graph_context_selection(&query, &project).unwrap().is_none());
+        }
+
+        #[test]
+        fn graph_authoring_cursor_rejects_changed_source_before_native_probe() {
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let (query, original) = graph_context_query(&project);
+            for case in 0..6 {
+                let mut candidate = query.clone();
+                let mut selected = original.clone();
+                match case {
+                    0 => selected.source_snapshot.branch_id = Uuid::new_v4(),
+                    1 => selected.source_snapshot.generation = Uuid::new_v4(),
+                    2 => selected.source_snapshot.project_id = Uuid::new_v4(),
+                    3 => selected.source_snapshot.revision += 1,
+                    4 => {
+                        candidate.cursor.as_mut().unwrap().version.generation =
+                            Uuid::new_v4().to_string()
+                    }
+                    _ => candidate.cursor.as_mut().unwrap().scope = "summary".into(),
+                }
+                candidate.cursor.as_mut().unwrap().token =
+                    serde_json::to_string(&selected).unwrap();
+                assert_eq!(
+                    graph_context_selection(&candidate, &project)
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::StaleReference
+                );
+            }
+        }
+
+        #[test]
+        fn graph_authoring_cursor_rejects_untyped_or_noncanonical_selector() {
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let (query, request) = graph_context_query(&project);
+            let mut extra = serde_json::to_value(&request).unwrap();
+            extra["ready"] = json!(true);
+            for token in [
+                "null".into(),
+                "{}".into(),
+                "x".repeat(1025),
+                serde_json::to_string(&extra).unwrap(),
+                serde_json::to_string_pretty(&request).unwrap(),
+            ] {
+                let mut candidate = query.clone();
+                candidate.cursor.as_mut().unwrap().token = token;
+                assert!(graph_context_selection(&candidate, &project).is_err());
+            }
+            let mut too_many = query;
+            too_many.limit = 2;
+            assert!(graph_context_selection(&too_many, &project).is_err());
+        }
+
+        #[test]
+        fn graph_remove_wire_keeps_original_source_without_graph_or_profile_substitutes() {
+            let project = crate::semantic_graph_source_fixture::seed_domain();
+            let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            let args = json!({"ref":"native:untrusted-test-marker", "request_id":"remove-original",
+                "graph_id":graph.id, "scene_id":graph.scene_id,
+                "source_snapshot":graph.authorship.source_snapshot, "include_recovery":true});
+            let parsed: GraphRemoveArgs = serde_json::from_value(args.clone()).unwrap();
+            assert_eq!(parsed.graph_id, graph.id);
+            assert_eq!(parsed.scene_id, graph.scene_id);
+            assert_eq!(parsed.source_snapshot, graph.authorship.source_snapshot);
+            assert_eq!(parsed.request_id.as_deref(), Some("remove-original"));
+            for field in [
+                "graph",
+                "variant_profile_ref",
+                "ready",
+                "operation_permit",
+                "store_binding",
+            ] {
+                let mut invalid = args.clone();
+                invalid[field] = json!(true);
+                assert!(serde_json::from_value::<GraphRemoveArgs>(invalid).is_err());
+            }
+            let mut null_key = args;
+            null_key["request_id"] = Value::Null;
+            assert!(serde_json::from_value::<GraphRemoveArgs>(null_key).is_err());
+            let contract = graph_remove_contract();
+            assert_eq!(contract.descriptor.name, "driver.motionwright.graph.remove");
+            assert_eq!(contract.target, TargetRequirement::ObservedResource);
+            assert_eq!(contract.retry, RetrySemantics::DurableRequestKey);
+        }
+
+        #[tokio::test]
+        async fn graph_remove_application_local_context_never_reaches_store() {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("negative-remove.sqlite3");
+            let project = seed_database(&path);
+            let service = StudioService::open(path).unwrap();
+            let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            let handler = GraphRemoveHandler {
+                binding: GraphStoreBinding {
+                    service: service.clone(),
+                },
+            };
+            assert_denied(
+                handler
+                    .invoke(
+                        json!({"ref":"native:untrusted-test-marker",
+                "graph_id":graph.id, "scene_id":graph.scene_id,
+                "source_snapshot":graph.authorship.source_snapshot}),
+                        &CallContext::application_local("remove-no-host").unwrap(),
+                    )
+                    .await,
+            );
+            assert_eq!(service.project(project.id).unwrap(), project);
         }
 
         #[test]

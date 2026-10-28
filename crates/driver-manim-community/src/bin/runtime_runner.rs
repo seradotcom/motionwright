@@ -8,12 +8,17 @@
 use motionwright_manim_profile::semantic_graph_profile_probe::{
     fixed_graph_profile_probe_program_v1, parse_fixed_graph_profile_observation_v1,
 };
+use motionwright_manim_profile::semantic_graph_text_probe::{
+    GraphTextProbeRequestV1, MAX_GRAPH_TEXT_PROBE_INPUT_BYTES, graph_text_probe_program_v1,
+    parse_graph_text_probe_observation_v1, parse_graph_text_probe_request_v1,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -344,19 +349,21 @@ mod graph_probe_custody {
             },
         },
         path::{Path, PathBuf},
-        process::{ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio},
+        process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio},
         sync::mpsc,
         thread,
+        time::{Duration, Instant},
     };
 
     const MAX_INPUT_BYTES: usize = 128 * 1024;
-    const FILE_NAMES: [&str; 6] = [
+    const FILE_NAMES: [&str; 7] = [
         "intent.json",
         "spawned.json",
         "stdout.bin",
         "stderr.bin",
         "exit.json",
         "terminal.json",
+        "stdin.bin",
     ];
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -525,6 +532,22 @@ mod graph_probe_custody {
             self.verify_bytes(original, &bytes)
         }
 
+        fn write_stdin(&self, original: &mut OriginalFile, bytes: &[u8]) -> Result<(), String> {
+            if bytes.is_empty() || bytes.len() > super::MAX_GRAPH_TEXT_PROBE_INPUT_BYTES {
+                return Err("Graph text stdin exceeds its closed budget".into());
+            }
+            self.verify_member(original)?;
+            original
+                .file
+                .write_all(bytes)
+                .map_err(|_| "Graph text original stdin write failed")?;
+            original
+                .file
+                .sync_all()
+                .map_err(|_| "Graph text original stdin sync failed")?;
+            self.verify_bytes(original, bytes)
+        }
+
         fn verify_bytes(&self, original: &mut OriginalFile, expected: &[u8]) -> Result<(), String> {
             self.verify_member(original)?;
             let before = original
@@ -602,6 +625,20 @@ mod graph_probe_custody {
             return Err("Graph custody input exceeds its closed budget".into());
         }
         Ok(value)
+    }
+
+    fn text_scope(mut value: Value) -> Value {
+        if let Some(schema) = value.get("schema").and_then(Value::as_str) {
+            let schema = schema.replace("fixed-graph-probe", "graph-text-probe");
+            value["schema"] = json!(schema);
+        }
+        value["capture_scope"] = json!("proposed_graph_text_probe_python_only");
+        value["version_guard_streams_captured"] = json!(true);
+        value
+    }
+
+    fn scoped(value: Value, text: bool) -> Value {
+        if text { text_scope(value) } else { value }
     }
 
     struct CapturedStream {
@@ -801,18 +838,101 @@ mod graph_probe_custody {
         }
     }
 
+    struct TextChildExit {
+        status: Result<ExitStatus, String>,
+        deadline_expired: bool,
+        supervision_error: Option<String>,
+    }
+
+    fn wait_text_child(mut child: Child, deadline: Instant) -> TextChildExit {
+        loop {
+            let expired = Instant::now() >= deadline;
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return TextChildExit {
+                        status: Ok(status),
+                        deadline_expired: expired,
+                        supervision_error: None,
+                    };
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    let _ = child.kill();
+                    return TextChildExit {
+                        status: child
+                            .wait()
+                            .map_err(|_| "Graph text child exit could not be observed".into()),
+                        deadline_expired: expired,
+                        supervision_error: Some("Graph text child supervision failed".into()),
+                    };
+                }
+            }
+            if expired {
+                let _ = child.kill();
+                return TextChildExit {
+                    status: child.wait().map_err(|_| {
+                        "Graph text child exit after timeout could not be observed".into()
+                    }),
+                    deadline_expired: true,
+                    supervision_error: None,
+                };
+            }
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+            );
+        }
+    }
+
     pub(super) fn capture(
-        mut command: Command,
+        command: Command,
         label: &str,
         work: &Path,
         path: &Path,
     ) -> Result<Vec<u8>, String> {
-        let request = input(&command)?;
+        capture_with_input(command, label, work, path, None, None)
+    }
+
+    pub(super) fn capture_graph_text(
+        command: Command,
+        label: &str,
+        work: &Path,
+        path: &Path,
+        stdin: &[u8],
+        deadline: Instant,
+    ) -> Result<Vec<u8>, String> {
+        capture_with_input(command, label, work, path, Some(stdin), Some(deadline))
+    }
+
+    fn capture_with_input(
+        mut command: Command,
+        label: &str,
+        work: &Path,
+        path: &Path,
+        stdin: Option<&[u8]>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<u8>, String> {
+        let mut request = scoped(input(&command)?, stdin.is_some());
+        if let Some(bytes) = stdin {
+            request["stdin_mode"] = json!("original_file");
+            request["stdin"] = json!({"file":"stdin.bin", "bytes":bytes.len(),
+                "sha256":hex::encode(Sha256::digest(bytes))});
+            request["child_deadline_enforced"] = json!(true);
+        }
         let root = Directory::open(work, path)?;
         // intent.json is the exclusive attempt reservation. Existing material is
         // never overwritten, removed, retried or silently reused by another probe.
         let mut intent = root.create("intent.json")?;
         root.write_json(&mut intent, &request)?;
+        let mut original_stdin = match stdin {
+            Some(bytes) => {
+                let mut file = root.create("stdin.bin")?;
+                root.write_stdin(&mut file, bytes)?;
+                Some(file)
+            }
+            None => None,
+        };
         let mut spawned = root.create("spawned.json")?;
         let stdout_file = root.create("stdout.bin")?;
         let stderr_file = root.create("stderr.bin")?;
@@ -820,7 +940,11 @@ mod graph_probe_custody {
         let mut terminal = root.create("terminal.json")?;
         let mut custody_errors = Vec::new();
         command
-            .stdin(Stdio::null())
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let outcome = thread::scope(|scope| {
@@ -858,11 +982,49 @@ mod graph_probe_custody {
                     return Err("Graph custody stderr reader could not be prepared".to_string());
                 }
             };
+            // Prepare supervision before the child exists. It owns Child and
+            // can kill/reap it while the parent is delivering bounded stdin.
+            // A timed wait placed only after write_all would not bound a child
+            // that stops reading its input pipe.
+            let (wait_tx, wait_rx) = mpsc::sync_channel::<Child>(1);
+            let waiter = if let Some(deadline) = deadline {
+                match thread::Builder::new()
+                    .name("graph-text-deadline".into())
+                    .spawn_scoped(scope, move || {
+                        wait_rx
+                            .recv()
+                            .ok()
+                            .map(|child| wait_text_child(child, deadline))
+                    }) {
+                    Ok(waiter) => Some(waiter),
+                    Err(_) => {
+                        drop(out_tx);
+                        drop(err_tx);
+                        drop(wait_tx);
+                        let _ = out.join();
+                        let _ = err.join();
+                        return Err(
+                            "Graph text deadline supervisor could not be prepared".to_string()
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                drop(out_tx);
+                drop(err_tx);
+                drop(wait_tx);
+                let _ = out.join();
+                let _ = err.join();
+                return Err("Graph text deadline expired before child launch".to_string());
+            }
             let mut child = match command.spawn() {
                 Ok(child) => child,
                 Err(_) => {
                     drop(out_tx);
                     drop(err_tx);
+                    drop(wait_tx);
                     let _ = out.join();
                     let _ = err.join();
                     return Err(format!("{label} could not be launched"));
@@ -870,10 +1032,13 @@ mod graph_probe_custody {
             };
             if let Err(error) = root.write_json(
                 &mut spawned,
-                &json!({
-                    "schema":"motionwright.manim.fixed-graph-probe-spawn/1",
-                    "pid":child.id(),"automatic_retry":false,
-                }),
+                &scoped(
+                    json!({
+                        "schema":"motionwright.manim.fixed-graph-probe-spawn/1",
+                        "pid":child.id(),"automatic_retry":false,
+                    }),
+                    stdin.is_some(),
+                ),
             ) {
                 custody_errors.push(error);
             }
@@ -899,18 +1064,73 @@ mod graph_probe_custody {
                 custody_errors.push("Graph custody prepared reader was lost".to_string());
                 let _ = child.kill();
             }
-            let status = child
-                .wait()
-                .map_err(|_| format!("{label} could not be launched"));
+            let (status, deadline_expired) = if let Some(waiter) = waiter {
+                let input = child.stdin.take();
+                match wait_tx.send(child) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        let mut child = error.0;
+                        let _ = child.kill();
+                        let status = child.wait();
+                        drop(wait_tx);
+                        let _ = waiter.join();
+                        custody_errors.push("Graph text deadline supervisor was lost".into());
+                        // Pipe readers still retain their original EOF/exit
+                        // independently below; the observed status is kept.
+                        return Ok((
+                            status.map_err(|_| "Graph text child exit unavailable".into()),
+                            false,
+                            joined_capture(out.join(), "stdout"),
+                            joined_capture(err.join(), "stderr"),
+                        ));
+                    }
+                }
+                drop(wait_tx);
+                if let Some(bytes) = stdin {
+                    let delivered = input
+                        .ok_or_else(|| "Graph text child stdin was unavailable".to_string())
+                        .and_then(|mut pipe| {
+                            pipe.write_all(bytes).map_err(|_| {
+                                "Graph text original stdin delivery failed".to_string()
+                            })
+                        });
+                    if let Err(error) = delivered {
+                        custody_errors.push(error);
+                    }
+                }
+                match waiter.join() {
+                    Ok(Some(exit)) => {
+                        if let Some(error) = exit.supervision_error {
+                            custody_errors.push(error);
+                        }
+                        (exit.status, exit.deadline_expired)
+                    }
+                    _ => (
+                        Err("Graph text child supervision did not return its original exit".into()),
+                        false,
+                    ),
+                }
+            } else {
+                drop(wait_tx);
+                (
+                    child
+                        .wait()
+                        .map_err(|_| format!("{label} could not be launched")),
+                    false,
+                )
+            };
             if let Ok(status) = &status {
                 if let Err(error) = root.write_json(
                     &mut exit_file,
-                    &json!({
-                        "schema":"motionwright.manim.fixed-graph-probe-exit/1",
-                        "code":status.code(),"success":status.success(),
-                        "unix_wait_status":status.into_raw(),
-                        "stream_eof_not_implied":true,
-                    }),
+                    &scoped(
+                        json!({
+                            "schema":"motionwright.manim.fixed-graph-probe-exit/1",
+                            "code":status.code(),"success":status.success(),
+                            "unix_wait_status":status.into_raw(),
+                            "stream_eof_not_implied":true,
+                        }),
+                        stdin.is_some(),
+                    ),
                 ) {
                     custody_errors.push(error);
                 }
@@ -921,22 +1141,26 @@ mod graph_probe_custody {
             let stderr_result = err.join();
             Ok::<_, String>((
                 status,
+                deadline_expired,
                 joined_capture(stdout_result, "stdout"),
                 joined_capture(stderr_result, "stderr"),
             ))
         });
-        let (status, mut stdout, mut stderr) = match outcome {
+        let (status, deadline_expired, mut stdout, mut stderr) = match outcome {
             Ok(value) => value,
             Err(original_error) => {
                 // No EOF, exit or successful child output is manufactured here.
                 let _ = root.write_json(
                     &mut terminal,
-                    &json!({
-                        "schema":"motionwright.manim.fixed-graph-probe-stream-terminal/1",
-                        "original_complete":false,"original_error":original_error,
-                        "custody_errors":custody_errors,"automatic_retry":false,
-                        "render_performed":false,"profile_admitted":false,
-                    }),
+                    &scoped(
+                        json!({
+                            "schema":"motionwright.manim.fixed-graph-probe-stream-terminal/1",
+                            "original_complete":false,"original_error":original_error,
+                            "custody_errors":custody_errors,"automatic_retry":false,
+                            "render_performed":false,"profile_admitted":false,
+                        }),
+                        stdin.is_some(),
+                    ),
                 );
                 return Err(original_error);
             }
@@ -959,11 +1183,31 @@ mod graph_probe_custody {
                 Err(error) => custody_errors.push(error.clone()),
             }
         }
-        let report = captured_terminal(&status, &stdout, &stderr, &custody_errors);
+        if let (Some(original), Some(bytes)) = (&mut original_stdin, stdin) {
+            if let Err(error) = root.verify_bytes(original, bytes) {
+                custody_errors.push(error);
+            }
+        }
+        let mut report = scoped(
+            captured_terminal(&status, &stdout, &stderr, &custody_errors),
+            stdin.is_some(),
+        );
+        if deadline.is_some() {
+            report["deadline_expired"] = json!(deadline_expired);
+        }
         if let Err(error) = root.write_json(&mut terminal, &report) {
             custody_errors.push(error);
         }
         let original = captured_result(status, stdout, stderr, label);
+        if deadline_expired {
+            return Err(match original {
+                Err(error) => format!("Graph text child deadline expired; {error}"),
+                Ok(_) => {
+                    "Graph text child completed after its deadline; late output was not admitted"
+                        .into()
+                }
+            });
+        }
         finish(original, &custody_errors)
     }
 
@@ -983,6 +1227,116 @@ mod graph_probe_custody {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
             let root = Directory::open(&work, &path).unwrap();
             (temp, work, root)
+        }
+
+        #[test]
+        fn text_probe_retains_exact_stdin_and_denies_a_second_child() {
+            // Mechanical pipe/custody fixture only, never a Manim/Pango witness.
+            let (_temp, work, root) = root();
+            let raw = b"{\"fixture\":\"original-data-only\"}";
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", "IFS= read -r input; printf '%s' \"$input\""])
+                .arg(&work)
+                .current_dir(&work)
+                .env_clear();
+            let stdout = capture_graph_text(
+                command,
+                "mechanical text fixture",
+                &work,
+                &root.path,
+                raw,
+                Instant::now() + Duration::from_secs(9),
+            )
+            .unwrap();
+            assert_eq!(stdout, raw);
+            assert_eq!(fs::read(root.member_path("stdin.bin")).unwrap(), raw);
+            let intent: Value =
+                serde_json::from_slice(&fs::read(root.member_path("intent.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                intent["schema"],
+                "motionwright.manim.graph-text-probe-stream-intent/1"
+            );
+            assert_eq!(intent["stdin"]["sha256"], hex::encode(Sha256::digest(raw)));
+            let terminal: Value =
+                serde_json::from_slice(&fs::read(root.member_path("terminal.json")).unwrap())
+                    .unwrap();
+            assert_eq!(terminal["original_complete"], true);
+            let marker = work.join("forbidden-second-child");
+            let mut retry = Command::new("/bin/sh");
+            retry.args(["-c", ": > \"$0\""]).arg(&marker);
+            assert!(
+                capture_graph_text(
+                    retry,
+                    "conflicting fixture",
+                    &work,
+                    &root.path,
+                    b"changed",
+                    Instant::now() + Duration::from_secs(9)
+                )
+                .is_err()
+            );
+            assert!(!marker.exists());
+            assert_eq!(fs::read(root.member_path("stdin.bin")).unwrap(), raw);
+        }
+
+        #[test]
+        fn text_deadline_bounds_a_child_that_never_reads_its_stdin() {
+            // Mechanical pipe/deadline fixture only; no runtime/font evidence.
+            let (_temp, work, root) = root();
+            let raw = vec![b'x'; super::super::MAX_GRAPH_TEXT_PROBE_INPUT_BYTES];
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", "while :; do :; done"])
+                .arg(&work)
+                .current_dir(&work)
+                .env_clear();
+            let started = Instant::now();
+            let error = capture_graph_text(
+                command,
+                "nonreading child fixture",
+                &work,
+                &root.path,
+                &raw,
+                started + Duration::from_millis(100),
+            )
+            .unwrap_err();
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(error.contains("deadline"));
+            assert_eq!(fs::read(root.member_path("stdin.bin")).unwrap(), raw);
+            let terminal: Value =
+                serde_json::from_slice(&fs::read(root.member_path("terminal.json")).unwrap())
+                    .unwrap();
+            assert_eq!(terminal["deadline_expired"], true);
+            assert_eq!(terminal["process_exit"]["success"], false);
+            // Complete original streams do not mean successful execution.
+            // A kernel pipe may buffer all input even when the child ignores it.
+            assert_eq!(terminal["automatic_retry"], false);
+        }
+
+        #[test]
+        fn deadline_supervisor_releases_a_provably_blocked_stdin_writer() {
+            // Mechanical Linux-pipe fixture only, never a native font probe.
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "while :; do :; done"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let mut pipe = child.stdin.take().unwrap();
+            let capacity = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETPIPE_SZ, 4096) };
+            assert!(capacity > 0);
+            let bytes = vec![b'x'; usize::try_from(capacity).unwrap() + 1];
+            assert!(bytes.len() <= super::super::MAX_GRAPH_TEXT_PROBE_INPUT_BYTES);
+            thread::scope(|scope| {
+                let writer = scope.spawn(move || pipe.write_all(&bytes));
+                let exit = wait_text_child(child, Instant::now() + Duration::from_millis(100));
+                assert!(exit.deadline_expired);
+                assert!(!exit.status.unwrap().success());
+                assert!(writer.join().unwrap().is_err());
+            });
         }
 
         #[test]
@@ -1382,6 +1736,101 @@ fn parse_graph_profile_probe_args(mut raw: Vec<String>) -> Result<ProbeArgs, Str
     parse_probe_args(raw)
 }
 
+fn parse_graph_text_probe_args(mut raw: Vec<String>) -> Result<ProbeArgs, String> {
+    if raw.first().map(String::as_str) != Some("probe-graph-text") {
+        return Err("runner requires the closed Graph text probe command".into());
+    }
+    raw[0] = "probe".into();
+    parse_probe_args(raw)
+}
+
+fn read_graph_text_probe_request() -> Result<GraphTextProbeRequestV1, String> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(MAX_GRAPH_TEXT_PROBE_INPUT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Graph text probe stdin is unavailable".to_string())?;
+    parse_graph_text_probe_request_v1(&bytes)
+        .map_err(|_| "Graph text probe requires the exact bounded data request".into())
+}
+
+fn probe_graph_text(args: ProbeArgs, request: GraphTextProbeRequestV1) -> Result<Value, String> {
+    // Preparation counts against the child's window, leaving the final Host
+    // second for original terminal custody and typed receipt validation.
+    let deadline = std::time::Instant::now() + request.child_timeout();
+    let runtime_root = real_directory(&args.runtime_root, "Manim runtime root")?;
+    let work_root = real_directory(&args.work_root, "Manim work root")?;
+    let fontconfig_root = real_directory(&args.fontconfig_root, "Fontconfig root")?;
+    if !fontconfig_root.join("fonts.conf").is_file() {
+        return Err("Fontconfig root has no fonts.conf".into());
+    }
+    let python = sealed_executable(&args.python, "sealed Python")?;
+    let ffmpeg = sealed_executable(&args.ffmpeg, "sealed FFmpeg")?;
+    let site_packages = runtime_site_packages(&runtime_root)?;
+    let stdin = request
+        .encode()
+        .map_err(|_| "Graph text request encoding".to_string())?;
+    let attempt = request
+        .attempt_sha256()
+        .map_err(|_| "Graph text attempt identity".to_string())?;
+    let program = graph_text_probe_program_v1()
+        .map_err(|_| "Graph text probe source could not be prepared".to_string())?;
+    let mut command = Command::new(&python);
+    command.args(["-c", &program]).arg(&runtime_root);
+    command.current_dir(&work_root);
+    command_environment(
+        &mut command,
+        &site_packages,
+        &ffmpeg,
+        &fontconfig_root,
+        &work_root,
+    )?;
+    // Actual module origin/version and every proposed text run are checked by
+    // this one child, after its exclusive original-input reservation. There is
+    // no preliminary Python dispatch or fallback to an unretained probe.
+    let stdout = checked_graph_text_output(command, &work_root, &attempt, &stdin, deadline)?;
+    let observation = parse_graph_text_probe_observation_v1(&stdout, &request)
+        .map_err(|_| "Graph text native observation was rejected".to_string())?;
+    serde_json::to_value(observation)
+        .map_err(|_| "Graph text native observation could not be encoded".into())
+}
+
+fn checked_graph_text_output(
+    command: Command,
+    work_root: &Path,
+    attempt: &str,
+    stdin: &[u8],
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = work_root.join(format!(".graph-text-probe-{attempt}"));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .map_err(|_| {
+                "Graph text original attempt exists or could not be reserved".to_string()
+            })?;
+        graph_probe_custody::capture_graph_text(
+            command,
+            "proposed Graph text probe",
+            work_root,
+            &directory,
+            stdin,
+            deadline,
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (command, work_root, attempt, stdin, deadline);
+        Err(
+            "Graph text probe requires the existing Linux Pango runtime and original custody"
+                .into(),
+        )
+    }
+}
+
 fn probe_graph_profile(args: ProbeArgs) -> Result<Value, String> {
     let runtime_root = real_directory(&args.runtime_root, "Manim runtime root")?;
     let work_root = real_directory(&args.work_root, "Manim work root")?;
@@ -1691,6 +2140,13 @@ fn render(args: RenderArgs) -> Result<(), String> {
 
 fn main() {
     let raw = std::env::args().skip(1).collect::<Vec<_>>();
+    if raw.first().map(String::as_str) == Some("probe-graph-text") {
+        let args = parse_graph_text_probe_args(raw).unwrap_or_else(|error| fail(error));
+        let request = read_graph_text_probe_request().unwrap_or_else(|error| fail(error));
+        let report = probe_graph_text(args, request).unwrap_or_else(|error| fail(error));
+        print!("{report}");
+        return;
+    }
     if raw.first().map(String::as_str) == Some("probe-graph-profile") {
         let args = parse_graph_profile_probe_args(raw).unwrap_or_else(|error| fail(error));
         let report = probe_graph_profile(args).unwrap_or_else(|error| fail(error));

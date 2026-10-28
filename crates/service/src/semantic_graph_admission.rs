@@ -1,4 +1,4 @@
-//! Backend-only seam for admitted Graph source inspection and save.
+//! Backend-only seam for admitted Graph source inspection, save and removal.
 //!
 //! This module supplies no admission issuer and makes no native runtime claim.
 //! The ordinary StudioService::apply and Graph context remain fail-closed.
@@ -11,13 +11,16 @@ use motionwright_storage::ApplyOutcome;
 use uuid::Uuid;
 
 /// Immutable operation input assembled by the service from the persisted
-/// Project and exact source-save change. This is not an authorization DTO.
+/// Project and exact Graph change. This is not an authorization DTO.
 /// There is no public constructor, Clone, Serialize or Deserialize implementation.
 pub struct SemanticGraphWriteScope<'a> {
     current_project: &'a Project,
     request_id: &'a str,
     change: &'a Change,
-    graph: &'a SemanticGraph,
+    source: &'a GraphSourceSnapshot,
+    graph_id: Uuid,
+    scene_id: Uuid,
+    graph: Option<&'a SemanticGraph>,
 }
 impl SemanticGraphWriteScope<'_> {
     /// Current application state for authentic Host/actor/project access checks.
@@ -32,17 +35,22 @@ impl SemanticGraphWriteScope<'_> {
     pub fn change(&self) -> &Change {
         self.change
     }
-    pub fn graph(&self) -> &SemanticGraph {
+    /// Exact authored source for Upsert; removal carries no replacement Graph.
+    pub fn graph(&self) -> Option<&SemanticGraph> {
         self.graph
     }
     pub fn source_snapshot(&self) -> &GraphSourceSnapshot {
-        &self.graph.authorship.source_snapshot
+        self.source
+    }
+    pub fn graph_id(&self) -> Uuid {
+        self.graph_id
     }
     pub fn scene_id(&self) -> Uuid {
-        self.graph.scene_id
+        self.scene_id
     }
-    pub fn variant_profile_ref(&self) -> Uuid {
-        self.graph.variant_profile_ref
+    /// Removal has no authored profile, including on replay after deletion.
+    pub fn variant_profile_ref(&self) -> Option<Uuid> {
+        self.graph.map(|graph| graph.variant_profile_ref)
     }
 }
 
@@ -50,10 +58,10 @@ impl SemanticGraphWriteScope<'_> {
 ///
 /// A production implementation must derive current access from a genuine
 /// NativeSDK Host invocation and bind the exact scope, including the original
-/// request/change, all four snapshot fields, scene and profile. It must retain
-/// the actual issuer's operation permit and lifecycle protections in the
-/// returned lease through Drop. A cached observation, caller flag, path or
-/// serialized readiness value does not satisfy this contract.
+/// request/change, all four snapshot fields, Graph identity, scene and any
+/// authored profile. It must retain the actual issuer's operation permit and
+/// lifecycle protections through lease Drop. A cached observation, caller
+/// flag, path or serialized readiness value does not satisfy this contract.
 ///
 /// Current Host/actor/project access is required even for a historical reply;
 /// source-revision freshness and exact receipt replay belong to Store.apply.
@@ -98,8 +106,8 @@ pub trait SemanticGraphWriteLease {
 }
 
 impl StudioService {
-    /// Save one Graph source through an injected, trusted backend admission.
-    /// This does not enable ordinary apply, removal, or authoring-context Ready.
+    /// Save or remove one Graph through an injected, trusted backend admission.
+    /// This does not enable ordinary apply or authoring-context Ready.
     /// A matching known-success retry returns Store's original durable result;
     /// this method neither recovers nor automatically retries UNKNOWN effects.
     pub fn apply_semantic_graph_with_admission(
@@ -108,14 +116,27 @@ impl StudioService {
         change: &Change,
         admission: &dyn SemanticGraphAdmission,
     ) -> StorageResult<ApplyOutcome> {
-        let Change::UpsertSemanticGraph { graph } = change else {
-            return Err(DomainError::Invalid(
-                "The admitted Graph source-save boundary accepts only UpsertSemanticGraph".into(),
-            )
-            .into());
+        let (source, graph_id, scene_id, graph) = match change {
+            Change::UpsertSemanticGraph { graph } => (
+                &graph.authorship.source_snapshot,
+                graph.id,
+                graph.scene_id,
+                Some(graph.as_ref()),
+            ),
+            Change::RemoveSemanticGraph {
+                graph_id,
+                scene_id,
+                source_snapshot,
+            } => (source_snapshot, *graph_id, *scene_id, None),
+            _ => {
+                return Err(DomainError::Invalid(
+                    "The admitted Graph boundary accepts only UpsertSemanticGraph or RemoveSemanticGraph"
+                        .into(),
+                )
+                .into());
+            }
         };
         let mut store = self.store.lock();
-        let source = &graph.authorship.source_snapshot;
         let current_project = store.load_project(source.project_id)?;
         let expected = RevisionStamp {
             resource: current_project.resource_key(),
@@ -126,6 +147,9 @@ impl StudioService {
             current_project: &current_project,
             request_id,
             change,
+            source,
+            graph_id,
+            scene_id,
             graph,
         };
         let lease = admission.acquire(&scope)?;
@@ -133,6 +157,8 @@ impl StudioService {
         // Do not require source == current here: Store validates an existing
         // exact receipt before freshness. For a new mutation, domain Graph
         // validation checks all four fields inside Store's SQL transaction.
+        // A removal replay must reach that receipt check even when its Graph
+        // is already absent; target existence and locks also belong to Store.
         let outcome = store.apply(source.project_id, &expected, request_id, change);
         // The operation permit outlives success, replay, conflict and failure.
         drop(lease);

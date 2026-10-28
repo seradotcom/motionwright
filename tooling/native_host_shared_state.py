@@ -16,7 +16,9 @@ import subprocess
 import tempfile
 import time
 import tomllib
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from native_av_failure_guard import run_sanitized_json
 
@@ -74,6 +76,171 @@ def actor(env: dict[str, str], database: Path, *args: str) -> dict:
     return run_json([str(ACTOR), str(database), *args], env=env)
 
 
+def owner_config(data_root: Path, *, manifest: Path | None = None,
+                 selections: list[tuple[str, str]] | None = None) -> str:
+    """Select existing Core Graph projects in trusted owner configuration only."""
+    allow = ["project.manage"] if manifest is None else [
+        "driver:motionwright", "providers.execute_bound",
+    ]
+    config = (
+        "drivers = " + json.dumps([] if manifest is None else [str(manifest)]) + "\n"
+        "driver_network = false\n"
+        "[policy]\n"
+        'profile = "observe"\n'
+        "allow = " + json.dumps(allow) + "\n"
+        "\n[[policy.filesystem]]\n"
+        'name = "motionwright-data"\n'
+        "path = " + json.dumps(str(data_root)) + "\n"
+        "read = true\n"
+        "write = true\n"
+    )
+    if manifest is not None:
+        config += '\n[[policy.native_resource_reads]]\nprovider = "driver:motionwright"\n'
+        for resource, project in selections or []:
+            if (not project.startswith("prj_") or len(project) != 36
+                    or any(char not in "0123456789abcdef" for char in project[4:])):
+                raise AssertionError("Core did not issue a canonical Graph project identity")
+            config += (
+                "\n[[policy.native_resource_reads.resources]]\n"
+                "resource = " + json.dumps(resource) + "\n"
+                'root = "motionwright-data"\n'
+                "project = " + json.dumps(project) + "\n"
+            )
+    return config
+
+
+@contextmanager
+def running_daemon(config: Path, socket: Path, env: dict[str, str], log: Path):
+    """Run the real daemon; no fake backend or sandbox fallback is selected."""
+    with log.open("wb") as stream:
+        log.chmod(0o600)
+        daemon = subprocess.Popen(
+            [str(SW_BINS / "semwrightd"), "--config", str(config), "--socket", str(socket)],
+            env=env, stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if daemon.poll() is not None:
+                    raise AssertionError(
+                        "Native shared-host Broker exited before owner socket startup; log retained privately"
+                    )
+                if socket.is_socket():
+                    break
+                time.sleep(0.02)
+            else:
+                raise AssertionError("semwrightd did not expose its owner socket")
+            yield daemon
+        finally:
+            if daemon.poll() is None:
+                daemon.terminate()
+                try:
+                    daemon.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(daemon.pid, signal.SIGKILL)
+                    daemon.wait(timeout=5)
+
+
+def invoke_cli(env: dict[str, str], socket: Path, session: Path, command: str,
+               args: dict, calls: list[dict], *, ok: bool | None = True) -> dict:
+    """Retain the original outer envelope before validating an expected outcome."""
+    receipt = uuid.uuid4().hex  # Custody filename only; never a principal or grant.
+    entry = {"command": command, "args": args, "session": session.name,
+             "receipt": receipt, "automatic_retry": False}
+    try:
+        result = subprocess.run(
+            [str(SW_BINS / "semwright"), "--socket", str(socket),
+             "--session-file", str(session), "--json", "execute", command,
+             "--args-json", json.dumps(args, separators=(",", ":"))],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        entry["status"] = "UNKNOWN" if isinstance(error, subprocess.TimeoutExpired) else "NOT_RUN"
+        calls.append(entry)
+        for name in ("stdout", "stderr"):
+            raw = getattr(error, name, None)
+            if isinstance(raw, bytes):
+                path = EVIDENCE / f"{receipt}.{name}.original"
+                path.write_bytes(raw)
+                path.chmod(0o600)
+        raise AssertionError(
+            "Native shared-host CLI unavailable or timed out; no effect is retried and custody is private"
+        ) from None
+    for name, raw in (("stdout", result.stdout), ("stderr", result.stderr)):
+        path = EVIDENCE / f"{receipt}.{name}.original"
+        path.write_bytes(raw)
+        path.chmod(0o600)
+    entry["exit_code"] = result.returncode
+    calls.append(entry)
+    value = checked_private_cli_payload(result.stdout, result.stderr, result.returncode, None)
+    entry["envelope"] = value
+    if ok is not None and value["ok"] is not ok:
+        raise AssertionError("Native shared-host CLI did not produce the expected typed outcome")
+    return entry
+
+
+def checked_native_result(outer: dict, binding: str) -> dict:
+    """Expose the unchanged child for assertions while custody retains both layers."""
+    if not outer["ok"]:
+        # Core forwards the original child typed error; never rebuild or retry it.
+        return outer
+    wrapper = outer.get("data")
+    if not isinstance(wrapper, dict) or wrapper.get("binding_ref") != binding:
+        raise AssertionError("Native shared-host result lost its original mount binding")
+    nested = wrapper.get("result")
+    if not isinstance(nested, dict) or nested.get("ok") is not True:
+        raise AssertionError("Native shared-host result omitted its original successful child")
+    execution = nested.get("execution")
+    provenance = execution.get("provenance") if isinstance(execution, dict) else None
+    if (not isinstance(provenance, dict)
+            or provenance.get("provider") != "driver:motionwright"
+            or provenance.get("source") != "driver"
+            or not isinstance(provenance.get("descriptor_sha256"), str)
+            or not provenance["descriptor_sha256"]):
+        raise AssertionError("Native shared-host CLI reported incomplete child provider provenance")
+    return nested
+
+
+def require_known_denial(value: dict, code: str, message: str) -> None:
+    error = value.get("error")
+    if value.get("ok") is not False or not isinstance(error, dict) or error.get("code") != code:
+        raise AssertionError(message)
+    if error.get("outcome_known") is not True:
+        raise AssertionError(
+            "Native shared-host retained UNKNOWN; the known-rejection oracle is not established"
+        )
+
+
+def retain_owner_audit(state: Path, label: str) -> None:
+    """Keep private child/parent audit correlation before disposable state disappears."""
+    audit = state / "audit"
+    if not audit.is_dir():
+        write_json(EVIDENCE / f"{label}.json", {"status": "NOT_RUN", "audit_present": False})
+        return
+    if audit.is_symlink() or audit.resolve() != audit:
+        raise AssertionError("Native shared-host audit escaped the isolated owner state")
+    files = []
+    for source in audit.rglob("*"):
+        if source.is_symlink() or not (source.is_file() or source.is_dir()):
+            raise AssertionError("Native shared-host audit contains a nonregular entry")
+        if source.is_file():
+            files.append((source.relative_to(audit), digest(source)))
+    destination = EVIDENCE / label
+    shutil.copytree(audit, destination)
+    destination.chmod(0o700)
+    for relative, expected in files:
+        copied = destination / relative
+        copied.chmod(0o600)
+        if digest(copied) != expected:
+            raise AssertionError("Native shared-host audit custody changed original bytes")
+    write_json(EVIDENCE / f"{label}.json", {
+        "status": "PASS", "scope": "original audit byte custody only",
+        "files": [{"path": str(relative), "sha256": expected} for relative, expected in files],
+    })
+
+
 def require_exact_inputs() -> None:
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("real Native Host shared-state acceptance is GitHub-Actions-only")
@@ -97,8 +264,9 @@ def require_exact_inputs() -> None:
 
 def main() -> None:
     require_exact_inputs()
-    EVIDENCE.mkdir(parents=True, exist_ok=False)
+    EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
     calls: list[dict] = []
+    transport_calls: list[dict] = []
 
     with tempfile.TemporaryDirectory(prefix="motionwright-native-host-") as raw:
         root = Path(raw).resolve()
@@ -120,6 +288,13 @@ def main() -> None:
             XDG_STATE_HOME=str(paths["state"]),
             RUST_BACKTRACE="1",
         )
+        effective_paths = run_json(
+            [str(SW_BINS / "semwright"), "--json", "config", "paths"], env=env,
+        )
+        owner_state = Path(effective_paths["state"]).resolve()
+        if not owner_state.is_relative_to(paths["state"]):
+            raise AssertionError("Native shared-host daemon state is outside the isolated owner profile")
+        write_json(EVIDENCE / "owner-paths.original.json", effective_paths)
 
         provider = paths["binary"] / "motionwright-native-provider"
         shutil.copyfile(PROVIDER_SOURCE, provider)
@@ -131,13 +306,16 @@ def main() -> None:
         resource = seeded["resource"]
         if seeded["revision"] != "0":
             raise AssertionError("New shared-state project was not at revision zero")
+        # Both resources are genuinely selected so the existing crossed-reference
+        # oracle tests reference isolation, independently of default-deny policy.
+        other = actor(env, database, "init", "Independent project")
 
         version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))[
             "workspace"
         ]["package"]["version"]
         manifest = {
             "manifest_version": 1,
-            "protocol": 4,
+            "protocol": 9,
             "id": "motionwright",
             "version": version,
             "publisher": "motionwright-project",
@@ -179,27 +357,49 @@ def main() -> None:
         }
         manifest_path = paths["config"] / "motionwright-driver.json"
         write_json(manifest_path, manifest)
+        write_json(EVIDENCE / "motionwright-driver.original.json", manifest)
 
-        config = (
-            "drivers = [" + json.dumps(str(manifest_path)) + "]\n"
-            "driver_network = false\n"
-            "[policy]\n"
-            'profile = "observe"\n'
-            'allow = ["driver:motionwright"]\n'
-            "\n[[policy.filesystem]]\n"
-            'name = "motionwright-data"\n'
-            "path = " + json.dumps(str(paths["motionwright-data"])) + "\n"
-            "read = true\n"
-            "write = true\n"
-        )
+        # The real owner daemon creates canonical Graph projects. A native UUID
+        # or fixture document never creates a prj_ identity or ProjectAccess.
+        # Restart with the SAME private state and an explicitly restricted policy.
+        bootstrap_config = paths["config"] / "owner-bootstrap.toml"
+        bootstrap_text = owner_config(paths["motionwright-data"])
+        for path in (bootstrap_config, EVIDENCE / "owner-bootstrap.original.toml"):
+            path.write_text(bootstrap_text, encoding="utf-8")
+            path.chmod(0o600)
+        bootstrap_socket = paths["runtime"] / "bootstrap.sock"
+        selections: list[tuple[str, str]] = []
+        try:
+            with running_daemon(bootstrap_config, bootstrap_socket, env,
+                                EVIDENCE / "semwrightd-bootstrap.log"):
+                for selected_resource in (resource, other["resource"]):
+                    created = invoke_cli(
+                        env, bootstrap_socket, paths["runtime"] / "owner-bootstrap.session",
+                        "project.create", {"root": "motionwright-data"}, transport_calls,
+                    )["envelope"]
+                    canonical_project = created.get("data", {}).get("project")
+                    if not isinstance(canonical_project, str):
+                        raise AssertionError("Owner project.create did not return its real Graph identity")
+                    selections.append((selected_resource, canonical_project))
+        finally:
+            write_json(EVIDENCE / "calls.json", calls)
+            write_json(EVIDENCE / "transport-calls.original.json", transport_calls)
+            retain_owner_audit(owner_state, "owner-bootstrap-audit.original")
+        if selections[0][1] == selections[1][1]:
+            raise AssertionError("Independent resources did not receive distinct canonical Graph projects")
+        config = owner_config(paths["motionwright-data"], manifest=manifest_path,
+                              selections=selections)
         config_path = paths["config"] / "owner.toml"
-        config_path.write_text(config, encoding="utf-8")
-        config_path.chmod(0o600)
+        for path in (config_path, EVIDENCE / "owner-restricted.original.toml"):
+            path.write_text(config, encoding="utf-8")
+            path.chmod(0o600)
 
         socket = paths["runtime"] / "broker.sock"
         session = paths["runtime"] / "client.session"
+        bindings: dict[Path, str] = {}
         daemon_log = EVIDENCE / "semwrightd.log"
         log_stream = daemon_log.open("wb")
+        daemon_log.chmod(0o600)
         daemon = subprocess.Popen(
             [
                 str(SW_BINS / "semwrightd"),
@@ -223,56 +423,31 @@ def main() -> None:
             session_path: Path | None = None,
         ) -> dict:
             selected_session = session_path or session
-            try:
-                result = subprocess.run(
-                    [
-                        str(SW_BINS / "semwright"),
-                        "--socket",
-                        str(socket),
-                        "--session-file",
-                        str(selected_session),
-                        "--json",
-                        "execute",
-                        command,
-                        "--args-json",
-                        json.dumps(args, separators=(",", ":")),
-                    ],
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=20,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                raise AssertionError(
-                    "Native shared-host CLI invocation unavailable or timed out; private arguments suppressed"
-                ) from None
-            value = checked_private_cli_payload(
-                result.stdout, result.stderr, result.returncode, ok
+            if selected_session not in bindings:
+                mount = invoke_cli(
+                    env, socket, selected_session, "providers.mount.observe",
+                    {"provider": "driver:motionwright", "root": "motionwright-data"}, transport_calls,
+                )["envelope"]["data"]
+                binding = mount.get("binding_ref")
+                if (not isinstance(binding, str) or not binding
+                        or mount.get("mount", {}).get("root") != "motionwright-data"
+                        or mount.get("mount", {}).get("write") is not True):
+                    raise AssertionError("Native shared-host did not receive its real writable mount")
+                bindings[selected_session] = binding
+            binding = bindings[selected_session]
+            receipt = invoke_cli(
+                env, socket, selected_session, "providers.execute_bound",
+                {"binding_ref": binding,
+                 "request": {"command": command, "args": args, "dry_run": False}},
+                transport_calls, ok=ok,
             )
-            calls.append(
-                {
-                    "command": command,
-                    "args": args,
-                    "session": selected_session.name,
-                    "exit_code": result.returncode,
-                    "envelope": value,
-                }
-            )
-            if value["ok"] and command.startswith("driver.motionwright."):
-                provenance = value.get("execution")
-                if not isinstance(provenance, dict):
-                    raise AssertionError("Native shared-host CLI omitted provider execution provenance")
-                provenance = provenance.get("provenance")
-                if not isinstance(provenance, dict):
-                    raise AssertionError("Native shared-host CLI omitted typed provider provenance")
-                if provenance.get("provider") != "driver:motionwright":
-                    raise AssertionError("Native shared-host CLI reported unexpected provider identity")
-                if (provenance.get("source") != "driver"
-                        or not isinstance(provenance.get("descriptor_sha256"), str)
-                        or not provenance["descriptor_sha256"]):
-                    raise AssertionError("Native shared-host CLI reported incomplete provider provenance")
-            return value
+            outer = receipt["envelope"]
+            # Preserve the public curator's 13 native-operation views and exact
+            # five-key shape. Each retains its ORIGINAL outer envelope; bootstrap,
+            # mounts and physical wrapper calls also have separate private custody.
+            calls.append({"command": command, "args": args, "session": selected_session.name,
+                          "exit_code": receipt["exit_code"], "envelope": outer})
+            return checked_native_result(outer, binding)
 
         try:
             deadline = time.monotonic() + 20
@@ -326,8 +501,7 @@ def main() -> None:
                 {"ref": observed["ref"], "title": "must not commit from stale ref"},
                 ok=False,
             )
-            if stale.get("error", {}).get("code") != "StaleReference":
-                raise AssertionError("Stale Native SDK reference was not rejected")
+            require_known_denial(stale, "StaleReference", "Stale Native SDK reference was not rejected")
             unchanged = actor(env, database, "show", project_id)
             if unchanged["title"] != "UI renamed after SDK":
                 raise AssertionError("stale SDK mutation altered app-owned state")
@@ -350,14 +524,13 @@ def main() -> None:
                 },
                 ok=False,
             )
-            if forged_actor.get("error", {}).get("code") != "InvalidArgument":
-                raise AssertionError(
-                    "Caller-supplied actor field was not rejected by the typed contract"
-                )
+            require_known_denial(
+                forged_actor, "InvalidArgument",
+                "Caller-supplied actor field was not rejected by the typed contract",
+            )
             if actor(env, database, "show", project_id)["title"] != "UI renamed after SDK":
                 raise AssertionError("forged actor payload altered application state")
 
-            other = actor(env, database, "init", "Independent project")
             cross_project = invoke(
                 "driver.motionwright.observe",
                 {
@@ -368,10 +541,9 @@ def main() -> None:
                 },
                 ok=False,
             )
-            if cross_project.get("error", {}).get("code") != "StaleReference":
-                raise AssertionError(
-                    "Cross-project native reference was incorrectly accepted"
-                )
+            require_known_denial(
+                cross_project, "PolicyDenied", "Cross-project native reference was incorrectly accepted",
+            )
             if actor(env, database, "show", other["id"])["title"] != "Independent project":
                 raise AssertionError("cross-project reference changed the independent project")
 
@@ -415,10 +587,9 @@ def main() -> None:
                 raise AssertionError(
                     "Concurrent native CAS did not return exactly one winner and one loser"
                 )
-            if losers[0].get("error", {}).get("code") != "StaleReference":
-                raise AssertionError(
-                    "Concurrent losing native CAS was not rejected as stale"
-                )
+            require_known_denial(
+                losers[0], "StaleReference", "Concurrent losing native CAS was not rejected as stale",
+            )
             after_race = actor(env, database, "show", project_id)
             winner_title = winners[0]["data"]["project"]["title"]
             if after_race["title"] != winner_title:
@@ -431,8 +602,10 @@ def main() -> None:
                 {"ref": fresh["ref"], "title": "old default-session ref must stay stale"},
                 ok=False,
             )
-            if stale_after_race.get("error", {}).get("code") != "StaleReference":
-                raise AssertionError("pre-race reference remained writable after concurrent edit")
+            require_known_denial(
+                stale_after_race, "StaleReference",
+                "pre-race reference remained writable after concurrent edit",
+            )
 
             post_race = invoke(
                 "driver.motionwright.observe",
@@ -489,6 +662,8 @@ def main() -> None:
                     daemon.wait(timeout=5)
             log_stream.close()
             write_json(EVIDENCE / "calls.json", calls)
+            write_json(EVIDENCE / "transport-calls.original.json", transport_calls)
+            retain_owner_audit(owner_state, "owner-final-audit.original")
 
     print(
         json.dumps(

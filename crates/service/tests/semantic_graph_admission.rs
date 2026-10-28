@@ -5,7 +5,10 @@ use motionwright_service::{
     SemanticGraphAdmission, SemanticGraphContextRequest, SemanticGraphWriteLease,
     SemanticGraphWriteScope, StudioService,
 };
-use motionwright_storage::{Result as StorageResult, StorageError, Store};
+use motionwright_storage::{
+    APPLY_REQUEST_ENCODING_V1, ApplyResultObservation, Result as StorageResult, StorageError,
+    Store, apply_request_digest_v1,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -29,8 +32,9 @@ struct SeenScope {
     request_id: String,
     change: Change,
     source: GraphSourceSnapshot,
+    graph_id: Uuid,
     scene_id: Uuid,
-    profile_id: Uuid,
+    profile_id: Option<Uuid>,
 }
 #[derive(Debug, PartialEq)]
 struct DroppedLease {
@@ -87,17 +91,36 @@ impl SemanticGraphAdmission for TestAdmission {
             scope.current_project().id,
             scope.source_snapshot().project_id
         );
-        assert!(matches!(scope.change(), Change::UpsertSemanticGraph { .. }));
-        assert_eq!(scope.graph().scene_id, scope.scene_id());
-        assert_eq!(
-            scope.graph().variant_profile_ref,
-            scope.variant_profile_ref()
-        );
+        match scope.change() {
+            Change::UpsertSemanticGraph { graph } => {
+                assert!(std::ptr::eq(scope.graph().unwrap(), graph.as_ref()));
+                assert!(std::ptr::eq(
+                    scope.source_snapshot(),
+                    &graph.authorship.source_snapshot
+                ));
+                assert_eq!(scope.graph_id(), graph.id);
+                assert_eq!(scope.scene_id(), graph.scene_id);
+                assert_eq!(scope.variant_profile_ref(), Some(graph.variant_profile_ref));
+            }
+            Change::RemoveSemanticGraph {
+                graph_id,
+                scene_id,
+                source_snapshot,
+            } => {
+                assert!(scope.graph().is_none());
+                assert!(scope.variant_profile_ref().is_none());
+                assert!(std::ptr::eq(scope.source_snapshot(), source_snapshot));
+                assert_eq!(scope.graph_id(), *graph_id);
+                assert_eq!(scope.scene_id(), *scene_id);
+            }
+            _ => panic!("A non-Graph change reached the admitted seam"),
+        }
         self.seen.lock().unwrap().push(SeenScope {
             current: scope.current_project().clone(),
             request_id: scope.request_id().to_owned(),
             change: scope.change().clone(),
             source: scope.source_snapshot().clone(),
+            graph_id: scope.graph_id(),
             scene_id: scope.scene_id(),
             profile_id: scope.variant_profile_ref(),
         });
@@ -245,7 +268,8 @@ fn exact_scope_and_lease_survive_one_durable_commit_without_enabling_ready() {
     assert_eq!(seen[0].change, change);
     assert_eq!(seen[0].source, GraphSourceSnapshot::from_project(&before));
     assert_eq!(seen[0].scene_id, graph.scene_id);
-    assert_eq!(seen[0].profile_id, graph.variant_profile_ref);
+    assert_eq!(seen[0].graph_id, graph.id);
+    assert_eq!(seen[0].profile_id, Some(graph.variant_profile_ref));
     drop(seen);
     assert_eq!(
         *admission.dropped.lock().unwrap(),
@@ -443,7 +467,7 @@ fn invalid_graph_still_uses_domain_validation_under_the_held_lease() {
 }
 
 #[test]
-fn ordinary_apply_removal_and_other_changes_cannot_enter_this_seam() {
+fn ordinary_apply_denies_graph_writes_and_admitted_seam_denies_other_changes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("graph-closed-routes.sqlite3");
     let service = StudioService::open(&path).unwrap();
@@ -464,18 +488,14 @@ fn ordinary_apply_removal_and_other_changes_cannot_enter_this_seam() {
         source_snapshot: GraphSourceSnapshot::from_project(&before),
     };
     let admission = TestAdmission::new(&service, &path, &before, Mode::Admit);
-    for other in [
-        removal.clone(),
-        Change::RenameProject {
-            title: "Not a Graph source save".into(),
-        },
-    ] {
-        assert!(
-            service
-                .apply_semantic_graph_with_admission("wrong-change-variant", &other, &admission,)
-                .is_err()
-        );
-    }
+    let other = Change::RenameProject {
+        title: "Not a Graph source save".into(),
+    };
+    assert!(
+        service
+            .apply_semantic_graph_with_admission("wrong-change-variant", &other, &admission,)
+            .is_err()
+    );
     assert!(
         service
             .apply(before.id, &before.stamp(), "ordinary-removal", &removal)
@@ -958,4 +978,380 @@ fn revocation_after_ready_is_rechecked_before_apply_and_prevents_further_inspect
             .is_err()
     );
     unchanged(&service, &before, &events);
+}
+
+fn saved_graph_for_removal(service: &StudioService, path: &Path) -> Project {
+    let before = seed(service);
+    let admission = TestAdmission::new(service, path, &before, Mode::Admit);
+    service
+        .apply_semantic_graph_with_admission("seed-admitted-graph", &upsert(&before), &admission)
+        .unwrap()
+        .project
+}
+
+fn removal(project: &Project) -> Change {
+    let graph = &project.production_design.semantic_graphs[0];
+    Change::RemoveSemanticGraph {
+        graph_id: graph.id,
+        scene_id: graph.scene_id,
+        source_snapshot: GraphSourceSnapshot::from_project(project),
+    }
+}
+
+fn no_apply_receipt(service: &StudioService, project: &Project, key: &str, change: &Change) {
+    let digest = apply_request_digest_v1(project.id, change).unwrap();
+    let shared = service.store();
+    let observation = shared
+        .lock()
+        .lookup_apply_result_v1(
+            project.id,
+            project.generation,
+            key,
+            &digest,
+            APPLY_REQUEST_ENCODING_V1,
+        )
+        .unwrap();
+    assert!(matches!(observation, ApplyResultObservation::NotFound));
+}
+
+#[test]
+fn admitted_removal_binds_exact_source_commits_once_and_reopens_absent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph-admitted-removal.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = saved_graph_for_removal(&service, &path);
+    let graph = before.production_design.semantic_graphs[0].clone();
+    let prior_events = service.history(before.id, 0, 1024).unwrap();
+    let change = removal(&before);
+    assert!(
+        service
+            .apply(
+                before.id,
+                &before.stamp(),
+                "ordinary-existing-removal",
+                &change
+            )
+            .is_err()
+    );
+    unchanged(&service, &before, &prior_events);
+    no_apply_receipt(&service, &before, "ordinary-existing-removal", &change);
+
+    let admission = TestAdmission::new(&service, &path, &before, Mode::Admit);
+    let outcome = service
+        .apply_semantic_graph_with_admission("admitted-removal", &change, &admission)
+        .unwrap();
+    assert!(!outcome.replayed);
+    assert_eq!(outcome.request_id, "admitted-removal");
+    assert_eq!(outcome.previous_revision, before.revision);
+    assert_eq!(outcome.project.revision, before.revision + 1);
+    assert!(outcome.project.production_design.semantic_graphs.is_empty());
+    assert_eq!(service.project(before.id).unwrap(), outcome.project);
+    let committed_events = service.history(before.id, before.revision, 16).unwrap();
+    assert_eq!(committed_events.len(), 1);
+    assert_eq!(committed_events[0].change, change);
+    let journal = service.history(before.id, 0, 1024).unwrap();
+    assert_eq!(journal.len(), prior_events.len() + 1);
+    assert!(prior_events.iter().all(|event| journal.contains(event)));
+    {
+        let seen = admission.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].current, before);
+        assert_eq!(seen[0].request_id, "admitted-removal");
+        assert_eq!(seen[0].change, change);
+        assert_eq!(seen[0].source, GraphSourceSnapshot::from_project(&before));
+        assert_eq!(seen[0].graph_id, graph.id);
+        assert_eq!(seen[0].scene_id, graph.scene_id);
+        assert_eq!(seen[0].profile_id, None);
+    }
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *admission.dropped.lock().unwrap(),
+        vec![DroppedLease {
+            request_id: "admitted-removal".into(),
+            revision: outcome.project.revision,
+            events: journal.len(),
+        }]
+    );
+    {
+        let shared = service.store();
+        let observation = shared
+            .lock()
+            .lookup_apply_result_v1(
+                before.id,
+                before.generation,
+                "admitted-removal",
+                &apply_request_digest_v1(before.id, &change).unwrap(),
+                APPLY_REQUEST_ENCODING_V1,
+            )
+            .unwrap();
+        let ApplyResultObservation::KnownVerifiedV1 {
+            outcome: stored, ..
+        } = observation
+        else {
+            panic!("Admitted removal must have an authentic V1 receipt");
+        };
+        assert_eq!(stored.project, outcome.project);
+        assert_eq!(stored.request_id, outcome.request_id);
+        assert_eq!(stored.previous_revision, outcome.previous_revision);
+        let original = Change::UpsertSemanticGraph {
+            graph: Box::new(graph.clone()),
+        };
+        let observation = shared
+            .lock()
+            .lookup_apply_result_v1(
+                before.id,
+                before.generation,
+                "seed-admitted-graph",
+                &apply_request_digest_v1(before.id, &original).unwrap(),
+                APPLY_REQUEST_ENCODING_V1,
+            )
+            .unwrap();
+        let ApplyResultObservation::KnownVerifiedV1 {
+            outcome: stored, ..
+        } = observation
+        else {
+            panic!("Removal must preserve the original verified source-save receipt");
+        };
+        assert_eq!(stored.project, before);
+        assert_eq!(stored.request_id, "seed-admitted-graph");
+    }
+    drop(admission);
+    drop(service);
+    let reopened = StudioService::open(&path).unwrap();
+    assert_eq!(reopened.project(before.id).unwrap(), outcome.project);
+    assert_eq!(reopened.history(before.id, 0, 1024).unwrap(), journal);
+}
+
+#[test]
+fn admitted_removal_replays_when_graph_is_absent_but_requires_current_access_and_exact_payload() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph-removal-replay.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = saved_graph_for_removal(&service, &path);
+    let change = removal(&before);
+    let admission = TestAdmission::new(&service, &path, &before, Mode::Admit);
+    let first = service
+        .apply_semantic_graph_with_admission("known-graph-removal", &change, &admission)
+        .unwrap();
+    let latest = service
+        .apply(
+            before.id,
+            &first.project.stamp(),
+            "later-title-after-removal",
+            &Change::RenameProject {
+                title: "Later head with the Graph still absent".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    let journal = service.history(before.id, 0, 1024).unwrap();
+    drop(admission);
+    drop(service);
+
+    let reopened = StudioService::open(&path).unwrap();
+    let current_access = TestAdmission::new(&reopened, &path, &latest, Mode::Admit);
+    let replay = reopened
+        .apply_semantic_graph_with_admission("known-graph-removal", &change, &current_access)
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.project, first.project);
+    assert_eq!(replay.request_id, first.request_id);
+    assert_eq!(replay.previous_revision, first.previous_revision);
+    unchanged(&reopened, &latest, &journal);
+    {
+        let seen = current_access.seen.lock().unwrap();
+        assert_eq!(seen[0].current, latest);
+        assert!(seen[0].current.production_design.semantic_graphs.is_empty());
+        assert_eq!(seen[0].source, GraphSourceSnapshot::from_project(&before));
+        assert_eq!(seen[0].profile_id, None);
+    }
+    for field in ["graph", "scene", "source"] {
+        let mut altered = change.clone();
+        let Change::RemoveSemanticGraph {
+            graph_id,
+            scene_id,
+            source_snapshot,
+        } = &mut altered
+        else {
+            unreachable!()
+        };
+        match field {
+            "graph" => *graph_id = Uuid::new_v4(),
+            "scene" => *scene_id = Uuid::new_v4(),
+            "source" => *source_snapshot = GraphSourceSnapshot::from_project(&latest),
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            reopened.apply_semantic_graph_with_admission(
+                "known-graph-removal",
+                &altered,
+                &current_access,
+            ),
+            Err(StorageError::RequestReuse)
+        ));
+        unchanged(&reopened, &latest, &journal);
+    }
+    let mut missing = change.clone();
+    let Change::RemoveSemanticGraph {
+        source_snapshot, ..
+    } = &mut missing
+    else {
+        unreachable!()
+    };
+    *source_snapshot = GraphSourceSnapshot::from_project(&latest);
+    assert!(matches!(
+        reopened.apply_semantic_graph_with_admission(
+            "new-request-for-absent-graph",
+            &missing,
+            &current_access,
+        ),
+        Err(StorageError::Domain(_))
+    ));
+    no_apply_receipt(&reopened, &latest, "new-request-for-absent-graph", &missing);
+    unchanged(&reopened, &latest, &journal);
+    assert_eq!(current_access.active.load(Ordering::SeqCst), 0);
+    assert_eq!(current_access.checks.load(Ordering::SeqCst), 5);
+    assert!(
+        current_access
+            .dropped
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|drop| drop.revision == latest.revision && drop.events == journal.len())
+    );
+    let revoked = TestAdmission::new(&reopened, &path, &latest, Mode::Reject);
+    assert!(
+        reopened
+            .apply_semantic_graph_with_admission("known-graph-removal", &change, &revoked)
+            .is_err()
+    );
+    assert_eq!(revoked.checks.load(Ordering::SeqCst), 0);
+    unchanged(&reopened, &latest, &journal);
+}
+
+#[test]
+fn admitted_removal_rejects_stale_source_and_mismatched_target_without_event_or_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph-removal-stale.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = saved_graph_for_removal(&service, &path);
+    let journal = service.history(before.id, 0, 1024).unwrap();
+    for field in [
+        "project",
+        "generation",
+        "branch",
+        "revision",
+        "graph",
+        "scene",
+    ] {
+        let mut change = removal(&before);
+        let Change::RemoveSemanticGraph {
+            graph_id,
+            scene_id,
+            source_snapshot,
+        } = &mut change
+        else {
+            unreachable!()
+        };
+        match field {
+            "project" => source_snapshot.project_id = Uuid::new_v4(),
+            "generation" => source_snapshot.generation = Uuid::new_v4(),
+            "branch" => source_snapshot.branch_id = Uuid::new_v4(),
+            "revision" => source_snapshot.revision -= 1,
+            "graph" => *graph_id = Uuid::new_v4(),
+            "scene" => *scene_id = Uuid::new_v4(),
+            _ => unreachable!(),
+        }
+        let key = format!("rejected-removal-{field}");
+        let admission = TestAdmission::new(&service, &path, &before, Mode::Admit);
+        let result = service.apply_semantic_graph_with_admission(&key, &change, &admission);
+        match field {
+            "project" => assert!(matches!(result, Err(StorageError::NotFound))),
+            "generation" => assert!(matches!(result, Err(StorageError::GenerationConflict))),
+            "revision" => assert!(matches!(result, Err(StorageError::Conflict { .. }))),
+            _ => assert!(matches!(result, Err(StorageError::Domain(_)))),
+        }
+        unchanged(&service, &before, &journal);
+        no_apply_receipt(&service, &before, &key, &change);
+        assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+        let admitted = usize::from(field != "project");
+        assert_eq!(admission.checks.load(Ordering::SeqCst), admitted);
+        assert_eq!(admission.dropped.lock().unwrap().len(), admitted);
+        assert!(
+            admission
+                .dropped
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|drop| drop.revision == before.revision && drop.events == journal.len())
+        );
+    }
+}
+
+#[test]
+fn admitted_removal_rejection_and_revocation_preserve_saved_source_without_a_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph-removal-denied.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = saved_graph_for_removal(&service, &path);
+    let change = removal(&before);
+    let journal = service.history(before.id, 0, 1024).unwrap();
+    for mode in [Mode::Reject, Mode::RevokeAfterAcquire] {
+        let admission = TestAdmission::new(&service, &path, &before, mode);
+        assert!(
+            service
+                .apply_semantic_graph_with_admission("denied-graph-removal", &change, &admission)
+                .is_err()
+        );
+        unchanged(&service, &before, &journal);
+        no_apply_receipt(&service, &before, "denied-graph-removal", &change);
+        assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+        let acquired = usize::from(matches!(mode, Mode::RevokeAfterAcquire));
+        assert_eq!(admission.checks.load(Ordering::SeqCst), acquired);
+        assert_eq!(admission.dropped.lock().unwrap().len(), acquired);
+    }
+}
+
+#[test]
+fn reopened_canonical_graph_lock_still_denies_removal_under_the_admitted_lease() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph-removal-locked.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let saved = saved_graph_for_removal(&service, &path);
+    let resource = format!("graph:{}", saved.production_design.semantic_graphs[0].id);
+    let locked = service
+        .apply(
+            saved.id,
+            &saved.stamp(),
+            "canonical-graph-lock",
+            &Change::SetLock {
+                resource: resource.clone(),
+                kind: LockKind::Content,
+                note: "Deletion must retain the canonical domain lock".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    let journal = service.history(saved.id, 0, 1024).unwrap();
+    drop(service);
+    let reopened = StudioService::open(&path).unwrap();
+    let change = removal(&locked);
+    let admission = TestAdmission::new(&reopened, &path, &locked, Mode::Admit);
+    let error = reopened
+        .apply_semantic_graph_with_admission("locked-graph-removal", &change, &admission)
+        .unwrap_err();
+    assert!(error.to_string().contains("locked"));
+    assert!(error.to_string().contains(&resource));
+    unchanged(&reopened, &locked, &journal);
+    no_apply_receipt(&reopened, &locked, "locked-graph-removal", &change);
+    assert_eq!(admission.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *admission.dropped.lock().unwrap(),
+        vec![DroppedLease {
+            request_id: "locked-graph-removal".into(),
+            revision: locked.revision,
+            events: journal.len(),
+        }]
+    );
 }
