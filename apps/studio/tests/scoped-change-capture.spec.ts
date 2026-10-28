@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Project } from "../src/types";
 import { expect, test, type TestInfo } from "@playwright/test";
-import { ScopedChangeService, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceProcessOwner, type StoreFinalization } from "./support/scopedChangeService";
+import { ScopedChangeService, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceLaunchContext, type ServiceProcessOwner, type StoreFinalization } from "./support/scopedChangeService";
 
 // Transport faults and deliberately damaged copies of real SQLite stores are
 // explicit negative fixtures. RPC responses and process results are real.
@@ -166,9 +166,14 @@ test("complete capture includes every file and a paginated full oracle after all
   test.setTimeout(60_000);
   let admissionsSealed = false, externalClosed = false, clientCount = 0;
   let serviceReceipt: ServiceClosureReceipt | null = null;
+  const clientContexts: Readonly<ServiceLaunchContext>[] = [];
   // This owner fixture checks the actual JSONL barrier, not Host termination.
   const owner: ServiceProcessOwner = {
-    async environmentForNewClient() { if (admissionsSealed) throw new Error("Client admissions sealed"); clientCount++; return {}; },
+    async environmentForNewClient(context) {
+      if (admissionsSealed) throw new Error("Client admissions sealed");
+      expect(Object.isFrozen(context)).toBe(true);
+      clientContexts.push(context); clientCount++; return {};
+    },
     sealClientAdmissions() { admissionsSealed = true; },
     async closeAfterClients(barrier) {
       expect(barrier.closed).toBe(true);
@@ -202,6 +207,11 @@ test("complete capture includes every file and a paginated full oracle after all
     finalized = true;
     expect(result.errors).toEqual([]);
     expect(clientCount).toBe(3); expect(admissionsSealed).toBe(true); expect(externalClosed).toBe(true);
+    expect(clientContexts).toEqual([
+      { helper_id: service.helperId, launch_index: 0, binary_path: service.binaryPath, database_path: service.databasePath },
+      { helper_id: peer.helperId, launch_index: 0, binary_path: peer.binaryPath, database_path: peer.databasePath },
+      { helper_id: service.helperId, launch_index: 1, binary_path: service.binaryPath, database_path: service.databasePath },
+    ]);
     const receipt = serviceReceipt as ServiceClosureReceipt | null;
     if (!receipt) throw new Error("Owner did not receive the actual service barrier");
     expect(receipt.schema).toBe("motionwright.service-closure/1");
@@ -209,6 +219,11 @@ test("complete capture includes every file and a paginated full oracle after all
     expect(receipt.participants.map(item => item.launch_count).sort()).toEqual([1, 2]);
     expect(receipt.phases).toEqual({ preparation: [], oracle: "fulfilled", owner_admission_seal: ["fulfilled"] });
     for (const item of receipt.participants) for (const stream of item.process_streams) {
+      expect(clientContexts.filter(context => context.helper_id === item.helper_id
+        && context.launch_index === stream.launch_index)).toEqual([{
+          helper_id: item.helper_id, launch_index: stream.launch_index,
+          binary_path: item.binary_path, database_path: item.database_path,
+        }]);
       expect(stream).toMatchObject({ stdout_ended: true, stderr_ended: true, jsonl_reader_closed: true });
       expect(item.process_exits[stream.exit_index!]).toMatchObject({ process_id: stream.process_id, code: 0, signal: null });
     }
@@ -485,7 +500,12 @@ test("service closure prevents a reserved client from spawning after admissions 
     await clientWaiting;
     const destination = testInfo.outputPath("denied-late-spawn");
     await expect(service.finalizeClosedStore(destination, final)).rejects.toThrow("all peer close outcomes were retained");
-    const peer = await peerResult; expect(peer.peer).toBeNull(); expect(String(peer.error)).toMatch(/sealed before the process launch/);
+    const peer = await peerResult; expect(peer.peer).toBeNull();
+    expect(peer.error).toBeInstanceOf(AggregateError);
+    expect((peer.error as AggregateError).errors.map(String)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/sealed before the process launch/),
+      expect.stringMatching(/lifecycle is tainted/),
+    ]));
     expect(count).toBe(2); expect(externalClosed).toBe(true); expect(barrier?.closed).toBe(false);
     if (!barrier?.receipt_path) throw new Error("Missing reserved-client closure receipt");
     const receipt = JSON.parse(await readFile(barrier.receipt_path, "utf8")) as ServiceClosureReceipt;
@@ -532,4 +552,61 @@ test("service closure seals ordinary clients after real reopen and captures a se
       service_closure: result.serviceClosure, beforeRestart, reopened, final, process_exits: service.processExits,
     }, null, 2), { flag: "wx" });
   } finally { await service.close(); }
+});
+
+test("an owner client reserved for a failed restart cannot reuse an earlier clean launch for capture", async ({}, testInfo) => {
+  const reservations: Readonly<ServiceLaunchContext>[] = [];
+  let sealed = false, ownerClosed = false, observed: ServiceClosureReceipt | null = null;
+  const owner: ServiceProcessOwner = {
+    async environmentForNewClient(context) {
+      if (sealed) throw new Error("Client admissions sealed");
+      reservations.push(context);
+      if (reservations.length === 3) throw new Error("Original owner client response unavailable before restart spawn");
+      return {};
+    },
+    sealClientAdmissions() { sealed = true; },
+    async closeAfterClients(barrier) {
+      expect(barrier.closed).toBe(false);
+      if (barrier.receipt_path === null) throw new Error("The failed restart must retain its actual closure receipt");
+      const bytes = await readFile(barrier.receipt_path);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(barrier.receipt_sha256);
+      observed = JSON.parse(bytes.toString("utf8")) as ServiceClosureReceipt;
+      ownerClosed = true;
+    },
+    assertClosed() { if (!ownerClosed) throw new Error("External cleanup did not finish"); },
+  };
+  const service = await create(testInfo, 10_000, owner);
+  let peer: ScopedChangeService | undefined;
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    peer = await service.peer();
+    await service.close();
+    expect(service.processExits).toHaveLength(1);
+    expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
+    await expect(service.start()).rejects.toThrow("Original owner client response unavailable before restart spawn");
+    expect(reservations.map(context => [context.helper_id, context.launch_index])).toEqual([
+      [service.helperId, 0], [peer.helperId, 0], [service.helperId, 1],
+    ]);
+    expect(service.processStreams).toHaveLength(1);
+    expect(service.lifecycleTaints.some(taint => taint.kind === "transport_failure")).toBe(true);
+    await expect(peer.finalizeClosedStore(testInfo.outputPath("failed-restart-store"), project, [service]))
+      .rejects.toThrow("Store finalization is incomplete");
+    expect(sealed).toBe(true); expect(ownerClosed).toBe(true);
+    const receipt = observed as ServiceClosureReceipt | null;
+    if (!receipt) throw new Error("External owner did not receive failed restart observations");
+    expect(receipt.status).toBe("UNKNOWN");
+    expect(receipt.sealed_helper_ids).toEqual([service.helperId, peer.helperId].sort());
+    const failed = receipt.participants.find(item => item.helper_id === service.helperId)!;
+    expect(failed.launch_count).toBe(1);
+    expect(failed.process_exits).toHaveLength(1);
+    expect(failed.close_status).toBe("rejected");
+    expect(failed.taints).toHaveLength(1);
+    expect(failed.taints[0]).toMatchObject({ kind: "transport_failure", process_id: null });
+    await expect(service.start()).rejects.toThrow(/admissions are sealed/);
+    expect(reservations).toHaveLength(3);
+    await expect(readFile(testInfo.outputPath("failed-restart-store", "manifest.json"))).rejects.toThrow();
+  } finally {
+    await Promise.allSettled([service.close(), ...(peer ? [peer.close()] : [])]);
+    await record(testInfo, peer ? [service, peer] : [service], { fixture: "real_service_failed_restart_reservation; excludes_Native_Host" });
+  }
 });

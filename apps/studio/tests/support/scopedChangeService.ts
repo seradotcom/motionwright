@@ -78,8 +78,16 @@ export interface ServiceBootstrap extends ServiceStartup { project: Project }
 /** Actual external owner lifecycle for native service tests, not an authority DTO.
  * Every launch obtains its own authenticated client environment. The owner must
  * observe all of its Host/provider writers terminal before assertClosed passes. */
+export interface ServiceLaunchContext {
+  readonly helper_id: string;
+  /** Zero-based identity reserved before awaiting the authenticated client. */
+  readonly launch_index: number;
+  readonly binary_path: string;
+  readonly database_path: string;
+}
+
 export interface ServiceProcessOwner {
-  environmentForNewClient(): Promise<NodeJS.ProcessEnv>;
+  environmentForNewClient(context: Readonly<ServiceLaunchContext>): Promise<NodeJS.ProcessEnv>;
   sealClientAdmissions(): void;
   closeAfterClients(barrier: ServiceClosureBarrier): Promise<void>;
   assertClosed(): void;
@@ -305,6 +313,8 @@ export class ScopedChangeService {
     }
   }
 
+  /** Stable process-helper identity, including a closed ordinary initializer. */
+  get helperId(): string { return this.sessionId; }
   get stderr(): string { return this.stderrText; }
 
   private taint(kind: ServiceLifecycleTaint["kind"], message: string, child = this.child): void {
@@ -382,12 +392,27 @@ export class ScopedChangeService {
     if (this.desktopInvokeFixture) args.push("--desktop-invoke-fixture");
     // A restarted session and each peer need a fresh authenticated client.
     // Never mutate the worker's global environment or reuse a bootstrap binding.
-    const environment = this.processOwner
-      ? { ...process.env, ...await this.processOwner.environmentForNewClient() } : undefined;
-    if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
-      throw new Error("Service client admissions were sealed before the process launch");
-    const child = spawn(this.binaryPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: environment });
-    const streams: ServiceProcessStreamState = { launch_index: this.processStreams.length, process_id: child.pid ?? null, exit_index: null,
+    const launchContext: Readonly<ServiceLaunchContext> = Object.freeze({
+      helper_id: this.sessionId, launch_index: this.processStreams.length,
+      binary_path: this.binaryPath, database_path: this.databasePath,
+    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      const environment = this.processOwner
+        ? { ...process.env, ...await this.processOwner.environmentForNewClient(launchContext) } : undefined;
+      if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
+        throw new Error("Service client admissions were sealed before the process launch");
+      if (launchContext.launch_index !== this.processStreams.length)
+        throw new Error("Service client launch identity changed before the process launch");
+      child = spawn(this.binaryPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: environment });
+    } catch (error) {
+      // A clean earlier launch cannot erase an authenticated client reservation
+      // whose process never started. The owner also retains the unmatched tuple.
+      if (this.processOwner) this.taint("transport_failure",
+        "Service client reservation did not reach a process launch: " + String(error), null);
+      throw error;
+    }
+    const streams: ServiceProcessStreamState = { launch_index: launchContext.launch_index, process_id: child.pid ?? null, exit_index: null,
       stdout_ended: false, stderr_ended: false, jsonl_reader_closed: false };
     this.processStreams.push(streams);
     child.stdout.once("end", function observeStdoutEnd() { streams.stdout_ended = true; });
