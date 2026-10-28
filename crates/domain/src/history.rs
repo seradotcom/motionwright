@@ -666,7 +666,9 @@ impl Project {
         branch.head_revision = next_revision;
 
         if let Change::CombineCreativeBranches { input } = change {
-            let candidate = self.branches.iter_mut()
+            let candidate = self
+                .branches
+                .iter_mut()
                 .find(|branch| branch.id == input.candidate_branch_id)
                 .ok_or_else(|| DomainError::Invalid("derived branch is missing".into()))?;
             candidate.head_revision = next_revision;

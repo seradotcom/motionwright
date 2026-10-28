@@ -530,7 +530,9 @@ async fn preview_branch_combination(
 ) -> Result<motionwright_domain::CreativePatchPreview, String> {
     let service = state.service.clone();
     let preview = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        service.preview_branch_combination(&request).map_err(sanitized)
+        service
+            .preview_branch_combination(&request)
+            .map_err(sanitized)
     })
     .await
     .map_err(|_| "Branch combination inspection task failed.".to_owned())??;
