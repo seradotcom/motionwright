@@ -1355,3 +1355,142 @@ fn reopened_canonical_graph_lock_still_denies_removal_under_the_admitted_lease()
         }]
     );
 }
+
+struct StoreInspectingAdmission {
+    inner: TestAdmission,
+    actual_store_address: usize,
+    reject_store: bool,
+    store_checks: AtomicUsize,
+    authoring_checks: AtomicUsize,
+}
+
+impl StoreInspectingAdmission {
+    fn new(inner: TestAdmission, reject_store: bool) -> Self {
+        let actual_store_address = {
+            let store = inner.store.lock();
+            std::ptr::from_ref(&*store).addr()
+        };
+        Self {
+            inner,
+            actual_store_address,
+            reject_store,
+            store_checks: AtomicUsize::new(0),
+            authoring_checks: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl SemanticGraphAdmission for StoreInspectingAdmission {
+    fn inspect_store(&self, store: &Store) -> StorageResult<()> {
+        assert!(self.inner.store.try_lock().is_none());
+        assert_eq!(
+            std::ptr::from_ref(store).addr(),
+            self.actual_store_address,
+            "inspection must receive the exact Store already held by Service"
+        );
+        assert_eq!(self.inner.active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.load_project(self.inner.project_id)?.id,
+            self.inner.project_id
+        );
+        self.store_checks.fetch_add(1, Ordering::SeqCst);
+        if self.reject_store {
+            Err(denied())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn inspect_authoring(
+        &self,
+        _project: &Project,
+        _request: &SemanticGraphContextRequest,
+    ) -> StorageResult<()> {
+        assert!(self.inner.store.try_lock().is_none());
+        self.authoring_checks.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn acquire<'a>(
+        &'a self,
+        scope: &'a SemanticGraphWriteScope<'a>,
+    ) -> StorageResult<Box<dyn SemanticGraphWriteLease + 'a>> {
+        self.inner.acquire(scope)
+    }
+}
+
+#[test]
+fn store_inspection_denial_prevents_graph_acquisition_and_persistence() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store-inspection-denied.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission = StoreInspectingAdmission::new(
+        TestAdmission::new(&service, &path, &before, Mode::Admit),
+        true,
+    );
+    assert!(
+        service
+            .apply_semantic_graph_with_admission("store-denied", &upsert(&before), &admission)
+            .is_err()
+    );
+    unchanged(&service, &before, &events);
+    assert_eq!(admission.store_checks.load(Ordering::SeqCst), 1);
+    assert!(admission.inner.seen.lock().unwrap().is_empty());
+    assert!(admission.inner.dropped.lock().unwrap().is_empty());
+    assert_eq!(admission.inner.active.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn store_inspection_denial_prevents_authoring_readiness() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store-context-denied.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let events = service.history(before.id, 0, 1024).unwrap();
+    let admission = StoreInspectingAdmission::new(
+        TestAdmission::new(&service, &path, &before, Mode::Admit),
+        true,
+    );
+    assert!(
+        service
+            .semantic_graph_authoring_context_with_admission(
+                &authoring_request(&before),
+                &admission
+            )
+            .is_err()
+    );
+    unchanged(&service, &before, &events);
+    assert_eq!(admission.store_checks.load(Ordering::SeqCst), 1);
+    assert_eq!(admission.authoring_checks.load(Ordering::SeqCst), 0);
+    assert!(admission.inner.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn store_inspection_borrows_actual_store_and_ends_before_mutable_apply() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store-inspection-accepted.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let before = seed(&service);
+    let admission = StoreInspectingAdmission::new(
+        TestAdmission::new(&service, &path, &before, Mode::Admit),
+        false,
+    );
+    let saved = service
+        .apply_semantic_graph_with_admission("store-inspected-save", &upsert(&before), &admission)
+        .unwrap();
+    assert_eq!(saved.project.revision, before.revision + 1);
+    assert_eq!(admission.store_checks.load(Ordering::SeqCst), 1);
+    assert_eq!(admission.inner.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(admission.inner.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.inner.dropped.lock().unwrap().len(), 1);
+    service
+        .semantic_graph_authoring_context_with_admission(
+            &authoring_request(&saved.project),
+            &admission,
+        )
+        .unwrap();
+    assert_eq!(admission.store_checks.load(Ordering::SeqCst), 2);
+    assert_eq!(admission.authoring_checks.load(Ordering::SeqCst), 1);
+}

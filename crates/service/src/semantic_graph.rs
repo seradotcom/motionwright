@@ -53,6 +53,9 @@ impl StudioService {
         admission: Option<&dyn SemanticGraphAdmission>,
     ) -> StorageResult<GraphAuthoringContext> {
         let store = self.store.lock();
+        if let Some(admission) = admission {
+            admission.inspect_store(&store)?;
+        }
         let project = store.load_project(request.source_snapshot.project_id)?;
         request.source_snapshot.require_current(&project)?;
         let scene = project

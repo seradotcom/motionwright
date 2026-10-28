@@ -7,7 +7,7 @@ use crate::{StorageResult, StudioService};
 use motionwright_domain::{
     Change, DomainError, GraphSourceSnapshot, Project, RevisionStamp, SemanticGraph,
 };
-use motionwright_storage::ApplyOutcome;
+use motionwright_storage::{ApplyOutcome, Store};
 use uuid::Uuid;
 
 /// Immutable operation input assembled by the service from the persisted
@@ -69,6 +69,18 @@ impl SemanticGraphWriteScope<'_> {
 /// await, call back into StudioService, or acquire another Store mutex here.
 /// The native adapter is intentionally not implemented by this module.
 pub trait SemanticGraphAdmission {
+    /// Inspect the actual Store while Service holds its existing mutex.
+    ///
+    /// This optional callback adds no authority. Production Native adapters
+    /// must use it to compare the retained connection identity with their
+    /// original mounted Store and the caller's independently bound Store.
+    /// Do not await, reenter Service, relock its Arc, mutate, or retain this
+    /// borrow. The callback ends before acquire() and mutable Store.apply;
+    /// the same mutex guard remains held through the complete operation.
+    fn inspect_store(&self, _store: &Store) -> StorageResult<()> {
+        Ok(())
+    }
+
     /// Inspect source-authoring availability for the exact persisted selection.
     /// Service has checked all snapshot fields, scene/profile membership and
     /// renderer before calling this synchronous method under its Store mutex.
@@ -137,6 +149,7 @@ impl StudioService {
             }
         };
         let mut store = self.store.lock();
+        admission.inspect_store(&store)?;
         let current_project = store.load_project(source.project_id)?;
         let expected = RevisionStamp {
             resource: current_project.resource_key(),
