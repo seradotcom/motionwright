@@ -1,10 +1,12 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Project } from "../src/types";
 import { expect, test, type TestInfo } from "@playwright/test";
-import { ScopedChangeService, type ServiceProcessOwner, type StoreFinalization } from "./support/scopedChangeService";
+import { ScopedChangeService, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceProcessOwner, type StoreFinalization } from "./support/scopedChangeService";
 
 // Transport faults and deliberately damaged copies of real SQLite stores are
 // explicit negative fixtures. RPC responses and process results are real.
@@ -40,6 +42,31 @@ function withDatabase<T>(path: string, action: (database: DatabaseSync) => T): T
   finally { database.close(); }
 }
 
+
+/** Deliberate corruption of our isolated v6 fixture, never a production writer grant. */
+function withCorruptibleV6Database<T>(path: string, action: (database: DatabaseSync) => T): T {
+  return withDatabase(path, database => {
+    expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(6);
+    database.function("motionwright_writer_epoch_guard_v6", { deterministic: true }, () => 6n);
+    return action(database);
+  });
+}
+
+/** Existing portable restore creates its own managed CAS root and fresh authority. */
+async function copyProjectThroughBundle(source: ScopedChangeService, target: ScopedChangeService, project: Project, path: string): Promise<Project> {
+  const before = await source.observeStoredProject(project);
+  await source.exportBundle(project, path);
+  const plan = await target.inspectBundle(path);
+  const restored = await target.importBundle(path, plan.fingerprint);
+  expect(restored.generation).not.toBe(project.generation);
+  // Core restore deliberately renews these two instance metadata fields.
+  expect(Number.isFinite(Date.parse(restored.updated_at))).toBe(true);
+  expect({ ...restored, generation: project.generation, updated_at: project.updated_at }).toEqual(project);
+  const after = await target.observeStoredProject(restored);
+  expect(after.journal).toEqual(before.journal);
+  return restored;
+}
+
 function authorityRows(database: DatabaseSync) {
   return Object.fromEntries(["projects", "events", "receipts", "production_receipts"].map(table =>
     [table, database.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
@@ -52,25 +79,24 @@ for (const damage of ["middle", "tail", "all"] as const) {
     try {
       let final = (await original.fixtureBootstrap()).project;
       for (let n = 0; n < 3; n++) final = await original.apply(final, { type: "rename_project", title: `Journal continuity ${n}` });
-      await original.observeStoredProject(final);
+      damaged = await ScopedChangeService.create({ databasePath: testInfo.outputPath("damaged-copy", "studio.sqlite3"), seedFixture: false });
+      const copiedProject = await copyProjectThroughBundle(original, damaged, final, testInfo.outputPath("journal-source-bundle"));
       await original.close();
-      const capture = await original.captureClosedStore(testInfo.outputPath("original-closed-store"));
+      await original.captureClosedStore(testInfo.outputPath("original-closed-store"));
       const originalBytes = await readFile(original.databasePath);
-      const copiedDirectory = testInfo.outputPath("damaged-copy");
-      await cp(capture.snapshotDirectory, copiedDirectory, { recursive: true, errorOnExist: true, force: false });
-      const copiedDatabase = join(copiedDirectory, capture.databaseRelativePath);
-      const deleted = withDatabase(copiedDatabase, database => {
+      await damaged.close();
+      const deleted = withCorruptibleV6Database(damaged.databasePath, database => {
         const revision = damage === "middle" ? 2 : final.revision;
         return damage === "all"
           ? database.prepare("DELETE FROM events WHERE project_id=?").run(final.id).changes
           : database.prepare("DELETE FROM events WHERE project_id=? AND revision=?").run(final.id, revision).changes;
       });
       expect(Number(deleted)).toBe(damage === "all" ? final.revision : 1);
-      damaged = await ScopedChangeService.create({ databasePath: copiedDatabase, seedFixture: false });
-      expect(await damaged.project(final.id)).toEqual(final);
-      await expect(damaged.observeStoredProject(final)).rejects.toThrow(damage === "middle" ? /journal has a gap/ : /journal is truncated/);
+      await damaged.start();
+      expect(await damaged.project(copiedProject.id)).toEqual(copiedProject);
+      await expect(damaged.observeStoredProject(copiedProject)).rejects.toThrow(damage === "middle" ? /journal has a gap/ : /journal is truncated/);
       const destination = testInfo.outputPath("rejected-damaged-finalization");
-      await expect(damaged.finalizeClosedStore(destination, final)).rejects.toThrow("Store finalization is incomplete");
+      await expect(damaged.finalizeClosedStore(destination, copiedProject)).rejects.toThrow("Store finalization is incomplete");
       const outcome = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
       expect(outcome.oracle).toBeNull(); expect(outcome.capture).toBeNull();
       expect(outcome.closures.every(item => item.status === "fulfilled")).toBe(true);
@@ -88,27 +114,27 @@ for (const damage of ["foreign_identity", "invalid_json"] as const) {
     const original = await create(testInfo);
     let damaged: ScopedChangeService | undefined;
     try {
-      const first = (await original.fixtureBootstrap()).project;
+      let first = (await original.fixtureBootstrap()).project;
       const intent = { request_id: crypto.randomUUID(), title: "Healthy independent project" };
       const creationGrant = await original.invoke<{ token: string }>("issue_project_creation_grant", { request: intent });
-      const second = (await original.invoke<{ project: typeof first }>("create_project", { request: { intent, effect_grant: creationGrant.token } })).project;
+      let second = (await original.invoke<{ project: typeof first }>("create_project", { request: { intent, effect_grant: creationGrant.token } })).project;
+      damaged = await ScopedChangeService.create({ databasePath: testInfo.outputPath("damaged-copy", "studio.sqlite3"), seedFixture: false, desktopInvokeFixture: true });
+      first = await copyProjectThroughBundle(original, damaged, first, testInfo.outputPath("first-project-bundle"));
+      second = await copyProjectThroughBundle(original, damaged, second, testInfo.outputPath("second-project-bundle"));
       await original.close();
-      const capture = await original.captureClosedStore(testInfo.outputPath("original-closed-store"));
+      await original.captureClosedStore(testInfo.outputPath("original-closed-store"));
       const originalBytes = await readFile(original.databasePath);
-      const copiedDirectory = testInfo.outputPath("damaged-copy");
-      await cp(capture.snapshotDirectory, copiedDirectory, { recursive: true, errorOnExist: true, force: false });
-      const copiedDatabase = join(copiedDirectory, capture.databaseRelativePath);
-      damaged = await ScopedChangeService.create({ databasePath: copiedDatabase, seedFixture: false, desktopInvokeFixture: true });
+      const copiedDatabase = damaged.databasePath;
       const requestId = crypto.randomUUID();
       const grant = await damaged.grant("project_edit", first, requestId);
       // The real grant predates a separate committed write to the isolated
       // copy. This exercises an association changing before the apply RPC.
-      const expectedRows = withDatabase(copiedDatabase, database => {
+      const expectedRows = withCorruptibleV6Database(copiedDatabase, database => {
         const document = damage === "foreign_identity" ? JSON.stringify(second) : "{ damaged document";
         expect(database.prepare("UPDATE projects SET document_json=? WHERE id=?").run(document, first.id).changes).toBe(1);
         return authorityRows(database);
       });
-      const rejected = damage === "foreign_identity" ? /identity differs/ : /could not be opened/;
+      const rejected = damage === "foreign_identity" ? /stored project authority columns differ from the document/ : /could not be opened/;
       await expect(damaged.project(first.id)).rejects.toThrow(rejected);
       await expect(damaged.grant("project_edit", first, crypto.randomUUID())).rejects.toThrow(rejected);
       await expect(damaged.invoke("apply_change", { request: {
@@ -119,7 +145,7 @@ for (const damage of ["foreign_identity", "invalid_json"] as const) {
       const library = page.getByRole("dialog", { name: "Project library", exact: true });
       await expect(library).toBeVisible();
       await library.getByRole("button", { name: "Open " + first.title, exact: true }).click();
-      await expect(library.getByRole("alert")).toContainText(damage === "foreign_identity" ? "identity differs" : "could not be opened");
+      await expect(library.getByRole("alert")).toContainText("The saved page could not be read because its request or content is invalid.");
       await library.getByRole("button", { name: "Open " + second.title, exact: true }).click();
       await expect(page.locator(".command-bar .revision-chip")).toHaveText("r0");
       expect(await damaged.project(second.id)).toEqual(second);
@@ -138,7 +164,23 @@ for (const damage of ["foreign_identity", "invalid_json"] as const) {
 
 test("complete capture includes every file and a paginated full oracle after all known peers close", async ({}, testInfo) => {
   test.setTimeout(60_000);
-  const service = await create(testInfo);
+  let admissionsSealed = false, externalClosed = false, clientCount = 0;
+  let serviceReceipt: ServiceClosureReceipt | null = null;
+  // This owner fixture checks the actual JSONL barrier, not Host termination.
+  const owner: ServiceProcessOwner = {
+    async environmentForNewClient() { if (admissionsSealed) throw new Error("Client admissions sealed"); clientCount++; return {}; },
+    sealClientAdmissions() { admissionsSealed = true; },
+    async closeAfterClients(barrier) {
+      expect(barrier.closed).toBe(true);
+      if (!barrier.receipt_path) throw new Error("Missing actual service closure receipt");
+      const original = await readFile(barrier.receipt_path);
+      expect(createHash("sha256").update(original).digest("hex")).toBe(barrier.receipt_sha256);
+      serviceReceipt = JSON.parse(original.toString("utf8")) as ServiceClosureReceipt;
+      expect(serviceReceipt.status).toBe("CLOSED"); externalClosed = true;
+    },
+    assertClosed() { if (!externalClosed) throw new Error("External callback did not finish"); },
+  };
+  const service = await create(testInfo, 10_000, owner);
   let peer: ScopedChangeService | undefined;
   let finalized = false;
   try {
@@ -155,9 +197,25 @@ test("complete capture includes every file and a paginated full oracle after all
     // sidecar-shaped names. They are not fabricated SQLite WAL/SHM for this DB.
     await writeFile(join(service.directory, "opaque.sqlite3-wal"), Buffer.from([0, 255, 1, 2, 3]));
     await writeFile(join(service.directory, "opaque.sqlite3-shm"), Buffer.from([9, 0, 8, 7]));
+    await service.close(); await service.start(); // Actual new launch and reader lifetime.
     const result = await service.finalizeClosedStore(testInfo.outputPath("closed-store-1"), final, [peer]);
     finalized = true;
     expect(result.errors).toEqual([]);
+    expect(clientCount).toBe(3); expect(admissionsSealed).toBe(true); expect(externalClosed).toBe(true);
+    const receipt = serviceReceipt as ServiceClosureReceipt | null;
+    if (!receipt) throw new Error("Owner did not receive the actual service barrier");
+    expect(receipt.schema).toBe("motionwright.service-closure/1");
+    expect(receipt.sealed_helper_ids).toEqual(receipt.participants.map(item => item.helper_id).sort());
+    expect(receipt.participants.map(item => item.launch_count).sort()).toEqual([1, 2]);
+    expect(receipt.phases).toEqual({ preparation: [], oracle: "fulfilled", owner_admission_seal: ["fulfilled"] });
+    for (const item of receipt.participants) for (const stream of item.process_streams) {
+      expect(stream).toMatchObject({ stdout_ended: true, stderr_ended: true, jsonl_reader_closed: true });
+      expect(item.process_exits[stream.exit_index!]).toMatchObject({ process_id: stream.process_id, code: 0, signal: null });
+    }
+    await expect(service.peer()).rejects.toThrow(/admissions are sealed/);
+    await expect(service.start()).rejects.toThrow(/admissions are sealed/);
+    await expect(ScopedChangeService.create({ databasePath: service.databasePath, binaryPath: service.binaryPath })).rejects.toThrow(/admissions are sealed/);
+    expect(clientCount).toBe(3);
     expect(result.closures).toHaveLength(2);
     expect(result.closures.every(outcome => outcome.status === "fulfilled" && outcome.taints.length === 0 && outcome.exits.every(exit => exit.code === 0 && exit.signal === null))).toBe(true);
     expect(result.oracle?.project).toEqual(final);
@@ -287,11 +345,12 @@ test("an unobserved process close cannot be promoted to proof by a later timeout
 
 test("finalization attempts every peer and retains every outcome when preparation and one close fail", async ({}, testInfo) => {
   let peer: ScopedChangeService | undefined;
-  let externalClosed = false, externalCloseCalls = 0, clientEnvironmentCalls = 0;
+  let externalClosed = false, externalCloseCalls = 0, clientEnvironmentCalls = 0, admissionsSealed = false;
   // This callback fixture tests cleanup ordering only. It creates no Host,
   // authority, Graph context or native success; both service processes are real.
   const owner: ServiceProcessOwner = {
-    async environmentForNewClient() { clientEnvironmentCalls += 1; return {}; },
+    async environmentForNewClient() { if (admissionsSealed) throw new Error("Client admissions sealed"); clientEnvironmentCalls += 1; return {}; },
+    sealClientAdmissions() { admissionsSealed = true; },
     async closeAfterClients() {
       externalCloseCalls += 1;
       if (!service.processExits.length || !peer?.processExits.length)
@@ -337,10 +396,11 @@ test("finalization attempts every peer and retains every outcome when preparatio
 
 for (const phase of ["preparation", "client", "external"] as const) {
   test(`finalization rejects an empty-message ${phase} failure after actual service closure`, async ({}, testInfo) => {
-    let externalClosed = false, externalCalls = 0;
+    let externalClosed = false, externalCalls = 0, admissionsSealed = false;
     // Only the rejection is injected; the service process and its close are real.
     const owner: ServiceProcessOwner = {
-      async environmentForNewClient() { return {}; },
+      async environmentForNewClient() { if (admissionsSealed) throw new Error("Client admissions sealed"); return {}; },
+      sealClientAdmissions() { admissionsSealed = true; },
       async closeAfterClients() { externalCalls++; externalClosed = true; if (phase === "external") throw ""; },
       assertClosed() { if (!externalClosed) throw new Error("External callback did not finish"); },
     };
@@ -364,3 +424,112 @@ for (const phase of ["preparation", "client", "external"] as const) {
     }
   });
 }
+
+for (const failure of ["missing EOF observation", "receipt already exists"] as const) {
+  test(`service closure preserves UNKNOWN after ${failure} and still closes its owner`, async ({}, testInfo) => {
+    let sealed = false, externalClosed = false, calls = 0, observed: ServiceClosureBarrier | undefined;
+    const owner: ServiceProcessOwner = {
+      async environmentForNewClient() { if (sealed) throw new Error("Client admissions sealed"); return {}; },
+      sealClientAdmissions() { sealed = true; },
+      async closeAfterClients(barrier) { observed = structuredClone(barrier); calls++; externalClosed = true; },
+      assertClosed() { if (!externalClosed) throw new Error("External callback did not finish"); },
+    };
+    const service = await create(testInfo, 10_000, owner);
+    try {
+      const final = (await service.fixtureBootstrap()).project, destination = testInfo.outputPath("denied-service-barrier");
+      let actualEnd: Promise<unknown> | undefined;
+      if (failure === "missing EOF observation") {
+        const child = childOf(service), observer = child.stdout.listeners("end").find(listener => listener.name === "observeStdoutEnd");
+        if (!observer) throw new Error("Actual helper EOF observer was not installed");
+        child.stdout.removeListener("end", observer as (...args: unknown[]) => void);
+        actualEnd = once(child.stdout, "end");
+      } else await writeFile(destination + "-service-closure.json", "Original conflicting receipt retained", { flag: "wx" });
+      await expect(service.finalizeClosedStore(destination, final)).rejects.toThrow("all peer close outcomes were retained");
+      if (actualEnd) await actualEnd;
+      expect(calls).toBe(1); expect(externalClosed).toBe(true); expect(observed?.closed).toBe(false);
+      expect(service.processExits).toHaveLength(1); expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
+      if (failure === "receipt already exists") {
+        expect(observed).toEqual({ closed: false, receipt_path: null, receipt_sha256: null });
+        expect(await readFile(destination + "-service-closure.json", "utf8")).toBe("Original conflicting receipt retained");
+      } else {
+        if (!observed?.receipt_path) throw new Error("Missing failed closure receipt");
+        const receipt = JSON.parse(await readFile(observed.receipt_path, "utf8")) as ServiceClosureReceipt;
+        expect(receipt.status).toBe("UNKNOWN");
+        expect(receipt.participants[0].process_streams[0]).toMatchObject({ stdout_ended: false, stderr_ended: true, jsonl_reader_closed: true });
+      }
+      const outcome = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
+      expect(outcome.capture).toBeNull(); expect(outcome.errors.length).toBeGreaterThan(0);
+      await expect(readFile(join(destination, "manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await service.close(); await record(testInfo, [service], { failure, observed }); }
+  });
+}
+test("service closure prevents a reserved client from spawning after admissions seal", async ({}, testInfo) => {
+  let sealed = false, count = 0, externalClosed = false;
+  let resolveEnvironment!: (env: NodeJS.ProcessEnv) => void, waiting!: () => void;
+  const clientWaiting = new Promise<void>(resolve => { waiting = resolve; });
+  let barrier: ServiceClosureBarrier | undefined;
+  const owner: ServiceProcessOwner = {
+    async environmentForNewClient() {
+      if (sealed) throw new Error("Client admissions sealed");
+      if (++count === 1) return {};
+      return new Promise<NodeJS.ProcessEnv>(resolve => { resolveEnvironment = resolve; waiting(); });
+    },
+    sealClientAdmissions() { sealed = true; resolveEnvironment({}); },
+    async closeAfterClients(value) { barrier = structuredClone(value); externalClosed = true; },
+    assertClosed() { if (!externalClosed) throw new Error("External callback did not finish"); },
+  };
+  const service = await create(testInfo, 10_000, owner);
+  try {
+    const final = (await service.fixtureBootstrap()).project;
+    const peerResult = service.peer().then(peer => ({ peer, error: null }), (error: unknown) => ({ peer: null, error }));
+    await clientWaiting;
+    const destination = testInfo.outputPath("denied-late-spawn");
+    await expect(service.finalizeClosedStore(destination, final)).rejects.toThrow("all peer close outcomes were retained");
+    const peer = await peerResult; expect(peer.peer).toBeNull(); expect(String(peer.error)).toMatch(/sealed before the process launch/);
+    expect(count).toBe(2); expect(externalClosed).toBe(true); expect(barrier?.closed).toBe(false);
+    if (!barrier?.receipt_path) throw new Error("Missing reserved-client closure receipt");
+    const receipt = JSON.parse(await readFile(barrier.receipt_path, "utf8")) as ServiceClosureReceipt;
+    expect(receipt.status).toBe("UNKNOWN"); expect(receipt.participants.map(item => item.launch_count).sort()).toEqual([0, 1]);
+    expect(receipt.participants.flatMap(item => item.process_exits)).toHaveLength(1);
+    expect(receipt.participants.every(item => item.active_child_count === 0 && item.starting_count === 0 && item.closing_count === 0 && item.pending_count === 0)).toBe(true);
+  } finally { await service.close(); await record(testInfo, [service], { barrier }); }
+});
+
+test("service closure seals ordinary clients after real reopen and captures a separate verified copy", async ({}, testInfo) => {
+  const service = await create(testInfo);
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    const saved = await service.apply(initial, { type: "rename_project", title: "Ordinary closure and real reopen" });
+    const beforeRestart = await service.observeStoredProject(saved);
+    await service.close(); await service.start();
+    const reopened = await service.observeStoredProject(saved);
+    expect(reopened.project).toEqual(beforeRestart.project); expect(reopened.journal).toEqual(beforeRestart.journal);
+    const final = await service.apply(reopened.project, { type: "rename_project", title: "Editable after real restart" });
+    const destination = testInfo.outputPath("ordinary-closed-store");
+    const result = await service.finalizeClosedStore(destination, final);
+    expect(result.errors).toEqual([]); expect(result.serviceClosure?.closed).toBe(true);
+    const receipt = JSON.parse(await readFile(result.serviceClosure!.receipt_path!, "utf8")) as ServiceClosureReceipt;
+    expect(receipt.status).toBe("CLOSED"); expect(receipt.phases.owner_admission_seal).toEqual([]);
+    expect(receipt.sealed_helper_ids).toEqual(receipt.participants.map(item => item.helper_id).sort());
+    await expect(service.start()).rejects.toThrow(/admissions are sealed/);
+    await expect(service.peer()).rejects.toThrow(/admissions are sealed/);
+    await expect(ScopedChangeService.create({ databasePath: service.databasePath, binaryPath: service.binaryPath })).rejects.toThrow(/admissions are sealed/);
+    expect(service.processExits).toHaveLength(2); expect(service.processStreams).toHaveLength(2);
+    const copiedDirectory = testInfo.outputPath("ordinary-reopen-copy"), capture = result.capture!;
+    await cp(capture.snapshotDirectory, copiedDirectory, { recursive: true, errorOnExist: true, force: false });
+    // A physical archive preserves CAS control identities as evidence. Inspect a
+    // separate copy read-only; writable restore uses the inspected bundle API.
+    const database = new DatabaseSync(join(copiedDirectory, capture.databaseRelativePath), { readOnly: true });
+    try {
+      expect(database.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+      expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      const row = database.prepare("SELECT document_json FROM projects WHERE id=?").get(final.id);
+      expect(JSON.parse(String(row?.document_json))).toEqual(final);
+      expect(database.prepare("SELECT count(*) AS count FROM events WHERE project_id=?").get(final.id)?.count).toBe(result.oracle!.journal.length);
+    } finally { database.close(); }
+    await writeFile(testInfo.outputPath("ordinary-reopen-original.json"), JSON.stringify({
+      scope: "real_service_restart_then_edit; immutable_capture_inspected_readonly_on_separate_copy",
+      service_closure: result.serviceClosure, beforeRestart, reopened, final, process_exits: service.processExits,
+    }, null, 2), { flag: "wx" });
+  } finally { await service.close(); }
+});

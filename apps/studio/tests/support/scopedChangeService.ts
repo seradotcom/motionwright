@@ -7,7 +7,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, cp, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -80,7 +80,8 @@ export interface ServiceBootstrap extends ServiceStartup { project: Project }
  * observe all of its Host/provider writers terminal before assertClosed passes. */
 export interface ServiceProcessOwner {
   environmentForNewClient(): Promise<NodeJS.ProcessEnv>;
-  closeAfterClients(): Promise<void>;
+  sealClientAdmissions(): void;
+  closeAfterClients(barrier: ServiceClosureBarrier): Promise<void>;
   assertClosed(): void;
 }
 
@@ -134,6 +135,28 @@ export interface ServiceProcessExit {
   observedAt: string;
 }
 
+export interface ServiceProcessStreamState {
+  launch_index: number; process_id: number | null; exit_index: number | null;
+  stdout_ended: boolean; stderr_ended: boolean; jsonl_reader_closed: boolean;
+}
+export type ServiceClosureBarrier = { closed: boolean; receipt_path: string; receipt_sha256: string }
+  | { closed: false; receipt_path: null; receipt_sha256: null };
+type ClosurePhase = "fulfilled" | "rejected" | "not_run";
+export interface ServiceClosureReceipt {
+  schema: "motionwright.service-closure/1"; recorded_at: string; directory: string; database_path: string;
+  status: "CLOSED" | "UNKNOWN";
+  phases: { preparation: ("fulfilled" | "rejected")[]; oracle: ClosurePhase; owner_admission_seal: ClosurePhase[] };
+  sealed_helper_ids: string[];
+  participants: {
+    helper_id: string; database_path: string; binary_path: string; launch_count: number;
+    process_exits: { process_id: number | null; code: number | null; signal: string | null; observed_at: string }[];
+    process_streams: ServiceProcessStreamState[];
+    active_child_count: number; starting_count: number; closing_count: number; pending_count: number;
+    taints: { kind: ServiceLifecycleTaint["kind"]; process_id: number | null; observed_at: string }[];
+    close_status: ClosurePhase;
+  }[];
+}
+
 export interface ServiceLifecycleTaint {
   kind: "pending_at_close" | "request_timeout" | "transport_failure" | "unclean_exit" | "close_deadline" | "unobserved_exit";
   processId: number | undefined;
@@ -157,6 +180,7 @@ export interface StoreFinalization {
   preparation: { index: number; status: "fulfilled" | "rejected"; error?: string }[];
   closures: { databasePath: string; status: "fulfilled" | "rejected"; error?: string; exits: ServiceProcessExit[]; taints: ServiceLifecycleTaint[] }[];
   externalClosures: { index: number; status: "fulfilled" | "rejected"; error?: string }[];
+  serviceClosure: ServiceClosureBarrier | null;
   errors: string[];
   capture: ClosedStoreCapture | null;
 }
@@ -206,11 +230,14 @@ export interface ClosedStoreCapture {
 
 export class ScopedChangeService {
   private static readonly instances = new Set<ScopedChangeService>();
+  private static readonly sealedDirectories = new Set<string>();
+  private static directoryIdentity(directory: string): string { return process.platform === "win32" ? resolve(directory).toLowerCase() : resolve(directory); }
   readonly databasePath: string;
   readonly directory: string;
   readonly binaryPath: string;
   readonly transcript: ServiceTranscriptEntry[] = [];
   readonly processExits: ServiceProcessExit[] = [];
+  readonly processStreams: ServiceProcessStreamState[] = [];
   /** Permanent for this helper, including across close()/start() lifetimes. */
   readonly lifecycleTaints: ServiceLifecycleTaint[] = [];
   private readonly timeoutMs: number;
@@ -260,6 +287,8 @@ export class ScopedChangeService {
       const directory = await mkdtemp(join(parent, "motionwright-scoped-review-"));
       databasePath = join(directory, "studio.sqlite3");
     }
+    if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(dirname(databasePath))))
+      throw new Error("Service client admissions are sealed for this store");
     const service = new ScopedChangeService(configured, databasePath, !options.databasePath, options);
     try {
       await service.start();
@@ -332,6 +361,8 @@ export class ScopedChangeService {
   }
 
   async start(): Promise<this> {
+    if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
+      throw new Error("Service client admissions are sealed for this store");
     if (this.starting) return this.starting;
     this.starting = this.launch();
     try { return await this.starting; }
@@ -353,15 +384,24 @@ export class ScopedChangeService {
     // Never mutate the worker's global environment or reuse a bootstrap binding.
     const environment = this.processOwner
       ? { ...process.env, ...await this.processOwner.environmentForNewClient() } : undefined;
+    if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
+      throw new Error("Service client admissions were sealed before the process launch");
     const child = spawn(this.binaryPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: environment });
+    const streams: ServiceProcessStreamState = { launch_index: this.processStreams.length, process_id: child.pid ?? null, exit_index: null,
+      stdout_ended: false, stderr_ended: false, jsonl_reader_closed: false };
+    this.processStreams.push(streams);
+    child.stdout.once("end", function observeStdoutEnd() { streams.stdout_ended = true; });
+    child.stderr.once("end", function observeStderrEnd() { streams.stderr_ended = true; });
     this.child = child;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => { this.stderrText = (this.stderrText + chunk).slice(-16_384); });
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    lines.once("close", () => { streams.jsonl_reader_closed = true; });
     lines.on("line", line => this.receive(child, line));
     this.exited = new Promise<ServiceProcessExit>(resolveExit => {
       child.once("close", (code, signal) => {
         const exit = { processId: child.pid, code, signal, observedAt: new Date().toISOString() };
+        streams.exit_index = this.processExits.length;
         this.processExits.push(exit);
         if (code !== 0 || signal !== null) this.taint("unclean_exit", `Process closed with code ${code}, signal ${signal ?? "none"}`, child);
         if (this.pending.size) this.taint("transport_failure", "Process closed before all RPC responses were observed", child);
@@ -680,6 +720,44 @@ export class ScopedChangeService {
     finally { clearTimeout(forceStop); clearTimeout(deadline); }
   }
 
+  private streamsClosed(): boolean {
+    return this.processStreams.length > 0 && this.processStreams.length === this.processExits.length
+      && new Set(this.processStreams.map(stream => stream.exit_index)).size === this.processExits.length
+      && this.processStreams.every((stream, index) => {
+        const exit = stream.exit_index === null ? undefined : this.processExits[stream.exit_index];
+        return stream.launch_index === index && stream.process_id !== null && Number.isSafeInteger(stream.process_id) && stream.process_id > 0
+          && !!exit && exit.processId === stream.process_id && exit.code === 0 && exit.signal === null
+          && stream.stdout_ended && stream.stderr_ended && stream.jsonl_reader_closed;
+      });
+  }
+
+  private closureReceipt(participants: ScopedChangeService[], closed: PromiseSettledResult<void>[], sealed: string[],
+    preparation: ("fulfilled" | "rejected")[], oracle: ClosurePhase, ownerSeals: ClosurePhase[], failed: boolean): ServiceClosureReceipt {
+    const receipt: ServiceClosureReceipt = {
+      schema: "motionwright.service-closure/1", recorded_at: new Date().toISOString(),
+      directory: this.directory, database_path: this.databasePath, status: "UNKNOWN",
+      phases: { preparation, oracle, owner_admission_seal: ownerSeals }, sealed_helper_ids: [...sealed],
+      participants: participants.map((service, index) => ({
+        helper_id: service.sessionId, database_path: service.databasePath, binary_path: service.binaryPath,
+        launch_count: service.processStreams.length,
+        process_exits: service.processExits.map(exit => ({ process_id: exit.processId ?? null,
+          code: exit.code, signal: exit.signal, observed_at: exit.observedAt })),
+        process_streams: structuredClone(service.processStreams),
+        active_child_count: service.child ? 1 : 0, starting_count: service.starting ? 1 : 0,
+        closing_count: service.closing ? 1 : 0, pending_count: service.pending.size,
+        taints: service.lifecycleTaints.map(taint => ({ kind: taint.kind, process_id: taint.processId ?? null, observed_at: taint.observedAt })),
+        close_status: closed[index]?.status ?? "not_run",
+      })),
+    };
+    const sameRoster = isDeepStrictEqual([...sealed].sort(), receipt.participants.map(item => item.helper_id).sort());
+    const allClosed = participants.every((service, index) => closed[index]?.status === "fulfilled" && service.databasePath === this.databasePath
+      && !service.child && !service.starting && !service.closing && service.pending.size === 0
+      && service.lifecycleTaints.length === 0 && service.streamsClosed());
+    if (!failed && sameRoster && allClosed && oracle === "fulfilled" && preparation.every(status => status === "fulfilled")
+      && ownerSeals.every(status => status === "fulfilled")) receipt.status = "CLOSED";
+    return receipt;
+  }
+
   private storeParticipants(peers: ScopedChangeService[]): ScopedChangeService[] {
     const identity = (directory: string) => process.platform === "win32" ? resolve(directory).toLowerCase() : resolve(directory);
     const source = identity(this.directory);
@@ -693,12 +771,27 @@ export class ScopedChangeService {
    * The caller's runner still seals the complete capture before returning.
    */
   async finalizeClosedStore(destination: string, expected: Project | undefined, peers: ScopedChangeService[] = [], prepare: (() => Promise<unknown>)[] = []): Promise<StoreFinalization> {
-    const participants = this.storeParticipants(peers);
-    const result: StoreFinalization = { schemaVersion: 1, oracle: null, preparation: [], closures: [], externalClosures: [], errors: [], capture: null };
+    const result: StoreFinalization = { schemaVersion: 1, oracle: null, preparation: [], closures: [], externalClosures: [], serviceClosure: null, errors: [], capture: null };
     const prepared = await Promise.allSettled(prepare.map(action => Promise.resolve().then(action)));
     result.preparation = prepared.map((outcome, index) => outcome.status === "fulfilled"
       ? { index, status: "fulfilled" } : { index, status: "rejected", error: String(outcome.reason) });
     result.errors.push(...result.preparation.flatMap(outcome => outcome.status === "rejected" ? [outcome.error ?? ""] : []));
+    let participants = this.storeParticipants(peers);
+    const owners = [...new Set(participants.map(service => service.processOwner).filter((owner): owner is ServiceProcessOwner => !!owner))];
+    const ownerSeals: ClosurePhase[] = [];
+    // Every finalization seals its roster, including ordinary services without
+    // an external owner. Reopening evidence uses a separate captured copy.
+    for (const service of participants) ScopedChangeService.sealedDirectories.add(ScopedChangeService.directoryIdentity(service.directory));
+    if (owners.length) {
+      for (const owner of owners) {
+        try {
+          if (typeof owner.sealClientAdmissions !== "function") { ownerSeals.push("not_run"); result.errors.push("External owner client admissions were not sealed"); }
+          else { owner.sealClientAdmissions(); ownerSeals.push("fulfilled"); }
+        } catch (error) { ownerSeals.push("rejected"); result.errors.push(String(error)); }
+      }
+      participants = this.storeParticipants(peers);
+    }
+    const sealedHelperIds = participants.map(service => service.sessionId).sort();
     try {
       if (!expected) throw new Error("No final Project oracle was observed by the test before closure");
       // A final read drains each running peer's earlier JSONL requests; closed
@@ -709,15 +802,38 @@ export class ScopedChangeService {
       result.oracle = await this.observeStoredProject(expected);
     } catch (error) { result.errors.push(String(error)); }
     const closed = await Promise.allSettled(participants.map(service => service.close()));
+    // One bounded cleanup pass for any late registered helper. The frozen roster
+    // remains unchanged, so a late participant can never manufacture CLOSED.
+    const late = this.storeParticipants(peers).filter(service => !participants.includes(service));
+    if (late.length) {
+      closed.push(...await Promise.allSettled(late.map(service => service.close())));
+      participants = [...participants, ...late];
+    }
     result.closures = closed.map((outcome, index) => ({ databasePath: participants[index].databasePath,
       status: outcome.status, ...(outcome.status === "rejected" ? { error: String(outcome.reason) } : {}),
       exits: structuredClone(participants[index].processExits), taints: structuredClone(participants[index].lifecycleTaints) }));
     result.errors.push(...result.closures.flatMap(outcome => outcome.status === "rejected" ? [outcome.error ?? ""] : []));
-    // This barrier must follow EVERY client close, including on failed oracles.
-    // Prepare callbacks run before reads and cannot close an external writer.
-    const owners = [...new Set(participants.map(service => service.processOwner).filter((owner): owner is ServiceProcessOwner => !!owner))];
+    for (const service of participants) if (service.processOwner && !owners.includes(service.processOwner)) {
+      owners.push(service.processOwner); ownerSeals.push("not_run");
+    }
+    // Seal actual JSONL process and reader observations before asking any owner
+    // to stop its external writers. A failed seal still requires owner cleanup.
+    let barrier: ServiceClosureBarrier = { closed: false, receipt_path: null, receipt_sha256: null };
+    try {
+      const receipt = this.closureReceipt(participants, closed, sealedHelperIds,
+        result.preparation.map(outcome => outcome.status), result.oracle ? "fulfilled" : "rejected", ownerSeals, result.errors.length > 0);
+      if (receipt.status !== "CLOSED" && !result.errors.length) result.errors.push("Service closure roster is incomplete; capture is forbidden");
+      await mkdir(dirname(destination), { recursive: true });
+      const receiptPath = destination + "-service-closure.json", original = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
+      await writeFile(receiptPath, original, { flag: "wx" });
+      const observed = await readFile(receiptPath);
+      if (!observed.equals(original)) throw new Error("Service closure receipt readback differs from its original bytes");
+      barrier = { closed: receipt.status === "CLOSED", receipt_path: receiptPath,
+        receipt_sha256: createHash("sha256").update(observed).digest("hex") };
+    } catch (error) { result.errors.push(String(error)); }
+    result.serviceClosure = barrier;
     const external = await Promise.allSettled(owners.map(async owner => {
-      await owner.closeAfterClients();
+      await owner.closeAfterClients(structuredClone(barrier));
       owner.assertClosed();
     }));
     result.externalClosures = external.map((outcome, index) => outcome.status === "fulfilled"
@@ -758,7 +874,7 @@ export class ScopedChangeService {
     const participants = this.storeParticipants(peers);
     for (const service of participants) {
       if (service.lifecycleTaints.length || service.pending.size || service.child || service.starting || service.closing || service.processExits.length === 0 ||
-          service.processExits.some(exit => exit.code !== 0 || exit.signal !== null)) {
+          service.processExits.some(exit => exit.code !== 0 || exit.signal !== null) || !service.streamsClosed()) {
         throw new Error(`Close every service peer cleanly and without lifecycle taint before capturing ${service.databasePath}`);
       }
     }
