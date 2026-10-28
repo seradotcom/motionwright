@@ -54,8 +54,12 @@ def read_exact_file(path: Path, expected_sha256: str, budget: int) -> dict:
     require(0 < before.st_size <= budget,
             "native_Kdenlive_source_file_outside_byte_budget")
     hasher = hashlib.sha256()
+    observed_bytes = 0
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        while chunk := stream.read(min(1024 * 1024, budget - observed_bytes + 1)):
+            observed_bytes += len(chunk)
+            require(observed_bytes <= budget,
+                    "native_Kdenlive_source_file_outside_byte_budget")
             hasher.update(chunk)
     after = path.stat()
     require((before.st_ino, before.st_size, before.st_mtime_ns)

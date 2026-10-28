@@ -133,6 +133,54 @@ class KdenliveNativeProcessControls(unittest.TestCase):
                 ):
                     read_exact_file(original, sha, 1024)
 
+    def test_growth_after_size_admission_stops_at_budget_before_hash_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory).resolve() / "source.otio"
+            source_bytes = b"original"
+            appended = b"appended source bytes" * 200
+            original.write_bytes(source_bytes)
+            budget = len(source_bytes)
+            observed = []
+            real_open = Path.open
+
+            class GrowingReader:
+                def __init__(self, stream):
+                    self.stream = stream
+                    self.grown = False
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return self.stream.__exit__(*args)
+
+                def read(self, count):
+                    if not self.grown:
+                        # Real file growth after the helper's initial stat.
+                        with real_open(original, "ab") as appender:
+                            appender.write(appended)
+                        self.grown = True
+                    data = self.stream.read(count)
+                    observed.append(len(data))
+                    return data
+
+            def admitted_then_growing_open(path, *args, **kwargs):
+                stream = real_open(path, *args, **kwargs)
+                if path == original and args == ("rb",):
+                    return GrowingReader(stream)
+                return stream
+
+            with mock.patch.object(Path, "open", admitted_then_growing_open):
+                with self.assertRaisesRegex(
+                    NativeKdenliveProcessRejected, "source_file_outside_byte_budget",
+                ):
+                    read_exact_file(original, hashlib.sha256(source_bytes).hexdigest(), budget)
+            self.assertEqual(original.read_bytes(), source_bytes + appended)
+            # One excess byte detects growth; the rest is never consumed by
+            # this stream reader and never reaches the SHA accumulator.
+            self.assertGreater(sum(observed), budget)
+            self.assertLessEqual(sum(observed), budget + 1)
+
     @staticmethod
     def stage_receipt(*, phase: str, pid: int, start: int) -> dict:
         return {
