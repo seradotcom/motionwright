@@ -4589,18 +4589,24 @@ mod graph_store_provider {
             // before freshness and rejects stale inputs for a new mutation.
             // This pure candidate check does not acquire another Store lock,
             // execute a runtime, attest fonts or replace the live Host permit.
-            if check_fresh_graph_reference(bound, current, original_source)? {
-                if matches!(scope.change(), Change::UpsertSemanticGraph { .. }) {
-                    crate::manim_graph_projection::validate_proposed_manim_semantic_graph_source(
-                        current,
-                        scope.change(),
-                    )?;
-                    self.proposed_fonts.as_ref().ok_or_else(|| Error::new(ErrorCode::PermissionDenied,
-                        "A fresh Graph proposal requires its original native font observation"))?
-                        .check(self.context, current, scope.change())?;
-                }
-                // Remove has no new text or profile. Its exact source fields,
-                // scene/graph IDs and canonical domain mutation remain Store-owned.
+            // Remove has no new text or profile. Its exact source fields,
+            // scene/graph IDs and canonical domain mutation remain Store-owned.
+            if check_fresh_graph_reference(bound, current, original_source)?
+                && matches!(scope.change(), Change::UpsertSemanticGraph { .. })
+            {
+                crate::manim_graph_projection::validate_proposed_manim_semantic_graph_source(
+                    current,
+                    scope.change(),
+                )?;
+                self.proposed_fonts
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::PermissionDenied,
+                            "A fresh Graph proposal requires its original native font observation",
+                        )
+                    })?
+                    .check(self.context, current, scope.change())?;
             }
             Ok(())
         }

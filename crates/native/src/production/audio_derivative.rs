@@ -76,7 +76,8 @@ impl AudioDerivativeProfile {
     fn output_frames(self, source_frames: u64) -> NativeResult<u64> {
         match self {
             Self::Stereo48ToMono16
-                if (1_200..=384_000).contains(&source_frames) && source_frames % 3 == 0 =>
+                if (1_200..=384_000).contains(&source_frames)
+                    && source_frames.is_multiple_of(3) =>
             {
                 Ok(source_frames / 3)
             }
@@ -507,7 +508,7 @@ fn derivative_require_current(project: &Project, expected: &RevisionStamp) -> Na
     Ok(())
 }
 
-fn derivative_source_asset<'a>(project: &'a Project, source: Uuid) -> NativeResult<&'a Asset> {
+fn derivative_source_asset(project: &Project, source: Uuid) -> NativeResult<&Asset> {
     let asset = project
         .assets
         .iter()
@@ -1024,14 +1025,14 @@ impl AdoptedAudioDerivative {
 /// This value cannot be deserialized into execution authority or an observation.
 #[derive(Debug, Serialize)]
 pub struct AudioDerivativeFailure {
-    original: Error,
+    original: Box<Error>,
     confirmed_import: Option<Box<ApplyOutcome>>,
     original_pair_observations: AudioPairReadbacks,
 }
 
 impl AudioDerivativeFailure {
     pub fn original(&self) -> &Error {
-        &self.original
+        self.original.as_ref()
     }
 
     pub fn original_pair_observations(&self) -> Value {
@@ -1044,7 +1045,7 @@ impl AudioDerivativeFailure {
 
     fn after_confirmed_import(original: Error, outcome: ApplyOutcome) -> Self {
         Self {
-            original,
+            original: Box::new(original),
             confirmed_import: Some(Box::new(outcome)),
             original_pair_observations: AudioPairReadbacks::default(),
         }
@@ -1054,7 +1055,7 @@ impl AudioDerivativeFailure {
 impl From<Error> for AudioDerivativeFailure {
     fn from(original: Error) -> Self {
         Self {
-            original,
+            original: Box::new(original),
             confirmed_import: None,
             original_pair_observations: AudioPairReadbacks::default(),
         }
@@ -1063,13 +1064,13 @@ impl From<Error> for AudioDerivativeFailure {
 
 impl std::fmt::Display for AudioDerivativeFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.original, formatter)
+        std::fmt::Display::fmt(self.original.as_ref(), formatter)
     }
 }
 
 impl std::error::Error for AudioDerivativeFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.original)
+        Some(self.original.as_ref())
     }
 }
 

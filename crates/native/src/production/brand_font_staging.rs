@@ -2036,7 +2036,7 @@ mod tests {
             assert_eq!(work["state"], "stopped");
             assert_eq!(work["outcome_known"], outcome_known);
             assert_eq!(work["original_error"], expected);
-            assert_eq!(json!(result.unwrap_err()), expected);
+            assert!(matches!(&result, Err(error) if json!(error) == expected));
             assert!(!owner.retire_for_root(&root));
             assert_eq!(probe.stage_drops.load(Ordering::SeqCst), 0);
         }
@@ -2360,10 +2360,8 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
-            result.unwrap_err().message,
-            "Synthetic known failure after capture acceptance"
-        );
+        assert!(matches!(&result, Err(error)
+            if error.message == "Synthetic known failure after capture acceptance"));
         assert_eq!(probe.root_drops.load(Ordering::SeqCst), 0);
     }
 }

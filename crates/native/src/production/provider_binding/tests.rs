@@ -1544,7 +1544,7 @@ fn audio_pair_readback_preserves_full_original_error_and_successful_core_data() 
     });
     let returned = Ok(observed);
     assert_eq!(audio_pair_readback(&returned), expected);
-    assert_eq!(returned.unwrap().value, expected["original_result"]);
+    assert!(matches!(&returned, Ok(result) if result.value == expected["original_result"]));
 }
 
 #[tokio::test]
