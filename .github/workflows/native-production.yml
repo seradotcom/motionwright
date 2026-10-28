@@ -106,7 +106,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22.22.0'
-      - name: HyperFrames source G0 (126 boundary, 11 intake, 17 owner and 54 Node contracts)
+      - name: HyperFrames source G0 (181 boundary, 11 intake, 17 owner and 54 Node contracts)
         id: hf_source_g0
         if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
         shell: bash
@@ -142,7 +142,7 @@ jobs:
           from ci_test_runner import source_state
           root = Path(sys.argv[1])
           for filename, counts in (
-              ("caller.json", [42, 32, 11, 52]), ("owner.json", [17])):
+              ("caller.json", [46, 34, 11, 101]), ("owner.json", [17])):
               value = json.loads((root / filename).read_bytes())
               assert value["status"] == "PASS" and value["exit_code"] == 0
               assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
@@ -159,7 +159,7 @@ jobs:
               assert values == [str(expected)], (label, values)
           source_state(Path.cwd(), os.environ["GITHUB_SHA"])
           print(json.dumps({"source_sha": os.environ["GITHUB_SHA"],
-                            "python_passed": 154, "node_passed": 54, "skipped": 0}))
+                            "python_passed": 209, "node_passed": 54, "skipped": 0}))
           PY
       - name: Retain HyperFrames source G0 originals
         if: ${{ always() && steps.hf_source_g0.outcome != 'skipped' }}
@@ -172,7 +172,7 @@ jobs:
             ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/node.tap
           if-no-files-found: error
           retention-days: 14
-      - name: Verify AAC custody consumers (179 selected source contracts)
+      - name: Verify AAC custody consumers (279 selected source contracts)
         id: aac_source_contracts
         if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
         env:
@@ -206,10 +206,10 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_mlt_evidence_selection.py', 38, '9a2a26593b9fb25a431c022ba2ceb0702ee32158a7e4cf180e613e25aff5d1ee'), ('tooling/tests/test_native_film180_evidence_selection.py', 32, '7894f402449384fb81b5a24870a8a44fe89506effdcd6bf0e518f51e671aacac'), ('tooling/tests/test_native_evidence_projection.py', 52, 'a46e578a07d9edd01fac9b3c178e8e2ac8d21ba59b56b3585471175153d11396')]
+          SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_film180_evidence_selection.py', 42, '0bb78be5dbbdfe3d8298a2d66dc2b3a182db50590cf8c9a7c55f638eab75188e'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125')]
           MODE = 'dotted'
           GROUP = 'production'
-          TOTAL = 179
+          TOTAL = 279
 
           import ast
           from datetime import datetime
@@ -609,7 +609,7 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["HF_ROOT"]) / "g0"
           for filename, counts in (
-              ("caller.json", [42, 32, 11, 52]), ("owner.json", [17])):
+              ("caller.json", [46, 34, 11, 101]), ("owner.json", [17])):
               value = json.loads((root / filename).read_bytes())
               assert value["status"] == "PASS" and value["exit_code"] == 0
               assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
@@ -639,10 +639,39 @@ jobs:
               assert values == [str(expected)], (label, values)
           PY
 
+      - name: Resolve admitted current Semwright source pin
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -E -s - <<'PY'
+          import os, re, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          source = os.environ["GITHUB_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{40}", source)
+          def git(*args):
+              return subprocess.check_output(["git", "--no-replace-objects", "-C", str(root), *args])
+          assert git("rev-parse", "HEAD").decode().strip() == source
+          raw_lock = (root / "SOURCE_LOCK.json").read_bytes()
+          assert raw_lock == git("show", source + ":SOURCE_LOCK.json")
+          admission_path = root / "tooling/source_lock_admission.py"
+          assert admission_path.read_bytes() == git("show", source + ":tooling/source_lock_admission.py")
+          sys.path.insert(0, str(root / "tooling"))
+          from source_lock_admission import load_source_lock, verify_source_lock
+          lock = load_source_lock(root)
+          verify_source_lock(root, lock)
+          pin = lock["dependencies"]["semwright"]["revision"]
+          assert re.fullmatch(r"[0-9a-f]{40}", pin)
+          assert (root / "SOURCE_LOCK.json").read_bytes() == raw_lock
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write("sha=" + pin + "\n")
+          PY
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: seradotcom/semwright
-          ref: 01d4a99a8473273fda5c61b7220d6da1bee94786
+          ref: ${{ steps.pin.outputs.sha }}
           path: _semwright
           persist-credentials: false
 
@@ -660,9 +689,13 @@ jobs:
       - name: Existing canonical Host sandbox and build dependencies
         id: sandbox
         shell: bash
+        env:
+          ADMITTED_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
         run: |
           set -euo pipefail
-          test "$(git -C _semwright rev-parse HEAD)" = 01d4a99a8473273fda5c61b7220d6da1bee94786
+          actual_sdk="$(git -C _semwright rev-parse HEAD)"
+          test "$actual_sdk" = "$ADMITTED_SEMWRIGHT_SHA"
+          printf 'sdk_sha=%s\n' "$actual_sdk" >> "$GITHUB_OUTPUT"
           bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh "$HF_ROOT/sandbox-profile.txt"
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang ffmpeg
@@ -789,6 +822,8 @@ jobs:
         if: always()
         shell: bash
         env:
+          ADMITTED_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
+          OBSERVED_SEMWRIGHT_SHA: ${{ steps.sandbox.outputs.sdk_sha }}
           GATE_SETUP: ${{ steps.setup.outcome }}
           GATE_G0_PYTHON: ${{ steps.g0_python.outcome }}
           GATE_G0_NODE: ${{ steps.g0_node.outcome }}
@@ -802,12 +837,16 @@ jobs:
           set -euo pipefail
           test -d "$HF_ROOT/public" || exit 0
           python3 -B - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
+          observed_sdk = os.environ["OBSERVED_SEMWRIGHT_SHA"] or None
+          if observed_sdk is not None:
+              assert re.fullmatch(r"[0-9a-f]{40}", observed_sdk)
+              assert observed_sdk == os.environ["ADMITTED_SEMWRIGHT_SHA"]
           value = {
               "schema": "motionwright.hyperframes.actions-gates/1",
               "source_sha": os.environ["GITHUB_SHA"],
-              "semwright_sha": "01d4a99a8473273fda5c61b7220d6da1bee94786",
+              "semwright_sha": observed_sdk,
               "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "gates": {key: os.environ.get("GATE_" + key.upper(), "") or "NOT_RUN"
                         for key in ("setup", "g0_python", "g0_node", "sandbox", "g1", "g1_sdk", "binaries", "intake", "native")},
