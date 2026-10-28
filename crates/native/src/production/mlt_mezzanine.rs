@@ -114,7 +114,8 @@ impl ProductionCoordinator {
             render,
             &self.client.connection().output_root,
         )?;
-        let scoped = self.with_mlt_motion_scene_boundary_scope(&project, options, &source);
+        let scoped =
+            self.with_mlt_motion_scene_boundary_scope(&project, options, &source, render)?;
         let recipe = mlt_native_video_recipe(&source)?;
         let mut prepared = Vec::with_capacity(recipe.clips.len());
         let mut total_bytes = 0u64;

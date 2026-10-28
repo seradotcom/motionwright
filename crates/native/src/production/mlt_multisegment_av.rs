@@ -293,7 +293,8 @@ impl ProductionCoordinator {
             rendered,
             &self.client.connection().output_root,
         )?;
-        let scoped = self.with_mlt_motion_scene_boundary_scope(&project, options, &checked);
+        let mut scoped =
+            self.with_mlt_motion_scene_boundary_scope(&project, options, &checked, rendered)?;
         let recipe = mlt_native_video_recipe(&checked)?;
         let expected_video_path = format!(
             "{}-sequence-video-only-ffv1.mkv",
@@ -418,6 +419,7 @@ impl ProductionCoordinator {
         // av.mux *requires* video with no audio and separate measured WAV.
         // Both input references originate from verified owner output receipts,
         // never arbitrary client filenames. Broker handles result uncertainty.
+        scoped.bind_mlt_mux_output(&output_path)?;
         let encoded = scoped
             .execute(
                 project_id,

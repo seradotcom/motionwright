@@ -2048,6 +2048,145 @@ fn require_no_unresolved_scene_history(
     Ok(())
 }
 
+// Closed continuation chosen from the committed Film before its first effect.
+// One segment uses the direct encoder/mux route; two or more use exactly one
+// semantic timeline. These are alternatives, never additive replay allowances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MltBudgetRoute {
+    Direct,
+    Timeline,
+}
+
+#[derive(Debug, Clone)]
+struct MltEncodeBudget {
+    manifest_sha256: String,
+    frames: u64,
+    output_path: String,
+    max_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MltDispatchBudget {
+    route: MltBudgetRoute,
+    frames: u64,
+    encodes: std::collections::BTreeMap<String, MltEncodeBudget>,
+    timeline_paths: Vec<String>,
+    mux_video_path: String,
+    mux_output_path: Option<String>,
+}
+
+impl MltDispatchBudget {
+    fn units_for(
+        &self,
+        command: &str,
+        args: &Value,
+        mutation: bool,
+    ) -> NativeResult<RootBudgetUnits> {
+        let mut units = RootBudgetUnits {
+            attempts: 1,
+            model_calls: 0,
+            render_frames: 0,
+            output_bytes: 0,
+        };
+        match command {
+            "driver.mlt-video.frames.encode" => {
+                let source = args
+                    .get("manifest_path")
+                    .and_then(Value::as_str)
+                    .and_then(|path| self.encodes.get(path))
+                    .ok_or_else(|| invalid("MLT encoding has no retained source-frame budget"))?;
+                if !mutation
+                    || args.get("root").and_then(Value::as_str) != Some("output")
+                    || args.get("expected_manifest_sha256").and_then(Value::as_str)
+                        != Some(source.manifest_sha256.as_str())
+                    || args.get("output_path").and_then(Value::as_str)
+                        != Some(source.output_path.as_str())
+                    || args.get("max_bytes").and_then(Value::as_u64) != Some(source.max_bytes)
+                {
+                    return Err(invalid(
+                        "MLT encoding differs from the retained native plan",
+                    ));
+                }
+                units.render_frames = source.frames;
+                units.output_bytes = source.max_bytes;
+            }
+            "driver.mlt-video.render.plan" | "driver.mlt-video.render.start" => {
+                let output = args.get("output").and_then(Value::as_str);
+                let profile = args.get("profile").and_then(Value::as_str);
+                if self.route != MltBudgetRoute::Timeline
+                    || !self
+                        .timeline_paths
+                        .iter()
+                        .any(|path| Some(path.as_str()) == output)
+                    || !matches!(profile, Some("lossless" | "lossless-video-only"))
+                    || mutation != (command == "driver.mlt-video.render.start")
+                {
+                    return Err(invalid(
+                        "MLT timeline differs from the retained closed plan",
+                    ));
+                }
+                if mutation {
+                    units.render_frames = self.frames;
+                    units.output_bytes = MLT_MASTER_MAX_BYTES;
+                }
+            }
+            "driver.mlt-video.av.mux" => {
+                if !mutation
+                    || args.get("video_root").and_then(Value::as_str) != Some("output")
+                    || args.get("video_path").and_then(Value::as_str)
+                        != Some(self.mux_video_path.as_str())
+                    || args.get("output_path").and_then(Value::as_str)
+                        != self.mux_output_path.as_deref()
+                    || self.mux_output_path.is_none()
+                    || args.get("frame_count").and_then(Value::as_u64) != Some(self.frames)
+                    || args.get("max_bytes").and_then(Value::as_u64) != Some(MLT_MASTER_MAX_BYTES)
+                    || args.get("profile").and_then(Value::as_str) != Some("h264-aac-mp4")
+                {
+                    return Err(invalid("MLT mux differs from the retained native plan"));
+                }
+                units.render_frames = self.frames;
+                // Native mux materializes both the MP4 and decoded PCM evidence.
+                units.output_bytes = MLT_MASTER_MAX_BYTES
+                    .checked_mul(2)
+                    .ok_or_else(|| invalid("MLT mux output reservation overflow"))?;
+            }
+            "driver.mlt-video.project.create"
+            | "driver.mlt-video.sequence.create"
+            | "driver.mlt-video.track.create"
+            | "driver.mlt-video.asset.import"
+            | "driver.mlt-video.clip.insert" => {
+                if !mutation || self.route != MltBudgetRoute::Timeline {
+                    return Err(invalid("MLT edit is outside the retained timeline route"));
+                }
+                // These closed edits change the provider's in-memory project.
+                // File materialization is reserved at encode/render/mux.
+            }
+            "driver.mlt-video.sequence.list"
+            | "driver.mlt-video.track.list"
+            | "driver.mlt-video.sequence.duration"
+            | "driver.mlt-video.render.status"
+            | "driver.mlt-video.render.result" => {
+                if mutation || self.route != MltBudgetRoute::Timeline {
+                    return Err(invalid(
+                        "MLT observation is outside the retained timeline route",
+                    ));
+                }
+            }
+            "driver.mlt-video.sync.probe" => {
+                if mutation || self.route != MltBudgetRoute::Direct {
+                    return Err(invalid("MLT sync observation is outside the direct route"));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    "Native command has no retained MLT continuation cost",
+                ));
+            }
+        }
+        Ok(units)
+    }
+}
+
 // A native accounting root is neither a Provider grant nor an authenticated
 // principal. This private scope is derived solely from the original committed
 // project/Film, then every native child must debit SQLite before dispatch.
@@ -2056,6 +2195,9 @@ struct MotionRootBudgetScope {
     root_id: Uuid,
     max_render_frames: u64,
     max_frame_bytes: u64,
+    mlt_route: Option<MltBudgetRoute>,
+    mlt: Option<MltDispatchBudget>,
+    audio_analysis: bool,
 }
 
 impl MotionRootBudgetScope {
@@ -2065,7 +2207,19 @@ impl MotionRootBudgetScope {
         args: &Value,
         mutation: bool,
     ) -> NativeResult<RootBudgetUnits> {
+        if command == "driver.audio-analysis.artifact.measure" && self.audio_analysis && !mutation {
+            return Ok(RootBudgetUnits {
+                attempts: 1,
+                model_calls: 0,
+                render_frames: 0,
+                // The opt-in wrapper stages one bounded original PCM input.
+                output_bytes: audio_analysis::MAX_ANALYSIS_BYTES,
+            });
+        }
         if !MOTION_CANVAS_COMMANDS.contains(&command) {
+            if let Some(mlt) = &self.mlt {
+                return mlt.units_for(command, args, mutation);
+            }
             return Err(Error::new(
                 ErrorCode::PermissionDenied,
                 "A retained Motion Canvas root cannot dispatch another provider",
@@ -2134,6 +2288,17 @@ impl MotionRootBudgetScope {
     }
 }
 
+// Private provenance for one already-created accounting root. This record
+// cannot authorize provider calls or change SQLite's durable limits/debits.
+struct RetainedMotionRoot {
+    root: RootOperationBudget,
+    source_digest: String,
+    scope: MotionRootBudgetScope,
+    render_digest: Option<String>,
+    // Derived from the original committed Film; never accepted from a caller.
+    direct_mlt_scene_scope: Option<std::sync::Arc<crate::native_scene_boundary::ExecutionScope>>,
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -2146,9 +2311,8 @@ pub struct ProductionCoordinator {
     // is authoritative for cumulative debits and spent UNKNOWN capacity.
     // Pair the retained operation with its original Film-options digest.
     // A fresh process cannot silently reuse or remint the persisted root.
-    motion_budget_roots: std::sync::Arc<
-        std::sync::Mutex<std::collections::BTreeMap<String, (RootOperationBudget, String)>>,
-    >,
+    motion_budget_roots:
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, RetainedMotionRoot>>>,
     active_motion_budget: Option<MotionRootBudgetScope>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -2283,12 +2447,91 @@ impl ProductionCoordinator {
             .checked_add(font_bytes)
             .and_then(|bytes| bytes.checked_add(source_bytes))
             .ok_or_else(|| invalid("Motion Canvas cumulative byte budget overflow"))?;
-        let limits = RootBudgetUnits {
+        // Reserve the one supported continuation before the first MC effect.
+        // Direct: encode + mux + optional sync, two additional frame passes,
+        // 512 MiB FFV1 + 1 GiB MP4 + 1 GiB decoded PCM.
+        // Timeline: 5N + 9 fixed calls including N encodes and one mux, at most
+        // 330 status calls, three additional frame passes, N*512 MiB FFV1,
+        // 1 GiB timeline, 1 GiB MP4 and 1 GiB decoded PCM. Choosing PCM or
+        // video-only consumes the same single timeline allowance, not both.
+        let profile = project
+            .deliverables
+            .iter()
+            .find(|p| p.id == deliverable_id)
+            .ok_or_else(|| invalid("Native root deliverable is unavailable"))?;
+        let all_motion = project
+            .scenes
+            .iter()
+            .filter(|scene| {
+                profile.included_scene_ids.is_empty()
+                    || profile.included_scene_ids.contains(&scene.id)
+            })
+            .all(|scene| scene.renderer == motionwright_domain::RendererKind::MotionCanvas);
+        let mlt_admitted = all_motion
+            && total_frames <= 36_000
+            && segment_count <= 64
+            && profile.video_codec == VideoCodec::H264
+            && profile.audio_codec == AudioCodec::Aac
+            && profile.audio_sample_rate_hz == 48_000
+            && profile.container == OutputContainer::Mp4
+            && profile.color_space == OutputColorSpace::Rec709
+            && profile.frame_rate.num == i64::from(options.frame_rate.num)
+            && profile.frame_rate.den == i64::from(options.frame_rate.den)
+            && (segment_count == 1
+                || matches!((profile.width, profile.height), (1280, 720) | (1920, 1080)));
+        let mlt_route = mlt_admitted.then_some(if segment_count == 1 {
+            MltBudgetRoute::Direct
+        } else {
+            MltBudgetRoute::Timeline
+        });
+        let mut limits = RootBudgetUnits {
             attempts,
             model_calls: 0,
             render_frames: total_frames,
             output_bytes,
         };
+        if let Some(route) = mlt_route {
+            let timeline = route == MltBudgetRoute::Timeline;
+            let continuation_calls = if timeline {
+                segment_count
+                    .checked_mul(5)
+                    .and_then(|n| n.checked_add(9 + 330))
+            } else {
+                Some(3)
+            }
+            .ok_or_else(|| invalid("MLT continuation call reservation overflow"))?;
+            let continuation_frames = total_frames
+                .checked_mul(if timeline { 3 } else { 2 })
+                .ok_or_else(|| invalid("MLT continuation frame reservation overflow"))?;
+            let intermediates = segment_count
+                .checked_mul(MLT_MEZZANINE_MAX_BYTES)
+                .ok_or_else(|| invalid("MLT intermediate reservation overflow"))?;
+            let final_outputs = MLT_MASTER_MAX_BYTES
+                .checked_mul(if timeline { 3 } else { 2 })
+                .ok_or_else(|| invalid("MLT final output reservation overflow"))?;
+            // Optional source + decoded-PCM measurements use at most two
+            // existing meter calls and two bounded staged input files.
+            let continuation_calls = continuation_calls
+                .checked_add(2)
+                .ok_or_else(|| invalid("Native audio observation reservation overflow"))?;
+            let audio_staging = audio_analysis::MAX_ANALYSIS_BYTES
+                .checked_mul(2)
+                .ok_or_else(|| invalid("Native audio staging reservation overflow"))?;
+            limits.attempts = limits
+                .attempts
+                .checked_add(continuation_calls)
+                .ok_or_else(|| invalid("Native cumulative call reservation overflow"))?;
+            limits.render_frames = limits
+                .render_frames
+                .checked_add(continuation_frames)
+                .ok_or_else(|| invalid("Native cumulative frame reservation overflow"))?;
+            limits.output_bytes = limits
+                .output_bytes
+                .checked_add(intermediates)
+                .and_then(|n| n.checked_add(final_outputs))
+                .and_then(|n| n.checked_add(audio_staging))
+                .ok_or_else(|| invalid("Native cumulative output reservation overflow"))?;
+        }
         // The operation key deliberately excludes per-stage and caller request
         // IDs: changing a retry label cannot mint a new root for this revision.
         let operation_key = format!(
@@ -2302,15 +2545,15 @@ impl ProductionCoordinator {
             .motion_budget_roots
             .lock()
             .map_err(|_| backend("Native budget root ownership is unavailable"))?;
-        let retained = if let Some((previous, bound_source)) = cache.get(&operation_key) {
-            if bound_source != &source_digest {
+        let retained = if let Some(previous) = cache.get(&operation_key) {
+            if previous.source_digest != source_digest {
                 return Err(Error::new(
                     ErrorCode::Conflict,
                     "Original Motion Canvas Film options differ from retained budget source",
                 ));
             }
             self.service
-                .root_operation_budget(project.id, previous.root_id)
+                .root_operation_budget(project.id, previous.root.root_id)
                 .map_err(storage_error)?
         } else {
             let created = self
@@ -2323,7 +2566,41 @@ impl ProductionCoordinator {
                     limits,
                 })
                 .map_err(storage_error)?;
-            cache.insert(operation_key.clone(), (created.clone(), source_digest));
+            let original_scope = MotionRootBudgetScope {
+                root_id: created.root_id,
+                max_render_frames: total_frames,
+                max_frame_bytes: frame_reservation,
+                mlt_route,
+                mlt: None,
+                audio_analysis: false,
+            };
+            cache.insert(
+                operation_key.clone(),
+                RetainedMotionRoot {
+                    root: created.clone(),
+                    source_digest,
+                    scope: original_scope,
+                    render_digest: None,
+                    direct_mlt_scene_scope: (mlt_route == Some(MltBudgetRoute::Direct)).then(
+                        || {
+                            // Derive the complete Film selection, including when this
+                            // root was first attached by a partial-window invocation.
+                            let original_scene_ids = segments
+                                .iter()
+                                .flat_map(|segment| segment.scene_ids.iter().copied())
+                                .collect::<Vec<_>>();
+                            std::sync::Arc::new(
+                                crate::native_scene_boundary::ExecutionScope::mlt_motion(
+                                    project,
+                                    deliverable_id,
+                                    options,
+                                    &original_scene_ids,
+                                ),
+                            )
+                        },
+                    ),
+                },
+            );
             created
         };
         if retained.operation_key != operation_key
@@ -2344,6 +2621,9 @@ impl ProductionCoordinator {
             root_id: retained.root_id,
             max_render_frames: total_frames,
             max_frame_bytes: frame_reservation,
+            mlt_route,
+            mlt: None,
+            audio_analysis: false,
         });
         Ok(scoped)
     }
@@ -2362,13 +2642,126 @@ impl ProductionCoordinator {
         Ok(scoped)
     }
 
+    fn retain_motion_budget_output(
+        &self,
+        project: &motionwright_domain::Project,
+        deliverable_id: Uuid,
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<()> {
+        let key = format!(
+            "motion-canvas/{}/{}/{}/{}",
+            project.id, project.generation, project.revision, deliverable_id
+        );
+        let digest = request_digest("motion-canvas.original-render", &json!(rendered))?;
+        let mut cache = self
+            .motion_budget_roots
+            .lock()
+            .map_err(|_| backend("Native budget root ownership is unavailable"))?;
+        let original = cache
+            .get_mut(&key)
+            .ok_or_else(|| backend("Original native accounting root is unavailable"))?;
+        if original
+            .render_digest
+            .as_ref()
+            .is_some_and(|prior| prior != &digest)
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "Original native output cannot be replaced under the same budget",
+            ));
+        }
+        original.render_digest = Some(digest);
+        Ok(())
+    }
+
+    fn retained_motion_continuation(
+        &self,
+        project: &motionwright_domain::Project,
+        deliverable_id: Uuid,
+        options: Option<&FilmBuildOptions>,
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<MotionRootBudgetScope> {
+        if self.client.connection().resource != project.resource_key()
+            || rendered.project_resource != project.resource_key()
+            || rendered.generation != project.generation
+            || rendered.revision != project.revision
+            || rendered.deliverable_id != deliverable_id
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "MLT continuation does not identify the original native project",
+            ));
+        }
+        let key = format!(
+            "motion-canvas/{}/{}/{}/{}",
+            project.id, project.generation, project.revision, deliverable_id
+        );
+        let digest = request_digest("motion-canvas.original-render", &json!(rendered))?;
+        let cache = self
+            .motion_budget_roots
+            .lock()
+            .map_err(|_| backend("Native budget root ownership is unavailable"))?;
+        let original = cache.get(&key).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Conflict,
+                "Original native budget is not attached; reconcile without a new root",
+            )
+        })?;
+        if original.render_digest.as_deref() != Some(digest.as_str())
+            || original.scope.mlt_route.is_none()
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "MLT continuation lacks the retained original render and route",
+            ));
+        }
+        if let Some(options) = options
+            && request_digest("motion-canvas.original-film-options", &json!(options))?
+                != original.source_digest
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "MLT continuation changed the original Film options",
+            ));
+        }
+        let retained = self
+            .service
+            .root_operation_budget(project.id, original.root.root_id)
+            .map_err(storage_error)?;
+        if retained.operation_key != key
+            || retained.generation != project.generation
+            || retained.revision != project.revision
+            || retained.limits != original.root.limits
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "MLT continuation lost its immutable original root",
+            ));
+        }
+        Ok(original.scope.clone())
+    }
+
     fn with_mlt_motion_scene_boundary_scope(
         &self,
         project: &motionwright_domain::Project,
         options: &FilmBuildOptions,
         checked: &crate::assembly::MultiSegmentAssemblyPreflight,
-    ) -> Self {
-        // Only this invocation's fresh canonical preflight supplies selection.
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<Self> {
+        let recipe = crate::mlt_edit_plan::mlt_native_video_recipe(checked)?;
+        let mut root = self.retained_motion_continuation(
+            project,
+            checked.deliverable_id,
+            Some(options),
+            rendered,
+        )?;
+        if root.mlt_route != Some(MltBudgetRoute::Timeline)
+            || root.max_render_frames != recipe.total_frames
+        {
+            return Err(invalid(
+                "MLT timeline differs from the original native budget plan",
+            ));
+        }
         let scene_ids = checked
             .segments
             .iter()
@@ -2380,9 +2773,62 @@ impl ProductionCoordinator {
             options,
             &scene_ids,
         );
+        let video_only = format!(
+            "{}-sequence-video-only-ffv1.mkv",
+            recipe.owner_output_namespace
+        );
+        root.mlt = Some(MltDispatchBudget {
+            route: MltBudgetRoute::Timeline,
+            frames: recipe.total_frames,
+            encodes: recipe
+                .clips
+                .iter()
+                .map(|clip| {
+                    (
+                        clip.source_manifest_path.clone(),
+                        MltEncodeBudget {
+                            manifest_sha256: clip.source_manifest_sha256.clone(),
+                            frames: clip.source_out_exclusive,
+                            output_path: clip.ffv1_output_path.clone(),
+                            max_bytes: clip.ffv1_max_bytes,
+                        },
+                    )
+                })
+                .collect(),
+            timeline_paths: vec![recipe.lossless_sequence_path, video_only.clone()],
+            mux_video_path: video_only,
+            mux_output_path: None,
+        });
         let mut scoped = self.clone();
         scoped.scene_boundary_scope = Some(std::sync::Arc::new(scope));
-        scoped
+        scoped.active_motion_budget = Some(root);
+        Ok(scoped)
+    }
+
+    fn with_retained_motion_audio_scope(
+        &self,
+        project_id: Uuid,
+        deliverable_id: Uuid,
+        options: Option<&FilmBuildOptions>,
+        rendered: &MotionCanvasRenderEvidence,
+    ) -> NativeResult<Self> {
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let mut root =
+            self.retained_motion_continuation(&project, deliverable_id, options, rendered)?;
+        root.audio_analysis = true;
+        let mut scoped = self.clone();
+        scoped.active_motion_budget = Some(root);
+        Ok(scoped)
+    }
+
+    fn bind_mlt_mux_output(&mut self, output_path: &str) -> NativeResult<()> {
+        let budget = self
+            .active_motion_budget
+            .as_mut()
+            .and_then(|root| root.mlt.as_mut())
+            .ok_or_else(|| invalid("MLT mux has no retained private accounting scope"))?;
+        budget.mux_output_path = Some(output_path.to_owned());
+        Ok(())
     }
 
     fn recheck_scene_boundary_before_dispatch(
@@ -2860,14 +3306,16 @@ impl ProductionCoordinator {
             });
         }
 
-        Ok(MotionCanvasRenderEvidence {
+        let rendered = MotionCanvasRenderEvidence {
             project_resource: project.resource_key(),
             generation: project.generation,
             revision: project.revision,
             deliverable_id,
             frame_rate: options.frame_rate,
             segments: evidence,
-        })
+        };
+        self.retain_motion_budget_output(&project, deliverable_id, &rendered)?;
+        Ok(rendered)
     }
 
     pub async fn assemble_mlt_av_master(
@@ -3049,7 +3497,66 @@ impl ProductionCoordinator {
         let mezzanine_path = format!("{stem}-motion.mkv");
         let master_path = format!("{stem}-master.mp4");
 
-        let encoded = self
+        let mut root = self.retained_motion_continuation(&project, deliverable_id, None, motion)?;
+        if root.mlt_route != Some(MltBudgetRoute::Direct)
+            || root.max_render_frames != segment.frame_count
+        {
+            return Err(invalid(
+                "MLT direct route differs from the original native budget plan",
+            ));
+        }
+        root.mlt = Some(MltDispatchBudget {
+            route: MltBudgetRoute::Direct,
+            frames: segment.frame_count,
+            encodes: std::collections::BTreeMap::from([(
+                manifest_path.clone(),
+                MltEncodeBudget {
+                    manifest_sha256: manifest_sha256.clone(),
+                    frames: segment.frame_count,
+                    output_path: mezzanine_path.clone(),
+                    max_bytes: MLT_MEZZANINE_MAX_BYTES,
+                },
+            )]),
+            timeline_paths: Vec::new(),
+            mux_video_path: mezzanine_path.clone(),
+            mux_output_path: Some(master_path.clone()),
+        });
+        // The direct API has no FilmOptions argument. Recover its scene
+        // boundary only from the same original root whose rendered evidence
+        // was checked above; do not reconstruct authority from client JSON.
+        let original_scene_scope = {
+            let key = format!(
+                "motion-canvas/{}/{}/{}/{}",
+                project.id, project.generation, project.revision, deliverable_id
+            );
+            let cache = self
+                .motion_budget_roots
+                .lock()
+                .map_err(|_| backend("Native budget root ownership is unavailable"))?;
+            let original = cache.get(&key).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Conflict,
+                    "Original direct MLT scene scope is unavailable",
+                )
+            })?;
+            if original.root.root_id != root.root_id
+                || original.root.generation != project.generation
+                || original.root.revision != project.revision
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Direct MLT scene scope differs from the original native root",
+                ));
+            }
+            original
+                .direct_mlt_scene_scope
+                .clone()
+                .ok_or_else(|| invalid("Original Film did not admit the direct MLT scene route"))?
+        };
+        let mut scoped = self.clone();
+        scoped.scene_boundary_scope = Some(original_scene_scope);
+        scoped.active_motion_budget = Some(root);
+        let encoded = scoped
             .execute(
                 project_id,
                 expected,
@@ -3100,7 +3607,7 @@ impl ProductionCoordinator {
             MLT_MEZZANINE_MAX_BYTES,
         )?;
 
-        let muxed = self
+        let muxed = scoped
             .execute(
                 project_id,
                 expected,
@@ -3183,7 +3690,7 @@ impl ProductionCoordinator {
                     return Err(invalid("MLT sync cue is invalid or duplicated"));
                 }
             }
-            let probed = self
+            let probed = scoped
                 .execute(
                     project_id,
                     expected,
@@ -4151,6 +4658,7 @@ impl ProductionCoordinator {
         .await
     }
 
+    #[cfg(test)]
     async fn execute_with_receipt_context(
         &self,
         project_id: Uuid,
@@ -4172,6 +4680,31 @@ impl ProductionCoordinator {
         .map(ReceiptExecutionOutcome::into_legacy_value)
     }
 
+    async fn execute_with_prepared_audio_context(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        operation: (&str, bool),
+        args: Value,
+        receipt_context: Option<(
+            audio_analysis::AudioReceiptContext,
+            audio_analysis::AudioStaging<'_>,
+        )>,
+    ) -> NativeResult<Value> {
+        self.execute_with_receipt_origin_context(
+            project_id,
+            expected,
+            request_id,
+            operation,
+            args,
+            receipt_context
+                .map(|(context, staging)| ReceiptDispatchContext::PreparedAudio(context, staging)),
+        )
+        .await
+        .map(ReceiptExecutionOutcome::into_legacy_value)
+    }
+
     // One dispatch/custody body for all production. Audio contributes only
     // closed private metadata to the same existing receipt payloads.
     async fn execute_with_receipt_origin_context(
@@ -4184,10 +4717,14 @@ impl ProductionCoordinator {
         dispatch_context: Option<ReceiptDispatchContext<'_>>,
     ) -> NativeResult<ReceiptExecutionOutcome> {
         let (command, mutation) = operation;
-        let (receipt_context, media_binding) = match dispatch_context {
-            Some(ReceiptDispatchContext::Audio(context)) => (Some(context), None),
-            Some(ReceiptDispatchContext::Bound(binding)) => (None, Some(binding)),
-            None => (None, None),
+        let (receipt_context, media_binding, audio_staging) = match dispatch_context {
+            #[cfg(test)]
+            Some(ReceiptDispatchContext::Audio(context)) => (Some(context), None, None),
+            Some(ReceiptDispatchContext::PreparedAudio(context, staging)) => {
+                (Some(context), None, Some(staging))
+            }
+            Some(ReceiptDispatchContext::Bound(binding)) => (None, Some(binding), None),
+            None => (None, None, None),
         };
         let media_mutation = if let Some(binding) = media_binding {
             binding.check_connection(&self.client)?;
@@ -4393,14 +4930,24 @@ impl ProductionCoordinator {
                 .map_err(storage_error)?;
         }
 
-        let dispatched = match media_binding {
-            Some(binding) => {
-                self.client
-                    .execute_bound_media_transport(binding, command, args, mutation)
-                    .await
+        let dispatched = async {
+            if let Some(staging) = audio_staging {
+                // Admission above durably charged the original root before
+                // either the bounded input copy or any SDK/provider effect.
+                // A staging failure follows the same terminal custody below;
+                // no credit is refunded and no alternate root is created.
+                staging.stage_after_admission(&self.client.connection().output_root)?;
             }
-            None => self.client.execute(command, args, mutation).await,
-        };
+            match media_binding {
+                Some(binding) => {
+                    self.client
+                        .execute_bound_media_transport(binding, command, args, mutation)
+                        .await
+                }
+                None => self.client.execute(command, args, mutation).await,
+            }
+        }
+        .await;
         match dispatched {
             Ok(result) => {
                 #[cfg(all(test, unix))]
@@ -4540,6 +5087,9 @@ mod native_motion_root_budget_tests {
             root_id: Uuid::nil(),
             max_render_frames: 24,
             max_frame_bytes: 1024,
+            mlt_route: None,
+            mlt: None,
+            audio_analysis: false,
         }
     }
 
@@ -4632,7 +5182,12 @@ mod native_motion_root_budget_tests {
 
 // Closed internal dispatch metadata; it cannot be supplied by stored caller JSON.
 enum ReceiptDispatchContext<'a> {
+    #[cfg(test)]
     Audio(audio_analysis::AudioReceiptContext),
+    PreparedAudio(
+        audio_analysis::AudioReceiptContext,
+        audio_analysis::AudioStaging<'a>,
+    ),
     Bound(&'a provider_binding::BoundMediaContext),
 }
 
@@ -4747,6 +5302,12 @@ fn storage_error(error: motionwright_storage::StorageError) -> Error {
 mod tests {
     include!("production/manim_graph/coordinator_tests.rs");
     use super::*;
+    #[cfg(unix)]
+    mod root_budget_productive_tests {
+        use super::*;
+        use std::sync::atomic::Ordering;
+        include!("production/root_budget_productive_tests.rs");
+    }
     #[cfg(unix)]
     use motionwright_domain::{BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle};
     #[cfg(unix)]

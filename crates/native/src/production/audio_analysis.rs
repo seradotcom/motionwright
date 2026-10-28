@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 const MEASURE_COMMAND: &str = "driver.audio-analysis.artifact.measure";
 const MUX_COMMAND: &str = "driver.mlt-video.av.mux";
-const MAX_ANALYSIS_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const MAX_ANALYSIS_BYTES: u64 = 512 * 1024 * 1024;
 
 mod qc_report;
 mod receipt_history;
@@ -229,6 +229,20 @@ pub(super) struct AudioReceiptContext {
     deliverable_id: Uuid,
     lane: String,
     measurement_context_sha256: String,
+}
+
+// Non-serializable private preparation. Only the measurement producer can
+// construct it; the coordinator runs it after the durable original debit and
+// dispatch intent, before invoking the existing native meter.
+pub(super) struct AudioStaging<'a> {
+    context: &'a MeasurementContext,
+    bytes: &'a [u8],
+}
+
+impl AudioStaging<'_> {
+    pub(super) fn stage_after_admission(self, output_root: &Path) -> NativeResult<()> {
+        stage_exact_input(output_root, self.context, self.bytes)
+    }
 }
 
 impl AudioReceiptContext {
@@ -1563,17 +1577,22 @@ impl ProductionCoordinator {
         let request_id = context.request_id()?;
         let args = context.args()?;
         let receipt_context = AudioReceiptContext::from_context(&context)?;
-        let root = &self.client.connection().output_root;
-        stage_exact_input(root, &context, bytes)?;
-        // An existing completed result may be read. The shared coordinator
-        // rejects nonterminal/failed/UNKNOWN identities; there is no retry loop.
-        self.execute_with_receipt_context(
+        // Completed replay returns before staging. Fresh source/decoded PCM
+        // is staged only after the same coordinator commits the root debit
+        // and original dispatch intent; failure retains its terminal receipt.
+        self.execute_with_prepared_audio_context(
             context.source.project_id,
             &context.source.stamp(),
             &request_id,
             (MEASURE_COMMAND, false),
             args,
-            Some(receipt_context),
+            Some((
+                receipt_context,
+                AudioStaging {
+                    context: &context,
+                    bytes,
+                },
+            )),
         )
         .await?;
         self.recheck_audio_source(&context.source)?;
@@ -1708,7 +1727,13 @@ impl ProductionCoordinator {
                 "Measured single-segment master requires one exact existing video segment",
             ));
         }
-        let source = self
+        let scoped = self.with_retained_motion_audio_scope(
+            project_id,
+            request.deliverable_id,
+            None,
+            request.motion,
+        )?;
+        let source = scoped
             .measure_source_for_master(
                 project_id,
                 expected,
@@ -1724,7 +1749,7 @@ impl ProductionCoordinator {
             )
             .await?;
         let namespace = source.context.source.namespace()?;
-        let master = self
+        let master = scoped
             .assemble_mlt_av_master_checked(
                 project_id,
                 expected,
@@ -1735,7 +1760,7 @@ impl ProductionCoordinator {
                 Some(&source),
             )
             .await?;
-        let audio_measurements = self.measure_completed_audio_parent(source).await?;
+        let audio_measurements = scoped.measure_completed_audio_parent(source).await?;
         Ok(MeasuredMltAvMasterEvidence {
             master,
             audio_measurements,
@@ -1750,7 +1775,13 @@ impl ProductionCoordinator {
         expected: &RevisionStamp,
         request: MltMultisegmentAvMasterRequest<'_>,
     ) -> NativeResult<MeasuredMltMultisegmentAvMasterEvidence> {
-        let source = self
+        let scoped = self.with_retained_motion_audio_scope(
+            project_id,
+            request.deliverable_id,
+            Some(request.options),
+            request.rendered,
+        )?;
+        let source = scoped
             .measure_source_for_master(
                 project_id,
                 expected,
@@ -1766,7 +1797,7 @@ impl ProductionCoordinator {
             )
             .await?;
         let namespace = source.context.source.namespace()?;
-        let master = self
+        let master = scoped
             .assemble_native_mlt_multisegment_av_master_checked(
                 project_id,
                 expected,
@@ -1781,7 +1812,7 @@ impl ProductionCoordinator {
                 Some(&source),
             )
             .await?;
-        let audio_measurements = self.measure_completed_audio_parent(source).await?;
+        let audio_measurements = scoped.measure_completed_audio_parent(source).await?;
         Ok(MeasuredMltMultisegmentAvMasterEvidence {
             master,
             audio_measurements,

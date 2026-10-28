@@ -482,7 +482,8 @@ impl ProductionCoordinator {
             rendered,
             &self.client.connection().output_root,
         )?;
-        let scoped = self.with_mlt_motion_scene_boundary_scope(&project, options, &checked);
+        let scoped =
+            self.with_mlt_motion_scene_boundary_scope(&project, options, &checked, rendered)?;
         let mut recipe: MltNativeVideoRecipe = mlt_native_video_recipe(&checked)?;
         if mode == MltTimelineMode::VideoOnly {
             // Deterministic, separate create-new output; never overwrite
@@ -583,7 +584,7 @@ impl ProductionCoordinator {
                 .await?;
             let asset = created(&asset_data, "asset")?;
             session = imported;
-            let sequence = self
+            let sequence = scoped
                 .mlt_entity_ref(
                     project_id,
                     expected,
@@ -596,7 +597,7 @@ impl ProductionCoordinator {
                     },
                 )
                 .await?;
-            let track = self
+            let track = scoped
                 .mlt_entity_ref(
                     project_id,
                     expected,
@@ -634,7 +635,7 @@ impl ProductionCoordinator {
             }
             session = inserted;
         }
-        let sequence = self
+        let sequence = scoped
             .mlt_entity_ref(
                 project_id,
                 expected,
@@ -647,7 +648,7 @@ impl ProductionCoordinator {
                 },
             )
             .await?;
-        let duration = self
+        let duration = scoped
             .execute(
                 project_id,
                 expected,
@@ -726,7 +727,7 @@ impl ProductionCoordinator {
             }
             sleep(Duration::from_millis(MLT_TIMELINE_POLL_MS)).await;
             poll += 1;
-            let status = self
+            let status = scoped
                 .execute(
                     project_id,
                     expected,
@@ -747,7 +748,7 @@ impl ProductionCoordinator {
                 }
             }
         }
-        let result = self
+        let result = scoped
             .execute(
                 project_id,
                 expected,
