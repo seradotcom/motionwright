@@ -163,7 +163,7 @@ for (const area of ["data", "pointer"] as const) test("a silent " + area + " bac
 
 for (const field of ["id", "generation", "active_branch"] as const) test("target author input does not follow another " + field + " and returns with its original scope", async ({ page }) => {
   await open(page); const before = await project(page); await lufs(page).fill("  -014.000  ");
-  await page.evaluate(({ field, value }) => window.__DELIVERY_RECIPE_AUTHORITY__.setScope({ [field]: value }), { field, value: before[field] + "-other" });
+  await page.evaluate(({ field, value }) => window.__DELIVERY_RECIPE_AUTHORITY__.setScope({ [field]: value }), { field, value: randomUUID() });
   await expect(lufs(page)).toHaveValue(""); await lufs(page).fill("-16");
   await page.evaluate(({ field, value }) => window.__DELIVERY_RECIPE_AUTHORITY__.setScope({ [field]: value }), { field, value: before[field] });
   await expect(lufs(page)).toHaveValue("  -014.000  "); expect(await requests(page)).toEqual([]);

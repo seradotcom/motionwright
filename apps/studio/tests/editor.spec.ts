@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { applyChange } from "../src/api";
 import { fixtureBootstrap } from "../src/fixture";
+import type { ExtensionProfile } from "../src/types";
 import { seedSyntheticProjectSelection } from "./support/selectedSyntheticProject";
 
 test("editor exposes real workspaces and browser-demo mutations", async ({ page }) => {
@@ -448,9 +451,26 @@ test("optional renderers stay closed until a reviewed project extension is expli
   await renderer.selectOption("remotion");
   await expect(renderer).toHaveValue("remotion");
 
-  await page.getByRole("button", { name: "Disable", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("renderer is in use");
+  // The editor blocks its stale descriptor after a renderer revision, rather than
+  // dispatching an unreviewed disable request. This is a stronger UI fence.
+  await expect(page.getByRole("button", { name: "Disable", exact: true })).toBeDisabled();
   await expect(renderer).toHaveValue("remotion");
+  await expect(page.getByText("Remotion enabled", { exact: true })).toBeVisible();
+
+  // Preserve the original negative domain oracle: even a direct, current
+  // project mutation must refuse to disable a renderer still in use.
+  const extension: ExtensionProfile = {
+    id: randomUUID(), name: "Reviewed Remotion bridge", kind: "remotion-renderer",
+    package_version: "1.2.3", digest_sha256: "ab".repeat(32), license: "MIT",
+    source: "https://example.invalid/remotion-bridge", rights_status: "cleared",
+    enabled: true, permissions: [],
+  };
+  const registered = await applyChange(structuredClone(fixtureBootstrap.project), { type: "upsert_extension", extension });
+  const used = await applyChange(registered, { type: "set_scene_renderer", scene_id: registered.scenes[0].id, renderer: "remotion" });
+  const unchanged = structuredClone(used);
+  await expect(applyChange(used, { type: "upsert_extension", extension: { ...extension, enabled: false } }))
+    .rejects.toThrow("extension cannot be disabled while its renderer is in use");
+  expect(used).toEqual(unchanged);
 });
 
 test("Launchwright handoffs use public refs and exact output digests without remote mutation claims", async ({ page }) => {
