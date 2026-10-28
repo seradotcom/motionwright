@@ -32,6 +32,7 @@ mod project_projection;
 mod render_window_cache;
 mod root_operation_budget;
 mod scene_boundary_target;
+mod sqlite_identity;
 pub use apply_receipt_binding::{
     APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
     ApplyResultObservation, MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
@@ -745,6 +746,17 @@ pub struct Store {
 }
 
 impl Store {
+    /// Physical evidence from this Store's retained SQLite connection.
+    ///
+    /// This is not an authorization grant. Trusted callers must keep the Store
+    /// and original mount permit alive and revalidate the binding for each
+    /// operation; serialized identifiers cannot replace either authority.
+    /// Unsupported platforms or VFS controls fail closed without reopening the
+    /// database pathname or inspecting a private SQLite structure.
+    pub fn database_file_identity(&self) -> Result<String> {
+        sqlite_identity::connection_identity(&self.conn)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
