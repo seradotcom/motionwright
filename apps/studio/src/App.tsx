@@ -6,7 +6,7 @@ import { timelineMarkerTime } from "./timelineMarkerTime";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
 import { graphReviewAnchor, graphSame, type SemanticGraphChange } from "./semanticGraph";
-import { readSemanticGraphContext } from "./semanticGraphService";
+import { readSemanticGraphContext, readSemanticGraphOperationRecovery } from "./semanticGraphService";
 import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
 import {
   Activity,
@@ -2336,6 +2336,7 @@ export default function App() {
           commit: commitGraph,
           readContext: readSemanticGraphContext,
           outcomeTransport: {
+            readOperationRecovery: readSemanticGraphOperationRecovery,
             readProject: async id => {
               if (!("__TAURI_INTERNALS__" in window)) throw new Error("A saved Graph read requires StudioService.");
               const value = await bootstrap(id);

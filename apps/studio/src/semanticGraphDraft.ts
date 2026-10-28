@@ -4,6 +4,7 @@ import { graphExact, graphRecord, graphSame, graphUuid, graphSourceSnapshot, gra
   graphLockIssue, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphRaw, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { GRAPH_MUTATION_REJECTED_MESSAGE } from "./semanticGraphMutationError";
+import { decodeGraphOperationRecovery, GRAPH_RECOVERY_READ_ERROR, type GraphOperationRecovery } from "./semanticGraphRecovery";
 
 export interface GraphPending {
   id: string; revision: number; sequence: number; submitted: SemanticGraphChange; input: GraphRaw;
@@ -16,8 +17,12 @@ export interface GraphDraft {
 }
 export interface GraphConflict { path: string; base: unknown; current: unknown; input: unknown }
 export interface GraphMerge { input: GraphRaw; conflicts: GraphConflict[] }
-export interface GraphOutcomeReview { scope: string; pending: GraphPending; sequence: number; input: GraphRaw; project: Project; events: ProjectEvent[] }
-export interface GraphOutcomeTransport { readProject(id: string): Promise<Project>; readHistory(project: Project, after: number, limit: number): Promise<ProjectEvent[]> }
+export interface GraphOutcomeReview { scope: string; pending: GraphPending; sequence: number; input: GraphRaw; project: Project; events: ProjectEvent[]; recovery: GraphOperationRecovery | null }
+export interface GraphOutcomeTransport {
+  readProject(id: string): Promise<Project>;
+  readHistory(project: Project, after: number, limit: number): Promise<ProjectEvent[]>;
+  readOperationRecovery(requestId: string, change: SemanticGraphChange): Promise<GraphOperationRecovery>;
+}
 export type GraphStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
 export interface GraphCustody { writerId: string; expectedRaw: string | null; expectedPointer: string | null }
 /** Unknown reads are different from an observed empty pointer. Observed bytes never change owners on Retry. */
@@ -167,13 +172,18 @@ export function submittedGraphMatches(project: Project, change: SemanticGraphCha
   if (change.type === "remove_semantic_graph") return !semanticGraphs(project).some(item => item.id === change.graph_id);
   return graphSame(semanticGraphs(project).find(item => item.id === change.graph.id), change.graph);
 }
-/** Call only from the exact original Promise<Project>; props and history never call this. */
-export function acknowledgeGraphDraft(draft: GraphDraft, id: string, receipt: Project): GraphDraft {
+/** Apply an already verified original result locally; this never publishes a Project. */
+function reconcileGraphReceipt(draft: GraphDraft, receipt: Project): GraphDraft {
   checkScope(draft, receipt); const sent = draft.pending;
-  if (!sent || sent.id !== id || receipt.revision !== sent.revision + 1 || !submittedGraphMatches(receipt, sent.submitted)) error("The original Graph reply is not the exact scoped r+1 result; retain UNKNOWN.");
+  if (!sent || receipt.revision !== sent.revision + 1 || !submittedGraphMatches(receipt, sent.submitted)) error("The Graph result is not the exact scoped r+1 result; retain UNKNOWN.");
   const edited = Object.fromEntries(Object.entries(draft.edited).filter(([, sequence]) => sequence > sent!.sequence));
   const saved = currentRaw(receipt, draft.graphId), hasLater = draft.sequence > sent!.sequence;
   return { ...draft, baseRevision: receipt.revision, base: saved, input: hasLater ? clone(draft.input) : clone(saved ?? draft.input), edited, pending: null };
+}
+/** Call only from the exact original Promise<Project>; recovery has its own read path. */
+export function acknowledgeGraphDraft(draft: GraphDraft, id: string, receipt: Project): GraphDraft {
+  if (draft.pending?.id !== id) error("The original Graph reply does not match the retained request; retain UNKNOWN.");
+  return reconcileGraphReceipt(draft, receipt);
 }
 export function graphOutcomeMatches(draft: GraphDraft, selected: Project, review: GraphOutcomeReview | null): boolean {
   return !!review && !!draft.pending && review.scope === draft.scope && graphSame(review.pending, draft.pending) && review.sequence === draft.sequence
@@ -181,18 +191,39 @@ export function graphOutcomeMatches(draft: GraphDraft, selected: Project, review
 }
 export async function inspectGraphOutcome(draft: GraphDraft, selected: Project, transport: GraphOutcomeTransport): Promise<GraphOutcomeReview> {
   checkScope(draft, selected); if (!draft.pending) error("There is no unconfirmed Graph operation to inspect.");
-  const selectedSource = clone(selected), project = clone(await transport.readProject(selectedSource.id)); checkScope(draft, project);
-  if (!graphSame(project, selectedSource) || project.revision < draft.pending!.revision) error("The service read is not the currently selected exact source. Refresh the Project before reviewing this attempt.");
-  const events = await transport.readHistory(clone(project), draft.pending!.revision, 256);
-  const verify = await transport.readProject(selectedSource.id); if (!graphSame(project, verify)) error("The Graph source changed during outcome inspection. Read again.");
-  if (events.some(e => e.revision <= draft.pending!.revision || e.revision > project.revision)) error("Graph history is outside the inspected revision interval.");
-  return { scope: draft.scope, pending: clone(draft.pending!), sequence: draft.sequence, input: clone(draft.input), project, events };
+  // Freeze the inspected intent before any await. A reused caller/transport object
+  // cannot retarget the original key, submitted source or later input.
+  const inspected = clone(draft), pending = inspected.pending!, selectedSource = clone(selected);
+  const read = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    try { return await operation(); } catch { return error(GRAPH_RECOVERY_READ_ERROR); }
+  };
+  const project = clone(await read(() => transport.readProject(selectedSource.id))); checkScope(inspected, project);
+  if (!graphSame(project, selectedSource) || project.revision < pending.revision) error("The service read is not the currently selected exact source. Refresh the Project before reviewing this attempt.");
+  const events = clone(await read(() => transport.readHistory(clone(project), pending.revision, 256)));
+  const recovery = pending.outcome === "UNKNOWN"
+    ? decodeGraphOperationRecovery(await read(() => transport.readOperationRecovery(pending.id, clone(pending.submitted))), pending.id, pending.submitted)
+    : null;
+  const verify = await read(() => transport.readProject(selectedSource.id));
+  if (!graphSame(project, verify)) error("The Graph source changed during outcome inspection. Read again.");
+  if (events.some(e => !integer(e.revision) || e.revision <= pending.revision || e.revision > project.revision)) error("Graph history is outside the inspected revision interval.");
+  if (recovery?.record.state === "recorded" && recovery.record.historical_project.revision > project.revision)
+    error("The recovered Graph result is newer than the selected source. Refresh the Project before reviewing this attempt.");
+  return { scope: inspected.scope, pending, sequence: inspected.sequence, input: inspected.input, project, events, recovery };
 }
 export function releaseGraphOutcome(draft: GraphDraft, project: Project, review: GraphOutcomeReview): GraphDraft {
   if (!graphOutcomeMatches(draft, project, review)) error("The Graph draft or selected source changed after inspection.");
-  if (graphUnconfirmed(draft) && project.revision <= draft.pending!.revision)
-    error("The original Graph request could still commit on its base. Keep it UNKNOWN.");
+  if (graphUnconfirmed(draft)) {
+    if (!review.recovery || review.recovery.record.state !== "recorded")
+      error("The original Graph request could still commit or remain unresolved. A recorded recovery receipt is required; keep it UNKNOWN.");
+    const recovery = decodeGraphOperationRecovery(review.recovery, draft.pending!.id, draft.pending!.submitted);
+    if (recovery.record.state !== "recorded" || recovery.record.historical_project.revision > project.revision)
+      return error("The recovered Graph result does not belong to the inspected source. Keep it UNKNOWN.");
+    // Reconcile the original historical result, never the current head. The UI
+    // must confirm copy-on-fork custody before adopting this local successor.
+    return reconcileGraphReceipt(draft, recovery.record.historical_project);
+  }
   const sent = draft.pending!, sameSubmitted = submittedGraphMatches(project, sent.submitted), without = { ...draft, pending: null };
+  // Live NOT_SENT/REJECTED retains its original known-failure provenance.
   // A saved equality is context for a new human intention, never an ACK. If the
   // exact submitted value is current, rebase later edits onto it after review.
   if (sameSubmitted && sent.submitted.type === "upsert_semantic_graph") return { ...without, base: currentRaw(project, draft.graphId), baseRevision: project.revision,
@@ -365,7 +396,7 @@ export function recoverGraphRead(current: GraphDraft, recovered: GraphDraft, edi
 }
 export function encodeGraphCopy(copy: GraphCopy): string { const raw = JSON.stringify(copy); decodeGraphCopy(raw, copy.scope, copy.writerId, false); return raw; }
 export function graphDownload(draft: GraphDraft): string { return JSON.stringify({ schema: "motionwright.semantic-graph-author-file/1", exportedAt: Date.now(), draft: cleanGraphDraft(draft, draft.scope, false) }, null, 2); }
-export function writeGraphCopy(storage: GraphStorage, pointers: Pick<Storage, "getItem" | "setItem">, draft: GraphDraft, custody: GraphCustody): GraphCustody {
+export function writeGraphCopy(storage: GraphStorage, pointers: Pick<Storage, "getItem" | "setItem">, draft: GraphDraft, custody: GraphCustody, beforePublish?: () => void): GraphCustody {
   const key = graphCopyKey(draft.scope, custody.writerId), pointerKey = graphPointerKey(draft.scope);
   const check = () => { const pointer = pointers.getItem(pointerKey); if (pointer !== custody.expectedPointer && pointer !== custody.writerId) error("Another runtime changed the Graph pointer. Earlier copies were retained.");
     if (storage.getItem(key) !== custody.expectedRaw) error("Another runtime changed the Graph copy. Earlier bytes were retained."); };
@@ -378,6 +409,7 @@ export function writeGraphCopy(storage: GraphStorage, pointers: Pick<Storage, "g
   if (total > GRAPH_TOTAL_BYTES || count > GRAPH_COPY_COUNT) error("Graph recovery is full (64 copies / 4 MiB). Review and discard only obsolete copies.");
   check(); if (raw !== custody.expectedRaw) storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) error("Graph recovery data write was not confirmed."); custody.expectedRaw = raw;
+  beforePublish?.();
   pointers.setItem(pointerKey, custody.writerId); if (pointers.getItem(pointerKey) !== custody.writerId) error("Graph recovery pointer write was not confirmed.");
   if (storage.getItem(key) !== raw) error("Graph recovery bytes changed during pointer publication."); custody.expectedPointer = custody.writerId; return custody;
 }
@@ -388,10 +420,11 @@ export function assertGraphCustody(storage: Pick<Storage, "getItem">, pointers: 
 /** Copy-on-fork retains the earlier UNKNOWN or author snapshot even if publication fails. */
 export function forkGraphCopy(storage: GraphStorage, pointers: Pick<Storage, "getItem" | "setItem">, before: GraphDraft, next: GraphDraft, original: GraphCustody, writerId: string): GraphCustody {
   if (before.scope !== next.scope || !graphUuid(writerId) || writerId === original.writerId) error("Invalid Graph custody fork.");
-  assertGraphCustody(storage, pointers, before, original); const oldKey = graphCopyKey(before.scope, original.writerId), oldRaw = original.expectedRaw;
+  assertGraphCustody(storage, pointers, before, original);
   const custody = { writerId, expectedRaw: null as string | null, expectedPointer: original.expectedPointer };
-  writeGraphCopy(storage, pointers, next, custody);
-  if (storage.getItem(oldKey) !== oldRaw) error("The original Graph copy changed during custody transfer.");
+  // Verify the staged data and original custody before publishing its pointer.
+  // A post-publication failure cannot undo a durable pointer or promise rollback.
+  writeGraphCopy(storage, pointers, next, custody, () => assertGraphCustody(storage, pointers, before, original));
   return custody;
 }
 export function readGraphCopies(storage: GraphStorage, scope: string, observe?: (writerId: string, raw: string) => void): { entries: GraphRecoveryEntry[]; limited: boolean } {

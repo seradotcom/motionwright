@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { graphSourceSnapshot, type GraphAuthoringContext } from "./semanticGraph";
+import { graphSourceSnapshot, type GraphAuthoringContext, type SemanticGraphChange } from "./semanticGraph";
+import { captureGraphRecoveryRequest, decodeGraphOperationRecovery, GRAPH_RECOVERY_READ_ERROR, type GraphOperationRecovery } from "./semanticGraphRecovery";
 import type { Project } from "./types";
 
 /**
@@ -23,4 +24,20 @@ export async function readSemanticGraphContext(
       variant_profile_ref: profileId,
     },
   });
+}
+
+/** Read the original operation without issuing a grant, mutation or replacement key. */
+export async function readSemanticGraphOperationRecovery(
+  requestId: string,
+  change: SemanticGraphChange,
+): Promise<GraphOperationRecovery> {
+  try {
+    if (!("__TAURI_INTERNALS__" in window)) throw new Error(GRAPH_RECOVERY_READ_ERROR);
+    const original = captureGraphRecoveryRequest(requestId, change);
+    const value: unknown = await invoke("semantic_graph_operation_recovery", { request: structuredClone(original) });
+    return decodeGraphOperationRecovery(value, original.request_id, original.change);
+  } catch {
+    // Read failures carry no information about the outcome of the original write.
+    throw new Error(GRAPH_RECOVERY_READ_ERROR);
+  }
 }

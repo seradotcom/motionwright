@@ -9,6 +9,7 @@ import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, c
   prepareGraphSubmission, readGraphCopies, readGraphRecoverySource, reconcileGraphDraft, recoverGraphRead, releaseGraphOutcome, reviewGraphDraft, validateGraphRaw, writeGraphCopy } from "./semanticGraphDraft";
 import type { GraphCustody, GraphDraft, GraphRecoveryObservation, GraphStorage } from "./semanticGraphDraft";
 import { GRAPH_MUTATION_REJECTED_MESSAGE } from "./semanticGraphMutationError";
+import type { GraphOperationRecovery, GraphRecoveryRecord } from "./semanticGraphRecovery";
 
 class Memory implements GraphStorage {
   data = new Map<string, string>(); reads = 0; writes = 0; drop = false; corrupt = false;
@@ -40,6 +41,17 @@ function syntheticReceipt(project: Project, submitted: SemanticGraphChange): Gra
     : [...graphs.filter(g => g.id !== submitted.graph.id), structuredClone(submitted.graph)];
   return next;
 }
+
+/** Synthetic read records exercise local transitions only, never Native acceptance. */
+function recoveryResponse(request_id: string, submitted: SemanticGraphChange, record: GraphRecoveryRecord = { state: "pending" }): GraphOperationRecovery {
+  return { schema: "motionwright.semantic-graph-operation-recovery/1", request_id,
+    source_snapshot: structuredClone(submitted.type === "upsert_semantic_graph" ? submitted.graph.authorship.source_snapshot : submitted.source_snapshot),
+    record: structuredClone(record) };
+}
+const pendingRecovery = async (id: string, submitted: SemanticGraphChange) => recoveryResponse(id, submitted);
+const recordedRecovery = (project: Project) => async (id: string, submitted: SemanticGraphChange) =>
+  recoveryResponse(id, submitted, { state: "recorded", historical_project: structuredClone(project) });
+
 function copy(draft: GraphDraft) { const local = new Memory(), pointers = new Memory(), custody: GraphCustody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: null }; writeGraphCopy(local, pointers, draft, custody); return { local, pointers, custody }; }
 
 describe("explicit label-placement recovery and authority", () => {
@@ -248,36 +260,39 @@ describe("Graph original Promise acknowledgement and reviewed successor", () => 
     if (kind === "later revision") receipt.revision++; if (kind === "different Graph") receipt.production_design!.semantic_graphs![0].content.vertices[0].label = "Different"; if (kind === "different request") id = crypto.randomUUID();
     expect(() => acknowledgeGraphDraft(prepared.draft, id, receipt)).toThrow(); expect(prepared.draft.pending?.outcome).toBe("UNKNOWN");
   });
-  it("reads current Project twice and treats matching history as context, not ACK", async () => {
+  it("reads current Project twice but matching saved values and history do not resolve UNKNOWN", async () => {
     const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID()), receipt = syntheticReceipt(project, prepared.change); let reads = 0;
-    const review = await inspectGraphOutcome(prepared.draft, receipt, { readProject: async () => { reads++; return structuredClone(receipt); }, readHistory: async () => [] });
+    const review = await inspectGraphOutcome(prepared.draft, receipt, { readOperationRecovery: pendingRecovery, readProject: async () => { reads++; return structuredClone(receipt); }, readHistory: async () => [] });
     expect(reads).toBe(2); expect(prepared.draft.pending?.outcome).toBe("UNKNOWN"); expect(graphOutcomeMatches(prepared.draft, receipt, review)).toBe(true);
-    const next = releaseGraphOutcome(prepared.draft, receipt, review); expect(next.pending).toBeNull(); expect(next.baseRevision).toBe(receipt.revision);
+    expect(() => releaseGraphOutcome(prepared.draft, receipt, review)).toThrow(/recorded recovery receipt/); expect(prepared.draft.pending?.outcome).toBe("UNKNOWN");
   });
-  it("rebases later edits after reviewed saved equality without inventing an ACK", async () => {
+  it("reconciles the recorded original result while retaining later edits", async () => {
     const { project, draft, context } = source(); const path = "/content/vertices/" + draft.input.content.vertices[0].id + "/label";
     const input = change(draft, path, raw => { raw.content.vertices[0].label = "Sent"; }), prepared = await prepareGraphSubmission(input, project, context, crypto.randomUUID());
     const later = change(prepared.draft, path, raw => { raw.content.vertices[0].label = "After request"; }), receipt = syntheticReceipt(project, prepared.change);
-    const review = await inspectGraphOutcome(later, receipt, { readProject: async () => structuredClone(receipt), readHistory: async () => [] });
+    const review = await inspectGraphOutcome(later, receipt, { readOperationRecovery: recordedRecovery(receipt), readProject: async () => structuredClone(receipt), readHistory: async () => [] });
     const successor = releaseGraphOutcome(later, receipt, review); expect(successor.input.content.vertices[0].label).toBe("After request"); expect(successor.base).toEqual(graphToRaw(receipt.production_design!.semantic_graphs![0]));
     expect(mergeGraphDraft(successor, receipt).conflicts).toEqual([]); expect(later.pending).not.toBeNull();
   });
   it("retains actual third-value CAS conflicts through an uncertain-outcome review", async () => {
     const { project, draft, context } = source(), path = "/content/vertices/" + draft.input.content.vertices[0].id + "/label";
-    const local = change(draft, path, raw => { raw.content.vertices[0].label = "Local"; }), prepared = await prepareGraphSubmission(local, project, context, crypto.randomUUID());
-    const peer = structuredClone(project); peer.revision++; peer.production_design!.semantic_graphs![0].content.vertices[0].label = "Peer";
-    const review = await inspectGraphOutcome(prepared.draft, peer, { readProject: async () => structuredClone(peer), readHistory: async () => [] });
-    const next = releaseGraphOutcome(prepared.draft, peer, review); expect(mergeGraphDraft(next, peer).conflicts.map(item => item.path)).toEqual([path]); expect(next.input.content.vertices[0].label).toBe("Local");
+    const local = change(draft, path, raw => { raw.content.vertices[0].label = "Submitted"; }), prepared = await prepareGraphSubmission(local, project, context, crypto.randomUUID());
+    const later = change(prepared.draft, path, raw => { raw.content.vertices[0].label = "Local"; }), receipt = syntheticReceipt(project, prepared.change);
+    const peer = structuredClone(receipt); peer.revision++; peer.production_design!.semantic_graphs![0].content.vertices[0].label = "Peer";
+    const originalPeer = structuredClone(peer);
+    const review = await inspectGraphOutcome(later, peer, { readOperationRecovery: recordedRecovery(receipt), readProject: async () => structuredClone(peer), readHistory: async () => [] });
+    const next = releaseGraphOutcome(later, peer, review); expect(mergeGraphDraft(next, peer).conflicts.map(item => item.path)).toEqual([path]); expect(next.input.content.vertices[0].label).toBe("Local");
+    expect(next.baseRevision).toBe(receipt.revision); expect(peer).toEqual(originalPeer); expect(later.pending?.outcome).toBe("UNKNOWN");
   });
   it("invalidates asynchronous outcome inspection after input or source changes", async () => {
     const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
-    const review = await inspectGraphOutcome(prepared.draft, project, { readProject: async () => structuredClone(project), readHistory: async () => [] });
+    const review = await inspectGraphOutcome(prepared.draft, project, { readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(project), readHistory: async () => [] });
     const changed = change(prepared.draft, "/authorship/rationale", raw => { raw.authorship.rationale = "New input"; }); expect(graphOutcomeMatches(changed, project, review)).toBe(false); expect(() => releaseGraphOutcome(changed, project, review)).toThrow();
-    let reads = 0; await expect(inspectGraphOutcome(prepared.draft, project, { readProject: async () => ({ ...structuredClone(project), revision: project.revision + (reads++ ? 1 : 0) }), readHistory: async () => [] })).rejects.toThrow(/changed/);
+    let reads = 0; await expect(inspectGraphOutcome(prepared.draft, project, { readOperationRecovery: pendingRecovery, readProject: async () => ({ ...structuredClone(project), revision: project.revision + (reads++ ? 1 : 0) }), readHistory: async () => [] })).rejects.toThrow(/changed/);
   });
   it("rejects history outside the inspected range and does not silently truncate to accept it", async () => {
     const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
-    await expect(inspectGraphOutcome(prepared.draft, project, { readProject: async () => structuredClone(project), readHistory: async () => [{ revision: project.revision + 1 } as ProjectEvent] })).rejects.toThrow(/outside/);
+    await expect(inspectGraphOutcome(prepared.draft, project, { readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(project), readHistory: async () => [{ revision: project.revision + 1 } as ProjectEvent] })).rejects.toThrow(/outside/);
   });
 });
 
@@ -299,17 +314,17 @@ describe("Graph verified copy-and-pointer custody", () => {
     local.onRead = readKey => { if (readKey.includes(":peer:") && !hit) { hit = true; local.data.set(key, "Peer replacement"); } };
     expect(() => writeGraphCopy(local, pointers, draft, custody)).toThrow(/changed/); expect(local.data.get(key)).toBe("Peer replacement");
   });
-  it("forks an uncertain attempt after an inspected peer revision without altering its original bytes", async () => {
+  it("forks a recorded original result under a later peer revision without altering original bytes", async () => {
     const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
-    const peer = structuredClone(project); peer.revision++; peer.title = "Independent peer source";
+    const receipt = syntheticReceipt(project, prepared.change), peer = structuredClone(receipt); peer.revision++; peer.title = "Independent peer source";
     const branch = peer.branches.find(item => item.id === peer.active_branch);
     if (!branch) throw new Error("The peer source has no active branch");
     branch.head_revision = peer.revision;
-    expect(branch.head_revision).toBe(project.revision + 1);
+    expect(branch.head_revision).toBe(project.revision + 2);
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     try {
       const held = copy(prepared.draft), oldRaw = held.custody.expectedRaw;
-      const review = await inspectGraphOutcome(prepared.draft, peer, { readProject: async () => structuredClone(peer),
+      const review = await inspectGraphOutcome(prepared.draft, peer, { readOperationRecovery: recordedRecovery(receipt), readProject: async () => structuredClone(peer),
         readHistory: async () => [{ revision: peer.revision, change: { type: "rename_project", title: peer.title }, created_at: "2026-10-26T00:00:00Z" }] });
       const next = releaseGraphOutcome(prepared.draft, peer, review);
       clock.mockReturnValue(2000);
@@ -457,22 +472,22 @@ describe("Graph failed first read retains original authority and explicit fields
   });
 });
 
-describe("Graph outcome authority is the complete Project", () => {
+describe("Graph outcome inspection stays bound to the complete selected Project", () => {
   it("rejects a first read with the same stamp and different Project contents", async () => {
     const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
     const changed = structuredClone(project); changed.scenes[0].name += " changed under same stamp"; let historyReads = 0;
-    await expect(inspectGraphOutcome(sent.draft, project, { readProject: async () => changed, readHistory: async () => { historyReads++; return []; } })).rejects.toThrow(/currently selected exact source/);
+    await expect(inspectGraphOutcome(sent.draft, project, { readOperationRecovery: pendingRecovery, readProject: async () => changed, readHistory: async () => { historyReads++; return []; } })).rejects.toThrow(/currently selected exact source/);
     expect(historyReads).toBe(0); expect(sent.draft.pending?.outcome).toBe("UNKNOWN");
   });
   it("rejects verification with the same stamp and different full Project", async () => {
     const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
     const changed = structuredClone(project); changed.scenes[0].name += " changed while inspecting"; let reads = 0;
-    await expect(inspectGraphOutcome(sent.draft, project, { readProject: async () => structuredClone(reads++ ? changed : project), readHistory: async () => [] })).rejects.toThrow(/changed during outcome inspection/);
+    await expect(inspectGraphOutcome(sent.draft, project, { readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(reads++ ? changed : project), readHistory: async () => [] })).rejects.toThrow(/changed during outcome inspection/);
     expect(reads).toBe(2); expect(sent.draft.pending?.outcome).toBe("UNKNOWN");
   });
   it("cannot release an inspected UNKNOWN after the selected full Project changes under its stamp", async () => {
     const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID()), held = copy(sent.draft), original = held.custody.expectedRaw!;
-    const review = await inspectGraphOutcome(sent.draft, project, { readProject: async () => structuredClone(project), readHistory: async () => [] });
+    const review = await inspectGraphOutcome(sent.draft, project, { readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(project), readHistory: async () => [] });
     const changed = structuredClone(project); changed.scenes[0].name += " changed after inspecting";
     expect(graphOutcomeMatches(sent.draft, changed, review)).toBe(false); expect(() => releaseGraphOutcome(sent.draft, changed, review)).toThrow(/selected source changed/);
     expect(sent.draft.pending?.outcome).toBe("UNKNOWN"); expect(held.local.data.get(graphCopyKey(draft.scope, held.custody.writerId))).toBe(original);
@@ -482,7 +497,7 @@ describe("Graph outcome authority is the complete Project", () => {
     const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
     const shared = structuredClone(project);
     await expect(inspectGraphOutcome(sent.draft, project, {
-      readProject: async () => shared,
+      readOperationRecovery: pendingRecovery, readProject: async () => shared,
       readHistory: async () => { shared.scenes[0].name += " changed on the reused object"; return []; },
     })).rejects.toThrow(/changed during outcome inspection/);
     expect(sent.draft.pending?.outcome).toBe("UNKNOWN");
@@ -540,7 +555,7 @@ describe("Graph unchanged-base uncertainty and exact backup confirmation", () =>
       const held = copy(later), key = graphCopyKey(later.scope, held.custody.writerId), original = held.custody.expectedRaw, owner = structuredClone(held.custody);
       let reads = 0;
       const review = await inspectGraphOutcome(later, project, {
-        readProject: async () => { reads++; return structuredClone(project); }, readHistory: async () => [],
+        readOperationRecovery: pendingRecovery, readProject: async () => { reads++; return structuredClone(project); }, readHistory: async () => [],
       });
       expect(reads).toBe(2); expect(review.events).toEqual([]); expect(graphOutcomeMatches(later, project, review)).toBe(true);
       expect(() => releaseGraphOutcome(later, project, review)).toThrow(/could still commit/);
@@ -553,7 +568,7 @@ describe("Graph unchanged-base uncertainty and exact backup confirmation", () =>
       const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID(), operation);
       const notSent = failGraphSubmission(prepared.draft, prepared.draft.pending!.id, "Recovery prevented the original callback", true), held = copy(notSent);
       const original = held.custody.expectedRaw, key = graphCopyKey(draft.scope, held.custody.writerId);
-      const review = await inspectGraphOutcome(notSent, project, { readProject: async () => structuredClone(project), readHistory: async () => [] });
+      const review = await inspectGraphOutcome(notSent, project, { readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(project), readHistory: async () => [] });
       const next = releaseGraphOutcome(notSent, project, review);
       expect(next.pending).toBeNull(); expect(next.input).toEqual(notSent.input); expect(next.baseRevision).toBe(project.revision);
       expect(notSent.pending?.outcome).toBe("NOT_SENT");
@@ -568,7 +583,7 @@ describe("Graph unchanged-base uncertainty and exact backup confirmation", () =>
       const raw = held.custody.expectedRaw!, key = graphCopyKey(draft.scope, held.custody.writerId);
       const recovered = decodeGraphCopy(raw, draft.scope, held.custody.writerId).draft;
       expect(recovered.pending?.outcome).toBe("UNKNOWN"); expect(JSON.parse(raw).draft.pending.outcome).toBe("NOT_SENT");
-      const review = await inspectGraphOutcome(recovered, project, { readProject: async () => structuredClone(project), readHistory: async () => [] });
+      const review = await inspectGraphOutcome(recovered, project, { readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(project), readHistory: async () => [] });
       expect(() => releaseGraphOutcome(recovered, project, review)).toThrow(/could still commit/);
       expect(held.local.getItem(key)).toBe(raw); expect(recovered.input).toEqual(notSent.input);
     });
@@ -626,13 +641,13 @@ describe("live Graph rejection and restored uncertainty", () => {
       expect(decodeGraphCopy(original, draft.scope, held.custody.writerId, false).draft.pending?.outcome).toBe("REJECTED");
       expect(rejectGraphSubmission(rejected, crypto.randomUUID())).toBe(rejected);
       await expect(prepareGraphSubmission(rejected, project, context, crypto.randomUUID(), operation)).rejects.toThrow(/earlier Graph operation/);
-      const transport = { readProject: vi.fn(async () => structuredClone(project)), readHistory: vi.fn(async () => []) };
+      const transport = { readOperationRecovery: vi.fn(pendingRecovery), readProject: vi.fn(async () => structuredClone(project)), readHistory: vi.fn(async () => []) };
       const review = await inspectGraphOutcome(rejected, project, transport), next = releaseGraphOutcome(rejected, project, review);
       expect(next.pending).toBeNull(); expect(next.input).toEqual(rejected.input);
       expect(rejected.pending?.outcome).toBe("REJECTED"); expect(rejected.pending?.submitted).toEqual(prepared.change);
       forkGraphCopy(held.local, held.pointers, rejected, next, held.custody, crypto.randomUUID());
       expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(original);
-      expect(transport.readProject).toHaveBeenCalledTimes(2);
+      expect(transport.readProject).toHaveBeenCalledTimes(2); expect(transport.readOperationRecovery).not.toHaveBeenCalled();
     });
 
     it(`${operation} a stored rejection is UNKNOWN and cannot release an unchanged base`, async () => {
@@ -644,7 +659,7 @@ describe("live Graph rejection and restored uncertainty", () => {
       expect(recovered.pending?.id).toBe(id); expect(recovered.pending?.submitted).toEqual(prepared.change);
       expect(recovered.pending?.input).toEqual(prepared.draft.pending?.input);
       const review = await inspectGraphOutcome(recovered, project, {
-        readProject: async () => structuredClone(project), readHistory: async () => [],
+        readOperationRecovery: pendingRecovery, readProject: async () => structuredClone(project), readHistory: async () => [],
       });
       expect(() => releaseGraphOutcome(recovered, project, review)).toThrow(/could still commit/);
       expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(original);
@@ -652,4 +667,104 @@ describe("live Graph rejection and restored uncertainty", () => {
       expect(recoverGraphRead(draft, rejected, []).pending?.diagnostic).toBeNull();
     });
   }
+});
+
+describe("typed read-only recovery resolves only the original recorded operation", () => {
+  for (const operation of ["save", "remove"] as const) {
+    it.each<GraphRecoveryRecord>([{ state: "pending" }, { state: "outcome_unknown" }, { state: "retention_expired", current_epoch: 7 }])(
+      operation + " retains UNKNOWN after head advances while recovery is $state", async record => {
+        const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID(), operation);
+        const current = syntheticReceipt(project, sent.change), held = copy(sent.draft), original = held.custody.expectedRaw;
+        const readOperationRecovery = vi.fn(async (id: string, submitted: SemanticGraphChange) => recoveryResponse(id, submitted, record));
+        const review = await inspectGraphOutcome(sent.draft, current, { readOperationRecovery,
+          readProject: async () => structuredClone(current), readHistory: async () => [] });
+        expect(readOperationRecovery).toHaveBeenCalledTimes(1); expect(readOperationRecovery).toHaveBeenCalledWith(sent.draft.pending!.id, sent.change);
+        expect(() => releaseGraphOutcome(sent.draft, current, review)).toThrow(/recorded recovery receipt/);
+        await expect(prepareGraphSubmission(sent.draft, current, context, crypto.randomUUID(), operation)).rejects.toThrow(/cannot be replayed/);
+        expect(sent.draft.pending?.outcome).toBe("UNKNOWN"); expect(held.custody.expectedRaw).toBe(original);
+        assertGraphCustody(held.local, held.pointers, sent.draft, held.custody);
+      });
+    it(operation + " reconciles its historical result without replacing a later Project or author input", async () => {
+      const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID(), operation);
+      const later = change(sent.draft, "/authorship/rationale", raw => { raw.authorship.rationale = "Input after the original request"; });
+      const historical = syntheticReceipt(project, sent.change), current = structuredClone(historical); current.revision++; current.title = "Later peer title";
+      if (operation === "save") current.production_design!.semantic_graphs = [];
+      const currentOriginal = structuredClone(current), held = copy(later), raw = held.custody.expectedRaw;
+      const review = await inspectGraphOutcome(later, current, { readOperationRecovery: recordedRecovery(historical),
+        readProject: async () => structuredClone(current), readHistory: async () => [] });
+      const successor = releaseGraphOutcome(later, current, review);
+      expect(successor.pending).toBeNull(); expect(successor.baseRevision).toBe(historical.revision);
+      expect(successor.input.authorship.rationale).toBe("Input after the original request");
+      expect(successor.base).toEqual(operation === "remove" ? null : graphToRaw(historical.production_design!.semantic_graphs![0]));
+      expect(current).toEqual(currentOriginal); expect(later.pending?.outcome).toBe("UNKNOWN");
+      const custody = forkGraphCopy(held.local, held.pointers, later, successor, held.custody, crypto.randomUUID());
+      expect(held.local.getItem(graphCopyKey(later.scope, held.custody.writerId))).toBe(raw);
+      assertGraphCustody(held.local, held.pointers, successor, custody);
+    });
+  }
+  it("keeps read rejection and malformed read data separate from original mutation knownness", async () => {
+    const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const current = syntheticReceipt(project, sent.change), original = structuredClone(sent.draft);
+    const mutationError = { schema: "motionwright.graph-mutation-error/1", request_id: sent.draft.pending!.id, outcome_known: true, code: "graph_mutation_failed" };
+    for (const reject of [false, true]) {
+      await expect(inspectGraphOutcome(sent.draft, current, {
+        readProject: async () => structuredClone(current), readHistory: async () => [],
+        readOperationRecovery: async () => { if (reject) throw mutationError; return mutationError as unknown as GraphOperationRecovery; },
+      })).rejects.toThrow(/outcome remains unconfirmed/);
+      expect(sent.draft).toEqual(original);
+    }
+  });
+  it("captures the key, source and input before a reused draft changes during the first read", async () => {
+    const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const original = structuredClone(sent.draft); let reads = 0;
+    const readOperationRecovery = vi.fn(pendingRecovery);
+    const review = await inspectGraphOutcome(sent.draft, project, { readOperationRecovery,
+      readProject: async () => {
+        if (++reads === 1) { sent.draft.pending!.id = crypto.randomUUID(); sent.draft.sequence++; sent.draft.input.authorship.rationale = "Edited while awaiting"; }
+        return structuredClone(project);
+      }, readHistory: async () => [] });
+    expect(readOperationRecovery).toHaveBeenCalledTimes(1); expect(readOperationRecovery).toHaveBeenCalledWith(original.pending!.id, original.pending!.submitted);
+    expect(review.pending).toEqual(original.pending); expect(review.input).toEqual(original.input);
+    expect(graphOutcomeMatches(sent.draft, project, review)).toBe(false);
+    expect(() => releaseGraphOutcome(sent.draft, project, review)).toThrow(/changed after inspection/);
+  });
+  it("requires refreshing a head older than the recovered original receipt", async () => {
+    const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    await expect(inspectGraphOutcome(sent.draft, project, {
+      readOperationRecovery: recordedRecovery(syntheticReceipt(project, sent.change)),
+      readProject: async () => structuredClone(project), readHistory: async () => [],
+    })).rejects.toThrow(/newer than the selected source/);
+    expect(sent.draft.pending?.outcome).toBe("UNKNOWN");
+  });
+  it.each(["data", "pointer"])("retains original uncertainty when recovered-result custody loses the %s write", async failure => {
+    const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const historical = syntheticReceipt(project, sent.change), held = copy(sent.draft), original = held.custody.expectedRaw;
+    const review = await inspectGraphOutcome(sent.draft, historical, {
+      readOperationRecovery: recordedRecovery(historical), readProject: async () => structuredClone(historical), readHistory: async () => [] });
+    const successor = releaseGraphOutcome(sent.draft, historical, review);
+    if (failure === "data") held.local.drop = true; else held.pointers.drop = true;
+    expect(() => forkGraphCopy(held.local, held.pointers, sent.draft, successor, held.custody, crypto.randomUUID())).toThrow(/not confirmed/);
+    expect(sent.draft.pending?.outcome).toBe("UNKNOWN");
+    expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(original);
+    expect(held.pointers.getItem(graphPointerKey(draft.scope))).toBe(held.custody.writerId);
+  });
+});
+
+describe("Graph custody verifies its original before pointer publication", () => {
+  it("keeps the old pointer when another writer changes original bytes during successor staging", async () => {
+    const { project, draft, context } = source(), sent = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const historical = syntheticReceipt(project, sent.change), held = copy(sent.draft), original = held.custody.expectedRaw;
+    const review = await inspectGraphOutcome(sent.draft, historical, { readOperationRecovery: recordedRecovery(historical),
+      readProject: async () => structuredClone(historical), readHistory: async () => [] });
+    const next = releaseGraphOutcome(sent.draft, historical, review), writer = crypto.randomUUID();
+    const oldKey = graphCopyKey(draft.scope, held.custody.writerId), newKey = graphCopyKey(draft.scope, writer);
+    let raced = false;
+    held.local.onRead = key => {
+      if (!raced && key === newKey && held.local.data.has(newKey)) { raced = true; held.local.data.set(oldKey, "Other writer bytes retained"); }
+    };
+    expect(() => forkGraphCopy(held.local, held.pointers, sent.draft, next, held.custody, writer)).toThrow(/confirmed recovery custody/);
+    expect(raced).toBe(true); expect(held.pointers.getItem(graphPointerKey(draft.scope))).toBe(held.custody.writerId);
+    expect(held.local.data.get(oldKey)).toBe("Other writer bytes retained"); expect(held.local.data.has(newKey)).toBe(true);
+    expect(held.custody.expectedRaw).toBe(original); expect(sent.draft.pending?.outcome).toBe("UNKNOWN");
+  });
 });

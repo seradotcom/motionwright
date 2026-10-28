@@ -216,7 +216,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   }
   function continueEditing() {
     if (busy || !review) return;
-    try { fork(releaseGraphOutcome(session.draft, current.current.project, review), "The earlier operation remains in a separate copy. No ACK or retry was inferred. Review conflicts and save a new intention explicitly."); }
+    try { fork(releaseGraphOutcome(session.draft, current.current.project, review), review.recovery?.record.state === "recorded"
+      ? "Recovered the original saved Graph result. Its earlier copy and later input were retained. Review the current source before saving another intention."
+      : "The earlier known failure remains in a separate copy. Review conflicts and save a new intention explicitly."); }
     catch (reason) { session.error = message(reason); notify(session); }
   }
   function reconcile() {
@@ -382,10 +384,11 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
         <button className="secondary-button" disabled={busy} onClick={() => void refresh()}>Refresh saved Project</button>
         <button className="secondary-button" disabled={busy || reviewing} onClick={() => void readOutcome()}>Inspect saved Graph outcome</button>
         {review && <><p>Read current source at r{review.project.revision}. {review.events.length} history entries inspected; none is treated as an ACK.</p>
-          {graphUnconfirmed(draft) && review.project.revision <= review.pending.revision && <p role="status">
-            The original Graph request can still commit on this revision. Keep it UNKNOWN and inspect again after the saved revision advances.
+          {review.recovery?.record.state === "recorded" && <p role="status">The original operation has a recorded saved result at r{review.recovery.record.historical_project.revision}. Continuing preserves the earlier copy and your later input.</p>}
+          {graphUnconfirmed(draft) && review.recovery?.record.state !== "recorded" && <p role="status">
+            No recorded result is available for the original operation. Keep it UNKNOWN; a later saved revision does not resolve it.
           </p>}
-          <button className="secondary-button" disabled={busy || (graphUnconfirmed(draft) && review.project.revision <= review.pending.revision)}
+          <button className="secondary-button" disabled={busy || (graphUnconfirmed(draft) && review.recovery?.record.state !== "recorded")}
             onClick={continueEditing}>Continue Graph as a new reviewed intention</button></>}
       </section>}
       {inputIssue && <p role="status" className="production-error">{inputIssue}</p>}{lock && <p role="status">{lock}</p>}

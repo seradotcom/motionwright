@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { ScopedChangeService } from "./support/scopedChangeService";
 import type { Project } from "../src/types";
-import type { GraphProject } from "../src/semanticGraph";
+import type { GraphProject, SemanticGraphChange } from "../src/semanticGraph";
 import type { DeliveryRecipe } from "../src/deliveryRecipe";
 
 test.setTimeout(120_000);
@@ -104,7 +104,9 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
     };
     await field(page, "Vertex 1 label").fill("Committed once"); await button(page, "Save semantic Graph").click(); await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
     latest = await service.project(initial.id); expect(latest.revision).toBe(initial.revision + 1); expect(graphRequests(service)).toHaveLength(1);
-    const sent = (graphRequests(service)[0].payload as { args: { request: { request_id: string } } }).args.request;
+    const sentPayload = graphRequests(service)[0].payload;
+    if (!("command" in sentPayload)) throw new Error("The retained Graph request was not an actual RPC command");
+    const sent = sentPayload.args?.request as { request_id: string; change: SemanticGraphChange };
     const retainedKeys = await page.evaluate(() => Object.keys(localStorage)
       .filter(key => key.startsWith("motionwright.semantic-graph-recovery.v1:"))
       .map(key => (JSON.parse(localStorage.getItem(key)!) as { draft: { pending?: { id: string } | null } }).draft.pending?.id)
@@ -112,7 +114,15 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
     expect(retainedKeys).toEqual([sent.request_id]);
     await field(page, "Vertex 1 label").fill("New human intention after lost reply"); await page.reload(); await open(page, setup.sceneId);
     await expect(field(page, "Vertex 1 label")).toHaveValue("New human intention after lost reply"); await expect(button(page, "Save Graph changes")).toBeDisabled(); expect(graphRequests(service)).toHaveLength(1);
-    await button(page, "Inspect saved Graph outcome").click(); await button(page, "Continue Graph as a new reviewed intention").click(); expect(graphRequests(service)).toHaveLength(1);
+    await button(page, "Inspect saved Graph outcome").click();
+    await expect(page.getByText("The original operation has a recorded saved result at r" + latest.revision + ".", { exact: false })).toBeVisible();
+    const recoveries = service.transcript.filter(entry => entry.direction === "request" && "command" in entry.payload
+      && entry.payload.command === "semantic_graph_operation_recovery");
+    expect(recoveries).toHaveLength(1);
+    const recoveredPayload = recoveries[0].payload;
+    if (!("command" in recoveredPayload)) throw new Error("The recovery read was not an actual RPC command");
+    expect(recoveredPayload.args?.request).toEqual({ request_id: sent.request_id, change: sent.change });
+    await button(page, "Continue Graph as a new reviewed intention").click(); expect(graphRequests(service)).toHaveLength(1);
     await button(page, "Inspect current Graph support and sources").click(); await button(page, "Save Graph changes").click();
     await expect.poll(async () => (await service.project(initial.id)).revision).toBe(initial.revision + 2); latest = await service.project(initial.id);
     expect((latest as GraphProject).production_design!.semantic_graphs!.find(graph => graph.scene_id === setup.sceneId)!.content.vertices[0].label).toBe("New human intention after lost reply");
