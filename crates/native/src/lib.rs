@@ -3926,7 +3926,11 @@ mod graph_store_provider {
             schema(
                 json!({
                     "ref": {"type":"string","minLength":1,"maxLength":512},
-                    "graph": {"type":"object"}
+                    "graph": {"type":"object"},
+                    "request_id": {
+                        "type":"string","minLength":1,"maxLength":256,
+                        "description":"Optional application request key: 1..=256 UTF-8 bytes without control characters; recovery accepts at most 87 bytes."
+                    }
                 }),
                 &["ref", "graph"],
             ),
@@ -3939,8 +3943,54 @@ mod graph_store_provider {
         #[serde(rename = "ref")]
         reference: String,
         graph: SemanticGraph,
+        #[serde(default, deserialize_with = "deserialize_graph_application_request_id")]
+        request_id: Option<String>,
         #[serde(default)]
         include_recovery: bool,
+    }
+
+    fn deserialize_graph_application_request_id<'de, D>(
+        deserializer: D,
+    ) -> std::result::Result<Option<String>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Absence retains the existing wire key. Explicit null is not absence.
+        <String as serde::Deserialize<'de>>::deserialize(deserializer).map(Some)
+    }
+
+    fn graph_application_request_id<'a>(
+        supplied: Option<&'a str>,
+        wire_request_id: &'a str,
+        include_recovery: bool,
+    ) -> NativeResult<&'a str> {
+        let raw = supplied.unwrap_or(wire_request_id);
+        // Match Store.apply's existing byte/control contract before acquiring
+        // a permit. This application selector never replaces the Host call ID.
+        if supplied.is_some()
+            && (raw.is_empty() || raw.len() > 256 || raw.chars().any(char::is_control))
+        {
+            return Err(Error::invalid(
+                "Graph request_id requires 1..=256 UTF-8 bytes without control characters",
+            ));
+        }
+        if include_recovery {
+            validate_apply_recovery_raw_key(raw)?;
+        }
+        Ok(raw)
+    }
+
+    fn check_graph_application_scope_key(
+        scope: &SemanticGraphWriteScope<'_>,
+        original_request_id: &str,
+    ) -> NativeResult<()> {
+        if scope.request_id() != original_request_id {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Graph Store scope differs from the original application request key",
+            ));
+        }
+        Ok(())
     }
 
     struct GraphStoreDeniedHandler;
@@ -4004,6 +4054,14 @@ mod graph_store_provider {
             if input.reference.is_empty() {
                 return Completion::NotApplied(Error::invalid("Project ref is required"));
             }
+            let request_id = match graph_application_request_id(
+                input.request_id.as_deref(),
+                context.request_id(),
+                input.include_recovery,
+            ) {
+                Ok(value) => value,
+                Err(error) => return Completion::NotApplied(error),
+            };
             // The marker was resolved by NativeDriver. It is never parsed into
             // an application resource or compared with a caller-provided UUID.
             let project_id = match project_id_from_resource(&bound.resource) {
@@ -4030,8 +4088,7 @@ mod graph_store_provider {
                         ));
                     }
                 };
-                match prepare_apply_recovery(project_id, generation, context.request_id(), &change)
-                {
+                match prepare_apply_recovery(project_id, generation, request_id, &change) {
                     Ok(identity) => Some(identity),
                     Err(error) => return Completion::NotApplied(error),
                 }
@@ -4065,16 +4122,16 @@ mod graph_store_provider {
             let admission = NativeGraphAdmission {
                 context,
                 permit: &permit,
+                original_request_id: request_id,
                 original_change: &change,
                 failure: RefCell::new(None),
                 #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
                 fixture,
             };
-            let result = self.binding.service.apply_semantic_graph_with_admission(
-                context.request_id(),
-                &change,
-                &admission,
-            );
+            let result = self
+                .binding
+                .service
+                .apply_semantic_graph_with_admission(request_id, &change, &admission);
             // The Service seam returns StorageError. Preserve the original SDK
             // error, including uncertainty, instead of recoding denial/cancellation.
             if let Some(error) = admission.failure.take() {
@@ -4087,6 +4144,7 @@ mod graph_store_provider {
     struct NativeGraphAdmission<'a> {
         context: &'a CallContext,
         permit: &'a OperationPermit,
+        original_request_id: &'a str,
         original_change: &'a Change,
         failure: RefCell<Option<Error>>,
         #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
@@ -4114,10 +4172,10 @@ mod graph_store_provider {
             // Immutable same-object binding excludes reconstructed or substituted
             // requests/changes. Explicit source comparisons document all four
             // snapshot fields plus the scene and deliverable selected by the source.
+            check_graph_application_scope_key(scope, self.original_request_id)?;
             let original_source = &original.authorship.source_snapshot;
             let scoped_source = scope.source_snapshot();
-            if scope.request_id() != self.context.request_id()
-                || !std::ptr::eq(scope.change(), self.original_change)
+            if !std::ptr::eq(scope.change(), self.original_change)
                 || !std::ptr::eq(scope.graph(), original.as_ref())
                 || scoped_source.project_id != original_source.project_id
                 || scoped_source.generation != original_source.generation
@@ -4917,6 +4975,196 @@ mod graph_store_provider {
                     serde_json::from_value::<GraphUpsertArgs>(changed).is_err(),
                     "serialized field cannot become native authority: {key}"
                 );
+            }
+        }
+
+        #[test]
+        fn graph_application_key_is_optional_in_the_existing_contract() {
+            let contract = graph_contract();
+            let input = &contract.descriptor.input_schema;
+            assert_eq!(input["required"], json!(["ref", "graph"]));
+            assert_eq!(input["properties"]["request_id"]["type"], "string");
+            assert_eq!(input["properties"]["request_id"]["minLength"], 1);
+            assert_eq!(input["properties"]["request_id"]["maxLength"], 256);
+            assert!(matches!(
+                contract.target,
+                TargetRequirement::ObservedResource
+            ));
+            assert_eq!(contract.retry, RetrySemantics::DurableRequestKey);
+        }
+
+        #[test]
+        fn absent_graph_application_key_preserves_the_legacy_context_key() {
+            let graph = crate::semantic_graph_source_fixture::raw_graph(false);
+            let input: GraphUpsertArgs = serde_json::from_value(json!({
+                "ref":"native:opaque-test-marker","graph":graph
+            }))
+            .unwrap();
+            let context = CallContext::application_local("original-wire-call").unwrap();
+            assert!(input.request_id.is_none());
+            assert_eq!(
+                graph_application_request_id(
+                    input.request_id.as_deref(),
+                    context.request_id(),
+                    input.include_recovery,
+                )
+                .unwrap(),
+                context.request_id()
+            );
+            let legacy = "k".repeat(256);
+            assert_eq!(
+                graph_application_request_id(None, &legacy, false).unwrap(),
+                legacy
+            );
+            assert!(graph_application_request_id(None, &legacy, true).is_err());
+        }
+
+        #[test]
+        fn graph_application_key_preserves_original_utf8_and_spaces() {
+            let context = CallContext::application_local("wire-call-stays-original").unwrap();
+            for raw in [
+                "  graph:é:original  ".to_owned(),
+                " ".to_owned(),
+                "é".repeat(128),
+            ] {
+                let graph = crate::semantic_graph_source_fixture::raw_graph(false);
+                let input: GraphUpsertArgs = serde_json::from_value(json!({
+                    "ref":"native:opaque-test-marker","graph":graph,"request_id":raw
+                }))
+                .unwrap();
+                let selected = graph_application_request_id(
+                    input.request_id.as_deref(),
+                    context.request_id(),
+                    false,
+                )
+                .unwrap();
+                assert_eq!(selected, raw);
+                assert_eq!(selected.as_bytes(), raw.as_bytes());
+                assert_eq!(context.request_id(), "wire-call-stays-original");
+            }
+        }
+
+        #[test]
+        fn graph_application_key_rejects_empty_oversize_and_control_bytes() {
+            for raw in [
+                String::new(),
+                "k".repeat(257),
+                "é".repeat(129),
+                "line\nbreak".into(),
+                "nul\0key".into(),
+                "delete\u{7f}key".into(),
+                "control\u{85}key".into(),
+            ] {
+                let error =
+                    graph_application_request_id(Some(&raw), "wire-call", false).unwrap_err();
+                assert_eq!(error.code, ErrorCode::InvalidArgument);
+                assert!(error.outcome_known);
+            }
+        }
+
+        #[test]
+        fn present_graph_application_key_must_be_a_string_not_null_or_other_json() {
+            let graph = crate::semantic_graph_source_fixture::raw_graph(false);
+            for value in [Value::Null, json!(true), json!(7), json!([]), json!({})] {
+                assert!(
+                    serde_json::from_value::<GraphUpsertArgs>(json!({
+                        "ref":"native:opaque-test-marker","graph":graph,"request_id":value
+                    }))
+                    .is_err()
+                );
+            }
+        }
+
+        #[test]
+        fn graph_recovery_uses_the_existing_utf8_byte_limit_only_when_requested() {
+            for raw in ["k".repeat(87), format!("{}x", "é".repeat(43))] {
+                assert_eq!(
+                    graph_application_request_id(Some(&raw), "wire-call", true).unwrap(),
+                    raw
+                );
+            }
+            for raw in ["k".repeat(88), "é".repeat(44)] {
+                assert_eq!(
+                    graph_application_request_id(Some(&raw), "wire-call", false).unwrap(),
+                    raw
+                );
+                assert!(graph_application_request_id(Some(&raw), "wire-call", true).is_err());
+            }
+        }
+
+        #[test]
+        fn graph_application_key_routes_to_real_service_scope_and_recovery_without_authority() {
+            struct ObserveThenDeny<'a> {
+                expected_key: &'a str,
+                wrong_key: &'a str,
+                observed: std::cell::Cell<bool>,
+            }
+            impl SemanticGraphAdmission for ObserveThenDeny<'_> {
+                fn acquire<'a>(
+                    &'a self,
+                    scope: &'a SemanticGraphWriteScope<'a>,
+                ) -> StorageResult<Box<dyn SemanticGraphWriteLease + 'a>> {
+                    check_graph_application_scope_key(scope, self.expected_key).unwrap();
+                    let error =
+                        check_graph_application_scope_key(scope, self.wrong_key).unwrap_err();
+                    assert_eq!(error.code, ErrorCode::PermissionDenied);
+                    self.observed.set(true);
+                    // This observes the real Service scope and always refuses;
+                    // it constructs no Host permit, lease or successful write.
+                    Err(
+                        DomainError::Invalid("Source-only scope observation ends here".into())
+                            .into(),
+                    )
+                }
+            }
+
+            for supplied in [None, Some("graph:é:original-key")] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("application-key.sqlite3");
+                let project = seed_database(&path);
+                let service = StudioService::open(path).unwrap();
+                let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+                let change = Change::UpsertSemanticGraph {
+                    graph: Box::new(graph),
+                };
+                let context = CallContext::application_local("original-wire-call").unwrap();
+                let request_id =
+                    graph_application_request_id(supplied, context.request_id(), true).unwrap();
+                let prepared =
+                    prepare_apply_recovery(project.id, project.generation, request_id, &change)
+                        .unwrap();
+                let identity: RequestIdentity = serde_json::from_value(prepared.metadata).unwrap();
+                assert_eq!(
+                    decode_apply_recovery_identity(&identity).unwrap(),
+                    (project.id, project.generation, request_id)
+                );
+                assert_eq!(
+                    identity.request_sha256,
+                    apply_request_digest_v1(project.id, &change).unwrap()
+                );
+                let before_history =
+                    serde_json::to_value(service.history(project.id, 0, 100).unwrap()).unwrap();
+                let admission = ObserveThenDeny {
+                    expected_key: request_id,
+                    wrong_key: if supplied.is_some() {
+                        context.request_id()
+                    } else {
+                        "different-application-key"
+                    },
+                    observed: std::cell::Cell::new(false),
+                };
+                assert!(
+                    service
+                        .apply_semantic_graph_with_admission(request_id, &change, &admission)
+                        .is_err()
+                );
+                assert!(admission.observed.get());
+                assert_eq!(service.project(project.id).unwrap(), project);
+                assert_eq!(
+                    serde_json::to_value(service.history(project.id, 0, 100).unwrap()).unwrap(),
+                    before_history
+                );
+                assert_eq!(context.request_id(), "original-wire-call");
             }
         }
 
