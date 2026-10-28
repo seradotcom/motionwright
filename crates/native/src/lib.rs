@@ -42,6 +42,9 @@ pub mod production;
 #[path = "../../domain/tests/support/semantic_graph_source.rs"]
 mod semantic_graph_source_fixture;
 pub mod sfx_mix;
+#[cfg(test)]
+#[path = "../../storage/tests/support/sqlite_v6_corruptible.rs"]
+mod sqlite_v6_corruptible;
 
 pub use graph_store_provider::run_native_provider;
 
@@ -6769,7 +6772,7 @@ mod tests {
     fn advance_receipt_order_fixture_clock(path: &std::path::Path, id: Uuid) -> Uuid {
         // Retained bytes simulate an earlier process with an advanced clock.
         // No host clock, provider, Broker or real-effect operation is touched.
-        let db = rusqlite::Connection::open(path).unwrap();
+        let db = crate::sqlite_v6_corruptible::open_v6_writer(path);
         db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         let ordinal: i64 = db
             .query_row(
@@ -7701,7 +7704,7 @@ mod apply_recovery_candidate_tests {
 
         // Break the actual owned receipt after its real commit. The shared
         // checker, not metadata formatting, supplies this uncertain terminal.
-        let peer = rusqlite::Connection::open(store.path()).unwrap();
+        let peer = crate::sqlite_v6_corruptible::open_v6_writer(store.path());
         peer.execute(
             "UPDATE receipts SET result_json='{}' WHERE request_id='original-key'",
             [],

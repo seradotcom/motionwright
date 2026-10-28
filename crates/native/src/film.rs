@@ -3378,11 +3378,51 @@ mod tests {
         let first = project.scenes[0].id;
         let second = project.scenes[1].id;
         let rate = Rate::new(30, 1).unwrap();
-        let source_start = exact_window_frame(project.scenes[0].start, rate).unwrap();
         let first_frames = exact_window_frame(project.scenes[0].duration, rate).unwrap();
         let second_frames = exact_window_frame(project.scenes[1].duration, rate).unwrap();
         let mut profile = project.deliverables[0].clone();
         profile.included_scene_ids = vec![second, first];
+        let before_rejected_cut = project.clone();
+        assert!(matches!(
+            project.apply_change(&Change::UpsertDeliverable {
+                profile: profile.clone(),
+            }),
+            Err(motionwright_domain::DomainError::Invalid(message))
+                if message == "deliverable cut must preserve approved project scene order"
+        ));
+        assert_eq!(project, before_rejected_cut);
+        // A saved cut follows the approved project order. Author that order
+        // through its canonical change before constructing the valid fixture.
+        project
+            .apply_change(&Change::MoveScene {
+                scene_id: first,
+                to_index: 1,
+            })
+            .unwrap();
+        // An omitted source scene keeps this a real source-to-cut offset
+        // mapping instead of an identity mapping after the approved reorder.
+        project
+            .apply_change(&Change::AddScene {
+                name: "Omitted source opening".into(),
+                objective: "Remain outside the saved cut".into(),
+                duration_seconds: 1,
+            })
+            .unwrap();
+        let omitted = project.scenes.last().unwrap().id;
+        project
+            .apply_change(&Change::MoveScene {
+                scene_id: omitted,
+                to_index: 0,
+            })
+            .unwrap();
+        assert!(!profile.included_scene_ids.contains(&omitted));
+        let source_scene = project
+            .scenes
+            .iter()
+            .find(|scene| scene.id == first)
+            .unwrap();
+        let source_start = exact_window_frame(source_scene.start, rate).unwrap();
+        assert!(source_start > second_frames);
         project
             .apply_change(&Change::UpsertDeliverable { profile })
             .unwrap();

@@ -171,7 +171,7 @@ fn corrupt_known_receipt_stays_uncertain(damage: Damage) {
     let f = fixture();
     let original = known_commit(&f);
     assert!(!original.replayed);
-    let oracle = Connection::open(&f.path).unwrap();
+    let oracle = crate::sqlite_v6_corruptible::open_v6_writer(&f.path);
     let (column, value) = match damage {
         Damage::MalformedResult => ("result_json", "{".to_owned()),
         Damage::WrongRequest => {
@@ -440,6 +440,7 @@ mod recovery_consumer_tests {
         let oracle = Connection::open(&f.path).unwrap();
         let missing =
             apply_recovery_identity(f.base.id, f.base.generation, "absent-key", &intent()).unwrap();
+        crate::sqlite_v6_corruptible::registered_v6_writer(&oracle);
         let before_missing = snapshot(&oracle);
         let observation = {
             let shared = f.service.store();
@@ -513,7 +514,7 @@ mod recovery_consumer_tests {
         for scenario in ["digest", "integrity", "contract", "generation"] {
             let f = fixture();
             let committed = known_commit(&f);
-            let oracle = Connection::open(&f.path).unwrap();
+            let oracle = crate::sqlite_v6_corruptible::open_v6_writer(&f.path);
             let mut identity =
                 apply_recovery_identity(f.base.id, f.base.generation, "known-original", &intent())
                     .unwrap();

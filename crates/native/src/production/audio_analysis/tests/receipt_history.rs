@@ -91,6 +91,7 @@ fn append_historical_dispatching_observation(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
     )
     .unwrap();
+    crate::sqlite_v6_corruptible::registered_v6_writer(&conn);
     // The existing AFTER INSERT trigger supplies the real commit ordinal.
     // Copy the persisted binding; retain its timestamp because order is ordinal.
     assert_eq!(
