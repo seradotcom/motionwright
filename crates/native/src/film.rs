@@ -704,6 +704,7 @@ fn subject(
                     emphasis: false,
                 }],
                 style,
+                line_height: node.style.line_height,
                 direction: TextDirection::Auto,
                 language: profile_language.to_owned(),
                 wrap: true,

@@ -246,6 +246,7 @@ fn emit_fixed_text(
                     emphasis: source.emphasis,
                 }],
                 style: style.clone(),
+                line_height: None,
                 direction: *direction,
                 language: language.clone(),
                 wrap: false,

@@ -243,8 +243,9 @@ fn exit_projection(status: &ExitStatus) -> Value {
     };
     #[cfg(windows)]
     let native = {
-        use std::os::windows::process::ExitStatusExt;
-        json!({"encoding":"windows_exit_code","value":status.into_raw()})
+        // Windows ExitStatusExt only constructs from_raw; code() carries the
+        // original 32-bit Windows exit value through its signed i32 form.
+        json!({"encoding":"windows_exit_code","value":status.code().map(|code| code as u32)})
     };
     #[cfg(not(any(windows, unix)))]
     let native = Value::Null;

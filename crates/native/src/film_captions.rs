@@ -226,6 +226,7 @@ pub(super) fn attach_native_caption_cues(
                                     emphasis: false,
                                 }],
                                 style: CAPTION_STYLE.to_owned(),
+                                line_height: None,
                                 direction: TextDirection::Auto,
                                 language: profile.language.clone(),
                                 wrap: true,
