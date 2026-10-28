@@ -1,12 +1,12 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { cp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Project } from "../src/types";
 import { expect, test, type TestInfo } from "@playwright/test";
-import { ScopedChangeService, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceLaunchContext, type ServiceProcessOwner, type StoreFinalization } from "./support/scopedChangeService";
+import { ScopedChangeService, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceLaunchContext, type ServiceProcessOwner, type ServiceRawStreamCapture, type StoreFinalization } from "./support/scopedChangeService";
 
 // Transport faults and deliberately damaged copies of real SQLite stores are
 // explicit negative fixtures. RPC responses and process results are real.
@@ -19,8 +19,8 @@ function childOf(service: ScopedChangeService): ChildProcessWithoutNullStreams {
   if (!child) throw new Error("The fault fixture requires a running real service");
   return child;
 }
-async function create(testInfo: TestInfo, timeoutMs = 10_000, processOwner?: ServiceProcessOwner) {
-  return ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), timeoutMs, processOwner });
+async function create(testInfo: TestInfo, timeoutMs = 10_000, processOwner?: ServiceProcessOwner, rawStreamCapture?: ServiceRawStreamCapture) {
+  return ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), timeoutMs, processOwner, rawStreamCapture });
 }
 async function record(testInfo: TestInfo, services: ScopedChangeService[], observed?: unknown) {
   const path = testInfo.outputPath("capture-lifecycle-negative.json");
@@ -609,4 +609,222 @@ test("an owner client reserved for a failed restart cannot reuse an earlier clea
     await Promise.allSettled([service.close(), ...(peer ? [peer.close()] : [])]);
     await record(testInfo, peer ? [service, peer] : [service], { fixture: "real_service_failed_restart_reservation; excludes_Native_Host" });
   }
+});
+
+interface RawSinkObservation {
+  context: Readonly<ServiceLaunchContext>;
+  processId: number | null;
+  stdout: Buffer[];
+  stderr: Buffer[];
+  nonBufferChunks: number;
+  ended: boolean;
+  settled: boolean;
+}
+
+/** Synthetic sink controls over real process bytes; never the Native shared pool. */
+function rawSinkFixture(afterEnd: (row: RawSinkObservation) => Promise<void> = async () => undefined) {
+  const rows: RawSinkObservation[] = [];
+  const capture: ServiceRawStreamCapture = {
+    bind(context, streams) {
+      expect(Object.isFrozen(context)).toBe(true);
+      expect(Object.isFrozen(streams)).toBe(true);
+      const row: RawSinkObservation = { context, processId: streams.process_id,
+        stdout: [], stderr: [], nonBufferChunks: 0, ended: false, settled: false };
+      rows.push(row);
+      for (const name of ["stdout", "stderr"] as const) streams[name].on("data", (chunk: unknown) => {
+        if (Buffer.isBuffer(chunk)) row[name].push(Buffer.from(chunk));
+        else row.nonBufferChunks++;
+      });
+      const settled = Promise.all([once(streams.stdout, "end"), once(streams.stderr, "end")]).then(async () => {
+        row.ended = true;
+        if (row.nonBufferChunks) throw new Error("Raw fixture received decoded chunks");
+        await afterEnd(row);
+        row.settled = true;
+      });
+      return { settled };
+    },
+  };
+  return { rows, capture };
+}
+
+test("one raw capture port covers the ordinary initializer, owner-admitted peers and every restart", async ({}, testInfo) => {
+  const raw = rawSinkFixture();
+  const initializer = await create(testInfo, 10_000, undefined, raw.capture);
+  const admissions: Readonly<ServiceLaunchContext>[] = [];
+  let ownerClosed = false;
+  let receipt: ServiceClosureReceipt | undefined;
+  const owner: ServiceProcessOwner = {
+    async environmentForNewClient(context) { admissions.push(context); return {}; },
+    sealClientAdmissions() {},
+    async closeAfterClients(barrier) {
+      expect(raw.rows.every(row => row.ended && row.settled)).toBe(true);
+      expect(barrier.closed).toBe(true);
+      if (!barrier.receipt_path) throw new Error("Missing service closure receipt");
+      receipt = JSON.parse(await readFile(barrier.receipt_path, "utf8")) as ServiceClosureReceipt;
+      ownerClosed = true;
+    },
+    assertClosed() { if (!ownerClosed) throw new Error("Owner fixture was not closed"); },
+  };
+  let service: ScopedChangeService | undefined, peer: ScopedChangeService | undefined;
+  try {
+    const project = (await initializer.fixtureBootstrap()).project;
+    await initializer.close();
+    service = await ScopedChangeService.create({ databasePath: initializer.databasePath, seedFixture: false,
+      processOwner: owner, rawStreamCapture: raw.capture });
+    peer = await service.peer();
+    await service.close(); await service.start();
+    expect(await service.project(project.id)).toEqual(project);
+    await service.finalizeClosedStore(testInfo.outputPath("raw-complete-store"), project, [peer]);
+    expect(raw.rows).toHaveLength(4);
+    expect(admissions).toHaveLength(3);
+    expect(admissions.some(context => context.helper_id === initializer.helperId)).toBe(false);
+    expect(raw.rows.map(row => [row.context.helper_id, row.context.launch_index])).toEqual([
+      [initializer.helperId, 0], [service.helperId, 0], [peer.helperId, 0], [service.helperId, 1],
+    ]);
+    expect(receipt?.participants.map(item => item.helper_id).sort()).toEqual([initializer.helperId, service.helperId, peer.helperId].sort());
+    for (const row of raw.rows) {
+      const helper = [initializer, service, peer].find(item => item.helperId === row.context.helper_id)!;
+      expect(row.context.binary_path).toBe(helper.binaryPath);
+      expect(row.context.database_path).toBe(helper.databasePath);
+      expect(row.processId).toBe(helper.processStreams[row.context.launch_index].process_id);
+      expect(row.nonBufferChunks).toBe(0);
+      const wire = Buffer.concat(row.stdout).toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(wire).toEqual(helper.transcript.filter(entry => entry.processId === row.processId && entry.direction === "response").map(entry => entry.payload));
+    }
+  } finally {
+    await Promise.allSettled([initializer.close(), ...(service ? [service.close()] : []), ...(peer ? [peer.close()] : [])]);
+  }
+});
+
+test("service closure waits for raw sink flush before presenting a CLOSED barrier to its owner", async ({}, testInfo) => {
+  let releaseFlush!: () => void;
+  const flush = new Promise<void>(resolve => { releaseFlush = resolve; });
+  const raw = rawSinkFixture(async () => flush);
+  let ownerClosed = false;
+  const owner: ServiceProcessOwner = {
+    async environmentForNewClient() { return {}; }, sealClientAdmissions() {},
+    async closeAfterClients(barrier) {
+      expect(raw.rows.every(row => row.settled)).toBe(true);
+      expect(barrier.closed).toBe(true); ownerClosed = true;
+    },
+    assertClosed() { if (!ownerClosed) throw new Error("Owner fixture was not closed"); },
+  };
+  const service = await create(testInfo, 10_000, owner, raw.capture);
+  let finalized: Promise<StoreFinalization> | undefined;
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    finalized = service.finalizeClosedStore(testInfo.outputPath("raw-flush-store"), project);
+    // Retain an early rejection without allowing an unhandled test promise.
+    void finalized.catch(() => undefined);
+    await expect.poll(() => service.processExits.length).toBe(1);
+    await expect.poll(() => raw.rows[0].ended).toBe(true);
+    expect(raw.rows[0].settled).toBe(false);
+    expect(ownerClosed).toBe(false);
+    await expect(readFile(testInfo.outputPath("raw-flush-store-service-closure.json"))).rejects.toThrow();
+    releaseFlush();
+    expect((await finalized).capture).not.toBeNull();
+    expect(ownerClosed).toBe(true);
+  } finally {
+    releaseFlush(); await Promise.allSettled([service.close(), ...(finalized ? [finalized] : [])]);
+  }
+});
+
+test("direct capture cannot bypass an exited process whose raw sinks are still pending", async ({}, testInfo) => {
+  let releaseFlush!: () => void;
+  const flush = new Promise<void>(resolve => { releaseFlush = resolve; });
+  const raw = rawSinkFixture(async () => flush);
+  const service = await create(testInfo, 10_000, undefined, raw.capture);
+  try {
+    await service.fixtureBootstrap();
+    childOf(service).stdin.end();
+    await expect.poll(() => service.processExits.length).toBe(1);
+    await expect.poll(() => raw.rows[0].ended).toBe(true);
+    expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
+    expect(service.lifecycleTaints).toHaveLength(0);
+    await rejectedCapture(service, testInfo, "raw-pending-direct-capture");
+    releaseFlush(); await service.close();
+    expect(raw.rows[0].settled).toBe(true);
+    expect((await service.captureClosedStore(testInfo.outputPath("raw-settled-direct-capture"))).entries.length).toBeGreaterThan(0);
+  } finally { releaseFlush(); await Promise.allSettled([service.close()]); }
+});
+
+test("a raw binding exception after spawn still drains and closes the actual child", async ({}, testInfo) => {
+  let context: Readonly<ServiceLaunchContext> | undefined;
+  const raw: ServiceRawStreamCapture = {
+    bind(observed) { context = observed; throw new Error("Injected raw binding failure after spawn"); },
+  };
+  await expect(create(testInfo, 10_000, undefined, raw)).rejects.toThrow("Service creation and its cleanup failed");
+  if (!context) throw new Error("The raw binding was not reached");
+  // Inspect the failed helper retained by the existing cleanup registry.
+  const instances = (ScopedChangeService as unknown as { instances: Set<ScopedChangeService> }).instances;
+  const service = [...instances].find(item => item.helperId === context!.helper_id)!;
+  expect(service).toBeDefined();
+  expect(service.processExits).toHaveLength(1);
+  expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
+  expect(service.processStreams[0]).toMatchObject({ stdout_ended: true, stderr_ended: true, jsonl_reader_closed: true });
+  expect(service.lifecycleTaints.some(taint => taint.message.includes("Injected raw binding failure"))).toBe(true);
+  await rejectedCapture(service, testInfo, "raw-binding-failed-capture");
+  await record(testInfo, [service], { fixture: "synthetic_raw_binding_throw_after_real_spawn; excludes_Native_Host" });
+});
+
+for (const failure of ["rejection", "deadline"] as const) {
+  test(`raw sink ${failure} permanently vetoes capture while external owner cleanup still runs`, async ({}, testInfo) => {
+    test.setTimeout(45_000);
+    let releaseLate!: () => void;
+    const late = new Promise<void>(resolve => { releaseLate = resolve; });
+    const raw = rawSinkFixture(async () => {
+      if (failure === "rejection") throw new Error("Injected raw sink flush failure");
+      await late;
+    });
+    let cleanupCalls = 0;
+    const owner: ServiceProcessOwner = {
+      async environmentForNewClient() { return {}; }, sealClientAdmissions() {},
+      async closeAfterClients(barrier) { expect(barrier.closed).toBe(false); cleanupCalls++; },
+      assertClosed() { if (cleanupCalls !== 1) throw new Error("Owner cleanup was not observed exactly once"); },
+    };
+    const service = await create(testInfo, 10_000, owner, raw.capture);
+    try {
+      const project = (await service.fixtureBootstrap()).project;
+      const destination = testInfo.outputPath("raw-failed-store");
+      await expect(service.finalizeClosedStore(destination, project)).rejects.toThrow("Store finalization is incomplete");
+      const receipt = JSON.parse(await readFile(destination + "-service-closure.json", "utf8")) as ServiceClosureReceipt;
+      expect(receipt.status).toBe("UNKNOWN");
+      expect(cleanupCalls).toBe(1);
+      expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
+      expect(service.lifecycleTaints.some(taint => taint.kind === "transport_failure" && /raw stream capture/.test(taint.message))).toBe(true);
+      releaseLate();
+      if (failure === "deadline") await expect.poll(() => raw.rows[0].settled).toBe(true);
+      await expect(service.close()).rejects.toThrow(/lifecycle is tainted/);
+      await rejectedCapture(service, testInfo, "raw-failed-direct-capture");
+      await expect(readFile(join(destination, "manifest.json"))).rejects.toThrow();
+    } finally {
+      releaseLate(); await Promise.allSettled([service.close()]);
+      await record(testInfo, [service], { fixture: "synthetic_raw_sink_failure_on_real_service; excludes_Native_Host", failure });
+    }
+  });
+}
+
+test("real stderr stays in Buffer mode when SQLite rejects a directory path", async ({}, testInfo) => {
+  const raw = rawSinkFixture();
+  const databasePath = testInfo.outputPath("service", "studio.sqlite3");
+  // The actual Rust startup fails opening a directory as SQLite and writes stderr.
+  await mkdir(databasePath, { recursive: true });
+  await expect(ScopedChangeService.create({ databasePath, rawStreamCapture: raw.capture }))
+    .rejects.toThrow("Service creation and its cleanup failed");
+  expect(raw.rows).toHaveLength(1);
+  const instances = (ScopedChangeService as unknown as { instances: Set<ScopedChangeService> }).instances;
+  const service = [...instances].find(item => item.helperId === raw.rows[0].context.helper_id)!;
+  expect(service).toBeDefined();
+  expect(service.processExits).toHaveLength(1);
+  expect(Number.isSafeInteger(service.processExits[0].code)).toBe(true);
+  expect(service.processExits[0].code).not.toBe(0);
+  expect(service.processExits[0].signal).toBeNull();
+  expect(raw.rows[0].ended).toBe(true);
+  expect(raw.rows[0].settled).toBe(true);
+  expect(raw.rows[0].nonBufferChunks).toBe(0);
+  const stderr = Buffer.concat(raw.rows[0].stderr);
+  expect(stderr.length).toBeGreaterThan(0);
+  expect(stderr.toString("utf8")).toBe(service.stderr);
+  await rejectedCapture(service, testInfo, "raw-stderr-failed-capture");
+  await record(testInfo, [service], { fixture: "SQLite_directory_path_for_original_stderr_byte_control; excludes_Native_Host" });
 });

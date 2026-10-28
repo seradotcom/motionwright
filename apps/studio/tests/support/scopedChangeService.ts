@@ -11,6 +11,8 @@ import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } f
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
 import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError";
@@ -93,9 +95,23 @@ export interface ServiceProcessOwner {
   assertClosed(): void;
 }
 
+/** A tee into the parent's shared raw-byte collector, independent of client authority.
+ * bind installs both Buffer observers synchronously, before this helper decodes.
+ * settled covers only these two sinks and their original EOF/error observations;
+ * it must not await Host shutdown, other clients, or the global archive seal.
+ * The collector owns storage, limits and overflow; it must not change encoding,
+ * remove another observer, or terminate either input stream. */
+export interface ServiceRawStreamCapture {
+  bind(context: Readonly<ServiceLaunchContext>, streams: Readonly<{
+    process_id: number | null; stdout: Readable; stderr: Readable;
+  }>): { settled: Promise<void> };
+}
+
 export interface ScopedChangeServiceOptions {
   /** Shared by peers; ordinary service tests have no external owner. */
   processOwner?: ServiceProcessOwner;
+  /** Same parent collector for initializer, peers and restarts; no authority grant. */
+  rawStreamCapture?: ServiceRawStreamCapture;
   /** Absolute source-built JSONL executable; retained by peers, not an authority claim. */
   binaryPath?: string;
   /** Existing or new absolute test SQLite path; never deleted by this helper. */
@@ -134,6 +150,12 @@ interface PendingRequest {
   resolve: (response: ServiceRpcResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface RawStreamCaptureState {
+  launchIndex: number;
+  status: "pending" | "fulfilled" | "rejected";
+  settled: Promise<void>;
 }
 
 export interface ServiceProcessExit {
@@ -253,6 +275,8 @@ export class ScopedChangeService {
   private readonly desktopInvokeFixture: boolean;
   private readonly ownsDirectory: boolean;
   private readonly processOwner: ServiceProcessOwner | undefined;
+  private readonly rawStreamCapture: ServiceRawStreamCapture | undefined;
+  private readonly rawCaptures: RawStreamCaptureState[] = [];
   private child: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<this> | null = null;
   private closing: Promise<void> | null = null;
@@ -271,6 +295,7 @@ export class ScopedChangeService {
     this.directory = dirname(databasePath);
     this.ownsDirectory = ownsDirectory;
     this.processOwner = options.processOwner;
+    this.rawStreamCapture = options.rawStreamCapture;
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.seedFixture = options.seedFixture ?? true;
     this.desktopInvokeFixture = options.desktopInvokeFixture ?? false;
@@ -418,11 +443,7 @@ export class ScopedChangeService {
     child.stdout.once("end", function observeStdoutEnd() { streams.stdout_ended = true; });
     child.stderr.once("end", function observeStderrEnd() { streams.stderr_ended = true; });
     this.child = child;
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => { this.stderrText = (this.stderrText + chunk).slice(-16_384); });
-    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    lines.once("close", () => { streams.jsonl_reader_closed = true; });
-    lines.on("line", line => this.receive(child, line));
+    let lines: ReturnType<typeof createInterface> | undefined;
     this.exited = new Promise<ServiceProcessExit>(resolveExit => {
       child.once("close", (code, signal) => {
         const exit = { processId: child.pid, code, signal, observedAt: new Date().toISOString() };
@@ -430,7 +451,7 @@ export class ScopedChangeService {
         this.processExits.push(exit);
         if (code !== 0 || signal !== null) this.taint("unclean_exit", `Process closed with code ${code}, signal ${signal ?? "none"}`, child);
         if (this.pending.size) this.taint("transport_failure", "Process closed before all RPC responses were observed", child);
-        lines.close();
+        lines?.close();
         if (this.child === child) {
           this.child = null;
           this.lastExit = `StudioService test process exited (code ${code}, signal ${signal ?? "none"})`;
@@ -452,16 +473,85 @@ export class ScopedChangeService {
       this.taint("transport_failure", `StudioService stdout failed: ${error.message}`, child);
       this.rejectPending(this.failure(`StudioService stdout failed: ${error.message}`));
     });
+    child.stderr.on("error", error => {
+      this.taint("transport_failure", `StudioService stderr failed: ${error.message}`, child);
+      this.rejectPending(this.failure(`StudioService stderr failed: ${error.message}`));
+    });
+    const spawned = new Promise<void>((resolveSpawn, rejectSpawn) => {
+      child.once("spawn", resolveSpawn);
+      child.once("error", error => rejectSpawn(this.failure(`StudioService process launch failed: ${error.message}`)));
+    });
+    // Observe process/error events before calling external code. A rejected bind
+    // must still leave real readers draining and a tracked child for close().
+    const bindingFailure = this.bindRawStreams(launchContext, child);
+    const diagnosticDecoder = new StringDecoder("utf8");
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (!Buffer.isBuffer(chunk)) {
+        this.taint("transport_failure", "StudioService stderr no longer carries raw Buffer chunks", child);
+        return;
+      }
+      this.stderrText = (this.stderrText + diagnosticDecoder.write(chunk)).slice(-16_384);
+    });
+    child.stderr.once("end", () => { this.stderrText = (this.stderrText + diagnosticDecoder.end()).slice(-16_384); });
+    lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    lines.once("close", () => { streams.jsonl_reader_closed = true; });
+    lines.on("line", line => this.receive(child, line));
     lines.on("error", error => {
       this.taint("transport_failure", `StudioService JSONL reader failed: ${error.message}`, child);
       this.rejectPending(this.failure(`StudioService JSONL reader failed: ${error.message}`));
     });
-    await new Promise<void>((resolveSpawn, rejectSpawn) => {
-      child.once("spawn", resolveSpawn);
-      child.once("error", error => rejectSpawn(this.failure(`StudioService process launch failed: ${error.message}`)));
-    });
+    await spawned;
+    if (bindingFailure) throw bindingFailure;
     this.lastExit = "Process is running";
     return this;
+  }
+
+  private bindRawStreams(context: Readonly<ServiceLaunchContext>, child: ChildProcessWithoutNullStreams): Error | null {
+    if (!this.rawStreamCapture) return null;
+    const state: RawStreamCaptureState = { launchIndex: context.launch_index, status: "pending", settled: Promise.resolve() };
+    this.rawCaptures.push(state);
+    const rejected = (error: unknown): Error => {
+      state.status = "rejected";
+      const failure = new Error(`StudioService raw stream capture failed for launch ${context.launch_index}: ${String(error)}`);
+      this.taint("transport_failure", failure.message, child);
+      return failure;
+    };
+    try {
+      const binding = this.rawStreamCapture.bind(context, Object.freeze({
+        process_id: child.pid ?? null, stdout: child.stdout, stderr: child.stderr,
+      }));
+      if (!binding || !binding.settled || typeof binding.settled.then !== "function")
+        throw new Error("Raw stream capture did not return its per-launch settlement promise");
+      // Handle rejection immediately; close() observes the permanent taint even
+      // if the collector failed while the service was still running.
+      state.settled = Promise.resolve(binding.settled).then(
+        () => { if (state.status === "pending") state.status = "fulfilled"; },
+        error => { rejected(error); },
+      );
+      return null;
+    } catch (error) { return rejected(error); }
+  }
+
+  private rawStreamsSettled(): boolean {
+    return !this.rawStreamCapture || this.rawCaptures.length === this.processStreams.length
+      && this.rawCaptures.every((capture, index) => capture.launchIndex === index && capture.status === "fulfilled");
+  }
+
+  private async settleRawStreams(): Promise<void> {
+    const pending = this.rawCaptures.filter(capture => capture.status === "pending");
+    if (!this.rawStreamCapture || pending.length === 0) return;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<void>(resolveTimeout => {
+      deadline = setTimeout(() => {
+        for (const capture of pending) if (capture.status === "pending") {
+          capture.status = "rejected";
+          this.taint("transport_failure", `StudioService raw stream capture for launch ${capture.launchIndex} did not settle within ${this.timeoutMs} ms after process closure`, null);
+        }
+        resolveTimeout();
+      }, this.timeoutMs);
+    });
+    try { await Promise.race([Promise.all(pending.map(capture => capture.settled)), expired]); }
+    finally { clearTimeout(deadline); }
   }
 
   async rawRequest<T = unknown>(request: ServiceRpcRequest): Promise<ServiceRpcResponse<T>> {
@@ -662,7 +752,8 @@ export class ScopedChangeService {
   /** An independent process and grant registry, sharing only the SQLite/CAS. */
   peer(): Promise<ScopedChangeService> {
     return ScopedChangeService.create({ binaryPath: this.binaryPath, databasePath: this.databasePath, timeoutMs: this.timeoutMs,
-      seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture, processOwner: this.processOwner });
+      seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture, processOwner: this.processOwner,
+      rawStreamCapture: this.rawStreamCapture });
   }
 
   /** Install before page.goto; every invoke crosses into the real process. */
@@ -722,8 +813,9 @@ export class ScopedChangeService {
         throw this.failure(`StudioService did not close cleanly (pid ${exit.processId}, code ${exit.code}, signal ${exit.signal ?? "none"})`);
       }
       if (this.lifecycleTaints.length) throw this.failure(`StudioService lifecycle is tainted: ${this.lifecycleTaints.map(taint => taint.kind + ": " + taint.message).join("; ")}`);
+      if (!this.rawStreamsSettled()) throw this.failure("StudioService raw stream capture is incomplete");
     };
-    if (!child) { requireCleanExit(await exited); return; }
+    if (!child) { const exit = await exited; await this.settleRawStreams(); requireCleanExit(exit); return; }
     if (this.pending.size) this.taint("pending_at_close", "Close was requested with unresolved RPCs", child);
     this.rejectPending(this.failure("StudioService test session closed before pending RPCs finished"), true);
     try { child.stdin.end(); }
@@ -741,8 +833,13 @@ export class ScopedChangeService {
         }, 2_000);
       }, 2_000);
     });
-    try { requireCleanExit(await Promise.race([exited, missingExit])); }
+    let exit: ServiceProcessExit;
+    try { exit = await Promise.race([exited, missingExit]); }
     finally { clearTimeout(forceStop); clearTimeout(deadline); }
+    // The process deadline ends at its observed close. The collector then gets
+    // the existing service timeout, scoped only to this helper's stdout/stderr.
+    await this.settleRawStreams();
+    requireCleanExit(exit);
   }
 
   private streamsClosed(): boolean {
@@ -777,7 +874,7 @@ export class ScopedChangeService {
     const sameRoster = isDeepStrictEqual([...sealed].sort(), receipt.participants.map(item => item.helper_id).sort());
     const allClosed = participants.every((service, index) => closed[index]?.status === "fulfilled" && service.databasePath === this.databasePath
       && !service.child && !service.starting && !service.closing && service.pending.size === 0
-      && service.lifecycleTaints.length === 0 && service.streamsClosed());
+      && service.lifecycleTaints.length === 0 && service.streamsClosed() && service.rawStreamsSettled());
     if (!failed && sameRoster && allClosed && oracle === "fulfilled" && preparation.every(status => status === "fulfilled")
       && ownerSeals.every(status => status === "fulfilled")) receipt.status = "CLOSED";
     return receipt;
@@ -899,7 +996,7 @@ export class ScopedChangeService {
     const participants = this.storeParticipants(peers);
     for (const service of participants) {
       if (service.lifecycleTaints.length || service.pending.size || service.child || service.starting || service.closing || service.processExits.length === 0 ||
-          service.processExits.some(exit => exit.code !== 0 || exit.signal !== null) || !service.streamsClosed()) {
+          service.processExits.some(exit => exit.code !== 0 || exit.signal !== null) || !service.streamsClosed() || !service.rawStreamsSettled()) {
         throw new Error(`Close every service peer cleanly and without lifecycle taint before capturing ${service.databasePath}`);
       }
     }
