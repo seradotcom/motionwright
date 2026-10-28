@@ -136,8 +136,9 @@ fn one_dispatch_debits_and_original_receipt_commit_atomically() {
 #[test]
 fn unknown_outcome_spends_capacity_and_cannot_be_retried_or_relabelled() {
     let (_tmp, path, mut store, project) = setup();
-    let root = start_root(&mut store, &project, "original", ceilings(1));
-    let original = dispatch(&project, root, "request-1", one());
+    let root = start_root(&mut store, &project, "original", ceilings(4));
+    let mut original = dispatch(&project, root, "request-1", one());
+    original.receipt.payload = json!({"mutation": true});
     store
         .admit_root_operation_dispatch(original.clone())
         .unwrap();
@@ -148,32 +149,374 @@ fn unknown_outcome_spends_capacity_and_cannot_be_retried_or_relabelled() {
             ..original.receipt.clone()
         })
         .unwrap();
+    let before = store.production_receipt_watermark(project.id).unwrap();
     drop(store);
     let mut reopened = Store::open(&path).unwrap();
+    let state = reopened.root_operation_budget(project.id, root).unwrap();
+    // A second identical dispatch fits every limit: only the retained effect
+    // identity can explain rejection, including after process reopen.
+    assert!(state.spent.attempts + one().attempts <= state.limits.attempts);
+    assert!(state.spent.model_calls + one().model_calls <= state.limits.model_calls);
+    assert!(state.spent.render_frames + one().render_frames <= state.limits.render_frames);
+    assert!(state.spent.output_bytes + one().output_bytes <= state.limits.output_bytes);
     assert!(matches!(
-        reopened.admit_root_operation_dispatch(original),
+        reopened.admit_root_operation_dispatch(original.clone()),
         Err(StorageError::RequestReuse)
     ));
-    assert!(
-        reopened
-            .admit_root_operation_dispatch(dispatch(
-                &project,
-                root,
-                "different-child-or-retry-label",
-                one()
-            ))
-            .is_err()
+    let mut alias = original;
+    alias.receipt.request_id = "different-child-or-retry-label".into();
+    alias.receipt.payload = json!({"mutation": false});
+    assert!(matches!(
+        reopened.admit_root_operation_dispatch(alias),
+        Err(StorageError::RequestReuse)
+    ));
+    assert_eq!(
+        reopened.production_receipt_watermark(project.id).unwrap(),
+        before
     );
     assert_eq!(debit_count(&path), 1);
     assert_eq!(
         reopened
             .root_operation_budget(project.id, root)
             .unwrap()
-            .spent
-            .attempts,
-        1
+            .spent,
+        one()
     );
 }
+#[test]
+fn unknown_effect_blocks_changed_output_digest_and_command_in_the_same_root() {
+    let (_tmp, path, mut store, project) = setup();
+    let root = start_root(&mut store, &project, "original-film", ceilings(4));
+    let mut original = dispatch(&project, root, "encode-original-output", one());
+    original.receipt.command = "driver.mlt.frames.encode".into();
+    original.receipt.payload = json!({"mutation": true, "output_path": "original.mkv"});
+    store
+        .admit_root_operation_dispatch(original.clone())
+        .unwrap();
+    store
+        .append_production_receipt(ProductionReceiptInput {
+            stage: "outcome_unknown".into(),
+            payload: json!({"outcome_known": false}),
+            ..original.receipt.clone()
+        })
+        .unwrap();
+    let before = store.production_receipt_watermark(project.id).unwrap();
+    drop(store);
+    let mut reopened = Store::open(&path).unwrap();
+    let retained = reopened.root_operation_budget(project.id, root).unwrap();
+    assert!(retained.spent.attempts + one().attempts <= retained.limits.attempts);
+    assert!(retained.spent.model_calls + one().model_calls <= retained.limits.model_calls);
+    assert!(retained.spent.render_frames + one().render_frames <= retained.limits.render_frames);
+    assert!(retained.spent.output_bytes + one().output_bytes <= retained.limits.output_bytes);
+    for (index, command) in ["driver.mlt.frames.encode", "driver.mlt.av.master"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut renamed = original.clone();
+        renamed.receipt.request_id = format!("changed-output-{index}");
+        renamed.receipt.request_sha256 = format!("{:064x}", index + 1);
+        renamed.receipt.command = command.into();
+        renamed.receipt.payload = json!({"mutation": true, "output_path": "renamed.mkv"});
+        assert_ne!(
+            renamed.receipt.request_sha256,
+            original.receipt.request_sha256
+        );
+        assert!(matches!(
+            reopened.admit_root_operation_dispatch(renamed),
+            Err(StorageError::RequestReuse)
+        ));
+        assert_eq!(
+            reopened.production_receipt_watermark(project.id).unwrap(),
+            before
+        );
+        assert_eq!(
+            reopened.root_operation_budget(project.id, root).unwrap(),
+            retained
+        );
+        assert_eq!(debit_count(&path), 1);
+    }
+}
+
+#[test]
+fn interrupted_read_only_observation_does_not_block_a_fresh_mutation() {
+    let (_tmp, path, mut store, project) = setup();
+    let root = start_root(&mut store, &project, "original", ceilings(4));
+    let mut status = dispatch(
+        &project,
+        root,
+        "status-before-interruption",
+        RootBudgetUnits {
+            attempts: 1,
+            ..RootBudgetUnits::default()
+        },
+    );
+    status.receipt.command = "driver.motion-canvas.render.status".into();
+    status.receipt.payload = json!({"mutation": false});
+    store.admit_root_operation_dispatch(status).unwrap();
+    drop(store);
+    let mut reopened = Store::open(&path).unwrap();
+    let mut effect = dispatch(&project, root, "new-render-effect", one());
+    effect.receipt.request_sha256 = "b".repeat(64);
+    effect.receipt.payload = json!({"mutation": true});
+    assert!(matches!(
+        reopened.admit_root_operation_dispatch(effect).unwrap(),
+        RootDispatchBudgetOutcome::Admitted(_)
+    ));
+    assert_eq!(debit_count(&path), 2);
+    assert_eq!(
+        reopened
+            .root_operation_budget(project.id, root)
+            .unwrap()
+            .spent,
+        RootBudgetUnits {
+            attempts: 2,
+            ..one()
+        }
+    );
+}
+
+#[test]
+fn unresolved_alias_uses_original_intent_not_relabelled_payload() {
+    for (payload, unknown) in [
+        (json!({"mutation": true}), false),
+        (json!({}), false),
+        (json!({"mutation": "false"}), false),
+        (json!({"mutation": false}), true),
+    ] {
+        let (_tmp, path, mut store, project) = setup();
+        let root = start_root(&mut store, &project, "original", ceilings(4));
+        let mut original = dispatch(&project, root, "original-effect", one());
+        original.receipt.payload = payload;
+        store
+            .admit_root_operation_dispatch(original.clone())
+            .unwrap();
+        if unknown {
+            store
+                .append_production_receipt(ProductionReceiptInput {
+                    stage: "outcome_unknown".into(),
+                    payload: json!({"outcome_known": false}),
+                    ..original.receipt.clone()
+                })
+                .unwrap();
+        }
+        let before = store.production_receipt_watermark(project.id).unwrap();
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        let mut alias = original;
+        alias.receipt.request_id = "fresh-label-is-not-fresh-authority".into();
+        alias.receipt.payload = json!({"mutation": false});
+        assert!(matches!(
+            reopened.admit_root_operation_dispatch(alias),
+            Err(StorageError::RequestReuse)
+        ));
+        assert_eq!(
+            reopened.production_receipt_watermark(project.id).unwrap(),
+            before
+        );
+        assert_eq!(debit_count(&path), 1);
+        assert_eq!(
+            reopened
+                .root_operation_budget(project.id, root)
+                .unwrap()
+                .spent,
+            one()
+        );
+    }
+}
+
+#[test]
+fn read_only_reobservation_remains_budgeted_without_resolving_unknown_effect() {
+    let (_tmp, path, mut store, project) = setup();
+    let root = start_root(&mut store, &project, "original", ceilings(4));
+    let mut original = dispatch(&project, root, "effect", one());
+    original.receipt.payload = json!({"mutation": true});
+    store
+        .admit_root_operation_dispatch(original.clone())
+        .unwrap();
+    store
+        .append_production_receipt(ProductionReceiptInput {
+            stage: "outcome_unknown".into(),
+            payload: json!({"outcome_known": false}),
+            ..original.receipt.clone()
+        })
+        .unwrap();
+    let read_units = RootBudgetUnits {
+        attempts: 1,
+        ..RootBudgetUnits::default()
+    };
+    let mut status = dispatch(&project, root, "status-before-interruption", read_units);
+    status.receipt.command = "driver.motion-canvas.render.status".into();
+    status.receipt.request_sha256 = "b".repeat(64);
+    status.receipt.payload = json!({"mutation": false});
+    store.admit_root_operation_dispatch(status.clone()).unwrap();
+    drop(store);
+    let mut reopened = Store::open(&path).unwrap();
+    status.receipt.request_id = "fresh-read-after-interruption".into();
+    reopened.admit_root_operation_dispatch(status).unwrap();
+    assert_eq!(debit_count(&path), 3);
+    assert_eq!(
+        reopened
+            .root_operation_budget(project.id, root)
+            .unwrap()
+            .spent,
+        RootBudgetUnits {
+            attempts: 3,
+            ..one()
+        }
+    );
+    let before = reopened.production_receipt_watermark(project.id).unwrap();
+    original.receipt.request_id = "effect-still-unresolved".into();
+    assert!(matches!(
+        reopened.admit_root_operation_dispatch(original),
+        Err(StorageError::RequestReuse)
+    ));
+    assert_eq!(
+        reopened.production_receipt_watermark(project.id).unwrap(),
+        before
+    );
+    let retained_unknown: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM production_receipts
+             WHERE request_id='effect' AND stage='outcome_unknown'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained_unknown, 1);
+}
+
+#[test]
+fn known_terminal_alias_is_charged_and_all_unresolved_aliases_remain_fenced() {
+    for terminal in ["completed", "failed_known"] {
+        let (_tmp, path, mut store, project) = setup();
+        let root = start_root(
+            &mut store,
+            &project,
+            "original",
+            RootBudgetUnits {
+                attempts: 4,
+                model_calls: 4,
+                render_frames: 40,
+                output_bytes: 400,
+            },
+        );
+        let mut original = dispatch(&project, root, "original-effect", one());
+        original.receipt.payload = json!({"mutation": true});
+        store
+            .admit_root_operation_dispatch(original.clone())
+            .unwrap();
+        store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: terminal.into(),
+                payload: json!({"actual_outcome_known": true}),
+                ..original.receipt.clone()
+            })
+            .unwrap();
+        if terminal == "completed" {
+            let before = store.production_receipt_watermark(project.id).unwrap();
+            assert!(matches!(
+                store
+                    .admit_root_operation_dispatch(original.clone())
+                    .unwrap(),
+                RootDispatchBudgetOutcome::AlreadyCompleted(_)
+            ));
+            assert_eq!(
+                store.production_receipt_watermark(project.id).unwrap(),
+                before
+            );
+            assert_eq!(debit_count(&path), 1);
+        }
+        // Capacity remains for a third dispatch: refusal must come from
+        // identity, not an accounting limit or an earlier resolved alias.
+        original.receipt.request_id = "fresh-after-known-terminal".into();
+        store
+            .admit_root_operation_dispatch(original.clone())
+            .unwrap();
+        let before = store.production_receipt_watermark(project.id).unwrap();
+        assert_eq!(debit_count(&path), 2);
+        original.receipt.request_id = "third-alias-of-unresolved-second".into();
+        assert!(matches!(
+            store.admit_root_operation_dispatch(original),
+            Err(StorageError::RequestReuse)
+        ));
+        assert_eq!(
+            store.production_receipt_watermark(project.id).unwrap(),
+            before
+        );
+        assert_eq!(debit_count(&path), 2);
+    }
+}
+
+#[test]
+fn a_later_unknown_is_not_resolved_by_an_older_completed_observation() {
+    let (_tmp, path, mut store, project) = setup();
+    let root = start_root(&mut store, &project, "original", ceilings(4));
+    let mut original = dispatch(&project, root, "original-effect", one());
+    original.receipt.payload = json!({"mutation": true});
+    store
+        .admit_root_operation_dispatch(original.clone())
+        .unwrap();
+    for stage in ["completed", "outcome_unknown"] {
+        store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: stage.into(),
+                payload: json!({"retained_observation": stage}),
+                ..original.receipt.clone()
+            })
+            .unwrap();
+    }
+    let before = store.production_receipt_watermark(project.id).unwrap();
+    drop(store);
+    let mut reopened = Store::open(&path).unwrap();
+    original.receipt.request_id = "renamed-after-late-unknown".into();
+    assert!(matches!(
+        reopened.admit_root_operation_dispatch(original),
+        Err(StorageError::RequestReuse)
+    ));
+    assert_eq!(
+        reopened.production_receipt_watermark(project.id).unwrap(),
+        before
+    );
+    assert_eq!(debit_count(&path), 1);
+}
+
+#[test]
+fn concurrent_aliases_with_headroom_admit_only_one_original_effect() {
+    let (_tmp, path, mut owner, project) = setup();
+    let root = start_root(&mut owner, &project, "root", ceilings(4));
+    let barrier = Arc::new(Barrier::new(2));
+    let workers: Vec<_> = (0..2)
+        .map(|i| {
+            let path = path.clone();
+            let project = project.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                let mut store = Store::open(&path).unwrap();
+                let mut input = dispatch(&project, root, &format!("alias-{i}"), one());
+                input.receipt.payload = json!({"mutation": true});
+                barrier.wait();
+                match store.admit_root_operation_dispatch(input) {
+                    Ok(RootDispatchBudgetOutcome::Admitted(_)) => true,
+                    Err(StorageError::RequestReuse) => false,
+                    other => panic!("unexpected concurrent alias outcome: {other:?}"),
+                }
+            })
+        })
+        .collect();
+    let wins = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .filter(|won| *won)
+        .count();
+    assert_eq!(wins, 1);
+    assert_eq!(debit_count(&path), 1);
+    assert_eq!(
+        owner.root_operation_budget(project.id, root).unwrap().spent,
+        one()
+    );
+}
+
 #[test]
 fn completed_exact_replay_is_read_only_and_never_charged_twice() {
     let (_tmp, path, mut store, project) = setup();
@@ -215,8 +558,18 @@ fn all_budget_dimensions_are_enforced_not_only_attempt_count() {
             output_bytes: 101,
         },
     );
+    let original = dispatch(&project, root, "first", one());
     store
-        .admit_root_operation_dispatch(dispatch(&project, root, "first", one()))
+        .admit_root_operation_dispatch(original.clone())
+        .unwrap();
+    // Close the first effect so only the independent quota can deny the next
+    // dispatch; an unresolved root must not make this capacity oracle pass.
+    store
+        .append_production_receipt(ProductionReceiptInput {
+            stage: "completed".into(),
+            payload: json!({"actual_outcome_known": true}),
+            ..original.receipt
+        })
         .unwrap();
     for (index, units) in [
         RootBudgetUnits {
@@ -241,16 +594,9 @@ fn all_budget_dimensions_are_enforced_not_only_attempt_count() {
     .into_iter()
     .enumerate()
     {
-        assert!(
-            store
-                .admit_root_operation_dispatch(dispatch(
-                    &project,
-                    root,
-                    &format!("exhausted-{index}"),
-                    units
-                ))
-                .is_err()
-        );
+        let mut distinct = dispatch(&project, root, &format!("exhausted-{index}"), units);
+        distinct.receipt.request_sha256 = format!("{:064x}", index + 1);
+        assert!(store.admit_root_operation_dispatch(distinct).is_err());
     }
     assert_eq!(debit_count(&path), 1);
     assert_eq!(
@@ -258,7 +604,7 @@ fn all_budget_dimensions_are_enforced_not_only_attempt_count() {
             .production_receipt_watermark(project.id)
             .unwrap()
             .count,
-        1
+        2
     );
 }
 #[test]
@@ -342,15 +688,26 @@ fn two_connections_compete_for_final_budget_only_one_admits() {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 let mut store = Store::open(&path).unwrap();
+                let mut distinct = dispatch(
+                    &project,
+                    root,
+                    &format!("compete-{i}"),
+                    RootBudgetUnits {
+                        attempts: 1,
+                        ..RootBudgetUnits::default()
+                    },
+                );
+                distinct.receipt.command = "driver.motion-canvas.render.status".into();
+                distinct.receipt.payload = json!({"mutation": false});
+                distinct.receipt.request_sha256 = format!("{:064x}", i + 1);
                 barrier.wait();
-                store
-                    .admit_root_operation_dispatch(dispatch(
-                        &project,
-                        root,
-                        &format!("compete-{i}"),
-                        one(),
-                    ))
-                    .is_ok()
+                match store.admit_root_operation_dispatch(distinct) {
+                    Ok(RootDispatchBudgetOutcome::Admitted(_)) => true,
+                    Err(StorageError::Domain(motionwright_domain::DomainError::Invalid(
+                        message,
+                    ))) if message == "root operation budget exhausted" => false,
+                    other => panic!("unexpected final-attempt quota outcome: {other:?}"),
+                }
             })
         })
         .collect();

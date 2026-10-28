@@ -515,6 +515,83 @@ fn root(conn: &Connection, project_id: Uuid, root_id: Uuid) -> Result<RootOperat
         spent,
     })
 }
+// A fresh mutation cannot continue a root with an unresolved earlier effect.
+// Changing output paths, command arguments or labels is not recovery. Inspect
+// each original receipt chain inside IMMEDIATE, before debit/native dispatch.
+fn reject_unresolved_dispatch_alias(
+    conn: &Connection,
+    input: &RootDispatchBudgetInput,
+) -> Result<()> {
+    let intent = &input.receipt;
+    crate::validate_production_receipt_order_integrity(conn, Some(intent.project_id))?;
+    let aliases: Vec<(String, String, String, String)> = {
+        let mut statement = conn.prepare(
+            "SELECT request_id,receipt_id,request_sha256,command
+             FROM production_operation_debits
+             WHERE project_id=?1 AND root_id=?2 AND generation=?3 AND revision=?4
+               AND request_id<>?5",
+        )?;
+        statement
+            .query_map(
+                params![
+                    intent.project_id.to_string(),
+                    input.root_id.to_string(),
+                    intent.generation.to_string(),
+                    to_sql(intent.revision)?,
+                    &intent.request_id,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (request_id, receipt_id, request_sha256, command) in aliases {
+        let history = request_history(conn, intent.project_id, &request_id)?;
+        let original = history.first().ok_or(StorageError::RequestReuse)?;
+        let latest = history.last().ok_or(StorageError::RequestReuse)?;
+        if original.id.to_string() != receipt_id
+            || original.stage != "dispatching"
+            || history.iter().any(|receipt| {
+                receipt.generation != intent.generation
+                    || receipt.revision != intent.revision
+                    || receipt.command != command
+                    || receipt.request_sha256 != request_sha256
+            })
+        {
+            return Err(StorageError::RequestReuse);
+        }
+        if matches!(latest.stage.as_str(), "completed" | "failed_known") {
+            continue;
+        }
+        // Only an explicitly read-only original dispatch may be reobserved
+        // after interruption. This retained producer classification grants no
+        // native authority. Missing/malformed classification and UNKNOWN stay
+        // closed; an incoming payload cannot downgrade the original effect.
+        if latest.stage == "dispatching"
+            && original
+                .payload
+                .get("mutation")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        {
+            continue;
+        }
+        // Native producers supply the existing classification from their
+        // typed command path; it is accounting metadata, never a grant.
+        // Read-only status/reconciliation can continue under its own budget,
+        // but a fresh hint cannot downgrade the exact uncertain effect.
+        let read_only = intent
+            .payload
+            .get("mutation")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false);
+        let same_effect = command == intent.command && request_sha256 == intent.request_sha256;
+        if !read_only || same_effect {
+            return Err(StorageError::RequestReuse);
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     /// New operation only. Repeating an operation key never creates new credit.
     /// This accounting identity is not a Broker grant.
@@ -685,6 +762,7 @@ impl Store {
             // Retain UNKNOWN/dispatching/failed, never restart a mutating effect.
             return Err(StorageError::RequestReuse);
         }
+        reject_unresolved_dispatch_alias(&tx, &input)?;
         let current = crate::load_project_from_row(&tx, intent.project_id)?;
         if current.generation != intent.generation {
             return Err(StorageError::GenerationConflict);
