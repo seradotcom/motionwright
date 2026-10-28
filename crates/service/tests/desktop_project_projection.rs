@@ -267,6 +267,8 @@ fn desktop_storage_failures_expose_no_sql_paths_or_document_text() {
     assert_eq!(head.title, project.title);
 }
 
+// This checks the persisted context through the ordinary Session's blocked
+// Service read. Authenticated Desktop and Native admission are separate checks.
 #[test]
 fn desktop_graph_context_is_read_only_blocked_and_rejects_stale_source_after_peer_edit() {
     use motionwright_domain::{GraphAvailability, GraphBlockReason, GraphSourceSnapshot};
@@ -286,11 +288,9 @@ fn desktop_graph_context_is_read_only_blocked_and_rejects_stale_source_after_pee
         "variant_profile_ref": profile_id
     });
 
-    let context = project_projection::semantic_graph_context(
-        &service,
-        request::<SemanticGraphContextRequest>(wire.clone()),
-    )
-    .unwrap();
+    let context = service
+        .semantic_graph_authoring_context(&request::<SemanticGraphContextRequest>(wire.clone()))
+        .unwrap();
     assert_eq!(context.source_snapshot, snapshot);
     assert_eq!(context.scene_id, scene_id);
     assert_eq!(context.variant_profile_ref, profile_id);
@@ -332,11 +332,9 @@ fn desktop_graph_context_is_read_only_blocked_and_rejects_stale_source_after_pee
     assert_eq!(edited_journal.len(), journal.len() + 1);
     assert_eq!(edited_journal.last().unwrap().change, change);
     assert!(
-        project_projection::semantic_graph_context(
-            &service,
-            request::<SemanticGraphContextRequest>(wire),
-        )
-        .is_err()
+        service
+            .semantic_graph_authoring_context(&request::<SemanticGraphContextRequest>(wire))
+            .is_err()
     );
     assert_eq!(service.project(project.id).unwrap(), edited);
     assert_eq!(
@@ -350,15 +348,13 @@ fn desktop_graph_context_is_read_only_blocked_and_rejects_stale_source_after_pee
     let retained = reopened.project(project.id).unwrap();
     assert_eq!(retained, edited);
     let fresh_snapshot = GraphSourceSnapshot::from_project(&retained);
-    let fresh = project_projection::semantic_graph_context(
-        &reopened,
-        request::<SemanticGraphContextRequest>(json!({
+    let fresh = reopened
+        .semantic_graph_authoring_context(&request::<SemanticGraphContextRequest>(json!({
             "source_snapshot": fresh_snapshot,
             "scene_id": scene_id,
             "variant_profile_ref": profile_id
-        })),
-    )
-    .unwrap();
+        })))
+        .unwrap();
     assert_eq!(fresh.source_snapshot, fresh_snapshot);
     assert_eq!(fresh.scene_id, scene_id);
     assert_eq!(fresh.variant_profile_ref, profile_id);
