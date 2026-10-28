@@ -419,6 +419,73 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.98.1
+      - name: Bind a real same-source StudioService before browser acceptance
+        working-directory: .
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/browser-service-target-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
+          export BROWSER_SERVICE_EVIDENCE="$RUNNER_TEMP/browser-service-build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$BROWSER_SERVICE_EVIDENCE"
+          mkdir -m 700 "$BROWSER_SERVICE_EVIDENCE"
+          cargo build --locked --jobs 1 -p motionwright-service --example studio_review_session --message-format=json > "$BROWSER_SERVICE_EVIDENCE/cargo.stdout.original" 2> "$BROWSER_SERVICE_EVIDENCE/cargo.stderr.original"
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,stat,subprocess
+          def require(ok,why):
+              if not ok: raise SystemExit("BROWSER_SOURCE_SERVICE_REJECTED: "+why)
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          repo=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          source=os.environ["GITHUB_SHA"]
+          target=pathlib.Path(os.environ["CARGO_TARGET_DIR"]).resolve(strict=True)
+          evidence=pathlib.Path(os.environ["BROWSER_SERVICE_EVIDENCE"]).resolve(strict=True)
+          require(len(source)==40 and all(c in "0123456789abcdef" for c in source),"source SHA")
+          observed=subprocess.check_output(["git","rev-parse","HEAD","HEAD^{tree}"],cwd=repo,text=True).splitlines()
+          require(len(observed)==2 and observed[0]==source,"candidate SHA changed")
+          lock=(repo/"Cargo.lock").read_bytes()
+          lock_git=subprocess.check_output(["git","show",source+":Cargo.lock"],cwd=repo)
+          require(lock==lock_git,"Cargo.lock differs from source")
+          root_lock=(repo/"SOURCE_LOCK.json").read_bytes()
+          require(root_lock==subprocess.check_output(["git","show",source+":SOURCE_LOCK.json"],cwd=repo),
+                  "SOURCE_LOCK differs from source")
+          output=evidence/"cargo.stdout.original"
+          require(output.is_file() and output.stat().st_size <= 64*1024*1024,"missing or oversized Cargo JSON")
+          records=[json.loads(line) for line in output.read_bytes().splitlines() if line.strip()]
+          require(any(row.get("reason")=="build-finished" and row.get("success") is True for row in records),
+                  "cargo did not declare successful build")
+          artifacts=[row for row in records if row.get("reason")=="compiler-artifact" and
+                     row.get("target",{}).get("name")=="studio_review_session" and
+                     "example" in row.get("target",{}).get("kind",[]) and row.get("executable")]
+          require(len(artifacts)==1 and "motionwright-service" in artifacts[0].get("package_id",""),
+                  "source-built service example artifact missing or ambiguous")
+          actual=pathlib.Path(artifacts[0]["executable"]).resolve(strict=True)
+          expected=target/"debug/examples/studio_review_session"
+          require(actual==expected and actual.is_file() and not actual.is_symlink() and os.access(actual,os.X_OK),
+                  "unexpected real-service executable identity")
+          size=actual.stat().st_size
+          require(0<size<=256*1024*1024,"service executable size bound")
+          originals={}
+          for name in ("cargo.stdout.original","cargo.stderr.original"):
+              raw=(evidence/name).read_bytes()
+              originals[name]={"bytes":len(raw),"sha256":sha(raw)}
+          tmp=evidence/"test-stores"
+          tmp.mkdir(mode=0o700,exist_ok=False)
+          report={"schema":"motionwright.ci.real-service-browser-binary/1",
+                  "github_run_id":os.environ["GITHUB_RUN_ID"],
+                  "github_run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                  "source_sha":source,"tree_sha":observed[1],
+                  "Cargo.lock.sha256":sha(lock),"SOURCE_LOCK.json.sha256":sha(root_lock),
+                  "service_binary":{"path":str(actual),"bytes":size,"sha256":sha(actual)},
+                  "cargo_target_dir":str(target),"build_originals":originals,
+                  "real_StudioService_SQLite_source_builtin":True,"formal_release_acceptance":False}
+          (evidence/"REAL_SERVICE_SOURCE_BINDING.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as env:
+              env.write("MOTIONWRIGHT_SERVICE_TEST_BIN="+str(actual)+"\n")
+              env.write("MOTIONWRIGHT_SERVICE_TEST_TMPDIR="+str(tmp)+"\n")
+          print(json.dumps({"source":source,"tree":observed[1],
+                            "real_service_sha256":report["service_binary"]["sha256"],
+                            "evidence":"browser-service-build/REAL_SERVICE_SOURCE_BINDING.json"}))
+          PY
       - name: Browser acceptance
         run: npm run test:e2e
       - name: Verify real-service report guards
@@ -447,6 +514,7 @@ jobs:
           path: |
             apps/studio/test-results
             apps/studio/playwright-report
+            ${{ runner.temp }}/browser-service-build-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: ignore
       - name: Bind job result to original source, plan and execution
         id: source
