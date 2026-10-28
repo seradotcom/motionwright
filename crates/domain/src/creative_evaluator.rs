@@ -6,7 +6,7 @@
 //! subjective/creative questions always abstain for human review.
 use crate::*;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const CREATIVE_EVALUATOR_SCHEMA: &str = "motionwright.creative-evaluator/1";
 pub const EVALUATION_REPORT_SCHEMA: &str = "motionwright.creative-evaluation/1";
@@ -139,6 +139,61 @@ pub struct CriterionObservation {
     pub outcome: CriterionOutcome,
     pub explanation: String,
 }
+/// Conservative, source-bound candidates. Nothing here asserts that repeated
+/// content is poor, that scene pixels were rendered, or that motion is pointless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreativeStyleKind {
+    Repetition,
+    Density,
+    MotionPurpose,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreativeStyleAdvisory {
+    pub kind: CreativeStyleKind,
+    pub scene_id: Uuid,
+    /// Exact scene-relative half-open interval, not a decoded/rendered frame.
+    pub interval_start: RationalTime,
+    pub interval_end: RationalTime,
+    pub source_node_ids: Vec<Uuid>,
+    pub rationale: String,
+    pub suggested_action: String,
+    /// Deliberately cannot become creative acceptance through an evaluator.
+    pub human_review_required: bool,
+}
+impl CreativeStyleAdvisory {
+    fn validate(&self, scene_id: Uuid) -> Result<()> {
+        if self.scene_id != scene_id
+            || self.source_node_ids.is_empty()
+            || self.source_node_ids.len() > 24
+            || self.source_node_ids.iter().any(Uuid::is_nil)
+            || self
+                .source_node_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.source_node_ids.len()
+            || self.interval_start.validate().is_err()
+            || self.interval_end.validate().is_err()
+            || self.interval_start < RationalTime::ZERO
+            || self.interval_end <= self.interval_start
+            || !self.human_review_required
+        {
+            return Err(DomainError::Invalid(
+                "creative style advisory has invalid source, interval or reviewer status".into(),
+            ));
+        }
+        safe_text(&self.rationale, 300, "creative style rationale")?;
+        safe_text(
+            &self.suggested_action,
+            240,
+            "creative style suggested action",
+        )?;
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreativeEvaluationReport {
@@ -151,11 +206,17 @@ pub struct CreativeEvaluationReport {
     pub source_generation: Uuid,
     pub source_revision: u64,
     pub observations: Vec<CriterionObservation>,
+    /// Backward-compatible: historical reports keep their exact old bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_advisories: Vec<CreativeStyleAdvisory>,
     pub conclusion: TechnicalConclusion,
     /// This report never establishes human creative or intellectual-property approval.
     pub creative_approval: String,
 }
-fn conclusion(observations: &[CriterionObservation]) -> TechnicalConclusion {
+fn conclusion(
+    observations: &[CriterionObservation],
+    style_advisories: &[CreativeStyleAdvisory],
+) -> TechnicalConclusion {
     if observations
         .iter()
         .any(|result| result.outcome == CriterionOutcome::Fail)
@@ -164,6 +225,7 @@ fn conclusion(observations: &[CriterionObservation]) -> TechnicalConclusion {
     } else if observations
         .iter()
         .any(|result| result.outcome == CriterionOutcome::NotAssessed)
+        || !style_advisories.is_empty()
     {
         TechnicalConclusion::NeedsHumanReview
     } else {
@@ -186,7 +248,7 @@ impl CreativeEvaluationReport {
             || self.source_generation.is_nil()
             || self.evaluator_sha256 != bundle.content_digest()?
             || self.observations.len() != bundle.criteria.len()
-            || self.conclusion != conclusion(&self.observations)
+            || self.conclusion != conclusion(&self.observations, &self.style_advisories)
             || self.creative_approval != "not_assessed"
         {
             return Err(DomainError::Invalid(
@@ -202,6 +264,14 @@ impl CreativeEvaluationReport {
                     "creative evaluation cannot assert a human-review PASS".into(),
                 ));
             }
+        }
+        if self.style_advisories.len() > 32 {
+            return Err(DomainError::Invalid(
+                "creative style advisory budget exceeded".into(),
+            ));
+        }
+        for advisory in &self.style_advisories {
+            advisory.validate(self.scene_id)?;
         }
         Ok(())
     }
@@ -276,6 +346,7 @@ impl Project {
             .iter()
             .map(|criterion| observe(scene, criterion))
             .collect::<Vec<_>>();
+        let style_advisories = observe_style_advisories(scene);
         let report = CreativeEvaluationReport {
             schema: EVALUATION_REPORT_SCHEMA.into(),
             id: Uuid::new_v4(),
@@ -285,14 +356,129 @@ impl Project {
             scene_id,
             source_generation: self.generation,
             source_revision: self.revision,
-            conclusion: conclusion(&observations),
+            conclusion: conclusion(&observations, &style_advisories),
             observations,
+            style_advisories,
             creative_approval: "not_assessed".into(),
         };
         report.validate(&self.production_design.evaluator_bundles)?;
         self.production_design.evaluation_reports.push(report);
         Ok(())
     }
+}
+/// Deterministic, bounded authoring diagnostics. These are editorial
+/// candidates, not objective quality scores or native-render observations.
+pub fn observe_style_advisories(scene: &Scene) -> Vec<CreativeStyleAdvisory> {
+    let mut result = Vec::new();
+    let full = (RationalTime::ZERO, scene.duration);
+    let mut repeated: BTreeMap<String, Vec<Uuid>> = BTreeMap::new();
+    for node in &scene.nodes {
+        if node.kind != "text" || node.opacity <= 0.01 {
+            continue;
+        }
+        if let Some(text) = node.text.as_deref() {
+            if text.len() > 512 {
+                continue;
+            }
+            let normalized = text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            if !normalized.is_empty() && normalized.len() <= 240 {
+                repeated.entry(normalized).or_default().push(node.id);
+            }
+        }
+    }
+    for ids in repeated.values().filter(|ids| ids.len() >= 3).take(12) {
+        result.push(CreativeStyleAdvisory {
+            kind: CreativeStyleKind::Repetition,
+            scene_id: scene.id,
+            interval_start: full.0,
+            interval_end: full.1,
+            source_node_ids: ids.iter().copied().take(24).collect(),
+            rationale: format!(
+                "{} visible editable text nodes repeat identical normalized wording; this is a candidate pattern, not an aesthetic verdict.",
+                ids.len()
+            ),
+            suggested_action: "Review whether repetition serves the scene; vary or remove redundant copies if not.".into(),
+            human_review_required: true,
+        });
+    }
+
+    // Baseline authored 1920x1080 project-pixel boxes only. Summed clipped
+    // area is an overdraw proxy, not a native composite or actual pixel count.
+    let mut visible = Vec::new();
+    let mut summed_area = 0.0;
+    for node in &scene.nodes {
+        if node.coordinate_space != CoordinateSpace::ProjectPixels || node.opacity <= 0.01 {
+            continue;
+        }
+        let width = (node.x + node.width).clamp(0.0, 1920.0) - node.x.clamp(0.0, 1920.0);
+        let height = (node.y + node.height).clamp(0.0, 1080.0) - node.y.clamp(0.0, 1080.0);
+        if width > 0.0 && height > 0.0 {
+            visible.push(node.id);
+            summed_area += width * height;
+        }
+    }
+    let overdraw_index = summed_area / (1920.0 * 1080.0);
+    if visible.len() >= 4 && (overdraw_index >= 1.2 || visible.len() >= 12 && overdraw_index >= 0.5)
+    {
+        result.push(CreativeStyleAdvisory {
+            kind: CreativeStyleKind::Density,
+            scene_id: scene.id,
+            interval_start: full.0,
+            interval_end: full.1,
+            source_node_ids: visible.iter().copied().take(24).collect(),
+            rationale: format!(
+                "{} visible project-pixel bounds have baseline overdraw index {:.2}; animation and rendered pixels were not measured.",
+                visible.len(), overdraw_index
+            ),
+            suggested_action: "Inspect hierarchy and overlaps; simplify competing visible objects where appropriate.".into(),
+            human_review_required: true,
+        });
+    }
+
+    for node in &scene.nodes {
+        if result.len() >= 32 {
+            break;
+        }
+        let changed = node
+            .keyframes
+            .iter()
+            .filter(|keyframe| {
+                let baseline = match keyframe.property {
+                    MotionProperty::X => node.x,
+                    MotionProperty::Y => node.y,
+                    MotionProperty::Width => node.width,
+                    MotionProperty::Height => node.height,
+                    MotionProperty::RotationDeg => node.rotation_deg,
+                    MotionProperty::Opacity => node.opacity,
+                };
+                (keyframe.value - baseline).abs() > 0.0001
+            })
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            continue;
+        }
+        let end = changed
+            .iter()
+            .map(|keyframe| keyframe.at)
+            .filter(|time| *time > RationalTime::ZERO)
+            .min()
+            .unwrap_or(scene.duration);
+        result.push(CreativeStyleAdvisory {
+            kind: CreativeStyleKind::MotionPurpose,
+            scene_id: scene.id,
+            interval_start: RationalTime::ZERO,
+            interval_end: end,
+            source_node_ids: vec![node.id],
+            rationale: "A saved node animates an authored property, but the creative purpose of that motion is not machine-verifiable.".into(),
+            suggested_action: "Review its timed narrative purpose; explain the motion or remove redundant keyframes.".into(),
+            human_review_required: true,
+        });
+    }
+    result
 }
 pub fn observe(scene: &Scene, criterion: &CreativeCriterion) -> CriterionObservation {
     let (outcome, explanation) = match criterion {

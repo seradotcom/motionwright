@@ -154,6 +154,19 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
       <ul>{report.observations.map(result=><li key={result.criterion_id}>
         {result.outcome==="not_assessed"?"Not assessed":
           result.outcome==="pass"?"Technical pass":"Technical fail"}: {result.explanation}</li>)}</ul>
+      {report.style_advisories?.length? <section
+        aria-label={"Source-bound style advisories r"+report.source_revision}>
+        <strong>Review candidates · not automatic aesthetic judgments</strong>
+        <ul>{report.style_advisories.map((advisory,index)=><li key={advisory.kind+":"+index}>
+          <p><strong>{advisory.kind.replaceAll("_"," ")}</strong> · scene {advisory.scene_id} ·
+            scene-local interval {advisory.interval_start.num}/{advisory.interval_start.den} to
+            {" "}{advisory.interval_end.num}/{advisory.interval_end.den} seconds</p>
+          <p>Source nodes: {advisory.source_node_ids.join(", ")}</p>
+          <p>Observed reason: {advisory.rationale}</p>
+          <p>Suggested action: {advisory.suggested_action}</p>
+          <p>Human creative review required; no render, edit or approval applied.</p>
+        </li>)}</ul>
+      </section>:null}
     </article>):<p className="production-help">No evaluator reports for this scene.</p>}
     <EvaluatorExperimentWorkbench project={project} scene={scene} selectedEvaluator={latest}
       busy={busy||editor.working}

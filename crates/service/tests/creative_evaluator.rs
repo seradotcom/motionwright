@@ -169,3 +169,141 @@ fn unknown_version_and_forged_report_cannot_mutate_atomic_source_project() {
     );
     assert_eq!(service.project(project.id).unwrap(), project);
 }
+
+#[test]
+fn actual_sqlite_creative_style_advisories_survive_fresh_service_reopen() {
+    use std::collections::BTreeSet;
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("style06.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let mut project = service.create_project("Real source style review").unwrap();
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "add-scene",
+            &Change::AddScene {
+                name: "Style diagnostics".into(),
+                objective: "Test only actual editable authored objects".into(),
+                duration_seconds: 6,
+            },
+        )
+        .unwrap()
+        .project;
+    let scene_id = project.scenes[0].id;
+    for index in 0..3 {
+        let node = CanvasNode {
+            id: Uuid::new_v4(),
+            name: format!("Repeat {index}"),
+            kind: "text".into(),
+            parent_id: None,
+            x: 150.0 + f64::from(index) * 70.0,
+            y: 160.0,
+            width: 440.0,
+            height: 110.0,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: Some("The same original text".into()),
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: index,
+            style: NodeStyle::default(),
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+            keyframes: if index == 0 {
+                vec![CanvasKeyframe {
+                    at: RationalTime { num: 1, den: 1 },
+                    property: MotionProperty::X,
+                    value: 350.0,
+                    interpolation: MotionInterpolation::Linear,
+                }]
+            } else {
+                vec![]
+            },
+        };
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("node-{index}"),
+                &Change::AddCanvasNode { scene_id, node },
+            )
+            .unwrap()
+            .project;
+    }
+    let bundle = original_bundle();
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "register-style",
+            &Change::RegisterCreativeEvaluator {
+                bundle: bundle.clone(),
+            },
+        )
+        .unwrap()
+        .project;
+    let before = project.clone();
+    let response = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "evaluate-style",
+            &Change::EvaluateCreativeScene {
+                evaluator_id: bundle.id,
+                evaluator_version: 1,
+                scene_id,
+            },
+        )
+        .unwrap();
+    let report = response
+        .project
+        .production_design
+        .evaluation_reports
+        .last()
+        .unwrap();
+    assert_eq!(report.source_revision, before.revision);
+    assert_eq!(report.source_generation, before.generation);
+    assert!(
+        report
+            .style_advisories
+            .iter()
+            .any(|a| a.kind == CreativeStyleKind::Repetition)
+    );
+    assert!(
+        report
+            .style_advisories
+            .iter()
+            .any(|a| a.kind == CreativeStyleKind::MotionPurpose)
+    );
+    assert!(
+        report
+            .style_advisories
+            .iter()
+            .all(|a| a.human_review_required && a.scene_id == scene_id)
+    );
+    assert_eq!(report.creative_approval, "not_assessed");
+    let replay = service
+        .apply(
+            before.id,
+            &before.stamp(),
+            "evaluate-style",
+            &Change::EvaluateCreativeScene {
+                evaluator_id: bundle.id,
+                evaluator_version: 1,
+                scene_id,
+            },
+        )
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.project, response.project);
+    drop(service);
+    let reopened = StudioService::open(database).unwrap();
+    assert_eq!(reopened.project(before.id).unwrap(), response.project);
+    assert_eq!(
+        reopened
+            .history(before.id, before.revision, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}

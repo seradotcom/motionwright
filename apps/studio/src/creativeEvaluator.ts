@@ -3,7 +3,7 @@
  * with a human editor's aesthetic, legal, or creative approval.
  */
 import { emptyProductionDesign } from "./creativeProduction";
-import type { Project, Scene, Change } from "./types";
+import type { Project, Scene, Change, RationalTime } from "./types";
 
 export const EVALUATOR_SCHEMA="motionwright.creative-evaluator/1";
 export const REPORT_SCHEMA="motionwright.creative-evaluation/1";
@@ -22,10 +22,20 @@ export type TechnicalConclusion="pass_technical_only"|"fail"|"needs_human_review
 export interface CriterionObservation {
   criterion_id:string;outcome:CriterionOutcome;explanation:string;
 }
+export type CreativeStyleKind="repetition"|"density"|"motion_purpose";
+export interface CreativeStyleAdvisory {
+  kind:CreativeStyleKind;scene_id:string;
+  /** Exact half-open interval relative to the saved scene. */
+  interval_start:RationalTime;interval_end:RationalTime;
+  source_node_ids:string[];rationale:string;suggested_action:string;
+  human_review_required:boolean;
+}
 export interface CreativeEvaluationReport {
   schema:string;id:string;evaluator_id:string;evaluator_version:number;
   evaluator_sha256:string;scene_id:string;source_generation:string;
   source_revision:number;observations:CriterionObservation[];
+  /** Historical source reports without this optional field remain unchanged. */
+  style_advisories?:CreativeStyleAdvisory[];
   conclusion:TechnicalConclusion;creative_approval:string;
 }
 export type EvaluatorChange=Extract<Change,{type:"register_creative_evaluator"|"evaluate_creative_scene"}>;
@@ -149,9 +159,85 @@ export function observeCriterion(scene:Scene,criterion:CreativeCriterion):Criter
   }
   return {criterion_id:criterion.id,outcome,explanation};
 }
-function summarize(results:CriterionObservation[]):TechnicalConclusion{
+
+/** Conservative authored-geometry/source checks, not rendered pixels or an
+ * automatic verdict about artistic quality. They mirror the Rust evaluator.
+ * Scene-relative rational intervals never use rounded UI timecodes.
+ */
+export function observeStyleAdvisories(scene:Scene):CreativeStyleAdvisory[]{
+  const result:CreativeStyleAdvisory[]=[];
+  const start:RationalTime={num:"0",den:"1"};
+  const make=(kind:CreativeStyleKind,ids:string[],rationale:string,suggested_action:string,end=scene.duration):CreativeStyleAdvisory=>({
+    kind,scene_id:scene.id,interval_start:start,interval_end:end,
+    source_node_ids:ids.slice(0,24),rationale,suggested_action,human_review_required:true,
+  });
+  const repeated=new Map<string,string[]>();
+  for(const node of scene.nodes){
+    if(node.kind!=="text"||node.opacity<=0.01||!node.text||
+      new TextEncoder().encode(node.text).length>512)continue;
+    const value=node.text.trim().split(/\s+/u).join(" ").toLowerCase();
+    if(value&&new TextEncoder().encode(value).length<=240)
+      repeated.set(value,[...(repeated.get(value)??[]),node.id]);
+  }
+  for(const [,ids] of [...repeated.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0)
+    .filter(([,ids])=>ids.length>=3).slice(0,12)){
+    result.push(make("repetition",ids,
+      ids.length+" visible editable text nodes repeat identical normalized wording; this is a candidate pattern, not an aesthetic verdict.",
+      "Review whether repetition serves the scene; vary or remove redundant copies if not."));
+  }
+  const visible:string[]=[];
+  let area=0;
+  for(const node of scene.nodes){
+    if(node.coordinate_space!=="project_pixels"||node.opacity<=0.01)continue;
+    const clamp=(value:number,max:number)=>Math.max(0,Math.min(value,max));
+    const width=clamp(node.x+node.width,1920)-clamp(node.x,1920);
+    const height=clamp(node.y+node.height,1080)-clamp(node.y,1080);
+    if(width>0&&height>0){visible.push(node.id);area+=width*height;}
+  }
+  const index=area/(1920*1080);
+  if(visible.length>=4&&(index>=1.2||(visible.length>=12&&index>=0.5)))
+    result.push(make("density",visible,
+      visible.length+" visible project-pixel bounds have baseline overdraw index "+index.toFixed(2)+
+        "; animation and rendered pixels were not measured.",
+      "Inspect hierarchy and overlaps; simplify competing visible objects where appropriate."));
+  const compare=(left:RationalTime,right:RationalTime)=>{
+    const difference=BigInt(left.num)*BigInt(right.den)-BigInt(right.num)*BigInt(left.den);
+    return difference<0n?-1:difference>0n?1:0;
+  };
+  for(const node of scene.nodes){
+    if(result.length>=32)break;
+    const original:Record<string,number>={
+      x:node.x,y:node.y,width:node.width,height:node.height,
+      rotation_deg:node.rotation_deg,opacity:node.opacity,
+    };
+    const changed=node.keyframes.filter(keyframe=>
+      Math.abs(keyframe.value-original[keyframe.property])>0.0001);
+    if(!changed.length)continue;
+    const end=changed.map(keyframe=>keyframe.at).filter(at=>compare(at,start)>0)
+      .sort(compare)[0]??scene.duration;
+    result.push(make("motion_purpose",[node.id],
+      "A saved node animates an authored property, but the creative purpose of that motion is not machine-verifiable.",
+      "Review its timed narrative purpose; explain the motion or remove redundant keyframes.",end));
+  }
+  return result;
+}
+function validAdvisoryTime(time:unknown):time is RationalTime{
+  if(!time||typeof time!=="object"||Array.isArray(time))return false;
+  const value=time as RationalTime;
+  const integer=/^-?\d{1,20}$/;
+  if(Object.keys(value).sort().join(",")!=="den,num"||
+    typeof value.num!=="string"||typeof value.den!=="string"||
+    !integer.test(value.num)||!integer.test(value.den))return false;
+  const max=9223372036854775807n,min=-9223372036854775808n;
+  const n=BigInt(value.num),d=BigInt(value.den);
+  return n>=min&&n<=max&&d>0n&&d<=max;
+}
+function beforeTime(left:RationalTime,right:RationalTime):boolean{
+  return BigInt(left.num)*BigInt(right.den)<BigInt(right.num)*BigInt(left.den);
+}
+function summarize(results:CriterionObservation[],advisories:CreativeStyleAdvisory[]=[]):TechnicalConclusion{
   return results.some(result=>result.outcome==="fail")?"fail":
-    results.some(result=>result.outcome==="not_assessed")?"needs_human_review":
+    (results.some(result=>result.outcome==="not_assessed")||advisories.length>0)?"needs_human_review":
     "pass_technical_only";
 }
 export async function validateEvaluatorState(project:Project):Promise<void>{
@@ -175,7 +261,8 @@ export async function validateEvaluatorState(project:Project):Promise<void>{
     if(!report || typeof report!=="object" || Array.isArray(report))
       deny("Invalid evaluation report shape.");
     strictKeys(report,["schema","id","evaluator_id","evaluator_version","evaluator_sha256",
-      "scene_id","source_generation","source_revision","observations","conclusion","creative_approval"]);
+      "scene_id","source_generation","source_revision","observations","conclusion","creative_approval",
+      ...("style_advisories" in report?["style_advisories"]:[])]);
     if(report.schema!==REPORT_SCHEMA || !uuid.test(report.id) || ids.has(report.id) ||
       !uuid.test(report.scene_id) || !uuid.test(report.source_generation) ||
       !Number.isSafeInteger(report.source_revision) || report.source_revision<0 ||
@@ -186,8 +273,28 @@ export async function validateEvaluatorState(project:Project):Promise<void>{
       deny("Invalid source-bound evaluation report.");
     ids.add(report.id);
     const bundle=bundles.find(entry=>entry.id===report.evaluator_id && entry.version===report.evaluator_version)!;
+    const advisories=report.style_advisories??[];
+    if(!Array.isArray(advisories)||advisories.length>32)
+      deny("Evaluator style advisory budget invalid.");
+    for(const advisory of advisories){
+      strictKeys(advisory,["kind","scene_id","interval_start","interval_end",
+        "source_node_ids","rationale","suggested_action","human_review_required"]);
+      if(!["repetition","density","motion_purpose"].includes(advisory.kind)||
+        advisory.scene_id!==report.scene_id||!validAdvisoryTime(advisory.interval_start)||
+        !validAdvisoryTime(advisory.interval_end)||
+        beforeTime(advisory.interval_start,{num:"0",den:"1"})||
+        !beforeTime(advisory.interval_start,advisory.interval_end)||
+        advisory.human_review_required!==true||
+        !Array.isArray(advisory.source_node_ids)||!advisory.source_node_ids.length||
+        advisory.source_node_ids.length>24||
+        advisory.source_node_ids.some(id=>!uuid.test(id))||
+        new Set(advisory.source_node_ids).size!==advisory.source_node_ids.length)
+        deny("Creative style advisory has foreign source, interval or reviewer state.");
+      bounded(advisory.rationale,300,"style rationale");
+      bounded(advisory.suggested_action,240,"suggested action");
+    }
     if(report.observations.length!==bundle.criteria.length ||
-      report.conclusion!==summarize(report.observations))
+      report.conclusion!==summarize(report.observations,advisories))
       deny("Evaluation report cannot fabricate a technical or creative PASS.");
     for(let index=0;index<bundle.criteria.length;index++){
       const observation=report.observations[index];
@@ -221,13 +328,15 @@ export async function applyEvaluatorChange(project:Project,change:EvaluatorChang
     const scene=project.scenes.find(s=>s.id===change.scene_id);
     if(!bundle || !scene)deny("Creative evaluator/scene not found.");
     const observations=bundle!.criteria.map(criterion=>observeCriterion(scene!,criterion));
+    const advisories=observeStyleAdvisories(scene!);
     const report:CreativeEvaluationReport={
       schema:REPORT_SCHEMA,id:crypto.randomUUID(),
       evaluator_id:bundle!.id,evaluator_version:bundle!.version,
       evaluator_sha256:await evaluatorDigest(bundle!),
       scene_id:change.scene_id,source_generation:project.generation,
-      source_revision:project.revision,observations,conclusion:summarize(observations),
-      creative_approval:"not_assessed",
+      source_revision:project.revision,observations,
+      ...(advisories.length?{style_advisories:advisories}:{}),
+      conclusion:summarize(observations,advisories),creative_approval:"not_assessed",
     };
     design.evaluation_reports=[...reports,report];
   }

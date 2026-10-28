@@ -3,7 +3,8 @@ import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
 import {
-  EVALUATOR_SCHEMA, evaluatorDigest, validateEvaluator, observeCriterion
+  EVALUATOR_SCHEMA, evaluatorDigest, validateEvaluator, observeCriterion,
+  observeStyleAdvisories, validateEvaluatorState
 } from "./creativeEvaluator";
 import type { CreativeEvaluatorBundle, CreativeCriterion } from "./creativeEvaluator";
 import type { Project } from "./types";
@@ -109,5 +110,56 @@ describe("versioned data-only scene evaluator",()=>{
     expect(observeCriterion(scene,criterion).outcome).toBe("fail");
     scene.nodes[0].coordinate_space="relative_parent" as typeof scene.nodes[0]["coordinate_space"];
     expect(observeCriterion(scene,criterion).outcome).toBe("not_assessed");
+  });
+});
+
+describe("source-bound style advisory acceptance without aesthetic automation",()=>{
+  it("identifies exact repeated text, authored overdraw and motion-purpose review candidates",async()=>{
+    let p=project();
+    const scene=p.scenes[0];
+    const original=structuredClone(scene.nodes[0]);
+    scene.nodes[0].text="Original claim repeated exactly";
+    for(let index=1;index<3;index++){
+      scene.nodes.push({...structuredClone(scene.nodes[0]),id:crypto.randomUUID(),
+        name:"Repeated first-party text "+index,x:290+index*75});
+    }
+    for(let index=0;index<4;index++){
+      scene.nodes.push({...structuredClone(original),id:crypto.randomUUID(),
+        name:"Dense original rectangle "+index,kind:"rectangle",text:null,
+        x:200+index*40,y:100+index*20,width:1200,height:800,keyframes:[]});
+    }
+    scene.nodes[0].keyframes=[{at:{num:"1",den:"1"},property:"x",
+      value:scene.nodes[0].x+200,interpolation:"linear"}];
+    const candidates=observeStyleAdvisories(scene);
+    expect(candidates.map(x=>x.kind)).toEqual(expect.arrayContaining([
+      "repetition","density","motion_purpose"]));
+    expect(candidates.every(value=>value.scene_id===scene.id&&value.human_review_required
+      &&value.source_node_ids.length>0&&value.rationale&&value.suggested_action)).toBe(true);
+    const motion=candidates.find(value=>value.kind==="motion_purpose")!;
+    expect(motion.interval_start).toEqual({num:"0",den:"1"});
+    expect(motion.interval_end).toEqual({num:"1",den:"1"});
+    p=await applyChange(p,{type:"register_creative_evaluator",bundle:bundle()});
+    const revision=p.revision;
+    p=await applyChange(p,{type:"evaluate_creative_scene",scene_id:scene.id,
+      evaluator_id:id,evaluator_version:1});
+    const report=p.production_design!.evaluation_reports!.at(-1)!;
+    expect(report.style_advisories).toEqual(candidates);
+    expect(report.source_revision).toBe(revision);
+    expect(report.creative_approval).toBe("not_assessed");
+    expect(report.conclusion).toBe("needs_human_review");
+    await expect(validateEvaluatorState(p)).resolves.toBeUndefined();
+    const forged=structuredClone(p);
+    forged.production_design!.evaluation_reports!.at(-1)!.style_advisories![0].human_review_required=false;
+    await expect(validateEvaluatorState(forged)).rejects.toThrow(/advisory|reviewer/i);
+  });
+  it("keeps quiet on sparse distinct static content and accepts historical report JSON",async()=>{
+    let p=project();expect(observeStyleAdvisories(p.scenes[0])).toEqual([]);
+    p=await applyChange(p,{type:"register_creative_evaluator",bundle:bundle()});
+    p=await applyChange(p,{type:"evaluate_creative_scene",scene_id:p.scenes[0].id,
+      evaluator_id:id,evaluator_version:1});
+    const report=p.production_design!.evaluation_reports!.at(-1)!;
+    expect(Object.hasOwn(report,"style_advisories")).toBe(false);
+    expect(JSON.parse(JSON.stringify(report)).style_advisories).toBeUndefined();
+    await expect(validateEvaluatorState(p)).resolves.toBeUndefined();
   });
 });

@@ -247,6 +247,57 @@ test("Evaluator actual author, immutable import and source-bound evaluation surv
     expect(await page.evaluate(key => localStorage.getItem(key), copy.key)).toBe(copy.raw);
     expect((await ownCopy(page, saved)).copy.draft.pending).toBeNull();
     expect(mutationCounts(service)).toEqual({ apply: initialCounts.apply + 4, projectEditGrants: initialCounts.projectEditGrants + 4 });
+
+    // Exercise the same real App, grant and SQLite journal after authoring
+    // observable style candidates; no mock Project or aesthetic approval.
+    let styled = saved;
+    const sceneId = saved.scenes[0].id, baseNode = saved.scenes[0].nodes[0];
+    if (!baseNode) throw new Error("Real evaluator fixture lacks an editable original Canvas node.");
+    for (let index = 0; index < 3; index++) {
+      styled = await service.apply(styled, { type: "add_canvas_node", scene_id: sceneId, node: {
+        ...structuredClone(baseNode), id: randomUUID(), name: "Author repetition " + index,
+        parent_id: null, kind: "text", text: "Repeated actual editable statement",
+        coordinate_space: "project_pixels", x: 250 + index * 75, y: 190,
+        width: 480, height: 95, relations: [], property_locks: [], keyframes: [],
+      } });
+    }
+    for (let index = 0; index < 4; index++) {
+      styled = await service.apply(styled, { type: "add_canvas_node", scene_id: sceneId, node: {
+        ...structuredClone(baseNode), id: randomUUID(), name: "Author density " + index,
+        parent_id: null, kind: "rectangle", text: null, coordinate_space: "project_pixels",
+        x: 200 + index * 40, y: 100 + index * 20, width: 1200, height: 800,
+        relations: [], property_locks: [], keyframes: [],
+      } });
+    }
+    styled = await service.apply(styled, { type: "add_canvas_node", scene_id: sceneId, node: {
+      ...structuredClone(baseNode), id: randomUUID(), name: "Author motion purpose",
+      parent_id: null, kind: "text", text: "Purpose requires editorial review",
+      coordinate_space: "project_pixels", x: 440, y: 590, width: 330, height: 95,
+      relations: [], property_locks: [],
+      keyframes: [{ at: { num: "1", den: "1" }, property: "x", value: 560, interpolation: "linear" }],
+    } });
+    await page.reload(); await revision(page, styled.revision); await open(page);
+    await field(page, "Evaluator source version").selectOption(v2.id + ":2");
+    await button(page, "Evaluate authored scene").click();
+    await revision(page, styled.revision + 1);
+    const advisoryProject = await observe("source-bound repetition, density and motion-purpose review recorded by real SQLite");
+    const styleReport = advisoryProject.production_design!.evaluation_reports!.at(-1)!;
+    expect(styleReport.source_revision).toBe(styled.revision);
+    expect(styleReport.style_advisories?.map(advisory => advisory.kind)).toEqual(expect.arrayContaining([
+      "repetition", "density", "motion_purpose"
+    ]));
+    expect(styleReport.style_advisories?.every(advisory => advisory.scene_id === sceneId
+      && advisory.source_node_ids.every(id => styled.scenes[0].nodes.some(node => node.id === id))
+      && advisory.human_review_required)).toBe(true);
+    expect(styleReport.creative_approval).toBe("not_assessed");
+    const visible = page.getByLabel("Source-bound style advisories r" + styled.revision, { exact: true });
+    await expect(visible).toContainText("Suggested action:");
+    await expect(visible).toContainText(sceneId);
+    await expect(visible).toContainText("scene-local interval");
+    observations.styleAdvisories = structuredClone(styleReport.style_advisories);
+    await restart(advisoryProject);
+    await expect(page.getByLabel("Source-bound style advisories r" + styled.revision, { exact: true })).toContainText("Human creative review required");
+    expect((await service.project(saved.id)).production_design!.evaluation_reports!.at(-1)).toEqual(styleReport);
   });
 });
 

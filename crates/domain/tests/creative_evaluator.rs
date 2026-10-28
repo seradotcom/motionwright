@@ -256,3 +256,118 @@ fn empty_and_nonproject_coordinate_scenes_cannot_falsely_pass_safe_area_checks()
         TechnicalConclusion::Fail
     );
 }
+
+#[test]
+fn authored_repetition_density_and_motion_advisories_are_source_bound_and_reopenable() {
+    let (mut p, scene_id, _) = project();
+    let scene = p
+        .scenes
+        .iter_mut()
+        .find(|scene| scene.id == scene_id)
+        .unwrap();
+    scene.nodes[0].text = Some("Original claim repeated exactly".into());
+    let template = scene.nodes[0].clone();
+    for index in 1..3 {
+        let mut repeated = template.clone();
+        repeated.id = Uuid::new_v4();
+        repeated.name = format!("Original repeated label {index}");
+        repeated.x += f64::from(index) * 75.0;
+        scene.nodes.push(repeated);
+    }
+    for index in 0..4 {
+        let mut geometry = template.clone();
+        geometry.id = Uuid::new_v4();
+        geometry.name = format!("Dense first-party rectangle {index}");
+        geometry.kind = "rectangle".into();
+        geometry.text = None;
+        geometry.x = 200.0 + f64::from(index) * 40.0;
+        geometry.y = 100.0 + f64::from(index) * 20.0;
+        geometry.width = 1200.0;
+        geometry.height = 800.0;
+        scene.nodes.push(geometry);
+    }
+    scene.nodes[0].keyframes = vec![CanvasKeyframe {
+        at: RationalTime { num: 1, den: 1 },
+        property: MotionProperty::X,
+        value: template.x + 200.0,
+        interpolation: MotionInterpolation::Linear,
+    }];
+    p.validate().unwrap();
+    let evaluator = bundle(Uuid::new_v4(), 1);
+    p.apply_change(&Change::RegisterCreativeEvaluator {
+        bundle: evaluator.clone(),
+    })
+    .unwrap();
+    let prior = p.clone();
+    p.apply_change(&Change::EvaluateCreativeScene {
+        evaluator_id: evaluator.id,
+        evaluator_version: 1,
+        scene_id,
+    })
+    .unwrap();
+    let report = &p.production_design.evaluation_reports[0];
+    let kinds = report
+        .style_advisories
+        .iter()
+        .map(|advisory| advisory.kind)
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&CreativeStyleKind::Repetition));
+    assert!(kinds.contains(&CreativeStyleKind::Density));
+    assert!(kinds.contains(&CreativeStyleKind::MotionPurpose));
+    assert_eq!(report.source_generation, prior.generation);
+    assert_eq!(report.source_revision, prior.revision);
+    for advisory in &report.style_advisories {
+        assert_eq!(advisory.scene_id, scene_id);
+        assert!(advisory.interval_start < advisory.interval_end);
+        assert!(advisory.human_review_required);
+        assert!(!advisory.rationale.is_empty());
+        assert!(!advisory.suggested_action.is_empty());
+        assert!(
+            advisory
+                .source_node_ids
+                .iter()
+                .all(|id| prior.scenes[0].nodes.iter().any(|node| node.id == *id))
+        );
+    }
+    assert_eq!(report.creative_approval, "not_assessed");
+    assert_eq!(report.conclusion, TechnicalConclusion::NeedsHumanReview);
+    let historical = report.clone();
+    let restored: Project = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+    assert_eq!(restored.production_design.evaluation_reports[0], historical);
+    let mut forged = historical;
+    forged.style_advisories[0].interval_end = forged.style_advisories[0].interval_start;
+    assert!(
+        forged
+            .validate(&p.production_design.evaluator_bundles)
+            .is_err()
+    );
+    let mut forged = report.clone();
+    forged.style_advisories[0].human_review_required = false;
+    assert!(
+        forged
+            .validate(&p.production_design.evaluator_bundles)
+            .is_err()
+    );
+}
+#[test]
+fn unanimated_sparse_distinct_canvas_does_not_invent_a_style_defect() {
+    let (mut p, scene_id, _) = project();
+    let evaluator = bundle(Uuid::new_v4(), 1);
+    assert!(observe_style_advisories(&p.scenes[0]).is_empty());
+    p.apply_change(&Change::RegisterCreativeEvaluator {
+        bundle: evaluator.clone(),
+    })
+    .unwrap();
+    p.apply_change(&Change::EvaluateCreativeScene {
+        evaluator_id: evaluator.id,
+        evaluator_version: 1,
+        scene_id,
+    })
+    .unwrap();
+    let report = &p.production_design.evaluation_reports[0];
+    assert!(report.style_advisories.is_empty());
+    let json = serde_json::to_value(report).unwrap();
+    assert!(json.get("style_advisories").is_none());
+    let backward = serde_json::from_value::<CreativeEvaluationReport>(json).unwrap();
+    assert_eq!(&backward, report);
+}
