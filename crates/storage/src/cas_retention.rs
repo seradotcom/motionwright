@@ -283,7 +283,24 @@ fn file_identity(file: &File) -> Result<String> {
 }
 
 pub(super) fn database_identity(path: &Path) -> Result<String> {
-    file_identity(&open_control(path, false, false, false)?)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        // This is a pathname observation, never retained-connection authority.
+        // Closing an independently opened SQLite file can release POSIX locks
+        // held by another connection in this process. Stat without opening it.
+        super::checked_sqlite_storage_path(path)?;
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file() {
+            return Err(invalid("database path is not a regular file"));
+        }
+        Ok(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        file_identity(&open_control(path, false, false, false)?)
+    }
 }
 
 fn directory_identity(path: &Path) -> Result<String> {

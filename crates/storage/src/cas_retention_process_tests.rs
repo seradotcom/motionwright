@@ -1711,3 +1711,90 @@ pub(super) fn with_paused_derived_checkpoint(
         fs::read_to_string(&actor.stderr).unwrap()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn real_database_path_identity_preserves_writer_exclusion() {
+    const MODE: &str = "database-identity-lock-probe";
+    if std::env::var(CHILD_MODE).as_deref() == Ok(MODE) {
+        let database = PathBuf::from(std::env::var_os(DATABASE).unwrap());
+        let connection = Connection::open(database).unwrap();
+        connection.busy_timeout(Duration::ZERO).unwrap();
+        assert!(matches!(
+            connection.execute("INSERT INTO identity_probe(value) VALUES(2)", []),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy
+        ));
+        eprintln!("SQLITE_PATH_IDENTITY_LOCK_PROBE:BUSY");
+        return;
+    }
+
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let database = root.join("identity.sqlite3");
+    let connection = Connection::open(&database).unwrap();
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "delete");
+    connection
+        .execute_batch("CREATE TABLE identity_probe(value INTEGER);")
+        .unwrap();
+    let metadata = fs::symlink_metadata(&database).unwrap();
+    let expected = format!("unix:{}:{}", metadata.dev(), metadata.ino());
+    let linked = root.join("linked.sqlite3");
+    std::os::unix::fs::symlink(&database, &linked).unwrap();
+    connection
+        .execute_batch("BEGIN IMMEDIATE; INSERT INTO identity_probe(value) VALUES(1);")
+        .unwrap();
+
+    assert_eq!(
+        cas_retention::database_identity(&database).unwrap(),
+        expected
+    );
+    assert!(cas_retention::database_identity(&linked).is_err());
+    assert!(cas_retention::database_identity(&root).is_err());
+    // Do not execute another statement on the parent before the child tries:
+    // reacquiring a lock here would hide a close()-induced lock release.
+    // Another connection in this process is also insufficient: SQLite's
+    // internal inode bookkeeping can return BUSY despite lost kernel locks.
+    let stderr = root.join("external-writer.stderr");
+    let mut command = test_binary_command(
+        "cas_retention_process_tests::real_database_path_identity_preserves_writer_exclusion",
+    );
+    command
+        .env(CHILD_MODE, MODE)
+        .env(DATABASE, &database)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(File::create(&stderr).unwrap()));
+    let mut child = ExitChildGuard(Some(command.spawn().unwrap()));
+    let status = wait_for_child(child.0.as_mut().unwrap(), &stderr);
+    let _ = child.0.take();
+    assert!(
+        status.success(),
+        "external writer did not observe SQLITE_BUSY: {}",
+        fs::read_to_string(&stderr).unwrap()
+    );
+
+    assert!(
+        fs::read_to_string(&stderr)
+            .unwrap()
+            .lines()
+            .any(|line| line == "SQLITE_PATH_IDENTITY_LOCK_PROBE:BUSY"),
+        "external writer probe was not executed"
+    );
+
+    connection
+        .execute_batch("INSERT INTO identity_probe(value) VALUES(3); COMMIT;")
+        .unwrap();
+    let values = connection
+        .prepare("SELECT value FROM identity_probe ORDER BY value")
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(values, vec![1, 3]);
+}
