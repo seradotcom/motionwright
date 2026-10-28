@@ -1034,7 +1034,22 @@ def selected_projection(current, final, exit_code, job_status, encrypted, recipi
         selected_manifest_sha256=sha(selected_core.canonical(manifest)),
         full_original_json_claimed=False, atomic_sqlite_snapshot_claimed=False,
         upload_authorization="NOT_GRANTED_BY_COLLECTOR")
-    if manifest["schema"]==selected_core.MANIFEST_SCHEMA_V3:
+    if manifest["schema"]==selected_core.MANIFEST_SCHEMA_V3 and scenario==FILM_SCOPE:
+        from native_film180_command_custody import contract as command_contract
+        expected=command_contract(selected.checked_context(current,FILM_SCOPE))
+        require(manifest["diagnostic_contract"]==expected and diagnostic_admission is None,
+                "film-public-command-roster")
+        value.update(schema="motionwright.native.film180-g2-public/3",
+            custody_scope="explicit-source-bound-selected-layers/3",
+            selected_evidence_schema=selected_core.MANIFEST_SCHEMA_V3,
+            selected_lost_scope=list(selected_core.LOST_SCOPE_V3),
+            command_originals_contract_sha256=sha(selected_core.canonical(expected)),
+            command_originals_intake_verified=diagnostic_verified,
+            command_originals_roster_complete=manifest["diagnostic_roster_complete"],
+            raw_diagnostics_included=manifest["raw_diagnostics_included"],
+            diagnostic_eof_claimed=False,diagnostic_history_complete_claimed=False,
+            diagnostic_payloads_redacted=False)
+    elif manifest["schema"]==selected_core.MANIFEST_SCHEMA_V3:
         require(scenario=="repaired-g2" and diagnostic_admission is not None,
                 "ffv1-public-admission-required")
         admitted=selected.checked_ffv1_admission(diagnostic_admission,current=current,
@@ -1160,7 +1175,9 @@ def seal(env, job_status):
     if ffv1_stage_plan_absent:
         selected.checked_ffv1_plan_absence(manifest,current=current,source_bindings=bindings)
     diagnostic_intake_verified=False
-    if diagnostic_admission is not None and custody_valid and source_unchanged:
+    if (scenario == FILM_SCOPE or (diagnostic_admission is not None and custody_valid)) and source_unchanged:
+        # Raw originals remain useful even when a failed/unknown native terminal
+        # cannot satisfy the independent success policy. This performs no replay.
         try:
             selected.verify_decrypted_selection(raw,current=current,scenario=scenario,
                 expected_diagnostic_admission=diagnostic_admission,require_complete=False)
@@ -1170,7 +1187,7 @@ def seal(env, job_status):
             diagnostic_intake_verified=False
     intake_verified = False
     if (manifest["required_layers_complete"] and custody_valid and not ffv1_stage_plan_absent
-            and (diagnostic_admission is None or diagnostic_intake_verified)):
+            and ((diagnostic_admission is None and scenario != FILM_SCOPE) or diagnostic_intake_verified)):
         try:
             selected.verify_decrypted_selection(raw, current=current, scenario=scenario,
                 expected_diagnostic_admission=diagnostic_admission)

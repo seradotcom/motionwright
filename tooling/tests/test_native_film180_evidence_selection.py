@@ -87,7 +87,11 @@ class FilmSelectionTests(unittest.TestCase):
         self.assertTrue(result["source_content_oracle_recomputed"])
         self.assertFalse(result["decode_or_psnr_recomputed"])
         self.assertTrue(all(result[k] is False for k in ("physical_acceptance","human_acceptance","release_authorized","native_reopen_performed","packet_PTS_and_AAC_priming_verified")))
-        self.assertFalse(any("stdout" in r["relative_path"] or r["relative_path"].endswith(".rgb24") for r in manifest["members"]))
+        from native_film180_command_custody import entries
+        originals={entry["relative_path"] for entry in entries()}
+        self.assertTrue(all(r["relative_path"] in originals and r["kind"]=="diagnostic-original"
+            for r in manifest["members"] if "stdout" in r["relative_path"]))
+        self.assertFalse(any(r["relative_path"].endswith(".rgb24") for r in manifest["members"]))
         self.assertEqual(1920*1080*3*180,1119744000)
         self.assertEqual(core.MAX_TOTAL,512*1024*1024)
 
@@ -452,6 +456,296 @@ class DedicatedPacketCaptureTests(unittest.TestCase):
 
 
 if __name__=="__main__":unittest.main()
+
+class FilmCommandOriginalCustodyTests(unittest.TestCase):
+    """Real private filesystem/ciphertext tests; no native renderer is invoked."""
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        import subprocess
+        import shutil
+        import native_film180_command_custody as commands
+        cls.commands = commands
+        cls.home = tempfile.TemporaryDirectory(prefix="film-command-source-")
+        cls.source = Path(cls.home.name) / "source"
+        cls.source.mkdir(mode=0o700)
+        (cls.source / "tooling").mkdir()
+        import native_film180_evidence_selection as film
+        import native_mlt_evidence_selection as selection
+        cls.source_paths = ("tooling/native_evidence_projection.py",
+                            "tooling/native_film180_command_custody.py",
+                            "tooling/native_film180_evidence_selection.py",
+                            "tooling/native_mlt_evidence_selection.py")
+        for name, module in zip(cls.source_paths, (core, commands, film, selection)):
+            shutil.copyfile(module.__file__, cls.source / name)
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(cls.source), *args], stderr=subprocess.DEVNULL).decode().strip()
+        git("init", "--quiet")
+        git("config", "user.email", "source-test@example.invalid")
+        git("config", "user.name", "Film custody source test")
+        git("add", "tooling")
+        git("commit", "--quiet", "-m", "Synthetic source-only custody fixture")
+        from native_mlt_evidence_selection import SEM
+        cls.current = dict(source_sha=git("rev-parse", "HEAD"), semwright_sha=SEM,
+                           run_id="34567", run_attempt="1", scenario="film180-g2")
+        cls.bindings = [dict(path=name, sha256=core.sha((cls.source/name).read_bytes()))
+                        for name in cls.source_paths]
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+        import base64
+        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        der = cls.key.public_key().public_bytes(serialization.Encoding.DER,
+                                               serialization.PublicFormat.SubjectPublicKeyInfo)
+        cls.recipient = dict(spki_der_base64=base64.b64encode(der).decode(), sha256=core.sha(der))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.home.cleanup()
+
+    def setUp(self):
+        import tempfile
+        self.temp = tempfile.TemporaryDirectory(prefix="film-command-originals-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.control = self.root / "control"; self.control.mkdir(mode=0o700)
+        self.observation = self.root / "observation"; self.observation.mkdir(mode=0o700)
+        self.anchor = b"SYNTHETIC_SOURCE_ONLY_CONTROL"
+        (self.control / "anchor.bin").write_bytes(self.anchor)
+        self.contract = self.commands.contract(self.current)
+        self.roles = self.commands.role_contract()
+        self.roles[("single", "attempt-custody", "anchor")] = (1, 1)
+
+    def put(self, path, raw):
+        target = self.observation / path
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        target.chmod(0o600)
+        return target
+
+    def command(self, label="original.render", stdout=b"PRIVATE-PARTIAL-STDOUT-\xff\x00", stderr=b"", *, code=None, deadline=True):
+        self.put(label+".stdout", stdout)
+        self.put(label+".stderr", stderr)
+        self.put(label+".intent.json", b'{"argv":["PRIVATE-OWNER-PATH","render"],"automatic_retry":false}')
+        terminal = dict(exit_code=code, deadline_exceeded=deadline, automatic_retry=False,
+            stdout_sha256=core.sha(stdout), stdout_bytes=len(stdout), stderr_sha256=core.sha(stderr),
+            stderr_bytes=len(stderr), native_terminal_inferred_from_exit=False)
+        self.put(label+".terminal.json", core.canonical(terminal))
+        return stdout, stderr
+
+    def spec(self, *, root_present=True):
+        roots = dict(source=str(self.source), control=str(self.control))
+        if root_present: roots["observation"] = str(self.observation)
+        rows = [dict(root="control", relative_path="anchor.bin", phase="single", layer="attempt-custody",
+            role="anchor", kind="original", required=True, expected_sha256=core.sha(self.anchor),
+            bytes=len(self.anchor), policy=None)]
+        # Exercise the actual Film collector and Selection.add with real private
+        # filesystem handles. The generic capture below verifies committed copies
+        # of all four executing source modules; no native owner is constructed.
+        import native_film180_evidence_selection as film
+        collector = film.FilmSelection.__new__(film.FilmSelection)
+        collector.roots = roots; collector.context = self.current
+        collector.diagnostic_contract = self.contract; collector.contract = self.roles
+        collector.policies = {}; collector.members = rows; collector.absence = []; collector.cache = {}
+        handles = core.RootHandles(roots)
+        try:
+            handles.admit_diagnostic_contract(self.contract)
+            collector.collect_command_originals(handles)
+        finally:
+            handles.close()
+        guards = collector.absence
+        return dict(schema=core.SPEC_SCHEMA_V3, context=self.current, roots=roots, members=rows,
+            absence_guards=guards, exclusions=[], source_bindings=self.bindings,
+            origin=dict(kind="generated-first-party-fixture", fixture_id="film180-g2",
+                producer_paths=[self.source_paths[1]], private_data=True,
+                upload_authorization="NOT_GRANTED_BY_COLLECTOR"))
+
+    def capture(self, spec=None):
+        return core.capture_selected_originals(spec or self.spec(), policies={},
+            role_contract=self.roles, diagnostic_contract=self.contract)
+
+    def inspect(self, raw):
+        return core.inspect_selected_tar(raw, expected_context=self.current,
+            role_contract=self.roles, policies={}, expected_diagnostic_contract=self.contract,
+            require_complete=False)
+
+    def row(self, manifest, path):
+        return next(row for row in manifest["members"] if row["relative_path"] == path)
+
+    def test_source_owned_roster_has_18_commands_68_real_names_and_finite_limits(self):
+        self.assertEqual(len(self.commands.COMMANDS), 18)
+        self.assertEqual(len(self.contract["entries"]), 68)
+        self.assertEqual(self.commands.MAX_TOTAL, 104660992)
+        names = {row["relative_path"] for row in self.contract["entries"]}
+        self.assertNotIn("edited.stage-audio.intent.json", names)
+        for phase in ("original","edited"):
+            self.assertNotIn(phase+".original-pcm-decode.intent.json", names)
+            self.assertNotIn(phase+".original-packet-probe.intent.json", names)
+        self.assertTrue(all(not name.startswith("fixed.") for name in names))
+        self.assertIn("original-attempt-error.json", names)
+
+    def test_partial_binary_and_zero_stream_survive_original_tar_and_authenticated_encryption(self):
+        import ci_private_evidence as crypto
+        stdout, stderr = self.command()
+        error = b'{"error":"PRIVATE-ORIGINAL-ERROR","traceback":"PRIVATE-TRACE","automatic_retry":false}'
+        self.put("original-attempt-error.json", error)
+        raw, manifest = self.capture(); self.inspect(raw)
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            for path, expected in (("original.render.stdout",stdout),("original.render.stderr",stderr),
+                                   ("original-attempt-error.json",error)):
+                row = self.row(manifest,path)
+                self.assertEqual(archive.extractfile(row["member"]).read(), expected)
+                self.assertEqual(row["retained_bytes"], len(expected))
+                self.assertEqual(row["retained_sha256"], core.sha(expected))
+        selected = next(row for row in manifest["film_command_originals"]["commands"] if row["label"]=="original.render")
+        self.assertEqual(selected["capture_status"], "ORIGINALS_RETAINED")
+        self.assertEqual(selected["reported_result"], "UNKNOWN")
+        self.assertFalse(manifest["film_command_originals"]["stream_eof_claimed"])
+        context = {key:value for key,value in self.current.items() if key!="scenario"}
+        sealed = crypto.encrypt_snapshot(raw,self.recipient,context)
+        self.assertNotIn(stdout,sealed)
+        self.assertNotIn(error,sealed)
+        recovered, bound = crypto.decrypt_snapshot(sealed,self.key)
+        self.assertEqual(recovered,raw); self.assertEqual(bound,context)
+
+    def test_absence_is_explicit_and_does_not_invent_a_terminal_or_no_effects(self):
+        raw, manifest = self.capture(); self.inspect(raw)
+        self.assertEqual(len(manifest["absence_guards"]),68)
+        self.assertTrue(all(row["capture_status"]=="ABSENT_OBSERVED"
+            for row in manifest["film_command_originals"]["commands"]))
+        self.assertFalse(manifest["film_command_originals"]["absent_means_no_effects"])
+        self.assertFalse(manifest["raw_diagnostics_included"])
+        with self.assertRaises(core.SelectionError):
+            self.commands.require_successful_capture(manifest["film_command_originals"])
+
+    def test_missing_stderr_is_not_an_invented_empty_original(self):
+        self.command(stdout=b"",stderr=b"partial")
+        (self.observation/"original.render.stderr").unlink()
+        raw, manifest=self.capture(); self.inspect(raw)
+        self.assertEqual(self.row(manifest,"original.render.stdout")["retained_bytes"],0)
+        self.assertFalse(any(row["relative_path"]=="original.render.stderr" for row in manifest["members"]))
+        row=next(row for row in manifest["film_command_originals"]["commands"] if row["label"]=="original.render")
+        self.assertEqual(row["capture_status"],"INCOMPLETE_OR_UNKNOWN")
+        self.assertEqual(row["parts"]["stderr"]["state"],"ABSENT_OBSERVED")
+
+    def test_unlisted_neighbors_and_other_scope_cannot_enter_the_nofollow_reader(self):
+        self.put("neighbor.stdout",b"NEIGHBOR-MUST-NOT-BE-READ")
+        self.put("nested/original.render.stdout",b"NESTED-MUST-NOT-BE-READ")
+        handles=core.RootHandles(dict(observation=str(self.observation)))
+        try:
+            with self.assertRaises(core.SelectionError):
+                handles.read("observation",("original.render.stdout",),1024)
+            handles.admit_diagnostic_contract(self.contract)
+            for path in ("neighbor.stdout","nested/original.render.stdout","fixed.project-inspect.stdout"):
+                with self.assertRaises(core.SelectionError):
+                    handles.read("observation",core.member_path(path),1024)
+        finally: handles.close()
+        wrong=copy.deepcopy(self.contract);wrong["context"]["scenario"]="fixedtxt-v4"
+        with self.assertRaises(core.SelectionError):
+            core._checked_diagnostic_contract(wrong,wrong["context"])
+
+    def test_symlink_and_hardlink_are_failed_originals_without_following_them(self):
+        import os
+        target=self.put("private-target.bin",b"ORIGINAL-SECRET-TARGET")
+        os.symlink(target,self.observation/"original.render.stdout")
+        os.link(target,self.observation/"original.render.stderr")
+        raw,manifest=self.capture();self.inspect(raw)
+        self.assertNotIn(b"ORIGINAL-SECRET-TARGET",raw)
+        for path in ("original.render.stdout","original.render.stderr"):
+            self.assertEqual(self.row(manifest,path)["state"],"CAPTURE_FAILED")
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+
+    def test_oversize_is_failed_not_truncated_and_keeps_other_originals(self):
+        self.command()
+        path=self.observation/"original.render.stdout"
+        with path.open("wb") as stream: stream.truncate(self.commands.MAX_STDOUT+1)
+        raw,manifest=self.capture();self.inspect(raw)
+        self.assertEqual(self.row(manifest,"original.render.stdout")["state"],"CAPTURE_FAILED")
+        self.assertEqual(self.row(manifest,"original.render.stderr")["state"],"INCLUDED")
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+
+    def test_changed_selected_bytes_are_retained_as_uncertain_not_replaced(self):
+        self.command()
+        spec=self.spec()
+        self.put("original.render.stdout",b"CHANGED-AFTER-PREFLIGHT")
+        raw,manifest=self.capture(spec)
+        self.assertEqual(self.row(manifest,"original.render.stdout")["state"],"CHANGED")
+        self.assertNotIn(b"CHANGED-AFTER-PREFLIGHT",raw)
+        self.assertFalse(manifest["required_layers_complete"])
+
+    def test_contract_source_run_attempt_or_limit_changes_fail_before_any_open(self):
+        for change in (lambda c:c["context"].update(source_sha="b"*40),
+                       lambda c:c["context"].update(run_id="34568"),
+                       lambda c:c["context"].update(run_attempt="2"),
+                       lambda c:c["entries"][0].update(maximum=self.commands.MAX_INTENT+1),
+                       lambda c:c["entries"][0].update(relative_path="unlisted.intent.json")):
+            spec=self.spec(); changed=copy.deepcopy(self.contract);change(changed)
+            with mock.patch.object(core,"RootHandles",side_effect=AssertionError("no path may be opened")):
+                with self.assertRaises(core.SelectionError):
+                    core.capture_selected_originals(spec,policies={},role_contract=self.roles,
+                        diagnostic_contract=changed)
+
+    def test_missing_observation_root_is_unobserved_not_an_absence_proof(self):
+        raw,manifest=self.capture(self.spec(root_present=False));self.inspect(raw)
+        self.assertEqual(len(manifest["absence_guards"]),0)
+        diagnostics=[row for row in manifest["members"] if row["kind"]=="diagnostic-original"]
+        self.assertEqual(len(diagnostics),68)
+        self.assertTrue(all(row["state"]=="CAPTURE_FAILED" for row in diagnostics))
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+
+    def test_forged_terminal_summary_cannot_promote_unknown_to_exit_zero(self):
+        self.command()
+        raw,manifest=self.capture()
+        import tarfile
+        entries={}
+        with tarfile.open(fileobj=io.BytesIO(raw),mode="r:") as archive:
+            for info in archive.getmembers():entries[info.name]=archive.extractfile(info).read()
+        for row in manifest["film_command_originals"]["commands"]:
+            if row["label"]=="original.render":row["reported_result"]="EXIT_ZERO_REPORTED"
+        entries["selected-evidence-manifest.json"]=core.canonical(manifest)
+        stream=io.BytesIO()
+        with tarfile.open(fileobj=stream,mode="w",format=tarfile.USTAR_FORMAT) as archive:
+            for name,data in entries.items():
+                info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o600
+                archive.addfile(info,io.BytesIO(data))
+        with self.assertRaisesRegex(core.SelectionError,"film-command-summary-originals"):
+            self.inspect(stream.getvalue())
+
+    def test_private_public_projection_contains_no_original_diagnostics_or_success_credit(self):
+        import native_mlt_g2_custody as custody
+        import native_mlt_evidence_selection as selection
+        import ci_private_evidence as crypto
+        self.command(stdout=b"PRIVATE-RAW-OUTPUT-SENTINEL")
+        self.put("original-attempt-error.json",b'{"error":"PRIVATE-ERROR-SENTINEL"}')
+        raw,manifest=self.capture()
+        current={key:value for key,value in self.current.items() if key!="scenario"}
+        encrypted=crypto.encrypt_snapshot(raw,self.recipient,current)
+        public=custody.selected_projection(current,None,1,"failure",encrypted,self.recipient,
+            manifest,producer_started=True,source_unchanged=True,intake_verified=False,
+            scenario="film180-g2",diagnostic_intake_verified=True)
+        selection.validate_public_evidence(public)
+        self.assertEqual(public["schema"],"motionwright.native.film180-g2-public/3")
+        self.assertTrue(public["command_originals_intake_verified"])
+        self.assertTrue(public["raw_diagnostics_included"])
+        self.assertFalse(public["selected_intake_verified"])
+        self.assertFalse(public["source_content_and_live_module_verified"])
+        self.assertNotIn(b"PRIVATE-",core.canonical(public))
+        self.assertEqual(public["native_terminal"],"ERROR_OR_UNKNOWN")
+        for name in ("physical_AV_master_acceptance","human_acceptance","release_authorized"):
+            self.assertFalse(public[name])
+
+    def test_actual_changed_collector_source_rejects_capture_before_selected_payloads(self):
+        self.command()
+        spec=self.spec()
+        source=self.source/self.source_paths[0]
+        original=source.read_bytes()
+        try:
+            source.write_bytes(original+b"\n# changed source fixture\n")
+            with self.assertRaises(core.SelectionError):
+                self.capture(spec)
+        finally:
+            source.write_bytes(original)
+
 
 def fixedtxt_fixture(*, fixture="flow-control-base", arm="RED", decoded=False):
     """Synthetic source-only originals; no caller, renderer or kernel evidence."""

@@ -28,7 +28,8 @@ MANIFEST_SCHEMA_V3 = "motionwright.native.selected-evidence/3"
 DIAGNOSTIC_CONTRACT_SCHEMA = "motionwright.native.diagnostic-contract/1"
 DIAGNOSTIC_KINDS = frozenset(("diagnostic-original", "diagnostic-json-original"))
 DIAGNOSTIC_MAXIMUM = {"stdout": 262144, "stderr": 262144,
-                      "stdin": 65536, "typed-terminal": 65536}
+                      "stdin": 65536, "typed-terminal": 65536,
+                      "film-command-original": 4 * 1024 * 1024}
 MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 4096
@@ -387,6 +388,21 @@ def excluded(parts):
     return any(p in EXCLUDED_COMPONENTS or p in EXCLUDED_NAMES
                or p.endswith(EXCLUDED_SUFFIXES) for p in lowered)
 
+def _film_command_entry(root, path, diagnostic_contract):
+    if (type(diagnostic_contract) is not dict
+            or type(diagnostic_contract.get("context")) is not dict
+            or diagnostic_contract["context"].get("scenario") != "film180-g2"):
+        return None
+    from native_film180_command_custody import entry_for
+    return entry_for(root, path, diagnostic_contract)
+
+
+def _diagnostic_path_allowed(item, diagnostic_contract):
+    entry = _film_command_entry(item.get("root"), item.get("relative_path"), diagnostic_contract)
+    return entry is not None and all(item.get(key) == entry[key]
+        for key in ("phase", "layer", "role"))
+
+
 def context(value):
     expected = {"source_sha", "semwright_sha", "run_id", "run_attempt", "scenario"}
     require(type(value) is dict and set(value) == expected, "context-fields")
@@ -410,6 +426,7 @@ class RootHandles:
                 and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd,
                 "capture-needs-linux-openat")
         self.fds, self.initial, self.paths = {}, {}, {}
+        self.diagnostic_contract = None
         try:
             for name, raw in roots.items():
                 require(type(raw) is str and raw.startswith("/") and "//" not in raw,
@@ -470,8 +487,17 @@ class RootHandles:
         for fd, _ in parents:
             os.close(fd)
 
+    def admit_diagnostic_contract(self, contract):
+        # This only enables the closed Film filenames for private read custody.
+        # It confers no native/Host write authority and cannot enable neighbors.
+        require(self.diagnostic_contract is None, "diagnostic-reader-repeat")
+        self.diagnostic_contract = _checked_diagnostic_contract(contract, contract["context"])
+
     def read(self, root, parts, maximum):
-        require(not excluded(parts), "excluded-before-open")
+        entry = _film_command_entry(root, "/".join(parts), self.diagnostic_contract)
+        require(not excluded(parts) or entry is not None, "excluded-before-open")
+        if entry is not None:
+            maximum = min(maximum, entry["maximum"])
         parents = self.parent(root, parts)
         fd = -1
         try:
@@ -504,7 +530,8 @@ class RootHandles:
             self.close_parents(parents)
 
     def stat_member(self, root, parts):
-        require(not excluded(parts), "excluded-before-stat")
+        require(not excluded(parts) or _film_command_entry(root, "/".join(parts),
+                self.diagnostic_contract) is not None, "excluded-before-stat")
         parents = self.parent(root, parts)
         try:
             mark = os.stat(parts[-1], dir_fd=parents[-1][0], follow_symlinks=False)
@@ -528,6 +555,10 @@ def _checked_diagnostic_contract(contract, expected_context, *, policies=None,
             "diagnostic-contract-fields")
     context(frozen["context"])
     require(frozen["context"] == expected_context, "diagnostic-context-mismatch")
+    film = frozen["context"]["scenario"] == "film180-g2"
+    if film:
+        from native_film180_command_custody import contract as film_contract
+        require(frozen == film_contract(expected_context), "film-command-fixed-contract")
     entries = frozen["entries"]
     require(type(entries) is list and 1 <= len(entries) <= MAX_FILES,
             "diagnostic-contract-entries")
@@ -538,8 +569,9 @@ def _checked_diagnostic_contract(contract, expected_context, *, policies=None,
         require(type(entry["root"]) is str and LABEL.fullmatch(entry["root"])
                 and entry["root"] != "source", "diagnostic-entry-root")
         if roots is not None:
-            require(entry["root"] in roots, "diagnostic-entry-root")
-        require(not excluded(member_path(entry["relative_path"])), "diagnostic-entry-excluded")
+            require(entry["root"] in roots or film, "diagnostic-entry-root")
+        require(not excluded(member_path(entry["relative_path"])) or film,
+                "diagnostic-entry-excluded")
         require(type(entry["phase"]) is str and entry["phase"] in PHASES
                 and type(entry["layer"]) is str and entry["layer"] == "attempt-custody"
                 and type(entry["role"]) is str and LABEL.fullmatch(entry["role"]),
@@ -549,6 +581,7 @@ def _checked_diagnostic_contract(contract, expected_context, *, policies=None,
             require(key in role_contract, "diagnostic-entry-role")
         require(type(entry["type"]) is str and entry["type"] in DIAGNOSTIC_MAXIMUM,
                 "diagnostic-entry-type")
+        require(entry["type"] != "film-command-original" or film, "film-command-scenario")
         require(type(entry["maximum"]) is int
                 and 0 < entry["maximum"] <= DIAGNOSTIC_MAXIMUM[entry["type"]],
                 "diagnostic-entry-maximum")
@@ -630,6 +663,9 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
     v3 = frozen["schema"] == SPEC_SCHEMA_V3
     require(v3 or diagnostic_contract is None, "diagnostic-contract-on-legacy")
     context(frozen["context"])
+    if v3:
+        diagnostic_contract = _checked_diagnostic_contract(diagnostic_contract, frozen["context"],
+            policies=policies, role_contract=role_contract)
     require(type(frozen["roots"]) is dict and 1 <= len(frozen["roots"]) <= 16
             and all(type(k) is str and LABEL.fullmatch(k) for k in frozen["roots"]),
             "spec-roots")
@@ -647,8 +683,9 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
         diagnostic = v3 and type(item.get("kind")) is str and item["kind"] in DIAGNOSTIC_KINDS
         require(set(item) == (member_keys | {"diagnostic_type"} if diagnostic else member_keys),
                 "member-fields")
-        require(type(item["root"]) is str and item["root"] in frozen["roots"]
-                and item["root"] != "source", "member-root")
+        require(type(item["root"]) is str and item["root"] != "source"
+                and (item["root"] in frozen["roots"] or
+                    (diagnostic and _diagnostic_path_allowed(item, diagnostic_contract))), "member-root")
         parts = member_path(item["relative_path"])
         require(type(item["layer"]) is str and item["layer"] in LAYERS
                 and type(item["phase"]) is str and item["phase"] in PHASES, "member-scope")
@@ -680,7 +717,8 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
             require(type(item["policy"]) is str and item["policy"] in policies,
                     "unregistered-json-policy")
             _checked_json_policy(item, policies[item["policy"]], legacy=not v3)
-        require(not excluded(parts), "required-role-in-excluded-scope")
+        require(not excluded(parts) or (diagnostic and
+                _diagnostic_path_allowed(item, diagnostic_contract)), "required-role-in-excluded-scope")
         role_counts[contract_key] = role_counts.get(contract_key, 0) + 1
     for key, bounds in role_contract.items():
         require(type(key) is tuple and len(key) == 3
@@ -711,7 +749,8 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
                 "absence-guard-fields")
         require(type(row["root"]) is str and row["root"] in frozen["roots"]
                 and row["root"] != "source", "absence-guard-root")
-        require(not excluded(member_path(row["relative_path"])), "absence-guard-excluded")
+        require(not excluded(member_path(row["relative_path"])) or
+                _diagnostic_path_allowed(row, diagnostic_contract), "absence-guard-excluded")
         require(type(row["phase"]) is str and row["phase"] in PHASES
                 and type(row["layer"]) is str and row["layer"] in LAYERS
                 and type(row["role"]) is str, "absence-guard-scope")
@@ -735,6 +774,9 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
                 and row["path"] not in bind_names, "source-binding-digest")
         bind_names.add(row["path"])
     require("tooling/native_evidence_projection.py" in bind_names, "collector-source-binding")
+    if v3 and frozen["context"]["scenario"] == "film180-g2":
+        require("tooling/native_film180_command_custody.py" in bind_names,
+                "film-command-source-binding")
     origin = frozen["origin"]
     require(type(origin) is dict and set(origin) == {"kind", "fixture_id", "producer_paths",
                 "private_data", "upload_authorization"}, "origin-fields")
@@ -809,12 +851,19 @@ def capture_selected_originals(spec, *, policies, role_contract, diagnostic_cont
     rows, payloads, initial = [], {}, {}
     stable, source_bound = False, False
     with _HandlesContext(spec["roots"]) as handles:
+        if diagnostic_contract is not None and spec["context"]["scenario"] == "film180-g2":
+            handles.admit_diagnostic_contract(diagnostic_contract)
         _verify_sources(spec, handles)
         source_bound = True
         # Freeze only selected namespace entries before reading any payload.
         inode_owners = {}
         for item in spec["members"]:
             key = (item["root"], item["relative_path"])
+            if item["root"] not in spec["roots"]:
+                # The whole original observation root was never available.
+                # Do not probe a substitute path or invent an absence witness.
+                initial[key] = "CAPTURE_FAILED"
+                continue
             try:
                 mark = handles.stat_member(item["root"], member_path(item["relative_path"]))
                 require(mark[:2] not in inode_owners, "aliased-selected-member")
@@ -963,6 +1012,9 @@ def capture_selected_originals(spec, *, policies, role_contract, diagnostic_cont
                                          for r in rows),
             diagnostic_eof_claimed=False, diagnostic_history_complete_claimed=False,
             diagnostic_payloads_redacted=False, lost_scope=list(LOST_SCOPE_V3))
+    if v3 and spec["context"]["scenario"] == "film180-g2":
+        from native_film180_command_custody import summarize
+        manifest["film_command_originals"] = summarize(rows, absence_guards, payloads, diagnostic_contract)
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for name, data in sorted(payloads.items()):
@@ -1046,7 +1098,9 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract,
         counts[k] = counts.get(k, 0) + 1
         require(not require_complete or not row["required"] or row["state"] == "INCLUDED",
                 "selected-required-missing")
-        require(not excluded(member_path(row.get("relative_path"))), "selected-excluded-member")
+        require(not excluded(member_path(row.get("relative_path"))) or
+                (row["kind"] in DIAGNOSTIC_KINDS and _diagnostic_path_allowed(row, diagnostic_contract)),
+                "selected-excluded-member")
         require(type(row.get("root")) is str and LABEL.fullmatch(row["root"])
                 and row["root"] != "source", "selected-member-root")
         if _json_snapshot_member(row, legacy=not v3):
@@ -1105,7 +1159,8 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract,
         name = (row["root"], row["relative_path"])
         require(name not in selected_names and name not in guard_names, "selected-absence-alias")
         guard_names.add(name)
-        require(not excluded(member_path(row["relative_path"]))
+        require((not excluded(member_path(row["relative_path"])) or
+                 _diagnostic_path_allowed(row, diagnostic_contract))
                 and row["absent_before"] is True and row["absent_after"] is True
                 and row["opened"] is False and row["hashed"] is False, "selected-absence-changed")
     if v3:
@@ -1118,6 +1173,13 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract,
         require(all(manifest.get(k) is False for k in ("diagnostic_eof_claimed",
                 "diagnostic_history_complete_claimed", "diagnostic_payloads_redacted")),
                 "selected-diagnostic-scope-escalation")
+    if v3 and expected_context["scenario"] == "film180-g2":
+        from native_film180_command_custody import SUMMARY_SCHEMA
+        summary = manifest.get("film_command_originals")
+        require(type(summary) is dict and summary.get("schema") == SUMMARY_SCHEMA
+                and summary.get("context") == expected_context, "film-command-summary-binding")
+    else:
+        require("film_command_originals" not in manifest, "film-command-summary-on-other-scope")
     for row in manifest.get("exclusions", []):
         require(row.get("state") == "EXCLUDED_BY_SCOPE"
                 and excluded(member_path(row.get("relative_path")))
@@ -1213,10 +1275,12 @@ def inspect_selected_tar(raw, *, expected_context, role_contract, policies,
         expected = {r["member"]: r for r in manifest["members"] if r["state"] == "INCLUDED"}
         require(set(names) == set(expected) | {"selected-evidence-manifest.json"},
                 "selected-tar-unlisted-member")
+        original_buffers = {}
         for name, row in expected.items():
             info = archive.getmember(name)
             require(info.size == row["retained_bytes"], "selected-tar-size")
             data = archive.extractfile(info).read()
+            original_buffers[name] = data
             require(sha(data) == row["retained_sha256"], "selected-tar-digest")
             require(row["kind"] in ("original", "json-original", "json-projection")
                     or (manifest["schema"] == MANIFEST_SCHEMA_V3 and row["kind"] in DIAGNOSTIC_KINDS),
@@ -1245,4 +1309,9 @@ def inspect_selected_tar(raw, *, expected_context, role_contract, policies,
                         and p.get("original_bytes_retained_locally") is True
                         and p.get("full_original_json_claimed") is False,
                         "selected-projection-binding")
+        if manifest["schema"] == MANIFEST_SCHEMA_V3 and expected_context["scenario"] == "film180-g2":
+            from native_film180_command_custody import summarize
+            require(manifest["film_command_originals"] == summarize(manifest["members"],
+                manifest["absence_guards"], original_buffers, expected_diagnostic_contract),
+                "film-command-summary-originals")
     return manifest

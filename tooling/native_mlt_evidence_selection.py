@@ -232,6 +232,7 @@ FILM_SOURCE_PATHS = SOURCE_PATHS + (
     "tooling/native_film180_original_g2.py", "tooling/native_film180_media_readback.py",
     "crates/native/examples/native-film180-e2e.rs",
     "tooling/native_film180_evidence_selection.py",
+    "tooling/native_film180_command_custody.py",
 )
 
 
@@ -856,6 +857,11 @@ class Selection:
                     and self.admission is None and "observation" in self.roots)),
                 "ffv1-plan-absence-mode")
         self.ffv1_stage_plan_absent=ffv1_stage_plan_absent
+        self.diagnostic_contract = (None if self.admission is None
+                                    else self.admission["capture_diagnostic_contract"])
+        if scenario == "film180-g2":
+            from native_film180_command_custody import contract
+            self.diagnostic_contract = contract(self.context)
         self.bindings = source_bindings
         self.contract = role_contract
         self.policies = json_policies
@@ -867,7 +873,13 @@ class Selection:
 
     def add(self, handles, root, path, role, layer="readback", phase="original", policy=None,
             identity=None, kind=None, maximum=None, diagnostic_type=None):
-        relative(path)
+        if diagnostic_type == "film-command-original":
+            require(core._diagnostic_path_allowed(dict(root=root, relative_path=path,
+                    phase=phase, layer=layer, role=role), self.diagnostic_contract),
+                    "film-command-selected-layout")
+            core.member_path(path)
+        else:
+            relative(path)
         actual = (root, path)
         require(actual not in self.cache, "native-duplicate-selected-path")
         key = (phase, layer, role)
@@ -877,7 +889,7 @@ class Selection:
                    kind=kind, required=diagnostic_type is not None or self.contract[key][0] > 0,
                    expected_sha256=None, bytes=None, policy=policy)
         if diagnostic_type is not None:
-            require(self.admission is not None and kind in core.DIAGNOSTIC_KINDS,
+            require(self.diagnostic_contract is not None and kind in core.DIAGNOSTIC_KINDS,
                     "ffv1-diagnostic-admission-required")
             row["diagnostic_type"]=diagnostic_type
         value, raw = None, None
@@ -891,7 +903,7 @@ class Selection:
                 row.update(expected_sha256=sha(raw), bytes=len(raw))
             except (FileNotFoundError, OSError, ValueError, TypeError, core.SelectionError):
                 raw, value = None, None
-        else:
+        elif diagnostic_type != "film-command-original":
             # No missing root is created or probed. Its mandatory logical role
             # receives an unobserved placeholder in the existing private root.
             row.update(root="control", relative_path="unobserved/"+phase+"/"+role+"-"+str(len(self.members))+(".json" if policy else ".bin"))
@@ -1076,6 +1088,8 @@ class Selection:
         self.attempted = True
         handles = core.RootHandles(self.roots)
         try:
+            if self.context["scenario"] == "film180-g2":
+                handles.admit_diagnostic_contract(self.diagnostic_contract)
             (collect or self.collect_mlt)(handles)
         finally:
             handles.close()
@@ -1084,14 +1098,15 @@ class Selection:
                            "observation":("observer-diagnostic.json",)}.items():
             if root in self.roots:
                 exclusions.extend(dict(root=root,relative_path=p,reason="outside-reviewed-scope") for p in paths)
-        spec = dict(schema=core.SPEC_SCHEMA_V3 if self.admission is not None else core.SPEC_SCHEMA,
+        spec = dict(schema=core.SPEC_SCHEMA_V3 if self.diagnostic_contract is not None else core.SPEC_SCHEMA,
                     context=self.context, roots=self.roots, members=self.members,
                     absence_guards=self.absence, exclusions=exclusions, source_bindings=self.bindings,
                     origin=dict(kind="generated-first-party-fixture",fixture_id=self.context["scenario"],
-                        producer_paths=["tooling/native_mlt_sequence_e2e.py"],private_data=True,
+                        producer_paths=(["tooling/native_film180_original_g2.py", "tooling/native_film180_command_custody.py"]
+                            if self.context["scenario"] == "film180-g2" else ["tooling/native_mlt_sequence_e2e.py"]),private_data=True,
                         upload_authorization="NOT_GRANTED_BY_COLLECTOR"))
         return core.capture_selected_originals(spec,policies=self.policies,role_contract=self.contract,
-            diagnostic_contract=None if self.admission is None else self.admission["capture_diagnostic_contract"])
+            diagnostic_contract=self.diagnostic_contract)
 
 
 class Intake:
@@ -1099,17 +1114,20 @@ class Intake:
     def __init__(self, raw, current, scenario, contract, json_policies, *,
                  expected_diagnostic_admission=None, require_complete=True):
         require(type(require_complete) is bool,"native-intake-completeness-mode")
-        require(require_complete or (scenario=="repaired-g2"
+        require(require_complete or scenario=="film180-g2" or (scenario=="repaired-g2"
                 and expected_diagnostic_admission is not None),"native-partial-needs-external-v3")
         self.context = checked_context(current,scenario)
         require(scenario=="repaired-g2" or expected_diagnostic_admission is None,
                 "ffv1-diagnostics-on-film")
         self.admission=(None if expected_diagnostic_admission is None else
             checked_ffv1_admission(expected_diagnostic_admission,current=current))
+        diagnostic_contract = (None if self.admission is None else self.admission["capture_diagnostic_contract"])
+        if scenario == "film180-g2":
+            from native_film180_command_custody import contract as film_contract
+            diagnostic_contract = film_contract(self.context)
         self.manifest = core.inspect_selected_tar(raw,expected_context=self.context,
             role_contract=contract,policies=json_policies,
-            expected_diagnostic_contract=None if self.admission is None
-                else self.admission["capture_diagnostic_contract"],require_complete=require_complete)
+            expected_diagnostic_contract=diagnostic_contract,require_complete=require_complete)
         self.data = {}
         with tarfile.open(fileobj=io.BytesIO(raw),mode="r:") as archive:
             for row in self.manifest["members"]:
@@ -1487,9 +1505,10 @@ def verify_decrypted_selection(raw,*,current,scenario,expected_diagnostic_admiss
                                require_complete=True):
     require(type(require_complete) is bool,"native-intake-completeness-mode")
     if scenario=="film180-g2":
-        require(require_complete and expected_diagnostic_admission is None,"ffv1-diagnostics-on-film")
-        from native_film180_evidence_selection import verify_film_intake
-        return verify_film_intake(raw,current=current)
+        require(expected_diagnostic_admission is None,"ffv1-diagnostics-on-film")
+        from native_film180_evidence_selection import verify_film_intake, verify_film_command_intake
+        return (verify_film_intake(raw,current=current) if require_complete
+                else verify_film_command_intake(raw,current=current))
     require(scenario=="repaired-g2","native-intake-scenario")
     if not require_complete:
         return verify_mlt_diagnostic_intake(raw,current=current,
@@ -1586,8 +1605,44 @@ def validate_public_v3(public):
     return public
 
 
+FILM_PUBLIC_V3_KEYS = PUBLIC_V2_KEYS | {
+    "selected_evidence_schema", "selected_lost_scope", "command_originals_contract_sha256",
+    "command_originals_intake_verified", "command_originals_roster_complete",
+    "raw_diagnostics_included", "diagnostic_eof_claimed", "diagnostic_history_complete_claimed",
+    "diagnostic_payloads_redacted",
+}
+
+
+def validate_film_public_v3(public):
+    require(type(public) is dict and set(public) == FILM_PUBLIC_V3_KEYS,
+            "film-public-command-exact-fields")
+    require(public["schema"] == "motionwright.native.film180-g2-public/3", "film-public-command-schema")
+    common = {key: public[key] for key in PUBLIC_V2_KEYS}
+    common.update(schema="motionwright.native.film180-g2-public/2",
+                  custody_scope="explicit-source-bound-selected-layers/2")
+    validate_public_v2(common)
+    from native_film180_command_custody import contract as command_contract
+    expected = command_contract(checked_context(public["context"], "film180-g2"))
+    require(public["selected_evidence_schema"] == core.MANIFEST_SCHEMA_V3
+            and public["selected_lost_scope"] == list(core.LOST_SCOPE_V3)
+            and public["custody_scope"] == "explicit-source-bound-selected-layers/3"
+            and public["command_originals_contract_sha256"] == sha(core.canonical(expected)),
+            "film-public-command-contract")
+    for name in ("command_originals_intake_verified", "command_originals_roster_complete", "raw_diagnostics_included"):
+        require(type(public[name]) is bool, "film-public-command-boolean")
+    require(all(public[name] is False for name in ("diagnostic_eof_claimed",
+        "diagnostic_history_complete_claimed", "diagnostic_payloads_redacted")), "film-public-command-scope")
+    require(not public["command_originals_intake_verified"] or public["source_unchanged"],
+            "film-public-command-source")
+    require(not public["selected_intake_verified"] or (public["command_originals_intake_verified"]
+        and public["command_originals_roster_complete"]), "film-public-command-completeness")
+    return public
+
+
 def validate_public_evidence(public):
     require(type(public) is dict,"native-public-exact-fields")
+    if public.get("schema")=="motionwright.native.film180-g2-public/3":
+        return validate_film_public_v3(public)
     if public.get("schema")=="motionwright.native.mlt-g2-public/3":
         return validate_public_v3(public)
     return validate_public_v2(public)
@@ -1600,8 +1655,9 @@ def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_ad
     validate_public_evidence(public)
     require(type(require_complete) is bool,"native-intake-completeness-mode")
     v3=public["schema"]=="motionwright.native.mlt-g2-public/3"
+    film_v3=public["schema"]=="motionwright.native.film180-g2-public/3"
     has_diagnostics=v3 and public["diagnostic_status"]=="FFV1_DIAGNOSTICS_ADMITTED"
-    require(require_complete or has_diagnostics,"native-partial-needs-external-v3")
+    require(require_complete or has_diagnostics or film_v3,"native-partial-needs-external-v3")
     require(has_diagnostics or expected_diagnostic_admission is None,"ffv1-admission-on-nondiagnostic-public")
     admitted=(checked_ffv1_admission(expected_diagnostic_admission,current=public["context"])
               if has_diagnostics else None)
@@ -1634,9 +1690,24 @@ def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_ad
                 and original_manifest["diagnostic_roster_complete"]==public["diagnostic_roster_complete"]
                 and original_manifest["raw_diagnostics_included"]==public["raw_diagnostics_included"],
                 "ffv1-public-selected-diagnostic-scope")
-    scenario="film180-g2" if public["schema"]=="motionwright.native.film180-g2-public/2" else "repaired-g2"
+    if film_v3:
+        original_manifest=core.strict(manifest_bytes)
+        require(original_manifest["schema"]==public["selected_evidence_schema"]
+            and original_manifest["lost_scope"]==public["selected_lost_scope"]
+            and original_manifest["diagnostic_contract_sha256"]==public["command_originals_contract_sha256"]
+            and original_manifest["diagnostic_roster_complete"] is public["command_originals_roster_complete"]
+            and original_manifest["raw_diagnostics_included"] is public["raw_diagnostics_included"]
+            and original_manifest["required_layers_complete"] is public["selected_layers_complete"],
+            "film-public-command-capsule-binding")
+    scenario="film180-g2" if film_v3 or public["schema"]=="motionwright.native.film180-g2-public/2" else "repaired-g2"
     result=verify_decrypted_selection(plaintext,current=authenticated_context,scenario=scenario,
         expected_diagnostic_admission=admitted,require_complete=require_complete)
+    if not require_complete and film_v3:
+        require(public["source_unchanged"] is True and public["command_originals_intake_verified"] is True
+            and result["diagnostic_roster_complete"] is public["command_originals_roster_complete"],
+            "film-public-partial-custody-not-verified")
+        result.update(native_terminal=public["native_terminal"], producer_exit_code=public["producer_exit_code"])
+        return result
     if not require_complete:
         require(public["source_unchanged"] is True and public["diagnostic_intake_verified"] is True,
                 "ffv1-public-partial-custody-not-verified")

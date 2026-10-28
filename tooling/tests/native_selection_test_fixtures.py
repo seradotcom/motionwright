@@ -1,4 +1,4 @@
-"""Pure synthetic /2 graphs; never evidence of a real native media run.
+"""Pure synthetic /2 and Film /3 graphs; never a real native media run.
 
 C/ELF pins are deliberately patched inside a scoped test context. All payloads
 and filesystem handles are in memory; fake Git returns synthetic committed
@@ -401,6 +401,25 @@ class World:
         final=sample(film.FINAL);final.update(native_terminal="SUCCESS_REPORTED",native_command_terminals={k:"SUCCESS_REPORTED" for k in ("original.render","original.master","edited.render","edited.master")},
             source_content_and_live_module_verified=True,completed_stages=stages,own_six_second_WAV_sha256=core.sha(WAV180))
         self.put("observation","final-custody.json",final)
+        # Synthetic command originals exercise the new finite custody graph.
+        # These fixtures are never a real Core/native process observation.
+        from native_film180_command_custody import COMMANDS
+        for label, phase, has_intent in COMMANDS:
+            if label == "original.failed-subprocess":
+                continue
+            stdout = ("synthetic original command: " + label).encode()
+            stderr = b""
+            self.put("observation", label+".stdout", stdout)
+            self.put("observation", label+".stderr", stderr)
+            terminal = dict(exit_code=0, deadline_exceeded=False, automatic_retry=False,
+                stdout_sha256=core.sha(stdout), stderr_sha256=core.sha(stderr),
+                native_terminal_inferred_from_exit=False)
+            suffix = "_observed_bytes" if label.endswith(".original-packet-probe") else "_bytes"
+            terminal["stdout"+suffix] = len(stdout)
+            terminal["stderr"+suffix] = len(stderr)
+            self.put("observation", label+".terminal.json", terminal)
+            if has_intent:
+                self.put("observation",label+".intent.json",dict(argv=["synthetic",label],automatic_retry=False))
 
     def mark(self,key):
         if key not in self.files: raise FileNotFoundError()
@@ -412,7 +431,9 @@ class World:
     def patched(self):
         world=self
         class Handles:
-            def __init__(self,roots): self.roots=roots
+            def __init__(self,roots): self.roots=roots;self.diagnostic_contract=None
+            def admit_diagnostic_contract(self,contract):
+                self.diagnostic_contract=core._checked_diagnostic_contract(contract,contract["context"])
             def close(self): world.closed+=1
             def stable_roots(self): return True
             def stat_member(self,root,parts):
@@ -420,7 +441,8 @@ class World:
                 if world.on_stat: world.on_stat(key)
                 return world.mark(key)
             def read(self,root,parts,maximum):
-                require_not_secret=not core.excluded(parts)
+                require_not_secret=(not core.excluded(parts) or
+                    core._film_command_entry(root,"/".join(parts),self.diagnostic_contract) is not None)
                 if not require_not_secret: raise AssertionError("Forbidden source reached fake open")
                 key=(root,"/".join(parts));world.reads.append(key)
                 if world.on_read: world.on_read(key)

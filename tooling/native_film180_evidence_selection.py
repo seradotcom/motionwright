@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Closed /2 original and edited Film180 selection; no renderer or upload.
+"""Closed /3 original and edited Film180 selection; no renderer or upload.
 
 The selected saved Projects are the one source-owned first-party fixture,
 retained as exact JSON originals after a complete closed fixture validation.
 All 180 native PNGs in each phase are mandatory, with independent decode and
-PSNR originals. No selected receipt grants human or audiovisual acceptance.
+PSNR originals. A finite private roster retains original command streams and
+errors without inferring EOF or effects from absence. No selected receipt
+grants human or audiovisual acceptance.
 """
 from __future__ import annotations
 import copy
@@ -498,7 +500,9 @@ def policies(project_rules=None):
 
 
 def role_contract():
+    from native_film180_command_custody import role_contract as command_roles
     result=mlt.common_contract()
+    result.update(command_roles())
     result[("single", "attempt-custody", "film-source-contracts")] = (1, 1)
     for phase in PHASES:
         for role in ("saved-project","native-film","native-master-receipt","native-frame-manifest","native-master",
@@ -519,7 +523,25 @@ class FilmSelection(mlt.Selection):
         super().__init__(roots=roots,current=current,scenario="film180-g2",source_bindings=source_bindings,
                          role_contract=role_contract(),json_policies=policies())
 
+    def collect_command_originals(self, handles):
+        # All destinations and limits precede any stat/read. No listing, glob,
+        # wildcard label, alternate owner root or fabricated missing file exists.
+        for entry in self.diagnostic_contract["entries"]:
+            root, path = entry["root"], entry["relative_path"]
+            if root in self.roots:
+                try:
+                    handles.stat_member(root, core.member_path(path))
+                except FileNotFoundError:
+                    self.absence.append({key: entry[key] for key in
+                        ("root", "relative_path", "phase", "layer", "role")})
+                    continue
+                except (OSError, core.SelectionError):
+                    pass
+            self.add(handles, root, path, entry["role"], entry["layer"], entry["phase"],
+                kind="diagnostic-original", maximum=entry["maximum"], diagnostic_type=entry["type"])
+
     def collect_film(self,handles):
+        self.collect_command_originals(handles)
         self.common(handles)
         for path,role,policy in (("source-plan.json","source-plan","film_source_plan"),
             ("firstparty-source-custody.json","source-custody","film_source_custody"),
@@ -582,18 +604,23 @@ class FilmSelection(mlt.Selection):
         return super().capture(self.collect_film)
 
 
-def intake_policies(raw,current):
+def intake_policies(raw,current,*,require_complete=True):
     expected=mlt.checked_context(current,"film180-g2")
     rules={}
     with tarfile.open(fileobj=io.BytesIO(raw),mode="r:") as archive:
         manifest_info=archive.getmember("selected-evidence-manifest.json")
         require(manifest_info.isreg() and manifest_info.size<=core.MAX_JSON,"film-manifest-intake-budget")
         manifest=core.strict(archive.extractfile(manifest_info).read())
-        core.validate_selected_manifest(manifest,expected_context=expected,role_contract=role_contract())
+        from native_film180_command_custody import contract as command_contract
+        core.validate_selected_manifest(manifest,expected_context=expected,role_contract=role_contract(),
+            expected_diagnostic_contract=command_contract(expected),require_complete=require_complete)
         for phase in PHASES:
             rows=[row for row in manifest["members"] if (row["phase"],row["layer"],row["role"])==(phase,"readback","saved-project")]
             require(len(rows)==1,"film-source-role-count")
             row=rows[0]
+            if not require_complete and row["state"] != "INCLUDED":
+                rules[phase+"_project"] = Object({})
+                continue
             require(row["root"]=="observation" and row["relative_path"]==phase+"-project.json"
                     and row["policy"]==phase+"_project" and row["kind"]=="json-original","film-source-role-layout")
             info=archive.getmember(row["member"])
@@ -613,8 +640,26 @@ def png_header(blob):
     return color
 
 
+def verify_film_command_intake(raw, *, current):
+    """Partial original custody only; never reopens, reruns or accepts a Film."""
+    from native_film180_command_custody import contract as command_contract
+    expected = mlt.checked_context(current, "film180-g2")
+    manifest = core.inspect_selected_tar(raw, expected_context=expected,
+        role_contract=role_contract(), policies=intake_policies(raw,current,require_complete=False),
+        expected_diagnostic_contract=command_contract(expected), require_complete=False)
+    require({row["path"] for row in manifest["source_bindings"]} == set(mlt.FILM_SOURCE_PATHS),
+            "film-command-source-closure")
+    return dict(schema="motionwright.native.film180-command-intake/1", context=expected,
+        command_originals=manifest["film_command_originals"],
+        diagnostic_roster_complete=manifest["diagnostic_roster_complete"],
+        physical_acceptance=False, human_acceptance=False, release_authorized=False,
+        native_operation_retried=False)
+
+
 def verify_film_intake(raw,*,current):
+    from native_film180_command_custody import require_successful_capture
     intake=mlt.Intake(raw,current,"film180-g2",role_contract(),intake_policies(raw,current))
+    require_successful_capture(intake.manifest["film_command_originals"])
     official,installation=intake.common()
     source=intake.value("source-custody","single","attempt-custody")
     wav=intake.original("source-wav","single")
