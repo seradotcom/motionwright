@@ -83,7 +83,9 @@ def _safe_database(data_root: Path) -> Path:
     return candidate
 
 
-def read_snapshot(data_root: Path, *, storage_cohort=None) -> ProjectSnapshot:
+def read_snapshot(
+    data_root: Path, *, storage_cohort=None, expected_title=EXPECTED_INITIAL_TITLE
+) -> ProjectSnapshot:
     """Independently inspect committed SQLite after a terminated GUI process."""
     expected_schema = storage.expected_schema(storage_cohort, historical_default=EXPECTED_SCHEMA)
     database = _safe_database(data_root)
@@ -105,7 +107,7 @@ def read_snapshot(data_root: Path, *, storage_cohort=None) -> ProjectSnapshot:
             if len(rows) != 1:
                 raise ColdStartError("First boot did not persist exactly one project")
             project_id, generation, revision, title, document = rows[0]
-            if title != EXPECTED_INITIAL_TITLE:
+            if title != expected_title:
                 raise ColdStartError("First boot created an unexpected default project")
             try:
                 uuid.UUID(project_id)
