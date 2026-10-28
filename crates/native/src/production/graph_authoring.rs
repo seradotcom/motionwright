@@ -58,6 +58,7 @@ pub struct NativeGraphRecipeResult<T> {
     original_envelope: Value,
     observation_envelope: Option<Envelope>,
     operation_envelope: Option<Envelope>,
+    outcome_is_original_native_error: bool,
     outcome: NativeResult<T>,
 }
 
@@ -87,6 +88,15 @@ impl<T> NativeGraphRecipeResult<T> {
     }
     pub fn outcome(&self) -> std::result::Result<&T, &Error> {
         self.outcome.as_ref()
+    }
+    /// The unchanged typed Core error from the original failed envelope only.
+    /// Local transport, custody and decoding failures never acquire this origin.
+    pub fn original_native_error(&self) -> Option<&Error> {
+        if self.outcome_is_original_native_error {
+            self.outcome.as_ref().err()
+        } else {
+            None
+        }
     }
 }
 
@@ -433,9 +443,13 @@ impl NativeGraphRecipeClient {
             })?;
         let mut observation_envelope = None;
         let mut operation_envelope = None;
+        let mut outcome_is_original_native_error = false;
         let outcome = match decode_outer(&original, &original_envelope) {
             // A genuine typed Core error is preserved before any later checks.
-            Ok(Outer::Failed(error)) => Err(error),
+            Ok(Outer::Failed(error)) => {
+                outcome_is_original_native_error = true;
+                Err(error)
+            }
             Ok(Outer::Completed(data)) => {
                 match decode_exchange(data, action, project_id, &self.expected_store) {
                     Ok(exchange) => {
@@ -465,6 +479,7 @@ impl NativeGraphRecipeClient {
             original_envelope,
             observation_envelope,
             operation_envelope,
+            outcome_is_original_native_error,
             outcome,
         })
     }

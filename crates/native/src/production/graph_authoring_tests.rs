@@ -1065,6 +1065,10 @@ async fn graph_recipe_transport_sends_exact_bounded_arguments_through_stdin_once
         serde_json::to_value(report.outcome().err().unwrap()).unwrap(),
         serde_json::to_value(error).unwrap()
     );
+    assert!(std::ptr::eq(
+        report.original_native_error().unwrap(),
+        report.outcome().err().unwrap(),
+    ));
     assert_eq!(
         report.original_envelope(),
         &serde_json::to_value(envelope).unwrap()
