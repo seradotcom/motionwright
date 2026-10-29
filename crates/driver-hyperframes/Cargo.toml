@@ -27,8 +27,8 @@ tokio.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-semwright-backend-api = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-backend-api" }
-semwright-driver-host = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-driver-host" }
-semwright-policy = { git = "https://github.com/seradotcom/semwright", rev = "e64a2d28d1d866c539a2c40824cbb57f86a13c10", package = "semwright-policy" }
+semwright-backend-api = { git = "https://github.com/seradotcom/semwright", rev = "6725e7098546a4d47ab9314ce1d571b30c83a26c", package = "semwright-backend-api" }
+semwright-driver-host = { git = "https://github.com/seradotcom/semwright", rev = "6725e7098546a4d47ab9314ce1d571b30c83a26c", package = "semwright-driver-host" }
+semwright-policy = { git = "https://github.com/seradotcom/semwright", rev = "6725e7098546a4d47ab9314ce1d571b30c83a26c", package = "semwright-policy" }
 tokio = { workspace = true, features = ["time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
