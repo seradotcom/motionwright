@@ -26,6 +26,7 @@ use motionwright_native::{
     },
 };
 use motionwright_service::{StudioService, VoiceImportMetadata};
+use motionwright_storage::ProductionReceipt;
 use semwright_media_time::Rate;
 use semwright_motion_authoring::{Archetype, NarrativeRole};
 use semwright_native_sdk::{
@@ -44,6 +45,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 const REQUEST: &str = "saved-mix-consumer";
+const ORIGINAL_RENDER_REQUEST: &str = "saved-mix-original";
 const AUDIO_FRAMES: u32 = 52_800; // 33 video frames at 30 fps; 1.1 seconds.
 const SINGLE_REJECTION: &str =
     "Staged soundtrack differs from the saved source mix or exact visual cut";
@@ -141,7 +143,40 @@ def artifact(name, content):
     path = root / name
     path.write_bytes(content)
     return {"root": "output", "path": name, "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}
-if command == "driver.mlt-video.frames.encode":
+if command.startswith("driver.motion-canvas."):
+    # Exercise the real coordinator's original-render path. Only the provider
+    # responses and video carriers are synthetic; no budget/root is injected.
+    originals = json.loads((home / "synthetic-motion-segments.json").read_text(encoding="utf-8"))
+    motion_calls = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()
+                    if json.loads(line)["command"].startswith("driver.motion-canvas.")]
+    index, stage = divmod(len(motion_calls) - 1, 6)
+    source = originals[index]
+    evidence = source["evidence"]
+    expected = ("composition.plan", "composition.apply", "render.start",
+                "render.status", "render.result", "composition.verify")
+    assert command == "driver.motion-canvas." + expected[stage]
+    if stage == 0:
+        assert args["film"] == source["film"]
+        data = {"plan_ref": evidence["plan_ref"]}
+    elif stage == 1:
+        assert args == {"plan_ref": evidence["plan_ref"], "dry_run": False}
+        data = {"applied": True, "execution_status": "completed",
+                "fingerprint": evidence["fingerprint"]}
+    elif stage == 2:
+        assert args["expected_fingerprint"] == evidence["fingerprint"]
+        profile = args["profile"]
+        assert profile["first_frame"] == 0
+        assert profile["end_frame_exclusive"] == evidence["frame_count"]
+        assert profile["scale"] == "full" and profile["transparent"] is False
+        data = {"job_ref": evidence["job_ref"], "state": "queued"}
+    elif stage in (3, 4):
+        assert args == {"job_ref": evidence["job_ref"]}
+        data = {"job_ref": evidence["job_ref"], "state": "succeeded",
+                "artifact": evidence["artifact"]}
+    else:
+        assert args == {"plan_ref": evidence["plan_ref"], "job_ref": evidence["job_ref"]}
+        data = evidence["verification"]
+elif command == "driver.mlt-video.frames.encode":
     raw = (root / args["manifest_path"]).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == args["expected_manifest_sha256"]
     plan = json.loads(raw)["plan"]
@@ -209,7 +244,11 @@ elif command == "driver.audio-analysis.artifact.measure":
 else:
     raise AssertionError("Unexpected transport command: " + command)
 execution = json.loads((home / "execution.json").read_text(encoding="utf-8"))
-if command == "driver.audio-analysis.artifact.measure":
+if command.startswith("driver.motion-canvas."):
+    execution["backend"] = "driver:motion-canvas"
+    execution["provenance"]["provider"] = "driver:motion-canvas"
+    execution["provenance"]["execution_provider"] = "driver:motion-canvas"
+elif command == "driver.audio-analysis.artifact.measure":
     execution["backend"] = "driver:audio-analysis"
     execution["provenance"]["provider"] = "driver:audio-analysis"
     execution["provenance"]["execution_provider"] = "driver:audio-analysis"
@@ -266,6 +305,18 @@ fn connection(root: &Path, resource: String) -> ProductionConnection {
     connection
 }
 
+fn transport_calls(root: &Path) -> Vec<Value> {
+    let path = root.join("transport-calls.jsonl");
+    if !path.exists() {
+        return Vec::new();
+    }
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,
@@ -276,25 +327,28 @@ struct Fixture {
     rendered: MotionCanvasRenderEvidence,
     visual: Option<MltVerifiedLosslessTimeline>,
     connection: ProductionConnection,
+    coordinator: ProductionCoordinator,
+    original_render_calls: Vec<Value>,
+    original_render_receipts: Vec<ProductionReceipt>,
     mix: Option<PreparedOriginalMix>,
     audio: MltAudioArtifact,
 }
 
 impl Fixture {
-    fn new(route: Route, saved: bool, visual_frames: u32) -> Self {
-        Self::with_semantic_sfx(route, saved, visual_frames, false)
+    async fn new(route: Route, saved: bool, visual_frames: u32) -> Self {
+        Self::with_semantic_sfx(route, saved, visual_frames, false).await
     }
 
-    fn with_semantic_sfx(
+    async fn with_semantic_sfx(
         route: Route,
         saved: bool,
         visual_frames: u32,
         semantic_sfx: bool,
     ) -> Self {
-        Self::with_audio_targets(route, saved, visual_frames, semantic_sfx, None)
+        Self::with_audio_targets(route, saved, visual_frames, semantic_sfx, None).await
     }
 
-    fn with_audio_targets(
+    async fn with_audio_targets(
         route: Route,
         saved: bool,
         visual_frames: u32,
@@ -621,7 +675,7 @@ impl Fixture {
                 }),
             }
         }).collect();
-        let rendered = MotionCanvasRenderEvidence {
+        let expected_rendered = MotionCanvasRenderEvidence {
             project_resource: project.resource_key(),
             generation: project.generation,
             revision: project.revision,
@@ -629,6 +683,46 @@ impl Fixture {
             frame_rate: options.frame_rate,
             segments,
         };
+        let motion_sources: Vec<_> = native
+            .iter()
+            .zip(&expected_rendered.segments)
+            .map(|(segment, evidence)| json!({"film": &segment.film, "evidence": evidence}))
+            .collect();
+        fs::write(
+            root.join("synthetic-motion-segments.json"),
+            serde_json::to_vec(&motion_sources).unwrap(),
+        )
+        .unwrap();
+        // Phase two must use the coordinator and original evidence returned by
+        // phase one. Constructing an equal public DTO cannot attach its private
+        // accounting root, and a fresh coordinator cannot mint a continuation.
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let rendered = coordinator
+            .render_motion_canvas_segments(
+                project.id,
+                &project.stamp(),
+                ORIGINAL_RENDER_REQUEST,
+                profile_id,
+                &options,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&rendered).unwrap(),
+            serde_json::to_value(&expected_rendered).unwrap()
+        );
+        let original_render_calls = transport_calls(&root);
+        let original_render_receipts = service.production_receipts(project.id, 100).unwrap();
+        assert_eq!(original_render_calls.len(), native.len() * 6);
+        assert_eq!(
+            original_render_receipts.len(),
+            original_render_calls.len() * 2
+        );
+        assert!(original_render_receipts.iter().all(|receipt| {
+            receipt.request_id.starts_with("saved-mix-original:motion:")
+                && receipt.command.starts_with("driver.motion-canvas.")
+                && matches!(receipt.stage.as_str(), "dispatching" | "completed")
+        }));
         let visual = match route {
             Route::Single => None,
             Route::Multi => {
@@ -706,11 +800,9 @@ impl Fixture {
             }
         };
         assert_eq!(service.project(project.id).unwrap(), project);
-        assert!(
-            service
-                .production_receipts(project.id, 100)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            service.production_receipts(project.id, 100).unwrap(),
+            original_render_receipts
         );
         Self {
             _temp: temp,
@@ -722,6 +814,9 @@ impl Fixture {
             rendered,
             visual,
             connection,
+            coordinator,
+            original_render_calls,
+            original_render_receipts,
             mix,
             audio,
         }
@@ -739,15 +834,11 @@ impl Fixture {
     }
 
     fn calls(&self) -> Vec<Value> {
-        let path = self.root.join("transport-calls.jsonl");
-        if !path.exists() {
-            return Vec::new();
-        }
-        fs::read_to_string(path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
+        // Keep and verify the literal original-render transcript. Every later
+        // call remains visible, including an unexpected render/retry command.
+        let calls = transport_calls(&self.root);
+        assert!(calls.starts_with(&self.original_render_calls));
+        calls[self.original_render_calls.len()..].to_vec()
     }
 
     fn assert_source_and_receipts_reopen(&self) {
@@ -821,7 +912,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 }
 
 async fn succeeds(f: &Fixture, route: Route) {
-    let coordinator = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let coordinator = &f.coordinator;
     let expected = RevisionStamp::from(&f.project);
     match route {
         Route::Single => {
@@ -888,7 +979,13 @@ async fn succeeds(f: &Fixture, route: Route) {
     };
     assert_eq!(calls.len(), commands.len());
     let receipts = f.service.production_receipts(f.project.id, 100).unwrap();
-    assert_eq!(receipts.len(), commands.len() * 2);
+    assert_eq!(
+        receipts.len(),
+        f.original_render_receipts.len() + commands.len() * 2
+    );
+    for original in &f.original_render_receipts {
+        assert!(receipts.contains(original));
+    }
     for (index, (call, (command, suffix))) in calls.iter().zip(commands).enumerate() {
         assert_eq!(call["command"], *command);
         let request_id = format!("{REQUEST}:{suffix}");
@@ -907,7 +1004,10 @@ async fn succeeds(f: &Fixture, route: Route) {
             if stage == "completed" {
                 assert_eq!(
                     row.payload["broker_request_id"],
-                    format!("synthetic-ack-{}", index + 1)
+                    format!(
+                        "synthetic-ack-{}",
+                        f.original_render_calls.len() + index + 1
+                    )
                 );
             }
         }
@@ -928,8 +1028,8 @@ async fn succeeds(f: &Fixture, route: Route) {
 async fn rejects(f: &Fixture, route: Route, code: ErrorCode, message: &str) {
     let before_output = snapshot(&f.connection.output_root);
     let before_receipts = f.service.production_receipts(f.project.id, 100).unwrap();
-    assert!(before_receipts.is_empty());
-    let coordinator = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    assert_eq!(before_receipts, f.original_render_receipts);
+    let coordinator = &f.coordinator;
     let expected = RevisionStamp::from(&f.project);
     let result = match route {
         Route::Single => coordinator
@@ -980,28 +1080,28 @@ async fn rejects(f: &Fixture, route: Route, code: ErrorCode, message: &str) {
 
 #[tokio::test]
 async fn single_saved_mix_supplies_exact_cas_pcm_to_mux() {
-    succeeds(&Fixture::new(Route::Single, true, 33), Route::Single).await;
+    succeeds(&Fixture::new(Route::Single, true, 33).await, Route::Single).await;
 }
 
 #[tokio::test]
 async fn multisegment_saved_mix_supplies_exact_cas_pcm_to_mux() {
-    succeeds(&Fixture::new(Route::Multi, true, 33), Route::Multi).await;
+    succeeds(&Fixture::new(Route::Multi, true, 33).await, Route::Multi).await;
 }
 
 #[tokio::test]
 async fn single_voice_only_keeps_existing_master_handoff() {
-    succeeds(&Fixture::new(Route::Single, false, 33), Route::Single).await;
+    succeeds(&Fixture::new(Route::Single, false, 33).await, Route::Single).await;
 }
 
 #[tokio::test]
 async fn multisegment_voice_only_keeps_existing_master_handoff() {
-    succeeds(&Fixture::new(Route::Multi, false, 33), Route::Multi).await;
+    succeeds(&Fixture::new(Route::Multi, false, 33).await, Route::Multi).await;
 }
 
 #[tokio::test]
 async fn single_saved_mix_rejects_other_valid_wav_before_provider() {
     for level in [2_000, 777] {
-        let mut fixture = Fixture::new(Route::Single, true, 33);
+        let mut fixture = Fixture::new(Route::Single, true, 33).await;
         fixture.substitute(&wav(level));
         rejects(
             &fixture,
@@ -1016,7 +1116,7 @@ async fn single_saved_mix_rejects_other_valid_wav_before_provider() {
 #[tokio::test]
 async fn multisegment_saved_mix_rejects_voice_substitution_before_provider() {
     for level in [2_000, 777] {
-        let mut fixture = Fixture::new(Route::Multi, true, 33);
+        let mut fixture = Fixture::new(Route::Multi, true, 33).await;
         fixture.substitute(&wav(level));
         rejects(
             &fixture,
@@ -1032,7 +1132,7 @@ async fn multisegment_saved_mix_rejects_voice_substitution_before_provider() {
 async fn single_saved_mix_rejects_clock_mismatch_before_provider() {
     for visual_frames in [32, 34] {
         rejects(
-            &Fixture::new(Route::Single, true, visual_frames),
+            &Fixture::new(Route::Single, true, visual_frames).await,
             Route::Single,
             ErrorCode::StaleReference,
             SINGLE_REJECTION,
@@ -1044,7 +1144,7 @@ async fn single_saved_mix_rejects_clock_mismatch_before_provider() {
 #[tokio::test]
 async fn multisegment_saved_mix_rejects_clock_mismatch_before_provider() {
     rejects(
-        &Fixture::new(Route::Multi, true, 66),
+        &Fixture::new(Route::Multi, true, 66).await,
         Route::Multi,
         ErrorCode::Unsupported,
         CLOCK_REJECTION,
@@ -1055,11 +1155,11 @@ async fn multisegment_saved_mix_rejects_clock_mismatch_before_provider() {
 #[tokio::test]
 async fn single_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substitution() {
     succeeds(
-        &Fixture::with_semantic_sfx(Route::Single, true, 33, true),
+        &Fixture::with_semantic_sfx(Route::Single, true, 33, true).await,
         Route::Single,
     )
     .await;
-    let mut changed = Fixture::with_semantic_sfx(Route::Single, true, 33, true);
+    let mut changed = Fixture::with_semantic_sfx(Route::Single, true, 33, true).await;
     changed.substitute(&wav(2_000));
     rejects(
         &changed,
@@ -1073,11 +1173,11 @@ async fn single_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substi
 #[tokio::test]
 async fn multisegment_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substitution() {
     succeeds(
-        &Fixture::with_semantic_sfx(Route::Multi, true, 33, true),
+        &Fixture::with_semantic_sfx(Route::Multi, true, 33, true).await,
         Route::Multi,
     )
     .await;
-    let mut changed = Fixture::with_semantic_sfx(Route::Multi, true, 33, true);
+    let mut changed = Fixture::with_semantic_sfx(Route::Multi, true, 33, true).await;
     changed.substitute(&wav(2_000));
     rejects(
         &changed,
@@ -1091,20 +1191,20 @@ async fn multisegment_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_
 #[tokio::test]
 async fn authored_semantic_sfx_without_a_saved_mix_rejects_before_both_providers() {
     rejects(
-        &Fixture::with_semantic_sfx(Route::Single, false, 33, true),
+        &Fixture::with_semantic_sfx(Route::Single, false, 33, true).await,
         Route::Single,
         ErrorCode::Unsupported,
         "Native master cannot omit authored gain/SFX or claim unmeasured loudness targets",
     )
     .await;
-    rejects(&Fixture::with_semantic_sfx(Route::Multi, false, 33, true), Route::Multi,
+    rejects(&Fixture::with_semantic_sfx(Route::Multi, false, 33, true).await, Route::Multi,
         ErrorCode::Unsupported, "Native master cannot omit a saved mix or replace authored semantic SFX with a voice-only WAV").await;
 }
 
 #[tokio::test]
 async fn changed_semantic_cas_source_rejects_before_both_native_providers() {
     for route in [Route::Single, Route::Multi] {
-        let fixture = Fixture::with_semantic_sfx(route, true, 33, true);
+        let fixture = Fixture::with_semantic_sfx(route, true, 33, true).await;
         let cue = &fixture.project.audio.sfx_cues[0];
         let path = fixture
             .service
@@ -1130,7 +1230,7 @@ async fn measured_result(
 ) -> semwright_native_sdk::Result<
     motionwright_native::production::VerifiedOriginalMixAudioMeasurements,
 > {
-    let coordinator = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let coordinator = &f.coordinator;
     match route {
         Route::Single => coordinator
             .assemble_mlt_av_master_with_audio_analysis(
@@ -1226,7 +1326,7 @@ async fn measured_succeeds(f: &Fixture, route: Route) {
 #[tokio::test]
 async fn measured_single_saved_semantic_mix_uses_actual_coordinator_two_phase_handoff() {
     measured_succeeds(
-        &Fixture::with_semantic_sfx(Route::Single, true, 33, true),
+        &Fixture::with_semantic_sfx(Route::Single, true, 33, true).await,
         Route::Single,
     )
     .await;
@@ -1236,7 +1336,7 @@ async fn measured_single_saved_semantic_mix_uses_actual_coordinator_two_phase_ha
 #[tokio::test]
 async fn measured_multisegment_saved_semantic_mix_uses_actual_coordinator_two_phase_handoff() {
     measured_succeeds(
-        &Fixture::with_semantic_sfx(Route::Multi, true, 33, true),
+        &Fixture::with_semantic_sfx(Route::Multi, true, 33, true).await,
         Route::Multi,
     )
     .await;
@@ -1246,7 +1346,7 @@ async fn measured_multisegment_saved_semantic_mix_uses_actual_coordinator_two_ph
 #[tokio::test]
 async fn measured_voice_only_both_coordinators_preserve_original_wav_without_mix_assets() {
     for route in [Route::Single, Route::Multi] {
-        let fixture = Fixture::new(route, false, 33);
+        let fixture = Fixture::new(route, false, 33).await;
         assert_eq!(fixture.project.assets.len(), 1);
         assert!(
             fixture
@@ -1264,7 +1364,7 @@ async fn measured_voice_only_both_coordinators_preserve_original_wav_without_mix
 async fn measured_consumers_reject_substituted_pcm_and_wrong_clock_before_any_provider() {
     for route in [Route::Single, Route::Multi] {
         for wrong_clock in [false, true] {
-            let mut fixture = Fixture::new(route, true, if wrong_clock { 66 } else { 33 });
+            let mut fixture = Fixture::new(route, true, if wrong_clock { 66 } else { 33 }).await;
             if !wrong_clock {
                 fixture.substitute(&wav(2_000));
             }
@@ -1305,7 +1405,8 @@ async fn profile_targets_reject_both_unmeasured_producers_before_dispatch_and_pr
                     target_lufs: Some(-23.0),
                     target_true_peak_dbtp: Some(-1.0),
                 }),
-            );
+            )
+            .await;
             rejects(&fixture, route, ErrorCode::Unsupported,
                 "Delivery audio targets require the measured native master route and final decoded PCM16 QC").await;
         }
@@ -1324,7 +1425,7 @@ async fn targeted_voice_only_and_semantic_mix_both_coordinators_use_final_qc_and
                 target_true_peak_dbtp: Some(-1.0),
             };
             let fixture =
-                Fixture::with_audio_targets(route, saved, 33, saved, Some(targets.clone()));
+                Fixture::with_audio_targets(route, saved, 33, saved, Some(targets.clone())).await;
             if !saved {
                 assert_eq!(fixture.project.assets.len(), 1);
                 assert!(
@@ -1413,7 +1514,8 @@ async fn final_qc_outside_or_unavailable_is_preserved_despite_passing_source_mea
                     target_lufs: Some(-23.0),
                     target_true_peak_dbtp: Some(-1.0),
                 }),
-            );
+            )
+            .await;
             fs::write(
                 fixture.root.join("synthetic-final-meter-values.json"),
                 serde_json::to_vec(&values).unwrap(),
