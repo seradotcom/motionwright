@@ -623,11 +623,17 @@ interface RawSinkObservation {
 
 /** Synthetic sink controls over real process bytes; never the Native shared pool. */
 function rawSinkFixture(afterEnd: (row: RawSinkObservation) => Promise<void> = async () => undefined) {
-  const rows: RawSinkObservation[] = [];
+  const rows: RawSinkObservation[] = [], reservations: Readonly<ServiceLaunchContext>[] = [];
   const capture: ServiceRawStreamCapture = {
+    reserveLaunch(context) {
+      expect(Object.isFrozen(context)).toBe(true);
+      reservations.push(context);
+    },
     bind(context, streams) {
       expect(Object.isFrozen(context)).toBe(true);
       expect(Object.isFrozen(streams)).toBe(true);
+      expect(reservations[rows.length]).toEqual(context);
+      expect(streams.exited).toBeInstanceOf(Promise);
       const row: RawSinkObservation = { context, processId: streams.process_id,
         stdout: [], stderr: [], nonBufferChunks: 0, ended: false, settled: false };
       rows.push(row);
@@ -644,7 +650,7 @@ function rawSinkFixture(afterEnd: (row: RawSinkObservation) => Promise<void> = a
       return { settled };
     },
   };
-  return { rows, capture };
+  return { rows, reservations, capture };
 }
 
 test("one raw capture port covers the ordinary initializer, owner-admitted peers and every restart", async ({}, testInfo) => {
@@ -654,7 +660,11 @@ test("one raw capture port covers the ordinary initializer, owner-admitted peers
   let ownerClosed = false;
   let receipt: ServiceClosureReceipt | undefined;
   const owner: ServiceProcessOwner = {
-    async environmentForNewClient(context) { admissions.push(context); return {}; },
+    async environmentForNewClient(context) {
+      expect(raw.reservations.some(item => item.helper_id === context.helper_id
+        && item.launch_index === context.launch_index)).toBe(true);
+      admissions.push(context); return {};
+    },
     sealClientAdmissions() {},
     async closeAfterClients(barrier) {
       expect(raw.rows.every(row => row.ended && row.settled)).toBe(true);
@@ -676,6 +686,8 @@ test("one raw capture port covers the ordinary initializer, owner-admitted peers
     expect(await service.project(project.id)).toEqual(project);
     await service.finalizeClosedStore(testInfo.outputPath("raw-complete-store"), project, [peer]);
     expect(raw.rows).toHaveLength(4);
+    expect(raw.reservations).toHaveLength(4);
+    expect(raw.reservations).toEqual(raw.rows.map(row => row.context));
     expect(admissions).toHaveLength(3);
     expect(admissions.some(context => context.helper_id === initializer.helperId)).toBe(false);
     expect(raw.rows.map(row => [row.context.helper_id, row.context.launch_index])).toEqual([

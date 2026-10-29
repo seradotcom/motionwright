@@ -102,8 +102,12 @@ export interface ServiceProcessOwner {
  * The collector owns storage, limits and overflow; it must not change encoding,
  * remove another observer, or terminate either input stream. */
 export interface ServiceRawStreamCapture {
+  /** Reserve once, synchronously, before an owner may mint client credentials. */
+  reserveLaunch?(context: Readonly<ServiceLaunchContext>): void;
   bind(context: Readonly<ServiceLaunchContext>, streams: Readonly<{
     process_id: number | null; stdout: Readable; stderr: Readable;
+    /** Actual close event Promise, not a caller-supplied terminal boolean. */
+    exited: Promise<ServiceProcessExit>;
   }>): { settled: Promise<void> };
 }
 
@@ -423,6 +427,10 @@ export class ScopedChangeService {
     });
     let child: ChildProcessWithoutNullStreams;
     try {
+      // A shared collector must pre-admit this exact helper/launch tuple before
+      // asynchronous client authorization or any process spawn. Also covers
+      // the ordinary initializer, which has no external processOwner.
+      this.rawStreamCapture?.reserveLaunch?.(launchContext);
       const environment = this.processOwner
         ? { ...process.env, ...await this.processOwner.environmentForNewClient(launchContext) } : undefined;
       if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
@@ -517,8 +525,11 @@ export class ScopedChangeService {
       return failure;
     };
     try {
+      const exitObservation = this.exited;
+      if (!exitObservation) throw new Error("No actual process-exit Promise exists for this raw launch");
       const binding = this.rawStreamCapture.bind(context, Object.freeze({
         process_id: child.pid ?? null, stdout: child.stdout, stderr: child.stderr,
+        exited: exitObservation,
       }));
       if (!binding || !binding.settled || typeof binding.settled.then !== "function")
         throw new Error("Raw stream capture did not return its per-launch settlement promise");
