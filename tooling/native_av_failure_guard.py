@@ -14,9 +14,11 @@ SCHEMA = "motionwright.v01-native-command-failure/1"
 MAX_INPUT_BYTES = 256 * 1024
 MAX_RECEIPTS = 4096
 CODES = frozenset((
-    "Unavailable", "Timeout", "ConsentRequired", "Conflict",
-    "StaleReference", "ResourceExhausted", "NotFound", "Cancelled",
-    "InvalidArguments", "Internal", "PermissionDenied", "Unknown",
+    "Unsupported", "Unavailable", "PermissionDenied", "ConsentRequired",
+    "PolicyDenied", "NotFound", "AmbiguousTarget", "StaleReference",
+    "BackendFailed", "Timeout", "InvalidArgument", "PluginProtocolError",
+    "SandboxDenied", "Conflict", "Cancelled", "Internal",
+    "ProtocolMismatch", "ResourceExhausted",
 ))
 # Optional, narrow native-caption CI diagnostics. These fields convey only
 # trusted static categories, never a provider error message or filesystem data.

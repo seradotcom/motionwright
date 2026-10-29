@@ -147,6 +147,65 @@ class NativeAVFailureRedactionTests(unittest.TestCase):
         self.assertEqual(report["reported_error_code"], "OtherOrMissing")
         self.assertEqual(report["source_outcome"], "UNKNOWN")
 
+    def test_sdk_error_code_vocabulary_does_not_promote_outcome(self) -> None:
+        # Canonical e64 ErrorCode wire vocabulary. This is diagnostic
+        # classification only; a typed code is never native media evidence.
+        sdk_codes = (
+            "Unsupported", "Unavailable", "PermissionDenied", "ConsentRequired",
+            "PolicyDenied", "NotFound", "AmbiguousTarget", "StaleReference",
+            "BackendFailed", "Timeout", "InvalidArgument", "PluginProtocolError",
+            "SandboxDenied", "Conflict", "Cancelled", "Internal",
+            "ProtocolMismatch", "ResourceExhausted",
+        )
+        for code in sdk_codes:
+            for outcome_known in (False, True):
+                for acknowledged in (False, True):
+                    with self.subTest(code=code, outcome_known=outcome_known,
+                                      acknowledged=acknowledged):
+                        receipts = []
+                        if acknowledged:
+                            receipts.append({
+                                "command": "driver.motion-canvas.render.start",
+                                "stage": "completed",
+                                "request_id": "synthetic-vocabulary-original",
+                                "payload": {"result": {"data": {"job_ref": PRIVATE}}},
+                            })
+                        raw = json.dumps({
+                            "error": {"code": code, "outcome_known": outcome_known,
+                                      "message": PRIVATE},
+                            "receipts": receipts,
+                        }).encode()
+                        report = classify_native_command_failure(
+                            stdout=raw, stderr=b"", exit_code=1)
+                        self.assert_closed(report)
+                        self.assertEqual(report["reported_error_code"], code)
+                        self.assertEqual(
+                            report["source_outcome"],
+                            "UNKNOWN" if acknowledged or not outcome_known or code == "Timeout"
+                            else "FAILED_NOT_MEDIA_VERIFIED",
+                        )
+
+    def test_non_sdk_error_code_spellings_and_types_stay_redacted(self) -> None:
+        for code in (
+            "InvalidArguments", "Unknown", "invalidargument", "TIMEOUT",
+            "OtherOrMissing", PRIVATE, None, 17, True, [], {},
+        ):
+            for outcome_known in (False, True):
+                with self.subTest(code=code, outcome_known=outcome_known):
+                    raw = json.dumps({
+                        "error": {"code": code, "outcome_known": outcome_known,
+                                  "message": PRIVATE},
+                        "receipts": [],
+                    }).encode()
+                    report = classify_native_command_failure(
+                        stdout=raw, stderr=b"", exit_code=1)
+                    self.assert_closed(report)
+                    self.assertEqual(report["reported_error_code"], "OtherOrMissing")
+                    self.assertEqual(
+                        report["source_outcome"],
+                        "FAILED_NOT_MEDIA_VERIFIED" if outcome_known else "UNKNOWN",
+                    )
+
     def test_status_failure_without_proof_stays_unverified(self) -> None:
         raw = json.dumps({
             "error": {"code": "Unavailable", "outcome_known": True,
