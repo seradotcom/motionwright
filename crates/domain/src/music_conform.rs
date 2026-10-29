@@ -43,6 +43,7 @@ pub struct MusicConformReview {
     pub original_duration: RationalTime,
     pub conformed_duration: RationalTime,
     pub affected_cue_count: usize,
+    pub affected_sfx_cue_count: usize,
     pub affected_marker_count: usize,
     pub affected_transcript_count: usize,
     pub approval_invalidated: bool,
@@ -51,6 +52,7 @@ pub struct MusicConformReview {
 impl MusicConformReview {
     pub fn anchors_need_acknowledgement(&self) -> bool {
         self.affected_cue_count > 0
+            || self.affected_sfx_cue_count > 0
             || self.affected_marker_count > 0
             || self.affected_transcript_count > 0
     }
@@ -190,7 +192,11 @@ impl Project {
                         original_end
                     };
                     earliest_cut_change = Some(earliest_cut_change.map_or(first, |current| {
-                        if first < current { first } else { current }
+                        if first < current {
+                            first
+                        } else {
+                            current
+                        }
                     }));
                 }
             }
@@ -236,6 +242,16 @@ impl Project {
         }
         let threshold = earliest_cut_change
             .ok_or_else(|| DomainError::Invalid("no selected music boundary changes".into()))?;
+        let affected_sfx_cue_count = self
+            .audio
+            .sfx_cues
+            .iter()
+            .filter(|cue| {
+                changes
+                    .iter()
+                    .any(|change| change.changed && change.scene_id == cue.scene_id)
+            })
+            .count();
         Ok(MusicConformReview {
             project_id: self.id,
             generation: self.generation,
@@ -253,6 +269,7 @@ impl Project {
                 .iter()
                 .filter(|cue| cue.at >= threshold)
                 .count(),
+            affected_sfx_cue_count,
             affected_marker_count: self
                 .markers
                 .iter()
@@ -283,7 +300,7 @@ impl Project {
         let review = self.inspect_music_conform(targets, source_sha256)?;
         if review.anchors_need_acknowledgement() && !acknowledge_absolute_anchors {
             return Err(DomainError::Invalid(
-                "global cues/markers/transcripts remain on absolute time; acknowledge the impact"
+                "music conform affects fixed timeline anchors or scene-linked SFX; acknowledge retained absolute anchors and any SFX retiming"
                     .into(),
             ));
         }

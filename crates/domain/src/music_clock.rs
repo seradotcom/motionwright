@@ -28,6 +28,7 @@ pub struct MusicCutReview {
     pub ripple: RationalTime,
     pub downstream_scene_ids: Vec<Uuid>,
     pub affected_cue_count: usize,
+    pub affected_sfx_cue_count: usize,
     pub affected_marker_count: usize,
     pub affected_transcript_count: usize,
     pub approval_invalidated: bool,
@@ -36,6 +37,7 @@ pub struct MusicCutReview {
 impl MusicCutReview {
     pub fn anchors_need_acknowledgement(&self) -> bool {
         self.affected_cue_count > 0
+            || self.affected_sfx_cue_count > 0
             || self.affected_marker_count > 0
             || self.affected_transcript_count > 0
     }
@@ -176,6 +178,16 @@ impl Project {
                 .iter()
                 .filter(|cue| cue.at >= first_changed_at)
                 .count(),
+            affected_sfx_cue_count: self
+                .audio
+                .sfx_cues
+                .iter()
+                .filter(|cue| {
+                    self.scenes[scene_index..]
+                        .iter()
+                        .any(|scene| scene.id == cue.scene_id)
+                })
+                .count(),
             affected_marker_count: self
                 .markers
                 .iter()
@@ -206,7 +218,7 @@ impl Project {
         }
         let reviewed = self.inspect_music_cut(scene_id, beat_index, source_sha256)?;
         if reviewed.anchors_need_acknowledgement() && !acknowledge_absolute_anchors {
-            return Err(DomainError::Invalid("music cut changes scene boundaries near fixed audio/marker anchors; acknowledge the retained absolute times".into()));
+            return Err(DomainError::Invalid("music cut affects fixed timeline anchors or scene-linked SFX; acknowledge retained absolute anchors and any SFX retiming".into()));
         }
         let scene = self
             .scenes
