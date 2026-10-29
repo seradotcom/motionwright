@@ -111,11 +111,37 @@ export interface ServiceRawStreamCapture {
   }>): { settled: Promise<void> };
 }
 
+export interface ServiceEvidenceOriginal {
+  path: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+/** Filesystem custody only, never source admission or native authority.
+ * The parent publishes exact exclusive originals with its consumed counter.
+ * A publication resolves after stable readback; copyClosedStore reserves its
+ * whole copy before creating the exclusive capture directory and its store/.
+ * Inventory is bounded and includes every regular file and directory. */
+export interface ServiceEvidenceCapture {
+  /** Monotonic failure observation on the same parent; never grants authority. */
+  taint(error: unknown): void;
+  publish(file: string, bytes: Buffer): Promise<Readonly<ServiceEvidenceOriginal>>;
+  inventory(directory: string): Promise<StoreEntry[]>;
+  copyClosedStore(source: string, captureRoot: string): Promise<Readonly<{
+    snapshotDirectory: string;
+    entries: StoreEntry[];
+  }>>;
+}
+
 export interface ScopedChangeServiceOptions {
   /** Shared by peers; ordinary service tests have no external owner. */
   processOwner?: ServiceProcessOwner;
   /** Same parent collector for initializer, peers and restarts; no authority grant. */
   rawStreamCapture?: ServiceRawStreamCapture;
+  /** Same parent as the raw collector; owns metadata originals and store copies. */
+  evidenceCapture?: ServiceEvidenceCapture;
+  /** Require the complete parent custody port before any Service launch. */
+  graphCustodyRequired?: boolean;
   /** Absolute source-built JSONL executable; retained by peers, not an authority claim. */
   binaryPath?: string;
   /** Existing or new absolute test SQLite path; never deleted by this helper. */
@@ -125,6 +151,25 @@ export interface ScopedChangeServiceOptions {
   seedFixture?: boolean;
   /** Opt into local import/bundle UI routes via JSONL; no native render authority. */
   desktopInvokeFixture?: boolean;
+}
+
+function validateCustodyOptions(options: ScopedChangeServiceOptions): void {
+  if (options.graphCustodyRequired !== undefined && typeof options.graphCustodyRequired !== "boolean")
+    throw new Error("graphCustodyRequired must be a boolean restriction");
+  const capture = options.evidenceCapture;
+  if (capture !== undefined && (!capture || typeof capture.taint !== "function" || typeof capture.publish !== "function"
+    || typeof capture.inventory !== "function" || typeof capture.copyClosedStore !== "function"))
+    throw new Error("Service evidence custody requires taint, publish, inventory and copyClosedStore");
+  if (options.graphCustodyRequired && (!options.databasePath || !capture
+    || capture !== (options.rawStreamCapture as unknown)
+    || typeof options.rawStreamCapture?.bind !== "function"
+    || typeof options.rawStreamCapture?.reserveLaunch !== "function"
+    || (options.processOwner && (capture !== (options.processOwner as unknown)
+      || typeof options.processOwner.environmentForNewClient !== "function"
+      || typeof options.processOwner.sealClientAdmissions !== "function"
+      || typeof options.processOwner.closeAfterClients !== "function"
+      || typeof options.processOwner.assertClosed !== "function"))))
+    throw new Error("Graph custody requires an explicit store and the same parent evidence, raw and owner ports");
 }
 
 export interface ServiceTranscriptEntry {
@@ -219,7 +264,7 @@ export interface StoreFinalization {
   capture: ClosedStoreCapture | null;
 }
 
-interface StoreEntry {
+export interface StoreEntry {
   path: string;
   kind: "directory" | "file";
   sizeBytes?: number;
@@ -280,6 +325,8 @@ export class ScopedChangeService {
   private readonly ownsDirectory: boolean;
   private readonly processOwner: ServiceProcessOwner | undefined;
   private readonly rawStreamCapture: ServiceRawStreamCapture | undefined;
+  private readonly evidenceCapture: ServiceEvidenceCapture | undefined;
+  private readonly graphCustodyRequired: boolean;
   private readonly rawCaptures: RawStreamCaptureState[] = [];
   private child: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<this> | null = null;
@@ -300,6 +347,8 @@ export class ScopedChangeService {
     this.ownsDirectory = ownsDirectory;
     this.processOwner = options.processOwner;
     this.rawStreamCapture = options.rawStreamCapture;
+    this.evidenceCapture = options.evidenceCapture;
+    this.graphCustodyRequired = options.graphCustodyRequired ?? false;
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.seedFixture = options.seedFixture ?? true;
     this.desktopInvokeFixture = options.desktopInvokeFixture ?? false;
@@ -310,6 +359,7 @@ export class ScopedChangeService {
   }
 
   static async create(options: ScopedChangeServiceOptions = {}): Promise<ScopedChangeService> {
+    validateCustodyOptions(options);
     const configured = options.binaryPath ?? process.env.MOTIONWRIGHT_SERVICE_TEST_BIN;
     if (!configured?.trim() || !isAbsolute(configured)) {
       throw new Error("Set binaryPath or MOTIONWRIGHT_SERVICE_TEST_BIN to the absolute path of the source-built JSONL test executable; no service fixture fallback is available");
@@ -764,7 +814,8 @@ export class ScopedChangeService {
   peer(): Promise<ScopedChangeService> {
     return ScopedChangeService.create({ binaryPath: this.binaryPath, databasePath: this.databasePath, timeoutMs: this.timeoutMs,
       seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture, processOwner: this.processOwner,
-      rawStreamCapture: this.rawStreamCapture });
+      rawStreamCapture: this.rawStreamCapture, evidenceCapture: this.evidenceCapture,
+      graphCustodyRequired: this.graphCustodyRequired });
   }
 
   /** Install before page.goto; every invoke crosses into the real process. */
@@ -897,6 +948,52 @@ export class ScopedChangeService {
     return [...new Set([this, ...peers, ...[...ScopedChangeService.instances].filter(service => identity(service.directory) === source)])];
   }
 
+  private evidenceCustody(participants: ScopedChangeService[]): ServiceEvidenceCapture | undefined {
+    const capture = this.evidenceCapture;
+    try {
+      if (participants.some(service => service.graphCustodyRequired || service.evidenceCapture !== undefined)) {
+        if (!capture || participants.some(service => service.evidenceCapture !== capture
+          || service.graphCustodyRequired !== this.graphCustodyRequired))
+          throw new Error("Store participants do not share the same evidence custody restriction");
+        for (const service of participants) validateCustodyOptions({
+          databasePath: service.databasePath, graphCustodyRequired: service.graphCustodyRequired,
+          evidenceCapture: service.evidenceCapture, rawStreamCapture: service.rawStreamCapture,
+          processOwner: service.processOwner,
+        });
+      }
+    } catch (error) {
+      const failures = [error];
+      for (const parent of new Set(participants.map(service => service.evidenceCapture))) {
+        if (parent) try { parent.taint(error); } catch (custody) { failures.push(custody); }
+      }
+      if (failures.length > 1) throw new AggregateError(failures, "Evidence custody restriction and parent failure observation failed");
+      throw error;
+    }
+    return capture;
+  }
+
+  private rejectEvidence(capture: ServiceEvidenceCapture, error: unknown): never {
+    try { capture.taint(error); }
+    catch (custody) { throw new AggregateError([error, custody], "Evidence failure and parent failure observation failed"); }
+    throw error;
+  }
+
+  private async publishEvidenceOriginal(file: string, bytes: Buffer, participants: ScopedChangeService[]): Promise<ServiceEvidenceOriginal> {
+    const expected = { path: file, sha256: createHash("sha256").update(bytes).digest("hex"), size_bytes: bytes.length };
+    const capture = this.evidenceCustody(participants);
+    if (capture) {
+      try {
+        const observed = await capture.publish(file, Buffer.from(bytes));
+        if (!isDeepStrictEqual(observed, expected)) throw new Error("Evidence publication did not retain the exact original reference");
+      } catch (error) { this.rejectEvidence(capture, error); }
+    } else {
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, bytes, { flag: "wx" });
+      if (!(await readFile(file)).equals(bytes)) throw new Error("Evidence publication readback differs from its original bytes");
+    }
+    return expected;
+  }
+
   /**
    * One finalization per store: quiesce browser/gates, observe the full oracle,
    * attempt every peer's close, close external writers, retain every outcome,
@@ -956,13 +1053,10 @@ export class ScopedChangeService {
       const receipt = this.closureReceipt(participants, closed, sealedHelperIds,
         result.preparation.map(outcome => outcome.status), result.oracle ? "fulfilled" : "rejected", ownerSeals, result.errors.length > 0);
       if (receipt.status !== "CLOSED" && !result.errors.length) result.errors.push("Service closure roster is incomplete; capture is forbidden");
-      await mkdir(dirname(destination), { recursive: true });
       const receiptPath = destination + "-service-closure.json", original = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
-      await writeFile(receiptPath, original, { flag: "wx" });
-      const observed = await readFile(receiptPath);
-      if (!observed.equals(original)) throw new Error("Service closure receipt readback differs from its original bytes");
+      const observed = await this.publishEvidenceOriginal(receiptPath, original, participants);
       barrier = { closed: receipt.status === "CLOSED", receipt_path: receiptPath,
-        receipt_sha256: createHash("sha256").update(observed).digest("hex") };
+        receipt_sha256: observed.sha256 };
     } catch (error) { result.errors.push(String(error)); }
     result.serviceClosure = barrier;
     const external = await Promise.allSettled(owners.map(async owner => {
@@ -972,17 +1066,33 @@ export class ScopedChangeService {
     result.externalClosures = external.map((outcome, index) => outcome.status === "fulfilled"
       ? { index, status: "fulfilled" } : { index, status: "rejected", error: String(outcome.reason) });
     result.errors.push(...result.externalClosures.flatMap(outcome => outcome.status === "rejected" ? [outcome.error ?? ""] : []));
-    await mkdir(dirname(destination), { recursive: true });
     const outcomePath = destination + "-outcomes.json";
-    await writeFile(outcomePath, JSON.stringify(result, null, 2), { flag: "wx" });
-    if (result.errors.length) throw new AggregateError(result.errors.map(error => new Error(error)), "Store finalization is incomplete; all peer close outcomes were retained");
+    const publishOutcome = (file: string) => this.publishEvidenceOriginal(file, Buffer.from(JSON.stringify(result, null, 2)), participants);
+    if (result.errors.length) {
+      const failure = new AggregateError(result.errors.map(error => new Error(error)), "Store finalization is incomplete; all peer close outcomes were retained");
+      try { await publishOutcome(outcomePath); }
+      catch (custody) { throw new AggregateError([failure, custody], "Store finalization and outcome custody failed"); }
+      throw failure;
+    }
+    // Preserve the completed cleanup outcomes before any copy can fail. The
+    // terminal outcome is another exclusive original, never a rewrite of this.
+    await publishOutcome(destination + "-outcomes-before-capture.json");
+    let captureFailure: unknown;
+    let captureRejected = false;
     try {
       result.capture = await this.captureClosedStore(destination, participants);
-      await writeFile(join(destination, "oracle.json"), JSON.stringify(result.oracle, null, 2), { flag: "wx" });
+      await this.publishEvidenceOriginal(join(destination, "oracle.json"), Buffer.from(JSON.stringify(result.oracle, null, 2)), participants);
     } catch (error) {
+      captureRejected = true;
+      captureFailure = error;
       result.errors.push(String(error));
-      throw error;
-    } finally { await writeFile(outcomePath, JSON.stringify(result, null, 2)); }
+    }
+    try { await publishOutcome(outcomePath); }
+    catch (custody) {
+      if (captureRejected) throw new AggregateError([captureFailure, custody], "Store capture and outcome custody failed");
+      throw custody;
+    }
+    if (captureRejected) throw captureFailure;
     return result;
   }
 
@@ -1013,33 +1123,46 @@ export class ScopedChangeService {
     }
     // Direct capture callers cannot bypass the external-writer barrier.
     for (const owner of new Set(participants.map(service => service.processOwner))) owner?.assertClosed();
-    const before = await storeTree(sourceDirectory);
-    await mkdir(dirname(target), { recursive: true });
-    await mkdir(target); // Fails if anything already occupies this destination.
-    const snapshotDirectory = join(target, "store");
-    await cp(sourceDirectory, snapshotDirectory, {
-      recursive: true, force: false, errorOnExist: true, dereference: false, preserveTimestamps: true,
-    });
-    const copied = await storeTree(snapshotDirectory);
-    const after = await storeTree(sourceDirectory);
-    const beforeJson = JSON.stringify(before);
-    const afterJson = JSON.stringify(after);
-    const copiedJson = JSON.stringify(copied);
-    if (beforeJson !== afterJson || beforeJson !== copiedJson) {
-      throw new Error("Closed store capture differs from its source, or the source changed; evidence is incomplete");
+    const custody = this.evidenceCustody(participants);
+    try {
+      const inventory = (directory: string) => custody ? custody.inventory(directory) : storeTree(directory);
+      const before = await inventory(sourceDirectory);
+      const snapshotDirectory = join(target, "store");
+      if (custody) {
+        const copied = await custody.copyClosedStore(sourceDirectory, target);
+        if (copied.snapshotDirectory !== snapshotDirectory || !isDeepStrictEqual(copied.entries, before))
+          throw new Error("Closed store custody copy does not identify the original inventory and destination");
+      } else {
+        await mkdir(dirname(target), { recursive: true });
+        await mkdir(target); // Fails if anything already occupies this destination.
+        await cp(sourceDirectory, snapshotDirectory, {
+          recursive: true, force: false, errorOnExist: true, dereference: false, preserveTimestamps: true,
+        });
+      }
+      const copied = await inventory(snapshotDirectory);
+      const after = await inventory(sourceDirectory);
+      const beforeJson = JSON.stringify(before);
+      const afterJson = JSON.stringify(after);
+      const copiedJson = JSON.stringify(copied);
+      if (beforeJson !== afterJson || beforeJson !== copiedJson) {
+        throw new Error("Closed store capture differs from its source, or the source changed; evidence is incomplete");
+      }
+      const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+      const capture: ClosedStoreCapture = {
+        schemaVersion: 1, capturedAt: new Date().toISOString(), sourceDirectory, snapshotDirectory,
+        databaseRelativePath: relative(sourceDirectory, this.databasePath).split("\\").join("/"),
+        entries: before, sourceBeforeSha256: digest(beforeJson), sourceAfterSha256: digest(afterJson),
+        snapshotSha256: digest(copiedJson),
+        lifecycle: [...participants].map(service => ({ databasePath: service.databasePath,
+          exits: service.processExits.map(exit => ({ ...exit })), taints: structuredClone(service.lifecycleTaints) })),
+        evidenceScope: "complete_closed_store_copy_with_verified_helper_exits; unopened_snapshot; later_archive_reopen_verification_required",
+      };
+      await this.publishEvidenceOriginal(join(target, "manifest.json"), Buffer.from(JSON.stringify(capture, null, 2)), participants);
+      return capture;
+    } catch (error) {
+      if (custody) this.rejectEvidence(custody, error);
+      throw error;
     }
-    const digest = (text: string) => createHash("sha256").update(text).digest("hex");
-    const capture: ClosedStoreCapture = {
-      schemaVersion: 1, capturedAt: new Date().toISOString(), sourceDirectory, snapshotDirectory,
-      databaseRelativePath: relative(sourceDirectory, this.databasePath).split("\\").join("/"),
-      entries: before, sourceBeforeSha256: digest(beforeJson), sourceAfterSha256: digest(afterJson),
-      snapshotSha256: digest(copiedJson),
-      lifecycle: [...participants].map(service => ({ databasePath: service.databasePath,
-        exits: service.processExits.map(exit => ({ ...exit })), taints: structuredClone(service.lifecycleTaints) })),
-      evidenceScope: "complete_closed_store_copy_with_verified_helper_exits; unopened_snapshot; later_archive_reopen_verification_required",
-    };
-    await writeFile(join(target, "manifest.json"), JSON.stringify(capture, null, 2), { flag: "wx" });
-    return capture;
   }
 
   /** Call after peers close; only helper-created temporary directories are removed. */

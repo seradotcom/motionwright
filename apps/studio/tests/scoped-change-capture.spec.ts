@@ -1,12 +1,12 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Project } from "../src/types";
 import { expect, test, type TestInfo } from "@playwright/test";
-import { ScopedChangeService, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceLaunchContext, type ServiceProcessOwner, type ServiceRawStreamCapture, type StoreFinalization } from "./support/scopedChangeService";
+import { ScopedChangeService, type ScopedChangeServiceOptions, type ServiceClosureBarrier, type ServiceClosureReceipt, type ServiceEvidenceCapture, type ServiceLaunchContext, type ServiceProcessOwner, type ServiceRawStreamCapture, type StoreEntry, type StoreFinalization } from "./support/scopedChangeService";
 
 // Transport faults and deliberately damaged copies of real SQLite stores are
 // explicit negative fixtures. RPC responses and process results are real.
@@ -839,4 +839,251 @@ test("real stderr stays in Buffer mode when SQLite rejects a directory path", as
   expect(stderr.toString("utf8")).toBe(service.stderr);
   await rejectedCapture(service, testInfo, "raw-stderr-failed-capture");
   await record(testInfo, [service], { fixture: "SQLite_directory_path_for_original_stderr_byte_control; excludes_Native_Host" });
+});
+
+/** Synthetic port fault injection over ordinary real Service processes.
+ * This fixture proves adapter delegation and immutable output/error behavior.
+ * It is not GraphCaseFactoryCore, a SharedPool, source admission or Native proof. */
+function evidenceSinkFixture() {
+  const raw = rawSinkFixture();
+  const calls: { operation: string; path: string }[] = [];
+  const originals = new Map<string, Buffer>();
+  const taints: unknown[] = [];
+  const hooks: {
+    beforePublish?: (file: string) => Promise<void>;
+    beforeCopy?: () => Promise<void>;
+    afterCopy?: (captureRoot: string) => Promise<void>;
+    wrongReference?: (file: string) => boolean;
+  } = {};
+  const inventory = async (directory: string): Promise<StoreEntry[]> => {
+    const entries: StoreEntry[] = [];
+    const visit = async (file: string, name: string): Promise<void> => {
+      const info = await lstat(file);
+      if (info.isSymbolicLink()) throw new Error("Synthetic inventory rejects links");
+      if (info.isDirectory()) {
+        entries.push({ path: name, kind: "directory" });
+        for (const child of (await readdir(file)).sort()) await visit(join(file, child), name ? name + "/" + child : child);
+      } else {
+        if (!info.isFile()) throw new Error("Synthetic inventory requires regular files");
+        const bytes = await readFile(file);
+        entries.push({ path: name, kind: "file", sizeBytes: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex") });
+      }
+    };
+    await visit(directory, "");
+    return entries;
+  };
+  const port: ServiceRawStreamCapture & ServiceEvidenceCapture = Object.assign(raw.capture, {
+    taint(error: unknown) { taints.push(error); },
+    async publish(file: string, bytes: Buffer) {
+      calls.push({ operation: "publish", path: file });
+      await hooks.beforePublish?.(file);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, bytes, { flag: "wx" });
+      const observed = await readFile(file);
+      expect(observed).toEqual(bytes);
+      expect(originals.has(file)).toBe(false);
+      originals.set(file, Buffer.from(observed));
+      return { path: file, size_bytes: observed.length,
+        sha256: hooks.wrongReference?.(file) ? "00".repeat(32) : createHash("sha256").update(observed).digest("hex") };
+    },
+    async inventory(directory: string) {
+      calls.push({ operation: "inventory", path: directory });
+      return inventory(directory);
+    },
+    async copyClosedStore(source: string, captureRoot: string) {
+      calls.push({ operation: "copy", path: captureRoot });
+      await hooks.beforeCopy?.();
+      const entries = await inventory(source), snapshotDirectory = join(captureRoot, "store");
+      await mkdir(dirname(captureRoot), { recursive: true });
+      await mkdir(captureRoot);
+      await cp(source, snapshotDirectory, { recursive: true, force: false, errorOnExist: true, dereference: false });
+      await hooks.afterCopy?.(captureRoot);
+      return { snapshotDirectory, entries };
+    },
+  });
+  return { raw, port, calls, originals, hooks, taints };
+}
+
+function evidenceOwnerFixture(port: ServiceRawStreamCapture & ServiceEvidenceCapture) {
+  let sealed = false, closed = false;
+  const barriers: ServiceClosureBarrier[] = [];
+  const owner: ServiceRawStreamCapture & ServiceEvidenceCapture & ServiceProcessOwner = Object.assign(port, {
+    async environmentForNewClient() {
+      if (sealed) throw new Error("Synthetic owner admissions sealed");
+      return {};
+    },
+    sealClientAdmissions() { sealed = true; },
+    async closeAfterClients(barrier: ServiceClosureBarrier) {
+      barriers.push(structuredClone(barrier)); closed = true;
+    },
+    assertClosed() { if (!closed) throw new Error("Synthetic owner cleanup not observed"); },
+  });
+  return { owner, barriers, isClosed: () => closed };
+}
+
+function createEvidenceService(testInfo: TestInfo, fixture: ReturnType<typeof evidenceSinkFixture>, suffix: string, owner?: ServiceProcessOwner) {
+  return ScopedChangeService.create({ databasePath: testInfo.outputPath("evidence-service-" + suffix, "studio.sqlite3"),
+    rawStreamCapture: fixture.port, evidenceCapture: fixture.port, graphCustodyRequired: true, processOwner: owner });
+}
+
+test("required evidence custody rejects missing legacy or foreign ports before any launch", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture();
+  const databasePath = testInfo.outputPath("no-custody-no-store", "studio.sqlite3");
+  const legacy = { ...fixture.port, copyClosedStore: undefined } as unknown as ServiceEvidenceCapture;
+  const cases: ScopedChangeServiceOptions[] = [
+    {},
+    { evidenceCapture: legacy, rawStreamCapture: fixture.port },
+    { evidenceCapture: fixture.port, rawStreamCapture: rawSinkFixture().capture },
+    { evidenceCapture: fixture.port, rawStreamCapture: fixture.port, processOwner: {} as ServiceProcessOwner },
+  ];
+  for (const options of cases) {
+    await expect(ScopedChangeService.create({ databasePath, graphCustodyRequired: true, ...options }))
+      .rejects.toThrow(/custody/);
+  }
+  expect(fixture.raw.reservations).toEqual([]);
+  expect(fixture.raw.rows).toEqual([]);
+  expect(fixture.calls).toEqual([]);
+  await expect(lstat(dirname(databasePath))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("required evidence custody survives peers and restart and publishes each original once", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture(), external = evidenceOwnerFixture(fixture.port);
+  const service = await createEvidenceService(testInfo, fixture, "complete", external.owner);
+  let peer: ScopedChangeService | undefined;
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    peer = await service.peer();
+    await service.close(); await service.start();
+    fixture.hooks.beforeCopy = async () => { expect(external.isClosed()).toBe(true); };
+    const destination = testInfo.outputPath("evidence-complete-store");
+    const result = await service.finalizeClosedStore(destination, project, [peer]);
+    expect(result.errors).toEqual([]);
+    expect(fixture.taints).toEqual([]);
+    expect(fixture.raw.rows).toHaveLength(3);
+    expect(external.barriers).toHaveLength(1); expect(external.barriers[0].closed).toBe(true);
+    const published = fixture.calls.filter(call => call.operation === "publish").map(call => call.path);
+    expect(published).toEqual([destination + "-service-closure.json", destination + "-outcomes-before-capture.json",
+      join(destination, "manifest.json"), join(destination, "oracle.json"), destination + "-outcomes.json"]);
+    expect(new Set(published).size).toBe(published.length);
+    expect(fixture.calls.filter(call => call.operation === "copy")).toEqual([{ operation: "copy", path: destination }]);
+    expect(fixture.calls.filter(call => call.operation === "inventory").map(call => call.path))
+      .toEqual([service.directory, join(destination, "store"), service.directory]);
+    const before = fixture.originals.get(destination + "-outcomes-before-capture.json")!;
+    expect(JSON.parse(before.toString()).capture).toBeNull();
+    expect(await readFile(destination + "-outcomes-before-capture.json")).toEqual(before);
+    expect(JSON.parse(await readFile(destination + "-outcomes.json", "utf8"))).toEqual(result);
+    for (const [file, bytes] of fixture.originals) expect(await readFile(file)).toEqual(bytes);
+  } finally { await Promise.allSettled([service.close(), ...(peer ? [peer.close()] : [])]); }
+});
+
+test("failed or contradictory custody publication still closes owners with a false barrier", async ({}, testInfo) => {
+  for (const mode of ["publication-failure", "wrong-reference"] as const) {
+    const fixture = evidenceSinkFixture(), external = evidenceOwnerFixture(fixture.port);
+    const service = await createEvidenceService(testInfo, fixture, mode, external.owner);
+    const destination = testInfo.outputPath("evidence-" + mode);
+    try {
+      const project = (await service.fixtureBootstrap()).project;
+      if (mode === "publication-failure") fixture.hooks.beforePublish = async file => {
+        if (file.endsWith("-service-closure.json")) throw new Error("Injected exclusive publication failure");
+      };
+      else fixture.hooks.wrongReference = file => file.endsWith("-service-closure.json");
+      await expect(service.finalizeClosedStore(destination, project)).rejects.toThrow("Store finalization is incomplete");
+      expect(external.barriers).toEqual([{ closed: false, receipt_path: null, receipt_sha256: null }]);
+      expect(external.isClosed()).toBe(true);
+      expect(fixture.taints.length).toBeGreaterThan(0);
+      expect(fixture.calls.some(call => call.operation === "copy")).toBe(false);
+      if (mode === "publication-failure") await expect(readFile(destination + "-service-closure.json")).rejects.toMatchObject({ code: "ENOENT" });
+      const outcomes = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
+      expect(outcomes.capture).toBeNull(); expect(outcomes.errors.length).toBeGreaterThan(0);
+    } finally { await service.close(); }
+  }
+});
+
+test("pre-capture custody rejection stops copying after all owners were closed", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture(), external = evidenceOwnerFixture(fixture.port);
+  const service = await createEvidenceService(testInfo, fixture, "checkpoint-failure", external.owner);
+  const destination = testInfo.outputPath("evidence-checkpoint-failure");
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    fixture.hooks.beforePublish = async file => {
+      if (file.endsWith("-outcomes-before-capture.json")) throw new Error("Synthetic SUBQUOTA_EXHAUSTED before copy");
+    };
+    await expect(service.finalizeClosedStore(destination, project)).rejects.toThrow("Synthetic SUBQUOTA_EXHAUSTED before copy");
+    expect(external.isClosed()).toBe(true); expect(external.barriers).toHaveLength(1);
+    expect(fixture.calls.some(call => call.operation === "copy")).toBe(false);
+    expect(fixture.taints.length).toBeGreaterThan(0);
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(destination + "-outcomes-before-capture.json")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(destination + "-outcomes.json")).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await service.close(); }
+});
+
+test("a custody copy failure keeps the prior original and cannot fall back to fs copying", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture(), service = await createEvidenceService(testInfo, fixture, "copy-failure");
+  const destination = testInfo.outputPath("evidence-copy-failure");
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    fixture.hooks.beforeCopy = async () => { throw new Error("Injected charged copy failure"); };
+    await expect(service.finalizeClosedStore(destination, project)).rejects.toThrow("Injected charged copy failure");
+    const before = fixture.originals.get(destination + "-outcomes-before-capture.json")!;
+    expect(JSON.parse(before.toString()).errors).toEqual([]);
+    expect(await readFile(destination + "-outcomes-before-capture.json")).toEqual(before);
+    const terminal = JSON.parse(await readFile(destination + "-outcomes.json", "utf8")) as StoreFinalization;
+    expect(terminal.capture).toBeNull(); expect(terminal.errors).toContain("Error: Injected charged copy failure");
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(fixture.calls.filter(call => call.operation === "copy")).toHaveLength(1);
+    expect(fixture.taints.some(error => String(error).includes("Injected charged copy failure"))).toBe(true);
+  } finally { await service.close(); }
+});
+
+test("a late final outcome collision preserves the conflicting original without a rewrite", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture(), service = await createEvidenceService(testInfo, fixture, "late-collision");
+  const destination = testInfo.outputPath("evidence-late-collision");
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    const original = Buffer.from("independent conflicting original");
+    fixture.hooks.afterCopy = async () => { await writeFile(destination + "-outcomes.json", original, { flag: "wx" }); };
+    await expect(service.finalizeClosedStore(destination, project)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await readFile(destination + "-outcomes.json")).toEqual(original);
+    expect(await readFile(destination + "-outcomes-before-capture.json"))
+      .toEqual(fixture.originals.get(destination + "-outcomes-before-capture.json"));
+    expect(fixture.calls.filter(call => call.operation === "publish" && call.path === destination + "-outcomes.json")).toHaveLength(1);
+  } finally { await service.close(); }
+});
+
+test("copy and terminal publication failures retain both causes instead of finally masking one", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture(), service = await createEvidenceService(testInfo, fixture, "two-failures");
+  const destination = testInfo.outputPath("evidence-two-failures");
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    const copyFailure = new Error("Original copy failure"), custodyFailure = new Error("Original terminal publication failure");
+    fixture.hooks.beforeCopy = async () => { throw copyFailure; };
+    fixture.hooks.beforePublish = async file => { if (file === destination + "-outcomes.json") throw custodyFailure; };
+    let rejected: unknown;
+    try { await service.finalizeClosedStore(destination, project); }
+    catch (error) { rejected = error; }
+    expect(rejected).toBeInstanceOf(AggregateError);
+    expect((rejected as AggregateError).errors).toEqual([copyFailure, custodyFailure]);
+    expect(await readFile(destination + "-outcomes-before-capture.json"))
+      .toEqual(fixture.originals.get(destination + "-outcomes-before-capture.json"));
+    await expect(readFile(destination + "-outcomes.json")).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await service.close(); }
+});
+
+test("an ordinary peer cannot downgrade required custody during finalization", async ({}, testInfo) => {
+  const fixture = evidenceSinkFixture(), service = await createEvidenceService(testInfo, fixture, "mixed-peer");
+  let peer: ScopedChangeService | undefined;
+  const destination = testInfo.outputPath("evidence-mixed-peer");
+  try {
+    const project = (await service.fixtureBootstrap()).project;
+    peer = await ScopedChangeService.create({ binaryPath: service.binaryPath, databasePath: service.databasePath, seedFixture: false });
+    await expect(peer.finalizeClosedStore(destination, project, [service])).rejects.toThrow("Store finalization and outcome custody failed");
+    expect(service.processExits).toHaveLength(1); expect(peer.processExits).toHaveLength(1);
+    expect(fixture.calls).toEqual([]);
+    expect(fixture.taints.some(error => String(error).includes("same evidence custody restriction"))).toBe(true);
+    await expect(readFile(destination + "-service-closure.json")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(destination + "-outcomes.json")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await Promise.allSettled([service.close(), ...(peer ? [peer.close()] : [])]); }
 });
