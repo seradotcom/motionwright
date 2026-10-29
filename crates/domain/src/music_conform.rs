@@ -192,11 +192,7 @@ impl Project {
                         original_end
                     };
                     earliest_cut_change = Some(earliest_cut_change.map_or(first, |current| {
-                        if first < current {
-                            first
-                        } else {
-                            current
-                        }
+                        if first < current { first } else { current }
                     }));
                 }
             }
