@@ -12,13 +12,451 @@ const MEDIA_MAX_BYTES: u64 = 256_000_000;
 const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MANIM_OBSERVATION_FRAME_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MANIM_OBSERVATION_REPORT_MAX_BYTES: u64 = 16 * 1024 * 1024;
-// Closed native + Host FFV1 custody on selected SDK e64a2d28, runtime.rs
-// preflight_ffv1_custody: six bounded native stages and two Host envelopes.
-const FFV1_CUSTODY_BYTES: u64 =
-    6 * (2 * 16_384 + 65_536) + 65_536 + 2 * (65_536 + 2 * 262_144 + 65_536);
+// Closed native + Host FFV1 custody for the SDK R63 capture-limit proposal.
+// Five stages retain 16 KiB/channel; complete-probe retains the accepted
+// REPORT_LIMIT/channel. Reserve the same roster in the root and each encode.
+// Adoption still requires the SDK owner's review; this is not a native result.
+pub(super) const FFV1_CUSTODY_BYTES: u64 = 5 * (2 * 16_384 + 65_536)
+    + (2 * native_observation::REPORT_LIMIT as u64 + 65_536)
+    + 65_536
+    + 2 * (65_536 + 2 * 262_144 + 65_536);
 // Selected SDK e64 xml.rs MAX_XML; the native render/mux each retain one
 // original .native-input.mlt. The Host's two-copy scratch check stays separate.
 const NATIVE_INPUT_XML_MAX_BYTES: u64 = 8 * 1024 * 1024;
+// Selected SDK model::MAX_PROJECT_BYTES used by Store, plus a closed receipt.
+const MC_SOURCE_MAX_BYTES: u64 = 524_288;
+const MC_SOURCE_RECEIPT_MAX_BYTES: u64 = 16_384;
+const HYBRID_GRANT_MAX_BYTES: u64 = 65_536;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HybridGrantContext {
+    source_sha: String,
+    semwright_sha: String,
+    run_id: String,
+    run_attempt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HybridGrantFile {
+    path: PathBuf,
+    sha256: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HybridGrantDaemon {
+    argv: Vec<String>,
+    pid: u32,
+    start_ticks: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HybridGrantReceipt {
+    schema: String,
+    context: HybridGrantContext,
+    source_project_sha256: String,
+    project_root: PathBuf,
+    output_root: PathBuf,
+    socket: PathBuf,
+    owner_config: HybridGrantFile,
+    connection: HybridGrantFile,
+    daemon: HybridGrantDaemon,
+    native_effect_started: bool,
+    automatic_retry: bool,
+}
+
+/// Sealed observation of the existing owner's grant, not a new Host grant.
+#[derive(Debug, Clone)]
+pub(super) struct HybridProjectGrant {
+    receipt: HybridGrantReceipt,
+    original: HybridGrantFile,
+    connection_identity: String,
+    project_identity: [u64; 5],
+    output_identity: [u64; 5],
+    socket_identity: [u64; 5],
+}
+
+fn grant_file_bytes(file: &HybridGrantFile, maximum: u64) -> NativeResult<Vec<u8>> {
+    require(
+        file.bytes > 0 && file.bytes <= maximum && is_sha256(&file.sha256),
+        "Hybrid grant original has an invalid bounded identity",
+    )?;
+    let parent = file
+        .path
+        .parent()
+        .ok_or_else(|| invalid("Hybrid grant original parent is absent"))?;
+    let name = file
+        .path
+        .file_name()
+        .and_then(|part| part.to_str())
+        .ok_or_else(|| invalid("Hybrid grant original name is invalid"))?;
+    let bytes = read_verified_production_artifact(parent, name, &file.sha256, maximum)?;
+    require(
+        bytes.len() as u64 == file.bytes,
+        "Hybrid grant original byte count changed",
+    )?;
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn grant_path_identity(path: &Path, directory: bool) -> NativeResult<[u64; 5]> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let metadata = safe_metadata(path)?;
+    require(
+        if directory {
+            metadata.is_dir()
+        } else {
+            metadata.file_type().is_socket()
+        },
+        "Hybrid grant path has another filesystem kind",
+    )?;
+    require(
+        metadata.uid() == unsafe { libc::geteuid() },
+        "Hybrid grant path has another owner",
+    )?;
+    Ok([
+        metadata.dev(),
+        metadata.ino(),
+        u64::from(metadata.mode()),
+        u64::from(metadata.uid()),
+        u64::from(metadata.gid()),
+    ])
+}
+
+#[cfg(not(target_os = "linux"))]
+fn grant_path_identity(_path: &Path, _directory: bool) -> NativeResult<[u64; 5]> {
+    Err(Error::new(
+        ErrorCode::Unsupported,
+        "Hybrid project-grant custody requires its original Linux CI owner",
+    ))
+}
+
+// This recognizes only the exact source-owned Python writer's closed TOML
+// profile. It is deliberately not an approximate general TOML parser.
+fn verify_owner_grant_profile(bytes: &[u8], project: &Path, output: &Path) -> NativeResult<()> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| invalid("Hybrid owner configuration is not UTF-8"))?;
+    require(
+        text.ends_with('\n') && !text.contains('\r'),
+        "Hybrid owner configuration framing changed",
+    )?;
+    let sections = text
+        .trim_end_matches('\n')
+        .split("\n\n")
+        .collect::<Vec<_>>();
+    require(
+        (4..=34).contains(&sections.len()),
+        "Hybrid owner grant roster is outside its closed bound",
+    )?;
+    let header = sections[0].lines().collect::<Vec<_>>();
+    require(
+        header.len() == 2 && header[1] == "driver_network = false",
+        "Hybrid owner configuration header changed",
+    )?;
+    let drivers: Vec<String> = serde_json::from_str(
+        header[0]
+            .strip_prefix("drivers = ")
+            .ok_or_else(|| invalid("Hybrid owner driver declaration changed"))?,
+    )
+    .map_err(|_| invalid("Hybrid owner driver declaration is malformed"))?;
+    let owner = project
+        .parent()
+        .ok_or_else(|| invalid("Hybrid project owner is absent"))?;
+    let expected_drivers = [
+        "motion-canvas-driver.json",
+        "mlt-video-driver.json",
+        "manim-driver.json",
+    ]
+    .iter()
+    .map(|name| {
+        owner
+            .join("config")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    })
+    .collect::<Vec<_>>();
+    require(
+        drivers == expected_drivers
+            && sections[1]
+                == "[policy]\nprofile = \"workspace\"\nallow = [\"driver:motion-canvas\", \"driver:mlt-video\", \"driver:manim-community\"]",
+        "Hybrid owner driver/policy profile differs from the original closed producer",
+    )?;
+    let mut grants = BTreeMap::new();
+    for section in &sections[2..] {
+        let lines = section.lines().collect::<Vec<_>>();
+        require(
+            lines.len() == 5 && lines[0] == "[[policy.filesystem]]" && lines[3] == "read = true",
+            "Hybrid owner filesystem block changed",
+        )?;
+        let parse_string = |line: &str, prefix: &str| -> NativeResult<String> {
+            serde_json::from_str(
+                line.strip_prefix(prefix)
+                    .ok_or_else(|| invalid("Hybrid owner grant field changed"))?,
+            )
+            .map_err(|_| invalid("Hybrid owner grant string is malformed"))
+        };
+        let name = parse_string(lines[1], "name = ")?;
+        let path = PathBuf::from(parse_string(lines[2], "path = ")?);
+        let writable = match lines[4] {
+            "write = true" => true,
+            "write = false" => false,
+            _ => return Err(invalid("Hybrid owner grant write flag changed")),
+        };
+        require(
+            !name.is_empty()
+                && name.len() <= 128
+                && grants.insert(name, (path, writable)).is_none(),
+            "Hybrid owner grant name is duplicated or invalid",
+        )?;
+    }
+    require(
+        grants.get("project") == Some(&(project.to_path_buf(), true))
+            && grants.get("output") == Some(&(output.to_path_buf(), true)),
+        "Hybrid project/output paths are not the existing owner read/write grants",
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn daemon_start_from_stat(bytes: &[u8], pid: u32) -> NativeResult<u64> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| invalid("Hybrid daemon stat is malformed"))?;
+    let (prefix, fields) = text
+        .rsplit_once(')')
+        .ok_or_else(|| invalid("Hybrid daemon stat fields are absent"))?;
+    require(
+        prefix.starts_with(&format!("{pid} (")),
+        "Hybrid daemon stat names another process",
+    )?;
+    let fields = fields.split_whitespace().collect::<Vec<_>>();
+    require(
+        fields.len() >= 20 && fields[0] != "Z" && fields[0] != "X",
+        "Hybrid daemon is not an observed live process",
+    )?;
+    fields[19]
+        .parse()
+        .map_err(|_| invalid("Hybrid daemon start time is malformed"))
+}
+
+#[cfg(target_os = "linux")]
+fn verify_grant_daemon(daemon: &HybridGrantDaemon) -> NativeResult<()> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    require(
+        daemon.pid > 0 && daemon.start_ticks > 0,
+        "Hybrid daemon identity is invalid",
+    )?;
+    let root = PathBuf::from(format!("/proc/{}", daemon.pid));
+    let observed =
+        fs::metadata(&root).map_err(|_| invalid("Hybrid original daemon is unavailable"))?;
+    require(
+        observed.uid() == unsafe { libc::geteuid() },
+        "Hybrid daemon belongs to another owner",
+    )?;
+    let read = |name: &str| -> NativeResult<Vec<u8>> {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(root.join(name))
+            .map_err(|_| invalid("Hybrid original daemon observation is unavailable"))?;
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(HYBRID_GRANT_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid("Hybrid original daemon observation failed"))?;
+        require(
+            bytes.len() as u64 <= HYBRID_GRANT_MAX_BYTES,
+            "Hybrid daemon observation exceeds its bound",
+        )?;
+        Ok(bytes)
+    };
+    let first = daemon_start_from_stat(&read("stat")?, daemon.pid)?;
+    let argv = daemon.argv.join("\0") + "\0";
+    require(
+        read("cmdline")?.as_slice() == argv.as_bytes()
+            && fs::read_link(root.join("exe")).ok().as_deref()
+                == daemon.argv.first().map(|path| Path::new(path)),
+        "Hybrid daemon argv/executable differs from the owner configuration process",
+    )?;
+    require(
+        first == daemon.start_ticks && daemon_start_from_stat(&read("stat")?, daemon.pid)? == first,
+        "Hybrid original daemon generation changed",
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_grant_daemon(_daemon: &HybridGrantDaemon) -> NativeResult<()> {
+    Err(Error::new(
+        ErrorCode::Unsupported,
+        "Hybrid daemon custody requires its original Linux CI owner",
+    ))
+}
+
+impl HybridProjectGrant {
+    fn recheck(&self, coordinator: &ProductionCoordinator) -> NativeResult<()> {
+        let receipt = &self.receipt;
+        require(
+            coordinator.client.connection().identity()? == self.connection_identity
+                && coordinator.client.connection().output_root == receipt.output_root
+                && coordinator.client.connection().socket == receipt.socket,
+            "Hybrid grant differs from the original production connection",
+        )?;
+        let original = grant_file_bytes(&self.original, HYBRID_GRANT_MAX_BYTES)?;
+        let current: HybridGrantReceipt = serde_json::from_slice(&original)
+            .map_err(|_| invalid("Hybrid grant original is malformed"))?;
+        require(
+            current.source_project_sha256 == receipt.source_project_sha256,
+            "Hybrid grant original source changed",
+        )?;
+        let config = grant_file_bytes(&receipt.owner_config, HYBRID_GRANT_MAX_BYTES)?;
+        verify_owner_grant_profile(&config, &receipt.project_root, &receipt.output_root)?;
+        let connection = grant_file_bytes(&receipt.connection, MAX_CONFIG_BYTES)?;
+        require(
+            serde_json::from_slice::<Value>(&connection)
+                .map_err(|_| invalid("Hybrid original connection is malformed"))?
+                == serde_json::to_value(coordinator.client.connection())
+                    .map_err(|_| invalid("Hybrid connection encoding failed"))?,
+            "Hybrid grant connection bytes name another production owner",
+        )?;
+        require(
+            grant_path_identity(&receipt.project_root, true)? == self.project_identity
+                && grant_path_identity(&receipt.output_root, true)? == self.output_identity
+                && grant_path_identity(&receipt.socket, false)? == self.socket_identity,
+            "Hybrid original project/output/socket identity changed",
+        )?;
+        verify_grant_daemon(&receipt.daemon)
+    }
+
+    fn require_unused_snapshots(&self, namespace: &str) -> NativeResult<()> {
+        for ordinal in [0, 2] {
+            for suffix in [
+                "semwright-motion.original.json",
+                "semwright-motion-custody.original.json",
+            ] {
+                let path = self
+                    .receipt
+                    .output_root
+                    .join(format!("{namespace}-mc-{ordinal}.{suffix}"));
+                require(
+                    matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+                    "Hybrid original MC source destination already exists or is unavailable; preserve it without replay",
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn write_hybrid_source_original(
+    root: &Path,
+    expected: &[u64; 5],
+    name: &str,
+    bytes: &[u8],
+    maximum: u64,
+) -> NativeResult<()> {
+    use std::io::Write;
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    };
+    require(
+        !bytes.is_empty()
+            && bytes.len() as u64 <= maximum
+            && maximum <= MC_SOURCE_MAX_BYTES
+            && name.starts_with("mw-hybrid-")
+            && name.ends_with(".json")
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.')),
+        "Hybrid source-original write is outside its closed member/byte bound",
+    )?;
+    require(
+        &grant_path_identity(root, true)? == expected,
+        "Hybrid source-original output root changed before write",
+    )?;
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)
+        .map_err(|_| backend("Hybrid source-original output directory cannot be retained"))?;
+    let metadata = directory
+        .metadata()
+        .map_err(|_| backend("Hybrid source-original output directory metadata is unavailable"))?;
+    require(
+        [
+            metadata.dev(),
+            metadata.ino(),
+            u64::from(metadata.mode()),
+            u64::from(metadata.uid()),
+            u64::from(metadata.gid()),
+        ] == *expected,
+        "Hybrid source-original output directory changed before exclusive creation",
+    )?;
+    let name_c = std::ffi::CString::new(name)
+        .map_err(|_| invalid("Hybrid source-original member is invalid"))?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_WRONLY
+                | libc::O_CREAT
+                | libc::O_EXCL
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | libc::O_NONBLOCK,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
+                Error::new(
+                    ErrorCode::Conflict,
+                    "Hybrid source original already exists; preserve it without retry",
+                )
+            } else {
+                backend("Hybrid source original cannot be exclusively created")
+            },
+        );
+    }
+    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .and_then(|_| directory.sync_all())
+        .map_err(|_| {
+            backend(
+                "Hybrid source-original publication failed; retain its charged partial original",
+            )
+        })?;
+    require(
+        read_verified_production_artifact(
+            root,
+            name,
+            &hex::encode(Sha256::digest(bytes)),
+            maximum,
+        )? == bytes,
+        "Hybrid source-original readback differs from the applied source bytes",
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_hybrid_source_original(
+    _root: &Path,
+    _expected: &[u64; 5],
+    _name: &str,
+    _bytes: &[u8],
+    _maximum: u64,
+) -> NativeResult<()> {
+    Err(Error::new(
+        ErrorCode::Unsupported,
+        "Hybrid source-original custody requires its original Linux CI owner",
+    ))
+}
 
 /// Retained outputs of the actual two MC jobs and actual static Manim job.
 /// It cannot be reconstructed from JSON or rebound to another coordinator.
@@ -455,6 +893,13 @@ impl HybridBudgetPlan {
                 )?,
             )?,
         )?;
+        let mc_output = bounded_add(
+            mc_output,
+            bounded_mul(
+                segment_count,
+                MC_SOURCE_MAX_BYTES + MC_SOURCE_RECEIPT_MAX_BYTES,
+            )?,
+        )?;
         let mut encode_output = 0;
         for contribution in &motion {
             encode_output = bounded_add(
@@ -563,6 +1008,9 @@ fn verify_original_pcm(bytes: &[u8], sample_frames: u64) -> NativeResult<()> {
 
 impl HybridRootBudgetScope {
     fn recheck(&self, coordinator: &ProductionCoordinator, project: &Project) -> NativeResult<()> {
+        if let Some(grant) = &coordinator.hybrid_project_grant {
+            grant.recheck(coordinator)?;
+        }
         require(
             coordinator.active_motion_budget.is_none(),
             "Hybrid root cannot coexist with a second native root",
@@ -617,6 +1065,124 @@ impl HybridRootBudgetScope {
         )
     }
 
+    pub(super) fn retain_motion_source(
+        &self,
+        coordinator: &ProductionCoordinator,
+        index: usize,
+        segment: &crate::film::MotionCanvasSegment,
+        prefix: &str,
+        fingerprint: &str,
+        applied: &Value,
+    ) -> NativeResult<()> {
+        self.recheck(coordinator, &self.plan.project)?;
+        let grant = coordinator.hybrid_project_grant.as_ref().ok_or_else(|| {
+            invalid("Hybrid MC source capture has no original project-grant observation")
+        })?;
+        let planned = self
+            .plan
+            .motion
+            .get(index)
+            .ok_or_else(|| invalid("Hybrid MC source index is outside the original plan"))?;
+        let request = format!("{prefix}:apply");
+        require(
+            matches!(&self.phase, HybridPhase::Sources)
+                && planned.segment_id == segment.id
+                && planned.output_ordinal == index * 2
+                && request == format!("{}-mc:motion:{index}:apply", self.plan.request_prefix)
+                && is_sha256(fingerprint)
+                && applied.get("replayed").and_then(Value::as_bool) == Some(false),
+            "Hybrid MC source snapshot is not the original applied segment",
+        )?;
+        let original = coordinator
+            .service
+            .latest_production_receipt(self.plan.project.id, &request)
+            .map_err(storage_error)?
+            .ok_or_else(|| backend("Hybrid MC apply has no original terminal receipt"))?;
+        require(
+            original.stage == "completed"
+                && original.command == "driver.motion-canvas.composition.apply"
+                && original.generation == self.plan.expected.generation
+                && original.revision == self.plan.expected.revision
+                && original.payload.get("result") == applied.get("result")
+                && original
+                    .payload
+                    .pointer("/result/data/fingerprint")
+                    .and_then(Value::as_str)
+                    == Some(fingerprint)
+                && original
+                    .payload
+                    .pointer("/result/data/applied")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && original
+                    .payload
+                    .pointer("/result/data/execution_status")
+                    .and_then(Value::as_str)
+                    == Some("completed")
+                && applied.get("receipt")
+                    == Some(
+                        &serde_json::to_value(&original)
+                            .map_err(|_| backend("Hybrid MC apply receipt cannot be observed"))?,
+                    ),
+            "Hybrid MC source capture lacks the charged original completed apply",
+        )?;
+        let bytes = read_verified_production_artifact(
+            &grant.receipt.project_root,
+            "semwright-motion.json",
+            fingerprint,
+            MC_SOURCE_MAX_BYTES,
+        )?;
+        let name = format!(
+            "{}-mc-{}.semwright-motion.original.json",
+            self.plan.namespace, planned.output_ordinal
+        );
+        let receipt_name = format!(
+            "{}-mc-{}.semwright-motion-custody.original.json",
+            self.plan.namespace, planned.output_ordinal
+        );
+        let document = json!({"schema":"motionwright.native.hybrid-mc-source-custody/1",
+            "ordinal":planned.output_ordinal,"segment_id":planned.segment_id,
+            "project_sha256":self.plan.project_sha256,"source_fingerprint":fingerprint,
+            "source_bytes":bytes.len(),"snapshot_path":name,"grant_receipt_sha256":grant.original.sha256,
+            "apply_request_id":request,"apply_receipt_id":original.id,"root_operation_id":self.root.root_id,
+            "apply_terminal_observed":true,"source_bytes_copied_without_reserialization":true,
+            "automatic_retry":false,"native_render_started_by_capture":false,"editable_cycle_acceptance":false});
+        let mut receipt_bytes = serde_json::to_vec_pretty(&document)
+            .map_err(|_| backend("Hybrid MC source custody receipt cannot be encoded"))?;
+        receipt_bytes.push(b'\n');
+        require(
+            receipt_bytes.len() as u64 <= MC_SOURCE_RECEIPT_MAX_BYTES,
+            "Hybrid MC source custody receipt exceeds its charged bound",
+        )?;
+        // Both writes are already charged by the original composition.apply
+        // dispatch. A failure preserves its files and never remints the debit.
+        write_hybrid_source_original(
+            &grant.receipt.output_root,
+            &grant.output_identity,
+            &name,
+            &bytes,
+            MC_SOURCE_MAX_BYTES,
+        )?;
+        require(
+            read_verified_production_artifact(
+                &grant.receipt.project_root,
+                "semwright-motion.json",
+                fingerprint,
+                MC_SOURCE_MAX_BYTES,
+            )? == bytes,
+            "Hybrid MC original changed during source custody",
+        )?;
+        grant.recheck(coordinator)?;
+        write_hybrid_source_original(
+            &grant.receipt.output_root,
+            &grant.output_identity,
+            &receipt_name,
+            &receipt_bytes,
+            MC_SOURCE_RECEIPT_MAX_BYTES,
+        )?;
+        grant.recheck(coordinator)
+    }
+
     pub(super) fn verify_motion_output(
         &self,
         coordinator: &ProductionCoordinator,
@@ -664,6 +1230,18 @@ impl HybridRootBudgetScope {
                 &sha,
                 8 * 1024 * 1024,
             )?;
+            if let Some(grant) = &coordinator.hybrid_project_grant {
+                let name = format!(
+                    "{}-mc-{}.semwright-motion.original.json",
+                    self.plan.namespace, planned.output_ordinal
+                );
+                let _ = read_verified_production_artifact(
+                    &grant.receipt.output_root,
+                    &name,
+                    &actual.fingerprint,
+                    MC_SOURCE_MAX_BYTES,
+                )?;
+            }
         }
         Ok(())
     }
@@ -880,7 +1458,14 @@ impl HybridRootBudgetScope {
                     mlt: None,
                     audio_analysis: false,
                 };
-                motion.units_for(command, args, mutation)
+                let mut units = motion.units_for(command, args, mutation)?;
+                if command == "driver.motion-canvas.composition.apply" {
+                    units.output_bytes = bounded_add(
+                        units.output_bytes,
+                        MC_SOURCE_MAX_BYTES + MC_SOURCE_RECEIPT_MAX_BYTES,
+                    )?;
+                }
+                Ok(units)
             }
             HybridPhase::Sources if command == "driver.manim-community.static.render.start" => {
                 require(
@@ -1060,6 +1645,126 @@ impl HybridRootBudgetScope {
 }
 
 impl ProductionCoordinator {
+    /// Retain an observation of the existing closed CI owner's project grant.
+    /// The receipt never adds a grant or a project path to ProductionConnection.
+    pub fn with_hybrid_project_grant(
+        mut self,
+        receipt_path: &Path,
+        receipt_sha256: &str,
+        source_project_sha256: &str,
+        connection_path: &Path,
+    ) -> NativeResult<Self> {
+        require(
+            self.active_motion_budget.is_none()
+                && self.active_hybrid_budget.is_none()
+                && self.hybrid_project_grant.is_none(),
+            "Hybrid project custody must precede its original native root",
+        )?;
+        require(
+            std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+                && std::env::var("CI").as_deref() == Ok("true")
+                && std::env::var("RUNNER_OS").as_deref() == Ok("Linux")
+                && std::env::var("GITHUB_EVENT_NAME").as_deref() == Ok("workflow_dispatch")
+                && std::env::var("GITHUB_JOB").as_deref() == Ok("native-mlt-hybrid")
+                && std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() == Ok("hybrid-av")
+                && std::env::var("MW_MLT_SCOPE").as_deref() == Ok("hybrid-g2")
+                && is_sha256(receipt_sha256)
+                && is_sha256(source_project_sha256),
+            "Hybrid project custody requires the original selected Linux CI context",
+        )?;
+        let parent = receipt_path
+            .parent()
+            .ok_or_else(|| invalid("Hybrid project custody parent is absent"))?;
+        require(
+            receipt_path.file_name().and_then(|name| name.to_str())
+                == Some("hybrid-project-grant.original.json"),
+            "Hybrid project custody has another original receipt name",
+        )?;
+        let raw = read_verified_production_artifact(
+            parent,
+            "hybrid-project-grant.original.json",
+            receipt_sha256,
+            HYBRID_GRANT_MAX_BYTES,
+        )?;
+        let receipt: HybridGrantReceipt = serde_json::from_slice(&raw)
+            .map_err(|_| invalid("Hybrid project-grant original is malformed"))?;
+        let lock: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../SOURCE_LOCK.json"
+        )))
+        .map_err(|_| invalid("Compiled hybrid dependency lock is malformed"))?;
+        let source_sha = &receipt.context.source_sha;
+        let run_id = &receipt.context.run_id;
+        require(
+            receipt.schema == "motionwright.native.hybrid-project-grant/1"
+                && receipt.source_project_sha256 == source_project_sha256
+                && !receipt.native_effect_started
+                && !receipt.automatic_retry
+                && source_sha.len() == 40
+                && source_sha
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && std::env::var("GITHUB_SHA").as_deref() == Ok(source_sha.as_str())
+                && !run_id.is_empty()
+                && run_id.len() <= 32
+                && !run_id.starts_with('0')
+                && run_id.bytes().all(|b| b.is_ascii_digit())
+                && std::env::var("GITHUB_RUN_ID").as_deref() == Ok(run_id.as_str())
+                && receipt.context.run_attempt == "1"
+                && std::env::var("GITHUB_RUN_ATTEMPT").as_deref() == Ok("1")
+                && lock
+                    .pointer("/dependencies/semwright/revision")
+                    .and_then(Value::as_str)
+                    == Some(receipt.context.semwright_sha.as_str()),
+            "Hybrid grant source/run/SDK identity differs from the original producer",
+        )?;
+        let owner = self
+            .client
+            .connection()
+            .output_root
+            .parent()
+            .ok_or_else(|| invalid("Hybrid output owner is absent"))?;
+        require(
+            receipt.output_root == owner.join("output")
+                && receipt.output_root == self.client.connection().output_root
+                && receipt.project_root == owner.join("project")
+                && receipt.socket == owner.join("runtime/broker.sock")
+                && receipt.socket == self.client.connection().socket
+                && receipt.owner_config.path == owner.join("config/owner.toml")
+                && receipt.connection.path == owner.join("config/motionwright-connection.json")
+                && receipt.connection.path == connection_path,
+            "Hybrid project grant does not belong to this existing owner/connection",
+        )?;
+        require(
+            receipt.daemon.argv.len() == 5
+                && Path::new(&receipt.daemon.argv[0])
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    == Some("semwrightd")
+                && receipt.daemon.argv[1] == "--config"
+                && Path::new(&receipt.daemon.argv[2]) == receipt.owner_config.path
+                && receipt.daemon.argv[3] == "--socket"
+                && Path::new(&receipt.daemon.argv[4]) == receipt.socket,
+            "Hybrid grant daemon did not select this owner configuration/socket",
+        )?;
+        let grant = HybridProjectGrant {
+            project_identity: grant_path_identity(&receipt.project_root, true)?,
+            output_identity: grant_path_identity(&receipt.output_root, true)?,
+            socket_identity: grant_path_identity(&receipt.socket, false)?,
+            connection_identity: self.client.connection().identity()?,
+            original: HybridGrantFile {
+                path: receipt_path.to_path_buf(),
+                sha256: receipt_sha256.to_owned(),
+                bytes: raw.len() as u64,
+            },
+            receipt,
+        };
+        grant.recheck(&self)?;
+        grant.require_unused_snapshots(&format!("mw-hybrid-{}", &source_project_sha256[..20]))?;
+        self.hybrid_project_grant = Some(Arc::new(grant));
+        Ok(self)
+    }
+
     pub(super) fn with_native_hybrid_scope(
         &self,
         project_id: Uuid,
@@ -1111,6 +1816,21 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         options: &FilmBuildOptions,
     ) -> NativeResult<HybridNativeSources> {
+        let grant = self.hybrid_project_grant.as_ref().ok_or_else(|| {
+            invalid(
+                "Hybrid native sources require the original verified owner project-grant receipt",
+            )
+        })?;
+        grant.recheck(self)?;
+        let current = self.service.project(project_id).map_err(storage_error)?;
+        require(
+            project_digest(&current)? == grant.receipt.source_project_sha256,
+            "Hybrid owner project grant belongs to another saved source",
+        )?;
+        grant.require_unused_snapshots(&format!(
+            "mw-hybrid-{}",
+            &grant.receipt.source_project_sha256[..20]
+        ))?;
         let scoped =
             self.with_native_hybrid_scope(project_id, expected, deliverable_id, options)?;
         let scope = scoped
@@ -1241,6 +1961,140 @@ impl ProductionCoordinator {
         // MC-only typed selection as a purported proof for the Manim clip.
         scoped.scene_boundary_scope = None;
         Ok(scoped)
+    }
+}
+
+#[cfg(test)]
+mod hybrid_project_grant_tests {
+    use super::*;
+
+    fn owner_profile() -> Vec<u8> {
+        let drivers = [
+            "motion-canvas-driver.json",
+            "mlt-video-driver.json",
+            "manim-driver.json",
+        ]
+        .iter()
+        .map(|name| format!("/synthetic-owner/config/{name}"))
+        .collect::<Vec<_>>();
+        format!("drivers = {}\ndriver_network = false\n\n[policy]\nprofile = \"workspace\"\nallow = [\"driver:motion-canvas\", \"driver:mlt-video\", \"driver:manim-community\"]\n\n[[policy.filesystem]]\nname = \"project\"\npath = \"/synthetic-owner/project\"\nread = true\nwrite = true\n\n[[policy.filesystem]]\nname = \"output\"\npath = \"/synthetic-owner/output\"\nread = true\nwrite = true\n", serde_json::to_string(&drivers).unwrap()).into_bytes()
+    }
+
+    #[test]
+    fn hybrid_project_grant_profile_binds_actual_roots_and_rejects_foreign_or_duplicate_grants() {
+        let raw = owner_profile();
+        let project = Path::new("/synthetic-owner/project");
+        let output = Path::new("/synthetic-owner/output");
+        verify_owner_grant_profile(&raw, project, output).unwrap();
+        for (from, to) in [
+            ("/synthetic-owner/project", "/foreign-owner/project"),
+            ("name = \"output\"", "name = \"project\""),
+            ("read = true", "read = false"),
+            ("write = true", "write = false"),
+            ("profile = \"workspace\"", "profile = \"observe\""),
+        ] {
+            let changed = String::from_utf8(raw.clone()).unwrap().replace(from, to);
+            assert!(verify_owner_grant_profile(changed.as_bytes(), project, output).is_err());
+        }
+    }
+
+    #[test]
+    fn hybrid_project_grant_profile_refuses_extra_toml_syntax_and_preserves_input_bytes() {
+        let raw = owner_profile();
+        let mut changed = raw.clone();
+        changed.extend_from_slice(b"\n[build]\nforeign = true\n");
+        assert!(
+            verify_owner_grant_profile(
+                &changed,
+                Path::new("/synthetic-owner/project"),
+                Path::new("/synthetic-owner/output")
+            )
+            .is_err()
+        );
+        assert_eq!(raw, owner_profile());
+    }
+
+    #[test]
+    fn hybrid_daemon_start_observation_rejects_foreign_dead_or_incomplete_process_records() {
+        let raw = format!("42 (semwrightd) S {} 12345\n", ["0"; 18].join(" "));
+        assert_eq!(daemon_start_from_stat(raw.as_bytes(), 42).unwrap(), 12345);
+        assert!(daemon_start_from_stat(raw.as_bytes(), 43).is_err());
+        assert!(daemon_start_from_stat(raw.replace(") S ", ") Z ").as_bytes(), 42).is_err());
+        assert!(daemon_start_from_stat(b"42 (semwrightd) S 0", 42).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hybrid_mc_source_snapshot_preserves_exact_bytes_and_refuses_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = grant_path_identity(directory.path(), true).unwrap();
+        let name = "mw-hybrid-aabb-mc-0.semwright-motion.original.json";
+        let original = b"{\n  \"source\": \"exact bytes, including whitespace\"\n}";
+        write_hybrid_source_original(
+            directory.path(),
+            &identity,
+            name,
+            original,
+            MC_SOURCE_MAX_BYTES,
+        )
+        .unwrap();
+        let error = write_hybrid_source_original(
+            directory.path(),
+            &identity,
+            name,
+            b"different",
+            MC_SOURCE_MAX_BYTES,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(fs::read(directory.path().join(name)).unwrap(), original);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hybrid_mc_source_snapshot_rejects_foreign_and_linked_roots_before_creation() {
+        use std::os::unix::fs::symlink;
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let identity = grant_path_identity(first.path(), true).unwrap();
+        let name = "mw-hybrid-aabb-mc-2.semwright-motion.original.json";
+        assert!(
+            write_hybrid_source_original(
+                second.path(),
+                &identity,
+                name,
+                b"original",
+                MC_SOURCE_MAX_BYTES
+            )
+            .is_err()
+        );
+        let link = first.path().join("linked-output");
+        symlink(second.path(), &link).unwrap();
+        assert!(
+            write_hybrid_source_original(&link, &identity, name, b"original", MC_SOURCE_MAX_BYTES)
+                .is_err()
+        );
+        assert!(!second.path().join(name).exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hybrid_mc_source_snapshot_refuses_oversize_before_exclusive_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = grant_path_identity(directory.path(), true).unwrap();
+        let name = "mw-hybrid-aabb-mc-0.semwright-motion.original.json";
+        let oversized = vec![b'x'; MC_SOURCE_MAX_BYTES as usize + 1];
+        assert!(
+            write_hybrid_source_original(
+                directory.path(),
+                &identity,
+                name,
+                &oversized,
+                MC_SOURCE_MAX_BYTES
+            )
+            .is_err()
+        );
+        assert!(!directory.path().join(name).exists());
     }
 }
 

@@ -772,6 +772,30 @@ pub(super) async fn assemble(
         verified.sha256 == project.audio.voice_tracks[0].source_sha256,
         "Hybrid saved original voice changed",
     )?;
+    // Bind the existing Owner's real project grant before private publication
+    // or the first native effect. No caller-supplied grant/path is added to the
+    // ProductionConnection, and the fixed CLI remains unchanged.
+    let grant_path = PathBuf::from(
+        std::env::var_os("MW_HYBRID_PROJECT_GRANT_PATH")
+            .ok_or("Hybrid original project-grant receipt is absent")?,
+    );
+    let grant_sha256 = std::env::var("MW_HYBRID_PROJECT_GRANT_SHA256")
+        .map_err(|_| "Hybrid original project-grant digest is absent")?;
+    need(
+        grant_path
+            == evidence_dir
+                .parent()
+                .ok_or("Hybrid original evidence parent is absent")?
+                .join("hybrid-project-grant.original.json"),
+        "Hybrid project-grant receipt is outside the original producer namespace",
+    )?;
+    let coordinator = ProductionCoordinator::new(service.clone(), connection)?
+        .with_hybrid_project_grant(
+            &grant_path,
+            &grant_sha256,
+            expected_project_sha256,
+            connection_path,
+        )?;
     create_private_directory(evidence_dir)?;
     let mut evidence = PrivateEvidence::new(evidence_dir);
     evidence.bytes("source-project.original.json", &original_bytes)?;
@@ -796,7 +820,6 @@ pub(super) async fn assemble(
     // operation intent, before the original native MC dispatch.
     // This concrete high-level entrypoint reserves the complete closed route
     // before its first effect. It does not expose a budgeted generic client.
-    let coordinator = ProductionCoordinator::new(service.clone(), connection)?;
     let result = assemble_original(
         &coordinator,
         &project,

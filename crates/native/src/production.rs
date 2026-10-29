@@ -2203,7 +2203,10 @@ impl MltDispatchBudget {
                     ));
                 }
                 units.render_frames = source.frames;
-                units.output_bytes = source.max_bytes;
+                units.output_bytes = source
+                    .max_bytes
+                    .checked_add(hybrid_budget::FFV1_CUSTODY_BYTES)
+                    .ok_or_else(|| invalid("MLT encoding custody reservation overflow"))?;
             }
             "driver.mlt-video.render.plan" | "driver.mlt-video.render.start" => {
                 let output = args.get("output").and_then(Value::as_str);
@@ -2412,6 +2415,9 @@ pub struct ProductionCoordinator {
     // The mixed-renderer route owns one preflighted root across MC, static
     // Manim and its closed MLT continuation. No scoped client is public.
     active_hybrid_budget: Option<hybrid_budget::HybridRootBudgetScope>,
+    // Observation of the existing CI owner's project grant. This adds no
+    // filesystem grant or arbitrary project path to ProductionConnection.
+    hybrid_project_grant: Option<std::sync::Arc<hybrid_budget::HybridProjectGrant>>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -2440,6 +2446,7 @@ impl ProductionCoordinator {
             )),
             active_motion_budget: None,
             active_hybrid_budget: None,
+            hybrid_project_grant: None,
             #[cfg(test)]
             before_dispatch_admission: None,
         })
@@ -2609,8 +2616,9 @@ impl ProductionCoordinator {
             let continuation_frames = total_frames
                 .checked_mul(if timeline { 3 } else { 2 })
                 .ok_or_else(|| invalid("MLT continuation frame reservation overflow"))?;
-            let intermediates = segment_count
-                .checked_mul(MLT_MEZZANINE_MAX_BYTES)
+            let intermediates = MLT_MEZZANINE_MAX_BYTES
+                .checked_add(hybrid_budget::FFV1_CUSTODY_BYTES)
+                .and_then(|bytes| segment_count.checked_mul(bytes))
                 .ok_or_else(|| invalid("MLT intermediate reservation overflow"))?;
             let final_outputs = MLT_MASTER_MAX_BYTES
                 .checked_mul(if timeline { 3 } else { 2 })
@@ -3105,6 +3113,10 @@ impl ProductionCoordinator {
             "/fingerprint",
             "Motion Canvas composition apply returned no source fingerprint",
         )?;
+
+        if let Some(hybrid) = &self.active_hybrid_budget {
+            hybrid.retain_motion_source(self, index, segment, prefix, &fingerprint, &applied)?;
+        }
 
         let apply_micros = motion_canvas_window::elapsed_micros(phase_started);
         let phase_started = std::time::Instant::now();
