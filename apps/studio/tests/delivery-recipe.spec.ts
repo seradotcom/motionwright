@@ -776,8 +776,15 @@ test("Film and PCM guards use saved options and expose unsupported combinations 
     original_source_attestation: "Synthetic author declaration for this test source, not independent rights verification.",
   } });
   await page.reload(); panel = await mix(page, a);
-  await expect(panel.getByRole("region", { name: "Original mix audition requirements", exact: true })).toContainText("cannot apply the project's semantic SFX cue schedule");
+  // The current saved-mix contract admits authored SFX cues in this cut.
+  // A source-bound cue must survive reload without manufacturing PCM or rights.
+  await expect(panel.getByText("Authored SFX cues in this cut: 1", { exact: false })).toBeVisible();
+  await expect(panel.getByRole("region", { name: "Original mix audition requirements", exact: true })).toHaveCount(0);
+  const semanticRights = panel.getByRole("checkbox", { name: /^I confirm I have permission to use these exact original sources/ });
+  await expect(semanticRights).not.toBeChecked();
   await expect(button(panel, "Create local original PCM audition")).toBeDisabled();
+  await semanticRights.check();
+  await expect(button(panel, "Create local original PCM audition")).toBeEnabled();
   expect(recipeFor(project, a)).toEqual(recipeFor(beforeUnsupported, a));
   expect(requests(service, "native_original_mix_audition")).toHaveLength(0);
   expect(requests(service, "render_motion_canvas")).toHaveLength(0);
