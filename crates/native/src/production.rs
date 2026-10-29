@@ -1587,6 +1587,20 @@ impl ProductionClient {
                     request_id: envelope.request_id,
                 });
             }
+            if !retain_original_core {
+                // Ordinary invocations do not request dry-run or admit both result arms.
+                // Missing data/error retain their existing diagnostic branches below.
+                if envelope.execution.dry_run {
+                    return Err(post_spawn_error(backend(
+                        "Canonical production response reported an unrequested dry run",
+                    )));
+                }
+                if envelope.error.is_some() && (envelope.ok || envelope.data.is_some()) {
+                    return Err(post_spawn_error(backend(
+                        "Canonical production response has contradictory result fields",
+                    )));
+                }
+            }
             if !status.success() || !envelope.ok {
                 let error = envelope.error.unwrap_or_else(|| {
                     post_spawn_error(backend(
@@ -7811,6 +7825,70 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                 original,
             )
             .await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_contradictory_result_fields_reject_without_redispatch() {
+        for (command, mutation) in [
+            ("driver.blender.collection.create", true),
+            ("driver.motion-canvas.composition.inspect", false),
+        ] {
+            for (ok, has_data, exit_code) in [(true, true, 0), (true, false, 19), (false, true, 19)]
+            {
+                let mut envelope = transport_reply(command);
+                envelope.ok = ok;
+                envelope.data = has_data.then(|| json!({"changed": true}));
+                envelope.error = Some(Error::new(
+                    ErrorCode::ConsentRequired,
+                    "typed error must not authenticate contradictory result fields",
+                ));
+                let error =
+                    backend("Canonical production response has contradictory result fields");
+                assert_transport_failure(
+                    &serde_json::to_string(&envelope).unwrap(),
+                    "",
+                    exit_code,
+                    command,
+                    mutation,
+                    if mutation { error.uncertain() } else { error },
+                )
+                .await;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_unrequested_dry_run_rejects_before_terminal_admission() {
+        for (command, mutation) in [
+            ("driver.blender.collection.create", true),
+            ("driver.motion-canvas.composition.inspect", false),
+        ] {
+            for failed in [false, true] {
+                let mut envelope = transport_reply(command);
+                if failed {
+                    envelope.ok = false;
+                    envelope.data = None;
+                    envelope.error = Some(Error::new(
+                        ErrorCode::ConsentRequired,
+                        "typed error does not admit unrequested dry-run metadata",
+                    ));
+                }
+                envelope.execution.dry_run = true;
+                let error =
+                    backend("Canonical production response reported an unrequested dry run");
+                assert_transport_failure(
+                    &serde_json::to_string(&envelope).unwrap(),
+                    "",
+                    if failed { 19 } else { 0 },
+                    command,
+                    mutation,
+                    if mutation { error.uncertain() } else { error },
+                )
+                .await;
+            }
         }
     }
 
