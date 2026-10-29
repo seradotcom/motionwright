@@ -290,6 +290,7 @@ enum JobPhase {
     Cancelling,
     Succeeded,
     Failed,
+    Unknown,
     Cancelled,
 }
 
@@ -300,12 +301,16 @@ impl JobPhase {
             Self::Cancelling => "cancelling",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
+            Self::Unknown => "unknown",
             Self::Cancelled => "cancelled",
         }
     }
 
     fn terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Unknown | Self::Cancelled
+        )
     }
 }
 
@@ -401,6 +406,7 @@ struct RenderJob {
     profile: ManimRenderProfile,
     artifact: Option<RenderArtifact>,
     diagnostic: Option<String>,
+    original_error: Option<Error>,
     /// Kept only in the original Driver Host's bounded job lifetime. Imported
     /// source/ZIP cannot assert this typed source identity.
     source_plan: OriginalSourcePlan,
@@ -411,6 +417,30 @@ struct RenderJob {
     graph_input_source: Option<graph_source::SourceBundleReadback>,
     graph_source: Option<EditableSourceArtifact>,
     source_custody_error: Option<String>,
+}
+
+impl RenderJob {
+    fn retain_failure(&mut self, error: Error) {
+        self.phase = if error.outcome_known {
+            JobPhase::Failed
+        } else {
+            JobPhase::Unknown
+        };
+        self.diagnostic = Some(format!("{:?}: {}", error.code, error.message));
+        self.original_error = Some(error);
+    }
+
+    fn failure_error(&self) -> Error {
+        let error = self
+            .original_error
+            .clone()
+            .unwrap_or_else(|| backend("Manim render failed; inspect status diagnostics"));
+        if self.phase == JobPhase::Unknown {
+            error.uncertain()
+        } else {
+            error
+        }
+    }
 }
 
 struct ManimCommunityDriver {
@@ -632,6 +662,7 @@ fn job_view(job_ref: &str, job: &RenderJob) -> Value {
         "profile": job.profile,
         "artifact": job.artifact,
         "diagnostic": job.diagnostic,
+        "original_error": job.original_error,
     });
     if let Some(source) = &job.camera_source {
         value["camera_source_artifact"] = json!(source);
@@ -1177,6 +1208,7 @@ impl ManimCommunityDriver {
                 profile,
                 artifact: None,
                 diagnostic: None,
+                original_error: None,
                 source_plan,
                 camera_source,
                 static_source,
@@ -1214,18 +1246,18 @@ impl ManimCommunityDriver {
             RuntimeToolJobStatus::Cancelling => job.phase = JobPhase::Cancelling,
             RuntimeToolJobStatus::Cancelled => job.phase = JobPhase::Cancelled,
             RuntimeToolJobStatus::Failed { error } => {
-                job.phase = JobPhase::Failed;
-                job.diagnostic = Some(format!("{:?}: {}", error.code, error.message));
+                job.retain_failure(error);
             }
             RuntimeToolJobStatus::Succeeded { output } => {
                 if output.exit_code != 0 {
-                    job.phase = JobPhase::Failed;
-                    job.diagnostic = Some(format!(
+                    let diagnostic = format!(
                         "Manim {} exited with code {} ({} stderr bytes)",
                         MANIM_VERSION,
                         output.exit_code,
                         output.stderr.len()
-                    ));
+                    );
+                    job.retain_failure(backend(diagnostic.clone()));
+                    job.diagnostic = Some(diagnostic);
                 } else {
                     let camera_getters_sha256 = if let Some(plan) = job.source_plan.camera() {
                         match verified_camera_getters_from_work_root(
@@ -1236,10 +1268,11 @@ impl ManimCommunityDriver {
                         ) {
                             Ok(digest) => Some(digest),
                             Err(error) => {
-                                job.phase = JobPhase::Failed;
-                                job.diagnostic = Some(format!(
+                                let diagnostic = format!(
                                     "Original Manim camera native getter proof missing or invalid: {error}"
-                                ));
+                                );
+                                job.retain_failure(error);
+                                job.diagnostic = Some(diagnostic);
                                 return Ok(job_view(job_ref, job));
                             }
                         }
@@ -1390,16 +1423,15 @@ impl ManimCommunityDriver {
             .jobs
             .get_mut(job_ref)
             .ok_or_else(|| Error::new(ErrorCode::StaleReference, "Manim job disappeared"))?;
-        job.phase = match state {
-            RuntimeToolJobStatus::Running => JobPhase::Rendering,
-            RuntimeToolJobStatus::Cancelling => JobPhase::Cancelling,
-            RuntimeToolJobStatus::Cancelled => JobPhase::Cancelled,
-            RuntimeToolJobStatus::Succeeded { .. } => JobPhase::Rendering,
+        match state {
+            RuntimeToolJobStatus::Running => job.phase = JobPhase::Rendering,
+            RuntimeToolJobStatus::Cancelling => job.phase = JobPhase::Cancelling,
+            RuntimeToolJobStatus::Cancelled => job.phase = JobPhase::Cancelled,
+            RuntimeToolJobStatus::Succeeded { .. } => job.phase = JobPhase::Rendering,
             RuntimeToolJobStatus::Failed { error } => {
-                job.diagnostic = Some(format!("{:?}: {}", error.code, error.message));
-                JobPhase::Failed
+                job.retain_failure(error);
             }
-        };
+        }
         Ok(job_view(job_ref, job))
     }
 
@@ -1411,7 +1443,7 @@ impl ManimCommunityDriver {
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Manim job is absent"))?;
         match job.phase {
             JobPhase::Succeeded => Ok(view),
-            JobPhase::Failed => Err(backend("Manim render failed; inspect status diagnostics")),
+            JobPhase::Failed | JobPhase::Unknown => Err(job.failure_error()),
             JobPhase::Cancelled => Err(Error::new(
                 ErrorCode::Cancelled,
                 "Manim render was cancelled",
@@ -1580,16 +1612,17 @@ fn job_output_schema() -> Value {
         "type":"object",
         "properties":{
             "job_ref":{"type":"string"},
-            "state":{"enum":["rendering","cancelling","succeeded","failed","cancelled"]},
+            "state":{"enum":["rendering","cancelling","succeeded","failed","unknown","cancelled"]},
             "source_file":{"type":"string"},
             "plan_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
             "profile":{"type":"object"},
             "artifact":{"type":["object","null"]},
             "diagnostic":{"type":["string","null"]},
+            "original_error":{"type":["object","null"]},
             "camera_source_artifact":{"type":"object"},
             "source_custody_error":{"type":"string"}
         },
-        "required":["job_ref","state","source_file","plan_sha256","profile","artifact","diagnostic"],
+        "required":["job_ref","state","source_file","plan_sha256","profile","artifact","diagnostic","original_error"],
         "additionalProperties":false
     })
 }
@@ -1867,6 +1900,132 @@ async fn main() {
 mod tests {
     use super::*;
     use motionwright_manim_profile::ManimPrimitive;
+
+    fn original_failure_job() -> RenderJob {
+        // Pure retained-job state, not a Host execution or native receipt.
+        RenderJob {
+            host_job: RuntimeToolJob {
+                id: "original-host-job".into(),
+            },
+            phase: JobPhase::Rendering,
+            source_file: "original.py".into(),
+            output_relative: "original.mp4".into(),
+            plan_sha256: "ab".repeat(32),
+            profile: ManimRenderProfile {
+                width: 640,
+                height: 360,
+                frame_rate: 30,
+            },
+            artifact: None,
+            diagnostic: None,
+            original_error: None,
+            source_plan: OriginalSourcePlan::Legacy,
+            camera_source: None,
+            static_source: None,
+            editable_source: None,
+            editable_input_source: None,
+            graph_input_source: None,
+            graph_source: None,
+            source_custody_error: Some("retained source custody diagnostic".into()),
+        }
+    }
+
+    #[test]
+    fn host_failures_retain_typed_original_error_and_terminal_certainty() {
+        for original in [
+            Error::new(ErrorCode::PolicyDenied, "original host denial")
+                .recipe_progress(1, "original-native-stage"),
+            Error::new(ErrorCode::Unavailable, "original host observation lost")
+                .uncertain()
+                .recipe_progress(1, "original-native-stage"),
+        ] {
+            let expected = serde_json::to_value(&original).unwrap();
+            let mut job = original_failure_job();
+            // refresh and cancel share this recorder for Host Failed results.
+            job.retain_failure(original.clone());
+            assert_eq!(
+                job.phase,
+                if original.outcome_known {
+                    JobPhase::Failed
+                } else {
+                    JobPhase::Unknown
+                }
+            );
+            assert!(job.phase.terminal());
+            let view = job_view("manim-0123456789abcdef0123456789abcdef", &job);
+            assert_eq!(view["state"], job.phase.as_str());
+            assert_eq!(view["original_error"], expected);
+            let decoded: Error = serde_json::from_value(view["original_error"].clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), expected);
+            assert_eq!(serde_json::to_value(job.failure_error()).unwrap(), expected);
+            assert_eq!(job.host_job.id, "original-host-job");
+            assert_eq!(view["plan_sha256"], "ab".repeat(32));
+            assert_eq!(view["profile"], json!(job.profile));
+            assert_eq!(
+                view["source_custody_error"],
+                "retained source custody diagnostic"
+            );
+            assert!(job.artifact.is_none());
+        }
+    }
+
+    #[test]
+    fn unknown_job_result_cannot_become_known_when_error_is_missing_or_inconsistent() {
+        let mut job = original_failure_job();
+        job.phase = JobPhase::Unknown;
+        assert!(job.phase.terminal());
+        assert_eq!(job.phase.as_str(), "unknown");
+        assert!(!job.failure_error().outcome_known);
+        let known = Error::new(ErrorCode::PolicyDenied, "retained denial");
+        job.original_error = Some(known.clone());
+        assert_eq!(
+            serde_json::to_value(job.failure_error()).unwrap(),
+            serde_json::to_value(known.uncertain()).unwrap()
+        );
+        let uncertain = Error::new(ErrorCode::Unavailable, "retained lost observation").uncertain();
+        job.phase = JobPhase::Failed;
+        job.original_error = Some(uncertain.clone());
+        assert_eq!(
+            serde_json::to_value(job.failure_error()).unwrap(),
+            serde_json::to_value(uncertain).unwrap()
+        );
+    }
+
+    #[test]
+    fn job_schema_preserves_original_errors_and_all_terminal_states() {
+        let schema = job_output_schema();
+        let states = schema["properties"]["state"]["enum"].as_array().unwrap();
+        let mut job = original_failure_job();
+        for phase in [
+            JobPhase::Rendering,
+            JobPhase::Cancelling,
+            JobPhase::Succeeded,
+            JobPhase::Failed,
+            JobPhase::Unknown,
+            JobPhase::Cancelled,
+        ] {
+            job.phase = phase;
+            let view = job_view("manim-0123456789abcdef0123456789abcdef", &job);
+            assert!(states.contains(&view["state"]));
+            for field in schema["required"].as_array().unwrap() {
+                assert!(view.get(field.as_str().unwrap()).is_some());
+            }
+            for field in view.as_object().unwrap().keys() {
+                assert!(schema["properties"].get(field.as_str()).is_some());
+            }
+        }
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("original_error"))
+        );
+        assert_eq!(
+            schema["properties"]["original_error"]["type"],
+            json!(["object", "null"])
+        );
+    }
 
     #[test]
     fn catalog_never_exposes_python_or_shell_execution() {

@@ -1869,10 +1869,35 @@ fn unconfirmed_started_manim_render(error: Error, start_command: &'static str) -
     error.uncertain().recipe_progress(1, start_command)
 }
 
+fn retained_manim_job_failure(
+    data: &Value,
+    unknown_state: bool,
+    start_command: &'static str,
+) -> Error {
+    let original = data
+        .get("original_error")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Error>(value).ok())
+        .unwrap_or_else(|| backend("Manim Community original render reported failure"));
+    if unknown_state || !original.outcome_known {
+        unconfirmed_started_manim_render(original, start_command)
+    } else {
+        original
+    }
+}
+
+fn retryable_manim_status_error(error: &Error) -> bool {
+    // Only an ordinary read timeout permits another observation of this job.
+    // An uncertain error must retain the acknowledged start for reconciliation.
+    error.code == ErrorCode::Timeout && error.outcome_known
+}
+
 fn require_acknowledged_manim_observation<'a>(
     observation: &'a Value,
     acknowledged_job_ref: &str,
     acknowledged_generation: u64,
+    expected_plan_sha256: &str,
+    expected_profile: &Value,
     start_command: &'static str,
     observation_kind: &'static str,
 ) -> NativeResult<&'a Value> {
@@ -1883,11 +1908,20 @@ fn require_acknowledged_manim_observation<'a>(
         .and_then(Value::as_u64);
     if data.get("job_ref").and_then(Value::as_str) != Some(acknowledged_job_ref)
         || generation != Some(acknowledged_generation)
+        || data.get("plan_sha256").and_then(Value::as_str) != Some(expected_plan_sha256)
+        || data.get("profile") != Some(expected_profile)
     {
         return Err(unconfirmed_started_manim_render(
             backend(format!(
-                "Manim {observation_kind} does not identify the acknowledged native job and generation"
+                "Manim {observation_kind} does not identify the acknowledged native job, generation, plan and profile"
             )),
+            start_command,
+        ));
+    }
+    if observation_kind == "start" && data.get("state").and_then(Value::as_str) != Some("rendering")
+    {
+        return Err(unconfirmed_started_manim_render(
+            backend("Manim render start returned an unsupported initial state"),
             start_command,
         ));
     }
@@ -4435,6 +4469,7 @@ impl ProductionCoordinator {
             source_bundle,
         } = prepared;
 
+        let expected_profile = json!(profile);
         let mut start_args = json!({"plan": plan_value, "profile": profile});
         if let Some(input) = &source_bundle {
             start_args["source_bundle"] = input.start_value(start_command)?;
@@ -4466,6 +4501,15 @@ impl ProductionCoordinator {
                     start_command,
                 )
             })?;
+        require_acknowledged_manim_observation(
+            &started,
+            &job_ref,
+            provider_generation,
+            &plan_sha256,
+            &expected_profile,
+            start_command,
+            "start",
+        )?;
 
         let deadline = Instant::now() + Duration::from_secs(MANIM_RENDER_POLL_DEADLINE_SECS);
         let mut poll = 0_u32;
@@ -4491,7 +4535,7 @@ impl ProductionCoordinator {
                 .await
             {
                 Ok(status) => status,
-                Err(error) if error.code == ErrorCode::Timeout => {
+                Err(error) if retryable_manim_status_error(&error) => {
                     poll = poll
                         .checked_add(1)
                         .ok_or_else(|| backend("Manim render poll counter overflowed"))?;
@@ -4506,13 +4550,22 @@ impl ProductionCoordinator {
                 &status,
                 &job_ref,
                 provider_generation,
+                &plan_sha256,
+                &expected_profile,
                 start_command,
                 "status",
             )?;
             match status_data.get("state").and_then(Value::as_str) {
                 Some("succeeded") => break,
                 Some("failed") => {
-                    return Err(backend("Manim Community render reported failure"));
+                    return Err(retained_manim_job_failure(
+                        status_data,
+                        false,
+                        start_command,
+                    ));
+                }
+                Some("unknown") => {
+                    return Err(retained_manim_job_failure(status_data, true, start_command));
                 }
                 Some("cancelled") => {
                     return Err(Error::new(
@@ -4555,6 +4608,8 @@ impl ProductionCoordinator {
             &result,
             &job_ref,
             provider_generation,
+            &plan_sha256,
+            &expected_profile,
             start_command,
             "result",
         )?;
@@ -6856,6 +6911,9 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         for start_command in [
             "driver.manim-community.render.start",
             "driver.manim-community.camera.render.start",
+            "driver.manim-community.static.render.start",
+            "driver.manim-community.editable.render.start",
+            "driver.manim-community.graph.render.start",
         ] {
             let original = Error::new(
                 ErrorCode::Unavailable,
@@ -6874,18 +6932,109 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     }
 
     #[test]
+    fn manim_original_host_failures_preserve_typed_certainty_and_start() {
+        for start_command in [
+            "driver.manim-community.render.start",
+            "driver.manim-community.camera.render.start",
+            "driver.manim-community.static.render.start",
+            "driver.manim-community.editable.render.start",
+            "driver.manim-community.graph.render.start",
+        ] {
+            for (original, unknown_state) in [
+                (
+                    Error::new(ErrorCode::PolicyDenied, "original host denial"),
+                    false,
+                ),
+                (
+                    Error::new(ErrorCode::Unavailable, "original host observation lost")
+                        .uncertain(),
+                    true,
+                ),
+                (
+                    Error::new(ErrorCode::Unavailable, "inconsistent failed view").uncertain(),
+                    false,
+                ),
+                (
+                    Error::new(ErrorCode::PolicyDenied, "inconsistent unknown view"),
+                    true,
+                ),
+            ] {
+                let expected = if unknown_state || !original.outcome_known {
+                    original
+                        .clone()
+                        .uncertain()
+                        .recipe_progress(1, start_command)
+                } else {
+                    original.clone()
+                };
+                let retained = retained_manim_job_failure(
+                    &json!({"original_error": original}),
+                    unknown_state,
+                    start_command,
+                );
+                assert_eq!(
+                    serde_json::to_value(retained).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+            }
+            for view in [json!({}), json!({"original_error": {"malformed": true}})] {
+                let unknown = retained_manim_job_failure(&view, true, start_command);
+                assert!(!unknown.outcome_known);
+                assert_eq!(unknown.code, ErrorCode::BackendFailed);
+            }
+        }
+    }
+
+    #[test]
+    fn manim_status_retry_requires_an_ordinary_known_read_timeout() {
+        let timeout = Error::new(ErrorCode::Timeout, "ordinary status read timeout");
+        assert!(retryable_manim_status_error(&timeout));
+        assert!(!retryable_manim_status_error(&timeout.uncertain()));
+        for code in [
+            ErrorCode::Unavailable,
+            ErrorCode::StaleReference,
+            ErrorCode::BackendFailed,
+            ErrorCode::PolicyDenied,
+        ] {
+            let error = Error::new(code, "status read failed");
+            assert!(!retryable_manim_status_error(&error));
+            assert!(!retryable_manim_status_error(&error.uncertain()));
+        }
+    }
+
+    #[test]
     fn manim_observations_require_original_job_and_provider_generation() {
         let command = "driver.manim-community.camera.render.start";
         let job = "private-native-original";
+        let plan_sha256 = "ab".repeat(32);
+        let profile = json!({"width": 640, "height": 360, "frame_rate": 30});
         let correct = json!({
             "result": {
-                "data": {"job_ref": job, "state": "succeeded"},
+                "data": {
+                    "job_ref": job, "state": "rendering",
+                    "plan_sha256": plan_sha256, "profile": profile
+                },
                 "execution": {"provenance": {"provider_generation": 17}}
             }
         });
-        for kind in ["status", "result"] {
+        for kind in ["start", "status", "result"] {
+            let mut correct = correct.clone();
+            correct["result"]["data"]["state"] = json!(if kind == "start" {
+                "rendering"
+            } else {
+                "succeeded"
+            });
             assert!(
-                require_acknowledged_manim_observation(&correct, job, 17, command, kind).is_ok()
+                require_acknowledged_manim_observation(
+                    &correct,
+                    job,
+                    17,
+                    &plan_sha256,
+                    &profile,
+                    command,
+                    kind
+                )
+                .is_ok()
             );
             for (pointer, replacement) in [
                 ("/result/data/job_ref", json!("private-native-foreign")),
@@ -6898,16 +7047,141 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                     "/result/execution/provenance/provider_generation",
                     serde_json::Value::Null,
                 ),
+                ("/result/data/plan_sha256", json!("cd".repeat(32))),
+                ("/result/data/plan_sha256", Value::Null),
+                ("/result/data/profile/width", json!(1280)),
+                ("/result/data/profile/height", json!(720)),
+                ("/result/data/profile/frame_rate", json!(24)),
+                ("/result/data/profile", Value::Null),
             ] {
                 let mut wrong = correct.clone();
                 *wrong.pointer_mut(pointer).unwrap() = replacement;
-                let error = require_acknowledged_manim_observation(&wrong, job, 17, command, kind)
-                    .unwrap_err();
+                let error = require_acknowledged_manim_observation(
+                    &wrong,
+                    job,
+                    17,
+                    &plan_sha256,
+                    &profile,
+                    command,
+                    kind,
+                )
+                .unwrap_err();
                 assert_eq!(error.code, ErrorCode::BackendFailed);
                 assert!(!error.outcome_known);
                 assert!(!error.message.contains("private-native-"));
             }
+            for field in ["plan_sha256", "profile"] {
+                let mut missing = correct.clone();
+                missing["result"]["data"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+                let error = require_acknowledged_manim_observation(
+                    &missing,
+                    job,
+                    17,
+                    &plan_sha256,
+                    &profile,
+                    command,
+                    kind,
+                )
+                .unwrap_err();
+                assert!(!error.outcome_known);
+            }
         }
+        for state in [
+            json!("succeeded"),
+            json!("unknown"),
+            json!("queued"),
+            Value::Null,
+        ] {
+            let mut wrong_start = correct.clone();
+            wrong_start["result"]["data"]["state"] = state;
+            let error = require_acknowledged_manim_observation(
+                &wrong_start,
+                job,
+                17,
+                &plan_sha256,
+                &profile,
+                command,
+                "start",
+            )
+            .unwrap_err();
+            assert!(!error.outcome_known);
+        }
+    }
+
+    #[cfg(unix)]
+    fn manim_fixture_job_data(kind: &str) -> Value {
+        assert!(["start", "status", "result"].contains(&kind));
+        let mut data = json!({
+            "job_ref": "job-native-1",
+            "state": if kind == "start" { "rendering" } else { "succeeded" },
+            "source_file": "original.py",
+            "plan_sha256": "ab".repeat(32),
+            "profile": {"width": 640, "height": 360, "frame_rate": 30},
+            "artifact": null,
+            "diagnostic": null,
+            "original_error": null,
+        });
+        if kind != "start" {
+            data["artifact"] = json!({"directory":"render-native-1","frame_count":60});
+            if kind == "result" {
+                data["artifact"]["manifest_sha256"] = json!("bb".repeat(32));
+            }
+        }
+        data
+    }
+
+    #[cfg(unix)]
+    fn manim_fixture_data_line(kind: &str) -> String {
+        format!(
+            "data='{}'",
+            serde_json::to_string(&manim_fixture_job_data(kind)).unwrap()
+        )
+    }
+
+    #[cfg(unix)]
+    fn fake_manim_render_connection(
+        temp: &tempfile::TempDir,
+        resource: String,
+    ) -> (ProductionConnection, PathBuf) {
+        let mut connection = fake_render_connection(temp, resource);
+        let mut script = fs::read_to_string(&connection.executable)
+            .unwrap()
+            .replace("driver.motion-canvas", "driver.manim-community")
+            .replace("driver:motion-canvas", "driver:manim-community")
+            .replace(
+                "driver.manim-community.render.start)",
+                "driver.manim-community.render.start|driver.manim-community.camera.render.start|driver.manim-community.static.render.start|driver.manim-community.editable.render.start)",
+            )
+            .replacen(
+                "command=\"$7\"",
+                "command=\"$7\"\nprintf '%s\\n' \"$command\" >> \"$0.calls\"",
+                1,
+            );
+        for (original, kind) in [
+            (
+                r#"data='{"job_ref":"job-native-1","state":"queued"}'"#,
+                "start",
+            ),
+            (
+                r#"data='{"job_ref":"job-native-1","state":"succeeded","artifact":{"directory":"render-native-1","frame_count":60}}'"#,
+                "status",
+            ),
+            (
+                r#"data='{"job_ref":"job-native-1","state":"succeeded","artifact":{"directory":"render-native-1","frame_count":60,"manifest_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'"#,
+                "result",
+            ),
+        ] {
+            assert_eq!(script.matches(original).count(), 1, "fixture source drift");
+            script = script.replace(original, &manim_fixture_data_line(kind));
+        }
+        fs::write(&connection.executable, script).unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        let mut calls_path = connection.executable.as_os_str().to_os_string();
+        calls_path.push(".calls");
+        (connection, PathBuf::from(calls_path))
     }
 
     #[cfg(unix)]
@@ -6930,19 +7204,17 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                 "error_result",
             ] {
                 let (service, project, temp) = fixture_service();
-                let mut connection = fake_render_connection(&temp, project.resource_key());
-                let script = fs::read_to_string(&connection.executable)
-                    .unwrap()
-                    .replace("driver.motion-canvas", "driver.manim-community")
-                    .replace("driver:motion-canvas", "driver:manim-community")
-                    .replace(
-                        "driver.manim-community.render.start)",
-                        "driver.manim-community.render.start|driver.manim-community.camera.render.start)",
-                    );
-                let status_line = r#"data='{"job_ref":"job-native-1","state":"succeeded","artifact":{"directory":"render-native-1","frame_count":60}}'"#;
-                let result_line = r#"data='{"job_ref":"job-native-1","state":"succeeded","artifact":{"directory":"render-native-1","frame_count":60,"manifest_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'"#;
+                let (mut connection, calls_path) =
+                    fake_manim_render_connection(&temp, project.resource_key());
+                let script = fs::read_to_string(&connection.executable).unwrap();
+                let status_line = manim_fixture_data_line("status");
+                let result_line = manim_fixture_data_line("result");
                 let is_result = case.ends_with("_result");
-                let line = if is_result { result_line } else { status_line };
+                let line = if is_result {
+                    result_line.as_str()
+                } else {
+                    status_line.as_str()
+                };
                 assert_eq!(script.matches(line).count(), 1, "fixture source drift");
                 let replacement = if case.starts_with("foreign_") {
                     line.replacen("job-native-1", "private-native-foreign", 1)
@@ -6959,8 +7231,13 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                             "driver.manim-community.render.status"
                         }
                         .into(),
-                        data: (!is_error)
-                            .then(|| json!({"job_ref":"job-native-1","state":"succeeded"})),
+                        data: (!is_error).then(|| {
+                            json!({
+                                "job_ref":"job-native-1", "state":"succeeded",
+                                "plan_sha256":"ab".repeat(32),
+                                "profile":{"width":640,"height":360,"frame_rate":30}
+                            })
+                        }),
                         error: is_error.then(|| {
                             Error::new(
                                 ErrorCode::Unavailable,
@@ -7050,7 +7327,256 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                         .count(),
                     1
                 );
+                let calls = fs::read_to_string(calls_path).unwrap();
+                assert_eq!(
+                    calls.lines().filter(|call| *call == start_command).count(),
+                    1
+                );
+                let expected_command = if is_result {
+                    "driver.manim-community.render.result"
+                } else {
+                    "driver.manim-community.render.status"
+                };
+                assert!(
+                    calls.lines().any(|call| call == expected_command),
+                    "fixture must reach the original {case} observation"
+                );
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_terminal_host_failure_views_preserve_original_without_redispatch() {
+        // Synthetic Broker views exercise the consumer and durable receipts.
+        // The driver recorder has separate pure tests; no native Host runs here.
+        for (start_command, state, original) in [
+            (
+                "driver.manim-community.static.render.start",
+                "failed",
+                Error::new(ErrorCode::PolicyDenied, "original bounded host denial"),
+            ),
+            (
+                "driver.manim-community.editable.render.start",
+                "unknown",
+                Error::new(ErrorCode::Unavailable, "original host outcome lost").uncertain(),
+            ),
+            (
+                "driver.manim-community.render.start",
+                "failed",
+                Error::new(ErrorCode::Unavailable, "inconsistent failed host view").uncertain(),
+            ),
+        ] {
+            let (service, project, temp) = fixture_service();
+            let (mut connection, calls_path) =
+                fake_manim_render_connection(&temp, project.resource_key());
+            let mut status = manim_fixture_job_data("status");
+            status["state"] = json!(state);
+            status["artifact"] = Value::Null;
+            status["original_error"] = json!(original);
+            let script = fs::read_to_string(&connection.executable).unwrap();
+            let status_line = manim_fixture_data_line("status");
+            assert_eq!(script.matches(status_line.as_str()).count(), 1);
+            let replacement = format!(
+                "data='{}'",
+                serde_json::to_string(&status)
+                    .unwrap()
+                    .replace('\'', "'\\''")
+            );
+            fs::write(
+                &connection.executable,
+                script.replace(status_line.as_str(), &replacement),
+            )
+            .unwrap();
+            connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+            let coordinator = ProductionCoordinator::new(service, connection).unwrap();
+            let observed = coordinator
+                .realize_prepared_manim_scene(
+                    project.id,
+                    &project.stamp(),
+                    "original-manim-host-failure",
+                    Uuid::nil(),
+                    PreparedManimRender {
+                        start_command,
+                        plan_value: json!({"coordinator_fixture_only": true}),
+                        plan_sha256: "ab".repeat(32),
+                        profile: ManimRenderProfile {
+                            width: 640,
+                            height: 360,
+                            frame_rate: 30,
+                        },
+                        requires_camera_getters: false,
+                        source_bundle: None,
+                    },
+                )
+                .await
+                .expect_err("terminal failure cannot become verified native media");
+            let expected = if state == "unknown" || !original.outcome_known {
+                original
+                    .clone()
+                    .uncertain()
+                    .recipe_progress(1, start_command)
+            } else {
+                original.clone()
+            };
+            assert_eq!(
+                serde_json::to_value(observed).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+            let calls = fs::read_to_string(calls_path).unwrap();
+            assert_eq!(
+                calls.lines().filter(|call| *call == start_command).count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .lines()
+                    .filter(|call| *call == "driver.manim-community.render.status")
+                    .count(),
+                1
+            );
+            assert!(
+                !calls
+                    .lines()
+                    .any(|call| call == "driver.manim-community.render.result")
+            );
+            let receipts = coordinator.receipts(project.id, 100).unwrap();
+            let retained = receipts
+                .iter()
+                .find(|receipt| {
+                    receipt.request_id == "original-manim-host-failure:status:0"
+                        && receipt.stage == "completed"
+                })
+                .unwrap();
+            assert_eq!(
+                retained.payload["result"]["data"]["original_error"],
+                json!(original)
+            );
+            assert_eq!(retained.payload["result"]["data"]["state"], state);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_known_timeout_polls_but_unknown_timeout_preserves_receipt_without_restart() {
+        // The finite fake CLI returns one timeout, then a known terminal denial.
+        // An incorrect retry still terminates, and the call/receipt counts expose it.
+        let start_command = "driver.manim-community.camera.render.start";
+        for outcome_known in [true, false] {
+            let (service, project, temp) = fixture_service();
+            let (mut connection, calls_path) =
+                fake_manim_render_connection(&temp, project.resource_key());
+            let original = Error::new(ErrorCode::Timeout, "original Manim status timeout")
+                .recipe_progress(1, "original-status-read");
+            let original = if outcome_known {
+                original
+            } else {
+                original.uncertain()
+            };
+            let mut timeout = transport_reply("driver.manim-community.render.status");
+            timeout.ok = false;
+            timeout.data = None;
+            timeout.error = Some(original.clone());
+            let provenance = timeout.execution.provenance.as_mut().unwrap();
+            provenance.provider_generation = Some(2);
+            provenance.descriptor_sha256 = "cd".repeat(32);
+            let denial = Error::new(
+                ErrorCode::PolicyDenied,
+                "original terminal denial after read",
+            );
+            let mut terminal = manim_fixture_job_data("status");
+            terminal["state"] = json!("failed");
+            terminal["artifact"] = Value::Null;
+            terminal["original_error"] = json!(denial);
+            let replacement = format!(
+                "if [ ! -e \"$0.polled\" ]; then\n      : > \"$0.polled\"\n      printf '%s\\n' '{}'\n      exit 0\n    fi\n    data='{}'",
+                serde_json::to_string(&timeout)
+                    .unwrap()
+                    .replace('\'', "'\\''"),
+                serde_json::to_string(&terminal)
+                    .unwrap()
+                    .replace('\'', "'\\''")
+            );
+            let script = fs::read_to_string(&connection.executable).unwrap();
+            let status_line = manim_fixture_data_line("status");
+            assert_eq!(script.matches(status_line.as_str()).count(), 1);
+            fs::write(
+                &connection.executable,
+                script.replace(status_line.as_str(), &replacement),
+            )
+            .unwrap();
+            connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+            let coordinator = ProductionCoordinator::new(service, connection).unwrap();
+            let observed = coordinator
+                .realize_prepared_manim_scene(
+                    project.id,
+                    &project.stamp(),
+                    "original-manim-timeout",
+                    Uuid::nil(),
+                    PreparedManimRender {
+                        start_command,
+                        plan_value: json!({"coordinator_fixture_only": true}),
+                        plan_sha256: "ab".repeat(32),
+                        profile: ManimRenderProfile {
+                            width: 640,
+                            height: 360,
+                            frame_rate: 30,
+                        },
+                        requires_camera_getters: true,
+                        source_bundle: None,
+                    },
+                )
+                .await
+                .expect_err("the finite fixture ends with the original error or terminal denial");
+            let expected = if outcome_known {
+                denial
+            } else {
+                original
+                    .clone()
+                    .uncertain()
+                    .recipe_progress(1, start_command)
+            };
+            assert_eq!(
+                serde_json::to_value(observed).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+            let calls = fs::read_to_string(calls_path).unwrap();
+            assert_eq!(
+                calls.lines().filter(|call| *call == start_command).count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .lines()
+                    .filter(|call| *call == "driver.manim-community.render.status")
+                    .count(),
+                if outcome_known { 2 } else { 1 }
+            );
+            assert!(
+                !calls
+                    .lines()
+                    .any(|call| call == "driver.manim-community.render.result")
+            );
+            let receipts = coordinator.receipts(project.id, 100).unwrap();
+            let stage = if outcome_known {
+                "failed_known"
+            } else {
+                "outcome_unknown"
+            };
+            let retained = receipts
+                .iter()
+                .find(|receipt| {
+                    receipt.request_id == "original-manim-timeout:status:0"
+                        && receipt.stage == stage
+                })
+                .unwrap();
+            assert_eq!(retained.payload["error"], json!(original));
+            assert_eq!(
+                receipts
+                    .iter()
+                    .any(|receipt| receipt.request_id == "original-manim-timeout:status:1"),
+                outcome_known
+            );
         }
     }
 
