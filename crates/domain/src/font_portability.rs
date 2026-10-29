@@ -267,8 +267,8 @@ mod tests {
         assert_eq!(project.visual_language, before_language);
         assert_eq!(project.assets, before_assets);
         assert_eq!(
-            project.production_design.font_portable_copies,
-            [declaration.clone()]
+            project.production_design.font_portable_copies.as_slice(),
+            std::slice::from_ref(&declaration)
         );
         project
             .apply_change(&Change::RemoveFontPortableCopy {

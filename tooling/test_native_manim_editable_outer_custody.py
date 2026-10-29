@@ -762,7 +762,9 @@ class R4OriginalChildCausals(unittest.TestCase):
         self.control.mkdir(mode=0o700)
         (self.control / "work").mkdir(mode=0o700)
         (self.control / "closing").mkdir(mode=0o700)
-        start = time.monotonic_ns() - (outer.WORK_SECONDS - 30) * outer.NANOSECOND
+        # Keep the real outer origin valid even on a newly booted runner.
+        # Each causal supplies its own bounded inert child or cancellation.
+        start = time.monotonic_ns()
         record = outer.origin_record(self.context, start, outer.boot_identity())
         digest = outer.new_json(self.control / "origin.json", record)
         self.deadline = outer.OuterDeadline(record, self.context, record["boot_id"],
@@ -782,7 +784,7 @@ class R4OriginalChildCausals(unittest.TestCase):
         outer.new_json(self.base / "SOURCE_CONTROL.json", {
             "kind": "REAL_INERT_POSIX_PROCESS_CONTROL_NOT_MANIM_EVIDENCE",
             "synthetic_source_context": self.context,
-            "shortened_fixture_work_window_seconds": 30, "original_terminal_reserve_seconds": 30,
+            "fixture_work_window_seconds": outer.WORK_SECONDS, "original_terminal_reserve_seconds": 30,
             "product_renderer_executed": False, "network_used": False})
 
     def script(self, name, body):
