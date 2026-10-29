@@ -11,12 +11,15 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import selectors
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -34,6 +37,21 @@ BLENDER_BIN = BLENDER_ROOT / "blender"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 EVIDENCE = ROOT / "verification" / "native-blender-e2e" / GITHUB_SHA
 
+STATIC_STAGE_BYTES = 64 * 1024 * 1024
+STATIC_DATABASE_BYTES = 32 * 1024 * 1024
+STATIC_SIDECAR_BYTES = 16 * 1024 * 1024
+STATIC_STREAM_BYTES = 4 * 1024 * 1024
+STATIC_JSON_BYTES = 8 * 1024 * 1024
+
+
+def static_original_budget():
+    # Installed only by the source-pinned workflow after reading the immutable
+    # Runner.Worker clock proof. Absence is denial, never a new local deadline.
+    budget = globals().get("_STATIC_ORIGINAL_JOB_BUDGET")
+    if budget is None:
+        raise AssertionError("static original job deadline is required before native effects")
+    return budget
+
 
 def digest(path: Path) -> str:
     hasher = hashlib.sha256()
@@ -48,20 +66,285 @@ def write_private_json(path: Path, value: object) -> None:
     path.chmod(0o600)
 
 
-def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 60) -> dict:
-    result = subprocess.run(
-        argv,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
+def write_static_json(path: Path, value: object) -> None:
+    """Bound the complete derived JSON before creating its private file."""
+    body = bytearray()
+    for part in json.JSONEncoder(indent=2, sort_keys=True).iterencode(value):
+        raw = part.encode("utf-8")
+        if len(body) + len(raw) + 1 > STATIC_JSON_BYTES:
+            raise ValueError("static private JSON exceeds its admitted byte budget")
+        body.extend(raw)
+    body.extend(b"\n")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(body)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def start_static_daemon_log(daemon, log_stream):
+    """One owned Blender broker pipe; no native dispatch or retry is added."""
+    stop = threading.Event()
+    state = {"observed_pipe_bytes": 0, "overflow": False, "eof_observed": False,
+             "errors": [], "byte_budget": STATIC_STREAM_BYTES}
+
+    def terminate_owned():
+        try:
+            if daemon.poll() is None:
+                os.killpg(daemon.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            state["errors"].append("terminate:" + type(error).__name__)
+
+    def drain():
+        selector = selectors.DefaultSelector()
+        try:
+            descriptor = daemon.stdout.fileno()
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ)
+            while not stop.is_set():
+                if not selector.select(0.05):
+                    continue
+                # The one byte that proves overflow is itself retained. No
+                # already-written original is truncated and no larger read is
+                # performed whose tail could be silently discarded.
+                remaining = STATIC_STREAM_BYTES + 1 - state["observed_pipe_bytes"]
+                try:
+                    data = os.read(descriptor, min(65536, remaining))
+                except BlockingIOError:
+                    continue
+                if not data:
+                    state["eof_observed"] = True
+                    break
+                state["observed_pipe_bytes"] += len(data)
+                log_stream.write(data)
+                log_stream.flush()
+                if state["observed_pipe_bytes"] > STATIC_STREAM_BYTES:
+                    state["overflow"] = True
+                    terminate_owned()
+                    break
+        except BaseException as error:
+            state["errors"].append("capture:" + type(error).__name__)
+            terminate_owned()
+        finally:
+            try:
+                selector.close()
+                daemon.stdout.close()
+            except BaseException as error:
+                state["errors"].append("pipe-close:" + type(error).__name__)
+
+    thread = threading.Thread(target=drain, name="static-blender-broker-log", daemon=True)
+    thread.start()
+    return {"thread": thread, "stop": stop, "state": state}
+
+
+def finish_static_daemon_log(capture, daemon, log_stream, log_path, evidence):
+    # The existing context has already closed/waited for its owned daemon.
+    capture["thread"].join(timeout=2)
+    if capture["thread"].is_alive():
+        capture["stop"].set()
+        capture["thread"].join(timeout=2)
+    state = dict(capture["state"])
+    state["thread_terminal_observed"] = not capture["thread"].is_alive()
+    log_stream.flush()
+    os.fsync(log_stream.fileno())
+    state["retained_file_bytes"] = log_path.stat().st_size
+    state["retained_file_sha256"] = digest(log_path)
+    state["owned_daemon_exit_code"] = daemon.returncode
+    state["capture_complete"] = (state["thread_terminal_observed"] and state["eof_observed"]
+                                 and not state["overflow"] and not state["errors"]
+                                 and state["retained_file_bytes"] == state["observed_pipe_bytes"])
+    state["native_operation_result"] = ("NO_NATIVE_ACCEPTANCE_FROM_LOG" if state["capture_complete"]
+                                        else "UNKNOWN_NO_RETRY")
+    state["automatic_retry"] = False
+    state["whole_process_tree_completion_claimed"] = False
+    write_static_json(evidence / "semwrightd-capture.json", state)
+    if not state["capture_complete"]:
+        raise AssertionError("static Blender daemon log is incomplete; UNKNOWN_NO_RETRY")
+
+
+def static_terminal_originals(label: str, database: Path, glb: Path | None,
+                             result: subprocess.CompletedProcess) -> None:
+    """Copy closed-process bytes without opening SQLite or executing a native app."""
+    if label not in {"seed", "realize"}:
+        raise AssertionError("unexpected static Blender custody stage")
+    destination = EVIDENCE / ("static-" + label + "-originals")
+    destination.mkdir(mode=0o700, exist_ok=False)
+    receipt = {"schema": "motionwright.blender.static-terminal-originals/1",
+               "stage": label, "native_process_returncode": result.returncode,
+               "native_process_terminal_observed": True,
+               "stage_limit_bytes": STATIC_STAGE_BYTES, "files": [],
+               "absent_optional_files": [], "custody_errors": [],
+               "sqlite_reopen_or_native_retry_executed": False}
+    total = 0
+
+    def keep(name: str, source: Path | None, data: bytes | None, limit: int):
+        nonlocal total
+        target = destination / name
+        source_fd = None
+        try:
+            if source is not None:
+                try:
+                    # Reject a substituted FIFO at fstat without waiting for a
+                    # writer. This never opens SQLite or retries a native call.
+                    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                except FileNotFoundError:
+                    if name != "motionwright.sqlite3":
+                        receipt["absent_optional_files"].append(name)
+                        return
+                    raise
+                before = os.fstat(source_fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                    raise AssertionError("source is not a bounded regular file")
+                size = before.st_size
+            else:
+                size = len(data)
+            if size > limit or total + size > STATIC_STAGE_BYTES:
+                raise AssertionError("static original exceeds its byte budget")
+            total += size
+            target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            actual = 0
+            hasher = hashlib.sha256()
+            with os.fdopen(target_fd, "wb") as output:
+                if source_fd is None:
+                    output.write(data)
+                    actual = len(data)
+                    hasher.update(data)
+                else:
+                    while True:
+                        chunk = os.read(source_fd, min(1024 * 1024, size - actual + 1))
+                        if not chunk:
+                            break
+                        if actual + len(chunk) > size:
+                            raise AssertionError("source grew during byte preservation")
+                        output.write(chunk)
+                        hasher.update(chunk)
+                        actual += len(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if actual != size:
+                raise AssertionError("source shrank during byte preservation")
+            if source_fd is not None:
+                after = os.fstat(source_fd)
+                current = source.lstat()
+                identity = lambda row: (row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns)
+                if identity(before) != identity(after) or identity(after) != identity(current):
+                    raise AssertionError("source identity changed during preservation")
+            sha256 = hasher.hexdigest()
+            if digest(target) != sha256:
+                raise AssertionError("preserved original readback differs")
+            receipt["files"].append({"name": name, "bytes": size, "sha256": sha256,
+                                     "copy_readback_verified": True})
+        except Exception as error:
+            receipt["custody_errors"].append({"name": name, "error": type(error).__name__,
+                                               "detail": str(error)})
+        finally:
+            if source_fd is not None:
+                os.close(source_fd)
+
+    keep("stdout.original", None, result.stdout, STATIC_STREAM_BYTES)
+    keep("stderr.original", None, result.stderr, STATIC_STREAM_BYTES)
+    keep("motionwright.sqlite3", database, None, STATIC_DATABASE_BYTES)
+    for suffix in ("-wal", "-shm", "-journal"):
+        keep("motionwright.sqlite3" + suffix, Path(str(database) + suffix), None,
+             1024 * 1024 if suffix == "-shm" else STATIC_SIDECAR_BYTES)
+    if glb is not None:
+        keep("motionwright-contribution.glb", glb, None, 8 * 1024 * 1024)
+    receipt["copied_bytes"] = sum(row["bytes"] for row in receipt["files"])
+    receipt["custody_complete"] = not receipt["custody_errors"]
+    write_static_json(destination / "receipt.json", receipt)
+    if receipt["custody_errors"]:
+        raise AssertionError("static Blender original custody is incomplete")
+
+
+@contextmanager
+def retained_static_owner():
+    # Do not remove the sole owner tree on parse/oracle/custody failure or an
+    # operation without an observed terminal result. It contains no cleanup
+    # authorization; selected source copies, not session tickets, are evidence.
+    root = Path(tempfile.mkdtemp(prefix="motionwright-native-blender-")).resolve()
+    root.chmod(0o700)
+    try:
+        yield root
+    finally:
+        primary = sys.exc_info()[1]
+        try:
+            write_static_json(EVIDENCE / "static-owner-retention.private.json", {
+                "schema": "motionwright.blender.static-owner-retention/1",
+                "owner_original_path": str(root), "owner_removed": False,
+                "native_retry_executed": False,
+                "retention_on_disposable_runner_is_not_durable_archive": True,
+            })
+        except BaseException as retention_error:
+            if primary is None:
+                raise
+            try:
+                primary.static_owner_retention_error = retention_error
+            except BaseException:
+                pass
+
+
+def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 60,
+             static_capture: tuple[str, Path, Path | None] | None = None) -> dict:
+    if env.get("MOTIONWRIGHT_BLENDER_SCOPE") == "static-glb":
+        budget = static_original_budget()
+        timeout = (budget.realize(timeout) if static_capture is not None and static_capture[0] == "realize"
+                   else budget.setup(timeout))
+    try:
+        result = subprocess.run(
+            argv,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        if static_capture is not None:
+            try:
+                label = static_capture[0]
+                if label not in {"seed", "realize"}:
+                    raise AssertionError("unexpected static Blender custody stage")
+                destination = EVIDENCE / ("static-" + label + "-unconfirmed")
+                destination.mkdir(mode=0o700, exist_ok=False)
+                rows = []
+                for name, data in (("stdout.partial.original", error.stdout),
+                                   ("stderr.partial.original", error.stderr)):
+                    if data is None:
+                        continue
+                    if type(data) is not bytes or len(data) > STATIC_STREAM_BYTES:
+                        raise AssertionError("unconfirmed stream exceeds custody profile")
+                    path = destination / name
+                    with path.open("xb") as output:
+                        output.write(data)
+                    path.chmod(0o600)
+                    rows.append({"name": name, "bytes": len(data), "sha256": digest(path)})
+                write_static_json(destination / "receipt.json", {
+                    "stage": label, "native_operation_result": "UNKNOWN",
+                    "native_process_terminal_observed": False,
+                    "streams_are_partial": True, "files": rows,
+                    "sqlite_reopen_or_native_retry_executed": False,
+                })
+            except Exception as custody_error:
+                error.native_custody_error = custody_error
+        raise
+    custody_error = None
+    if static_capture is not None:
+        try:
+            static_terminal_originals(*static_capture, result)
+        except Exception as error:
+            custody_error = error
     if result.returncode != 0:
-        raise AssertionError(
+        error = AssertionError(
             f"command failed ({result.returncode}): {argv!r}\n"
             f"stdout={result.stdout[:16384]!r}\nstderr={result.stderr[:16384]!r}"
         )
+        if custody_error is not None:
+            error.native_custody_error = custody_error
+        raise error
+    if custody_error is not None:
+        raise custody_error
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -71,11 +354,12 @@ def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 60) -> dict
         ) from error
 
 
-def exact_inputs() -> dict:
+def exact_inputs(*, bounded_static: bool = False) -> dict:
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("native Blender E2E is GitHub-Actions-only")
     observed = subprocess.check_output(
-        ["git", "-C", str(SEMWRIGHT), "rev-parse", "HEAD"], text=True
+        ["git", "-C", str(SEMWRIGHT), "rev-parse", "HEAD"], text=True,
+        **({"timeout": static_original_budget().setup(30)} if bounded_static else {}),
     ).strip()
     if observed != PIN:
         raise SystemExit(f"Semwright checkout mismatch: expected {PIN}, got {observed}")
@@ -92,7 +376,10 @@ def exact_inputs() -> dict:
             raise SystemExit(f"missing exact acceptance input: {path}")
     if not shutil.which("bwrap"):
         raise SystemExit("bubblewrap is required; no unsandboxed fallback is accepted")
-    version_output = subprocess.check_output([str(BLENDER_BIN), "--version"], text=True)
+    version_output = subprocess.check_output(
+        [str(BLENDER_BIN), "--version"], text=True,
+        **({"timeout": static_original_budget().setup(30)} if bounded_static else {}),
+    )
     first = version_output.splitlines()[0]
     if first != "Blender 4.5.14 LTS":
         raise SystemExit(f"unexpected Blender runtime: {first}")
@@ -232,7 +519,8 @@ def broker_socket_path(runtime: Path) -> Path:
 
 @contextmanager
 def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
-                    seeded: dict, *, required: set[str] | None = None):
+                    seeded: dict, *, required: set[str] | None = None,
+                    bounded_static: bool = False):
     socket = broker_socket_path(paths["runtime"])
     if socket.exists() or socket.is_symlink():
         raise FileExistsError("Existing Blender broker socket path cannot be adopted")
@@ -342,8 +630,11 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
     log_stream = daemon_log.open("xb")
     daemon_log.chmod(0o600)
     daemon = None
+    static_log = None
     state = {"cleanup_errors": []}
     try:
+        if bounded_static:
+            static_original_budget().setup(45)
         daemon = subprocess.Popen(
             [
                 str(SW_BINS / "semwrightd"),
@@ -354,10 +645,12 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
             ],
             env=env,
             stdin=subprocess.DEVNULL,
-            stdout=log_stream,
-            stderr=log_stream,
+            stdout=subprocess.PIPE if bounded_static else log_stream,
+            stderr=subprocess.STDOUT if bounded_static else log_stream,
             start_new_session=True,
         )
+        if bounded_static:
+            static_log = start_static_daemon_log(daemon, log_stream)
         wait_for_socket(daemon, socket, daemon_log)
         capabilities: list[dict] = []
         offset = 0
@@ -463,6 +756,11 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
                 state["daemon_returncode"] = daemon.returncode
             except BaseException as error:
                 failures.append("daemon:" + type(error).__name__ + ":" + str(error))
+        if static_log is not None:
+            try:
+                finish_static_daemon_log(static_log, daemon, log_stream, daemon_log, evidence)
+            except BaseException as error:
+                failures.append("static-log:" + type(error).__name__ + ":" + str(error))
         for operation, action in (("flush", log_stream.flush), ("close", log_stream.close)):
             try:
                 action()
@@ -477,6 +775,45 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
             else:
                 raise AssertionError("native Blender context cleanup was incomplete")
 
+def static_glb_source_nodes(seeded: dict, evidence: dict) -> list[dict]:
+    """Bind independently saved/loaded raw CanvasNodes before GLB admission."""
+    from native_blender_glb_content import canvas_source_nodes
+    for key in ("project_id", "resource", "generation", "revision", "scene_id"):
+        if (key not in seeded or key not in evidence
+                or type(seeded[key]) is not type(evidence[key])
+                or seeded[key] != evidence[key]):
+            raise AssertionError("Blender original source identity changed: " + key)
+    if (type(seeded["revision"]) is not int or seeded["revision"] < 0
+            or any(type(seeded[key]) is not str or not seeded[key]
+                   for key in ("project_id", "resource", "generation", "scene_id"))):
+        raise AssertionError("Blender original source identity is malformed")
+    if ("source_nodes" not in seeded or "source_nodes" not in evidence
+            or seeded["source_nodes"] != evidence["source_nodes"]):
+        raise AssertionError("Blender original CanvasNode body changed")
+    source = canvas_source_nodes(seeded["source_nodes"])
+    objects = evidence.get("result", {}).get("objects")
+    if (type(seeded.get("mesh_count")) is not int or seeded["mesh_count"] != len(source)
+            or type(objects) is not list or len(objects) != len(source)
+            or any(type(row) is not dict or type(row.get("node_id")) is not str
+                   for row in objects)
+            or {row["node_id"] for row in objects} != {row["node_id"] for row in source}):
+        raise AssertionError("Blender realized nodes differ from the original source")
+    return source
+
+
+def check_static_glb_content(path: Path, artifact: dict, seeded: dict, evidence: dict) -> dict:
+    from native_blender_glb_content import MAX_GLB_BYTES, check_glb_source_geometry
+    source = static_glb_source_nodes(seeded, evidence)
+    with path.open("rb") as stream:
+        original = stream.read(MAX_GLB_BYTES + 1)
+    content = check_glb_source_geometry(
+        original, original_GLB_SHA256=artifact["sha256"], source_nodes=source
+    )
+    if not content["source_Project_UUIDs_explicitly_checked"]:
+        raise AssertionError("Blender GLB does not retain every complete source UUID")
+    return content
+
+
 def main() -> None:
     mode = os.environ.get("MOTIONWRIGHT_BLENDER_SCOPE", "static-glb")
     if mode == "original-scene":
@@ -489,20 +826,25 @@ def main() -> None:
         return
     if mode != "static-glb":
         raise SystemExit("unsupported native Blender verification scope")
-    exact_inputs()
+    static_original_budget().setup(30)
+    exact_inputs(bounded_static=True)
     EVIDENCE.mkdir(parents=True, exist_ok=False)
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-blender-") as raw:
+    with retained_static_owner() as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         paths = new_owner_paths(root)
         env = owned_environment(paths)
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env,
+                          static_capture=("seed", database, None))
         if seeded.get("mesh_count") != 2:
             raise AssertionError(f"unexpected Blender seed: {seeded}")
+        from native_blender_glb_content import canvas_source_nodes
+        canvas_source_nodes(seeded.get("source_nodes"))
+        write_static_json(EVIDENCE / "motionwright-blender-source.original.json", seeded)
 
-        with blender_context(paths, env, EVIDENCE, seeded) as context:
+        with blender_context(paths, env, EVIDENCE, seeded, bounded_static=True) as context:
             connection_path = context["connection"]
             driver = paths["bin"] / "semwright-blender-driver"
             blender_bin = BLENDER_BIN.resolve()
@@ -518,6 +860,9 @@ def main() -> None:
                 ],
                 env=env,
                 timeout=420,
+                static_capture=("realize", database, paths["workspace"] /
+                                ("motionwright-blender-scene-" +
+                                 seeded["scene_id"].replace("-", "") + ".glb")),
             )
             if result.get("native_blender_e2e") != "PASS":
                 raise AssertionError(f"Motionwright Blender realization did not pass: {result}")
@@ -527,6 +872,10 @@ def main() -> None:
             )
             artifact = evidence["result"]["artifact"]
             relative = artifact["path"]
+            expected_name = ("motionwright-blender-scene-" +
+                             seeded["scene_id"].replace("-", "") + ".glb")
+            if relative != expected_name:
+                raise AssertionError("GLB path differs from the selected source scene")
             artifact_path = paths["workspace"] / relative
             if not artifact_path.is_file():
                 raise AssertionError(f"verified GLB artifact is missing: {artifact_path}")
@@ -535,7 +884,21 @@ def main() -> None:
                 raise AssertionError(
                     f"independent GLB digest mismatch: {observed_digest} != {artifact['sha256']}"
                 )
-            model = parse_glb(artifact_path)
+            # Preserve even a rejected original before parsing or admitting it.
+            review_glb = EVIDENCE / "motionwright-contribution.glb"
+            captured_glb = EVIDENCE / "static-realize-originals" / "motionwright-contribution.glb"
+            with captured_glb.open("rb") as source:
+                original_bytes = source.read(8 * 1024 * 1024 + 1)
+            if len(original_bytes) > 8 * 1024 * 1024:
+                raise AssertionError("preserved GLB exceeds the static mesh profile")
+            with review_glb.open("xb") as target:
+                target.write(original_bytes)
+            review_glb.chmod(0o600)
+            if digest(review_glb) != observed_digest:
+                raise AssertionError("preserved GLB digest differs from the original")
+            model = parse_glb(review_glb)
+            content = check_static_glb_content(review_glb, artifact, seeded, evidence)
+            write_static_json(EVIDENCE / "motionwright-blender-glb-content.json", content)
             names = {
                 item.get("name")
                 for section in ("nodes", "meshes", "materials")
@@ -545,11 +908,7 @@ def main() -> None:
             if not any(name and "Motionwright" in name for name in names):
                 raise AssertionError("GLB readback lost Motionwright-authored semantic names")
 
-            review_glb = EVIDENCE / "motionwright-contribution.glb"
-            shutil.copyfile(artifact_path, review_glb)
-            write_private_json(
-                EVIDENCE / "result.json",
-                {
+            public_result = {
                     "native_blender_e2e": "PASS",
                     "motionwright_sha": GITHUB_SHA,
                     "semwright_sha": PIN,
@@ -558,7 +917,7 @@ def main() -> None:
                     "blender_sha256": digest(blender_bin),
                     "driver_sha256": digest(driver),
                     "session_runner_sha256": digest(session_runner),
-                    "project": seeded,
+                    "project": {key: value for key, value in seeded.items() if key != "source_nodes"},
                     "glb": {
                         "path": relative,
                         "sha256": observed_digest,
@@ -568,9 +927,9 @@ def main() -> None:
                         "materials": len(model.get("materials", [])),
                     },
                     "capabilities_checked": sorted(required),
-                },
-            )
+                }
 
+    write_static_json(EVIDENCE / "result.json", public_result)
     print(
         json.dumps(
             {

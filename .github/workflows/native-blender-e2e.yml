@@ -48,6 +48,13 @@ name: Native Blender round-trip
     - crates/manim-profile/**
     - crates/hyperframes-profile/**
     - tooling/native_blender_e2e.py
+    - tooling/native_blender_glb_content.py
+    - tooling/tests/test_native_blender_glb_content.py
+    - tooling/tests/test_native_blender_glb_framing.py
+    - tooling/tests/test_native_blender_glb_source_gate.py
+    - tooling/tests/test_native_blender_static_custody_wiring.py
+    - tooling/tests/test_native_blender_static_writer_budget.py
+    - tooling/tests/test_native_blender_static_deadline.py
     - tooling/native_blender_lit_still_e2e.py
     - tooling/native_blender_lit_still_oracle.py
     - tooling/native_evidence_projection.py
@@ -72,9 +79,9 @@ name: Native Blender round-trip
 permissions:
   contents: read
 concurrency:
-  group: ${{ inputs.verification_scope == 'product-scene' && 'native-blender-product-exclusive' || inputs.verification_scope == 'lit-still' && 'native-blender-lit-exclusive' || inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
+  group: ${{ inputs.verification_scope == 'static-glb' && 'native-blender-static-exclusive' || inputs.verification_scope == 'product-scene' && 'native-blender-product-exclusive' || inputs.verification_scope == 'lit-still' && 'native-blender-lit-exclusive' || inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
     github.event_name, github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ inputs.verification_scope != 'original-scene' && inputs.verification_scope != 'lit-still' && inputs.verification_scope != 'product-scene' }}
+  cancel-in-progress: ${{ inputs.verification_scope != 'static-glb' && inputs.verification_scope != 'original-scene' && inputs.verification_scope != 'lit-still' && inputs.verification_scope != 'product-scene' }}
 defaults:
   run:
     shell: bash
@@ -90,13 +97,787 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.verification_scope == 'product-scene' && 90 || inputs.verification_scope == 'original-scene' && 60 || 45 }}
     steps:
+    - name: Capture the original static job clock before checkout or setup
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      timeout-minutes: 1
+      run: |
+        set -euo pipefail
+        umask 077
+        set -C
+        cat > "$RUNNER_TEMP/blender-static-custody.py" <<'PY'
+        """Closed workflow wiring for the existing static Blender evidence and mwseal API.
+
+        This never runs Blender, opens SQLite, repeats an operation or certifies G2.
+        Only the selected SHA evidence directory and these workflow receipts are sealed.
+        """
+        from pathlib import Path
+        import ast
+        import hashlib
+        import io
+        import json
+        import os
+        import re
+        import subprocess
+        import sys
+        import tarfile
+        import runpy
+        import signal
+        import stat
+        import textwrap
+        import time
+
+
+        # This body is embedded verbatim in the source-pinned static workflow helper.
+        # It is private static-GLB wiring, not a new scheduler or execution authority.
+        NANOSECONDS = 1_000_000_000
+        JOB_SECONDS = 45 * 60
+        NATIVE_SECONDS = 900
+        SETUP_SECONDS = 300
+        REALIZE_SECONDS = 420
+        POST_NATIVE_SECONDS = 120
+        SEAL_SECONDS = 180
+        UPLOAD_SECONDS = 300
+        TRANSITION_SECONDS = 60
+        PREPARE_STEP_SECONDS = 600
+        PREPARE_STOP_GRACE_SECONDS = 5
+        DEADLINE_PROOF_BYTES = 8192
+        WIRING_SOURCE_BYTES = 65536
+        MAX_ANCESTORS = 16
+
+
+        class StaticDeadlineDenied(ValueError):
+            """No new static effect may start; this never grants a retry."""
+
+
+        def time_need(condition, code):
+            if not condition:
+                raise StaticDeadlineDenied(code)
+
+
+        def clock_ns():
+            time_need(sys.platform == "linux" and hasattr(time, "CLOCK_BOOTTIME"),
+                      "static-linux-boottime-required")
+            value = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+            time_need(type(value) is int and value > 0, "static-boottime-invalid")
+            return value
+
+
+        def bounded_original(path, maximum):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(descriptor)
+                time_need(stat.S_ISREG(info.st_mode), "static-deadline-file-not-regular")
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    raw = stream.read(maximum + 1)
+                time_need(len(raw) <= maximum, "static-deadline-file-budget")
+                return raw
+            finally:
+                os.close(descriptor)
+
+
+        def exclusive_original(path, raw, maximum):
+            time_need(type(raw) is bytes and len(raw) <= maximum, "static-deadline-original-budget")
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+
+
+        def deadline_control(env):
+            time_need(re.fullmatch(r"[1-9][0-9]{0,19}", env.get("GITHUB_RUN_ID", "")) is not None
+                      and env.get("GITHUB_RUN_ATTEMPT") == "1", "static-original-run-required")
+            temp = Path(env["RUNNER_TEMP"]).resolve(strict=True)
+            return temp / ("blender-static-custody-" + env["GITHUB_RUN_ID"] + "-1")
+
+
+        def deadline_context(env):
+            fields = ("GITHUB_REPOSITORY", "GITHUB_JOB", "GITHUB_SHA", "GITHUB_RUN_ID",
+                      "GITHUB_RUN_ATTEMPT", "GITHUB_WORKFLOW_REF", "GITHUB_REF")
+            context = {field: env[field] for field in fields}
+            time_need(context["GITHUB_REPOSITORY"] == "seradotcom/motionwright"
+                      and context["GITHUB_JOB"] == "native-blender-roundtrip"
+                      and context["GITHUB_RUN_ATTEMPT"] == "1"
+                      and re.fullmatch(r"[0-9a-f]{40}", context["GITHUB_SHA"]) is not None
+                      and context["GITHUB_WORKFLOW_REF"] ==
+                          "seradotcom/motionwright/.github/workflows/native-blender-e2e.yml@" + context["GITHUB_REF"],
+                      "static-deadline-context-mismatch")
+            return context
+
+
+        def process_identity(pid):
+            """Read only this process or its next observed parent, never scan /proc."""
+            time_need(type(pid) is int and pid > 0, "static-ancestor-pid-invalid")
+            prefix = Path("/proc") / str(pid)
+            raw = bounded_original(prefix / "stat", 4096)
+            end = raw.rfind(b") ")
+            begin = raw.find(b" (")
+            time_need(begin > 0 and end > begin and raw[:begin] == str(pid).encode(),
+                      "static-ancestor-stat-invalid")
+            fields = raw[end + 2:].split()
+            time_need(len(fields) >= 20 and fields[0] != b"Z", "static-ancestor-stat-invalid")
+            parent, start = int(fields[1]), int(fields[19])
+            status = bounded_original(prefix / "status", 8192).decode("ascii", "strict")
+            lines = [line for line in status.splitlines() if line.startswith("Uid:")]
+            time_need(len(lines) == 1, "static-ancestor-uid-missing")
+            uid = [int(part) for part in lines[0].split()[1:]]
+            time_need(len(uid) == 4 and all(item == os.geteuid() for item in uid),
+                      "static-ancestor-uid-mismatch")
+            comm = raw[begin + 2:end].decode("utf-8", "strict")
+            executable = os.readlink(prefix / "exe")
+            time_need(executable.startswith("/") and not executable.endswith(" (deleted)"),
+                      "static-ancestor-executable-invalid")
+            # Counters/state can change while reading /proc. Compare identity fields,
+            # not the whole stat row, so an ordinary scheduler tick is not PID reuse.
+            again = bounded_original(prefix / "stat", 4096)
+            again_end = again.rfind(b") ")
+            again_fields = again[again_end + 2:].split() if again_end > begin else []
+            time_need(again[:again_end] == raw[:end] and len(again_fields) >= 20
+                      and int(again_fields[1]) == parent and int(again_fields[19]) == start,
+                      "static-ancestor-identity-changed")
+            return {"pid": pid, "parent_pid": parent, "start_ticks": start,
+                    "uid": uid, "comm": comm, "executable": executable}
+
+
+        def observe_worker():
+            before = clock_ns()
+            ticks = os.sysconf("SC_CLK_TCK")
+            time_need(type(ticks) is int and 1 <= ticks <= 1_000_000, "static-clock-ticks-invalid")
+            boot = bounded_original(Path("/proc/sys/kernel/random/boot_id"), 64).decode("ascii").strip()
+            time_need(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot) is not None,
+                      "static-boot-id-invalid")
+            pid = os.getpid()
+            chain = []
+            seen = set()
+            for _ in range(MAX_ANCESTORS):
+                time_need(pid not in seen, "static-ancestor-cycle")
+                seen.add(pid)
+                row = process_identity(pid)
+                time_need(0 < row["start_ticks"] * NANOSECONDS // ticks <= before,
+                          "static-worker-clock-incoherent")
+                if chain:
+                    time_need(row["start_ticks"] <= chain[-1]["start_ticks"],
+                              "static-ancestor-start-order")
+                chain.append(row)
+                if row["comm"] == "Runner.Worker" and Path(row["executable"]).name == "Runner.Worker":
+                    after = clock_ns()
+                    time_need(after >= before, "static-boottime-regressed")
+                    return {"clock": "CLOCK_BOOTTIME", "clock_ticks_per_second": ticks,
+                            "boot_id": boot, "observed_before_ns": before,
+                            "observed_after_ns": after, "worker": row, "ancestors": chain}
+                time_need(row["parent_pid"] > 0, "static-runner-worker-not-observed")
+                pid = row["parent_pid"]
+            raise StaticDeadlineDenied("static-runner-worker-not-observed")
+
+
+        def budget_seconds():
+            return {"job": JOB_SECONDS, "native": NATIVE_SECONDS, "setup": SETUP_SECONDS,
+                    "realize": REALIZE_SECONDS, "post_native": POST_NATIVE_SECONDS,
+                    "seal": SEAL_SECONDS, "upload": UPLOAD_SECONDS,
+                    "transitions": TRANSITION_SECONDS, "prepare_step": PREPARE_STEP_SECONDS,
+                    "prepare_stop_grace": PREPARE_STOP_GRACE_SECONDS}
+
+
+        def deadline_bootstrap(env):
+            control = deadline_control(env)
+            control.mkdir(mode=0o700, exist_ok=False)
+            script = bounded_original(Path(__file__), WIRING_SOURCE_BYTES)
+            exclusive_original(control / "wiring.original.py", script, WIRING_SOURCE_BYTES)
+            proof = {"schema": "motionwright.blender.static-original-deadline/1",
+                     "status": "DENY", "native_effects": False, "native_retry_executed": False,
+                     "formal_acceptance": False, "budget_seconds": budget_seconds(),
+                     "wiring_sha256": hashlib.sha256(script).hexdigest()}
+            primary = None
+            try:
+                proof["context"] = deadline_context(env)
+                proof["observation"] = observe_worker()
+                observed = proof["observation"]
+                start = observed["worker"]["start_ticks"] * NANOSECONDS // observed["clock_ticks_per_second"]
+                proof["worker_start_boottime_ns"] = start
+                proof["original_deadline_boottime_ns"] = start + JOB_SECONDS * NANOSECONDS
+                time_need(proof["original_deadline_boottime_ns"] - observed["observed_after_ns"] >
+                          (NATIVE_SECONDS + SEAL_SECONDS + UPLOAD_SECONDS + TRANSITION_SECONDS) * NANOSECONDS,
+                          "static-original-deadline-already-exhausted")
+                proof["status"] = "ORIGINAL_ANCHOR_OBSERVED"
+            except BaseException as error:
+                primary = error
+                proof["denial"] = type(error).__name__ + ":" + str(error)[:256]
+            try:
+                raw = (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode("utf-8")
+                if len(raw) > DEADLINE_PROOF_BYTES:
+                    if primary is None:
+                        primary = StaticDeadlineDenied("static-original-clock-observation-budget")
+                    # This is an explicit denial receipt for a rejected derived
+                    # observation, not a shortened claim of a complete clock proof.
+                    proof = {"schema": "motionwright.blender.static-original-deadline/1",
+                             "status": "DENY", "observation_retention": "INCOMPLETE_BEFORE_ANY_NATIVE_EFFECT",
+                             "rejected_observation_bytes": len(raw),
+                             "rejected_observation_sha256": hashlib.sha256(raw).hexdigest(),
+                             "wiring_sha256": hashlib.sha256(script).hexdigest(),
+                             "denial": type(primary).__name__ + ":" + str(primary)[:256],
+                             "native_effects": False, "native_retry_executed": False,
+                             "formal_acceptance": False}
+                    raw = (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode("utf-8")
+                exclusive_original(control / "deadline.original.json", raw, DEADLINE_PROOF_BYTES)
+            except BaseException as retention_error:
+                if primary is None:
+                    raise
+                primary.static_deadline_retention_error = retention_error
+            if primary is not None:
+                raise primary
+            return proof
+
+
+        def validate_deadline_proof(proof, observation, context, script_sha256):
+            time_need(type(proof) is dict and proof.get("status") == "ORIGINAL_ANCHOR_OBSERVED"
+                      and proof.get("schema") == "motionwright.blender.static-original-deadline/1"
+                      and proof.get("context") == context
+                      and proof.get("wiring_sha256") == script_sha256
+                      and proof.get("budget_seconds") == budget_seconds(), "static-original-deadline-binding")
+            original = proof["observation"]
+            time_need(original["clock"] == observation["clock"] == "CLOCK_BOOTTIME"
+                      and original["boot_id"] == observation["boot_id"]
+                      and original["clock_ticks_per_second"] == observation["clock_ticks_per_second"]
+                      and original["worker"] == observation["worker"], "static-original-worker-changed")
+            start = observation["worker"]["start_ticks"] * NANOSECONDS // observation["clock_ticks_per_second"]
+            time_need(proof["worker_start_boottime_ns"] == start
+                      and proof["original_deadline_boottime_ns"] == start + JOB_SECONDS * NANOSECONDS
+                      and start <= original["observed_before_ns"] <= original["observed_after_ns"]
+                      <= observation["observed_before_ns"] <= observation["observed_after_ns"],
+                      "static-original-clock-changed")
+            return proof
+
+
+        def original_deadline(env):
+            control = deadline_control(env)
+            raw = bounded_original(control / "deadline.original.json", DEADLINE_PROOF_BYTES)
+            script = bounded_original(control / "wiring.original.py", WIRING_SOURCE_BYTES)
+            time_need(script == bounded_original(Path(__file__), WIRING_SOURCE_BYTES),
+                      "static-original-wiring-changed")
+            proof = json.loads(raw)
+            return validate_deadline_proof(proof, observe_worker(), deadline_context(env),
+                                           hashlib.sha256(script).hexdigest())
+
+
+        def prepare_remaining(proof, now):
+            cutoff = proof["original_deadline_boottime_ns"] - (
+                NATIVE_SECONDS + SEAL_SECONDS + UPLOAD_SECONDS + TRANSITION_SECONDS) * NANOSECONDS
+            return (cutoff - now) / NANOSECONDS
+
+
+        def require_time(proof, seconds, code):
+            time_need(type(seconds) is int and seconds > 0, "static-time-request-invalid")
+            time_need(proof["original_deadline_boottime_ns"] - clock_ns() >= seconds * NANOSECONDS, code)
+
+
+        def prepare_action(env):
+            proof = original_deadline(env)
+            # The associated action is bounded to three minutes; all four preparations
+            # share this original cutoff, not a fresh three-minute job budget.
+            time_need(prepare_remaining(proof, clock_ns()) >= 180 + PREPARE_STOP_GRACE_SECONDS,
+                      "static-action-would-spend-native-custody-reserve")
+            return 0
+
+
+        def wait_without_reap(process, timeout):
+            stop = time.monotonic() + timeout
+            while True:
+                observed = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if observed is not None:
+                    return observed
+                if time.monotonic() >= stop:
+                    raise subprocess.TimeoutExpired(process.args, timeout)
+                time.sleep(min(0.02, max(0, stop - time.monotonic())))
+
+
+        def close_preparation_group(process):
+            # The group leader is deliberately NOT reaped before signalling its group.
+            # Even a terminal/nonzero shell can leave a background compiler descendant.
+            # Holding its waitable PID prevents signalling a recycled process group.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                wait_without_reap(process, PREPARE_STOP_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            code = process.wait(timeout=1)
+            # Observation only after reap: never signal a possibly recycled PGID. A
+            # group that remains present (including an unreaped descendant) fails closed.
+            stop = time.monotonic() + 1
+            while True:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    return code
+                if time.monotonic() >= stop:
+                    raise StaticDeadlineDenied("static-setup-process-group-terminal-not-observed")
+                time.sleep(0.02)
+
+
+        def prepare_script(env, name):
+            proof = original_deadline(env)
+            script = Path(name)
+            temp = Path(env["RUNNER_TEMP"]).resolve(strict=True)
+            time_need(script.is_absolute() and script.resolve(strict=True) == script and script.parent == temp
+                      and script.suffix == ".sh" and not script.is_symlink(), "static-prepare-script-not-runner-owned")
+            remaining = prepare_remaining(proof, clock_ns()) - PREPARE_STOP_GRACE_SECONDS - 2
+            timeout = min(PREPARE_STEP_SECONDS, remaining)
+            time_need(timeout > 0, "static-preparation-deadline-exhausted")
+            child_env = {**env, "MOTIONWRIGHT_STATIC_PREP_CHILD": str(os.getpid())}
+            process = subprocess.Popen(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", str(script)],
+                                       env=child_env, start_new_session=True)
+            primary = None
+            terminal = None
+            try:
+                terminal = wait_without_reap(process, timeout)
+            except BaseException as error:
+                primary = error
+            cleanup = None
+            try:
+                code = close_preparation_group(process)
+            except BaseException as error:
+                cleanup = error
+                code = (terminal.si_status if terminal.si_code == os.CLD_EXITED else -terminal.si_status) if terminal is not None else None
+            if primary is not None:
+                if cleanup is not None:
+                    primary.static_preparation_cleanup_error = cleanup
+                raise primary
+            if cleanup is not None:
+                if code not in (None, 0):
+                    # Preserve the shell's already-observed original failure; custody of
+                    # the process group remains explicitly incomplete in the runner log.
+                    print("static setup cleanup incomplete: " + type(cleanup).__name__, file=sys.stderr)
+                else:
+                    raise cleanup
+            return code if code >= 0 else 128 - code
+
+
+        class StaticNativeBudget:
+            """One original static window; construction never changes the job deadline."""
+            def __init__(self, proof, step_started_ns=None):
+                self.proof = proof
+                observed = clock_ns()
+                self.started_ns = observed if step_started_ns is None else step_started_ns
+                time_need(type(self.started_ns) is int and 0 < self.started_ns <= observed,
+                          "static-native-step-clock-invalid")
+                time_need(proof["original_deadline_boottime_ns"] - self.started_ns >=
+                          (NATIVE_SECONDS + SEAL_SECONDS + UPLOAD_SECONDS + TRANSITION_SECONDS) * NANOSECONDS,
+                          "static-native-and-custody-window-not-admitted")
+                self.stop_ns = min(self.started_ns + NATIVE_SECONDS * NANOSECONDS,
+                                   proof["original_deadline_boottime_ns"] -
+                                   (SEAL_SECONDS + UPLOAD_SECONDS + TRANSITION_SECONDS) * NANOSECONDS)
+                self.setup_stop_ns = min(self.started_ns + SETUP_SECONDS * NANOSECONDS,
+                                         self.stop_ns - (REALIZE_SECONDS + POST_NATIVE_SECONDS) * NANOSECONDS)
+                self.realize_admitted = False
+
+            def setup(self, seconds):
+                time_need(type(seconds) is int and 0 < seconds <= 60 and not self.realize_admitted,
+                          "static-setup-request-invalid")
+                time_need(clock_ns() + seconds * NANOSECONDS <= self.setup_stop_ns,
+                          "static-setup-would-spend-original-realize-reserve")
+                return seconds
+
+            def realize(self, seconds):
+                time_need(seconds == REALIZE_SECONDS and not self.realize_admitted,
+                          "static-original-realize-cap-or-attempt-changed")
+                now = clock_ns()
+                time_need(now <= self.setup_stop_ns and
+                          now + (REALIZE_SECONDS + POST_NATIVE_SECONDS) * NANOSECONDS <= self.stop_ns,
+                          "static-full-original-realize-cap-not-admitted")
+                self.realize_admitted = True
+                return REALIZE_SECONDS
+
+
+        def verify_wiring_source(root, context):
+            workflow = source_bytes(root, context["source_sha"], ".github/workflows/native-blender-e2e.yml").decode("utf-8")
+            marker = '        cat > "$RUNNER_TEMP/blender-static-custody.py" <<\'PY\'\n'
+            time_need(workflow.count(marker) == 1, "static-wiring-source-marker")
+            body = textwrap.dedent(workflow.split(marker, 1)[1].split("        PY\n", 1)[0]).encode("utf-8")
+            time_need(body == bounded_original(Path(__file__), WIRING_SOURCE_BYTES),
+                      "static-running-wiring-differs-from-source")
+
+
+        def native_step_start(observation):
+            chain = observation["ancestors"]
+            time_need(len(chain) >= 2 and chain[-1] == observation["worker"],
+                      "static-native-shell-ancestry-missing")
+            shell = chain[-2]
+            time_need(shell["parent_pid"] == observation["worker"]["pid"]
+                      and shell["comm"] == "bash" and Path(shell["executable"]).name == "bash",
+                      "static-native-shell-identity-required")
+            return shell["start_ticks"] * NANOSECONDS // observation["clock_ticks_per_second"]
+
+
+        def run_static_native(root, proof, budget):
+            # The selected wrapper retains its native/primary exception and all existing
+            # UNKNOWN/custody paths; runpy does not catch, relabel or repeat the effect.
+            runpy.run_path(str(root / "tooling/native_blender_e2e.py"), run_name="__main__",
+                           init_globals={"_STATIC_ORIGINAL_JOB_BUDGET": budget})
+            return 0
+
+
+        SOURCE_PATHS = (
+            "SOURCE_LOCK.json", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+            "apps/studio/package-lock.json", "crates/native/Cargo.toml",
+            "crates/native/examples/native-blender-e2e.rs",
+            "crates/native/src/multi_renderer.rs", "crates/native/src/production.rs",
+            "tooling/native_blender_e2e.py", "tooling/native_blender_glb_content.py",
+            "tooling/tests/test_native_blender_glb_content.py",
+            "tooling/tests/test_native_blender_glb_framing.py",
+            "tooling/tests/test_native_blender_glb_source_gate.py",
+            "tooling/tests/test_native_blender_static_custody_wiring.py",
+            "tooling/tests/test_native_blender_static_writer_budget.py",
+            "tooling/tests/test_native_blender_static_deadline.py",
+            "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
+            "tooling/ci_test_runner.py", "tooling/requirements/mlt-g2-custody.txt",
+            ".github/workflows/native-blender-e2e.yml",
+        )
+
+        MIB = 1024 * 1024
+        JSON_LIMIT = 8 * MIB
+        STAGE_LIMIT = 64 * MIB
+        STREAM_LIMIT = 4 * MIB
+        TOP_JSON = (
+            "motionwright-blender-source.original.json", "motionwright-blender-evidence.json",
+            "motionwright-blender-diagnostic.json", "motionwright-blender-diagnostic-custody.json",
+            "motionwright-blender-glb-content.json", "result.json",
+            "static-owner-retention.private.json", "semwrightd-capture.json",
+        )
+        STAGE_FILES = {
+            "stdout.original": STREAM_LIMIT, "stderr.original": STREAM_LIMIT,
+            "motionwright.sqlite3": 32 * MIB, "motionwright.sqlite3-wal": 16 * MIB,
+            "motionwright.sqlite3-shm": MIB, "motionwright.sqlite3-journal": 16 * MIB,
+        }
+
+
+        def capacity_plan(crypto):
+            # Each invocation can create a terminal directory OR an unconfirmed one,
+            # never both. The smaller unconfirmed stream payload is covered by 64MiB.
+            # A stage quota is an archival bound, not proof that every source fit it.
+            payload = 2 * STAGE_LIMIT + 2 * JSON_LIMIT + 8 * JSON_LIMIT + 8 * MIB + STREAM_LIMIT + 1 + 2 * JSON_LIMIT + DEADLINE_PROOF_BYTES + WIRING_SOURCE_BYTES
+            manifest = JSON_LIMIT
+            members = 30  # 29 closed payload members plus snapshot-manifest.json.
+            tar_overhead = members * 4096 + 10240
+            envelope_overhead = 8192 + 64
+            cipher_max = payload + manifest + tar_overhead + envelope_overhead
+            need(cipher_max < crypto.MAX_FILE, "static-cipher-capacity-not-admitted")
+            return {"payload_max_bytes": payload, "snapshot_manifest_max_bytes": manifest,
+                    "snapshot_members_max": members, "tar_overhead_max_bytes": tar_overhead,
+                    "envelope_overhead_max_bytes": envelope_overhead, "cipher_max_bytes": cipher_max,
+                    "writer_readback_limit_bytes": crypto.MAX_FILE,
+                    "compression_assumed": False, "source_complete_from_budget_claimed": False}
+
+
+        def verify_header_budget(crypto, context, recipient, plan):
+            # Exact fixed fields from the selected existing mwseal/1 implementation.
+            # A 3072-bit RSA wrap is 384 bytes (512 base64 characters); a 12-byte
+            # nonce is 16. The maximal admitted plaintext size bounds its decimal
+            # length. This checks the real context before any native effect/encryption.
+            header = {"schema": crypto.SEAL_SCHEMA, "algorithm": "RSA-OAEP-SHA256+AES-256-GCM",
+                      "recipient_spki_sha256": recipient["sha256"], "context": context,
+                      "nonce": "A" * 16, "wrapped_key": "A" * 512,
+                      "plaintext_sha256": "0" * 64,
+                      "plaintext_bytes": plan["cipher_max_bytes"] - plan["envelope_overhead_max_bytes"]}
+            maximum = len(crypto.json_bytes(header))
+            need(maximum <= 8192, "static-header-byte-budget")
+            return maximum
+
+
+        def verify_writer_limits(root, context):
+            raw = source_bytes(root, context["source_sha"], "tooling/native_blender_e2e.py")
+            module = ast.parse(raw)
+            def integer(node):
+                if isinstance(node, ast.Constant) and type(node.value) is int:
+                    return node.value
+                if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+                    return integer(node.left) * integer(node.right)
+                raise ValueError("static-writer-budget-expression-changed")
+            wanted = {"STATIC_JSON_BYTES": JSON_LIMIT, "STATIC_STAGE_BYTES": STAGE_LIMIT,
+                      "STATIC_STREAM_BYTES": STREAM_LIMIT, "STATIC_DATABASE_BYTES": 32 * MIB,
+                      "STATIC_SIDECAR_BYTES": 16 * MIB}
+            found = {target.id: integer(row.value) for row in module.body if isinstance(row, ast.Assign)
+                     for target in row.targets if isinstance(target, ast.Name) and target.id in wanted}
+            need(found == wanted, "static-python-writer-limits-changed")
+            rust = source_bytes(root, context["source_sha"], "crates/native/examples/native-blender-e2e.rs").decode("utf-8")
+            need(re.search(r"const STATIC_PRIVATE_JSON_MAX_BYTES: usize\s*=\s*8 \* 1024 \* 1024;", rust) is not None
+                 and re.search(r"const STATIC_PROCESS_JSON_MAX_BYTES: usize\s*=\s*4 \* 1024 \* 1024;", rust) is not None,
+                 "static-rust-writer-limits-changed")
+
+
+        def roster_observation(evidence, control):
+            if not evidence.is_dir():
+                return False
+            allowed = {name: JSON_LIMIT for name in TOP_JSON}
+            allowed.update({"motionwright-contribution.glb": 8 * MIB,
+                            "semwrightd.log": STREAM_LIMIT + 1})
+            directories = set()
+            valid = True
+            for label in ("seed", "realize"):
+                terminal = "static-" + label + "-originals"
+                unconfirmed = "static-" + label + "-unconfirmed"
+                directories.update((terminal, unconfirmed))
+                if (evidence / terminal).exists() and (evidence / unconfirmed).exists():
+                    valid = False
+                fields = dict(STAGE_FILES)
+                if label == "realize":
+                    fields["motionwright-contribution.glb"] = 8 * MIB
+                for name, maximum in fields.items():
+                    allowed[terminal + "/" + name] = maximum
+                allowed[terminal + "/receipt.json"] = JSON_LIMIT
+                for name in ("stdout.partial.original", "stderr.partial.original"):
+                    allowed[unconfirmed + "/" + name] = STREAM_LIMIT
+                allowed[unconfirmed + "/receipt.json"] = JSON_LIMIT
+                payload = sum((evidence / terminal / name).lstat().st_size
+                              for name in fields if (evidence / terminal / name).is_file())
+                if payload > STAGE_LIMIT:
+                    valid = False
+            observed = []
+            for path in evidence.rglob("*"):
+                name = path.relative_to(evidence).as_posix()
+                if path.is_symlink() or (path.is_dir() and name not in directories):
+                    valid = False
+                if path.is_file():
+                    observed.append(path)
+                    if name not in allowed or path.lstat().st_size > allowed.get(name, -1):
+                        valid = False
+            controls = {"preflight.json": JSON_LIMIT, "seal-observation.json": JSON_LIMIT,
+                        "deadline.original.json": DEADLINE_PROOF_BYTES,
+                        "wiring.original.py": WIRING_SOURCE_BYTES}
+            for path in control.iterdir():
+                if (path.name not in controls or not path.is_file() or path.is_symlink()
+                        or path.lstat().st_size > controls.get(path.name, -1)):
+                    valid = False
+            return valid and len(observed) <= 25
+
+
+        def bounded_control_json(crypto, path, value):
+            raw = crypto.json_bytes(value)
+            need(len(raw) <= JSON_LIMIT, "static-control-json-byte-budget")
+            crypto.new_bytes(path, raw)
+
+
+        def verify_snapshot_size(snapshot, plan):
+            need(len(snapshot) <= plan["cipher_max_bytes"] - plan["envelope_overhead_max_bytes"],
+                 "static-snapshot-byte-budget")
+            with tarfile.open(fileobj=io.BytesIO(snapshot), mode="r:") as archive:
+                members = archive.getmembers()
+                need(len(members) <= plan["snapshot_members_max"], "static-snapshot-member-budget")
+                manifest = archive.getmember("snapshot-manifest.json")
+                need(manifest.isreg() and manifest.size <= plan["snapshot_manifest_max_bytes"],
+                     "static-snapshot-manifest-budget")
+
+
+        def need(condition, code):
+            if not condition:
+                raise ValueError(code)
+
+
+        def source_bytes(root, source, name):
+            path = root / name
+            need(path.is_file() and not path.is_symlink() and path.resolve(strict=True) == path,
+                 "noncanonical-static-source")
+            raw = path.read_bytes()
+            need(len(raw) <= 2 * 1024 * 1024, "static-source-byte-limit")
+            original = subprocess.check_output(["git", "-C", str(root), "show", source + ":" + name])
+            need(raw == original, "static-source-differs-from-commit")
+            return raw
+
+
+        def source_state(root, context):
+            need(subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                         text=True).strip() == context["source_sha"],
+                 "static-source-head-changed")
+            hashes = {name: hashlib.sha256(source_bytes(root, context["source_sha"], name)).hexdigest()
+                      for name in SOURCE_PATHS}
+            lock = json.loads(source_bytes(root, context["source_sha"], "SOURCE_LOCK.json"))
+            need(lock["dependencies"]["semwright"]["revision"] == context["semwright_sha"],
+                 "static-selected-sdk-pin-changed")
+            return hashes
+
+
+        def binding(root, env):
+            need(env["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+                 and env["VERIFICATION_SCOPE"] == "static-glb"
+                 and env["GITHUB_RUN_ATTEMPT"] == "1"
+                 and re.fullmatch(r"[0-9a-f]{40}", env["EXPECTED_SOURCE"]) is not None
+                 and env["EXPECTED_SOURCE"] == env["GITHUB_SHA"],
+                 "explicit-first-static-attempt-required")
+            need(env["GITHUB_REPOSITORY"] == "seradotcom/motionwright"
+                 and env["GITHUB_JOB"] == "native-blender-roundtrip"
+                 and env["GITHUB_WORKFLOW_REF"] ==
+                     "seradotcom/motionwright/.github/workflows/native-blender-e2e.yml@" + env["GITHUB_REF"],
+                 "static-workflow-context-mismatch")
+            # The existing crypto and its regular-file reader must be the selected
+            # source before import; no altered post-run module is executed to seal it.
+            for name in ("tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py"):
+                source_bytes(root, env["EXPECTED_SOURCE"], name)
+            sys.path.insert(0, str(root / "tooling"))
+            import ci_private_evidence as crypto
+            context = {"source_sha": env["EXPECTED_SOURCE"], "semwright_sha": env["EXACT_SEMWRIGHT_SHA"],
+                       "run_id": env["GITHUB_RUN_ID"], "run_attempt": env["GITHUB_RUN_ATTEMPT"]}
+            crypto.validate_context(context)
+            recipient_raw = env["RECOVERY_RECIPIENT"].encode("utf-8")
+            need(0 < len(recipient_raw) <= 4096, "static-recipient-byte-limit")
+            recipient = crypto.strict(recipient_raw)
+            crypto.public_key(recipient)
+            return context, recipient, crypto
+
+
+        def seal_static(root, control, stage, context, recipient, crypto, native_outcome, stable, timing=None):
+            plan = capacity_plan(crypto)
+            header_max = verify_header_budget(crypto, context, recipient, plan)
+            evidence = root / "verification/native-blender-e2e" / context["source_sha"]
+            uncertain = any((evidence / ("static-" + label + "-unconfirmed")).exists()
+                            for label in ("seed", "realize"))
+            log_receipt = evidence / "semwrightd-capture.json"
+            if log_receipt.exists():
+                try:
+                    uncertain = uncertain or crypto.strict(crypto.regular(log_receipt, JSON_LIMIT)[0]).get("capture_complete") is not True
+                except Exception:
+                    uncertain = True
+            observation = {"context": context, "verification_scope": "static-glb",
+                           "native_step_outcome": native_outcome,
+                           "native_state": "NOT_RUN" if native_outcome == "skipped" else
+                               "UNKNOWN_NO_RETRY" if uncertain or native_outcome != "success" else
+                               "RUNNER_STEP_COMPLETED_ONLY",
+                           "source_stable": stable, "formal_acceptance": False,
+                           "native_retry_executed": False, "whole_owner_collected": False,
+                           "original_deadline_observation": timing}
+            bounded_control_json(crypto, control / "seal-observation.json", observation)
+            roster_valid = roster_observation(evidence, control)
+            snapshot, complete = crypto.gather_snapshot({"evidence": evidence, "control": control},
+                                                        preserve_partial=True)
+            verify_snapshot_size(snapshot, plan)
+            sealed = crypto.encrypt_snapshot(snapshot, recipient, context)
+            header_size = int.from_bytes(sealed[len(crypto.MAGIC):len(crypto.MAGIC) + 4], "big")
+            need(sealed.startswith(crypto.MAGIC) and 0 < header_size <= header_max <= 8192
+                 and len(sealed) == len(crypto.MAGIC) + 4 + header_size + len(snapshot) + 16,
+                 "static-envelope-framing-budget")
+            need(len(sealed) <= plan["cipher_max_bytes"] < crypto.MAX_FILE, "static-envelope-byte-budget")
+            stage.mkdir(parents=True, mode=0o700, exist_ok=False)
+            crypto.new_bytes(stage / "private-evidence.mwseal", sealed)
+            return {"cipher_bytes": len(sealed), "cipher_sha256": crypto.sha(sealed),
+                    "selected_originals_complete": complete,
+                    "roster_within_admitted_bounds": roster_valid,
+                    "ready": complete is True and stable is True and roster_valid and native_outcome == "success" and not uncertain
+                        and (timing is None or timing.get("full_custody_reserve_observed") is True),
+                    "formal_acceptance": False}
+
+
+        def main(mode):
+            native_budget = None
+            if mode == "native":
+                original = original_deadline(os.environ)
+                native_budget = StaticNativeBudget(original, native_step_start(observe_worker()))
+            root = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+            context, recipient, crypto = binding(root, os.environ)
+            temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+            control = temp / ("blender-static-custody-" + context["run_id"] + "-" + context["run_attempt"])
+            if mode == "preflight":
+                source = source_state(root, context)
+                verify_writer_limits(root, context)
+                capacity = capacity_plan(crypto)
+                header_max = verify_header_budget(crypto, context, recipient, capacity)
+                evidence = root / "verification/native-blender-e2e" / context["source_sha"]
+                need(all(len(str(path).encode("utf-8")) <= 4096 for path in (root,
+                         control / "seal-observation.json",
+                         evidence / "static-realize-originals/motionwright.sqlite3-journal")),
+                     "static-snapshot-path-budget")
+                proof = original_deadline(os.environ)
+                verify_wiring_source(root, context)
+                need(control.is_dir() and not control.is_symlink()
+                     and {path.name for path in control.iterdir()} == {"deadline.original.json", "wiring.original.py"},
+                     "static-original-control-root-changed")
+                deadline_raw = bounded_original(control / "deadline.original.json", DEADLINE_PROOF_BYTES)
+                bounded_control_json(crypto, control / "preflight.json", {"context": context, "source": source,
+                                "capacity": capacity, "header_max_bytes": header_max,
+                                "deadline_original_sha256": hashlib.sha256(deadline_raw).hexdigest(),
+                                "original_deadline_boottime_ns": proof["original_deadline_boottime_ns"],
+                                "recipient_sha256": recipient["sha256"], "native_effects": False})
+                with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                    output.write("bound=true\n")
+                return 0
+            need(mode in {"native", "seal"}, "unsupported-static-custody-mode")
+            preflight = crypto.strict(crypto.regular(control / "preflight.json", 128 * 1024)[0])
+            need(preflight["context"] == context and preflight["recipient_sha256"] == recipient["sha256"],
+                 "static-preflight-binding-changed")
+            need(preflight["capacity"] == capacity_plan(crypto), "static-admitted-capacity-changed")
+            need(preflight["header_max_bytes"] == verify_header_budget(crypto, context, recipient, preflight["capacity"]),
+                 "static-admitted-header-changed")
+            if mode == "native":
+                need(source_state(root, context) == preflight["source"], "static-preflight-source-changed")
+                verify_wiring_source(root, context)
+                proof = original_deadline(os.environ)
+                deadline_raw = bounded_original(control / "deadline.original.json", DEADLINE_PROOF_BYTES)
+                need(hashlib.sha256(deadline_raw).hexdigest() == preflight["deadline_original_sha256"]
+                     and proof["original_deadline_boottime_ns"] == preflight["original_deadline_boottime_ns"],
+                     "static-preflight-original-deadline-changed")
+                return run_static_native(root, proof, native_budget)
+            try:
+                stable = source_state(root, context) == preflight["source"]
+            except Exception:
+                stable = False
+            timing = {"full_custody_reserve_observed": False, "deadline_renewed": False,
+                      "upload_completion_claimed": False}
+            try:
+                proof = original_deadline(os.environ)
+                deadline_raw = bounded_original(control / "deadline.original.json", DEADLINE_PROOF_BYTES)
+                need(hashlib.sha256(deadline_raw).hexdigest() == preflight["deadline_original_sha256"],
+                     "static-seal-original-deadline-changed")
+                require_time(proof, SEAL_SECONDS + UPLOAD_SECONDS, "static-custody-reserve-not-observed")
+                timing["full_custody_reserve_observed"] = True
+                timing["original_deadline_boottime_ns"] = proof["original_deadline_boottime_ns"]
+            except Exception as error:
+                # A late clock/custody fault must not erase already-written originals or
+                # relabel the primary native result. The bounded always() seal/upload
+                # still attempts recovery; this observation cannot claim completeness.
+                timing["secondary_deadline_error"] = type(error).__name__ + ":" + str(error)[:256]
+            result = seal_static(root, control, root / "verification/native-blender-static-staged",
+                                 context, recipient, crypto, os.environ["NATIVE_STEP_OUTCOME"], stable, timing)
+            # Output is set after exclusive write/readback, including a partial capture.
+            # A nonzero final status must not stop the always() upload of this ciphertext.
+            with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                output.write("sealed=true\n")
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["ready"] else 1
+
+
+        if __name__ == "__main__":
+            mode = sys.argv[1] if len(sys.argv) >= 2 else ""
+            if mode == "init" and len(sys.argv) == 2:
+                deadline_bootstrap(os.environ)
+                raise SystemExit(0)
+            if mode == "prepare-action" and len(sys.argv) == 2:
+                raise SystemExit(prepare_action(os.environ))
+            if mode == "prepare-script" and len(sys.argv) == 3:
+                raise SystemExit(prepare_script(os.environ, sys.argv[2]))
+            need(len(sys.argv) == 2 and mode in {"preflight", "native", "seal"}, "fixed-static-custody-mode")
+            raise SystemExit(main(mode))
+        PY
+        python3 "$RUNNER_TEMP/blender-static-custody.py" init
+        printf '%s\n' 'CARGO_BUILD_JOBS=1' >> "$GITHUB_ENV"
+    - name: Admit static setup action 1 within the original job deadline
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      timeout-minutes: 1
+      run: python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-action
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 3 || 360 }}
       with:
         persist-credentials: false
     - name: Validate Blender verification scope
       env:
         VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         python3 - <<'PY'
         import os
         event = os.environ["GITHUB_EVENT_NAME"]
@@ -139,7 +920,11 @@ jobs:
             assert 0 < len(os.environ['PRODUCT_ANNOTATION_AFTER'].encode('utf-8')) <= 256
         PY
     - name: Verify original Scene source and custody contracts
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         python3 -m venv "$RUNNER_TEMP/blender-original-venv"
         "$RUNNER_TEMP/blender-original-venv/bin/python" -m pip install \
           --disable-pip-version-check --no-input --no-cache-dir --only-binary=:all: \
@@ -201,13 +986,59 @@ jobs:
                           "compact_runtime_cases":9, "skipped":0,
                           "native_effects":False}, sort_keys=True))
         PY
-    - name: Install decoder for exact product pixel source tests
+    - name: Verify static GLB source, original preservation and sealed recovery contracts
+      if: github.event_name == 'pull_request' || inputs.verification_scope == 'source' || inputs.verification_scope == 'static-glb'
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/ci_test_runner.py \
+          --pattern test_native_blender_glb_content.py \
+          --pattern test_native_blender_glb_framing.py \
+          --pattern test_native_blender_glb_source_gate.py \
+          --pattern test_native_blender_static_custody_wiring.py \
+          --pattern test_native_blender_static_writer_budget.py \
+          --pattern test_native_blender_static_deadline.py \
+          --mode both --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$RUNNER_TEMP/blender-static-source-tests.json"
+        "$RUNNER_TEMP/blender-original-venv/bin/python" - <<'PY'
+        import json, os
+        from pathlib import Path
+        counts = {"test_native_blender_glb_content": 27,
+                  "test_native_blender_glb_framing": 12,
+                  "test_native_blender_glb_source_gate": 14,
+                  "test_native_blender_static_custody_wiring": 17,
+                  "test_native_blender_static_writer_budget": 5,
+                  "test_native_blender_static_deadline": 20}
+        expected = {label: count for name, count in counts.items()
+                    for label in ("discovery:" + name + ".py", "dotted:tooling.tests." + name)}
+        receipt = json.loads((Path(os.environ["RUNNER_TEMP"]) / "blender-static-source-tests.json").read_bytes())
+        assert receipt["status"] == "PASS" and receipt["exit_code"] == 0
+        assert receipt["executed_source_sha"] == os.environ["GITHUB_SHA"]
+        assert len(receipt["steps"]) == len(expected)
+        assert {row["entry_point"] for row in receipt["steps"]} == set(expected)
+        for row in receipt["steps"]:
+            actual = row["counts"]
+            assert row["status"] == "PASS" and row["exit_code"] == 0
+            assert actual["tests_run"] == actual["passed"] == expected[row["entry_point"]]
+            assert all(actual[name] == 0 for name in ("errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+        PY
+    - name: Install decoder for exact product pixel source tests
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
+      run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y ffmpeg
         ffmpeg -version
     - name: Require all 15 product pixel cases through both real test entrypoints
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/ci_test_runner.py \
           --pattern test_native_blender_product_pixels.py \
           --mode both --require-complete --expected-source "$GITHUB_SHA" \
@@ -354,11 +1185,34 @@ jobs:
         retention-days: 14
     - name: Resolve exact Semwright source pin
       id: pin
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
         test "${#sha}" -eq 40
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - name: Bind explicit static GLB source and recovery recipient
+      id: static_preflight
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      env:
+        VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+        EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+        RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        EXACT_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
+      run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
+        "$RUNNER_TEMP/blender-original-venv/bin/python" "$RUNNER_TEMP/blender-static-custody.py" preflight
+    - name: Admit static setup action 2 within the original job deadline
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      timeout-minutes: 1
+      run: python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-action
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 3 || 360 }}
       with:
         repository: seradotcom/semwright
         ref: ${{ steps.pin.outputs.sha }}
@@ -368,28 +1222,99 @@ jobs:
     - name: Verify immutable source identities
       env:
         VERIFY_SEMWRIGHT_CHECKOUT: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene') }}
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         test "$(git rev-parse HEAD)" = "${{ github.sha }}"
         if [[ "$VERIFY_SEMWRIGHT_CHECKOUT" == "true" ]]; then
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
         fi
         python3 tooling/source_policy.py
+    - name: Admit static setup action 3 within the original job deadline
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      timeout-minutes: 1
+      run: python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-action
     - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 3 || 360 }}
       with:
         toolchain: 1.98.1
+    - name: Admit static setup action 4 within the original job deadline
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      timeout-minutes: 1
+      run: python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-action
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 3 || 360 }}
       with:
         key: motionwright-native-blender-1.98.1
         cache-on-failure: true
     - name: Build bounded Motionwright Blender acceptance
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         cargo fmt --all -- --check
         cargo clippy --locked -p motionwright-native --lib --example native-blender-e2e -- -D warnings
         cargo build --locked -p motionwright-native --example native-blender-e2e
         cargo test --locked -p motionwright-native blender -- --nocapture
         cargo test --locked -p motionwright-native --example native-blender-e2e original_ -- --nocapture
-    - name: Require every source and receipt custody case before native execution
+    - name: Require static JSON budget and primary-error preservation cases
+      if: github.event_name == 'pull_request' || inputs.verification_scope == 'source' || inputs.verification_scope == 'static-glb'
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
+        python3 - <<'PY'
+        import hashlib, json, os, re, subprocess
+        from pathlib import Path
+        source = os.environ["GITHUB_SHA"]
+        paths = ("crates/native/examples/native-blender-e2e.rs", "Cargo.lock", "SOURCE_LOCK.json")
+        def source_state():
+            assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == source
+            assert not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+            result = {}
+            for name in paths:
+                raw = Path(name).read_bytes()
+                assert raw == subprocess.check_output(["git", "show", source + ":" + name])
+                result[name] = hashlib.sha256(raw).hexdigest()
+            return result
+        before = source_state()
+        command = ["cargo", "test", "--locked", "-p", "motionwright-native", "--example",
+                   "native-blender-e2e", "static_budget_tests::", "--", "--nocapture"]
+        result = subprocess.run(command, capture_output=True, timeout=1200, check=False)
+        temp = Path(os.environ["RUNNER_TEMP"])
+        for label, raw in (("stdout", result.stdout), ("stderr", result.stderr)):
+            with (temp / ("blender-static-rust-budget-" + label + ".log")).open("xb") as output:
+                output.write(raw)
+        after = source_state()
+        expected = {
+            "static_budget_tests::static_budget_counts_the_terminal_newline_before_any_file_write",
+            "static_budget_tests::static_budget_rejects_large_derived_diagnostic_without_replacing_native_error",
+            "static_budget_tests::static_budget_existing_diagnostic_is_preserved_and_native_error_stays_primary",
+        }
+        view = (result.stdout + result.stderr).decode("utf-8", "replace").replace("\r\n", "\n")
+        actual = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
+        summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
+        valid = result.returncode == 0 and before == after and len(actual) == 3 and set(actual) == expected and summaries == [("3", "0", "0")]
+        receipt = {"status": "PASS" if valid else "FAIL", "exit_code": result.returncode,
+                   "executed_source_sha": source, "source_hashes": before, "command": command,
+                   "expected_cases": sorted(expected), "observed_cases": actual,
+                   "native_operation_executed": False, "formal_acceptance": False}
+        with (temp / "blender-static-rust-budget-tests.json").open("x", encoding="utf-8") as output:
+            json.dump(receipt, output, indent=2, sort_keys=True)
+            output.write("\n")
+        if not valid:
+            raise SystemExit("all three static Rust budget cases must actually pass")
+        PY
+    - name: Require every source and receipt custody case before native execution
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
+      run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         python3 - <<'PY'
         import hashlib, json, os, pathlib, re, shlex, subprocess
         def require_exact_case(name, output, code):
@@ -887,7 +1812,11 @@ jobs:
       env:
         BLENDER_URL: https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
         BLENDER_SHA256: 9ba871ff2ecd36526b77432745980b7e6664ecd0c7ca11c48849073dcfe06da3
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y \
           bubblewrap fontconfig xz-utils libpipewire-0.3-dev pkg-config clang
@@ -898,13 +1827,21 @@ jobs:
         bwrap --version
       if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Configure disposable-runner Driver Host sandbox
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
           "$GITHUB_WORKSPACE/verification/native-blender-e2e/sandbox-profile.txt"
       if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Build exact Semwright Broker, sandbox and Blender provider
       working-directory: _semwright
+      timeout-minutes: ${{ inputs.verification_scope == 'static-glb' && 11 || 360 }}
       run: |
+        if [[ "${{ inputs.verification_scope == 'static-glb' }}" == 'true' && "${MOTIONWRIGHT_STATIC_PREP_CHILD:-}" != "$PPID" ]]; then
+          exec python3 "$RUNNER_TEMP/blender-static-custody.py" prepare-script "$0"
+        fi
         cargo build --locked -p semwright-daemon -p semwright-cli --bins
         cargo build --locked \
           -p semwright-plugin-host --bin semwright-sandbox \
@@ -913,13 +1850,41 @@ jobs:
           --bin semwright-blender-session-runner
       if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Realize application-owned scene through real Broker and Blender Driver Host
+      id: static_native
       if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      timeout-minutes: 15
       env:
+        VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+        EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+        RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        EXACT_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
+        MOTIONWRIGHT_BLENDER_SCOPE: static-glb
         SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
         SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
       run: |
-        python3 tooling/native_blender_e2e.py \
+        mkdir -p verification/native-blender-e2e
+        "$RUNNER_TEMP/blender-original-venv/bin/python" "$RUNNER_TEMP/blender-static-custody.py" native \
           | tee verification/native-blender-e2e/run.log
+    - name: Seal static GLB originals even after failure or UNKNOWN
+      id: static_seal
+      if: always() && steps.static_preflight.outputs.bound == 'true'
+      timeout-minutes: 3
+      env:
+        VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+        EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+        RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        EXACT_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
+        NATIVE_STEP_OUTCOME: ${{ steps.static_native.outcome }}
+      run: |
+        "$RUNNER_TEMP/blender-original-venv/bin/python" "$RUNNER_TEMP/blender-static-custody.py" seal
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always() && steps.static_seal.outputs.sealed == 'true'
+      timeout-minutes: 5
+      with:
+        name: motionwright-blender-static-private-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: verification/native-blender-static-staged/private-evidence.mwseal
+        if-no-files-found: error
+        retention-days: 14
     - name: Run one explicit original Scene save-edit-reopen attempt
       if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'original-scene'
       env:
@@ -1045,6 +2010,10 @@ jobs:
         name: motionwright-blender-original-source-tests-${{ github.sha }}-${{ github.run_id }}
         path: |
           ${{ runner.temp }}/blender-original-source-tests.json
+          ${{ runner.temp }}/blender-static-source-tests.json
+          ${{ runner.temp }}/blender-static-source-tests-*.log
+          ${{ runner.temp }}/blender-static-rust-budget-tests.json
+          ${{ runner.temp }}/blender-static-rust-budget-*.log
           ${{ runner.temp }}/blender-original-source-tests-*.log
           ${{ runner.temp }}/blender-required-rust
           ${{ runner.temp }}/blender-product-pixels-tests.json

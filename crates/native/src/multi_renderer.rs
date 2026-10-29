@@ -152,10 +152,21 @@ pub struct BlenderSceneContribution {
     pub objects: Vec<BlenderPrimitiveContribution>,
 }
 
-fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
-    // Blender 4.x data-block names are bounded to 63 bytes. Preserve a
-    // human-readable fragment of Motionwright's semantic name while keeping a
-    // stable UUID-derived disambiguator so exact lookups survive export/readback.
+#[derive(Clone, Copy)]
+enum BlenderNameIdentity {
+    StaticGlbFullUuid,
+    OriginalSceneLegacyShortUuid,
+}
+
+fn blender_semantic_name(
+    label: &str,
+    id: Uuid,
+    suffix: &str,
+    identity: BlenderNameIdentity,
+) -> String {
+    // Static GLB exports retain the full UUID within Blender's 63-byte names.
+    // Original-scene plans keep their existing 12-digit names and full UUID
+    // custom properties. Changing their names would invalidate saved plans.
     let mut slug = String::with_capacity(label.len().min(40));
     let mut separator = false;
     for byte in label.bytes() {
@@ -180,10 +191,13 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
     }
 
     let uuid = id.simple().to_string();
-    let short = &uuid[..12];
+    let uuid = match identity {
+        BlenderNameIdentity::StaticGlbFullUuid => uuid.as_str(),
+        BlenderNameIdentity::OriginalSceneLegacyShortUuid => &uuid[..12],
+    };
     let suffix = suffix.trim_matches('-');
     let reserved = 1
-        + short.len()
+        + uuid.len()
         + if suffix.is_empty() {
             0
         } else {
@@ -195,9 +209,9 @@ fn blender_semantic_name(label: &str, id: Uuid, suffix: &str) -> String {
         slug.pop();
     }
     if suffix.is_empty() {
-        format!("{slug}-{short}")
+        format!("{slug}-{uuid}")
     } else {
-        format!("{slug}-{short}-{suffix}")
+        format!("{slug}-{uuid}-{suffix}")
     }
 }
 
@@ -232,6 +246,18 @@ pub fn build_blender_contribution(
     project: &Project,
     scene_id: Uuid,
 ) -> NativeResult<BlenderSceneContribution> {
+    build_blender_contribution_with_name_identity(
+        project,
+        scene_id,
+        BlenderNameIdentity::StaticGlbFullUuid,
+    )
+}
+
+fn build_blender_contribution_with_name_identity(
+    project: &Project,
+    scene_id: Uuid,
+    identity: BlenderNameIdentity,
+) -> NativeResult<BlenderSceneContribution> {
     let scene = renderer_scene(project, scene_id, &RendererKind::Blender)?;
     if project
         .production_design
@@ -262,8 +288,8 @@ pub fn build_blender_contribution(
                 )));
             }
         };
-        let name = blender_semantic_name(&node.name, node.id, "");
-        let material_name = blender_semantic_name(&node.name, node.id, "material");
+        let name = blender_semantic_name(&node.name, node.id, "", identity);
+        let material_name = blender_semantic_name(&node.name, node.id, "material", identity);
         let fill = node
             .style
             .fill
@@ -380,7 +406,11 @@ pub fn build_blender_original_scene_plan(
     use sha2::{Digest, Sha256};
     use std::collections::BTreeSet;
 
-    let contribution = build_blender_contribution(project, scene_id)?;
+    let contribution = build_blender_contribution_with_name_identity(
+        project,
+        scene_id,
+        BlenderNameIdentity::OriginalSceneLegacyShortUuid,
+    )?;
     let scene = renderer_scene(project, scene_id, &RendererKind::Blender)?;
     if !scene.beats.is_empty()
         || project
@@ -890,17 +920,19 @@ mod tests {
             "Motionwright focus / export — extremely long semantic label that exceeds Blender bounds",
             id,
             "",
+            BlenderNameIdentity::StaticGlbFullUuid,
         );
         let material = blender_semantic_name(
             "Motionwright focus / export — extremely long semantic label that exceeds Blender bounds",
             id,
             "material",
+            BlenderNameIdentity::StaticGlbFullUuid,
         );
         assert!(name.starts_with("Motionwright-focus-export-"));
-        assert!(material.starts_with("Motionwright-focus-export-"));
+        assert!(material.starts_with("Motionwright-focus-"));
         assert!(material.ends_with("-material"));
-        assert!(name.contains("0123456789ab"));
-        assert!(material.contains("0123456789ab"));
+        assert!(name.contains("0123456789abcdef0123456789abcdef"));
+        assert!(material.contains("0123456789abcdef0123456789abcdef"));
         assert!(name.is_ascii() && material.is_ascii());
         assert!(name.len() <= 63 && material.len() <= 63);
     }
@@ -1114,6 +1146,53 @@ mod tests {
         let error = build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("unambiguous"));
+    }
+
+    #[test]
+    fn static_glb_preserves_distinct_uuids_with_the_same_old_prefix() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        project.scenes[0].nodes[0].id =
+            Uuid::parse_str("01234567-89ab-4000-8000-000000000001").unwrap();
+        let mut other = project.scenes[0].nodes[0].clone();
+        other.id = Uuid::parse_str("01234567-89ab-4000-8000-000000000002").unwrap();
+        other.x += 400.0;
+        project.scenes[0].nodes.push(other);
+        let plan = build_blender_contribution(&project, project.scenes[0].id).unwrap();
+        let first = &plan.objects[0];
+        let second = &plan.objects[1];
+        assert_ne!(first.name, second.name);
+        assert_ne!(first.material_name, second.material_name);
+        for object in [first, second] {
+            let full_id = object.node_id.simple().to_string();
+            let material_suffix = format!("{full_id}-material");
+            assert!(object.name.ends_with(full_id.as_str()));
+            assert!(object.material_name.ends_with(material_suffix.as_str()));
+            assert!(object.name.len() <= 63 && object.material_name.len() <= 63);
+        }
+    }
+
+    #[test]
+    fn original_blender_plan_preserves_stored_names_and_full_identity_properties() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        project.scenes[0].nodes[0].id =
+            Uuid::parse_str("01234567-89ab-4000-8000-000000000001").unwrap();
+        project.scenes[0].nodes[0].name = "Motionwright panel".into();
+        let plan = build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap();
+        let object = &plan.contribution.objects[0];
+        assert_eq!(object.name, "Motionwright-panel-0123456789ab");
+        assert_eq!(
+            object.material_name,
+            "Motionwright-panel-0123456789ab-material"
+        );
+        let identity = plan
+            .identities
+            .iter()
+            .find(|row| row.name == object.name)
+            .unwrap();
+        assert_eq!(
+            identity.properties["motionwright.node_id"],
+            "01234567-89ab-4000-8000-000000000001"
+        );
     }
 
     #[test]

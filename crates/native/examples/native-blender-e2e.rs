@@ -148,23 +148,106 @@ fn seed_project(
 
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let project = seed_project(database)?;
-    let scene_id = project
+    let scene = project
         .scenes
         .first()
-        .ok_or("seeded Blender project has no Scene")?
-        .id;
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "project_id": project.id,
-            "resource": project.resource_key(),
-            "generation": project.generation,
-            "revision": project.revision,
-            "scene_id": scene_id,
-            "mesh_count": 2
-        }))?
-    );
+        .ok_or("seeded Blender project has no Scene")?;
+    print_static_json(&json!({
+        "project_id": project.id,
+        "resource": project.resource_key(),
+        "generation": project.generation,
+        "revision": project.revision,
+        "scene_id": scene.id,
+        "source_nodes": &scene.nodes,
+        "mesh_count": 2
+    }))?;
     Ok(())
+}
+
+const STATIC_PRIVATE_JSON_MAX_BYTES: usize = 8 * 1024 * 1024;
+const STATIC_PROCESS_JSON_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+struct StaticJsonBuffer {
+    bytes: Vec<u8>,
+    maximum: usize,
+}
+
+impl Write for StaticJsonBuffer {
+    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+        if input.len() > self.maximum.saturating_sub(self.bytes.len()) {
+            return Err(std::io::Error::other(
+                "static Blender JSON byte budget exceeded",
+            ));
+        }
+        self.bytes.extend_from_slice(input);
+        Ok(input.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_static_json(
+    value: &serde_json::Value,
+    pretty: bool,
+    maximum: usize,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut output = StaticJsonBuffer {
+        bytes: Vec::new(),
+        maximum: maximum
+            .checked_sub(1)
+            .ok_or("static JSON budget cannot be zero")?,
+    };
+    if pretty {
+        serde_json::to_writer_pretty(&mut output, value)?;
+    } else {
+        serde_json::to_writer(&mut output, value)?;
+    }
+    output.bytes.push(b'\n');
+    Ok(output.bytes)
+}
+
+fn write_static_private_json(path: &Path, value: &serde_json::Value) -> EvidenceResult<()> {
+    let body = bounded_static_json(value, true, STATIC_PRIVATE_JSON_MAX_BYTES)?;
+    write_new_bytes(path, &body)
+}
+
+fn print_static_json(value: &serde_json::Value) -> EvidenceResult<()> {
+    let body = bounded_static_json(value, false, STATIC_PROCESS_JSON_MAX_BYTES)?;
+    std::io::stdout().lock().write_all(&body)?;
+    Ok(())
+}
+
+fn retain_static_failure(
+    error: semwright_native_sdk::Error,
+    diagnostic: &serde_json::Value,
+    evidence_path: &Path,
+) -> semwright_native_sdk::Error {
+    let path = evidence_path.with_file_name("motionwright-blender-diagnostic.json");
+    if let Err(custody_error) = write_static_private_json(&path, diagnostic) {
+        // This records a derived publication failure, never a replacement for
+        // the native error or an invented complete receipt snapshot. SQLite
+        // and its actual sidecars remain the original source of receipt bytes.
+        let cause = json!({
+            "diagnostic_publication": "INCOMPLETE",
+            "diagnostic_is_derived": true,
+            "diagnostic_byte_budget": STATIC_PRIVATE_JSON_MAX_BYTES,
+            "native_error_replaced": false,
+            "native_retry_executed": false,
+            "receipt_originals": "existing SQLite database and actual sidecars",
+            "cause": custody_error.to_string(),
+        });
+        let _ = write_static_private_json(
+            &evidence_path.with_file_name("motionwright-blender-diagnostic-custody.json"),
+            &cause,
+        );
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Static Blender diagnostic publication incomplete; original native error retained"
+        );
+    }
+    error
 }
 
 async fn realize(
@@ -185,6 +268,10 @@ async fn realize(
     if scene.renderer != RendererKind::Blender {
         return Err("seeded scene is not owned by the Blender renderer".into());
     }
+    // Retain raw authoring fields read from this actual persisted Project.
+    // The independent Python oracle derives geometry from these CanvasNodes;
+    // the native contribution or exported GLB is not its source of intent.
+    let source_nodes = serde_json::to_value(&scene.nodes)?;
 
     let connection = ProductionConnection::load(connection_path)?;
     if connection.resource != project.resource_key() {
@@ -203,9 +290,9 @@ async fn realize(
     {
         Ok(result) => result,
         Err(error) => {
-            let diagnostic_path =
-                evidence_path.with_file_name("motionwright-blender-diagnostic.json");
-            let receipts = coordinator.receipts(project.id, 256).unwrap_or_default();
+            let receipt_query = coordinator.receipts(project.id, 256);
+            let receipt_query_succeeded = receipt_query.is_ok();
+            let receipts = receipt_query.unwrap_or_default();
             let diagnostic = json!({
                 "native_blender_e2e": "FAIL",
                 "project_id": project.id,
@@ -219,17 +306,9 @@ async fn realize(
                     "candidates": &error.candidates,
                 },
                 "receipts": receipts,
+                "receipt_query_succeeded": receipt_query_succeeded,
             });
-            let body = serde_json::to_vec_pretty(&diagnostic)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&diagnostic_path)?;
-            file.write_all(&body)?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
-            return Err(error.into());
+            return Err(retain_static_failure(error, &diagnostic, evidence_path).into());
         }
     };
 
@@ -301,20 +380,13 @@ async fn realize(
         "generation": project.generation,
         "revision": project.revision,
         "scene_id": scene.id,
+        "source_nodes": source_nodes,
         "result": result,
         "receipt_count": receipts.len(),
         "completed_commands": completed_commands,
     });
-    let body = serde_json::to_vec_pretty(&evidence)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(evidence_path)?;
-    file.write_all(&body)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-
-    println!("{}", serde_json::to_string(&evidence)?);
+    write_static_private_json(evidence_path, &evidence)?;
+    print_static_json(&evidence)?;
     Ok(())
 }
 
@@ -1853,5 +1925,66 @@ mod product_caller_tests {
         assert!(fixture.output.read_dir().unwrap().next().is_none());
         assert_eq!(std::fs::read(retired).unwrap(), fixture.original_bytes);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod static_budget_tests {
+    use super::*;
+    use semwright_native_sdk::{Error, ErrorCode};
+
+    #[test]
+    fn static_budget_counts_the_terminal_newline_before_any_file_write() {
+        let value = json!("a");
+        assert_eq!(bounded_static_json(&value, false, 4).unwrap(), b"\"a\"\n");
+        assert!(bounded_static_json(&value, false, 3).is_err());
+        assert!(bounded_static_json(&value, false, 0).is_err());
+    }
+
+    #[test]
+    fn static_budget_rejects_large_derived_diagnostic_without_replacing_native_error() {
+        let root = tempfile::tempdir().unwrap();
+        let evidence = root.path().join("motionwright-blender-evidence.json");
+        let mut original = Error::new(ErrorCode::Timeout, "original native uncertainty");
+        original.outcome_known = false;
+        let expected = serde_json::to_value(&original).unwrap();
+        let value = json!({"large_derived_diagnostic": "x".repeat(STATIC_PRIVATE_JSON_MAX_BYTES)});
+        let observed = retain_static_failure(original, &value, &evidence);
+        assert_eq!(serde_json::to_value(observed).unwrap(), expected);
+        assert!(
+            !root
+                .path()
+                .join("motionwright-blender-diagnostic.json")
+                .exists()
+        );
+        let cause: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                root.path()
+                    .join("motionwright-blender-diagnostic-custody.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cause["diagnostic_publication"], "INCOMPLETE");
+        assert_eq!(cause["native_error_replaced"], false);
+        assert_eq!(cause["diagnostic_is_derived"], true);
+    }
+
+    #[test]
+    fn static_budget_existing_diagnostic_is_preserved_and_native_error_stays_primary() {
+        let root = tempfile::tempdir().unwrap();
+        let evidence = root.path().join("motionwright-blender-evidence.json");
+        let diagnostic = root.path().join("motionwright-blender-diagnostic.json");
+        let original_bytes = b"previous original diagnostic";
+        std::fs::write(&diagnostic, original_bytes).unwrap();
+        let original = Error::new(ErrorCode::Unsupported, "original native failure");
+        let expected = serde_json::to_value(&original).unwrap();
+        let observed = retain_static_failure(
+            original,
+            &json!({"diagnostic": "new derived view"}),
+            &evidence,
+        );
+        assert_eq!(serde_json::to_value(observed).unwrap(), expected);
+        assert_eq!(std::fs::read(diagnostic).unwrap(), original_bytes);
     }
 }
