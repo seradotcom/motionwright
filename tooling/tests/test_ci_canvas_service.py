@@ -6161,8 +6161,334 @@ CLOSEOUT_WORKFLOW_REVERT_PAIRS = (('description: Run a closed selection; all req
   "|| matrix.selection == 'review' && 70 || contains(",
   "matrix.selection == 'project-authoring' && 360 || contains("))
 
+PHASE1_WORKFLOW_BASE_SHA256 = "cc0024f003afe1f5292d10f8f7566178d6cfe3465516ba32b4ffda3cb7a4d13d"
+PHASE1_WORKFLOW_POST_SHA256 = "e66c829c578e247eb36017b7d52693d4175866d0d6b73009131e4fef60b5e89b"
+PUBLISHED_CHOICES_BASE_SHA256 = "3c14f7eae2eb29c43f5434731f4f0e66bd0c688003d68454ad25a3a82dbdfa43"
+PHASE1_WORKFLOW_REVERT_PAIRS = (
+    ("options: [studio-service-68, phase1-service47, criterion-partials,", "options: [studio-service-68, criterion-partials,"),
+    ("matrix.selection == 'phase1-service47' && 110 || matrix.selection == 'camera-with-v2' && 90 ||",
+     "matrix.selection == 'camera-with-v2' && 90 ||"),
+)
+
+
+
+SERVICE47_DEADLINE_WORKFLOW_SHA256 = '7cf96ffb190fbe8297c0e4587823e5ec3ad37fd9016fd97caf88be5bdb5536df'
+SERVICE47_DEADLINE_WORKFLOW_REVERT = ((270,
+  274,
+  b'    # Metadata read is job-wide; only the conditional Service47 guard receives its token.\n    permission'
+  b's:\n      contents: read\n      actions: read\n',
+  b''),
+ (291,
+  427,
+  b'      - name: Bind Service47 to its authenticated original job deadline\n        if: matrix.selection == '
+  b"'phase1-service47'\n        working-directory: .\n        timeout-minutes: 2\n        env:\n          MO"
+  b'TIONWRIGHT_SERVICE47_METADATA_TOKEN: ${{ github.token }}\n        run: |\n          set -euo pipefail\n    '
+  b"      python3 -I -B - <<'PY'\n          import hashlib, json, os, re, signal, ssl, time, urllib.error, ur"
+  b'llib.request\n          from datetime import datetime\n          from email.utils import parsedate_to_date'
+  b'time\n          from pathlib import Path\n\n          def check(ok, reason):\n              if not ok:\n '
+  b'                 raise SystemExit("Service47 NOT_STARTED: " + reason)\n\n          def timeout(_signal, _f'
+  b'rame):\n              raise SystemExit("Service47 NOT_STARTED: metadata deadline expired")\n\n          sig'
+  b'nal.signal(signal.SIGALRM, timeout)\n          signal.alarm(60)\n          begin = time.monotonic_ns()\n   '
+  b'       binding = {key: os.environ.get(key) for key in (\n              "GITHUB_REPOSITORY", "GITHUB_RUN_I'
+  b'D", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA",\n              "GITHUB_WORKFLOW_REF", "GITHUB_WORKF'
+  b'LOW_SHA", "RUNNER_NAME")}\n          check(all(isinstance(value, str) and value for value in binding.valu'
+  b'es()), "job binding absent")\n          check(binding["GITHUB_JOB"] == "real-service" and os.environ.get('
+  b'"GITHUB_API_URL") == "https://api.github.com"\n                and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z'
+  b'0-9_.-]+", binding["GITHUB_REPOSITORY"])\n                and re.fullmatch(r"[0-9a-f]{40}", binding["GITH'
+  b'UB_SHA"])\n                and binding["GITHUB_WORKFLOW_SHA"] == binding["GITHUB_SHA"]\n                an'
+  b'd binding["GITHUB_WORKFLOW_REF"].startswith(binding["GITHUB_REPOSITORY"]\n                    + "/.github'
+  b'/workflows/studio-service-verification.yml@")\n                and all(re.fullmatch(r"[1-9][0-9]*", bindi'
+  b'ng[key])\n                        for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")), "job/source bindin'
+  b'g differs")\n          token = os.environ.pop("MOTIONWRIGHT_SERVICE47_METADATA_TOKEN", "")\n          chec'
+  b'k(token != "", "read-only metadata token absent")\n          class NoRedirect(urllib.request.HTTPRedirect'
+  b'Handler):\n              def redirect_request(self, *args, **kwargs):\n                  raise SystemExit('
+  b'"Service47 NOT_STARTED: metadata redirect refused")\n          opener = urllib.request.build_opener(urlli'
+  b'b.request.ProxyHandler({}), NoRedirect(),\n              urllib.request.HTTPSHandler(context=ssl.create_d'
+  b'efault_context()))\n          base = ("https://api.github.com/repos/" + binding["GITHUB_REPOSITORY"] + "/'
+  b'actions/runs/"\n                  + binding["GITHUB_RUN_ID"] + "/attempts/" + binding["GITHUB_RUN_ATTEMPT'
+  b'"])\n          responses, originals, transport_originals = {}, {}, {}\n          root = Path("v")\n        '
+  b'  check(not root.exists(), "fresh evidence namespace required")\n          # Only bounded metadata origin'
+  b'als are created here. Product preparation follows\n          # authentication of the original GitHub job '
+  b'start and complete-phase admission.\n          (root / "tools").mkdir(parents=True, exist_ok=False)\n     '
+  b'     def fetch(name, suffix):\n              request = urllib.request.Request(base + suffix, headers={"Au'
+  b'thorization": "Bearer " + token,\n                  "Accept": "application/vnd.github+json", "X-GitHub-Ap'
+  b'i-Version": "2022-11-28", "Cache-Control": "no-cache"})\n              try:\n                  response = '
+  b'opener.open(request, timeout=15)\n              except urllib.error.HTTPError as error:\n                 '
+  b' response = error\n              with response:\n                  dates = response.headers.get_all("Date"'
+  b', [])\n                  raw = response.read(4 * 1024 * 1024 + 1)\n                  with (root / "tools" '
+  b'/ name).open("xb") as stream:\n                      check(stream.write(raw) == len(raw), "metadata origi'
+  b'nal short write")\n                      stream.flush(); os.fsync(stream.fileno())\n                  orig'
+  b'inals[name] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}\n                  responses'
+  b'[name] = {"url": base + suffix, "http_date": dates[0] if len(dates) == 1 else None,\n                    '
+  b'                 "http_dates": dates, "status": response.status, "age": response.headers.get("Age", "0")'
+  b',\n                                     "received_mono_ns": time.monotonic_ns(), "body_bytes": len(raw),\n'
+  b'                                     "body_within_bound": 0 < len(raw) <= 4 * 1024 * 1024}\n             '
+  b'     transport_name = name.replace(".original.json", ".transport.original.json")\n                  trans'
+  b'port = (json.dumps(responses[name], sort_keys=True, separators=(",", ":")) + "\\n").encode()\n            '
+  b'      check(len(transport) <= 65536, "metadata transport original exceeds bound")\n                  with'
+  b' (root / "tools" / transport_name).open("xb") as stream:\n                      check(stream.write(transp'
+  b'ort) == len(transport), "metadata transport original short write")\n                      stream.flush();'
+  b' os.fsync(stream.fileno())\n                  transport_originals[transport_name] = {"bytes": len(transpo'
+  b'rt), "sha256": hashlib.sha256(transport).hexdigest()}\n                  # A failed response retains its '
+  b'original body/Date/status before denial.\n                  # It never becomes an authenticated deadline '
+  b'and is never retried.\n                  check(response.status == 200 and len(dates) == 1 and response.he'
+  b'aders.get("Age", "0") == "0",\n                        "metadata status/date/cache differs")\n            '
+  b'      check(0 < len(raw) <= 4 * 1024 * 1024, "metadata original exceeds bound")\n                  return'
+  b' json.loads(raw), dates[0]\n          run, _ = fetch("phase1-run-response.original.json", "")\n          j'
+  b'obs, date = fetch("phase1-jobs-response.original.json", "/jobs?per_page=100")\n          end = time.monot'
+  b'onic_ns()\n          token = None\n          check(type(run.get("id")) is int and type(run.get("run_attemp'
+  b't")) is int\n                and run.get("id") == int(binding["GITHUB_RUN_ID"])\n                and run.g'
+  b'et("run_attempt") == int(binding["GITHUB_RUN_ATTEMPT"])\n                and run.get("head_sha") == bindi'
+  b'ng["GITHUB_SHA"]\n                and run.get("repository", {}).get("full_name") == binding["GITHUB_REPOS'
+  b'ITORY"]\n                and run.get("path", "").split("@", 1)[0] == ".github/workflows/studio-service-ve'
+  b'rification.yml"\n                and run.get("event") == "workflow_dispatch" and run.get("status") == "in'
+  b'_progress", "run original differs")\n          rows = jobs.get("jobs")\n          check(isinstance(rows, l'
+  b'ist) and type(jobs.get("total_count")) is int\n                and 0 < jobs["total_count"] == len(rows) <'
+  b'= 100, "job list is incomplete or paginated")\n          selected = [row for row in rows if isinstance(ro'
+  b'w, dict)\n                      and row.get("name") == "Real SQLite and Studio / phase1-service47"]\n     '
+  b'     check(len(selected) == 1, "current job is absent or ambiguous")\n          job = selected[0]\n       '
+  b'   check(type(job.get("run_id")) is int and type(job.get("run_attempt")) is int\n                and job.'
+  b'get("run_id") == int(binding["GITHUB_RUN_ID"])\n                and job.get("run_attempt") == int(binding'
+  b'["GITHUB_RUN_ATTEMPT"])\n                and job.get("head_sha") == binding["GITHUB_SHA"] and job.get("st'
+  b'atus") == "in_progress"\n                and job.get("conclusion") is None and job.get("runner_name") == '
+  b'binding["RUNNER_NAME"]\n                and type(job.get("id")) is int and job["id"] > 0, "job/runner ori'
+  b'ginal differs")\n          server = parsedate_to_datetime(date)\n          started = datetime.fromisoforma'
+  b't(job.get("started_at", "").replace("Z", "+00:00"))\n          check(server.tzinfo is not None and starte'
+  b'd.tzinfo is not None\n                and server.utcoffset().total_seconds() == started.utcoffset().total'
+  b'_seconds() == 0\n                and server >= started, "original job start/HTTP Date differs")\n         '
+  b' age = server - started\n          elapsed_upper_ns = ((age.days * 86400 + age.seconds + 2) * 1_000_000_0'
+  b'00 + age.microseconds * 1000)\n          deadline = end + 6600 * 1_000_000_000 - elapsed_upper_ns - (end '
+  b'- begin)\n          custody = {"execution_cleanup": 30, "seal_guard": 60, "seal": 300, "seal_cleanup": 30'
+  b',\n                     "closed_upload_guard": 60, "closed_upload": 300, "unsealed_upload_guard": 60, "un'
+  b'sealed_upload": 300}\n          original = {"schema": "motionwright.service47-job-deadline/1", "binding":'
+  b' binding,\n              "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),\n        '
+  b'      "job_seconds": 6600, "custody_seconds": custody, "rounding_allowance_seconds": 2,\n              "r'
+  b'equest_started_mono_ns": begin, "response_received_mono_ns": end,\n              "deadline_mono_ns": dead'
+  b'line, "jobs_http_date": date, "run": run, "jobs": jobs,\n              "response_originals": originals, "'
+  b'response_transport_originals": transport_originals,\n              "transport_observations": responses,\n '
+  b'             "transport": "HTTPS_VERIFIED_NO_REDIRECT_NO_PROXY_AUTHENTICATED_READ_ONLY"}\n          raw ='
+  b' (json.dumps(original, sort_keys=True, separators=(",", ":")) + "\\n").encode()\n          check(len(raw) '
+  b'<= 8 * 1024 * 1024 + 65536, "deadline original exceeds bound")\n          with (root / "tools/phase1-dead'
+  b'line.original.json").open("xb") as stream:\n              check(stream.write(raw) == len(raw), "deadline '
+  b'original short write")\n              stream.flush(); os.fsync(stream.fileno())\n          check(deadline '
+  b'- time.monotonic_ns() >= (180 + sum(custody.values())) * 1_000_000_000,\n                "prepare/checkou'
+  b't plus custody does not fit the original job deadline")\n          with open(os.environ["GITHUB_ENV"], "a'
+  b'", encoding="utf-8") as stream:\n              stream.write("MOTIONWRIGHT_SERVICE47_DEADLINE_SHA256=" + h'
+  b'ashlib.sha256(raw).hexdigest() + "\\n")\n          signal.alarm(0)\n          print("Service47 original job'
+  b' deadline admitted; no Service/browser/native process has run")\n          PY\n',
+  b''),
+ (429,
+  432,
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 1 || 360 }}\n        env:\n        "
+  b'  REQUESTED_SELECTION: ${{ matrix.selection }}\n',
+  b''),
+ (434,
+  441,
+  b'          if [ "$REQUESTED_SELECTION" = phase1-service47 ]; then\n            test -f v/tools/phase1-dead'
+  b'line.original.json\n            test ! -e v/x\n            test ! -e v/c\n          else\n            te'
+  b'st ! -e v\n          fi\n',
+  b'          test ! -e v\n'),
+ (443, 444, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 2 || 360 }}\n", b''),
+ (449,
+  455,
+  b"      - name: Admit the complete Service47 python-setup phase\n        if: matrix.selection == 'phase1-se"
+  b"rvice47'\n        timeout-minutes: 1\n        run: |\n          set -euo pipefail\n          python3 -B "
+  b'-I tooling/ci_canvas_service.py phase1-budget --root ../v --phase python-setup\n',
+  b''),
+ (456, 457, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 2 || 360 }}\n", b''),
+ (459,
+  465,
+  b"      - name: Admit the complete Service47 node-setup phase\n        if: matrix.selection == 'phase1-serv"
+  b"ice47'\n        timeout-minutes: 1\n        run: |\n          set -euo pipefail\n          python3 -B -I"
+  b' tooling/ci_canvas_service.py phase1-budget --root ../v --phase node-setup\n',
+  b''),
+ (466, 467, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 2 || 360 }}\n", b''),
+ (469,
+  475,
+  b"      - name: Admit the complete Service47 rust-setup phase\n        if: matrix.selection == 'phase1-serv"
+  b"ice47'\n        timeout-minutes: 1\n        run: |\n          set -euo pipefail\n          python3 -B -I"
+  b' tooling/ci_canvas_service.py phase1-budget --root ../v --phase rust-setup\n',
+  b''),
+ (476, 477, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 5 || 360 }}\n", b''),
+ (480,
+  486,
+  b"      - name: Admit the complete Service47 rust-identities phase\n        if: matrix.selection == 'phase1"
+  b"-service47'\n        timeout-minutes: 1\n        run: |\n          set -euo pipefail\n          python3 "
+  b'-B -I tooling/ci_canvas_service.py phase1-budget --root ../v --phase rust-identities\n',
+  b''),
+ (487, 488, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 1 || 360 }}\n", b''),
+ (493,
+  499,
+  b"      - name: Admit the complete Service47 shared-identities phase\n        if: matrix.selection == 'phas"
+  b"e1-service47'\n        timeout-minutes: 1\n        run: |\n          set -euo pipefail\n          python"
+  b'3 -B -I tooling/ci_canvas_service.py phase1-budget --root ../v --phase shared-identities\n',
+  b''),
+ (500, 501, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 1 || 360 }}\n", b''),
+ (513,
+  519,
+  b'      - name: Install locked Service47 dependencies inside the original deadline\n        if: matrix.sele'
+  b"ction == 'phase1-service47'\n        timeout-minutes: 21\n        run: |\n          set -euo pipefail\n "
+  b'         python3 -B -I tooling/ci_canvas_service.py phase1-dependencies --repo .\n',
+  b''),
+ (520, 521, b"        if: matrix.selection != 'phase1-service47'\n", b''),
+ (535, 536, b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 7 || 360 }}\n", b''),
+ (540,
+  603,
+  b'      - name: Admit the complete Service47 closed upload\n        id: phase1-closed-upload-admission\n    '
+  b"    if: always() && matrix.selection == 'phase1-service47'\n        working-directory: .\n        timeout-"
+  b'minutes: 1\n        env:\n          SERVICE47_UPLOAD_MODE: closed\n        run: |\n          set -euo pi'
+  b"pefail\n          python3 -I -B - <<'PY'\n          import hashlib, json, os, signal, stat, time\n         "
+  b' from pathlib import Path\n\n          def check(ok, reason):\n              if not ok:\n               '
+  b'   raise SystemExit("Service47 upload NOT_STARTED: " + reason)\n\n          def timeout(_signal, _frame):\n'
+  b'              raise SystemExit("Service47 upload NOT_STARTED: custody guard expired")\n\n          signal.'
+  b'signal(signal.SIGALRM, timeout); signal.alarm(50)\n          path = Path("v/tools/phase1-deadline.origina'
+  b'l.json")\n          check(not path.is_symlink() and path.parent.is_dir() and not path.parent.is_symlink()'
+  b'\n                and path.parent.parent.is_dir() and not path.parent.parent.is_symlink(), "original ance'
+  b'stry differs")\n          before = path.stat()\n          check(stat.S_ISREG(before.st_mode) and 0 < befor'
+  b'e.st_size <= 8 * 1024 * 1024 + 65536, "original size differs")\n          with os.fdopen(os.open(path, os'
+  b'.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:\n              opened = os.fstat(stream.fileno())\n          '
+  b'    check((opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)\n       '
+  b'             == (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns), '
+  b'"original changed before open")\n              raw = stream.read(8 * 1024 * 1024 + 65537)\n          check'
+  b'(len(raw) == before.st_size and hashlib.sha256(raw).hexdigest()\n                == os.environ.get("MOTIO'
+  b'NWRIGHT_SERVICE47_DEADLINE_SHA256"), "pinned original changed")\n          original = json.loads(raw)\n   '
+  b'       check(original.get("schema") == "motionwright.service47-job-deadline/1"\n                and origi'
+  b'nal.get("binding") == {key: os.environ.get(key) for key in (\n                    "GITHUB_REPOSITORY", "G'
+  b'ITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA",\n                    "GITHUB_WORKFLOW_RE'
+  b'F", "GITHUB_WORKFLOW_SHA", "RUNNER_NAME")}\n                and original.get("boot_id") == Path("/proc/sy'
+  b's/kernel/random/boot_id").read_text().strip()\n                and original.get("job_seconds") == 6600, "'
+  b'original job/host binding differs")\n          now = time.monotonic_ns()\n          check(type(original.ge'
+  b't("response_received_mono_ns")) is int and original["response_received_mono_ns"] <= now\n                '
+  b'and type(original.get("deadline_mono_ns")) is int, "original monotonic clock differs")\n          mode = '
+  b'os.environ.get("SERVICE47_UPLOAD_MODE")\n          check(mode in ("closed", "unsealed"), "unknown upload '
+  b'phase")\n          # Both existing uploads are reserved. The fallback is never granted a fresh H.\n       '
+  b'   reserve = 360 if mode == "closed" else 0\n          check(original["deadline_mono_ns"] - now >= (300 +'
+  b' reserve) * 1_000_000_000,\n                "whole upload and pending custody no longer fit")\n          r'
+  b'ecord = {"schema": "motionwright.service47-upload-admission/1", "mode": mode,\n                    "deadl'
+  b'ine_original_sha256": hashlib.sha256(raw).hexdigest(), "observed_mono_ns": now,\n                    "dea'
+  b'dline_mono_ns": original["deadline_mono_ns"], "phase_seconds": 300, "reserve_seconds": reserve,\n        '
+  b'            "status": "ADMITTED_NOT_AN_UPLOAD_RESULT", "retry": "FORBIDDEN"}\n          directory = Path('
+  b'"v/retained") if mode == "closed" else Path("v/tools")\n          directory.mkdir(exist_ok=True)\n        '
+  b'  with (directory / ("phase1-" + mode + "-upload-admission.json")).open("x", encoding="utf-8") as stream'
+  b':\n              stream.write(json.dumps(record, sort_keys=True) + "\\n"); stream.flush(); os.fsync(stream'
+  b'.fileno())\n          check(original["deadline_mono_ns"] - time.monotonic_ns() >= (300 + reserve) * 1_000'
+  b'_000_000,\n                "upload admission custody consumed its remaining budget")\n          with open('
+  b'os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:\n              stream.write("admitted=true'
+  b'\\n")\n          signal.alarm(0)\n          PY\n',
+  b''),
+ (604,
+  606,
+  b"        if: always() && (matrix.selection != 'phase1-service47' || steps.phase1-closed-upload-admission."
+  b"outputs.admitted == 'true')\n        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 5 || "
+  b'360 }}\n',
+  b'        if: always()\n'),
+ (613,
+  676,
+  b'      - name: Admit the complete Service47 unsealed upload\n        id: phase1-unsealed-upload-admission\n'
+  b"        if: always() && matrix.selection == 'phase1-service47' && steps.archive.outcome != 'success'\n   "
+  b'     working-directory: .\n        timeout-minutes: 1\n        env:\n          SERVICE47_UPLOAD_MODE: unsea'
+  b"led\n        run: |\n          set -euo pipefail\n          python3 -I -B - <<'PY'\n          import has"
+  b'hlib, json, os, signal, stat, time\n          from pathlib import Path\n\n          def check(ok, reaso'
+  b'n):\n              if not ok:\n                  raise SystemExit("Service47 upload NOT_STARTED: " + reaso'
+  b'n)\n\n          def timeout(_signal, _frame):\n              raise SystemExit("Service47 upload NOT_STARTED'
+  b': custody guard expired")\n\n          signal.signal(signal.SIGALRM, timeout); signal.alarm(50)\n          '
+  b'path = Path("v/tools/phase1-deadline.original.json")\n          check(not path.is_symlink() and path.pare'
+  b'nt.is_dir() and not path.parent.is_symlink()\n                and path.parent.parent.is_dir() and not pat'
+  b'h.parent.parent.is_symlink(), "original ancestry differs")\n          before = path.stat()\n          chec'
+  b'k(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= 8 * 1024 * 1024 + 65536, "original size differs'
+  b'")\n          with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:\n              o'
+  b'pened = os.fstat(stream.fileno())\n              check((opened.st_dev, opened.st_ino, opened.st_size, ope'
+  b'ned.st_mtime_ns, opened.st_ctime_ns)\n                    == (before.st_dev, before.st_ino, before.st_siz'
+  b'e, before.st_mtime_ns, before.st_ctime_ns), "original changed before open")\n              raw = stream.r'
+  b'ead(8 * 1024 * 1024 + 65537)\n          check(len(raw) == before.st_size and hashlib.sha256(raw).hexdiges'
+  b't()\n                == os.environ.get("MOTIONWRIGHT_SERVICE47_DEADLINE_SHA256"), "pinned original change'
+  b'd")\n          original = json.loads(raw)\n          check(original.get("schema") == "motionwright.service'
+  b'47-job-deadline/1"\n                and original.get("binding") == {key: os.environ.get(key) for key in ('
+  b'\n                    "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_S'
+  b'HA",\n                    "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "RUNNER_NAME")}\n                a'
+  b'nd original.get("boot_id") == Path("/proc/sys/kernel/random/boot_id").read_text().strip()\n              '
+  b'  and original.get("job_seconds") == 6600, "original job/host binding differs")\n          now = time.mon'
+  b'otonic_ns()\n          check(type(original.get("response_received_mono_ns")) is int and original["respons'
+  b'e_received_mono_ns"] <= now\n                and type(original.get("deadline_mono_ns")) is int, "original'
+  b' monotonic clock differs")\n          mode = os.environ.get("SERVICE47_UPLOAD_MODE")\n          check(mode'
+  b' in ("closed", "unsealed"), "unknown upload phase")\n          # Both existing uploads are reserved. The '
+  b'fallback is never granted a fresh H.\n          reserve = 360 if mode == "closed" else 0\n          check('
+  b'original["deadline_mono_ns"] - now >= (300 + reserve) * 1_000_000_000,\n                "whole upload and'
+  b' pending custody no longer fit")\n          record = {"schema": "motionwright.service47-upload-admission/'
+  b'1", "mode": mode,\n                    "deadline_original_sha256": hashlib.sha256(raw).hexdigest(), "obse'
+  b'rved_mono_ns": now,\n                    "deadline_mono_ns": original["deadline_mono_ns"], "phase_seconds'
+  b'": 300, "reserve_seconds": reserve,\n                    "status": "ADMITTED_NOT_AN_UPLOAD_RESULT", "retr'
+  b'y": "FORBIDDEN"}\n          directory = Path("v/retained") if mode == "closed" else Path("v/tools")\n     '
+  b'     directory.mkdir(exist_ok=True)\n          with (directory / ("phase1-" + mode + "-upload-admission.j'
+  b'son")).open("x", encoding="utf-8") as stream:\n              stream.write(json.dumps(record, sort_keys=Tr'
+  b'ue) + "\\n"); stream.flush(); os.fsync(stream.fileno())\n          check(original["deadline_mono_ns"] - ti'
+  b'me.monotonic_ns() >= (300 + reserve) * 1_000_000_000,\n                "upload admission custody consumed'
+  b' its remaining budget")\n          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as strea'
+  b'm:\n              stream.write("admitted=true\\n")\n          signal.alarm(0)\n          PY\n',
+  b''),
+ (677,
+  679,
+  b"        if: always() && steps.archive.outcome != 'success' && (matrix.selection != 'phase1-service47' ||"
+  b" steps.phase1-unsealed-upload-admission.outputs.admitted == 'true')\n        timeout-minutes: ${{ matrix."
+  b"selection == 'phase1-service47' && 5 || 360 }}\n",
+  b"        if: always() && steps.archive.outcome != 'success'\n"))
+
+def service47_deadline_previous_workflow(raw):
+    """Reverse only the exact reviewed deadline delta; keep historical pins."""
+    if gate.hashlib.sha256(raw).hexdigest() != SERVICE47_DEADLINE_WORKFLOW_SHA256:
+        return raw
+    lines = raw.splitlines(keepends=True)
+    for start, end, added, previous in reversed(SERVICE47_DEADLINE_WORKFLOW_REVERT):
+        if b"".join(lines[start:end]) != added:
+            raise ValueError("Service47 deadline workflow delta differs")
+        lines[start:end] = previous.splitlines(keepends=True)
+    restored = b"".join(lines)
+    if gate.hashlib.sha256(restored).hexdigest() != PHASE1_WORKFLOW_POST_SHA256:
+        raise ValueError("Service47 deadline delta modified an unreviewed carrier byte")
+    return restored
+
+def phase1_previous_workflow(raw):
+    raw = service47_deadline_previous_workflow(raw)
+    """Reverse exactly one selector and its bound; every prior pin stays in force."""
+    identity = gate.hashlib.sha256(raw).hexdigest()
+    if identity in (PHASE1_WORKFLOW_BASE_SHA256, PUBLISHED_CHOICES_BASE_SHA256):
+        return raw
+    if identity != PHASE1_WORKFLOW_POST_SHA256:
+        raise ValueError("Phase1 service47 workflow differs from the reviewed postimage")
+    for added, previous in PHASE1_WORKFLOW_REVERT_PAIRS:
+        if raw.count(added.encode()) != 1:
+            raise ValueError("Phase1 service47 workflow delta is missing or duplicated")
+        raw = raw.replace(added.encode(), previous.encode(), 1)
+    if gate.hashlib.sha256(raw).hexdigest() != PHASE1_WORKFLOW_BASE_SHA256:
+        raise ValueError("an existing workflow byte changed outside Phase1 service47")
+    return raw
+
+
+PUBLISHED_CHOICES_REVERT_PAIRS = (
+    ("project-authoring, project-authoring-core, production-design", "project-authoring, production-design"),
+    ("claim-source, branch-combination]", "claim-source]"),
+)
+
+
+def published_choices_previous_workflow(raw):
+    """Reconcile the exact 57b81e4 published choices with the original 7e6ce6 pin."""
+    identity = gate.hashlib.sha256(raw).hexdigest()
+    if identity == PUBLISHED_CHOICES_BASE_SHA256:
+        return raw
+    if identity != PHASE1_WORKFLOW_BASE_SHA256:
+        raise ValueError("published selector workflow differs from its Git preimage")
+    for added, previous in PUBLISHED_CHOICES_REVERT_PAIRS:
+        if raw.count(added.encode()) != 1:
+            raise ValueError("published selector delta is missing or duplicated")
+        raw = raw.replace(added.encode(), previous.encode(), 1)
+    if gate.hashlib.sha256(raw).hexdigest() != PUBLISHED_CHOICES_BASE_SHA256:
+        raise ValueError("workflow bytes changed outside the two published choices")
+    return raw
+
+
 def closeout_previous_workflow(raw):
     """Accept only the exact bounded dispatch delta; preserve every old workflow pin."""
+    raw = published_choices_previous_workflow(phase1_previous_workflow(raw))
     if gate.hashlib.sha256(raw).hexdigest() != "3c14f7eae2eb29c43f5434731f4f0e66bd0c688003d68454ad25a3a82dbdfa43":
         raise ValueError("bounded service workflow differs from the reviewed postimage")
     for added, previous in CLOSEOUT_WORKFLOW_REVERT_PAIRS:
@@ -6700,6 +7026,783 @@ class CloseoutServiceRosterTests(unittest.TestCase):
                     result = ClosedStudioArchiveTests().retained(root, source)
                     self.assertEqual(result["status"], "FAIL", result)
                     self.assertFalse((root / "retained/closed-evidence.tar").exists())
+
+# The 47-case parser fixtures below are inert. They grant no Service/Native result.
+PHASE1_REVIEWED_CATALOG_SHA256 = "264db36daddb770a814ca43753f9451151f62e1097dd0a463453e4eb22cf04fa"
+
+
+def phase1_fixture_reports(selection):
+    label, filename, titles = selection
+    timeout = {"branch-combination": 120000, "phase1-camera": 120000, "phase1-camera-v2": 120000,
+               "phase1-canvas": 90000, "phase1-delivery-recipe": 90000, "phase1-narrative-editing": 120000,
+               "production-design": 120000, "review": 120000, "phase1-scoped-change": 30000,
+               "phase1-ink": 90000, "phase1-capture": 30000}[label]
+    specs = [{"title": title, "file": filename, "id": "inert/" + label + "/" + str(index),
+              "line": index + 1, "column": 1, "tags": [], "ok": False,
+              "tests": [{"projectId": "chromium", "projectName": "chromium", "expectedStatus": "passed",
+                         "annotations": [], "timeout": timeout, "results": [], "status": "skipped"}]}
+             for index, title in enumerate(titles)]
+    listed = {"config": {"workers": 1, "forbidOnly": True,
+                         "projects": [{"name": "chromium", "id": "chromium", "repeatEach": 1, "retries": 0}]},
+              "errors": [], "stats": {"expected": 0, "skipped": len(titles), "unexpected": 0, "flaky": 0},
+              "suites": [{"title": filename, "file": filename, "specs": specs, "suites": []}]}
+    executed = copy.deepcopy(listed)
+    executed["stats"].update(expected=len(titles), skipped=0)
+    for spec in executed["suites"][0]["specs"]:
+        spec["ok"] = True
+        spec["tests"][0].update(status="expected", results=[{"status": "passed", "retry": 0, "errors": []}])
+    return listed, executed
+
+
+def phase1_fixture_receipt():
+    value = {"build": {"finished_utc": "2026-10-28T00:00:01+00:00"},
+             "phase1_sdk_preflight": {"command": {"started_utc": "2026-10-28T00:00:02+00:00",
+                                                   "finished_utc": "2026-10-28T00:00:03+00:00"}},
+             "phase1_discovery": [], "selections": []}
+    for row in gate.phase1_service47_selections():
+        listed, _ = phase1_fixture_reports(row)
+        value["phase1_discovery"].append({"label": row[0], "status": "LISTED_NOT_EXECUTED",
+            "verified": gate.phase1_service47_report(listed, row[1], row[2], listing=True),
+            "command": {"started_utc": "2026-10-28T00:00:04+00:00", "finished_utc": "2026-10-28T00:00:05+00:00"}})
+        value["selections"].append({"label": row[0], "command": {"started_utc": "2026-10-28T00:00:06+00:00",
+                                                                  "finished_utc": "2026-10-28T00:00:07+00:00"}})
+    return value
+
+
+class Phase1Service47Tests(unittest.TestCase):
+    """Closed catalogue/parser and tiny Python custody controls, no product build."""
+
+    def test_catalogue_is_exact20_plus27_and_never_grants_graph_or_formal_credit(self):
+        rows = gate.phase1_service47_selections()
+        self.assertEqual(gate.hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
+                         PHASE1_REVIEWED_CATALOG_SHA256)
+        self.assertEqual([(row[0], len(row[2])) for row in rows], [
+            ("branch-combination", 3), ("phase1-camera", 1), ("phase1-camera-v2", 1), ("phase1-canvas", 4),
+            ("phase1-delivery-recipe", 1), ("phase1-narrative-editing", 2), ("production-design", 2), ("review", 3),
+            ("phase1-scoped-change", 2), ("phase1-ink", 1), ("phase1-capture", 27)])
+        plan = gate.selection_plan("phase1-service47")
+        self.assertEqual((plan["required_tests"], plan["ordinary_service"], plan["closure_capture"]), (47, 20, 27))
+        self.assertEqual(len(plan["not_selected"]), 4)
+        self.assertTrue(all(row["file"] == "semantic-graph-service.spec.ts" for row in plan["not_selected"]))
+        self.assertFalse(plan["formal_acceptance"]); self.assertFalse(plan["catalogue_is_runtime_evidence"])
+        self.assertEqual(plan["native_graph"], "NOT_SELECTED")
+        self.assertEqual(gate.selection_plan("all")["required_tests"], 208)
+        self.assertEqual(gate.selection_plan("project-authoring")["required_tests"], 143)
+
+    def test_changed_count_preserving_catalogue_cannot_activate(self):
+        rows = list(gate.PHASE1_SERVICE47_SELECTIONS)
+        first = rows[0]
+        for mutation in ("duplicate", "foreign"):
+            titles = (first[2][0],) * len(first[2]) if mutation == "duplicate" else (*first[2][:-1], "foreign body")
+            rows[0] = (first[0], first[1], titles)
+            with self.subTest(mutation=mutation), mock.patch.object(gate, "PHASE1_SERVICE47_SELECTIONS", tuple(rows)), \
+                    self.assertRaisesRegex(ValueError, "closed catalogue"):
+                gate.phase1_service47_selections()
+
+    def test_exact_commands_have_one_worker_no_retry_and_no_graph(self):
+        for row in gate.phase1_service47_selections():
+            argv = gate.service_command("/node", Path("/cli"), Path("/out"), row, scope="phase1-service47")
+            for flag in ("--project=chromium", "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json"):
+                self.assertIn(flag, argv)
+            pattern = argv[argv.index("--grep") + 1]
+            self.assertTrue(pattern.startswith("^(?:") and pattern.endswith(")$"))
+            self.assertEqual(gate.service_command("/node", Path("/cli"), Path("/out"), row,
+                listing=True, scope="phase1-service47"), [*argv, "--list"])
+            for title in row[2]:
+                self.assertRegex("chromium " + row[1] + " " + title, pattern)
+                self.assertIsNone(re.search(pattern, "prefix chromium " + row[1] + " " + title))
+            self.assertNotIn("semantic-graph-service.spec.ts", " ".join(argv))
+        with self.assertRaises(ValueError):
+            gate.service_command("/node", Path("/cli"), Path("/out"), ("fake", "fake.spec.ts", ("fake",)), scope="phase1-service47")
+
+    def test_all_synthetic_reports_require_exact_discovered_identity(self):
+        for row in gate.phase1_service47_selections():
+            listed, executed = phase1_fixture_reports(row)
+            discovered = gate.phase1_service47_report(listed, row[1], row[2], listing=True)
+            result = gate.phase1_service47_report(executed, row[1], row[2], listing=False, expected=discovered)
+            self.assertEqual(result["passed"], len(row[2])); self.assertTrue(result["original_discovery_matched"])
+
+    def test_runtime_timeout_changes_keep_exact_ids_and_cannot_exceed_group_budget(self):
+        self.assertEqual(sum(gate.PHASE1_SERVICE47_TIMEOUTS.values()), 3570)
+        row = gate.phase1_service47_selections()[-1]
+        listed, executed = phase1_fixture_reports(row)
+        discovered = gate.phase1_service47_report(listed, row[1], row[2], listing=True)
+        changed = {"complete capture includes every file and a paginated full oracle after all known peers close": 60000,
+                   "raw sink rejection permanently vetoes capture while external owner cleanup still runs": 45000,
+                   "raw sink deadline permanently vetoes capture while external owner cleanup still runs": 45000}
+        for spec in executed["suites"][0]["specs"]:
+            if spec["title"] in changed: spec["tests"][0]["timeout"] = changed[spec["title"]]
+        result = gate.phase1_service47_report(executed, row[1], row[2], listing=False, expected=discovered)
+        self.assertEqual(result["identities"], discovered["identities"])
+        self.assertEqual(sum(item["timeout_ms"] for item in result["observed_timeouts"]), 870000)
+        executed["suites"][0]["specs"][0]["tests"][0]["timeout"] += 60000
+        with self.assertRaisesRegex(ValueError, "process budget"):
+            gate.phase1_service47_report(executed, row[1], row[2], listing=False, expected=discovered)
+
+    def test_discovery_rejects_omission_duplicate_foreign_execution_and_duplicate_id(self):
+        row = gate.phase1_service47_selections()[0]
+        for mutation in ("omit", "duplicate", "foreign", "execution", "duplicate_id"):
+            listed, _ = phase1_fixture_reports(row); specs = listed["suites"][0]["specs"]
+            if mutation == "omit": specs.pop()
+            elif mutation == "duplicate": specs[1] = copy.deepcopy(specs[0])
+            elif mutation == "foreign": specs[0]["title"] = "foreign title"
+            elif mutation == "execution": specs[0]["tests"][0]["results"] = [{"status": "passed", "retry": 0, "errors": []}]
+            else: specs[1]["id"] = specs[0]["id"]
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.phase1_service47_report(listed, row[1], row[2], listing=True)
+
+    def test_execution_rejects_skip_failure_retry_flaky_repetition_and_annotations(self):
+        row = gate.phase1_service47_selections()[0]
+        for mutation in ("skip", "expected_failure", "retry", "flaky", "repetition", "annotation", "id", "file_line"):
+            listed, executed = phase1_fixture_reports(row)
+            discovered = gate.phase1_service47_report(listed, row[1], row[2], listing=True)
+            spec = executed["suites"][0]["specs"][0]; case = spec["tests"][0]
+            if mutation == "skip": case["expectedStatus"] = "skipped"
+            elif mutation == "expected_failure": case["expectedStatus"] = "failed"
+            elif mutation == "retry": case["results"][0]["retry"] = 1
+            elif mutation == "flaky": executed["stats"]["flaky"] = 1
+            elif mutation == "repetition": case["results"].append(copy.deepcopy(case["results"][0]))
+            elif mutation == "annotation": case["annotations"] = [{"type": "skip"}]
+            elif mutation == "id": spec["id"] += "/substituted"
+            else: spec["line"] += 1
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.phase1_service47_report(executed, row[1], row[2], listing=False, expected=discovered)
+
+    def test_report_rejects_wrong_worker_project_repeat_and_boolean_counters(self):
+        row = gate.phase1_service47_selections()[0]
+        for mutation in ("workers", "project", "repeat", "retries", "counter"):
+            listed, _ = phase1_fixture_reports(row)
+            if mutation == "workers": listed["config"]["workers"] = 2
+            elif mutation == "project": listed["config"]["projects"][0]["name"] = "webkit"
+            elif mutation == "repeat": listed["config"]["projects"][0]["repeatEach"] = 2
+            elif mutation == "retries": listed["config"]["projects"][0]["retries"] = 1
+            else: listed["stats"]["flaky"] = False
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.phase1_service47_report(listed, row[1], row[2], listing=True)
+
+    def test_global_discovery_cannot_omit_or_reuse_ids_before_any_body(self):
+        value = phase1_fixture_receipt()
+        gate.phase1_service47_discovery_complete(value["phase1_discovery"])
+        for mutation in ("omit", "reordered", "duplicate_id", "unverified"):
+            rows = copy.deepcopy(value["phase1_discovery"])
+            if mutation == "omit": rows.pop()
+            elif mutation == "reordered": rows.reverse()
+            elif mutation == "duplicate_id": rows[1]["verified"]["identities"][0]["id"] = rows[0]["verified"]["identities"][0]["id"]
+            else: rows[0]["status"] = "FAIL"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): gate.phase1_service47_discovery_complete(rows)
+
+    def test_main_duplicate_cross_file_id_stops_before_first_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); repo, target, output = root / "g", root / "v/t", root / "v/e"
+            cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"; cli.parent.mkdir(parents=True)
+            cli.write_bytes(b"inert CLI, never executed")
+            for name in ("node", "cargo"): (repo / name).write_bytes(b"inert tool, never executed")
+            calls, source = [], {"checkout": "a" * 40, "tree": "b" * 40, "files": {"inert": "parser only"}}
+            rows = gate.phase1_service47_selections()
+
+            def execute(argv, cwd, env, destination, label, timeout):
+                calls.append(label)
+                self.assertTrue(label == "build" or label.endswith("-discovery"), "a body launched before global ID admission")
+                if label == "build":
+                    binary = target / "debug/examples/studio_review_session"; binary.parent.mkdir(parents=True)
+                    binary.write_bytes(b"inert binary, never executed")
+                else:
+                    row = next(row for row in rows if label == row[0] + "-discovery")
+                    listed, _ = phase1_fixture_reports(row)
+                    if row == rows[1]: listed["suites"][0]["specs"][0]["id"] = "inert/" + rows[0][0] + "/0"
+                    (output / (row[0] + "-discovery.json")).write_text(json.dumps(listed))
+                return {"argv": argv, "cwd": str(cwd), "exit_code": 0, **synthetic_process_fields(env),
+                        "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+
+            argv = ["observer", "--repo", str(repo), "--output", str(output), "--target", str(target), "--selection", "phase1-service47"]
+            with mock.patch("sys.argv", argv), mock.patch("sys.stdout", new=io.StringIO()), \
+                    mock.patch.object(gate, "source_observation", return_value=source), \
+                    mock.patch.object(gate.shutil, "which", side_effect=lambda name: str(repo / name)), \
+                    mock.patch.object(gate, "execute", side_effect=execute), \
+                    mock.patch.object(gate, "phase1_service47_build_original", return_value={"inert": True}), \
+                    mock.patch.object(gate, "phase1_service47_sdk_preflight", return_value={"inert": True}):
+                self.assertEqual(gate.run_service_observation(gate.argparse.Namespace(
+                    repo=repo, output=output, target=target, selection="phase1-service47")), 1)
+            receipt = json.loads((output / "receipt.json").read_bytes())
+            self.assertEqual(receipt["status"], "FAIL")
+            self.assertIn("complete original catalogue IDs", receipt["error"])
+            self.assertEqual(calls, ["build", *(row[0] + "-discovery" for row in rows)])
+            self.assertEqual(receipt["selections"], [])
+
+    def test_order_rejects_early_body_missing_execution_and_late_preflight(self):
+        receipt = phase1_fixture_receipt(); gate.phase1_service47_phase_order(receipt)
+        for mutation in ("early_body", "missing_execution", "late_preflight", "naive_time"):
+            value = copy.deepcopy(receipt)
+            if mutation == "early_body": value["selections"][0]["command"]["started_utc"] = "2026-10-28T00:00:04+00:00"
+            elif mutation == "missing_execution": value["selections"].pop()
+            elif mutation == "late_preflight": value["phase1_sdk_preflight"]["command"]["finished_utc"] = "2026-10-28T00:00:08+00:00"
+            else: value["selections"][0]["command"]["started_utc"] = "2026-10-28T00:00:06"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): gate.phase1_service47_phase_order(value)
+
+    def test_sdk_preflight_rejects_wrong_pin_mock_and_extra_reply(self):
+        pin = "a" * 40
+        reply = {"id": "phase1-service-preflight", "ok": True,
+                 "result": {"test_transport": "service-test-jsonl", "native_sdk": {"pinned_revision": pin}}}
+        raw = (json.dumps(reply) + "\n").encode()
+        self.assertEqual(gate.phase1_service47_validate_preflight(raw, pin)["compiled_sdk_revision"], pin)
+        with self.assertRaises(ValueError): gate.phase1_service47_validate_preflight(raw, "b" * 40)
+        with self.assertRaises(ValueError): gate.phase1_service47_validate_preflight(raw + raw, pin)
+        reply["result"]["test_transport"] = "mock"
+        with self.assertRaises(ValueError): gate.phase1_service47_validate_preflight(json.dumps(reply).encode(), pin)
+
+    def test_archive_joins_build_sdk_and_all_original_discoveries_and_rejects_substitution(self):
+        for mutation in (None, "build", "sdk", "stdin", "report", "ids"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "v"; repo, output, target = root.parent / "g", root / "e", root / "t"
+                output.mkdir(parents=True); (root / "tools").mkdir(); repo.mkdir()
+                pin = "a" * 40
+                (repo / "SOURCE_LOCK.json").write_text(json.dumps({"dependencies": {"semwright": {"revision": pin}}}))
+                binary = target / "debug/examples/studio_review_session"; binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"inert fixture, never executed")
+                artifact = {"reason": "compiler-artifact", "package_id": "motionwright-service#0.1.0", "executable": str(binary),
+                            "target": {"name": "studio_review_session", "kind": ["example"],
+                                       "src_path": str(repo / "crates/service/examples/studio_review_session.rs")}}
+                (output / "build.stdout.log").write_text(json.dumps(artifact) + "\n" + json.dumps({"reason": "build-finished", "success": True}) + "\n")
+                (output / "build.stderr.log").write_bytes(b"")
+                receipt = phase1_fixture_receipt(); receipt["node"] = {"path": "/inert-node"}
+                receipt["phase1_build_original"] = gate.phase1_service47_build_original(output, repo, target, binary)
+                path, raw = self.stdin_fixture(output)
+                reply = {"id": "phase1-service-preflight", "ok": True,
+                         "result": {"test_transport": "service-test-jsonl", "native_sdk": {"pinned_revision": pin}}}
+                (output / "phase1-service-preflight.stdout.log").write_text(json.dumps(reply) + "\n")
+                preflight = receipt["phase1_sdk_preflight"]
+                preflight["command"].update({"argv": [str(binary), "--database", str(output / "phase1-preflight-stores/service.sqlite3")],
+                    "cwd": str(repo), "selected_environment": gate.service_environment_binding(target),
+                    "stdin": {"path": path.name, **gate.digest(path)}})
+                preflight.update(stdin_original=gate.digest(path), verified=gate.phase1_service47_preflight_original(output, pin))
+                for observed, selection in zip(receipt["phase1_discovery"], gate.phase1_service47_selections()):
+                    label, filename, titles = selection
+                    listed, _ = phase1_fixture_reports(selection)
+                    name = output / (label + "-discovery.json"); name.write_text(json.dumps(listed))
+                    environment = gate.service_environment_binding(target, output, label, binary)
+                    environment["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(name)
+                    observed["command"].update({"argv": gate.service_command("/inert-node", repo / "apps/studio/node_modules/@playwright/test/cli.js",
+                        output, selection, listing=True, scope="phase1-service47"), "cwd": str(repo / "apps/studio"),
+                        "selected_environment": environment})
+                    observed["original_report"] = gate.digest(name)
+                receipt["phase1_result"] = {"ordinary_service": 20, "closure_capture": 27, "native_graph": "NOT_SELECTED",
+                    "catalogue_sha256": PHASE1_REVIEWED_CATALOG_SHA256, "formal_acceptance": False}
+                if mutation == "build": receipt["phase1_build_original"]["binary"]["sha256"] = "f" * 64
+                elif mutation == "sdk": preflight["verified"]["compiled_sdk_revision"] = "b" * 40
+                elif mutation == "stdin": preflight["command"]["stdin"]["sha256"] = "f" * 64
+                elif mutation == "ids": receipt["phase1_discovery"][1]["verified"]["identities"][0]["id"] = "foreign"
+                for observed in [preflight, *receipt["phase1_discovery"]]:
+                    command = observed["command"]; label = "phase1-service-preflight" if observed is preflight else observed["label"] + "-discovery"
+                    command.update({**synthetic_process_fields(command["selected_environment"]), "exit_code": 0,
+                                    "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"})
+                    (output / (label + ".command.json")).write_text(json.dumps(command))
+                inventory = gate.archive_inventory(root)
+                if mutation == "report":
+                    first = receipt["phase1_discovery"][0]["label"]
+                    (output / (first + "-discovery.json")).write_bytes(b"{}\n")
+                closed = []
+                def command_closed(command, label):
+                    gate.require_observed_command(command)
+                    self.assertEqual(gate.archive_json(root, inventory, "e/" + label + ".command.json"), command)
+                    closed.append(label)
+                if mutation:
+                    with self.assertRaises(ValueError): gate.phase1_service47_archive_inputs(root, inventory, receipt, {}, command_closed)
+                else:
+                    result = gate.phase1_service47_archive_inputs(root, inventory, receipt, {}, command_closed)
+                    self.assertEqual(sum(item["selected"] for item in result.values()), 47)
+                    self.assertEqual(len(closed), 12)
+
+    def test_unknown_preflight_or_discovery_prevents_archive_traversal_and_source_commands(self):
+        for phase in ("preflight", "discovery"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "v"; output = root / "e"; output.mkdir(parents=True)
+                unknown = {"observation": "UNKNOWN_CUSTODY_NO_RETRY", "uncertainty_reason": "inert stdin fault"}
+                receipt = {"status": "PASS", "selection_plan": {"requested": "phase1-service47"}}
+                if phase == "preflight": receipt["phase1_sdk_preflight"] = {"command": unknown}
+                else: receipt["phase1_discovery"] = [{"command": unknown}]
+                (output / "receipt.json").write_text(json.dumps(receipt))
+                with mock.patch.object(gate, "archive_inventory") as inventory, \
+                        mock.patch.object(gate, "source_observation") as source, mock.patch.object(gate, "write_closed_tar") as archive:
+                    result = gate.retain_closed_archive(root.parent / "g", root)
+                self.assertEqual(result["status"], "UNKNOWN")
+                self.assertEqual(result["unsealed_command"], unknown)
+                inventory.assert_not_called(); source.assert_not_called(); archive.assert_not_called()
+
+    def test_original_build_rejects_foreign_source_duplicate_artifact_and_failed_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); repo, target, output = root / "g", root / "v/t", root / "v/e"
+            output.mkdir(parents=True); binary = target / "debug/examples/studio_review_session"; binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"inert fixture, never executed"); (output / "build.stderr.log").write_bytes(b"")
+            artifact = {"reason": "compiler-artifact", "package_id": "motionwright-service#0.1.0", "executable": str(binary),
+                        "target": {"name": "studio_review_session", "kind": ["example"],
+                                   "src_path": str(repo / "crates/service/examples/studio_review_session.rs")}}
+            for mutation in (None, "source", "duplicate", "terminal", "binary"):
+                rows = [copy.deepcopy(artifact), {"reason": "build-finished", "success": True}]
+                if mutation == "source": rows[0]["target"]["src_path"] = str(repo / "foreign.rs")
+                elif mutation == "duplicate": rows.insert(0, copy.deepcopy(rows[0]))
+                elif mutation == "terminal": rows[1]["success"] = False
+                elif mutation == "binary": rows[0]["executable"] += ".foreign"
+                (output / "build.stdout.log").write_text("\n".join(map(json.dumps, rows)) + "\n")
+                with self.subTest(mutation=mutation):
+                    if mutation:
+                        with self.assertRaises(ValueError): gate.phase1_service47_build_original(output, repo, target, binary)
+                    else:
+                        self.assertEqual(gate.phase1_service47_build_original(output, repo, target, binary)["binary"]["sha256"],
+                                         gate.hashlib.sha256(binary.read_bytes()).hexdigest())
+
+    @staticmethod
+    def stdin_fixture(root):
+        path = root / "phase1-service-preflight.stdin.original"
+        raw = (json.dumps(gate.phase1_service47_preflight_request(), separators=(",", ":")) + "\n").encode()
+        path.write_bytes(raw)
+        return path, raw
+
+    @staticmethod
+    def echo_child(root, path):
+        return gate.execute([gate.sys.executable, "-c", "import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+                            root, gate.os.environ, root, "phase1-service-preflight", 10, stdin_original=path)
+
+    def test_real_python_receives_exact_retained_descriptor_and_closes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path, raw = self.stdin_fixture(root)
+            command = self.echo_child(root, path)
+            gate.require_observed_command(command)
+            self.assertEqual(command["exit_code"], 0)
+            self.assertEqual(command["stdin"], {"path": path.name, "bytes": len(raw), "sha256": gate.hashlib.sha256(raw).hexdigest()})
+            self.assertEqual((root / "phase1-service-preflight.stdout.log").read_bytes(), raw)
+
+    def test_real_name_swap_at_spawn_cannot_supply_other_descriptor_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path, raw = self.stdin_fixture(root)
+            saved = root / "held-original"; real_spawn = gate.subprocess.Popen
+            called = []
+
+            def swap_then_spawn(*args, **kwargs):
+                path.rename(saved); path.write_bytes(b"FOREIGN_STDIN\n")
+                called.append(gate.os.fstat(kwargs["stdin"].fileno()).st_ino)
+                self.assertEqual(called[-1], saved.stat().st_ino)
+                self.assertNotEqual(called[-1], path.stat().st_ino)
+                try:
+                    return real_spawn(*args, **kwargs)
+                finally:
+                    path.unlink(); saved.rename(path)
+
+            with mock.patch.object(gate.subprocess, "Popen", side_effect=swap_then_spawn): command = self.echo_child(root, path)
+            self.assertEqual(len(called), 1)
+            self.assertEqual((root / "phase1-service-preflight.stdout.log").read_bytes(), raw)
+            # The original inode received a new ctime; the namespace disturbance remains UNKNOWN.
+            self.assertEqual(command["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+            with self.assertRaises(gate.UnknownObservation): gate.require_observed_command(command)
+
+    def test_real_stdin_write_after_open_is_detected_even_when_name_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path, _ = self.stdin_fixture(root)
+            real_spawn = gate.subprocess.Popen
+            def modify_then_spawn(*args, **kwargs):
+                path.write_bytes(b"CHANGED_INODE_CONTENT\n")
+                return real_spawn(*args, **kwargs)
+            with mock.patch.object(gate.subprocess, "Popen", side_effect=modify_then_spawn): command = self.echo_child(root, path)
+            self.assertEqual(command["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+            with self.assertRaises(gate.UnknownObservation): gate.require_observed_command(command)
+
+    def test_stdin_symlink_foreign_bytes_and_unrelated_label_never_launch(self):
+        for mutation in ("symlink", "foreign", "unrelated"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); path, _ = self.stdin_fixture(root)
+                if mutation == "symlink":
+                    saved = root / "saved"; path.rename(saved); path.symlink_to(saved)
+                elif mutation == "foreign": path.write_bytes(b"FOREIGN\n")
+                with mock.patch.object(gate.subprocess, "Popen") as spawn:
+                    if mutation == "unrelated":
+                        with self.assertRaisesRegex(ValueError, "only the bounded Phase1"):
+                            gate.execute(["inert"], root, {}, root, "other", 1, stdin_original=path)
+                    else:
+                        command = self.echo_child(root, path)
+                        self.assertTrue(gate.execution_unknown(command)); self.assertIsNone(command["pid"])
+                    spawn.assert_not_called()
+
+    def test_real_timeout_keeps_primary_unknown_when_stdin_also_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path, _ = self.stdin_fixture(root)
+            real_spawn = gate.subprocess.Popen
+            def modify_then_spawn(*args, **kwargs):
+                path.write_bytes(b"INDEPENDENT_CUSTODY_FAILURE\n")
+                return real_spawn(*args, **kwargs)
+            with mock.patch.object(gate.subprocess, "Popen", side_effect=modify_then_spawn) as spawn:
+                command = gate.execute([gate.sys.executable, "-c", "import time;time.sleep(10)"],
+                    root, gate.os.environ, root, "phase1-service-preflight", 0.05, stdin_original=path)
+            self.assertEqual(spawn.call_count, 1)
+            self.assertEqual(command["observation"], "UNKNOWN_TIMEOUT_NO_RETRY")
+            self.assertEqual(command["uncertainty_reason"], "DIRECT_WAIT_TIMEOUT")
+            self.assertTrue(any("stdin" in item for item in command["secondary_observation_errors"]))
+            self.assertEqual(gate.owned_process_group_state(command["pid"]), "ABSENT")
+            with self.assertRaises(gate.UnknownObservation): gate.require_observed_command(command)
+
+    def test_default_execute_preserves_popen_kwargs_and_branch_admission_is_scoped(self):
+        for label, admitted in (("branch-combination", True), ("branch-combination-discovery", True), ("phase1-camera-discovery", False)):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); process = mock.Mock(pid=123, wait=mock.Mock(return_value=0))
+                with mock.patch.object(gate.subprocess, "Popen", return_value=process) as spawn, \
+                        mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"):
+                    gate.execute(["inert"], root, {gate.BRANCH_COMBINATION_ADMISSION_ENV: "1"}, root, label, 1)
+                self.assertNotIn("stdin", spawn.call_args.kwargs)
+                self.assertEqual(gate.BRANCH_COMBINATION_ADMISSION_ENV in spawn.call_args.kwargs["env"], admitted)
+
+    def test_explicit_workflow_delta_retains_all_historical_pins_and_rejects_drift(self):
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        previous = phase1_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), PHASE1_WORKFLOW_BASE_SHA256)
+        self.assertNotIn(b"phase1-service47", previous)
+        for changed in (raw + b" ", raw.replace(b"needs: g0", b"needs: []", 1),
+                        raw.replace(b"phase1-service47, criterion-partials", b"phase1-service47, phase1-service47, criterion-partials", 1),
+                        raw.replace(b"matrix.selection == 'phase1-service47' && 110 || ", b"", 1),
+                        raw.replace(b"default: authoring-drafts", b"default: phase1-service47", 1)):
+            self.assertNotEqual(raw, changed)
+            with self.assertRaises(ValueError): phase1_previous_workflow(changed)
+        self.assertEqual(phase1_previous_workflow(previous), previous)
+        real = raw.decode().split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
+        for item in ("needs: g0", "runs-on: ubuntu-24.04", "max-parallel: 1", ' --selection "$REQUESTED_SELECTION"', "path: v/retained"):
+            self.assertIn(item, real)
+        self.assertNotIn("windows", real.lower())
+
+    def test_published_choices_reversal_preserves_exact_git_history_and_rejects_partial_delta(self):
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        current = phase1_previous_workflow(raw)
+        historical = published_choices_previous_workflow(current)
+        self.assertEqual(gate.hashlib.sha256(historical).hexdigest(),
+                         "3c14f7eae2eb29c43f5434731f4f0e66bd0c688003d68454ad25a3a82dbdfa43")
+        self.assertEqual(len(current) - len(historical), 44)
+        self.assertEqual(phase1_previous_workflow(historical), historical)
+        self.assertEqual(published_choices_previous_workflow(historical), historical)
+        self.assertEqual(gate.hashlib.sha256(closeout_previous_workflow(historical)).hexdigest(),
+                         "e1e3ff831d96934317cec81e8f0055b23bdce39665cdbfb2b25bfd8f5ebcdc64")
+        for changed in (
+            current.replace(b"project-authoring, project-authoring-core,", b"project-authoring,", 1),
+            current.replace(b"claim-source, branch-combination]", b"claim-source]", 1),
+            current.replace(b"claim-source, branch-combination]", b"claim-source, branch-combination, branch-combination]", 1),
+            current.replace(b"default: authoring-drafts", b"default: branch-combination", 1),
+        ):
+            with self.assertRaises(ValueError): published_choices_previous_workflow(changed)
+
+
+def phase1_deadline_fixture():
+    """Inert GitHub/clock values; never an authenticated runtime admission."""
+    ns = 1_000_000_000
+    binding = {"GITHUB_REPOSITORY": "inert/repository", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_JOB": "real-service", "GITHUB_SHA": "a" * 40,
+        "GITHUB_WORKFLOW_REF": "inert/repository/.github/workflows/studio-service-verification.yml@refs/heads/inert",
+        "GITHUB_WORKFLOW_SHA": "a" * 40, "RUNNER_NAME": "inert-runner"}
+    original = {"schema": "motionwright.service47-job-deadline/1", "binding": binding.copy(), "boot_id": "inert-boot",
+        "job_seconds": 6600, "custody_seconds": dict(gate.PHASE1_SERVICE47_CUSTODY), "rounding_allowance_seconds": 2,
+        "request_started_mono_ns": 1000 * ns, "response_received_mono_ns": 1005 * ns,
+        "jobs_http_date": "Thu, 29 Oct 2026 00:01:00 GMT", "deadline_mono_ns": (1000 + 6600 - 62) * ns,
+        "run": {"id": 123, "run_attempt": 1, "head_sha": "a" * 40,
+            "repository": {"full_name": "inert/repository"}, "event": "workflow_dispatch", "status": "in_progress",
+            "path": ".github/workflows/studio-service-verification.yml"},
+        "jobs": {"total_count": 1, "jobs": [{"id": 456, "name": "Real SQLite and Studio / phase1-service47",
+            "run_id": 123, "run_attempt": 1, "head_sha": "a" * 40, "status": "in_progress", "conclusion": None,
+            "runner_name": "inert-runner", "started_at": "2026-10-29T00:00:00Z"}]}}
+    return original, binding, 1005 * ns
+
+
+class Phase1Service47DeadlineTests(unittest.TestCase):
+    """Pure clock/metadata controls and mocked process seams; no Service or network."""
+
+    def clock(self):
+        original, binding, now = phase1_deadline_fixture()
+        return gate.Phase1Service47Clock(original, binding, now_ns=now, boot_id="inert-boot"), original, binding, now
+
+    def test_original_server_age_roundtrip_and_rounding_are_all_debited(self):
+        clock, original, _, now = self.clock()
+        self.assertEqual(clock.deadline_ns - now, (6600 - 60 - 2 - 5) * 1_000_000_000)
+        self.assertEqual(gate.PHASE1_SERVICE47_EFFECT_RESERVE, 1140)
+        self.assertEqual(sum(gate.PHASE1_SERVICE47_TIMEOUTS.values()), 3570)
+        self.assertEqual(sum(len(row[2]) for row in gate.phase1_service47_selections()), 47)
+        self.assertEqual(original["job_seconds"], 110 * 60)
+
+    def test_missing_ambiguous_wrong_attempt_source_runner_or_clock_cannot_admit(self):
+        for mutation in ("run", "attempt", "source", "workflow", "runner", "ambiguous", "paginated", "future", "deadline", "boolean"):
+            original, binding, now = phase1_deadline_fixture()
+            if mutation == "run": original["run"]["id"] += 1
+            elif mutation == "attempt": original["jobs"]["jobs"][0]["run_attempt"] = 2
+            elif mutation == "source": original["run"]["head_sha"] = "b" * 40
+            elif mutation == "workflow": original["run"]["path"] = ".github/workflows/foreign.yml"
+            elif mutation == "runner": original["jobs"]["jobs"][0]["runner_name"] = "foreign"
+            elif mutation == "ambiguous": original["jobs"]["jobs"] *= 2; original["jobs"]["total_count"] = 2
+            elif mutation == "paginated": original["jobs"]["total_count"] = 101
+            elif mutation == "future": original["response_received_mono_ns"] = now + 1
+            elif mutation == "deadline": original["deadline_mono_ns"] += 1
+            elif mutation == "boolean": original["run"]["run_attempt"] = True
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.Phase1Service47Clock(original, binding, now_ns=now, boot_id="inert-boot")
+        original, binding, now = phase1_deadline_fixture()
+        with self.assertRaises(ValueError): gate.Phase1Service47Clock(original, binding, now_ns=now, boot_id="foreign-boot")
+        binding.pop("GITHUB_RUN_ATTEMPT")
+        with self.assertRaises(ValueError): gate.Phase1Service47Clock(original, binding, now_ns=now, boot_id="inert-boot")
+
+    def test_full_phase_boundary_is_not_a_shortened_timeout(self):
+        clock, _, _, _ = self.clock()
+        border = clock.deadline_ns - (1200 + 1140) * 1_000_000_000
+        self.assertEqual(clock.admit("build", 1200, now_ns=border)["phase_seconds"], 1200)
+        with self.assertRaises(gate.Phase1Service47BudgetDenied) as denied:
+            clock.admit("build", 1200, now_ns=border + 1)
+        self.assertFalse(denied.exception.observation["attempted"])
+        self.assertEqual(denied.exception.observation["status"], "NOT_STARTED_INSUFFICIENT_ORIGINAL_BUDGET")
+
+    def test_reopen_and_seal_keep_the_same_original_horizon(self):
+        clock, original, binding, now = self.clock()
+        reopened = gate.Phase1Service47Clock(original, binding, now_ns=now + 100 * 1_000_000_000, boot_id="inert-boot")
+        self.assertEqual(reopened.deadline_ns, clock.deadline_ns)
+        border = clock.deadline_ns - (300 + 750) * 1_000_000_000
+        reopened.admit("seal", 300, reserve=750, now_ns=border)
+        with self.assertRaises(gate.Phase1Service47BudgetDenied): reopened.admit("seal", 300, reserve=750, now_ns=border + 1)
+        with self.assertRaises(ValueError): reopened.admit("seal", 300, reserve=750, now_ns=border - 1)
+
+    def test_seal_window_denies_if_receipt_custody_consumed_the_full_phase_margin(self):
+        for elapsed_ns in (0, 1, 1_000_000_000):
+            clock, _, _, _ = self.clock()
+            border = clock.deadline_ns - (300 + 750) * 1_000_000_000
+            clock.admit("seal", 300, reserve=750, now_ns=border)
+            entered = []
+            with self.subTest(elapsed_ns=elapsed_ns), mock.patch("time.monotonic_ns", return_value=border + elapsed_ns), \
+                    mock.patch.object(gate.signal, "getitimer", return_value=(0.0, 0.0)), \
+                    mock.patch.object(gate.signal, "getsignal", return_value=gate.signal.SIG_DFL), \
+                    mock.patch.object(gate.signal, "signal") as install, \
+                    mock.patch.object(gate.signal, "setitimer") as timer:
+                if elapsed_ns:
+                    with self.assertRaises(gate.Phase1Service47BudgetDenied):
+                        with clock.window(reserve=750, cap=300): entered.append(True)
+                    self.assertEqual(entered, []); install.assert_not_called(); timer.assert_not_called()
+                else:
+                    with clock.window(reserve=750, cap=300): entered.append(True)
+                    self.assertEqual(entered, [True])
+                    self.assertEqual(timer.call_args_list[0].args[1], 300)
+
+    def test_budget_denial_occurs_before_logs_or_popen(self):
+        clock, _, _, _ = self.clock()
+        now = clock.deadline_ns - 1140 * 1_000_000_000
+        with tempfile.TemporaryDirectory() as directory, mock.patch("time.monotonic_ns", return_value=now), \
+                mock.patch.object(gate.subprocess, "Popen") as spawn:
+            output = Path(directory)
+            with self.assertRaises(gate.Phase1Service47BudgetDenied):
+                gate.execute(["inert-never-executed"], output, {}, output, "build", 1200, deadline=clock)
+            spawn.assert_not_called()
+            self.assertEqual(list(output.iterdir()), [])
+
+    def test_second_pre_spawn_check_denies_without_claiming_a_timeout(self):
+        clock, _, _, _ = self.clock()
+        border = clock.deadline_ns - (1200 + 1140) * 1_000_000_000
+        with tempfile.TemporaryDirectory() as directory, mock.patch("time.monotonic_ns", side_effect=[border, border + 1]), \
+                mock.patch.object(gate.subprocess, "Popen") as spawn:
+            output = Path(directory)
+            command = gate.execute(["inert"], output, {}, output, "build", 1200, deadline=clock)
+            spawn.assert_not_called()
+            self.assertIsNone(command["pid"])
+            self.assertEqual(command["observation"], "NOT_STARTED_INSUFFICIENT_ORIGINAL_BUDGET")
+            self.assertFalse(gate.execution_unknown(command))
+            self.assertTrue((output / "build.command.json").is_file())
+
+    def test_metadata_token_and_origin_hash_never_reach_a_child(self):
+        clock, _, _, now = self.clock()
+        process = mock.Mock(pid=123, wait=mock.Mock(return_value=0))
+        with tempfile.TemporaryDirectory() as directory, mock.patch("time.monotonic_ns", return_value=now), \
+                mock.patch.object(gate.subprocess, "Popen", return_value=process) as spawn, \
+                mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"):
+            output = Path(directory)
+            command = gate.execute(["inert"], output, {gate.PHASE1_SERVICE47_TOKEN_ENV: "INERT_NOT_A_TOKEN",
+                gate.PHASE1_SERVICE47_DEADLINE_ENV: "f" * 64}, output, "build", 1200, deadline=clock)
+            self.assertNotIn(gate.PHASE1_SERVICE47_TOKEN_ENV, spawn.call_args.kwargs["env"])
+            self.assertNotIn(gate.PHASE1_SERVICE47_DEADLINE_ENV, spawn.call_args.kwargs["env"])
+            self.assertEqual(command["deadline_admission"]["phase_seconds"], 1200)
+            self.assertEqual(command["deadline_admission"]["reserve_seconds"], 1140)
+
+    def test_unknown_timeout_latches_and_never_retries_a_process(self):
+        clock, _, _, now = self.clock()
+        process = mock.Mock(pid=123, wait=mock.Mock(side_effect=gate.subprocess.TimeoutExpired(["inert"], 1200)))
+        with tempfile.TemporaryDirectory() as directory, mock.patch("time.monotonic_ns", return_value=now), \
+                mock.patch.object(gate.subprocess, "Popen", return_value=process) as spawn, \
+                mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"), \
+                mock.patch.object(gate, "stop_observed_process", return_value=["inert cleanup detail"]) as stop:
+            output = Path(directory)
+            command = gate.execute(["inert"], output, {}, output, "build", 1200, deadline=clock)
+            self.assertEqual(command["observation"], "UNKNOWN_TIMEOUT_NO_RETRY")
+            self.assertEqual(command["cleanup_errors"], ["inert cleanup detail"])
+            self.assertTrue(clock.unknown)
+            with self.assertRaises(ValueError): gate.execute(["inert"], output, {}, output, "retry", 1200, deadline=clock)
+            self.assertEqual(spawn.call_count, 1); self.assertEqual(stop.call_count, 1)
+
+    def test_python_work_outside_a_subprocess_cannot_pass_the_aggregate_window(self):
+        clock, _, _, now = self.clock()
+        soft = clock.deadline_ns - 1140 * 1_000_000_000
+        with mock.patch("time.monotonic_ns", side_effect=[now, soft]), \
+                mock.patch.object(gate.signal, "getitimer", return_value=(0.0, 0.0)), \
+                mock.patch.object(gate.signal, "getsignal", return_value=gate.signal.SIG_DFL), \
+                mock.patch.object(gate.signal, "signal"), mock.patch.object(gate.signal, "setitimer") as timer:
+            with self.assertRaises(gate.UnknownObservation):
+                with clock.window(): pass
+            self.assertTrue(clock.unknown)
+            self.assertEqual(timer.call_args_list[0].args[1], (soft - now) / 1_000_000_000)
+            self.assertEqual(timer.call_args_list[-1].args[1], 0)
+
+    def test_primary_timeout_survives_a_secondary_group_custody_error(self):
+        clock, _, _, now = self.clock()
+        process = mock.Mock(pid=123, wait=mock.Mock(side_effect=gate.subprocess.TimeoutExpired(["inert"], 1200)))
+        with tempfile.TemporaryDirectory() as directory, mock.patch("time.monotonic_ns", return_value=now), \
+                mock.patch.object(gate.subprocess, "Popen", return_value=process), \
+                mock.patch.object(gate, "owned_process_group_state", side_effect=PermissionError("inert group custody failure")), \
+                mock.patch.object(gate, "stop_observed_process", return_value=[]):
+            output = Path(directory)
+            command = gate.execute(["inert"], output, {}, output, "build", 1200, deadline=clock)
+            self.assertEqual(command["observation"], "UNKNOWN_TIMEOUT_NO_RETRY")
+            self.assertEqual(command["uncertainty_reason"], "DIRECT_WAIT_TIMEOUT")
+            self.assertTrue(any("inert group custody failure" in item for item in command["secondary_observation_errors"]))
+            self.assertTrue((output / "build.command.json").is_file())
+            self.assertTrue(clock.unknown)
+
+    def test_second_alarm_never_signals_a_reaped_or_reused_numeric_group(self):
+        clock, _, _, now = self.clock(); clock.active_process = mock.Mock(pid=123, returncode=0)
+        handlers = {}
+        def install(signum, handler): handlers[signum] = handler
+        with mock.patch("time.monotonic_ns", return_value=now), \
+                mock.patch.object(gate.signal, "getitimer", return_value=(0.0, 0.0)), \
+                mock.patch.object(gate.signal, "getsignal", return_value=gate.signal.SIG_DFL), \
+                mock.patch.object(gate.signal, "signal", side_effect=install), \
+                mock.patch.object(gate.signal, "setitimer") as timer, \
+                mock.patch.object(gate.os, "killpg") as kill, \
+                mock.patch.object(gate.os, "_exit", side_effect=SystemExit(124)) as hard_exit:
+            with self.assertRaises(gate.UnknownObservation):
+                with clock.window():
+                    handler = handlers[gate.signal.SIGALRM]
+                    with self.assertRaises(gate.UnknownObservation): handler(gate.signal.SIGALRM, None)
+                    self.assertTrue(clock.unknown)
+                    self.assertEqual(timer.call_args.args[1], 30)
+                    with self.assertRaises(SystemExit): handler(gate.signal.SIGALRM, None)
+            kill.assert_not_called()
+            hard_exit.assert_called_once_with(124)
+
+    def test_missing_original_rejects_main_before_observer_effects(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(gate.os.environ, {}, clear=True), \
+                mock.patch("sys.argv", ["inert", "--repo", directory, "--target", directory + "/target",
+                    "--output", directory + "/output", "--selection", "phase1-service47"]), \
+                mock.patch.object(gate, "phase1_service47_guard", return_value=gate.nullcontext()), \
+                mock.patch.object(gate, "run_service_observation") as observer:
+            with self.assertRaisesRegex(ValueError, "authenticated original deadline absent"): gate.main()
+            observer.assert_not_called()
+            self.assertFalse((Path(directory) / "output").exists())
+
+    def test_initial_workflow_guard_binds_original_responses_without_network_or_child(self):
+        import ssl, urllib.request
+        from email.message import Message
+        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
+        block = workflow.split("Bind Service47 to its authenticated original job deadline", 1)[1]
+        block = block.split("python3 -I -B - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+        code = "\n".join(line[10:] for line in block.splitlines()) + "\n"
+        for ambiguous in (False, True):
+            original, binding, now = phase1_deadline_fixture()
+            if ambiguous:
+                original["jobs"]["jobs"] *= 2; original["jobs"]["total_count"] = 2
+            class Response:
+                status = 200
+                def __init__(self, value):
+                    self.raw = json.dumps(value).encode(); self.headers = Message()
+                    self.headers["Date"] = original["jobs_http_date"]
+                def __enter__(self): return self
+                def __exit__(self, *_): return False
+                def read(self, limit):
+                    self.asserted_limit = limit
+                    return self.raw
+            opener = mock.Mock(open=mock.Mock(side_effect=[Response(original["run"]), Response(original["jobs"])]))
+            with self.subTest(ambiguous=ambiguous), tempfile.TemporaryDirectory() as directory:
+                previous = gate.os.getcwd(); gate.os.chdir(directory)
+                env = {**binding, "GITHUB_API_URL": "https://api.github.com", "GITHUB_ENV": str(Path(directory) / "inert-env"),
+                       gate.PHASE1_SERVICE47_TOKEN_ENV: "INERT_NOT_A_TOKEN"}
+                try:
+                    with mock.patch.dict(gate.os.environ, env, clear=True), mock.patch("time.monotonic_ns", return_value=now), \
+                            mock.patch.object(urllib.request, "build_opener", return_value=opener), \
+                            mock.patch.object(ssl, "create_default_context", return_value=mock.Mock()), \
+                            mock.patch.object(gate.signal, "signal"), mock.patch.object(gate.signal, "alarm"), \
+                            mock.patch.object(gate.subprocess, "Popen") as spawn, mock.patch("sys.stdout", new=io.StringIO()):
+                        if ambiguous:
+                            with self.assertRaisesRegex(SystemExit, "absent or ambiguous"): exec(compile(code, "inert-workflow-guard", "exec"), {})
+                        else:
+                            exec(compile(code, "inert-workflow-guard", "exec"), {})
+                            value = json.loads(Path("v/tools/phase1-deadline.original.json").read_bytes())
+                            self.assertEqual(gate.phase1_service47_deadline_from_original(value, binding, now, value["boot_id"]),
+                                             value["deadline_mono_ns"])
+                            self.assertEqual(value["deadline_mono_ns"], now + (6600 - 62) * 1_000_000_000)
+                            self.assertNotIn("INERT_NOT_A_TOKEN", Path(env["GITHUB_ENV"]).read_text())
+                            gate.os.environ[gate.PHASE1_SERVICE47_DEADLINE_ENV] = Path(env["GITHUB_ENV"]).read_text().strip().split("=", 1)[1]
+                            self.assertEqual(gate.phase1_service47_clock(Path("v")).deadline_ns, value["deadline_mono_ns"])
+                            transport = Path("v/tools/phase1-run-response.transport.original.json")
+                            transport.write_bytes(b"{}\n")
+                            with self.assertRaisesRegex(ValueError, "HTTP Date/status original changed"):
+                                gate.phase1_service47_clock(Path("v"))
+                        self.assertNotIn(gate.PHASE1_SERVICE47_TOKEN_ENV, gate.os.environ)
+                        spawn.assert_not_called()
+                        self.assertEqual(opener.open.call_count, 2)
+                        self.assertFalse(Path("v/x").exists()); self.assertFalse(Path("v/c").exists())
+                finally:
+                    gate.os.chdir(previous)
+
+    def test_http_error_retains_original_body_and_date_before_denial_without_retry(self):
+        import ssl, urllib.error, urllib.request
+        from email.message import Message
+        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
+        block = workflow.split("Bind Service47 to its authenticated original job deadline", 1)[1]
+        block = block.split("python3 -I -B - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+        code = "\n".join(line[10:] for line in block.splitlines()) + "\n"
+        for fail_second in (False, True):
+            original, binding, now = phase1_deadline_fixture()
+            headers = Message(); headers["Date"] = original["jobs_http_date"]
+            raw_error = b'{"message":"inert forbidden"}\n'
+            error = urllib.error.HTTPError("https://api.github.com/inert", 403, "inert forbidden", headers, io.BytesIO(raw_error))
+            response = mock.Mock(status=200, headers=headers, read=mock.Mock(return_value=json.dumps(original["run"]).encode()))
+            response.__enter__ = mock.Mock(return_value=response); response.__exit__ = mock.Mock(return_value=False)
+            opener = mock.Mock(open=mock.Mock(side_effect=[response, error] if fail_second else [error]))
+            with self.subTest(fail_second=fail_second), tempfile.TemporaryDirectory() as directory:
+                previous = gate.os.getcwd(); gate.os.chdir(directory)
+                env = {**binding, "GITHUB_API_URL": "https://api.github.com", "GITHUB_ENV": str(Path(directory) / "inert-env"),
+                       gate.PHASE1_SERVICE47_TOKEN_ENV: "INERT_NOT_A_TOKEN"}
+                try:
+                    with mock.patch.dict(gate.os.environ, env, clear=True), mock.patch("time.monotonic_ns", return_value=now), \
+                            mock.patch.object(urllib.request, "build_opener", return_value=opener), \
+                            mock.patch.object(ssl, "create_default_context", return_value=mock.Mock()), \
+                            mock.patch.object(gate.signal, "signal"), mock.patch.object(gate.signal, "alarm"), \
+                            mock.patch.object(gate.subprocess, "Popen") as spawn:
+                        with self.assertRaisesRegex(SystemExit, "metadata status/date/cache differs"):
+                            exec(compile(code, "inert-workflow-http-error", "exec"), {})
+                        name = "jobs" if fail_second else "run"
+                        self.assertEqual(Path("v/tools/phase1-" + name + "-response.original.json").read_bytes(), raw_error)
+                        transport = json.loads(Path("v/tools/phase1-" + name + "-response.transport.original.json").read_bytes())
+                        self.assertEqual(transport["status"], 403)
+                        self.assertEqual(transport["http_dates"], [original["jobs_http_date"]])
+                        if fail_second:
+                            previous_transport = json.loads(Path("v/tools/phase1-run-response.transport.original.json").read_bytes())
+                            self.assertEqual(previous_transport["http_dates"], [original["jobs_http_date"]])
+                            self.assertEqual(previous_transport["status"], 200)
+                        self.assertFalse(Path("v/tools/phase1-deadline.original.json").exists())
+                        self.assertFalse(Path(env["GITHUB_ENV"]).exists())
+                        self.assertNotIn(gate.PHASE1_SERVICE47_TOKEN_ENV, gate.os.environ)
+                        self.assertEqual(opener.open.call_count, 2 if fail_second else 1)
+                        spawn.assert_not_called()
+                        self.assertFalse(Path("v/x").exists()); self.assertFalse(Path("v/c").exists())
+                finally:
+                    gate.os.chdir(previous)
+
+    def test_workflow_preserves_the_carrier_limit_and_accounts_for_both_uploads(self):
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        self.assertEqual(gate.hashlib.sha256(service47_deadline_previous_workflow(raw)).hexdigest(), PHASE1_WORKFLOW_POST_SHA256)
+        real = raw.decode().split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
+        self.assertIn("matrix.selection == 'phase1-service47' && 110 ||", real)
+        self.assertEqual(real.count("actions: read"), 1)
+        self.assertEqual(real.count("MOTIONWRIGHT_SERVICE47_METADATA_TOKEN: ${{ github.token }}"), 1)
+        self.assertLess(real.index("Bind Service47 to its authenticated original job deadline"), real.index("Prepare isolated output"))
+        self.assertLess(real.index("Bind Service47 to its authenticated original job deadline"), real.index("uses: actions/checkout"))
+        for mode in ("closed", "unsealed"):
+            self.assertIn("id: phase1-" + mode + "-upload-admission", real)
+            self.assertIn("SERVICE47_UPLOAD_MODE: " + mode, real)
+        self.assertEqual(real.count("timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 5 || 360 }}"), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

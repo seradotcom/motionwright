@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -3299,6 +3300,634 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
+# Exact A3 R31 catalogue; this is not an inherited runtime result.
+PHASE1_SERVICE47_SCOPE = "phase1-service47"
+PHASE1_SERVICE47_ROSTER_SHA256 = 'ad64c74ee276ebefeec92beaa28d28c0ea5c95abfc187127d488ab15d0a52de7'
+PHASE1_SERVICE47_CATALOG_SHA256 = '264db36daddb770a814ca43753f9451151f62e1097dd0a463453e4eb22cf04fa'
+PHASE1_SERVICE47_SELECTIONS = (('branch-combination',
+  'branch-combination-service.spec.ts',
+  ('two real strategies produce a persisted inactive candidate, then editable undo preserves peer style and '
+   'historical reviews',
+   'lost original reply preserves late choices and UNKNOWN through reload, exact read and explicit separate '
+   'intent',
+   'an independent peer wins CAS after preview; rejected combination retains raw and never adds a phantom '
+   'candidate')),
+ ('phase1-camera',
+  'camera-reframe-service.spec.ts',
+  ('Camera reframe keeps raw input, commits twice and reopens exact SQLite Project',)),
+ ('phase1-camera-v2',
+  'camera-reframe-v2-service.spec.ts',
+  ('saved Manim v2 Camera preserves its authored pair through raw recovery, two UI edits and SQLite '
+   'reopen',)),
+ ('phase1-canvas',
+  'canvas-draft-service.spec.ts',
+  ('an empty library reaches thirteen authored revisions while object, scene and workspace drafts survive a '
+   'process restart',
+   'an independent peer wins overlapping copy while disjoint geometry and locked drafts are preserved',
+   'lost reply after real Canvas commit cannot replay the already saved operation',
+   'saved parented Canvas text stays visible in real editorial study after service reopen')),
+ ('phase1-delivery-recipe',
+  'delivery-recipe.spec.ts',
+  ('Film and PCM guards use saved options and expose unsupported combinations without pretending a native '
+   'result',)),
+ ('phase1-narrative-editing',
+  'narrative-editing-service.spec.ts',
+  ('actual editorial reorder preserves UUIDs, unaffected relationships and scenes through closed SQLite '
+   'reopen',
+   'a real committed result with a lost reply stays UNKNOWN across reload until reviewed as a separate '
+   'intent')),
+ ('production-design',
+  'production-design-service.spec.ts',
+  ('Scene boundary explicit source binding, Draft and Explicit saves preserve authored objects and assets '
+   'through SQLite reopen and journalled removal',
+   'Scene boundary keeps invalid raw endpoint JSON and its prior source when a real peer makes explicit '
+   'rebind stale')),
+ ('review',
+  'review-service.spec.ts',
+  ('ABA author input survives lost review reply, inspection, separate save and SQLite restart',
+   'denied review custody prevents any SQLite mutation until a confirmed copy and explicit save',
+   'selected review deliverable, language and rational range persist through actual App reload and SQLite '
+   'restart')),
+ ('phase1-scoped-change',
+  'scoped-change-service.spec.ts',
+  ('Studio previews, commits, reopens, undoes and redoes against the real persisted service',
+   'two Studio clients reject a stale commit and let the author resolve only the overlapping property')),
+ ('phase1-ink',
+  'visual-language-draft-service.spec.ts',
+  ('a saved ink token changes the actual SVG text paint across revisions and reopen',)),
+ ('phase1-capture',
+  'scoped-change-capture.spec.ts',
+  ('a middle journal loss in an isolated SQLite copy cannot receive a complete oracle',
+   'a tail journal loss in an isolated SQLite copy cannot receive a complete oracle',
+   'a all journal loss in an isolated SQLite copy cannot receive a complete oracle',
+   'a foreign_identity project row cannot redirect reads or mutations and healthy projects remain usable',
+   'a invalid_json project row cannot redirect reads or mutations and healthy projects remain usable',
+   'complete capture includes every file and a paginated full oracle after all known peers close',
+   'pending at close remains tainted despite exit zero and a later clean restart',
+   'a timed out real response followed by exit zero never becomes clean capture evidence',
+   'a real stdin transport error is permanent even when EOF lets the process exit zero',
+   'a broken response pipe records the real nonzero exit and vetoes capture',
+   'an unobserved process close cannot be promoted to proof by a later timeout',
+   'finalization attempts every peer and retains every outcome when preparation and one close fail',
+   'finalization rejects an empty-message preparation failure after actual service closure',
+   'finalization rejects an empty-message client failure after actual service closure',
+   'finalization rejects an empty-message external failure after actual service closure',
+   'service closure preserves UNKNOWN after missing EOF observation and still closes its owner',
+   'service closure preserves UNKNOWN after receipt already exists and still closes its owner',
+   'service closure prevents a reserved client from spawning after admissions seal',
+   'service closure seals ordinary clients after real reopen and captures a separate verified copy',
+   'an owner client reserved for a failed restart cannot reuse an earlier clean launch for capture',
+   'one raw capture port covers the ordinary initializer, owner-admitted peers and every restart',
+   'service closure waits for raw sink flush before presenting a CLOSED barrier to its owner',
+   'direct capture cannot bypass an exited process whose raw sinks are still pending',
+   'a raw binding exception after spawn still drains and closes the actual child',
+   'raw sink rejection permanently vetoes capture while external owner cleanup still runs',
+   'raw sink deadline permanently vetoes capture while external owner cleanup still runs',
+   'real stderr stays in Buffer mode when SQLite rejects a directory path')))
+PHASE1_SERVICE47_GRAPH_EXCLUDED = (('semantic-graph-service.spec.ts',
+  'Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing'),
+ ('semantic-graph-service.spec.ts',
+  'Synthetic flow stores exact event times and rejects a real stale CAS without a new event'),
+ ('semantic-graph-service.spec.ts',
+  'A lost Graph reply cannot replay a committed SQLite mutation after reload'),
+ ('semantic-graph-service.spec.ts',
+  'Graph removal rejects a prior-session grant and stale base, then removes once through the real UI and '
+  'survives SQLite restart'))
+PHASE1_SERVICE47_SOURCE_PATHS = tuple("apps/studio/tests/" + row[1] for row in PHASE1_SERVICE47_SELECTIONS)
+# Original listed case caps, plus 60 seconds per process for startup/closure.
+# Capture adds the three in-body timeout changes (30s, 15s, 15s).
+PHASE1_SERVICE47_TIMEOUTS = {
+    "branch-combination": 420, "phase1-camera": 180, "phase1-camera-v2": 180,
+    "phase1-canvas": 420, "phase1-delivery-recipe": 150, "phase1-narrative-editing": 300,
+    "production-design": 300, "review": 420, "phase1-scoped-change": 120,
+    "phase1-ink": 150, "phase1-capture": 930,
+}
+
+PHASE1_SERVICE47_JOB_SECONDS = 110 * 60
+PHASE1_SERVICE47_METADATA_LIMIT = 4 * 1024 * 1024
+PHASE1_SERVICE47_DEADLINE_ENV = "MOTIONWRIGHT_SERVICE47_DEADLINE_SHA256"
+PHASE1_SERVICE47_TOKEN_ENV = "MOTIONWRIGHT_SERVICE47_METADATA_TOKEN"
+PHASE1_SERVICE47_CUSTODY = {
+    "execution_cleanup": 30, "seal_guard": 60, "seal": 300, "seal_cleanup": 30,
+    "closed_upload_guard": 60, "closed_upload": 300,
+    "unsealed_upload_guard": 60, "unsealed_upload": 300,
+}
+PHASE1_SERVICE47_EFFECT_RESERVE = sum(PHASE1_SERVICE47_CUSTODY.values())
+PHASE1_SERVICE47_PREPARATION = {
+    "prepare-and-checkout": 180, "python-setup": 120, "node-setup": 120,
+    "rust-setup": 300, "rust-identities": 60, "shared-identities": 60,
+    "dependencies": 600, "chromium": 600,
+}
+
+
+class Phase1Service47BudgetDenied(ValueError):
+    def __init__(self, observation):
+        super().__init__("Phase1 original deadline cannot admit the whole phase and pending custody")
+        self.observation = observation
+
+
+@contextmanager
+def phase1_service47_guard():
+    """A read/admission cap, never a new execution grant or original deadline."""
+    require(os.name == "posix" and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0),
+            "Phase1 metadata guard requires its own timer")
+    previous = signal.getsignal(signal.SIGALRM)
+    def expired(_signal, _frame):
+        raise TimeoutError("Phase1 original deadline admission exceeded its 60-second guard")
+    signal.signal(signal.SIGALRM, expired); signal.setitimer(signal.ITIMER_REAL, 60)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0); signal.signal(signal.SIGALRM, previous)
+
+
+def phase1_service47_deadline_binding(environment):
+    keys = ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB",
+            "GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "RUNNER_NAME")
+    result = {key: environment.get(key) for key in keys}
+    require(all(isinstance(value, str) and value for value in result.values()), "Phase1 original job binding absent")
+    require(result["GITHUB_JOB"] == "real-service"
+            and re.fullmatch(r"[0-9a-f]{40}", result["GITHUB_SHA"]) is not None
+            and result["GITHUB_WORKFLOW_SHA"] == result["GITHUB_SHA"]
+            and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", result["GITHUB_REPOSITORY"]) is not None
+            and all(re.fullmatch(r"[1-9][0-9]*", result[key]) is not None
+                    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
+            and result["GITHUB_WORKFLOW_REF"].startswith(result["GITHUB_REPOSITORY"]
+                + "/.github/workflows/studio-service-verification.yml@"), "Phase1 original job binding differs")
+    return result
+
+
+def phase1_service47_deadline_from_original(original, environment, now_ns, boot_id):
+    """Validate a carrier-authenticated original; never manufacture an origin here."""
+    binding = phase1_service47_deadline_binding(environment)
+    require(isinstance(original, dict) and original.get("schema") == "motionwright.service47-job-deadline/1"
+            and original.get("binding") == binding and original.get("boot_id") == boot_id
+            and original.get("job_seconds") == PHASE1_SERVICE47_JOB_SECONDS
+            and original.get("custody_seconds") == PHASE1_SERVICE47_CUSTODY
+            and original.get("rounding_allowance_seconds") == 2,
+            "Phase1 original deadline source/profile/host differs")
+    begin, end = original.get("request_started_mono_ns"), original.get("response_received_mono_ns")
+    require(type(now_ns) is int and type(begin) is int and type(end) is int
+            and 0 < begin <= end <= now_ns, "Phase1 original clock absent, future or regressed")
+    run, jobs = original.get("run"), original.get("jobs")
+    require(isinstance(run, dict) and isinstance(jobs, dict), "Phase1 API originals absent")
+    require(type(run.get("id")) is int and type(run.get("run_attempt")) is int
+            and run.get("id") == int(binding["GITHUB_RUN_ID"])
+            and run.get("run_attempt") == int(binding["GITHUB_RUN_ATTEMPT"])
+            and run.get("head_sha") == binding["GITHUB_SHA"]
+            and run.get("repository", {}).get("full_name") == binding["GITHUB_REPOSITORY"]
+            and run.get("path", "").split("@", 1)[0] == ".github/workflows/studio-service-verification.yml"
+            and run.get("event") == "workflow_dispatch" and run.get("status") == "in_progress",
+            "Phase1 original run/attempt/source/workflow differs")
+    rows = jobs.get("jobs")
+    require(isinstance(rows, list) and type(jobs.get("total_count")) is int
+            and 0 < jobs["total_count"] == len(rows) <= 100, "Phase1 job response is incomplete or paginated")
+    selected = [row for row in rows if isinstance(row, dict)
+                and row.get("name") == "Real SQLite and Studio / phase1-service47"]
+    require(len(selected) == 1, "Phase1 current job is absent or ambiguous")
+    job = selected[0]
+    require(type(job.get("run_id")) is int and type(job.get("run_attempt")) is int
+            and job.get("run_id") == int(binding["GITHUB_RUN_ID"])
+            and job.get("run_attempt") == int(binding["GITHUB_RUN_ATTEMPT"])
+            and job.get("head_sha") == binding["GITHUB_SHA"]
+            and job.get("status") == "in_progress" and job.get("conclusion") is None
+            and job.get("runner_name") == binding["RUNNER_NAME"]
+            and type(job.get("id")) is int and job["id"] > 0,
+            "Phase1 current job/runner identity differs")
+    from email.utils import parsedate_to_datetime
+    server = parsedate_to_datetime(original.get("jobs_http_date", ""))
+    started = datetime.fromisoformat(job.get("started_at", "").replace("Z", "+00:00"))
+    require(server.tzinfo is not None and started.tzinfo is not None
+            and server.utcoffset().total_seconds() == started.utcoffset().total_seconds() == 0
+            and server >= started, "Phase1 authenticated job start/HTTP Date differs")
+    age = server - started
+    elapsed_upper_ns = ((age.days * 86400 + age.seconds + 2) * 1_000_000_000 + age.microseconds * 1000)
+    # Map at response receipt and subtract the complete request interval. This
+    # equals begin + H - elapsed_upper; no local wall clock resets the deadline.
+    remaining_ns = PHASE1_SERVICE47_JOB_SECONDS * 1_000_000_000 - elapsed_upper_ns - (end - begin)
+    deadline_ns = end + remaining_ns
+    require(original.get("deadline_mono_ns") == deadline_ns and deadline_ns > now_ns,
+            "Phase1 original job deadline differs or is already exhausted")
+    return deadline_ns
+
+
+class Phase1Service47Clock:
+    def __init__(self, original, environment, *, now_ns=None, boot_id=None):
+        import time
+        now_ns = time.monotonic_ns() if now_ns is None else now_ns
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip() if boot_id is None else boot_id
+        self.deadline_ns = phase1_service47_deadline_from_original(original, environment, now_ns, boot_id)
+        self.original, self.last_ns, self.unknown, self.active_process = original, now_ns, False, None
+        self.expired = False
+        self.admissions = []
+
+    def admit(self, label, seconds, *, reserve=PHASE1_SERVICE47_EFFECT_RESERVE, now_ns=None):
+        import time
+        now_ns = time.monotonic_ns() if now_ns is None else now_ns
+        require(type(seconds) is int and 0 < seconds <= PHASE1_SERVICE47_JOB_SECONDS
+                and type(reserve) is int and 0 <= reserve <= PHASE1_SERVICE47_EFFECT_RESERVE
+                and type(now_ns) is int and now_ns >= self.last_ns,
+                "Phase1 finite phase budget or monotonic clock differs")
+        self.last_ns = now_ns
+        record = {"label": label, "phase_seconds": seconds, "reserve_seconds": reserve,
+                  "observed_mono_ns": now_ns, "deadline_mono_ns": self.deadline_ns,
+                  "remaining_ns": self.deadline_ns - now_ns, "attempted": False, "retry": "FORBIDDEN"}
+        require(not self.unknown, "Phase1 UNKNOWN is terminal; no further effects or readback")
+        if record["remaining_ns"] < (seconds + reserve) * 1_000_000_000:
+            record["status"] = "NOT_STARTED_INSUFFICIENT_ORIGINAL_BUDGET"
+            self.admissions.append(record)
+            raise Phase1Service47BudgetDenied(record)
+        record["status"] = "ADMITTED_COMPLETE_PHASE_AND_CUSTODY"
+        self.admissions.append(record)
+        return record
+
+    @contextmanager
+    def window(self, *, reserve=PHASE1_SERVICE47_EFFECT_RESERVE, cap=None, cleanup=30):
+        """Bound Python work as well as subprocess waits; cleanup gets one grace."""
+        import time
+        require(os.name == "posix" and hasattr(signal, "setitimer")
+                and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), "Phase1 requires its own deadline signal")
+        now = time.monotonic_ns()
+        soft = self.deadline_ns - reserve * 1_000_000_000
+        if cap is not None:
+            require(type(cap) is int and cap > 0, "Phase1 phase window cap differs")
+            # Admission receipts/fsync may consume time. Recheck the full phase
+            # at the actual window boundary; never shorten it with min().
+            self.admit("terminal-window", cap, reserve=reserve, now_ns=now)
+            soft = now + cap * 1_000_000_000
+        require(now < soft, "Phase1 original aggregate observation window is exhausted")
+        previous_alarm, previous_term = signal.getsignal(signal.SIGALRM), signal.getsignal(signal.SIGTERM)
+        def expired(signum, _frame):
+            if self.expired:
+                # Popen.wait may already have reaped the leader. A numeric PGID
+                # is not an identity reservation; never signal it on this late
+                # path. The first expiration uses execute's existing cleanup.
+                # This hard exit proves neither descendant closure nor custody.
+                os._exit(124)
+            self.unknown = self.expired = True
+            signal.setitimer(signal.ITIMER_REAL, cleanup)
+            raise UnknownObservation("Phase1 original aggregate deadline expired; no retry", {
+                "observation": "UNKNOWN_DEADLINE_NO_RETRY", "pid": getattr(self.active_process, "pid", None),
+                "deadline_mono_ns": self.deadline_ns, "signal": signum,
+                "diagnostic_custody": "UNSEALED_ORIGINALS_NO_FURTHER_EFFECTS"})
+        signal.signal(signal.SIGALRM, expired); signal.signal(signal.SIGTERM, expired)
+        signal.setitimer(signal.ITIMER_REAL, (soft - now) / 1_000_000_000)
+        try:
+            yield self
+            if self.unknown or time.monotonic_ns() >= soft:
+                self.unknown = True
+                raise UnknownObservation("Phase1 original observation window did not close", {
+                    "observation": "UNKNOWN_DEADLINE_NO_RETRY", "deadline_mono_ns": self.deadline_ns})
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_alarm); signal.signal(signal.SIGTERM, previous_term)
+
+
+def phase1_service47_clock(root):
+    """The first workflow guard supplies this pinned original, never a fresh H."""
+    expected = os.environ.get(PHASE1_SERVICE47_DEADLINE_ENV, "")
+    require(re.fullmatch(r"[0-9a-f]{64}", expected) is not None, "Phase1 authenticated original deadline absent")
+    path = root / "tools/phase1-deadline.original.json"
+    raw, identity = studio68_original(path, 2 * PHASE1_SERVICE47_METADATA_LIMIT + 65536)
+    require(identity["sha256"] == expected, "Phase1 original deadline identity changed")
+    original = json.loads(raw)
+    for name, key in (("phase1-run-response.original.json", "run"), ("phase1-jobs-response.original.json", "jobs")):
+        source, fingerprint = studio68_original(root / "tools" / name, PHASE1_SERVICE47_METADATA_LIMIT)
+        require(fingerprint == original["response_originals"][name] and json.loads(source) == original[key],
+                "Phase1 authenticated API original changed")
+        transport_name = name.replace(".original.json", ".transport.original.json")
+        transport, transport_fingerprint = studio68_original(root / "tools" / transport_name, 65536)
+        require(transport_fingerprint == original["response_transport_originals"][transport_name]
+                and json.loads(transport) == original["transport_observations"][name],
+                "Phase1 authenticated HTTP Date/status original changed")
+    return Phase1Service47Clock(original, os.environ)
+
+
+def phase1_service47_budget_main(arguments):
+    parser = argparse.ArgumentParser(description="Admit a fixed Service47 preparation phase against its original job deadline.")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--phase", choices=tuple(PHASE1_SERVICE47_PREPARATION), required=True)
+    args = parser.parse_args(arguments)
+    with phase1_service47_guard():
+        root = args.root.resolve(); clock = phase1_service47_clock(root)
+        record = clock.admit(args.phase, PHASE1_SERVICE47_PREPARATION[args.phase])
+        write_new(root / "tools" / ("phase1-admit-" + args.phase + ".json"), record)
+        clock.admit(args.phase, PHASE1_SERVICE47_PREPARATION[args.phase])
+    return 0
+
+
+def phase1_service47_dependencies_main(arguments):
+    parser = argparse.ArgumentParser(description="Install the existing locked dependencies inside the original Service47 deadline.")
+    parser.add_argument("--repo", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    with phase1_service47_guard():
+        repo = args.repo.resolve(); root = repo.parent / "v"; clock = phase1_service47_clock(root)
+        output = root / "tools/phase1-dependencies"
+        clock.admit("dependencies", PHASE1_SERVICE47_PREPARATION["dependencies"])
+        output.mkdir(exist_ok=False)
+        receipt = {"status": "FAIL", "commands": [], "retry": "FORBIDDEN"}
+    with clock.window():
+        try:
+            npm, node = shutil.which("npm"), shutil.which("node")
+            require(npm and node, "Phase1 npm/node unavailable")
+            for label, argv in (("dependencies", [npm, "ci", "--no-audit", "--no-fund"]),
+                                ("chromium", [node, str(repo / "apps/studio/node_modules/@playwright/test/cli.js"),
+                                              "install", "--with-deps", "chromium"])):
+                command = execute(argv, repo / "apps/studio", os.environ, output, label,
+                                  PHASE1_SERVICE47_PREPARATION[label], deadline=clock)
+                receipt["commands"].append(command); require_observed_command(command)
+                require(command.get("exit_code") == 0, "Phase1 locked preparation failed")
+            receipt["status"] = "PASS_DEPENDENCIES_ONLY"
+        except Phase1Service47BudgetDenied as error:
+            receipt.update(error=str(error), budget_denial=error.observation)
+        except UnknownObservation as error:
+            receipt.update(status="UNKNOWN", error=str(error), unsealed_command=error.command)
+        except Exception as error:
+            receipt.update(error=type(error).__name__ + ": " + str(error))
+        receipt["deadline_admissions"] = clock.admissions
+        write_new(output / "receipt.json", receipt)
+    return 0 if receipt["status"] == "PASS_DEPENDENCIES_ONLY" else 1
+
+
+
+def phase1_branch_admission_label(label):
+    return label in ("branch-combination", "branch-combination-discovery")
+
+
+@contextmanager
+def phase1_service47_stdin(path, command):
+    """Hash and supply one held descriptor; reopening a pathname is not custody."""
+    require(os.name == "posix" and hasattr(os, "O_NOFOLLOW"), "Phase1 stdin requires POSIX no-follow custody")
+    archive_ancestors(path)
+    before = archive_stat(path)
+    require(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= 16384, "Phase1 stdin original bounds")
+    identity = archive_identity(before)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    with os.fdopen(os.open(path, flags), "rb", buffering=0) as stream:
+        require(archive_identity(os.fstat(stream.fileno())) == identity, "Phase1 stdin changed before open")
+        raw = stream.read(16385)
+        expected = (json.dumps(phase1_service47_preflight_request(), separators=(",", ":")) + "\n").encode()
+        require(raw == expected and len(raw) == before.st_size
+                and archive_identity(os.fstat(stream.fileno())) == identity
+                and archive_identity(archive_stat(path)) == identity, "Phase1 stdin original changed before spawn")
+        archive_ancestors(path)
+        command["stdin"] = {"path": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        stream.seek(0)
+        try:
+            yield stream
+        finally:
+            try:
+                require(archive_identity(os.fstat(stream.fileno())) == identity, "Phase1 held stdin identity changed")
+                stream.seek(0)
+                require(stream.read(16385) == raw and archive_identity(os.fstat(stream.fileno())) == identity,
+                        "Phase1 held stdin bytes changed")
+                archive_ancestors(path)
+                require(archive_identity(archive_stat(path)) == identity, "Phase1 stdin pathname changed")
+            except BaseException as error:
+                if execution_unknown(command):
+                    command.setdefault("secondary_observation_errors", []).append("stdin custody: " + str(error))
+                else:
+                    command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="STDIN_ORIGINAL_CHANGED",
+                                   error=type(error).__name__ + ": " + str(error))
+                raise
+
+
+def phase1_service47_selections():
+    rows = PHASE1_SERVICE47_SELECTIONS
+    require(isinstance(rows, tuple) and len(rows) == 11
+            and len({row[0] for row in rows}) == len(rows)
+            and all(isinstance(row, tuple) and len(row) == 3 and isinstance(row[2], tuple)
+                    and row[2] and all(isinstance(title, str) and title for title in row[2]) for row in rows)
+            and sum(len(titles) for label, _, titles in rows if label != "phase1-capture") == 20
+            and [(name, len(titles)) for label, name, titles in rows if label == "phase1-capture"]
+                == [("scoped-change-capture.spec.ts", 27)]
+            and len({(name, title) for _, name, titles in rows for title in titles}) == 47
+            and not any(name == "semantic-graph-service.spec.ts" for _, name, _ in rows)
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == PHASE1_SERVICE47_CATALOG_SHA256, "Phase1 service47 closed catalogue differs")
+    return rows
+
+
+def phase1_service47_plan():
+    return {"requested": PHASE1_SERVICE47_SCOPE, "scope": "EXACT_ORDINARY_SERVICE20_AND_CLOSURE_CAPTURE27",
+            "required": [{"label": label, "file": filename, "titles": list(titles)}
+                         for label, filename, titles in phase1_service47_selections()],
+            "required_tests": 47, "ordinary_service": 20, "closure_capture": 27,
+            "not_selected": [{"file": filename, "title": title, "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                             for filename, title in PHASE1_SERVICE47_GRAPH_EXCLUDED],
+            "catalogue_original_sha256": PHASE1_SERVICE47_ROSTER_SHA256,
+            "catalogue_sha256": PHASE1_SERVICE47_CATALOG_SHA256,
+            "catalogue_is_runtime_evidence": False, "discovery_required_before_execution": True,
+            "execution_platform": "Linux", "workers": 1, "retries": 0,
+            "process_timeouts_seconds": dict(PHASE1_SERVICE47_TIMEOUTS),
+            "process_startup_closure_reserve_seconds": 60,
+            "original_job_seconds": PHASE1_SERVICE47_JOB_SECONDS,
+            "custody_reserve_seconds": dict(PHASE1_SERVICE47_CUSTODY),
+            "deadline_origin": "AUTHENTICATED_CURRENT_GITHUB_JOB_START",
+            "native_graph": "NOT_SELECTED", "independent_archive_reopen": False,
+            "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
+
+
+def phase1_service47_report(document, filename, titles, *, listing, expected=None):
+    require(type(listing) is bool and (filename, titles) in {(name, names) for _, name, names in phase1_service47_selections()},
+            "unknown Phase1 exact report selection")
+    require(isinstance(document, dict) and document.get("errors") == [], "Phase1 report errors")
+    config = document.get("config", {})
+    projects = config.get("projects", [])
+    require(type(config.get("workers")) is int and config["workers"] == 1 and config.get("forbidOnly") is True
+            and len(projects) == 1 and projects[0].get("name") == projects[0].get("id") == "chromium"
+            and type(projects[0].get("repeatEach")) is int and projects[0]["repeatEach"] == 1
+            and type(projects[0].get("retries")) is int and projects[0]["retries"] == 0,
+            "Phase1 worker/project/retry/repeat configuration differs")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(key)) is int for key in ("expected", "skipped", "unexpected", "flaky")),
+            "Phase1 report counters must be integers")
+    identities = browser_result_identities(document)
+    require(len(identities) == len(titles) and {pair for pair, _ in identities} == {(filename, title) for title in titles},
+            "Phase1 exact file/title inventory differs")
+    specs = []
+    def visit(suites):
+        for suite in suites:
+            specs.extend(suite.get("specs", [])); visit(suite.get("suites", []))
+    visit(document["suites"])
+    identity, timeouts = [], []
+    for spec in specs:
+        case = spec["tests"][0]
+        require(case.get("expectedStatus") == "passed" and case.get("annotations", []) == []
+                and type(case.get("timeout")) is int and case["timeout"] > 0
+                and isinstance(spec.get("id"), str) and 0 < len(spec["id"]) <= 512
+                and type(spec.get("line")) is int and spec["line"] > 0
+                and type(spec.get("column")) is int and spec["column"] > 0,
+                "Phase1 skip/annotation or source identity differs")
+        identity.append({key: spec[key] for key in ("id", "file", "title", "line", "column")}
+                        | {"project": "chromium"})
+        timeouts.append({"id": spec["id"], "timeout_ms": case["timeout"]})
+        if listing:
+            require(case.get("results") == [], "Phase1 discovery contains an execution")
+    require(len({row["id"] for row in identity}) == len(titles), "Phase1 duplicate original IDs")
+    identity.sort(key=lambda row: (row["file"], row["title"]))
+    timeouts.sort(key=lambda row: row["id"])
+    label = next(label for label, name, names in phase1_service47_selections() if (name, names) == (filename, titles))
+    require(sum(row["timeout_ms"] for row in timeouts) <= (PHASE1_SERVICE47_TIMEOUTS[label] - 60) * 1000,
+            "Phase1 original case bounds exceed the process budget")
+    if listing:
+        require(stats["expected"] == stats["unexpected"] == stats["flaky"] == 0 and stats["skipped"] == len(titles),
+                "Phase1 list counts differ")
+        return {"status": "LISTED_NOT_EXECUTED", "selected": len(titles), "identities": identity,
+                "observed_timeouts": timeouts, "execution_results": 0}
+    verified = validate_browser_execution(document, filename, titles)
+    require(isinstance(expected, dict) and expected.get("status") == "LISTED_NOT_EXECUTED"
+            and expected.get("selected") == len(titles) and expected.get("identities") == identity,
+            "Phase1 execution differs from its original discovery IDs")
+    return {**verified, "identities": identity, "observed_timeouts": timeouts, "original_discovery_matched": True}
+
+
+def phase1_service47_build_original(output, repo, target, binary):
+    stdout = output / "build.stdout.log"
+    original = archive_file_digest(stdout, 64 * 1024 * 1024)
+    with stdout.open("rb") as stream:
+        raw = stream.read(64 * 1024 * 1024 + 1)
+    require(0 < len(raw) <= 64 * 1024 * 1024, "Phase1 Cargo original is absent or oversized")
+    require(original == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, "Phase1 Cargo original changed")
+    records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    finished = [row for row in records if row.get("reason") == "build-finished"]
+    artifacts = [row for row in records if row.get("reason") == "compiler-artifact"
+                 and row.get("target", {}).get("name") == "studio_review_session" and row.get("executable")]
+    require(len(finished) == 1 and finished[0].get("success") is True and len(artifacts) == 1,
+            "Phase1 original Cargo terminal/artifact differs")
+    artifact = artifacts[0]
+    require(artifact.get("target", {}).get("kind") == ["example"]
+            and "motionwright-service" in artifact.get("package_id", "")
+            and Path(artifact["target"].get("src_path", "")) == repo / "crates/service/examples/studio_review_session.rs"
+            and Path(artifact["executable"]) == binary == target / "debug/examples/studio_review_session",
+            "Phase1 original Cargo executable source/path differs")
+    return {"compiler_artifact": artifact, "build_finished": finished[0], "stdout_original": original,
+            "stderr_original": digest(output / "build.stderr.log"), "binary": {"path": str(binary), **digest(binary)}}
+
+
+def phase1_service47_preflight_request():
+    return {"id": "phase1-service-preflight", "command": "bootstrap", "args": {"request": {"project_id": None}}}
+
+
+def phase1_service47_validate_preflight(raw, sdk_revision):
+    require(isinstance(raw, bytes) and 0 < len(raw) <= 1024 * 1024
+            and re.fullmatch("[0-9a-f]{40}", sdk_revision) is not None, "Phase1 bootstrap original bounds")
+    messages = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    require(len(messages) == 1 and set(messages[0]) == {"id", "ok", "result"}
+            and messages[0]["id"] == "phase1-service-preflight" and messages[0]["ok"] is True,
+            "Phase1 actual bootstrap reply differs")
+    result = messages[0]["result"]
+    require(result.get("test_transport") == "service-test-jsonl"
+            and result.get("native_sdk", {}).get("pinned_revision") == sdk_revision,
+            "Phase1 compiled SDK differs from the source lock")
+    return {"compiled_sdk_revision": sdk_revision, "test_transport": "service-test-jsonl", "reply_count": 1}
+
+
+def phase1_service47_preflight_original(output, sdk_revision):
+    path = output / "phase1-service-preflight.stdout.log"
+    original = archive_file_digest(path, 1024 * 1024)
+    with path.open("rb") as stream:
+        raw = stream.read(1024 * 1024 + 1)
+    require(original == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, "Phase1 bootstrap original changed")
+    return phase1_service47_validate_preflight(raw, sdk_revision)
+
+
+def phase1_service47_sdk_preflight(repo, output, binary, env, *, deadline=None):
+    label = "phase1-service-preflight"
+    if deadline is not None:
+        deadline.admit(label, 30)
+    stdin_original = output / (label + ".stdin.original")
+    raw = (json.dumps(phase1_service47_preflight_request(), separators=(",", ":")) + "\n").encode()
+    with stdin_original.open("xb") as stream:
+        require(stream.write(raw) == len(raw), "Phase1 stdin short write"); stream.flush(); os.fsync(stream.fileno())
+    stores = output / "phase1-preflight-stores"; stores.mkdir()
+    command = execute([str(binary), "--database", str(stores / "service.sqlite3")], repo, env, output, label, 30,
+                      stdin_original=stdin_original, deadline=deadline)
+    require_observed_command(command)
+    require(command["exit_code"] == 0, "Phase1 actual Service bootstrap failed")
+    sdk_revision = json.loads((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+    verified = phase1_service47_preflight_original(output, sdk_revision)
+    return {"command": command, "stdin_original": digest(stdin_original), "verified": verified}
+
+
+def phase1_service47_discovery_complete(lists):
+    """Close the whole ID inventory before the first selected body can launch."""
+    labels = [row[0] for row in phase1_service47_selections()]
+    require(isinstance(lists, list) and [row.get("label") for row in lists] == labels
+            and all(row.get("status") == "LISTED_NOT_EXECUTED"
+                    and row.get("verified", {}).get("status") == "LISTED_NOT_EXECUTED"
+                    and row["verified"].get("selected") == len(selection[2])
+                    and row["verified"].get("execution_results") == 0
+                    for row, selection in zip(lists, phase1_service47_selections())),
+            "Phase1 discovery roster is incomplete")
+    ids = [item["id"] for row in lists for item in row["verified"]["identities"]]
+    require(len(ids) == len(set(ids)) == 47, "Phase1 complete original catalogue IDs differ")
+
+
+def phase1_service47_phase_order(receipt):
+    lists, executions = receipt.get("phase1_discovery"), receipt.get("selections")
+    phase1_service47_discovery_complete(lists)
+    labels = [row[0] for row in phase1_service47_selections()]
+    require(isinstance(executions, list) and [row.get("label") for row in executions] == labels,
+            "Phase1 execution roster is incomplete")
+    def instant(value):
+        require(isinstance(value, str) and value, "Phase1 original command timestamp absent")
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        require(result.tzinfo is not None and result.utcoffset() is not None, "Phase1 timestamp timezone absent")
+        return result
+    first_list = min(instant(row["command"]["started_utc"]) for row in lists)
+    last_list = max(instant(row["command"]["finished_utc"]) for row in lists)
+    first_execution = min(instant(row["command"]["started_utc"]) for row in executions)
+    require(instant(receipt["build"]["finished_utc"]) <= instant(receipt["phase1_sdk_preflight"]["command"]["started_utc"])
+            and instant(receipt["phase1_sdk_preflight"]["command"]["finished_utc"]) <= first_list <= last_list <= first_execution,
+            "Phase1 build/preflight/discovery/execution order differs")
+
+
+def phase1_service47_archive_inputs(root, inventory, receipt, source, command_closed):
+    output, repo, target = root / "e", root.parent / "g", root / "t"
+    binary = target / "debug/examples/studio_review_session"
+    require(receipt.get("phase1_build_original") == phase1_service47_build_original(output, repo, target, binary),
+            "Phase1 Cargo original binding changed before archive")
+    preflight = receipt.get("phase1_sdk_preflight", {})
+    command = preflight.get("command", {}); command_closed(command, "phase1-service-preflight")
+    original = inventory["entries"].get("e/phase1-service-preflight.stdin.original", {})
+    expected_input = (json.dumps(phase1_service47_preflight_request(), separators=(",", ":")) + "\n").encode()
+    identity = {"bytes": len(expected_input), "sha256": hashlib.sha256(expected_input).hexdigest()}
+    require(original.get("kind") == "file" and {key: original.get(key) for key in identity} == identity
+            and preflight.get("stdin_original") == identity
+            and command.get("stdin") == {"path": "phase1-service-preflight.stdin.original", **identity}
+            and command.get("argv") == [str(binary), "--database", str(output / "phase1-preflight-stores/service.sqlite3")]
+            and command.get("cwd") == str(repo) and command.get("selected_environment") == service_environment_binding(target),
+            "Phase1 actual bootstrap command/stdin binding differs")
+    sdk_revision = json.loads((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+    require(preflight.get("verified") == phase1_service47_preflight_original(output, sdk_revision),
+            "Phase1 compiled SDK original changed before archive")
+    lists = receipt.get("phase1_discovery", [])
+    rows = phase1_service47_selections()
+    require([row.get("label") for row in lists] == [row[0] for row in rows], "Phase1 archived discovery roster differs")
+    result = {}
+    for observed, selection in zip(lists, rows):
+        label, filename, titles = selection; command = observed.get("command", {})
+        command_closed(command, label + "-discovery")
+        environment = service_environment_binding(target, output, label, binary)
+        environment["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + "-discovery.json"))
+        require(command.get("argv") == service_command(receipt["node"]["path"], repo / "apps/studio/node_modules/@playwright/test/cli.js",
+                    output, selection, listing=True, scope=PHASE1_SERVICE47_SCOPE)
+                and command.get("cwd") == str(repo / "apps/studio") and command.get("selected_environment") == environment,
+                "Phase1 original discovery command differs")
+        name = "e/" + label + "-discovery.json"
+        actual = phase1_service47_report(archive_json(root, inventory, name), filename, titles, listing=True)
+        require(observed.get("status") == "LISTED_NOT_EXECUTED" and observed.get("verified") == actual
+                and observed.get("original_report") == {key: inventory["entries"][name][key] for key in ("bytes", "sha256")},
+                "Phase1 original discovery report differs")
+        result[label] = actual
+    phase1_service47_phase_order(receipt)
+    require(receipt.get("phase1_result") == {"ordinary_service": 20, "closure_capture": 27, "native_graph": "NOT_SELECTED",
+                "catalogue_sha256": PHASE1_SERVICE47_CATALOG_SHA256, "formal_acceptance": False},
+            "Phase1 complete result statement differs")
+    return result
+
+
 # Additive partial technical oracles. Historical all184 and Studio68 remain separate from the current all208 roster.
 # A listed title is not an execution or a contractual/human acceptance decision.
 PARTIAL_ORACLE_SCOPE = "criterion-partials"
@@ -3671,6 +4300,8 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if is_browser_scope(selection):
         return browser_selections(selection)
+    if selection == PHASE1_SERVICE47_SCOPE:
+        return phase1_service47_selections()
     if selection == CAMERA_EIGHT_SCOPE:
         return camera_eight_selections()
     if selection == PARTIAL_ORACLE_SCOPE:
@@ -3717,6 +4348,8 @@ def selected_selections(selection):
 def selection_plan(selection):
     chosen = selected_selections(selection)
     labels = {row[0] for row in chosen}
+    if selection == PHASE1_SERVICE47_SCOPE:
+        return phase1_service47_plan()
     if selection == CAMERA_EIGHT_SCOPE:
         return {"requested": selection, "scope": "CAMERA_SEVEN_PLUS_SAVED_MANIM_V2",
                 "required": [{"label": label, "file": filename, "titles": list(titles)}
@@ -3853,7 +4486,7 @@ BRANCH_COMBINATION_SOURCE_PATHS = ('apps/desktop/src-tauri/build.rs',
 
 
 def source_observation(repo, selection=None):
-    require(selection is None or is_browser_scope(selection) or selection in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE),
+    require(selection is None or is_browser_scope(selection) or selection in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE),
             "unknown source observation scope")
     if selection == CAMERA_EIGHT_SCOPE:
         camera_eight_profile()
@@ -4006,6 +4639,9 @@ def source_observation(repo, selection=None):
         paths = tuple(dict.fromkeys((*paths, *WINDOW_FRONTEND_SOURCE_PATHS)))
     if selection == CAMERA_EIGHT_SCOPE:
         paths = tuple(dict.fromkeys((*paths, *(name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS))))
+    if selection == PHASE1_SERVICE47_SCOPE:
+        phase1_service47_selections()
+        paths = tuple(dict.fromkeys((*paths, *PHASE1_SERVICE47_SOURCE_PATHS)))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -4086,15 +4722,18 @@ def require_observed_command(command):
             "owned process group exit was not observed; no closed execution credit")
 
 
-def execute(argv, cwd, env, output, label, timeout):
+def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None):
     env = dict(env)
-    if label == "branch-combination":
+    env.pop(PHASE1_SERVICE47_TOKEN_ENV, None)
+    env.pop(PHASE1_SERVICE47_DEADLINE_ENV, None)
+    admission = deadline.admit(label, timeout) if deadline is not None else None
+    if phase1_branch_admission_label(label):
         require(env.get(BRANCH_COMBINATION_ADMISSION_ENV) == "1", "branch combination admission is absent")
     else:
         # Never inherit the admission into a build, unrelated selector or helper.
         env.pop(BRANCH_COMBINATION_ADMISSION_ENV, None)
     observed_environment = (*PROCESS_ENVIRONMENT_KEYS, *((BRANCH_COMBINATION_ADMISSION_ENV,)
-                            if label == "branch-combination" else ()))
+                            if phase1_branch_admission_label(label) else ()))
     owned_group = os.name == "posix"
     command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat(),
                "process_observation_schema": PROCESS_OBSERVATION_SCHEMA,
@@ -4102,12 +4741,20 @@ def execute(argv, cwd, env, output, label, timeout):
                "pid": None, "owned_group_after_wait": "NOT_OBSERVED", "escaped_descendants": "NOT_OBSERVED",
                "selected_environment": {key: env.get(key) for key in observed_environment},
                "cleanup_errors": []}
+    if deadline is not None:
+        command["deadline_admission"] = admission
     process = None
+    if stdin_original is not None:
+        require(label == "phase1-service-preflight" and stdin_original == output / (label + ".stdin.original"),
+                "only the bounded Phase1 SDK preflight accepts a retained stdin original")
     try:
-        with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err:
+        with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err, \
+                (phase1_service47_stdin(stdin_original, command) if stdin_original is not None else nullcontext(None)) as inp:
+            if deadline is not None:
+                command["deadline_admission"] = deadline.admit(label, timeout)
             try:
                 process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
-                                           start_new_session=owned_group)
+                                           start_new_session=owned_group, **({"stdin": inp} if stdin_original is not None else {}))
             except (FileNotFoundError, PermissionError) as error:
                 command.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
             except OSError as error:
@@ -4115,6 +4762,8 @@ def execute(argv, cwd, env, output, label, timeout):
                                uncertainty_reason="SPAWN_HANDLE_NOT_OBSERVED", error=type(error).__name__ + ": " + str(error))
             else:
                 command["pid"] = process.pid
+                if deadline is not None:
+                    deadline.active_process = process
                 try:
                     command["exit_code"] = process.wait(timeout=timeout)
                     if owned_group:
@@ -4137,6 +4786,9 @@ def execute(argv, cwd, env, output, label, timeout):
                         command["cleanup_errors"] = stop_observed_process(process, owned_group)
                     except BaseException as error:
                         command["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
+    except Phase1Service47BudgetDenied as error:
+        command.update(exit_code=None, observation="NOT_STARTED_INSUFFICIENT_ORIGINAL_BUDGET",
+                       budget_denial=error.observation, error=str(error))
     except BaseException as error:
         if process is None and isinstance(error, OSError) and not execution_unknown(command):
             raise
@@ -4152,7 +4804,28 @@ def execute(argv, cwd, env, output, label, timeout):
                 command["cleanup_errors"].extend(stop_observed_process(process, owned_group))
             except BaseException as cleanup_error:
                 command["cleanup_errors"].append(type(cleanup_error).__name__ + ": " + str(cleanup_error))
+    if deadline is not None:
+        if execution_unknown(command):
+            deadline.unknown = True
+        try:
+            if process is None or owned_process_group_state(process.pid) == "ABSENT":
+                deadline.active_process = None
+        except BaseException as error:
+            command.setdefault("secondary_observation_errors", []).append("deadline group custody: " + str(error))
+            if not execution_unknown(command):
+                command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="DEADLINE_GROUP_RECHECK_FAILED")
+            deadline.unknown = True
     command["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    if stdin_original is not None:
+        try:
+            require(command["stdin"] == {"path": stdin_original.name, **archive_file_digest(stdin_original, 16384)},
+                    "Phase1 preflight stdin changed")
+        except BaseException as error:
+            if execution_unknown(command):
+                command.setdefault("secondary_observation_errors", []).append("stdin original: " + str(error))
+            else:
+                command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="STDIN_ORIGINAL_CHANGED",
+                               error=type(error).__name__ + ": " + str(error))
     for stream in ("stdout", "stderr"):
         path = output / (label + "." + stream + ".log")
         try:
@@ -4170,7 +4843,11 @@ def execute(argv, cwd, env, output, label, timeout):
             command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="COMMAND_RECEIPT_PERSISTENCE_FAILED")
         command.update(diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED",
                        receipt_error=type(error).__name__ + ": " + str(error))
+        if deadline is not None:
+            deadline.unknown = True
         raise UnknownObservation("command receipt could not be retained; no retry", command) from error
+    if deadline is not None and execution_unknown(command):
+        deadline.unknown = True
     return command
 
 
@@ -4447,6 +5124,7 @@ def archive_closed_bindings(root, inventory, source):
     require(plan == selection_plan(plan.get("requested")), "archive selection binding differs")
     required = selected_selections(plan["requested"])
     camera_mode = plan["requested"] == CAMERA_EIGHT_SCOPE
+    phase1_mode = plan["requested"] == PHASE1_SERVICE47_SCOPE
     selections = receipt.get("selections", [])
     require([x.get("label") for x in selections] == [x[0] for x in required],
             "archive selected roster differs")
@@ -4523,7 +5201,8 @@ def archive_closed_bindings(root, inventory, source):
         build = receipt.get("build", {})
         command_closed(build, "build")
         require(build.get("argv") == [cargo, "build", "--locked", "-p", "motionwright-service",
-                                       "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])]
+                                       "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode or phase1_mode else []),
+                                       *(["--message-format=json"] if phase1_mode else [])]
                 and build.get("cwd") == str(repo)
                 and build.get("selected_environment") == service_environment_binding(target),
                 "service build invocation differs")
@@ -4547,6 +5226,7 @@ def archive_closed_bindings(root, inventory, source):
                     "partial oracle discovery original differs")
         partial_oracle_list_order(discovered, selections)
     camera_lists = camera_eight_archive_lists(root, inventory, receipt, source, command_closed) if camera_mode else {}
+    phase1_lists = phase1_service47_archive_inputs(root, inventory, receipt, source, command_closed) if phase1_mode else {}
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
@@ -4560,7 +5240,7 @@ def archive_closed_bindings(root, inventory, source):
                 "browser selected command differs")
         else:
             require(selection["command"].get("argv") == service_command(
-                node, cli, root / "e", (label, filename, titles), scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
+                node, cli, root / "e", (label, filename, titles), scope=CAMERA_EIGHT_SCOPE if camera_mode else PHASE1_SERVICE47_SCOPE if phase1_mode else None)
                 and selection["command"].get("cwd") == cwd
                 and selection["command"].get("selected_environment") == service_environment_binding(
                     target, root / "e", label, binary_path), "service selected invocation differs")
@@ -4569,7 +5249,9 @@ def archive_closed_bindings(root, inventory, source):
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
                 "archive report binding differs")
         original_document = archive_json(root, inventory, "e/" + label + ".json")
-        if camera_mode:
+        if phase1_mode:
+            verified = phase1_service47_report(original_document, filename, titles, listing=False, expected=phase1_lists[label])
+        elif camera_mode:
             verified = camera_eight_report(original_document, filename, titles, listing=False, expected=camera_lists[label])
             intent_name = "e/" + label + "-intent.json"
             intent = camera_eight_intent(label, titles, selection["command"]["argv"], Path(cwd), source, receipt["service_binary"])
@@ -4814,17 +5496,24 @@ def retain_closed_archive(repo, root):
         commands = [original_receipt.get("build", {}), original_receipt.get("discovery", {}).get("command", {}),
                     *(row.get("command", {}) for row in original_receipt.get("selections", [])),
                     *(row.get("command", {}) for row in original_receipt.get("partial_discovery", [])),
-                    *(row.get("command", {}) for row in original_receipt.get("camera_discovery", []))]
+                    *(row.get("command", {}) for row in original_receipt.get("camera_discovery", [])),
+                    *(row.get("command", {}) for row in original_receipt.get("phase1_discovery", [])),
+                    original_receipt.get("phase1_sdk_preflight", {}).get("command", {})]
         for command in commands:
             if execution_unknown(command):
                 raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
         require(original_receipt.get("status") == "PASS", "original execution is not complete")
+        if original_receipt.get("selection_plan", {}).get("requested") == PHASE1_SERVICE47_SCOPE:
+            require(re.fullmatch(r"[0-9a-f]{64}", os.environ.get(PHASE1_SERVICE47_DEADLINE_ENV, "")) is not None
+                    and original_receipt.get("phase1_deadline", {}).get("original_sha256")
+                        == os.environ[PHASE1_SERVICE47_DEADLINE_ENV],
+                    "Phase1 archive requires its authenticated original deadline")
         before = archive_inventory(root)
         require(before["identities"].get(receipt_name) == receipt_identity
                 and archive_json(root, before, receipt_name) == original_receipt,
                 "original receipt changed before archive admission")
         selected = original_receipt.get("selection_plan", {}).get("requested")
-        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE) else None
+        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE) else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -4859,7 +5548,25 @@ def archive_main(arguments):
     require(repo.name == "g" and root == repo.parent / "v"
             and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent,
             "archive command requires the isolated CI g/v layout")
-    report = retain_closed_archive(repo, root)
+    if os.environ.get(PHASE1_SERVICE47_DEADLINE_ENV) is not None:
+        with phase1_service47_guard():
+            original_raw, _ = studio68_original(root / "e/receipt.json", 64 * 1024 * 1024)
+            original_receipt = json.loads(original_raw)
+            clock = phase1_service47_clock(root)
+            require(original_receipt.get("selection_plan", {}).get("requested") == PHASE1_SERVICE47_SCOPE
+                    and original_receipt.get("status") == "PASS", "Phase1 incomplete/UNKNOWN evidence cannot be sealed")
+            budget = original_receipt.get("phase1_deadline", {})
+            require(budget.get("original_sha256") == os.environ[PHASE1_SERVICE47_DEADLINE_ENV]
+                    and budget.get("deadline_mono_ns") == clock.deadline_ns and budget.get("unknown") is False
+                    and type(budget.get("finished_mono_ns")) is int
+                    and budget["finished_mono_ns"] <= clock.deadline_ns - PHASE1_SERVICE47_EFFECT_RESERVE * 1_000_000_000,
+                    "Phase1 original observation did not retain its custody reserve")
+            admission = clock.admit("seal", 300, reserve=750)
+            write_new(root / "tools/phase1-seal-admission.json", admission)
+        with clock.window(reserve=750, cap=300):
+            report = retain_closed_archive(repo, root)
+    else:
+        report = retain_closed_archive(repo, root)
     print(json.dumps({"status": report["status"], "custody": report["custody"],
                       "receipt": str(root / "retained/archive-receipt.json")}))
     return 0 if report["status"] == "PASS" else 1
@@ -5016,14 +5723,14 @@ def service_environment_binding(target, output=None, label=None, binary=None):
             "PLAYWRIGHT_JSON_OUTPUT_FILE": str(output / (label + ".json")) if label is not None else None,
             "MOTIONWRIGHT_SERVICE_TEST_BIN": str(binary) if label is not None else None,
             "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
-    if label == "branch-combination":
+    if phase1_branch_admission_label(label):
         value[BRANCH_COMBINATION_ADMISSION_ENV] = "1"
     return value
 
 
-def branch_combination_environment(repo, before, binary, retained_binary, identity):
+def branch_combination_environment(repo, before, binary, retained_binary, identity, *, scope=None):
     """Bind the explicit branch selector to this observed source and built bytes."""
-    require(source_observation(repo) == before, "branch combination source changed before dispatch")
+    require(source_observation(repo, scope) == before, "branch combination source changed before dispatch")
     require(digest(binary) == digest(retained_binary) == identity,
             "branch combination binary changed before dispatch")
     return {BRANCH_COMBINATION_ADMISSION_ENV: "1"}
@@ -5032,7 +5739,14 @@ def branch_combination_environment(repo, before, binary, retained_binary, identi
 def service_command(node, cli, output, selection, *, listing=False, scope=None):
     label, filename, _titles = selection
     require(type(listing) is bool, "service list flag must be boolean")
-    require(scope in (None, CAMERA_EIGHT_SCOPE), "unknown closed service command scope")
+    require(scope in (None, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE), "unknown closed service command scope")
+    if scope == PHASE1_SERVICE47_SCOPE:
+        require(selection in phase1_service47_selections(), "unknown Phase1 service selection")
+        pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title))) for title in _titles) + ")$"
+        return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+                "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json",
+                "--output=" + str(output / (label + "-test-results")), "--grep", pattern,
+                *(["--list"] if listing else [])]
     if scope == CAMERA_EIGHT_SCOPE:
         require(selection in camera_eight_selections(), "unknown Camera eight selection")
         pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title))) for title in _titles) + ")$"
@@ -5466,13 +6180,23 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
+    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
     args = parser.parse_args()
     if is_browser_scope(args.selection):
         return run_browser_selection(args.repo, args.output, args.target, args.selection)
+    if args.selection == PHASE1_SERVICE47_SCOPE:
+        with phase1_service47_guard():
+            clock = phase1_service47_clock(args.repo.resolve().parent / "v")
+        with clock.window():
+            return run_service_observation(args, deadline=clock)
+    return run_service_observation(args)
+
+
+def run_service_observation(args, *, deadline=None):
     selections = selected_selections(args.selection)
     partial_mode, camera_mode = args.selection == PARTIAL_ORACLE_SCOPE, args.selection == CAMERA_EIGHT_SCOPE
-    listed_mode = partial_mode or camera_mode
+    phase1_mode = args.selection == PHASE1_SERVICE47_SCOPE
+    listed_mode = partial_mode or camera_mode or phase1_mode
     if camera_mode:
         camera_eight_profile()  # No source/resource admission is inferred from this selector.
     require(not listed_mode or sys.platform.startswith("linux"),
@@ -5513,8 +6237,9 @@ def main():
         env.pop(BRANCH_COMBINATION_ADMISSION_ENV, None)
         env["CARGO_TARGET_DIR"] = str(target)
         build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
-                         "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])],
-                        repo, env, output, "build", 1200)
+                         "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode or phase1_mode else []),
+                         *(["--message-format=json"] if phase1_mode else [])],
+                        repo, env, output, "build", 1200, **({"deadline": deadline} if deadline is not None else {}))
         report["build"] = build
         require_observed_command(build)
         require(build["exit_code"] == 0, "real service build failed")
@@ -5530,7 +6255,11 @@ def main():
                 "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
-        discovery_key = "camera_discovery" if camera_mode else "partial_discovery"
+        if phase1_mode:
+            report["phase1_build_original"] = phase1_service47_build_original(output, repo, target, binary)
+            report["phase1_sdk_preflight"] = phase1_service47_sdk_preflight(repo, output, binary, env,
+                **({"deadline": deadline} if deadline is not None else {}))
+        discovery_key = "phase1_discovery" if phase1_mode else "camera_discovery" if camera_mode else "partial_discovery"
         if listed_mode:
             report[discovery_key] = []
             # Every current list closes before any selected test body is launched.
@@ -5543,16 +6272,20 @@ def main():
                 if camera_mode:
                     report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="list-" + label))
                 command = execute(service_command(node, cli, output, (label, filename, titles), listing=True,
-                                                  scope=CAMERA_EIGHT_SCOPE if camera_mode else None),
-                                  repo / "apps/studio", discovery_env, output, label + "-discovery", 60)
+                                                  scope=CAMERA_EIGHT_SCOPE if camera_mode else PHASE1_SERVICE47_SCOPE if phase1_mode else None),
+                                  repo / "apps/studio", discovery_env, output, label + "-discovery", 60,
+                                  **({"deadline": deadline} if deadline is not None else {}))
                 observed = {"label": label, "command": command, "status": "FAIL"}
                 report[discovery_key].append(observed)
                 require_observed_command(command)
                 require(command["exit_code"] == 0, "partial oracle discovery process failed")
                 original, document = browser_report_original(output / (label + "-discovery.json"))
-                verified = (camera_eight_report(document, filename, titles, listing=True) if camera_mode
+                verified = (phase1_service47_report(document, filename, titles, listing=True) if phase1_mode else
+                            camera_eight_report(document, filename, titles, listing=True) if camera_mode
                             else partial_oracle_discovery(document, filename, titles))
                 observed.update(original_report=original, verified=verified, status="LISTED_NOT_EXECUTED")
+            if phase1_mode:
+                phase1_service47_discovery_complete(report[discovery_key])
             if camera_mode:
                 all_ids = [identity["id"] for row in report[discovery_key] for identity in row["verified"]["identities"]]
                 require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
@@ -5567,11 +6300,11 @@ def main():
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
-            if label == "branch-combination":
+            if phase1_branch_admission_label(label):
                 case_env.update(branch_combination_environment(repo, before, binary, retained_binary,
-                    {key: report["service_binary"][key] for key in ("bytes", "sha256")}))
+                    {key: report["service_binary"][key] for key in ("bytes", "sha256")}, scope=source_mode))
             argv = service_command(node, cli, output, (label, filename, titles),
-                                   scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
+                                   scope=CAMERA_EIGHT_SCOPE if camera_mode else PHASE1_SERVICE47_SCOPE if phase1_mode else None)
             if camera_mode:
                 report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="execute-" + label))
                 intent = camera_eight_intent(label, titles, argv, repo / "apps/studio", before, report["service_binary"])
@@ -5587,7 +6320,9 @@ def main():
             try:
                 command = execute(argv, repo / "apps/studio", case_env, output, label,
                                   CAMERA_EIGHT_TIMEOUTS[label] if camera_mode else
-                                  PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
+                                  PHASE1_SERVICE47_TIMEOUTS[label] if phase1_mode else
+                                  PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label],
+                                  **({"deadline": deadline} if deadline is not None else {}))
             except UnknownObservation as error:
                 if camera_mode:
                     camera_eight_record_attempt(selection, error.command)
@@ -5603,7 +6338,10 @@ def main():
                 selection["original_report"] = digest(result_path)
                 require(result_path.stat().st_size <= 64 * 1024 * 1024, "report exceeds bound")
                 document = json.loads(result_path.read_bytes())
-                if camera_mode:
+                if phase1_mode:
+                    discovered = next(row["verified"] for row in report[discovery_key] if row["label"] == label)
+                    selection["verified"] = phase1_service47_report(document, filename, titles, listing=False, expected=discovered)
+                elif camera_mode:
                     discovered = next(row["verified"] for row in report[discovery_key] if row["label"] == label)
                     selection["verified"] = camera_eight_report(document, filename, titles, listing=False, expected=discovered)
                 else:
@@ -5629,7 +6367,13 @@ def main():
         require(digest(retained_binary) == digest(binary), "retained service binary changed")
         require(len(report["selections"]) == len(selections)
                 and all(x["status"] == "PASS" for x in report["selections"]), "required selection failed")
+        if phase1_mode:
+            phase1_service47_phase_order(report)
+            report["phase1_result"] = {"ordinary_service": 20, "closure_capture": 27, "native_graph": "NOT_SELECTED",
+                                      "catalogue_sha256": PHASE1_SERVICE47_CATALOG_SHA256, "formal_acceptance": False}
         report["status"] = "PASS"
+    except Phase1Service47BudgetDenied as error:
+        report.update(error=str(error), budget_denial=error.observation, terminal_custody="ORIGINALS_UNSEALED_NO_RETRY")
     except UnknownObservation as error:
         report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
                       terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
@@ -5644,6 +6388,11 @@ def main():
             "state": ("UNKNOWN" if report["status"] == "UNKNOWN" else "VALIDATED_ALL_SELECTED_ORIGINALS"
                       if report["status"] == "PASS" else "ATTEMPTED_NOT_VALIDATED" if started else "NOT_RUN"),
             "retry": "FORBIDDEN", "formal_acceptance": False}
+    if deadline is not None:
+        import time
+        report["phase1_deadline"] = {"original_sha256": os.environ[PHASE1_SERVICE47_DEADLINE_ENV],
+            "deadline_mono_ns": deadline.deadline_ns, "finished_mono_ns": time.monotonic_ns(),
+            "admissions": deadline.admissions, "unknown": deadline.unknown, "retry": "FORBIDDEN"}
     write_new(output / "receipt.json", report)
     print(json.dumps({"status": report["status"],
                       "selected_tests": sum(x["expected_tests"] for x in report["selections"]),
@@ -7055,6 +7804,10 @@ def studio68_main(arguments):
     return exit_code
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["phase1-budget"]:
+        raise SystemExit(phase1_service47_budget_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["phase1-dependencies"]:
+        raise SystemExit(phase1_service47_dependencies_main(sys.argv[2:]))
     if sys.argv[1:2] == ["window-base"]:
         raise SystemExit(window_frontend_base_main(sys.argv[2:]))
     if sys.argv[1:2] == ["camera-preflight"]:
