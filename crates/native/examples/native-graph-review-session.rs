@@ -47,6 +47,110 @@ const BINDING_UNAVAILABLE: &str =
 const MAX_PRIVATE_FILES: usize = 4096;
 const MAX_PRIVATE_TOTAL_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PRIVATE_RECORD_BYTES: usize = 16 * 1024 * 1024;
+const CALLBACK_LIMIT_ENV: &str = "MOTIONWRIGHT_GRAPH_CALLBACK_CAP";
+const PRIVATE_BYTES_ENV: &str = "MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES";
+const PRIVATE_FILES_ENV: &str = "MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES";
+const CALLBACK_UNAVAILABLE: &str = "Native Graph callback admission is unavailable.";
+
+/// Restrictions supplied by the existing parent allocation. No value here
+/// grants SDK authority or chooses a different connection/session file.
+#[derive(Clone, Copy)]
+struct ClientRestrictions {
+    callbacks: usize,
+    private_bytes: usize,
+    private_files: usize,
+}
+
+impl ClientRestrictions {
+    fn parse(
+        callbacks: Option<&str>,
+        bytes: Option<&str>,
+        files: Option<&str>,
+    ) -> Result<Self, String> {
+        let decimal = |raw: Option<&str>| -> Result<usize, String> {
+            let raw = raw.ok_or(CALLBACK_UNAVAILABLE)?;
+            if raw.is_empty()
+                || raw.len() > usize::MAX.to_string().len()
+                || !raw.bytes().all(|byte| byte.is_ascii_digit())
+                || (raw.len() > 1 && raw.starts_with('0'))
+            {
+                return Err(CALLBACK_UNAVAILABLE.into());
+            }
+            raw.parse().map_err(|_| CALLBACK_UNAVAILABLE.into())
+        };
+        let restrictions = Self {
+            callbacks: decimal(callbacks)?,
+            private_bytes: decimal(bytes)?,
+            private_files: decimal(files)?,
+        };
+        if restrictions.private_bytes == 0
+            || restrictions.private_bytes > MAX_PRIVATE_TOTAL_BYTES
+            || restrictions.private_files == 0
+            || restrictions.private_files > MAX_PRIVATE_FILES
+        {
+            return Err(CALLBACK_UNAVAILABLE.into());
+        }
+        Ok(restrictions)
+    }
+
+    fn from_parent_environment() -> Result<Self, String> {
+        let callbacks = std::env::var(CALLBACK_LIMIT_ENV).ok();
+        let bytes = std::env::var(PRIVATE_BYTES_ENV).ok();
+        let files = std::env::var(PRIVATE_FILES_ENV).ok();
+        Self::parse(callbacks.as_deref(), bytes.as_deref(), files.as_deref())
+    }
+
+    fn private_observation(&self) -> Value {
+        json!({"maximum_callbacks":self.callbacks,"private_bytes":self.private_bytes,
+            "private_files":self.private_files,"authority":false,"automatic_retry":false})
+    }
+}
+
+/// This state belongs to one original Native backend. Session::reopen moves
+/// that same backend; it cannot reset the consumed callbacks or failure latch.
+struct CallbackBudget {
+    maximum: usize,
+    consumed: usize,
+    stopped: bool,
+}
+
+impl CallbackBudget {
+    fn new(maximum: usize) -> Self {
+        Self {
+            maximum,
+            consumed: 0,
+            stopped: false,
+        }
+    }
+
+    fn reserve(&mut self) -> Result<usize, String> {
+        if self.stopped || self.consumed >= self.maximum {
+            self.stopped = true;
+            return Err(CALLBACK_UNAVAILABLE.into());
+        }
+        self.consumed += 1; // Consume before validation, journaling or any CLI effect. No refund.
+        Ok(self.consumed)
+    }
+
+    fn stop(&mut self) {
+        self.stopped = true;
+    }
+
+    fn observe_return(&mut self, transport_failed: bool, typed_error: Option<&Error>) {
+        // A returned CLI success does not make the typed Graph outcome known.
+        // Decode/interpret failures after a mutation and original UNKNOWN Core
+        // errors retain their actual typed knownness. Restrict future calls;
+        // never mutate that error or replace the retained original report.
+        if transport_failed || typed_error.is_some_and(|error| !error.outcome_known) {
+            self.stop();
+        }
+    }
+
+    fn private_observation(&self) -> Value {
+        json!({"maximum_callbacks":self.maximum,"consumed_callbacks":self.consumed,
+            "admissions_stopped":self.stopped,"refunds":0,"authority":false,"automatic_retry":false})
+    }
+}
 
 // A1 owns UUID validation and the closed public mutation DTO. This adapter
 // supplies only the actual phase and, when present, the original typed error;
@@ -121,12 +225,14 @@ struct PrivateOriginals {
     next: usize,
     reserved_files: usize,
     reserved_bytes: usize,
+    maximum_files: usize,
+    maximum_bytes: usize,
     stopped: bool,
     unpublished: Option<Value>,
 }
 
 impl PrivateOriginals {
-    fn create(connection_file: &Path) -> Result<Self, String> {
+    fn create(connection_file: &Path, restrictions: ClientRestrictions) -> Result<Self, String> {
         let parent = connection_file
             .parent()
             .ok_or("Native Graph connection has no private parent")?;
@@ -174,6 +280,8 @@ impl PrivateOriginals {
             next: 0,
             reserved_files: 0,
             reserved_bytes: 0,
+            maximum_files: restrictions.private_files,
+            maximum_bytes: restrictions.private_bytes,
             stopped: false,
             unpublished: None,
         })
@@ -183,11 +291,11 @@ impl PrivateOriginals {
         let raw =
             serde_json::to_vec(value).map_err(|_| "Native Graph private record encoding failed")?;
         if raw.len() > MAX_PRIVATE_RECORD_BYTES
-            || self.reserved_files >= MAX_PRIVATE_FILES
+            || self.reserved_files >= self.maximum_files
             || self
                 .reserved_bytes
                 .checked_add(raw.len())
-                .is_none_or(|bytes| bytes > MAX_PRIVATE_TOTAL_BYTES)
+                .is_none_or(|bytes| bytes > self.maximum_bytes)
         {
             return Err("Native Graph private record exceeds its bounded custody".into());
         }
@@ -227,8 +335,14 @@ impl PrivateOriginals {
         // dispatch. A later custody error preserves the private Native original
         // but prevents publishing success, known rejection or read readiness.
         if self.stopped
-            || self.reserved_files > MAX_PRIVATE_FILES - 2
-            || self.reserved_bytes > MAX_PRIVATE_TOTAL_BYTES - 2 * MAX_PRIVATE_RECORD_BYTES
+            || self
+                .reserved_files
+                .checked_add(2)
+                .is_none_or(|files| files > self.maximum_files)
+            || self
+                .reserved_bytes
+                .checked_add(2 * MAX_PRIVATE_RECORD_BYTES)
+                .is_none_or(|bytes| bytes > self.maximum_bytes)
         {
             return Err("Native Graph original custody has no capacity for another request".into());
         }
@@ -266,6 +380,7 @@ struct NativeGraphBackend {
     connection: ProductionConnection,
     runtime: tokio::runtime::Runtime,
     originals: PrivateOriginals,
+    callbacks: CallbackBudget,
 }
 
 fn recovery_read_error(error: GraphRecoveryReadError) -> Value {
@@ -330,14 +445,18 @@ impl NativeGraphBackend {
         _database: &Path,
         service: &StudioService,
         connection_file: &Path,
+        restrictions: ClientRestrictions,
     ) -> Result<Self, String> {
+        // Parsed once by main before opening this actual Service/SQLite. A6
+        // precharges its declared per-client C_i in the existing SharedPool.
         let connection = ProductionConnection::load(connection_file)
             .map_err(|_| "Native Graph connection is unavailable or invalid")?;
-        let mut originals = PrivateOriginals::create(connection_file)?;
+        let mut originals = PrivateOriginals::create(connection_file, restrictions)?;
         let sequence = originals.begin(json!({
             "schema":"motionwright.native.graph-review-private-request/1",
             "operation":"factory_bind_actual_service",
             "native_dispatch_attempted":false,
+            "parent_resource_restrictions":restrictions.private_observation(),
             "automatic_retry":false,
         }))?;
         // Probe the exact factory Service before the shared fixture seed. The
@@ -383,7 +502,15 @@ impl NativeGraphBackend {
             connection,
             runtime,
             originals,
+            callbacks: CallbackBudget::new(restrictions.callbacks),
         })
+    }
+
+    fn reserve_callback(&mut self) -> Result<usize, String> {
+        if self.originals.stopped {
+            self.callbacks.stop();
+        }
+        self.callbacks.reserve()
     }
 
     fn retain<T>(
@@ -392,8 +519,21 @@ impl NativeGraphBackend {
         report: &NativeResult<NativeGraphRecipeResult<T>>,
         transport: &ProductionTransportCustody,
     ) -> Result<(), String> {
-        self.originals
-            .finish(sequence, private_result_record(sequence, report, transport))
+        let typed_error = match report {
+            Ok(report) => report.outcome().err(),
+            Err(error) => Some(error),
+        };
+        self.callbacks.observe_return(
+            transport.has_unconfirmed_or_failed_invocation(),
+            typed_error,
+        );
+        let mut original = private_result_record(sequence, report, transport);
+        original["callback_restriction"] = self.callbacks.private_observation();
+        let retained = self.originals.finish(sequence, original);
+        if retained.is_err() {
+            self.callbacks.stop();
+        }
+        retained
     }
 }
 
@@ -404,6 +544,7 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         _database: &Path,
         request: &SemanticGraphContextRequest,
     ) -> Result<GraphAuthoringContext, Value> {
+        self.reserve_callback().map_err(Value::String)?;
         // One fresh bounded capture per explicit callback, using the same
         // original owner connection. No old capture is evicted or reset.
         let transport = ProductionTransportCustody::default();
@@ -412,6 +553,7 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             .begin(json!({
                 "schema":"motionwright.native.graph-review-private-request/1",
                 "operation":"authoring_context",
+                "callback_restriction":self.callbacks.private_observation(),
                 "original_context_request":request,
                 "automatic_retry":false,
             }))
@@ -442,6 +584,8 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         _database: &Path,
         request: Value,
     ) -> Result<Value, Value> {
+        self.reserve_callback()
+            .map_err(|_| recovery_read_error(GraphRecoveryReadError::ReadFailed))?;
         let (sequence, prepared) = begin_recovery_read(&mut self.originals, request)?;
         let transport = ProductionTransportCustody::default();
         // Reopen replaces the Session Service. This fresh client binds that
@@ -479,6 +623,8 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         request_id: &str,
         change: &Change,
     ) -> Result<Project, Value> {
+        self.reserve_callback()
+            .map_err(|_| mutation_failure(GraphInvokeFailure::before_dispatch(request_id)))?;
         GraphInvokeFailure::validate_request_id(request_id)
             .map_err(|error| Value::String(error.to_string()))?;
         let prepared = prepare_mutation(project, request_id, change)
@@ -489,6 +635,7 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             .begin(json!({
                 "schema":"motionwright.native.graph-review-private-request/1",
                 "operation":"apply_change",
+                "callback_restriction":self.callbacks.private_observation(),
                 "original_application_request_id":request_id,
                 "original_change":prepared.original_change,
                 "prepared_recovery_identity":prepared.recovery,
@@ -521,6 +668,17 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             )),
             _ => unreachable!("Canonical Graph change was prepared before dispatch"),
         };
+        // The existing mutation DTO conservatively reports UNKNOWN for an
+        // unclassified outer/local error. Even if that local Error has its
+        // default knownness, this client receives no further callback credit.
+        // A genuine known Native rejection keeps its original typed status.
+        let unclassified_mutation_failure = match &report {
+            Err(_) => true,
+            Ok(report) => report.outcome().is_err() && report.original_native_error().is_none(),
+        };
+        if unclassified_mutation_failure {
+            self.callbacks.stop();
+        }
         self.retain(sequence, &report, &transport)
             .map_err(|error| mutation_custody_failure(request_id, error))?;
         match report {
@@ -541,13 +699,17 @@ impl shared_session::GraphBackend for NativeGraphBackend {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // A6's private restrictions must be valid BEFORE the shared runner opens
+    // Service/SQLite, creates its parent or reaches the Native factory. Zero
+    // keeps the existing Service available with no Graph callback admission.
+    let restrictions = ClientRestrictions::from_parent_environment()?;
     // Per-child startup configuration only. Browser invoke payloads cannot
     // select a connection, SDK executable, owner session or custody root.
     let connection_file = std::env::var_os(CONNECTION_ENV)
         .map(PathBuf::from)
         .ok_or("MOTIONWRIGHT_GRAPH_CONNECTION is required for the Native Graph Session")?;
     shared_session::run_with_graph_backend(move |database, service| {
-        let backend = NativeGraphBackend::open(database, service, &connection_file)?;
+        let backend = NativeGraphBackend::open(database, service, &connection_file, restrictions)?;
         Ok(Some(Box::new(backend)))
     })
 }
@@ -564,6 +726,266 @@ mod native_graph_adapter_tests {
     use uuid::Uuid;
 
     const ORIGINAL_KEY: &str = "ABCDEF12-3456-4789-aBcD-EF1234567890";
+
+    // Private file controls do not dispatch a callback or select the real C_i.
+    fn fixture_restrictions() -> ClientRestrictions {
+        ClientRestrictions {
+            callbacks: 0,
+            private_bytes: MAX_PRIVATE_TOTAL_BYTES,
+            private_files: MAX_PRIVATE_FILES,
+        }
+    }
+
+    #[test]
+    fn callback_parent_restrictions_are_mandatory_canonical_and_cannot_expand_the_shared_pool() {
+        let bytes = (64 * 1024 * 1024).to_string();
+        let parsed = ClientRestrictions::parse(Some("2"), Some(&bytes), Some("512")).unwrap();
+        assert_eq!(parsed.callbacks, 2); // Synthetic component value, not a production C_i.
+        assert_eq!(parsed.private_bytes, 64 * 1024 * 1024);
+        assert_eq!(parsed.private_files, 512);
+        for callback in [
+            None,
+            Some(""),
+            Some("00"),
+            Some("01"),
+            Some("+1"),
+            Some("02"),
+            Some(" 2"),
+            Some("2 "),
+            Some("\t1"),
+            Some("1\n"),
+            Some("-1"),
+            Some("\u{0661}"),
+            Some("\u{ff10}"),
+            Some("999999999999999999999999999999999999"),
+        ] {
+            assert!(ClientRestrictions::parse(callback, Some(&bytes), Some("512")).is_err());
+        }
+        let overflow = (usize::MAX as u128 + 1).to_string();
+        assert!(ClientRestrictions::parse(Some(&overflow), Some(&bytes), Some("512")).is_err());
+        for (bytes, files) in [
+            (None, Some("512")),
+            (Some("1"), None),
+            (Some("0"), Some("512")),
+            (Some("536870913"), Some("512")),
+            (Some("1"), Some("4097")),
+            (Some("1"), Some("0")),
+        ] {
+            assert!(ClientRestrictions::parse(Some("2"), bytes, files).is_err());
+        }
+    }
+
+    #[test]
+    fn zero_parent_cap_keeps_service_reads_available_and_denies_each_first_real_callback_before_journal()
+     {
+        let restrictions =
+            ClientRestrictions::parse(Some("0"), Some("67108864"), Some("512")).unwrap();
+        assert_eq!(restrictions.callbacks, 0);
+        for entrypoint in 0..3 {
+            let directory = tempfile::tempdir().unwrap();
+            let database = directory.path().join("read-only-session.sqlite3");
+            let service = StudioService::open(&database).unwrap();
+            assert!(service.projects(1).unwrap().is_empty());
+            let connection = ProductionConnection {
+                schema: "motionwright-semwright-connection/1".into(),
+                executable: directory.path().join("never-dispatched-client"),
+                executable_sha256: "ab".repeat(32),
+                socket: directory.path().join("never-opened.sock"),
+                session_file: directory.path().join("never-created.session"),
+                output_root: directory.path().join("never-used-output"),
+                resource: "project:synthetic-zero-cap-control".into(),
+            };
+            // An inert exact-type connection lets this test exercise the real
+            // trait entrypoints without a Native client, Host or SDK process.
+            let mut backend = NativeGraphBackend {
+                connection,
+                runtime: tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+                originals: PrivateOriginals::create(
+                    &directory.path().join("client.json"),
+                    restrictions,
+                )
+                .unwrap(),
+                callbacks: CallbackBudget::new(restrictions.callbacks),
+            };
+            let project = graph_source_fixture::seed_domain();
+            let request = SemanticGraphContextRequest {
+                source_snapshot: GraphSourceSnapshot::from_project(&project),
+                scene_id: project.scenes[0].id,
+                variant_profile_ref: project.deliverables[0].id,
+            };
+            let change = Change::UpsertSemanticGraph {
+                graph: Box::new(graph_source_fixture::graph_for(&project, false)),
+            };
+            let result = match entrypoint {
+                0 => shared_session::GraphBackend::authoring_context(
+                    &mut backend,
+                    &service,
+                    &database,
+                    &request,
+                )
+                .map(|_| ()),
+                1 => shared_session::GraphBackend::apply_change(
+                    &mut backend,
+                    &service,
+                    &database,
+                    &project,
+                    ORIGINAL_KEY,
+                    &change,
+                )
+                .map(|_| ()),
+                _ => shared_session::GraphBackend::operation_recovery(
+                    &mut backend,
+                    &service,
+                    &database,
+                    Value::Null,
+                )
+                .map(|_| ()),
+            };
+            assert!(result.is_err());
+            assert!(backend.callbacks.stopped);
+            assert_eq!(backend.callbacks.consumed, 0);
+            assert_eq!(backend.originals.next, 0);
+            assert_eq!(backend.originals.reserved_files, 0);
+            assert_eq!(backend.originals.reserved_bytes, 0);
+            assert_eq!(fs::read_dir(&backend.originals.root).unwrap().count(), 0);
+            assert!(!backend.connection.session_file.exists());
+            assert!(!backend.connection.socket.exists());
+            assert!(service.projects(1).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn callback_admissions_are_cumulative_and_exhaustion_never_refunds_an_attempt() {
+        let mut budget = CallbackBudget::new(2);
+        assert_eq!(budget.reserve().unwrap(), 1);
+        // A failed validation or UNKNOWN return has no release/refund path.
+        assert_eq!(budget.reserve().unwrap(), 2);
+        assert!(budget.reserve().is_err());
+        assert!(budget.reserve().is_err());
+        assert_eq!(budget.consumed, 2);
+        assert!(budget.stopped);
+        let mut zero = CallbackBudget::new(0);
+        assert!(zero.reserve().is_err());
+        assert_eq!(zero.consumed, 0);
+    }
+
+    #[test]
+    fn callback_failure_latch_survives_backend_state_movement_without_new_credit() {
+        let mut original = CallbackBudget::new(3);
+        original.reserve().unwrap();
+        original.stop();
+        // The actual shared Session transfers the same backend on reopen.
+        let mut retained = original;
+        assert!(retained.reserve().is_err());
+        assert_eq!(retained.consumed, 1);
+        assert_eq!(retained.maximum, 3);
+        assert!(retained.stopped);
+    }
+
+    #[test]
+    fn callback_counter_maximum_cannot_wrap_into_new_credit() {
+        let mut budget = CallbackBudget {
+            maximum: usize::MAX,
+            consumed: usize::MAX - 1,
+            stopped: false,
+        };
+        assert_eq!(budget.reserve().unwrap(), usize::MAX);
+        assert!(budget.reserve().is_err());
+        assert_eq!(budget.consumed, usize::MAX);
+    }
+
+    #[test]
+    fn callback_typed_unknown_stops_even_after_returned_transport_success_without_changing_error() {
+        for code in [
+            ErrorCode::ProtocolMismatch,
+            ErrorCode::Timeout,
+            ErrorCode::PolicyDenied,
+        ] {
+            let error = Error::new(code, "synthetic retained original or after-dispatch error")
+                .recipe_progress(2, "original-step")
+                .uncertain();
+            let original = serde_json::to_value(&error).unwrap();
+            let mut budget = CallbackBudget::new(2);
+            budget.reserve().unwrap();
+            budget.observe_return(false, Some(&error));
+            assert!(budget.reserve().is_err());
+            assert_eq!(budget.consumed, 1);
+            assert_eq!(serde_json::to_value(&error).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn callback_known_rejection_does_not_refund_or_grant_an_extra_callback() {
+        let error = Error::new(
+            ErrorCode::PolicyDenied,
+            "synthetic known original rejection",
+        );
+        assert!(error.outcome_known);
+        let original = serde_json::to_value(&error).unwrap();
+        let mut budget = CallbackBudget::new(2);
+        budget.reserve().unwrap();
+        budget.observe_return(false, Some(&error));
+        assert!(!budget.stopped);
+        assert_eq!(budget.reserve().unwrap(), 2);
+        budget.observe_return(false, None);
+        assert!(budget.reserve().is_err());
+        assert_eq!(budget.consumed, 2);
+        assert_eq!(serde_json::to_value(&error).unwrap(), original);
+        let mut transport = CallbackBudget::new(2);
+        transport.reserve().unwrap();
+        transport.observe_return(true, Some(&error));
+        assert!(transport.reserve().is_err());
+        assert_eq!(transport.consumed, 1);
+    }
+
+    #[test]
+    fn parent_journal_file_slice_rejects_before_publishing_an_unreserved_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let restrictions = ClientRestrictions {
+            callbacks: 1,
+            private_bytes: MAX_PRIVATE_TOTAL_BYTES,
+            private_files: 1,
+        };
+        let mut originals =
+            PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
+        assert!(
+            originals
+                .begin(json!({"synthetic_original_request":true}))
+                .is_err()
+        );
+        assert_eq!(originals.reserved_files, 0);
+        assert_eq!(fs::read_dir(&originals.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn parent_journal_byte_slice_preserves_charges_and_existing_originals() {
+        let directory = tempfile::tempdir().unwrap();
+        let restrictions = ClientRestrictions {
+            callbacks: 0,
+            private_bytes: 4,
+            private_files: 2,
+        };
+        let mut originals =
+            PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
+        originals
+            .write_new("first.original.json", &json!(0))
+            .unwrap();
+        assert!(
+            originals
+                .write_new("oversize.original.json", &json!("too large"))
+                .is_err()
+        );
+        assert_eq!(originals.reserved_files, 1);
+        assert_eq!(originals.reserved_bytes, 1);
+        assert_eq!(
+            fs::read(originals.root.join("first.original.json")).unwrap(),
+            b"0"
+        );
+        assert!(!originals.root.join("oversize.original.json").exists());
+    }
 
     #[test]
     fn shared_mutation_error_projection_keeps_original_knownness_and_exact_key() {
@@ -716,8 +1138,8 @@ mod native_graph_adapter_tests {
     fn exclusive_private_originals_do_not_replace_a_previous_request_or_resume_after_failure() {
         let directory = tempfile::tempdir().unwrap();
         let connection = directory.path().join("client.json");
-        let mut originals = PrivateOriginals::create(&connection).unwrap();
-        assert!(PrivateOriginals::create(&connection).is_err());
+        let mut originals = PrivateOriginals::create(&connection, fixture_restrictions()).unwrap();
+        assert!(PrivateOriginals::create(&connection, fixture_restrictions()).is_err());
         let request = json!({"original_application_request_id":"original-key","original_change":{"fixture":true}});
         let sequence = originals.begin(request.clone()).unwrap();
         let path = originals
@@ -751,8 +1173,11 @@ mod native_graph_adapter_tests {
     #[test]
     fn pre_dispatch_binding_error_keeps_original_private_reason_without_inventing_an_envelope() {
         let directory = tempfile::tempdir().unwrap();
-        let mut originals =
-            PrivateOriginals::create(&directory.path().join("client.json")).unwrap();
+        let mut originals = PrivateOriginals::create(
+            &directory.path().join("client.json"),
+            fixture_restrictions(),
+        )
+        .unwrap();
         let sequence = originals
             .begin(json!({"operation":"factory_bind_actual_service"}))
             .unwrap();
@@ -809,8 +1234,11 @@ mod native_graph_adapter_tests {
     #[test]
     fn recovery_intent_keeps_original_session_value_uuid_spelling_and_canonical_identity() {
         let directory = tempfile::tempdir().unwrap();
-        let mut originals =
-            PrivateOriginals::create(&directory.path().join("recovery.json")).unwrap();
+        let mut originals = PrivateOriginals::create(
+            &directory.path().join("recovery.json"),
+            fixture_restrictions(),
+        )
+        .unwrap();
         let (request, change) = recovery_request_fixture();
         let (sequence, prepared) = begin_recovery_read(&mut originals, request.clone()).unwrap();
         let raw = fs::read(originals.root.join("00.request.original.json")).unwrap();
@@ -848,8 +1276,11 @@ mod native_graph_adapter_tests {
     #[test]
     fn recovery_invalid_request_is_an_ordinary_read_error_before_custody_or_binding() {
         let directory = tempfile::tempdir().unwrap();
-        let mut originals =
-            PrivateOriginals::create(&directory.path().join("recovery.json")).unwrap();
+        let mut originals = PrivateOriginals::create(
+            &directory.path().join("recovery.json"),
+            fixture_restrictions(),
+        )
+        .unwrap();
         let (request, _) = recovery_request_fixture();
         let mut extra_authority = request.clone();
         extra_authority["expected_store"] = json!("caller must not choose a physical binding");
@@ -877,8 +1308,11 @@ mod native_graph_adapter_tests {
     #[test]
     fn recovery_custody_refusal_preserves_prior_original_and_remains_a_read_error() {
         let directory = tempfile::tempdir().unwrap();
-        let mut originals =
-            PrivateOriginals::create(&directory.path().join("recovery.json")).unwrap();
+        let mut originals = PrivateOriginals::create(
+            &directory.path().join("recovery.json"),
+            fixture_restrictions(),
+        )
+        .unwrap();
         let prior = b"retained original, possibly incomplete";
         let path = originals.root.join("00.request.original.json");
         fs::write(&path, prior).unwrap();
@@ -904,8 +1338,11 @@ mod native_graph_adapter_tests {
     #[test]
     fn recovery_known_and_unknown_read_errors_are_retained_without_mutation_classification() {
         let directory = tempfile::tempdir().unwrap();
-        let mut originals =
-            PrivateOriginals::create(&directory.path().join("recovery.json")).unwrap();
+        let mut originals = PrivateOriginals::create(
+            &directory.path().join("recovery.json"),
+            fixture_restrictions(),
+        )
+        .unwrap();
         let (request, _) = recovery_request_fixture();
         for known in [true, false] {
             let (sequence, prepared) =
@@ -967,8 +1404,11 @@ mod native_graph_adapter_tests {
         ];
         for record in original_records {
             let directory = tempfile::tempdir().unwrap();
-            let mut originals =
-                PrivateOriginals::create(&directory.path().join("client.json")).unwrap();
+            let mut originals = PrivateOriginals::create(
+                &directory.path().join("client.json"),
+                fixture_restrictions(),
+            )
+            .unwrap();
             let sequence = originals
                 .begin(json!({"original_application_request_id":ORIGINAL_KEY}))
                 .unwrap();
@@ -1004,8 +1444,11 @@ mod native_graph_adapter_tests {
     fn failed_read_result_publication_is_an_ordinary_error_before_any_ready_or_decode() {
         for recovery in [false, true] {
             let directory = tempfile::tempdir().unwrap();
-            let mut originals =
-                PrivateOriginals::create(&directory.path().join("client.json")).unwrap();
+            let mut originals = PrivateOriginals::create(
+                &directory.path().join("client.json"),
+                fixture_restrictions(),
+            )
+            .unwrap();
             let sequence = originals
                 .begin(json!({"inert_read":"publication_only"}))
                 .unwrap();
@@ -1038,8 +1481,12 @@ mod native_graph_adapter_tests {
     fn ninth_explicit_callback_keeps_prior_originals_without_reusing_or_expanding_a_capture() {
         let directory = tempfile::tempdir().unwrap();
         let connection = directory.path().join("client.json");
-        let mut originals = PrivateOriginals::create(&connection).unwrap();
+        let mut originals = PrivateOriginals::create(&connection, fixture_restrictions()).unwrap();
+        // Nine is this pure fixture's declared callback cap, not a default or
+        // the callback count of any real A6 launch.
+        let mut callbacks = CallbackBudget::new(9);
         for index in 0..9 {
+            assert_eq!(callbacks.reserve().unwrap(), index + 1);
             let sequence = originals.begin(json!({"explicit_callback":index})).unwrap();
             assert_eq!(sequence, index);
             // Each real callback creates its own unchanged bounded capture.
@@ -1055,6 +1502,8 @@ mod native_graph_adapter_tests {
         }
         assert!(!originals.stopped);
         assert_eq!(originals.reserved_files, 18);
+        assert!(callbacks.reserve().is_err());
+        assert_eq!(callbacks.consumed, 9);
         for index in 0..9 {
             let raw = fs::read(
                 originals

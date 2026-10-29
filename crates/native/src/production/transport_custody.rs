@@ -196,6 +196,17 @@ impl ProductionTransportCustody {
         Ok(reservation)
     }
 
+    /// Inspect the actual transport state, without classifying a Graph outcome
+    /// or replacing its original error. A pending or dropped invocation is not
+    /// a confirmed terminal. No later callback may mint a fresh capture after
+    /// an original transport failure under the same client admission.
+    pub fn has_unconfirmed_or_failed_invocation(&self) -> bool {
+        self.inner.is_poisoned()
+            || self.lock().entries.iter().any(|entry| {
+                entry.dropped_without_return || !matches!(&entry.returned, Some(Ok(())))
+            })
+    }
+
     /// Lossless private projection of the original argv, JSON argument bytes and
     /// observed process streams. Byte strings use hexadecimal, never lossy UTF-8.
     /// Nothing is evicted or retried. The caller owns durable publication.
@@ -614,6 +625,41 @@ mod tests {
                 intended,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn callback_transport_stop_query_preserves_the_original_error_and_pending_or_dropped_state() {
+        let custody = ProductionTransportCustody::default();
+        assert!(!custody.has_unconfirmed_or_failed_invocation());
+        let mut pending = reserve(&custody);
+        assert!(custody.has_unconfirmed_or_failed_invocation());
+        let error =
+            Error::new(ErrorCode::Timeout, "synthetic original unknown transport").uncertain();
+        pending.finish(&Err(error.clone()));
+        let original = custody.private_snapshot();
+        assert!(custody.has_unconfirmed_or_failed_invocation());
+        assert_eq!(custody.private_snapshot(), original);
+        assert_eq!(
+            original["entries"][0]["transport_terminal"]["original_error"],
+            serde_json::to_value(&error).unwrap()
+        );
+        let dropped = ProductionTransportCustody::default();
+        drop(reserve(&dropped));
+        assert!(dropped.has_unconfirmed_or_failed_invocation());
+    }
+
+    #[test]
+    fn callback_transport_stop_query_does_not_classify_a_returned_graph_outcome_as_transport_failure()
+     {
+        let custody = ProductionTransportCustody::default();
+        let mut reservation = reserve(&custody);
+        reservation.finish(&Ok(BrokerResult {
+            value: json!({"synthetic_graph_outcome":"known rejection"}),
+            request_id: "synthetic-component-only".into(),
+        }));
+        let original = custody.private_snapshot();
+        assert!(!custody.has_unconfirmed_or_failed_invocation());
+        assert_eq!(custody.private_snapshot(), original);
     }
 
     enum WriteAction {
