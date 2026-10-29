@@ -39,6 +39,15 @@ def zero_right(raw: bytes, start: int, stop: int) -> bytes:
     return bytes(altered)
 
 
+def attenuate(raw: bytes, start: int, stop: int, channel: int, gain: float) -> bytes:
+    altered = bytearray(raw)
+    for frame in range(start, stop):
+        offset = frame * 4 + channel * 2
+        sample = struct.unpack_from("<h", raw, offset)[0]
+        struct.pack_into("<h", altered, offset, round(sample * gain))
+    return bytes(altered)
+
+
 class CiStereoFullSourceEnvelopeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -127,6 +136,68 @@ class CiStereoFullSourceEnvelopeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssertionError, "lost distinct authored stereo"):
             inspect_fixed_ci_stereo_envelope(self.wav, swap)
+
+    def test_right_terminal_256_at_40_percent_is_rejected(self):
+        changed = attenuate(self.raw, 52_544, 52_800, 1, 0.40) + bytes(448 * 4)
+        inspect_decoded_ci_stereo(changed)
+        with self.assertRaisesRegex(AssertionError, "rms_lost:right:terminal"):
+            inspect_fixed_ci_stereo_envelope(self.wav, changed)
+
+    def test_right_terminal_64_at_40_percent_is_rejected(self):
+        changed = attenuate(self.raw, 52_736, 52_800, 1, 0.40) + bytes(448 * 4)
+        inspect_decoded_ci_stereo(changed)
+        with self.assertRaisesRegex(AssertionError, "rms_lost:right:last64"):
+            inspect_fixed_ci_stereo_envelope(self.wav, changed)
+
+    def test_left_terminal_256_at_40_percent_is_rejected(self):
+        changed = attenuate(self.raw, 52_544, 52_800, 0, 0.40) + bytes(448 * 4)
+        inspect_decoded_ci_stereo(changed)
+        with self.assertRaisesRegex(AssertionError, "rms_lost:left:terminal"):
+            inspect_fixed_ci_stereo_envelope(self.wav, changed)
+
+    def test_alternating_right_terminal_mutes_fail_original_occupancy(self):
+        changed = bytearray(self.raw + bytes(448 * 4))
+        for frame in range(52_544, 52_800, 2):
+            struct.pack_into("<h", changed, frame * 4 + 2, 0)
+        self.assertEqual(sum(struct.unpack_from("<h", changed, i * 4 + 2)[0] != 0
+                             for i in range(52_544, 52_800)), 128)
+        inspect_decoded_ci_stereo(bytes(changed))
+        with self.assertRaisesRegex(AssertionError, "right_terminal_nonzero_lost"):
+            inspect_fixed_ci_stereo_envelope(self.wav, bytes(changed))
+
+    def test_early_attenuation_in_either_channel_fails_original_window(self):
+        for channel, side in enumerate(("left", "right")):
+            with self.subTest(channel=side):
+                changed = attenuate(self.raw, 4_800, 9_600, channel, 0.40)
+                inspect_decoded_ci_stereo(changed)
+                with self.assertRaisesRegex(AssertionError, f"rms_lost:{side}:early"):
+                    inspect_fixed_ci_stereo_envelope(self.wav, changed)
+
+    def test_pre_tail_attenuation_fails_original_short_window(self):
+        changed = attenuate(self.raw, 52_352, 52_416, 1, 0.40)
+        inspect_decoded_ci_stereo(changed)
+        with self.assertRaisesRegex(AssertionError, "rms_lost:right:pre_tail"):
+            inspect_fixed_ci_stereo_envelope(self.wav, changed)
+
+    def test_early_wrong_waveform_cannot_pass_on_energy_alone(self):
+        changed = bytearray(self.raw)
+        for frame in range(4_800, 9_600):
+            left = struct.unpack_from("<h", self.raw, frame * 4)[0]
+            struct.pack_into("<h", changed, frame * 4 + 2, left)
+        inspect_decoded_ci_stereo(bytes(changed))
+        with self.assertRaisesRegex(AssertionError, "correlation_lost:right:early"):
+            inspect_fixed_ci_stereo_envelope(self.wav, bytes(changed))
+
+    def test_admissible_gain_retains_no_padding_and_full_padding_bounds(self):
+        changed = attenuate(attenuate(self.raw, 0, SOURCE_FRAMES, 0, 0.56),
+                            0, SOURCE_FRAMES, 1, 0.56)
+        for padding in (0, 1024):
+            with self.subTest(padding=padding):
+                observed = inspect_fixed_ci_stereo_envelope(
+                    self.wav, changed + bytes(padding * 4))
+                self.assertEqual(observed["decoded_frames"], SOURCE_FRAMES + padding)
+                self.assertFalse(observed["media_packet_priming_and_skip_verified"])
+                self.assertFalse(observed["native_provider_receipt_verified"])
 
 
 if __name__ == "__main__":

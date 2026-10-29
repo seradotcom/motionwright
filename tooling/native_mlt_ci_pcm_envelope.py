@@ -9,6 +9,7 @@ skip/priming and grants before release.
 from __future__ import annotations
 
 import io
+import math
 import struct
 import wave
 
@@ -22,6 +23,58 @@ SOURCE_PCM_BYTES = SOURCE_FRAMES * SOURCE_CHANNELS * 2
 WINDOW = 64
 MIN_RELATIVE_ABSOLUTE_ENERGY = 0.2
 MAX_RELATIVE_ABSOLUTE_ENERGY = 5.0
+MIN_FIXTURE_WINDOW_RMS = 0.55
+MIN_FIXTURE_WINDOW_CORRELATION = 0.70
+MAX_FIXTURE_CORRELATION_LAG = 12
+
+
+def _require_original_fixture_windows(source, output) -> None:
+    """Preserve the original fixed-fixture checks within the existing envelope.
+
+    The short lag search is a waveform check only; it does not approve AAC
+    priming, remove samples, shift the source clock or change the generic
+    full-source verifier. Only complete windows available in the actual
+    decoded input may participate, including an input with no padding.
+    """
+    windows = (
+        ("early", 4_800, 9_600, (0, 1)),
+        ("pre_tail", 52_352, 52_416, (1,)),
+        ("terminal", 52_544, 52_800, (0, 1)),
+        ("last64", 52_736, 52_800, (1,)),
+    )
+    for label, start, stop, channels in windows:
+        for channel in channels:
+            side = ("left", "right")[channel]
+            original = [source[i][channel] for i in range(start, stop)]
+            expected_power = sum(float(v) ** 2 for v in original)
+            observed_power = sum(float(output[i][channel]) ** 2
+                                 for i in range(start, stop))
+            ratio = math.sqrt(observed_power / expected_power)
+            if ratio < MIN_FIXTURE_WINDOW_RMS:
+                raise AssertionError(
+                    f"ci_original_fixture_rms_lost:{side}:{label}:{start}:{stop}"
+                )
+            mean = sum(original) / len(original)
+            variance = sum((v - mean) ** 2 for v in original)
+            best = -1.0
+            first_lag = max(-MAX_FIXTURE_CORRELATION_LAG, -start)
+            final_lag = min(MAX_FIXTURE_CORRELATION_LAG, len(output) - stop)
+            for lag in range(first_lag, final_lag + 1):
+                observed = [output[i + lag][channel] for i in range(start, stop)]
+                observed_mean = sum(observed) / len(observed)
+                power = sum((v - observed_mean) ** 2 for v in observed)
+                correlation = (
+                    sum((a - mean) * (b - observed_mean)
+                        for a, b in zip(original, observed))
+                    / math.sqrt(variance * power) if power > 0 else 0.0
+                )
+                best = max(best, correlation)
+            if best < MIN_FIXTURE_WINDOW_CORRELATION:
+                raise AssertionError(
+                    f"ci_original_fixture_correlation_lost:{side}:{label}:{start}:{stop}"
+                )
+    if sum(output[i][1] != 0 for i in range(52_544, 52_800)) < 160:
+        raise AssertionError("ci_original_fixture_right_terminal_nonzero_lost:52544:52800")
 
 
 def _ci_expected_sample(frame: int) -> tuple[int, int]:
@@ -90,6 +143,8 @@ def inspect_fixed_ci_stereo_envelope(
             minima[channel] = min(minima[channel], ratio)
             maxima[channel] = max(maxima[channel], ratio)
         windows += 1
+
+    _require_original_fixture_windows(source, output)
 
     return {
         "schema": "motionwright.ci.fixed-stereo-full-source-envelope/1",
