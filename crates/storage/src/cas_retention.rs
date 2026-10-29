@@ -239,7 +239,7 @@ fn open_control(path: &Path, directory: bool, write: bool, create: bool) -> Resu
     Ok(file)
 }
 
-fn file_identity(file: &File) -> Result<String> {
+pub(super) fn file_identity(file: &File) -> Result<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

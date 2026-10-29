@@ -1868,9 +1868,18 @@ fn checked_existing_blob_path_from_root(blob_root: &Path, digest: &str) -> Resul
 type VerifiedBlobCaptureHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
+type VerifiedBlobReadHook = Box<dyn FnMut(u64)>;
+
+#[cfg(test)]
 std::thread_local! {
     static BEFORE_VERIFIED_BLOB_CAPTURE:
         std::cell::RefCell<Option<VerifiedBlobCaptureHook>> =
+        const { std::cell::RefCell::new(None) };
+    static AFTER_VERIFIED_BLOB_CAPTURE:
+        std::cell::RefCell<Option<VerifiedBlobCaptureHook>> =
+        const { std::cell::RefCell::new(None) };
+    static OBSERVE_VERIFIED_BLOB_READ:
+        std::cell::RefCell<Option<VerifiedBlobReadHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1882,21 +1891,117 @@ fn run_verified_blob_capture_hook(path: &Path) {
     }
 }
 
+#[cfg(test)]
+fn run_verified_blob_after_capture_hook(path: &Path) {
+    let hook = AFTER_VERIFIED_BLOB_CAPTURE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
+#[cfg(test)]
+fn observe_verified_blob_read(captured: u64) {
+    OBSERVE_VERIFIED_BLOB_READ.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(captured);
+        }
+    });
+}
+
+// Metadata excludes access time: reading the retained handle may update it.
+#[derive(Debug, PartialEq, Eq)]
+struct VerifiedBlobMetadata {
+    size: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    mode: u32,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    #[cfg(windows)]
+    attributes: u32,
+    #[cfg(windows)]
+    created: u64,
+}
+
+fn verified_blob_metadata(metadata: &fs::Metadata) -> Result<VerifiedBlobMetadata> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::MetadataExt;
+
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(StorageError::UnsafeSourcePath(
+            "content-addressed blob must remain a regular file".into(),
+        ));
+    }
+    #[cfg(windows)]
+    if metadata.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        return Err(StorageError::UnsafeSourcePath(
+            "content-addressed blob must not be a reparse point".into(),
+        ));
+    }
+    Ok(VerifiedBlobMetadata {
+        size: metadata.len(),
+        modified: metadata.modified()?,
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        mode: metadata.mode(),
+        #[cfg(unix)]
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+        #[cfg(windows)]
+        attributes: metadata.file_attributes(),
+        #[cfg(windows)]
+        created: metadata.creation_time(),
+    })
+}
+
+fn verified_blob_changed() -> StorageError {
+    StorageError::InvalidBackup("content-addressed blob changed during bounded read".into())
+}
+
 fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
     let path = checked_existing_blob_path_from_root(blob_root, digest)?;
-    let input = file_import::open_regular_import_source(&path, limit)?;
+    let initial = verified_blob_metadata(&ensure_regular_file(&path, "content-addressed blob")?)?;
+    if initial.size > limit {
+        return Err(StorageError::BlobTooLarge {
+            size: initial.size,
+            limit,
+        });
+    }
+    let read_limit = initial
+        .size
+        .checked_add(1)
+        .ok_or_else(verified_blob_changed)?;
+    let mut input = file_import::open_regular_import_source(&path, limit)?;
+    let identity = cas_retention::file_identity(&input)?;
+    if verified_blob_metadata(&input.metadata()?)? != initial
+        || verified_blob_metadata(&ensure_regular_file(&path, "content-addressed blob")?)?
+            != initial
+    {
+        return Err(verified_blob_changed());
+    }
 
     #[cfg(test)]
     run_verified_blob_capture_hook(&path);
 
-    // Retain the admitted handle and observe at most one excess byte. Concurrent
-    // regular-file writes cannot turn the metadata check into an unbounded read.
-    let mut input = input.take(limit.saturating_add(1));
+    // Keep the original handle and charge at most the admitted length plus
+    // one byte. A larger caller budget cannot authorize growth during capture.
+    let mut limited = (&mut input).take(read_limit);
     let mut bytes = Vec::new();
     let mut size = 0_u64;
     let mut chunk = [0_u8; 128 * 1024];
     loop {
-        let count = match input.read(&mut chunk) {
+        let count = match limited.read(&mut chunk) {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             result => result?,
         };
@@ -1913,11 +2018,17 @@ fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> R
                 size: u64::MAX,
                 limit,
             })?;
+        #[cfg(test)]
+        observe_verified_blob_read(next_size);
+
         if next_size > limit {
             return Err(StorageError::BlobTooLarge {
                 size: next_size,
                 limit,
             });
+        }
+        if next_size > initial.size {
+            return Err(verified_blob_changed());
         }
         let required = bytes
             .len()
@@ -1926,7 +2037,7 @@ fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> R
         if required > bytes.capacity() {
             let capacity = required
                 .max(bytes.capacity().saturating_mul(2))
-                .min(usize::try_from(limit).unwrap_or(usize::MAX));
+                .min(usize::try_from(initial.size).unwrap_or(usize::MAX));
             bytes
                 .try_reserve_exact(capacity - bytes.len())
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
@@ -1934,10 +2045,44 @@ fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> R
         bytes.extend_from_slice(&chunk[..count]);
         size = next_size;
     }
+    #[cfg(test)]
+    run_verified_blob_after_capture_hook(&path);
+
+    if size != initial.size {
+        return Err(verified_blob_changed());
+    }
     if hex::encode(Sha256::digest(&bytes)) != digest {
         return Err(StorageError::InvalidBackup(
             "content-addressed blob failed digest verification".into(),
         ));
+    }
+    if cas_retention::file_identity(&input)? != identity
+        || verified_blob_metadata(&input.metadata()?)? != initial
+    {
+        return Err(verified_blob_changed());
+    }
+    // Bind the current pathname to the captured handle. This second retained
+    // handle reads metadata only; it never replaces the verified byte buffer.
+    let current_path = checked_existing_blob_path_from_root(blob_root, digest)?;
+    if current_path != path
+        || verified_blob_metadata(&ensure_regular_file(
+            &current_path,
+            "content-addressed blob",
+        )?)? != initial
+    {
+        return Err(verified_blob_changed());
+    }
+    let current = file_import::open_regular_import_source(&current_path, limit)?;
+    if cas_retention::file_identity(&current)? != identity
+        || verified_blob_metadata(&current.metadata()?)? != initial
+        || verified_blob_metadata(&ensure_regular_file(
+            &current_path,
+            "content-addressed blob",
+        )?)? != initial
+        || cas_retention::file_identity(&input)? != identity
+        || verified_blob_metadata(&input.metadata()?)? != initial
+    {
+        return Err(verified_blob_changed());
     }
     Ok(bytes)
 }
@@ -3118,5 +3263,190 @@ mod verified_blob_capture_budget_tests {
                 panic!("expected streaming BlobTooLarge {{ size: 5, limit: 4 }}, got {error:?}");
             }
         }
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
+mod verified_blob_capture_stability_tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct CaptureHooks;
+    impl Drop for CaptureHooks {
+        fn drop(&mut self) {
+            BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| drop(slot.borrow_mut().take()));
+            AFTER_VERIFIED_BLOB_CAPTURE.with(|slot| drop(slot.borrow_mut().take()));
+            OBSERVE_VERIFIED_BLOB_READ.with(|slot| drop(slot.borrow_mut().take()));
+        }
+    }
+
+    fn before_capture(hook: impl FnOnce(&Path) + 'static) -> CaptureHooks {
+        BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "a before-capture hook is already installed");
+            *slot = Some(Box::new(hook));
+        });
+        CaptureHooks
+    }
+
+    fn after_capture(hook: impl FnOnce(&Path) + 'static) -> CaptureHooks {
+        AFTER_VERIFIED_BLOB_CAPTURE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "an after-capture hook is already installed");
+            *slot = Some(Box::new(hook));
+        });
+        CaptureHooks
+    }
+
+    fn observe_reads(hook: impl FnMut(u64) + 'static) -> CaptureHooks {
+        OBSERVE_VERIFIED_BLOB_READ.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(
+                slot.is_none(),
+                "a capture-read observer is already installed"
+            );
+            *slot = Some(Box::new(hook));
+        });
+        CaptureHooks
+    }
+
+    fn fixture(initial: &[u8], expected: &[u8]) -> (tempfile::TempDir, Store, String, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("store.sqlite3")).unwrap();
+        let source = directory.path().join("source.bin");
+        fs::write(&source, expected).unwrap();
+        let descriptor = store.ingest_blob_file(&source).unwrap();
+        let path = store.verified_blob_path(&descriptor.sha256).unwrap();
+        // Arrange a real regular CAS leaf, not a substituted reader.
+        fs::write(&path, initial).unwrap();
+        (directory, store, descriptor.sha256, path)
+    }
+
+    #[test]
+    fn stable_multichunk_capture_and_wrong_digest_keep_their_contract() {
+        let bytes = vec![0x5a; 128 * 1024 + 17];
+        let (_directory, store, digest, path) = fixture(&bytes, &bytes);
+        assert_eq!(store.read_blob(&digest, bytes.len() as u64).unwrap(), bytes);
+        assert_eq!(
+            store.read_blob(&digest, bytes.len() as u64 + 4096).unwrap(),
+            bytes
+        );
+        fs::write(&path, b"different stable source").unwrap();
+        assert!(matches!(
+            store.read_blob(&digest, 4096),
+            Err(StorageError::InvalidBackup(message))
+                if message == "content-addressed blob failed digest verification"
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"different stable source");
+    }
+
+    #[test]
+    fn growth_with_a_matching_digest_cannot_use_the_callers_spare_budget() {
+        for (initial, grown) in [
+            (b"abc".as_slice(), b"longer valid source".as_slice()),
+            (b"".as_slice(), b"x".as_slice()),
+        ] {
+            let (_directory, store, digest, path) = fixture(initial, grown);
+            let calls = Rc::new(Cell::new(0));
+            let observed = Rc::clone(&calls);
+            let captured = Rc::new(Cell::new(u64::MAX));
+            let observed_capture = Rc::clone(&captured);
+            let _observer = observe_reads(move |size| observed_capture.set(size));
+            let changed = grown.to_vec();
+            let _hook = before_capture(move |path| {
+                observed.set(observed.get() + 1);
+                fs::write(path, &changed).unwrap();
+            });
+            // The final bytes deliberately match the requested SHA and are
+            // below the caller's budget. Only the admitted snapshot changed.
+            assert!(matches!(
+                store.read_blob(&digest, 4096),
+                Err(StorageError::InvalidBackup(_))
+            ));
+            assert_eq!(calls.get(), 1);
+            assert_eq!(captured.get(), initial.len() as u64 + 1);
+            assert_eq!(fs::read(&path).unwrap(), grown);
+            assert_eq!(hex::encode(Sha256::digest(grown)), digest);
+        }
+    }
+
+    #[test]
+    fn shrink_with_a_matching_digest_cannot_replace_the_admitted_length() {
+        let (_directory, store, digest, path) = fixture(b"longer admitted source", b"short");
+        let calls = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&calls);
+        let _hook = before_capture(move |path| {
+            observed.set(observed.get() + 1);
+            fs::write(path, b"short").unwrap();
+        });
+        assert!(matches!(
+            store.read_blob(&digest, 4096),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&path).unwrap(), b"short");
+        assert_eq!(hex::encode(Sha256::digest(b"short")), digest);
+    }
+
+    #[test]
+    fn equal_content_and_mtime_do_not_authorize_a_replaced_cas_leaf() {
+        const BYTES: &[u8] = b"same original source bytes";
+        let (_directory, store, digest, path) = fixture(BYTES, BYTES);
+        let original = File::open(&path).unwrap();
+        let original_id = cas_retention::file_identity(&original).unwrap();
+        let modified = original.metadata().unwrap().modified().unwrap();
+        let retained = path.with_extension("retained-original");
+        let destination = retained.clone();
+        let calls = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&calls);
+        let _hook = before_capture(move |path| {
+            observed.set(observed.get() + 1);
+            fs::rename(path, &destination).unwrap();
+            fs::write(path, BYTES).unwrap();
+            OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+            let replacement = File::open(path).unwrap();
+            assert_ne!(
+                cas_retention::file_identity(&replacement).unwrap(),
+                original_id
+            );
+            assert_eq!(
+                replacement.metadata().unwrap().modified().unwrap(),
+                modified
+            );
+            assert_eq!(fs::read(path).unwrap(), BYTES);
+        });
+        assert!(matches!(
+            store.read_blob(&digest, 4096),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&path).unwrap(), BYTES);
+        assert_eq!(fs::read(&retained).unwrap(), BYTES);
+        assert_eq!(hex::encode(Sha256::digest(BYTES)), digest);
+    }
+
+    #[test]
+    fn mutation_after_capture_cannot_publish_pre_mutation_bytes() {
+        const INITIAL: &[u8] = b"already captured source";
+        const CHANGED: &[u8] = b"different physical source after capture";
+        let (_directory, store, digest, path) = fixture(INITIAL, INITIAL);
+        let calls = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&calls);
+        let _hook = after_capture(move |path| {
+            observed.set(observed.get() + 1);
+            fs::write(path, CHANGED).unwrap();
+        });
+        assert!(matches!(
+            store.read_blob(&digest, 4096),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&path).unwrap(), CHANGED);
+        assert_eq!(hex::encode(Sha256::digest(INITIAL)), digest);
     }
 }
