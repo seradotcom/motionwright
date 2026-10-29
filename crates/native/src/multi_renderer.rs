@@ -94,7 +94,7 @@ fn hex_color(value: &str) -> NativeResult<[f64; 4]> {
     let hex = value
         .strip_prefix('#')
         .ok_or_else(|| unsupported("Blender material fill must be an explicit hex color"))?;
-    if hex.len() != 6 && hex.len() != 8 {
+    if (hex.len() != 6 && hex.len() != 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(unsupported(
             "Blender material fill must use #RRGGBB or #RRGGBBAA",
         ));
@@ -935,6 +935,19 @@ mod tests {
         assert!(material.contains("0123456789abcdef0123456789abcdef"));
         assert!(name.is_ascii() && material.is_ascii());
         assert!(name.len() <= 63 && material.len() <= 63);
+    }
+
+    #[test]
+    fn blender_color_parser_rejects_non_ascii_boundaries_without_panicking() {
+        for invalid in ["#FéFFF", "#FFFéFFF", "#GG0000", "#00000", "#123456789"] {
+            let error = hex_color(invalid).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+        assert_eq!(
+            hex_color("#FF8040").unwrap(),
+            [1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0]
+        );
+        assert_eq!(hex_color("#ff804080").unwrap()[3], 128.0 / 255.0);
     }
 
     #[test]
