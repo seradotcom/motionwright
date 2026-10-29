@@ -189,6 +189,121 @@ struct LosslessExpected<'a> {
     mode: MltTimelineMode,
 }
 
+struct MltRenderJobExpected<'a> {
+    job: &'a str,
+    revision: &'a str,
+    path: &'a str,
+    mode: MltTimelineMode,
+}
+
+/// The original render-start was acknowledged. A failed read cannot establish
+/// whether that render finished, failed or is still running. Preserve its
+/// typed diagnostics; never turn a lost observation into a replacement job.
+fn unconfirmed_mlt_render(mut error: Error) -> Error {
+    error.message = format!(
+        "MLT render started but its terminal result is unconfirmed ({:?}). \
+         Reconcile the original job/request receipt with the Broker and Driver Host; \
+         do not redispatch a render automatically.",
+        error.code
+    );
+    error.outcome_known = false;
+    if error.progress.is_none() {
+        error = error.recipe_progress(1, "driver.mlt-video.render.start");
+    }
+    error
+}
+
+/// Observe the pinned SDK JobSnapshot for this exact original job. Free-form
+/// provider error text never decides whether an operation outcome is known.
+/// `true` means a closed successful status, pending physical result validation.
+fn observe_mlt_render_state(
+    value: &Value,
+    expected: &MltRenderJobExpected<'_>,
+) -> NativeResult<bool> {
+    let malformed = || {
+        unconfirmed_mlt_render(backend(
+            "MLT job observation is missing, malformed or belongs to another source",
+        ))
+    };
+    if value.get("job").and_then(Value::as_str) != Some(expected.job)
+        || value.get("project_revision").and_then(Value::as_str) != Some(expected.revision)
+        || value.get("profile").and_then(Value::as_str) != Some(expected.mode.profile())
+        || value.get("output").and_then(Value::as_str) != Some(expected.path)
+        || value.get("created_at_ms").and_then(Value::as_u64).is_none()
+        || !value
+            .get("started_at_ms")
+            .is_some_and(|v| v.is_null() || v.as_u64().is_some())
+        || !value.get("progress").is_some_and(Value::is_null)
+        || value
+            .get("cancellation_requested")
+            .and_then(Value::as_bool)
+            .is_none()
+    {
+        return Err(malformed());
+    }
+    let completed = value.get("completed_at_ms");
+    match value.get("state").and_then(Value::as_str) {
+        Some("queued" | "starting" | "running") => {
+            if !completed.is_some_and(Value::is_null)
+                || !value.get("error").is_some_and(Value::is_null)
+                || !value.get("artifact").is_some_and(Value::is_null)
+                || !value.get("media").is_some_and(Value::is_null)
+            {
+                return Err(malformed());
+            }
+            Ok(false)
+        }
+        Some("succeeded") => {
+            if completed.and_then(Value::as_u64).is_none()
+                || !value.get("error").is_some_and(Value::is_null)
+                || value.get("cancellation_requested").and_then(Value::as_bool) != Some(false)
+                || !value.get("artifact").is_some_and(Value::is_object)
+                || !value.get("media").is_some_and(Value::is_object)
+            {
+                return Err(malformed());
+            }
+            Ok(true)
+        }
+        Some(state @ ("failed" | "cancelled")) => {
+            if completed.and_then(Value::as_u64).is_none()
+                || !value.get("artifact").is_some_and(Value::is_null)
+                || !value.get("media").is_some_and(Value::is_null)
+            {
+                return Err(malformed());
+            }
+            let mut reported: Error =
+                serde_json::from_value(value.get("error").ok_or_else(malformed)?.clone())
+                    .map_err(|_| malformed())?;
+            if !reported.outcome_known {
+                return Err(unconfirmed_mlt_render(reported));
+            }
+            if state == "cancelled" && reported.code != ErrorCode::Cancelled {
+                return Err(malformed());
+            }
+            let message = if state == "cancelled" {
+                "The original MLT render job is terminal and cancellation is confirmed."
+            } else {
+                "The original MLT render job is terminal and failure is confirmed."
+            };
+            reported.message = message.into();
+            if reported.progress.is_none() {
+                reported = reported.recipe_progress(1, "driver.mlt-video.render.start");
+            }
+            Err(reported)
+        }
+        Some("unknown") => {
+            let reported = value
+                .get("error")
+                .and_then(|value| serde_json::from_value::<Error>(value.clone()).ok())
+                .unwrap_or_else(|| {
+                    backend("The original MLT render job has an unknown operation outcome")
+                });
+            Err(unconfirmed_mlt_render(reported))
+        }
+        _ => Err(malformed()),
+    }
+}
+
 fn verify_lossless_render_result(
     result: &Value,
     expected: &LosslessExpected<'_>,
@@ -713,17 +828,23 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let started = response_data(&started)?;
-        let job_ref = opaque(started, "job")?;
+        let started = response_data(&started).map_err(unconfirmed_mlt_render)?;
+        let job_ref = opaque(started, "job").map_err(unconfirmed_mlt_render)?;
+        let job_expected = MltRenderJobExpected {
+            job: &job_ref,
+            revision: &session.revision,
+            path: &recipe.lossless_sequence_path,
+            mode,
+        };
         let deadline = Instant::now() + Duration::from_secs(MLT_TIMELINE_POLL_SECS);
-        let mut succeeded = started.get("state").and_then(Value::as_str) == Some("succeeded");
+        let mut succeeded = observe_mlt_render_state(started, &job_expected)?;
         let mut poll = 0u32;
         while !succeeded {
             if Instant::now() >= deadline {
-                return Err(Error::new(
+                return Err(unconfirmed_mlt_render(Error::new(
                     ErrorCode::Timeout,
                     "MLT native sequence render exceeded the bounded driver polling window",
-                ));
+                )));
             }
             sleep(Duration::from_millis(MLT_TIMELINE_POLL_MS)).await;
             poll += 1;
@@ -736,17 +857,10 @@ impl ProductionCoordinator {
                     json!({"job":job_ref}),
                     false,
                 )
-                .await?;
-            let status = response_data(&status)?;
-            match status.get("state").and_then(Value::as_str) {
-                Some("succeeded") => succeeded = true,
-                Some("queued" | "starting" | "running") => {}
-                _ => {
-                    return Err(backend(
-                        "Semwright Driver Host reported failed, cancelled, unknown or malformed MLT output",
-                    ));
-                }
-            }
+                .await
+                .map_err(unconfirmed_mlt_render)?;
+            let status = response_data(&status).map_err(unconfirmed_mlt_render)?;
+            succeeded = observe_mlt_render_state(status, &job_expected)?;
         }
         let result = scoped
             .execute(
@@ -757,8 +871,14 @@ impl ProductionCoordinator {
                 json!({"job":job_ref}),
                 false,
             )
-            .await?;
-        let result = response_data(&result)?;
+            .await
+            .map_err(unconfirmed_mlt_render)?;
+        let result = response_data(&result).map_err(unconfirmed_mlt_render)?;
+        if !observe_mlt_render_state(result, &job_expected)? {
+            return Err(unconfirmed_mlt_render(backend(
+                "MLT final result returned a nonterminal original job",
+            )));
+        }
         let native_frame_count_observed = verify_lossless_render_result(
             result,
             &LosslessExpected {
@@ -772,7 +892,8 @@ impl ProductionCoordinator {
                 fps_den: recipe.provider_profile.fps_den,
                 mode,
             },
-        )?;
+        )
+        .map_err(unconfirmed_mlt_render)?;
         let artifact_sha256 = required_string(
             result,
             "/artifact/sha256",
@@ -830,6 +951,340 @@ impl ProductionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn expected_render_job() -> MltRenderJobExpected<'static> {
+        MltRenderJobExpected {
+            job: "render:owner-original",
+            revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            path: "owner-lossless-video-only.mkv",
+            mode: MltTimelineMode::VideoOnly,
+        }
+    }
+
+    fn render_job_view(state: &str) -> Value {
+        let expected = expected_render_job();
+        let mut view = json!({
+            "job": expected.job,
+            "project_revision": expected.revision,
+            "profile": expected.mode.profile(),
+            "output": expected.path,
+            "state": state,
+            "progress": null,
+            "created_at_ms": 100,
+            "started_at_ms": 101,
+            "completed_at_ms": null,
+            "artifact": null,
+            "media": null,
+            "error": null,
+            "cancellation_requested": false,
+        });
+        match state {
+            "succeeded" => {
+                view["completed_at_ms"] = json!(102);
+                view["artifact"] = json!({
+                    "root":"output", "path":expected.path,
+                    "sha256":"b".repeat(64), "bytes":8192,
+                });
+                view["media"] = json!({
+                    "width":1280, "height":720, "frames":33,
+                    "duration_num":1100, "duration_den":1000,
+                    "video":true, "audio":false, "codecs":["ffv1"],
+                });
+            }
+            "failed" | "cancelled" | "unknown" => {
+                let code = if state == "cancelled" {
+                    ErrorCode::Cancelled
+                } else {
+                    ErrorCode::BackendFailed
+                };
+                let mut error =
+                    Error::new(code, "private provider message must not decide authority");
+                error.outcome_known = state != "unknown";
+                view["error"] = serde_json::to_value(error).unwrap();
+                view["completed_at_ms"] = json!(102);
+            }
+            _ => {}
+        }
+        view
+    }
+
+    #[test]
+    fn mlt_state_pending_and_success_require_the_original_source_bound_snapshot() {
+        for state in ["queued", "starting", "running"] {
+            let view = render_job_view(state);
+            let before = view.clone();
+            assert!(!observe_mlt_render_state(&view, &expected_render_job()).unwrap());
+            assert_eq!(view, before);
+        }
+        assert!(
+            observe_mlt_render_state(&render_job_view("succeeded"), &expected_render_job())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn mlt_state_only_closed_failed_or_cancelled_jobs_are_known_failures() {
+        for (state, code) in [
+            ("failed", ErrorCode::BackendFailed),
+            ("cancelled", ErrorCode::Cancelled),
+        ] {
+            let view = render_job_view(state);
+            let error = observe_mlt_render_state(&view, &expected_render_job()).unwrap_err();
+            assert_eq!(error.code, code);
+            assert!(error.outcome_known);
+            assert!(!error.message.contains("private provider"));
+            for key in ["completed_at_ms", "error"] {
+                let mut incomplete = view.clone();
+                incomplete.as_object_mut().unwrap().remove(key);
+                assert!(
+                    !observe_mlt_render_state(&incomplete, &expected_render_job())
+                        .unwrap_err()
+                        .outcome_known
+                );
+            }
+            let mut unconfirmed = view;
+            unconfirmed["error"]["outcome_known"] = json!(false);
+            assert!(
+                !observe_mlt_render_state(&unconfirmed, &expected_render_job())
+                    .unwrap_err()
+                    .outcome_known
+            );
+        }
+        // A renderer's closed failure after confirmed cleanup is distinct
+        // from an observation Timeout with no terminal original job evidence.
+        let mut closed_timeout = render_job_view("failed");
+        closed_timeout["error"]["code"] = json!("Timeout");
+        let error = observe_mlt_render_state(&closed_timeout, &expected_render_job()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Timeout);
+        assert!(error.outcome_known);
+    }
+
+    #[test]
+    fn mlt_state_unknown_malformed_and_missing_views_remain_uncertain() {
+        for state in ["unknown", "UNKNOWN", "lost", "failed_known", ""] {
+            let view = render_job_view(state);
+            assert!(
+                !observe_mlt_render_state(&view, &expected_render_job())
+                    .unwrap_err()
+                    .outcome_known,
+                "{state}"
+            );
+        }
+        for missing in [
+            "state",
+            "created_at_ms",
+            "started_at_ms",
+            "progress",
+            "cancellation_requested",
+        ] {
+            let mut view = render_job_view("succeeded");
+            view.as_object_mut().unwrap().remove(missing);
+            assert!(
+                !observe_mlt_render_state(&view, &expected_render_job())
+                    .unwrap_err()
+                    .outcome_known,
+                "{missing}"
+            );
+        }
+        for value in [Value::Null, json!([]), json!({}), json!(false)] {
+            assert!(
+                !observe_mlt_render_state(&value, &expected_render_job())
+                    .unwrap_err()
+                    .outcome_known
+            );
+        }
+        let mut view = render_job_view("failed");
+        view["error"]["outcome_known"] = json!("true");
+        assert!(
+            !observe_mlt_render_state(&view, &expected_render_job())
+                .unwrap_err()
+                .outcome_known
+        );
+        let mut unknown = render_job_view("unknown");
+        unknown["error"]["code"] = json!("Timeout");
+        unknown["error"]["outcome_known"] = json!(true);
+        let error = observe_mlt_render_state(&unknown, &expected_render_job()).unwrap_err();
+        assert!(
+            !error.outcome_known,
+            "an explicit unknown state overrides a contradictory known flag"
+        );
+        assert_eq!(error.code, ErrorCode::Timeout);
+    }
+
+    #[test]
+    fn mlt_state_foreign_or_missing_job_revision_profile_and_output_cannot_close_the_job() {
+        for state in ["succeeded", "failed", "cancelled"] {
+            for key in ["job", "project_revision", "profile", "output"] {
+                let mut view = render_job_view(state);
+                view[key] = json!("foreign-source");
+                assert!(
+                    !observe_mlt_render_state(&view, &expected_render_job())
+                        .unwrap_err()
+                        .outcome_known,
+                    "{state}/{key}"
+                );
+                view.as_object_mut().unwrap().remove(key);
+                assert!(
+                    !observe_mlt_render_state(&view, &expected_render_job())
+                        .unwrap_err()
+                        .outcome_known,
+                    "missing {state}/{key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mlt_state_cancellation_request_is_pending_and_contradictory_terminal_views_are_uncertain() {
+        let mut running = render_job_view("running");
+        running["cancellation_requested"] = json!(true);
+        assert!(!observe_mlt_render_state(&running, &expected_render_job()).unwrap());
+        let mut succeeded = render_job_view("succeeded");
+        succeeded["cancellation_requested"] = json!(true);
+        assert!(
+            !observe_mlt_render_state(&succeeded, &expected_render_job())
+                .unwrap_err()
+                .outcome_known
+        );
+        let mut cancelled = render_job_view("cancelled");
+        cancelled["error"]["code"] = json!("BackendFailed");
+        assert!(
+            !observe_mlt_render_state(&cancelled, &expected_render_job())
+                .unwrap_err()
+                .outcome_known
+        );
+        for (state, key, value) in [
+            ("running", "completed_at_ms", json!(102)),
+            ("failed", "completed_at_ms", Value::Null),
+            ("failed", "artifact", json!({"path":"unexpected"})),
+            ("succeeded", "media", Value::Null),
+            (
+                "succeeded",
+                "error",
+                json!({"code":"Timeout", "message":"", "outcome_known":true}),
+            ),
+        ] {
+            let mut view = render_job_view(state);
+            view[key] = value;
+            assert!(
+                !observe_mlt_render_state(&view, &expected_render_job())
+                    .unwrap_err()
+                    .outcome_known,
+                "{state}/{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn mlt_state_untyped_message_cannot_promote_or_demote_terminal_evidence() {
+        let expected = expected_render_job();
+        let mut first = None;
+        for message in [
+            "UNKNOWN",
+            "succeeded",
+            "failed",
+            "Cancelled",
+            "private/path/master.mkv",
+            "",
+        ] {
+            let mut view = render_job_view("failed");
+            view["error"]["message"] = json!(message);
+            let error = observe_mlt_render_state(&view, &expected).unwrap_err();
+            assert!(error.outcome_known);
+            let observed = serde_json::to_value(error).unwrap();
+            if let Some(first) = &first {
+                assert_eq!(&observed, first);
+            } else {
+                first = Some(observed);
+            }
+            view["state"] = json!("unknown");
+            assert!(
+                !observe_mlt_render_state(&view, &expected)
+                    .unwrap_err()
+                    .outcome_known
+            );
+        }
+        let mut missing_flag = render_job_view("failed");
+        missing_flag["error"]
+            .as_object_mut()
+            .unwrap()
+            .remove("outcome_known");
+        assert!(
+            !observe_mlt_render_state(&missing_flag, &expected)
+                .unwrap_err()
+                .outcome_known
+        );
+    }
+
+    #[test]
+    fn mlt_state_lost_observation_and_timeout_preserve_typed_error_as_uncertain() {
+        for code in [
+            ErrorCode::Timeout,
+            ErrorCode::Unavailable,
+            ErrorCode::StaleReference,
+            ErrorCode::BackendFailed,
+            ErrorCode::Cancelled,
+            ErrorCode::PluginProtocolError,
+        ] {
+            let mut original = Error::new(code, "private/path/free-form known cancelled failed");
+            original
+                .candidates
+                .push("existing-original-reconciliation-handle".into());
+            original = original.recipe_progress(2, "original-provider-observation");
+            let progress = serde_json::to_value(&original.progress).unwrap();
+            let error = unconfirmed_mlt_render(original.clone());
+            assert_eq!(error.code, code);
+            assert!(!error.outcome_known);
+            assert_eq!(error.candidates, original.candidates);
+            assert_eq!(serde_json::to_value(&error.progress).unwrap(), progress);
+            assert!(!error.message.contains("private/path"));
+            assert!(error.message.contains("do not redispatch"));
+        }
+        let timeout = unconfirmed_mlt_render(Error::new(ErrorCode::Timeout, "poll deadline"));
+        assert!(!timeout.outcome_known);
+        assert_eq!(timeout.code, ErrorCode::Timeout);
+        assert_eq!(
+            timeout.progress.unwrap().failed_step,
+            "driver.mlt-video.render.start"
+        );
+    }
+
+    #[test]
+    fn mlt_state_missing_start_and_invalid_final_result_do_not_become_known_failures() {
+        for envelope in [json!({}), json!({"result":null}), json!({"result":{}})] {
+            let error = response_data(&envelope)
+                .map_err(unconfirmed_mlt_render)
+                .unwrap_err();
+            assert!(!error.outcome_known);
+        }
+        let missing_job = opaque(&json!({}), "job")
+            .map_err(unconfirmed_mlt_render)
+            .unwrap_err();
+        assert!(!missing_job.outcome_known);
+        let job = expected_render_job();
+        let expected = LosslessExpected {
+            job: job.job,
+            revision: job.revision,
+            path: job.path,
+            frames: 33,
+            width: 1280,
+            height: 720,
+            fps_num: 30,
+            fps_den: 1,
+            mode: job.mode,
+        };
+        let mut result = render_job_view("succeeded");
+        assert_eq!(
+            verify_lossless_render_result(&result, &expected).unwrap(),
+            Some(33)
+        );
+        result["artifact"]["sha256"] = json!("missing-artifact-digest");
+        let error = verify_lossless_render_result(&result, &expected)
+            .map_err(unconfirmed_mlt_render)
+            .unwrap_err();
+        assert!(!error.outcome_known);
+    }
+
     #[test]
     fn rejects_forged_revision_and_multientity_or_nonadvancing_edits() {
         let one = MltSession {
