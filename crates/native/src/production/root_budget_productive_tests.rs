@@ -720,11 +720,11 @@ with open(destination, 'a', encoding='utf-8') as output:
     );
     assert_eq!(
         retained.spent.output_bytes,
-        before.spent.output_bytes + MLT_MEZZANINE_MAX_BYTES
+        before.spent.output_bytes + MLT_MEZZANINE_MAX_BYTES + hybrid_budget::FFV1_CUSTODY_BYTES
     );
     assert!(retained.spent.attempts < retained.limits.attempts);
     assert!(retained.spent.render_frames + 60 <= retained.limits.render_frames);
-    assert!(retained.spent.output_bytes + MLT_MEZZANINE_MAX_BYTES <= retained.limits.output_bytes);
+    assert!(retained.spent.output_bytes + MLT_MEZZANINE_MAX_BYTES + hybrid_budget::FFV1_CUSTODY_BYTES <= retained.limits.output_bytes);
     let watermark = service.production_receipt_watermark(project.id).unwrap();
     // The producer derives another output filename from this label, so this
     // is a different digest. The unresolved original root must still fence it.
@@ -836,7 +836,7 @@ fn retained_mlt_costs_bind_exact_source_frames_and_both_mux_artifacts() {
         .units_for("driver.mlt-video.frames.encode", &encode_args, true)
         .unwrap();
     assert_eq!(units.render_frames, 60);
-    assert_eq!(units.output_bytes, MLT_MEZZANINE_MAX_BYTES);
+    assert_eq!(units.output_bytes, MLT_MEZZANINE_MAX_BYTES + hybrid_budget::FFV1_CUSTODY_BYTES);
     let mux = json!({"video_root":"output", "video_path":"original.mkv",
         "output_path":"original.mp4", "frame_count":60,
         "max_bytes":MLT_MASTER_MAX_BYTES, "profile":"h264-aac-mp4"});
