@@ -1157,12 +1157,11 @@ fn reconstruct_empty_budget_predecessor_schema5(path: &std::path::Path) {
                  ORDER BY name",
             )
             .unwrap();
-        let found = query
+        query
             .query_map([], |row| row.get::<_, String>(0))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        found
+            .unwrap()
     };
     assert_eq!(names.len(), 33, "27 writer fences plus six budget triggers");
     for name in names {
