@@ -462,6 +462,21 @@ fn map_profile_error(error: motionwright_manim_profile::ManimProfileError) -> Er
     invalid(error.to_string())
 }
 
+fn render_fontconfig_args(editable: bool) -> (&'static str, RuntimeToolArg) {
+    let (option, mount) = if editable {
+        ("--fontconfig-work-root", WORK_MOUNT)
+    } else {
+        ("--fontconfig-root", FONTCONFIG_MOUNT)
+    };
+    (
+        option,
+        RuntimeToolArg::MountPath {
+            mount: mount.into(),
+            relative: String::new(),
+        },
+    )
+}
+
 fn canonical_root(name: &str) -> Result<PathBuf> {
     let root = workspace_mount(name)?;
     let metadata = fs::symlink_metadata(&root)?;
@@ -1111,24 +1126,19 @@ impl ManimCommunityDriver {
             })
             .transpose()?;
 
-        let fontconfig_arg = if let Some(plan) = source_plan.editable() {
-            let relative = editable_source::stage_assets(
+        if let Some(plan) = source_plan.editable() {
+            editable_source::stage_assets(
                 &self.work_root,
                 &self.output_root,
                 &source_file,
                 plan,
                 editable_input,
             )?;
-            RuntimeToolArg::MountPath {
-                mount: WORK_MOUNT.into(),
-                relative,
-            }
-        } else {
-            RuntimeToolArg::MountPath {
-                mount: FONTCONFIG_MOUNT.into(),
-                relative: String::new(),
-            }
-        };
+        }
+        // Host resolves only the granted root. The sealed runner derives the
+        // editable job's fixed assets directory from its original source name.
+        let (fontconfig_option, fontconfig_arg) =
+            render_fontconfig_args(source_plan.editable().is_some());
         let editable_source = source_plan
             .editable()
             .map(|plan| {
@@ -1166,7 +1176,7 @@ impl ManimCommunityDriver {
                     RuntimeToolArg::ToolPath {
                         tool: FFMPEG_TOOL.into(),
                     },
-                    literal("--fontconfig-root".into()),
+                    literal(fontconfig_option.into()),
                     fontconfig_arg,
                     literal("--work-root".into()),
                     RuntimeToolArg::MountPath {
@@ -1903,6 +1913,35 @@ async fn main() {
 mod tests {
     use super::*;
     use motionwright_manim_profile::ManimPrimitive;
+
+    #[test]
+    fn editable_fontconfig_uses_root_only_host_argument() {
+        for (editable, option, mount) in [
+            (false, "--fontconfig-root", FONTCONFIG_MOUNT),
+            (true, "--fontconfig-work-root", WORK_MOUNT),
+        ] {
+            let (actual_option, argument) = render_fontconfig_args(editable);
+            assert_eq!(actual_option, option);
+            assert_eq!(
+                argument,
+                RuntimeToolArg::MountPath {
+                    mount: mount.into(),
+                    relative: String::new(),
+                }
+            );
+            semwright_driver_sdk::validate_runtime_tool_args(&[argument]).unwrap();
+        }
+        let old_argument = RuntimeToolArg::MountPath {
+            mount: WORK_MOUNT.into(),
+            relative: "mw_0123456789abcdef0123456789abcdef.assets".into(),
+        };
+        assert_eq!(
+            semwright_driver_sdk::validate_runtime_tool_args(&[old_argument])
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+    }
 
     fn original_failure_job() -> RenderJob {
         // Pure retained-job state, not a Host execution or native receipt.

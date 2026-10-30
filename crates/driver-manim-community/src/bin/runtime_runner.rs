@@ -44,6 +44,7 @@ struct RenderArgs {
     python: PathBuf,
     ffmpeg: PathBuf,
     fontconfig_root: PathBuf,
+    fontconfig_from_source: bool,
     work_root: PathBuf,
     output_root: PathBuf,
     source: String,
@@ -143,6 +144,7 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
                 | "--python-sealed"
                 | "--ffmpeg-sealed"
                 | "--fontconfig-root"
+                | "--fontconfig-work-root"
                 | "--work-root"
                 | "--output-root"
                 | "--source"
@@ -184,12 +186,21 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
     }
     let source = required("--source")?;
     direct_component(&source, "Manim source filename")?;
+    let (fontconfig_root, fontconfig_from_source) = match (
+        values.get("--fontconfig-root"),
+        values.get("--fontconfig-work-root"),
+    ) {
+        (Some(root), None) => (PathBuf::from(root), false),
+        (None, Some(root)) => (PathBuf::from(root), true),
+        _ => return Err("runner requires exactly one fontconfig root selection".into()),
+    };
 
     Ok(RenderArgs {
         runtime_root: PathBuf::from(required("--runtime-root")?),
         python: PathBuf::from(required("--python-sealed")?),
         ffmpeg: PathBuf::from(required("--ffmpeg-sealed")?),
-        fontconfig_root: PathBuf::from(required("--fontconfig-root")?),
+        fontconfig_root,
+        fontconfig_from_source,
         work_root: PathBuf::from(required("--work-root")?),
         output_root: PathBuf::from(required("--output-root")?),
         source,
@@ -198,6 +209,33 @@ fn parse_render_args(raw: Vec<String>) -> Result<RenderArgs, String> {
         height,
         fps,
     })
+}
+
+fn render_fontconfig_root(args: &RenderArgs, work_root: &Path) -> Result<PathBuf, String> {
+    let root = real_directory(&args.fontconfig_root, "Fontconfig root")?;
+    if !args.fontconfig_from_source {
+        return Ok(root);
+    }
+    if root != work_root {
+        return Err("Editable fontconfig requires the original work root".into());
+    }
+    let token = args
+        .source
+        .strip_prefix("mw_")
+        .and_then(|name| name.strip_suffix(".py"))
+        .filter(|token| {
+            token.len() == 32
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or("Editable fontconfig source is not bound to its native job")?;
+    let assets = work_root.join(format!("mw_{token}.assets"));
+    let resolved = real_directory(&assets, "Editable fontconfig assets")?;
+    if resolved != assets || resolved.parent() != Some(work_root) {
+        return Err("Editable fontconfig escaped the original work root".into());
+    }
+    Ok(resolved)
 }
 
 fn runtime_site_packages(runtime_root: &Path) -> Result<PathBuf, String> {
@@ -2062,7 +2100,7 @@ fn render(args: RenderArgs) -> Result<(), String> {
     let runtime_root = real_directory(&args.runtime_root, "Manim runtime root")?;
     let work_root = real_directory(&args.work_root, "Manim work root")?;
     let output_root = real_directory(&args.output_root, "Manim output root")?;
-    let fontconfig_root = real_directory(&args.fontconfig_root, "Fontconfig root")?;
+    let fontconfig_root = render_fontconfig_root(&args, &work_root)?;
     if !fontconfig_root.join("fonts.conf").is_file() {
         return Err("Fontconfig root has no fonts.conf".into());
     }
@@ -2174,6 +2212,103 @@ mod tests {
         let error =
             parse_render_args(vec!["render".into(), "--shell".into(), "sh".into()]).unwrap_err();
         assert!(error.contains("exact bounded") || error.contains("unsupported"));
+    }
+
+    fn render_argv(fontconfig_option: &str, root: &Path) -> Vec<String> {
+        [
+            "render",
+            "--runtime-root",
+            "/runtime",
+            "--python-sealed",
+            "/python",
+            "--ffmpeg-sealed",
+            "/ffmpeg",
+            fontconfig_option,
+            root.to_str().unwrap(),
+            "--work-root",
+            root.to_str().unwrap(),
+            "--output-root",
+            "/output",
+            "--source",
+            "mw_0123456789abcdef0123456789abcdef.py",
+            "--scene",
+            SCENE_CLASS,
+            "--output-name",
+            "mw_0123456789abcdef0123456789abcdef",
+            "--width",
+            "640",
+            "--height",
+            "360",
+            "--fps",
+            "12",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn editable_fontconfig_parser_has_one_explicit_root_selection() {
+        let root = Path::new("/work");
+        for (option, from_source) in [
+            ("--fontconfig-root", false),
+            ("--fontconfig-work-root", true),
+        ] {
+            let raw = render_argv(option, root);
+            let args = parse_render_args(raw.clone()).unwrap();
+            assert_eq!(args.fontconfig_from_source, from_source);
+            let mut extra = raw.clone();
+            extra.extend(["--fontconfig-root".into(), "/other".into()]);
+            assert!(parse_render_args(extra).is_err());
+            let mut both = raw;
+            both[1] = if from_source {
+                "--fontconfig-root".into()
+            } else {
+                "--fontconfig-work-root".into()
+            };
+            assert!(parse_render_args(both).is_err());
+        }
+    }
+
+    #[test]
+    fn editable_fontconfig_is_bound_to_the_current_source_and_work_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let current = root.join("mw_0123456789abcdef0123456789abcdef.assets");
+        let other = root.join("mw_fedcba9876543210fedcba9876543210.assets");
+        fs::create_dir(&current).unwrap();
+        fs::create_dir(&other).unwrap();
+        let mut args = parse_render_args(render_argv("--fontconfig-work-root", &root)).unwrap();
+        assert_eq!(render_fontconfig_root(&args, &root).unwrap(), current);
+        for source in [
+            "../mw_0123456789abcdef0123456789abcdef.py",
+            "mw_0123456789abcdef0123456789abcdef.py/other",
+            "mw_0123456789ABCDEF0123456789ABCDEF.py",
+            "mw_unbound.py",
+        ] {
+            args.source = source.into();
+            assert!(render_fontconfig_root(&args, &root).is_err(), "{source}");
+        }
+        args.source = "mw_0123456789abcdef0123456789abcdef.py".into();
+        args.fontconfig_root = other;
+        assert!(render_fontconfig_root(&args, &root).is_err());
+        let legacy = parse_render_args(render_argv("--fontconfig-root", &current)).unwrap();
+        assert_eq!(render_fontconfig_root(&legacy, &root).unwrap(), current);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editable_fontconfig_rejects_linked_job_assets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path(),
+            root.join("mw_0123456789abcdef0123456789abcdef.assets"),
+        )
+        .unwrap();
+        let args = parse_render_args(render_argv("--fontconfig-work-root", &root)).unwrap();
+        assert!(render_fontconfig_root(&args, &root).is_err());
     }
 
     #[test]
