@@ -6968,7 +6968,7 @@
     },
     {
       "path": ".github/workflows/native-production.yml",
-      "sha256": "412e3713d93828190fbc93ae3d957e85f326725a12b6178b4a7b0f7af2844eea",
+      "sha256": "779a7dec5524727a79dd2c01a19c70a615476657a05278d4220b415fe1d98666",
       "preamble_sha256": "d27e572ddab41c8bfd588d9dcb8e6d489c51a4acefdcac6b1e606795934f3a26",
       "evidence_class": "source_and_selected_native_hyperframes",
       "purpose": "Production receipt, Broker and HyperFrames source contracts, plus a separately selected first-attempt native HyperFrames original scenario with public-recipient custody.",
@@ -7020,7 +7020,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "45a505ad0f179299ae264f4ae951703925088162afb1bfc90700e178ff863dc3",
+          "source_sha256": "05380db56229e3c8f5461eec536d9d1a3d49a1ec04af184264da95e5d403ff23",
           "instance_sets": {
             "contracts": [
               {}
@@ -7099,7 +7099,7 @@
               "name": "Compile and test HyperFrames source targets without provisioning a runtime",
               "guard": "github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "45df8f11aa3282e66d990bb5bb9ae2fe736e937fb3cd42074761eeeb981abd62",
+              "source_block_sha256": "51100a70a63f3bb300aeaf0c2deb32a7bc99d364c0af4c98b9296ac27e85d19f",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -7126,7 +7126,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "production-contracts",
           "strategy": null,
-          "source_sha256": "930dede72bdf6520c93d91a9f50e6d12521641e42901f8dca5ddd280b1db7549",
+          "source_sha256": "24cc746f5591bcf9be75c72933f80f1d17663aba69440b016b7782b3df095cd1",
           "instance_sets": {
             "hyperframes": [
               {}
@@ -7178,7 +7178,7 @@
               "name": "Source-bound Rust gates and original executables",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c53329cae225ecd98e2497dde209ae6ae3bc61b957428d72e0ea4a2c5ce40b20",
+              "source_block_sha256": "087c2603105e4eaa8608f69040aa3232b486216ef1d0eb81a98750175c2ffdc2",
               "api_binding": "EXPLICIT_NAME"
             },
             {
