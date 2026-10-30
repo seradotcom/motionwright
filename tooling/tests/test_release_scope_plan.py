@@ -1451,19 +1451,19 @@ class N83FailureBranchTests(unittest.TestCase):
         self._review()
         case = self._case("n83-preflight-failure")
         self.assertEqual(case["kind"], "CONDITIONAL_ALTERNATIVE")
-        self.assertEqual(case["required_job_instances"][0]["required_steps"], [2, 3, 5, 33])
-        self.assertNotIn(4, case["required_job_instances"][0]["required_steps"])
-        self.assertNotIn(27, case["required_job_instances"][0]["required_steps"])
+        self.assertEqual(case["required_job_instances"][0]["required_steps"], [2, 3, 6, 35])
+        self.assertNotIn(5, case["required_job_instances"][0]["required_steps"])
+        self.assertNotIn(29, case["required_job_instances"][0]["required_steps"])
 
     def test_rust_failure_requires_python_success_without_failed_rust_or_native(self):
         self._review()
         case = self._case("n83-rust-controls-failure")
         required = case["required_job_instances"][0]["required_steps"]
-        self.assertEqual(required, [2, 3, 4, 6, 8, 9, 10, 14, 15, 16, 17, 18, 21, 33])
-        self.assertIn(4, required)
-        self.assertNotIn(20, required)
-        self.assertNotIn(27, required)
-        self.assertNotIn(32, required)
+        self.assertEqual(required, [2, 3, 5, 7, 9, 10, 11, 15, 16, 17, 18, 19, 23, 35])
+        self.assertIn(5, required)
+        self.assertNotIn(22, required)
+        self.assertNotIn(29, required)
+        self.assertNotIn(34, required)
 
     def test_three_n83_branches_share_one_attempt_without_dispatch_authority(self):
         success = self._case("n83-preview")
@@ -1506,8 +1506,8 @@ class N83FailureBranchTests(unittest.TestCase):
                         scope.review_scope_definition(self.raw, entry)
 
     def test_failure_cannot_require_its_failed_anchor_or_native_success(self):
-        for name, failed in (("n83-preflight-failure", 4), ("n83-rust-controls-failure", 20)):
-            for forbidden in (failed, 27, 32):
+        for name, failed in (("n83-preflight-failure", 5), ("n83-rust-controls-failure", 22)):
+            for forbidden in (failed, 29, 34):
                 with self.subTest(case=name, step=forbidden):
                     entry = copy.deepcopy(self.entry)
                     self._case(name, entry)["required_job_instances"][0]["required_steps"].append(forbidden)
@@ -1515,8 +1515,8 @@ class N83FailureBranchTests(unittest.TestCase):
                         self._review(entry=entry)
 
     def test_failure_cannot_omit_successful_setup_or_sealed_upload(self):
-        for name, selected in (("n83-preflight-failure", (2, 3, 33)),
-                               ("n83-rust-controls-failure", (2, 3, 4, 18, 33))):
+        for name, selected in (("n83-preflight-failure", (2, 3, 35)),
+                               ("n83-rust-controls-failure", (2, 3, 5, 19, 35))):
             for missing in selected:
                 with self.subTest(case=name, step=missing):
                     entry = copy.deepcopy(self.entry)
@@ -1525,8 +1525,8 @@ class N83FailureBranchTests(unittest.TestCase):
                         self._review(entry=entry)
 
     def test_failure_branch_cannot_claim_the_other_rescue(self):
-        for name, old, wrong in (("n83-preflight-failure", 5, 21),
-                                  ("n83-rust-controls-failure", 21, 5)):
+        for name, old, wrong in (("n83-preflight-failure", 6, 23),
+                                  ("n83-rust-controls-failure", 23, 6)):
             with self.subTest(case=name):
                 entry = copy.deepcopy(self.entry)
                 required = self._case(name, entry)["required_job_instances"][0]["required_steps"]
@@ -1559,7 +1559,7 @@ class N83FailureBranchTests(unittest.TestCase):
 
     def test_diagnostic_prerequisites_and_publisher_stay_exact_after_rebinding(self):
         for name in ("Admit closed native selection before bootstrap",
-                     "Install pinned N83 custody and PNG verifier in a private runner venv",
+                     'Install pinned custody and PNG verifier in a private runner venv',
                      "Build exact Semwright Broker, sandbox and Motion Canvas provider",
                      "Publish only sealed N83 originals and closed manifest"):
             with self.subTest(step=name):

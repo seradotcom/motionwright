@@ -3627,7 +3627,7 @@
     },
     {
       "path": ".github/workflows/native-blender-e2e.yml",
-      "sha256": "589aa46f50d0625b42197fba4de19169473be9d7eaa814d2ee6e03524718246c",
+      "sha256": "3c45d91053dc7a47d9841076a1c4a1dc766fc80dcffebdadd95b43fa4bc7bd50",
       "preamble_sha256": "5660052540c45b0ab9f6c80626e12f0498da45ee2922dd8895efe557feb4eaed",
       "evidence_class": "native_media_reopen",
       "purpose": "Separate current source gates, static GLB, original Scene, lit-still and parameterized ProductScene save/edit/reopen native alternatives, with source/recipient bindings and retained originals. Static GLB source/attempt/recipient and outer custody now require explicit semantic binding.",
@@ -4061,7 +4061,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "0997db4f978a03919a0516f0b15d0f7c7825b13197620c5037e6120214514880",
+          "source_sha256": "d058128f5068008b59a1aa19fcbf0b806e9191a69d827e68db4822f08364011d",
           "instance_sets": {
             "lit-still": [
               {}
@@ -4085,7 +4085,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 5,
+              "ordinal": 4,
+              "name": "Prepare isolated Rust toolchain root",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "90049311740dce44061095831566b1f609896b0dc05173bb52c76bd8ff1fcfc3",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
               "name": "Prepare existing locked custody environment",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4093,7 +4101,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 6,
+              "ordinal": 7,
               "name": "Materialize workflow-owned bounded lit wiring",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4101,7 +4109,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 8,
               "name": "Bind composed source and validate encryption recipient before native effects",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4109,15 +4117,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 9,
               "name": "G0 source policy, format and closed lit producer contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "a1f7bfcf5b3085525c57f8c844b55f60e839a60821bb77c84de4758e94742382",
+              "source_block_sha256": "7bbb6d8e35c09d2c4d9bab7328df3f9fd8d0cde56f1b2848057d38fe976f1690",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 11,
               "name": "G1 compile exact composed caller and require all 29 real Rust cases",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4125,7 +4133,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
+              "ordinal": 13,
               "name": "Verify checked out SDK identity",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4133,7 +4141,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 13,
+              "ordinal": 14,
               "name": "Install verified Blender and decoded-media dependencies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4141,7 +4149,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 14,
+              "ordinal": 15,
               "name": "Configure disposable-runner Driver Host sandbox",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4149,7 +4157,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
+              "ordinal": 16,
               "name": "Build exact SDK Broker, sandbox and Blender provider",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -4157,7 +4165,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 16,
+              "ordinal": 17,
               "name": "G2 one explicit lit create-edit-reopen-light-control attempt",
               "guard": "success() && steps.lit_g1.outcome == 'success'",
               "kind": "EXECUTABLE_STEP",
@@ -4165,7 +4173,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 17,
+              "ordinal": 18,
               "name": "Seal already-selected private originals and retain UNKNOWN as failure",
               "guard": "always() && steps.lit_preflight.outcome == 'success'",
               "kind": "EXECUTABLE_STEP",
@@ -4173,7 +4181,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 18,
+              "ordinal": 19,
               "name": null,
               "guard": "always() && steps.lit_seal.outputs.sealed == 'true'",
               "kind": "ARTIFACT_RETENTION",
@@ -4350,18 +4358,19 @@
               "required_steps": [
                 2,
                 3,
-                5,
+                4,
                 6,
                 7,
                 8,
-                10,
-                12,
+                9,
+                11,
                 13,
                 14,
                 15,
                 16,
                 17,
-                18
+                18,
+                19
               ]
             }
           ],
@@ -4632,7 +4641,7 @@
     },
     {
       "path": ".github/workflows/native-manim-e2e.yml",
-      "sha256": "b78ac50566ef27d788b59a75205a36a225c6dbdd0822aeb629f5965b482255c7",
+      "sha256": "b9657c41be088729edb913e32899154831df9513b4640c9a70f9ec2f6c746b22",
       "preamble_sha256": "4e25b08c43218051dea699dec294fba27a327aac5e79b6a13d91e989e19e66b3",
       "evidence_class": "native_media_reopen",
       "purpose": "Distinct current source contracts, static scene, 120-frame camera, saved-camera-source cycle and editable-source cycle, each with its own guarded native steps and sealed originals. Preserve the existing editable outer deadline/custody and explicitly disposition the partial affected-Rust alternative.",
@@ -4737,7 +4746,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "c53298b117eab7d65a7c91653f70891d940742228c94fb894a235a3f4cf0008f",
+          "source_sha256": "9dad8716874b5d9bf0e7d4a6d451d6df21f9dc4dcf16b8f1b86e94278ff03c03",
           "instance_sets": {
             "source-contracts": [
               {}
@@ -4881,10 +4890,10 @@
             },
             {
               "ordinal": 19,
-              "name": "Require named example23 and runtime-version Rust source contracts",
+              "name": "Require named example24 and runtime-version Rust source contracts",
               "guard": "github.event_name != 'workflow_dispatch' || inputs.scenario == 'source-contracts'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "812262d9e14f223075357311d0248107127772d2984fe28c6a0e6523bb0c4e1f",
+              "source_block_sha256": "3e28d74db0aeacdc06040a6ad8828054ceccfafb00467e25ea8b9adfa1d5e77f",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -4903,7 +4912,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "source-contracts",
           "strategy": null,
-          "source_sha256": "42d2802a252b2341a64faaa8664ca62c362b10d7940afa428922380227046c90",
+          "source_sha256": "8e8c79a22ffe8e46a283d1adbd904e27e5febd33940d24982d7449adbc3d88e0",
           "instance_sets": {
             "static-scene": [
               {}
@@ -5033,10 +5042,10 @@
             },
             {
               "ordinal": 19,
-              "name": "Require named example23 and runtime-version Rust source contracts",
+              "name": "Require named example24 and runtime-version Rust source contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "46bbdd2f9ee29bff9d99b464031a25d1153cde1cd0ac2c6cf84d38812f248d16",
+              "source_block_sha256": "53f5ad8056c9230a2956d1b1a73f17b5e132160857cbf2c0e90f7dfc1584d629",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -5602,8 +5611,8 @@
     },
     {
       "path": ".github/workflows/native-mlt-sequence-e2e.yml",
-      "sha256": "94753433e5e409f322147d4053e3495d1e7ce0121fcdfbdaa5b6ad1277ca1b52",
-      "preamble_sha256": "8e0d824b9f6573a4bae0668c424ec4fbfdaefb0f70cb9e5fc8a8f41089d5e3f9",
+      "sha256": "17eb624cf3ae3ff432b48cbff600176d14cf2428402f04080270310b32c27f89",
+      "preamble_sha256": "0f7e3954423ade58188763c39977fd35ef580582c5567df564cb6473c8f0cac8",
       "evidence_class": "native_media_custody",
       "purpose": "Four ordinary MLT media modes plus separate admitted repaired-module and Film180 original G2 branches. The admitted R3 source declares a separate one-fixture FixedTxt prepare/owner route and independent R28 transport.",
       "inputs": {
@@ -5663,9 +5672,10 @@
           },
           "source": {
             "covered_by": [
-              "source"
+              "source",
+              "fixedtxt-managed-project-source-kit"
             ],
-            "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
+            "basis": "The blank-request source case keeps all existing source gates. The explicit managed-project-source-kit marker additionally prepares one authentic SDK Project and retains its partial input artifact, with no Native/G2 or R28 authority."
           },
           "repaired-g2": {
             "covered_by": [
@@ -5696,7 +5706,8 @@
               "repaired-g2",
               "film180-g2",
               "source",
-              "fixedtxt-v4-one-fixture"
+              "fixedtxt-v4-one-fixture",
+              "fixedtxt-managed-project-source-kit"
             ],
             "basis": "Actual default prepare preserves every original source/normal/G2 case; fixed fixture requires its explicit request and existing Film runtime-only dispatch."
           },
@@ -5717,9 +5728,12 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "e57447b7d518a63dbac1e9c21feee8724bf12d5cd81f1f1cde033e83bba34692",
+          "source_sha256": "f496ab14083b3ee2335a9333883e7b26b2958cbc1f865e62f012ad490b3a6b9b",
           "instance_sets": {
             "source": [
+              {}
+            ],
+            "fixedtxt-managed-project-source-kit": [
               {}
             ]
           },
@@ -5734,6 +5748,14 @@
             },
             {
               "ordinal": 3,
+              "name": "Preserve the explicit source-kit clock before existing source gates",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.fixedtxt_request != '' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "bc6726949e1b295e4c08ca91c4063d34287ddbdaf57762ef848ec8eed9f0dcf1",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
               "name": "Install hash-pinned private-evidence cryptography",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5741,7 +5763,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 4,
+              "ordinal": 5,
               "name": "Verify original FixedTxt admission and delivery source controls",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5749,7 +5771,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 5,
+              "ordinal": 6,
               "name": "Verify preflight custody infrastructure controls",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5757,7 +5779,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 6,
+              "ordinal": 7,
               "name": "Verify FixedTXT owner admission and closure source contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5765,7 +5787,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 8,
               "name": "Verify complete source-only G2 custody contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5773,15 +5795,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 9,
               "name": "Verify complete Film source and original-custody contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "04ca8d23cc06a3a28c2fa84128525a46188316065ea80e9fa27ceea485b1f819",
+              "source_block_sha256": "1559c3c4b1beb209a8a9366afdf7aa8e81d575ebb437017d09002cd6a7fe7daf",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 10,
               "name": "Verify isolated inspector import regression (discovery35)",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5789,15 +5811,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 11,
               "name": "Verify remaining source import contracts (discovery611)",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "41b9f9f5828df87858ef98ce8dbbcceabbdb43fda201c6bde0255aa985adf2e2",
+              "source_block_sha256": "626d84c16c6cfb73edecbc5f0648a73b06b54c8b439295f2da18341b3072ff18",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 12,
               "name": "Verify original consumer publication and Linux descriptor custody",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5805,15 +5827,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 14,
+              "ordinal": 15,
               "name": "Verify original-WAV staging contracts without native execution",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "4bf51515e1665f101bf11886d080654cc650ac7ac501e21c1e64e417a2e93635",
+              "source_block_sha256": "c66c19fcadf5da621e6ccbb9c7fb3f76bdc3013a8a56ef17a09a4ea29e073c43",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
+              "ordinal": 16,
               "name": "Build the existing Film180 producer and verify its source contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -5821,7 +5843,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 16,
+              "ordinal": 17,
+              "name": "Build the existing SDK library and prepare one managed Project source input",
+              "guard": "${{ steps.fixedtxt_source_kit_start.outcome == 'success' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "db937af5ecaabcf159d5dc4e838efed0edc42560ea68c41e5fd33a255eaccbcc",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 18,
               "name": "Verify source remains the exact selected checkout",
               "guard": "always()",
               "kind": "EXECUTABLE_STEP",
@@ -5829,11 +5859,35 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 17,
+              "ordinal": 19,
               "name": "Retain only source-contract originals",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
               "source_block_sha256": "4b1ae18b8e19b16cfe923cbfe0ea7c0d7df4bc55df3e86a3d8081ac57cde9b93",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 20,
+              "name": "Preserve the original partial source kit without Native admission",
+              "guard": "${{ always() && steps.fixedtxt_source_kit_start.outcome == 'success' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "004db042261519af9f4d670be3a13c25c10b283462a4b584886e47d70912b96a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 21,
+              "name": "Bind the source-kit upload to actual artifact action outputs",
+              "guard": "${{ always() && steps.fixedtxt_source_kit_upload.outcome == 'success' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "a017bb5074f37a6ab8580428b2aaace3e5c304a4eff91f566edec63ffbb88ac8",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 22,
+              "name": "Preserve original source-kit transport binding separately",
+              "guard": "${{ always() && steps.fixedtxt_source_kit_binding.outcome == 'success' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "276e40c0624df2084be5222c2b67708885eb3360f34122319d025dcc32382840",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -5849,7 +5903,7 @@
               "mode": "${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2') && '[\"final-mp4\"]' || '[\"pcm\",\"video-only\",\"final-mp4\",\"captioned-mp4\"]') }}"
             }
           },
-          "source_sha256": "40588a9b8c5f593f1c9690d2966643fbe4548559f86a7a99a891f2bd8e343cdc",
+          "source_sha256": "059f59bdb863e0157d6608fd1711034630a8fbfe2094d9c43632a67289854cb1",
           "instance_sets": {
             "normal": [
               {
@@ -5922,7 +5976,7 @@
               "name": "Verify complete Film source and original-custody contracts",
               "guard": "matrix.mode != 'pcm' && matrix.mode != 'video-only'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "b9566a9b1f8ce015725448daa05da86f2c4a43cc66964c17e8517b653b35cbf2",
+              "source_block_sha256": "4b4dab7e079bbe5b93aff3a2efc7841d5155c75a0fadc739b13c67e4c787a812",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -6018,7 +6072,7 @@
               "name": "Verify original-WAV staging contracts without native execution",
               "guard": "matrix.mode == 'final-mp4'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "98a388cb4326a8a65d40ee4ff5592f20a773bc2651c2da0776ba8d12b320e0f8",
+              "source_block_sha256": "3ab84a7b292a452a89f6e94633de24abaf0e1bf5b0fff3b05b1888c13253a8f4",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -6536,7 +6590,6 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                3,
                 4,
                 5,
                 6,
@@ -6545,10 +6598,11 @@
                 9,
                 10,
                 11,
-                14,
+                12,
                 15,
                 16,
-                17
+                18,
+                19
               ]
             }
           ],
@@ -6628,6 +6682,52 @@
           "coverage_basis": "One separate same-workflow transport invocation carrying the independently authored full original R28 dispatch and exact live target/review artifact descriptor. Read-only API, original actor/run/attempt/source checks, prewrite stream caps,100-second local deadline inside2-minute job, six retained original members. This transport neither authors/adopts R28 nor runs Native, resets the target clock, or supplies owner/physical PASS.",
           "original_attempt": 1,
           "blocking_reason": null
+        },
+        {
+          "id": "fixedtxt-managed-project-source-kit",
+          "inputs": {
+            "verification_scope": "source",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "g2_admission": "",
+            "fixedtxt_mode": "prepare",
+            "fixedtxt_request": "managed-project-source-kit",
+            "fixedtxt_delivery": ""
+          },
+          "kind": "COMPONENT_PREREQUISITE",
+          "required_job_instances": [
+            {
+              "job_id": "source-contracts",
+              "display_name": "source-contracts",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22
+              ]
+            }
+          ],
+          "coverage_basis": "The exact first-attempt source-only marker preserves the original clock before existing source gates, verifies current source/SDK/locks and one compiled factory binary, then calls the real pinned SDK authoring factory once. It retains the generated Film/Project/realization bytes, original source/build/command custody, the actual artifact upload and separate upload binding. The existing30-minute job and bounded command budget remain unchanged. This partial source kit has zero Native calls and no R28; caption_source, red_native, measurement_protocol and independent A5 review remain outstanding.",
+          "original_attempt": 1,
+          "blocking_reason": null
         }
       ],
       "job_dispositions": [],
@@ -6639,7 +6739,8 @@
         "This definition describes existing dispatch selections; it schedules no jobs, admits no original evidence and does not make every alternative a mandatory rerun. Candidate applicability remains a separate reviewed requirement mapping.",
         "FixedTxt R3 is source admitted but not adopted. It preserves180 original PNG per context, explicit2arms/24contexts in the independent experiment plan, and no fabricated values for final source, clock, sizes or capacity. One catalog selection does not collapse that24-context obligation.",
         "The existing Film runtime-only dispatch permits preparation only and never substitutes for the independently authored full FixedTxt R28 dispatch after original P/R/Q. The initial request and separate delivery inputs remain explicitly bound; missing bindings are blocking.",
-        "The three new binding names describe existing request/dispatch/delivery contracts. The planner remains read-only and does not validate an operational lease, authorize runtime, fill input values or infer success."
+        "The three new binding names describe existing request/dispatch/delivery contracts. The planner remains read-only and does not validate an operational lease, authorize runtime, fill input values or infer success.",
+        "The optional source-kit marker is restricted to source/prepare, exact first-attempt source binding and blank G2/delivery inputs. It generates only a partial authentic source input once; upload identity is transport custody, not original artifact readback, independent protocol approval, R28 or Native acceptance."
       ]
     },
     {
@@ -6867,7 +6968,7 @@
     },
     {
       "path": ".github/workflows/native-production.yml",
-      "sha256": "9e574aec2fa83c1cde672aeafa321845ae19730c16d63aa3355b443c5b7fe778",
+      "sha256": "412e3713d93828190fbc93ae3d957e85f326725a12b6178b4a7b0f7af2844eea",
       "preamble_sha256": "d27e572ddab41c8bfd588d9dcb8e6d489c51a4acefdcac6b1e606795934f3a26",
       "evidence_class": "source_and_selected_native_hyperframes",
       "purpose": "Production receipt, Broker and HyperFrames source contracts, plus a separately selected first-attempt native HyperFrames original scenario with public-recipient custody.",
@@ -6919,7 +7020,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "780bac7408513b7b2b30f4a161033a7b830f79397d2651313981094b810518ae",
+          "source_sha256": "45a505ad0f179299ae264f4ae951703925088162afb1bfc90700e178ff863dc3",
           "instance_sets": {
             "contracts": [
               {}
@@ -6947,10 +7048,10 @@
             },
             {
               "ordinal": 5,
-              "name": "Verify AAC custody consumers (292 selected source contracts)",
+              "name": "Verify AAC custody consumers (298 selected source contracts)",
               "guard": "github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "105fddfe13cc3e02b1c105d819673a70ffd31236f15386f8a86f0683904a9231",
+              "source_block_sha256": "249fa4963019735eef439ccc524e8131a9a05f9fbd907c61c2657209378351e2",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -7231,7 +7332,7 @@
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
         "This definition describes existing dispatch selections; it schedules no jobs, admits no original evidence and does not make every alternative a mandatory rerun. Candidate applicability remains a separate reviewed requirement mapping.",
-        "The current admitted Semwright source is resolved and verified from exact SOURCE_LOCK before checkout; the observed SDK is retained only when actually observed. Source rosters are descriptive expected identities, not test execution. The private 292-case workflow proposal must be reviewed/adopted before this definition binding."
+        "The current admitted Semwright source is resolved and verified from exact SOURCE_LOCK before checkout; the observed SDK is retained only when actually observed. Source rosters are descriptive expected identities, not test execution. The current closed AAC source roster declares298 cases, including the integrated Film coordinator controls. These are expected identities, not execution or physical audio acceptance."
       ]
     },
     {
@@ -7710,10 +7811,10 @@
     },
     {
       "path": ".github/workflows/native-render-e2e.yml",
-      "sha256": "b174f88863260de57d29b81b054f14de89b9581381f4960ee62fc079fc4cf3bf",
-      "preamble_sha256": "b2522b04fb38a3cafaa3ee340c888b1a6e33cd33016d86d9a9d95f03dd4f4386",
+      "sha256": "2dbab5e36b3b53f01f16d09a9ceda8cdca5671f0f96ef88d20877f7fa34210c6",
+      "preamble_sha256": "c97aabcfb60ba999584cfd4c0bf85170aa9df14d94e30ab56ae6092bdcecf8aa",
       "evidence_class": "native_render",
-      "purpose": "Existing standard independent native repeats and the explicitly selected source-bound N83 preview fixture; neither scope grants formal acceptance.",
+      "purpose": "Existing standard independent native repeats and the explicitly selected source-bound N83 preview fixture; neither scope grants formal acceptance. The separate editable-source selection preserves four original/reopened/edited phases, exact first-attempt source/recipient admission and sealed originals.",
       "inputs": {
         "native_scope": {
           "type": "choice",
@@ -7721,7 +7822,8 @@
           "default": "standard",
           "options": [
             "standard",
-            "n83-preview"
+            "n83-preview",
+            "editable-source-cycle"
           ]
         },
         "expected_source_sha": {
@@ -7758,6 +7860,13 @@
               "n83-rust-controls-failure"
             ],
             "basis": "N83 requires an explicit first-attempt manual dispatch, exact candidate source binding and an existing admitted public recovery recipient. The failure-retention alternative applies only when that same attempt fails its source controls; it is not another dispatch or a success requirement. The former combined source-control failure is now split explicitly into the early Python75 and later Rust3 retention branches of that same attempt; neither branch is dispatched independently."
+          },
+          "editable-source-cycle": {
+            "covered_by": [
+              "editable-source-cycle",
+              "editable-source-preflight-failure"
+            ],
+            "basis": "Explicit first-attempt source/recipient selection with repeat=false; the conditional preflight seal belongs to that same attempt and is never another dispatch or Native success."
           }
         },
         "expected_source_sha": {},
@@ -7774,9 +7883,11 @@
               "independent-repeat",
               "n83-preview",
               "n83-preflight-failure",
-              "n83-rust-controls-failure"
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure"
             ],
-            "basis": "For standard, false selects the shared single-run subset covered by the reviewed repeat. N83 requires false and disables repeat/event replay; its conditional source-control failure retention never grants permission for a Native attempt. The former combined source-control failure is now split explicitly into the early Python75 and later Rust3 retention branches of that same attempt; neither branch is dispatched independently."
+            "basis": "Standard false selects its shared single-run subset. N83 and editable-source require false and disable repeat/event replay; their separate conditional failure retention never grants another Native attempt."
           }
         }
       },
@@ -7787,7 +7898,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "c770738dfd228dac961e53610e4ddcb815d4d8be2294eadcaba8c544ff8534ab",
+          "source_sha256": "26e572199c4573ed8167ac9ad74029b06b0ab20e3ca582721745dd339cd79060",
           "instance_sets": {
             "independent-repeat": [
               {}
@@ -7800,6 +7911,12 @@
             ],
             "n83-rust-controls-failure": [
               {}
+            ],
+            "editable-source-cycle": [
+              {}
+            ],
+            "editable-source-preflight-failure": [
+              {}
             ]
           },
           "steps": [
@@ -7808,19 +7925,27 @@
               "name": "Admit closed native selection before bootstrap",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c6515f1883b2306f4b5166dc5c4840c29e3066c6a4b04cf872abbb7aa05785e8",
+              "source_block_sha256": "70b0656b1152717a3adfcd03c55a7cd68ba1369eafe23695b68ddd3ba2721e96",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 3,
-              "name": "Install pinned N83 custody and PNG verifier in a private runner venv",
-              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "name": "Install pinned custody and PNG verifier in a private runner venv",
+              "guard": "${{ inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "9c0f95c7bba55704e3e763f92a466ad8e51f1ddbba56000604592d5435fd56f5",
+              "source_block_sha256": "d452dd5a37dc4e769410116cc20dd8e16fa6e268f3de8b4aadc16e4142f3696a",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 4,
+              "name": "Verify editable-source reader before any native attempt",
+              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "78ed22be583b2e0b924eb69fb0e3652f3b49d050c7ba3b79bea7b897248ff232",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
               "name": "Verify exact N83 source controls before Native",
               "guard": "${{ inputs.native_scope == 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7828,7 +7953,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 5,
+              "ordinal": 6,
               "name": "Seal failed N83 source controls without any owner or Native attempt",
               "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7836,7 +7961,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 6,
+              "ordinal": 7,
               "name": "Resolve exact Semwright source pin",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7844,7 +7969,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 9,
               "name": "Verify immutable source identities",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7852,7 +7977,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 10,
               "name": "Verify v0.1 native CLI failures never expose private job receipts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7860,7 +7985,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 11,
               "name": "Reject raw Broker session or forged native parity in public evidence",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7868,7 +7993,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 14,
+              "ordinal": 15,
               "name": "Configure disposable-runner Driver Host sandbox",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7876,7 +8001,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
+              "ordinal": 16,
               "name": "Install Semwright daemon build dependencies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7884,7 +8009,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 16,
+              "ordinal": 17,
               "name": "Install exact Motion Canvas runtime and Firefox",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7892,7 +8017,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 17,
+              "ordinal": 18,
               "name": "Build exact Semwright Broker, sandbox and Motion Canvas provider",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7900,7 +8025,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 18,
+              "ordinal": 19,
               "name": "Build admitted N83 preview producer",
               "guard": "${{ inputs.native_scope == 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7908,7 +8033,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 19,
+              "ordinal": 20,
               "name": "Build Motionwright production acceptance",
               "guard": "${{ inputs.native_scope != 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7916,7 +8041,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 20,
+              "ordinal": 21,
+              "name": "Verify actual editable source Service cycle before Native",
+              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "040a67d9e86910f44867990e46d40854c1e1adb2bb79409d54c9e67c997b1ced",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 22,
               "name": "Verify exact N83 Rust3 source controls before Native",
               "guard": "${{ inputs.native_scope == 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7924,7 +8057,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 21,
+              "ordinal": 23,
               "name": "Seal failed N83 Rust3 source controls without any owner or Native attempt",
               "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'success' && steps.n83_rust_controls.outcome == 'failure' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7932,7 +8065,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 22,
+              "ordinal": 24,
               "name": "Verify direct-vs-mediated parity invariants before native rendering",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7940,7 +8073,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 23,
+              "ordinal": 25,
               "name": "Reject synthetic or incorrectly interpolated cubic ROI evidence",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7948,7 +8081,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 24,
+              "ordinal": 26,
               "name": "Reject invented render stage timing claims",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7956,7 +8089,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 25,
+              "ordinal": 27,
               "name": "Verify bounded provider lifecycle diagnostics",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7964,7 +8097,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 26,
+              "ordinal": 28,
               "name": "Reject fabricated independent-run reliability evidence",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7972,47 +8105,47 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 27,
+              "ordinal": 29,
               "name": "Render application-owned revision through real Broker and Driver Host",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "7a71e073bb1db22be18452f15495eb547fd5a0a5d4b97b94916a237da271b60f",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 28,
-              "name": "Verify review evidence",
-              "guard": "${{ inputs.native_scope != 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "e6ea5bc9d52cee34f031794ccbcaf2a82500fefd5eff53d92b10619b9afb1fb0",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 29,
-              "name": "Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)",
-              "guard": "${{ inputs.native_scope != 'n83-preview' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "98061ca18bd74c9e9a972f94944b6441fc8ffa5deaaef3f760cd599a4c60b536",
+              "source_block_sha256": "cf4210e4fbae29fcf79e1e0d77f5d5ca11cb19137d68b5903f27e201cbd1c59d",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 30,
-              "name": "Stage only verified v0.1 native PNG review, not original Broker receipts",
-              "guard": "${{ always() && inputs.native_scope != 'n83-preview' }}",
+              "name": "Verify review evidence",
+              "guard": "${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "250b50183dd70a8b88469f9989da5f06a3088b9ba64d7a45231b95c6378b95ad",
+              "source_block_sha256": "4f630f89d39a2b8cc213182451b678ec51193bb98cb0ab3a6c800d0dc4c5033a",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 31,
-              "name": null,
-              "guard": "${{ always() && inputs.native_scope != 'n83-preview' }}",
-              "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "e3a6ae245dfeea8be0d948af8725a78c22a36f196eece7dfc4c75c3b40a697d9",
-              "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+              "name": "Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)",
+              "guard": "${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "49cad0f6932f3ecf85af939a0bc34b7987dcae59c651f6a6081f517e0bbcf7f5",
+              "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 32,
+              "name": "Stage only verified v0.1 native PNG review, not original Broker receipts",
+              "guard": "${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "6366ae33976a3b491adccc7ec74a567eec695a8bbe590a03296dd3c3a999818c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 33,
+              "name": null,
+              "guard": "${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "14a5df7b40418effb56a87c5b88a77d89df29a97102c2355b896df875f31fb31",
+              "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            },
+            {
+              "ordinal": 34,
               "name": "Verify complete sealed N83 fixture outcome",
               "guard": "${{ inputs.native_scope == 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -8020,11 +8153,35 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 33,
+              "ordinal": 35,
               "name": "Publish only sealed N83 originals and closed manifest",
               "guard": "${{ always() && inputs.native_scope == 'n83-preview' }}",
               "kind": "ARTIFACT_RETENTION",
               "source_block_sha256": "087c7921f19d263ec29de22aa2b45d66f8a6536f734e45cd17eabe49612c55a5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 36,
+              "name": "Preserve editable-source preflight failure without starting an owner",
+              "guard": "${{ always() && inputs.native_scope == 'editable-source-cycle' && !hashFiles('verification/native-editable-public/sealed-originals.bin') }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "e3bcc2e77fea74ed307a345f70cc7909c95a5439688a3a70967ad6eab9ec4ac4",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 37,
+              "name": "Verify sealed editable native source cycle",
+              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "988473c396de3ca6c7f3945c90f4ac3724b08c27323cd905bb64d210a66e1d8f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 38,
+              "name": "Publish only sealed editable-source originals and closed manifest",
+              "guard": "${{ always() && inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "910cdb940012fb0af438df572dac769a29cc33b0edb7ccc17780281feae3847c",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -8048,17 +8205,15 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                6,
-                8,
+                7,
                 9,
                 10,
-                14,
+                11,
                 15,
                 16,
                 17,
-                19,
-                22,
-                23,
+                18,
+                20,
                 24,
                 25,
                 26,
@@ -8066,11 +8221,13 @@
                 28,
                 29,
                 30,
-                31
+                31,
+                32,
+                33
               ]
             }
           ],
-          "coverage_basis": "The standard repeat preserves the existing native acceptance, direct/mediated parity, fresh owner/Broker/Driver Host repeat and bounded public-artifact steps. N83-only steps 3,4,5,18,20,21,32,33 are not selected. Intermittent loss repair remains NOT_PROVEN; exact originals remain necessary.",
+          "coverage_basis": "The standard repeat preserves existing native acceptance, direct/mediated parity, two fresh owner/Broker/Driver Host renders and bounded public artifacts. N83 and editable-only source controls, source cycles and sealed uploads are excluded. Intermittent loss repair remains NOT_PROVEN and original readback remains required.",
           "original_attempt": null,
           "blocking_reason": null
         },
@@ -8096,29 +8253,29 @@
               "required_steps": [
                 2,
                 3,
-                4,
-                6,
-                8,
+                5,
+                7,
                 9,
                 10,
-                14,
+                11,
                 15,
                 16,
                 17,
                 18,
-                20,
+                19,
                 22,
-                23,
                 24,
                 25,
                 26,
                 27,
-                32,
-                33
+                28,
+                29,
+                34,
+                35
               ]
             }
           ],
-          "coverage_basis": "The explicit manual N83 selection requires attempt 1, expected_source_sha equal to GITHUB_SHA and clean HEAD, unchanged committed lock bytes and an already admitted RSA3072 recovery recipient before owner or Native effects. It runs the exact Python75 and Rust3 source controls, then seed/before/edit/dirty/full-after/assemble-input/admit-preview/reopen-preview/dependency-negative once. Only before, dirty and full-after render (90+60+90 frames). The success path requires the complete sealed outcome and upload; source-control failure salvage steps5 and21 are excluded. Standard parity/repeat rendering is not selected; no formal acceptance, automatic retry or current preview at the negative TimeRipple revision is inferred.",
+          "coverage_basis": "The explicit first-attempt N83 selection requires exact candidate SHA, clean source/locks and an admitted public RSA3072 recipient. Python75 step5 and Rust3 step22 precede the bounded seed/before/edit/dirty/full-after/assemble-input/admit-preview/reopen-preview/dependency-negative sequence. Its positive path requires sealed outcome34 and upload35; source-control rescues6 and23 are excluded. The added editable-source steps4,21,36,37,38 are not selected. Standard parity/repeat and any retry remain excluded; no formal acceptance is inferred.",
           "original_attempt": 1,
           "blocking_reason": null
         },
@@ -8144,12 +8301,12 @@
               "required_steps": [
                 2,
                 3,
-                5,
-                33
+                6,
+                35
               ]
             }
           ],
-          "coverage_basis": "This preserves A1's n83-preflight-failure diagnostic-retention obligation, now specifically the early Python75 branch of the same first N83 attempt when n83_source_controls step4 has outcome failure. Only the preceding successful closed admission and private custody setup steps2 and3 are required before step5 seals the failed source-control originals for step33 upload. Step4 is an observed failure, not a positive obligation. SDK checkout, bootstrap, Rust3, Native and complete-outcome verification do not execute on this branch. The seal refuses an existing owner, Native evidence or public seal and emits NOT_VERIFIED with no completed Native stages. Do not provoke a failure or dispatch another run to satisfy this branch. It never substitutes for the n83-preview success case or grants source, Native or release acceptance.",
+          "coverage_basis": "The preserved early Python75 failure alternative belongs to the same first N83 attempt when n83_source_controls step5 has outcome failure. Successful admission/setup2,3 precede rescue6 and sealed upload35. The failed anchor5, SDK/bootstrap/Rust3, Native29 and positive outcome34 are not positive requirements. The rescue refuses existing owner/native/public evidence and emits NOT_VERIFIED. This is conditional diagnostic retention, never a provoked failure, another dispatch or a substitute for the N83 success case.",
           "original_attempt": 1,
           "blocking_reason": null
         },
@@ -8175,22 +8332,101 @@
               "required_steps": [
                 2,
                 3,
-                4,
-                6,
-                8,
+                5,
+                7,
                 9,
                 10,
-                14,
+                11,
                 15,
                 16,
                 17,
                 18,
-                21,
-                33
+                19,
+                23,
+                35
               ]
             }
           ],
-          "coverage_basis": "This separates the later Rust3 part of A1's original combined preflight-failure obligation within the same first N83 attempt. Python75 step4 and its preceding exact setup must have succeeded; n83_rust_controls step20 has observed outcome failure. The exact successful prerequisites are steps2,3,4,6,8,9,10,14,15,16,17,18, followed by the step21 seal-only command and step33 upload. Step20 is never a positive obligation. The Native owner step27, complete-outcome verifier step32, standard repeat and early Python-failure seal step5 do not execute on this branch. The seal refuses an existing owner, Native evidence or public seal and emits NOT_VERIFIED with no completed Native stages. This is a conditional diagnostic branch, not another dispatch, a required provoked failure or a substitute for the n83-preview success case. UNKNOWN does not authorize replay.",
+          "coverage_basis": "The preserved later Rust3 failure alternative belongs to the same first N83 attempt: Python75 step5 and exact prerequisites2,3,5,7,9,10,11,15,16,17,18,19 succeed before n83_rust_controls step22 has outcome failure. Rescue23 and upload35 retain NOT_VERIFIED originals. Failed anchor22, Native29, positive outcome34 and early rescue6 are excluded. This branch authorizes no replay, separate dispatch or Native acceptance.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "editable-source-cycle",
+          "inputs": {
+            "native_scope": "editable-source-cycle",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                4,
+                7,
+                9,
+                10,
+                11,
+                15,
+                16,
+                17,
+                18,
+                20,
+                21,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                37,
+                38
+              ]
+            }
+          ],
+          "coverage_basis": "The explicit first-attempt editable-source cycle requires exact clean candidate/SDK/locks, the existing public RSA3072 recipient, its reader controls and the two real Service source-cycle tests. It observes original, reopened, edited and edited_reopened stages with five native jobs and four Host processes, preserves sealed originals and requires the closed SCOPED_COMPLETED projection. Standard repeat/event replay and N83 are excluded. Failure salvage36 is never a positive obligation and UNKNOWN stops without replay.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "editable-source-preflight-failure",
+          "inputs": {
+            "native_scope": "editable-source-cycle",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "v01_provider_repeat": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                36,
+                38
+              ]
+            }
+          ],
+          "coverage_basis": "Conditional retention of the same editable-source attempt when no sealed cycle exists after preflight failure. The successful closed admission/private custody setup2,3 precedes seal36 and upload38; the sealer refuses an existing owner, native evidence or public capture and emits NOT_VERIFIED with no selected-original completeness. It observes no Native success and cannot replace the positive cycle, recreate a failed owner capture or authorize another dispatch.",
           "original_attempt": 1,
           "blocking_reason": null
         }
@@ -8200,8 +8436,9 @@
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
         "N83 is a bounded preview fixture, not formal acceptance. Its first-attempt source/lock/recipient admission and selected original custody remain mandatory; no recovery identity is created by this catalog.",
-        "The preserved preflight-failure alternative is Python75 conditional retention only; the separate Rust3 failure alternative carries the later half of the former combined failure obligation. Their NOT_VERIFIED seals cannot satisfy N83 success. Rescue steps5 and21 are required only in their exact diagnostic alternatives and never on the success path; failed source-control anchors4 and20 are not positive requirements of their respective failure branches.",
-        "The catalogue describes possible success and failure observations of one selected N83 attempt. Its182 case declarations are not182 executions or a universal release denominator; no runtime reader, dispatch authority or automatic retry is added."
+        "The preserved preflight-failure alternative is Python75 conditional retention only; the separate Rust3 failure alternative carries the later half of the former combined failure obligation. Their NOT_VERIFIED seals cannot satisfy N83 success. Rescue steps6 and23 are required only in their exact diagnostic alternatives and never on the success path; failed source-control anchors5 and22 are not positive requirements of their respective failure branches.",
+        "The catalogue describes possible success and failure observations of one selected N83 attempt. Its case declarations are not182 executions or a universal release denominator; no runtime reader, dispatch authority or automatic retry is added.",
+        "Editable-source-cycle has a distinct positive cycle and a same-attempt preflight-only NOT_VERIFIED retention branch. No source, diagnostic or encrypted artifact alone establishes physical/G2 or release acceptance; existing applicability review determines selection."
       ]
     },
     {
@@ -18638,8 +18875,8 @@
     },
     {
       "path": ".github/workflows/v05-otio-real-media.yml",
-      "sha256": "211a1745a31fb71b2595ce531f2625bc6924d37ea1184bcc151090e2f83791c6",
-      "preamble_sha256": "017d85a0a4fdab28c7a819f207d454e42c33b2c436e32a4eda59888dac24315f",
+      "sha256": "fb9640390cabe36dc099335af7c68d5b7a64fb2323a998435a8fdc702c1cf114",
+      "preamble_sha256": "bc85bc588c3dd5c633986c73f9812f2a6528bc1f96564f0b3979b22ae5be1a2f",
       "evidence_class": "mixed_source_media_native_readonly",
       "purpose": "Source OTIO/media interchange and Windows junction controls, separate Kdenlive accessibility/roundtrip observations, and externally admitted read-only ALab metadata.",
       "inputs": {
@@ -18649,6 +18886,7 @@
           "default": "source",
           "options": [
             "source",
+            "kdenlive-distribution",
             "accessibility-only",
             "kdenlive-gui",
             "external-alab-readonly"
@@ -18704,6 +18942,12 @@
               "external-alab-readonly"
             ],
             "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
+          },
+          "kdenlive-distribution": {
+            "covered_by": [
+              "kdenlive-distribution"
+            ],
+            "basis": "Independent static-distribution observation with exact source/public-recipient binding; no GUI, editor, native render or external ALab branch is selected. It is an existing optional dispatch, not an automatic prerequisite imposed on every other case."
           }
         },
         "expected_source_sha": {},
@@ -18718,7 +18962,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "87c5265c509fbfdc289a196684bcd7a661acc746ca1849cbd68a9ecba396482c",
+          "source_sha256": "e1cdd1bb6ab0ac5685661f8ac9d1feb6b6428c62ce21159168a34d354877f431",
           "instance_sets": {
             "source": [
               {}
@@ -18778,7 +19022,7 @@
               "name": "Run complete OTIO discovery with explicit platform-specific cases",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "6f67ef3eab7c6fd1107372c2e326af02176671031142eef4dfd1ee1bfbbf9d27",
+              "source_block_sha256": "c87a62a687a329eedfed0da7e718559b9f9568544b5b94387784052f22cdb97d",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -18852,7 +19096,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "a9592f39cae4b37dd281061d2576ee5a1f3fc3143d3cc96d0107bc06c1c11e47",
+          "source_sha256": "b1e3bc72cf5a3f27dbea11800ae4b76b02da74b3e379f9736a4c70eca660d297",
           "instance_sets": {
             "accessibility-only": [
               {}
@@ -18894,7 +19138,7 @@
               "name": "Install disposable GUI and accessibility observation dependencies",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c5e18bb2011e4fcd3d1e3fc012206cda89ee748b05d84acaff374d2dd48a8a26",
+              "source_block_sha256": "960f69abaeeb86321092425899e8b95032aecff158102f54760590d0fc725be6",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -18902,7 +19146,7 @@
               "name": "Run exact offline GUI contracts without native effects or skips",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "24f927dddb0bc6bbfe31941939fd73502f7b394034cd93b54957e8f9aabc86c6",
+              "source_block_sha256": "076a4465b2ea4d97a74118b5bee8493096932761c38d751a01f76530faa15050",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -18982,7 +19226,78 @@
               "name": "Retain original owner-cut source-test receipts",
               "guard": "always() && inputs.verification_scope != 'external-alab-readonly'",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "c33ad44935cf5dac5a70392ce6b59cf809c4a50df673659c05fd905922e15896",
+              "source_block_sha256": "2cff6c4b7277d62d04f97a8fd3fd2c69945632d9bb7ebc785ac5de1cb53180d1",
+              "api_binding": "EXPLICIT_NAME"
+            }
+          ]
+        },
+        "kdenlive-distribution-observation": {
+          "source_name": "kdenlive-distribution-observation",
+          "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-distribution'",
+          "runs_on": "ubuntu-24.04",
+          "needs": null,
+          "strategy": null,
+          "source_sha256": "7dfe0511de4ec14c1032421665f2d39132c84d2d1513232d9ec10d094b272709",
+          "instance_sets": {
+            "kdenlive-distribution": [
+              {}
+            ]
+          },
+          "steps": [
+            {
+              "ordinal": 2,
+              "name": "Bind the explicit distribution-only source before preparation",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "012ed9a42371671ca81aed2e534e779599c9f1e8fb5b1e14d499a89b994e7127",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 3,
+              "name": "Install static ELF and private-custody observation dependencies",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "4583fc7b2efc1ef8876b1a1f30ca3305301fa77c4811d209a062de64b6adbbb4",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
+              "name": "Reserve one static observation and preserve immutable inputs",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "4578b274d9ab2b1fa7c42caa99c1ef3c0582540b6c8a7161fcba515716858548",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
+              "name": "Require finite distribution source controls without launching the editor",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "20bbd974c377f805ac199cc144f517868cffa7e0d06e2fe61541ebff2d323d14",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "Extract once and inspect original hooks and ELF declarations only",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "e6e5ae4cba5d1c4ad329481b17854b78d79aa5a50e10927984f1087d86e145d9",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
+              "name": "Seal the one full or partial static observation",
+              "guard": "always() && steps.observation_start.outcome == 'success'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "0ab5ae1a1408ddc5373d981329e3820ad1baf95f595bc5823d35d39fc24c4d28",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Retain only ciphertext and the closed distribution projection",
+              "guard": "always() && steps.observation_start.outcome == 'success'",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "8ac74153d63cfbb1fb822613100730f49a14f0eca8052d6809a6f9824d79bf04",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -19143,13 +19458,49 @@
           "coverage_basis": "Existing read-only metadata branch requires its own frozen external ALab admission and source-control custody; it excludes GUI dependencies, Rust fixture compilation and the native edit route.",
           "original_attempt": 1,
           "blocking_reason": "Exact reviewed external ALab admission JSON and its SHA-256 remain unbound here. Preserve their external authorization and original evidence requirements; this empty placeholder is not dispatchable."
+        },
+        {
+          "id": "kdenlive-distribution",
+          "inputs": {
+            "verification_scope": "kdenlive-distribution",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": ""
+          },
+          "kind": "COMPONENT_PREREQUISITE",
+          "required_job_instances": [
+            {
+              "job_id": "kdenlive-distribution-observation",
+              "display_name": "kdenlive-distribution-observation",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ]
+            }
+          ],
+          "coverage_basis": "One explicit first-attempt distribution-only observation binds exact source and an admitted public recipient, retains immutable inputs, executes finite source controls, extracts the exact distribution once, and records only original hooks and static ELF declarations with sealed custody. It does not load libraries, initialize AT-SPI, launch the editor, edit media or establish GUI/G2 success. Partial observations remain NOT_VERIFIED.",
+          "original_attempt": 1,
+          "blocking_reason": null
         }
       ],
       "job_dispositions": [],
       "limitations": [
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
-        "This definition describes existing dispatch selections; it schedules no jobs, admits no original evidence and does not make every alternative a mandatory rerun. Candidate applicability remains a separate reviewed requirement mapping."
+        "This definition describes existing dispatch selections; it schedules no jobs, admits no original evidence and does not make every alternative a mandatory rerun. Candidate applicability remains a separate reviewed requirement mapping.",
+        "The distribution selector is a static component observation only. Its sealed ELF/hook originals cannot satisfy accessibility, import/edit, owner-cut/render or other physical G2 obligations. The source and GUI routes retain their current closed rosters without counting a definition as execution."
       ]
     },
     {
