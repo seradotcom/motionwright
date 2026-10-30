@@ -207,6 +207,7 @@ jobs:
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
           SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_film180_evidence_selection.py', 55, '15ffcbb8cb2968432d051e3d8b921dfb0a980e4a915e077901c19a127b32f3b5'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125')]
+          DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
           MODE = 'dotted'
           GROUP = 'production'
           TOTAL = 292
@@ -269,7 +270,7 @@ jobs:
               tree = ast.parse(raw, filename=path)
               contract_need(not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_tests"
                                for n in ast.walk(tree)), "Unreviewed dynamic Source group discovery")
-              names, classes = [], []
+              names, classes, actual_descriptions = [], [], {}
               for cls in tree.body:
                   if not isinstance(cls, ast.ClassDef):
                       continue
@@ -279,16 +280,26 @@ jobs:
                                and cls.name not in classes and len(methods) == len(set(methods)), "Source group class/method roster changed")
                       classes.append(cls.name)
                       names.extend(cls.name + "." + name for name in methods)
+                      for method in cls.body:
+                          if isinstance(method, ast.FunctionDef) and method.name in methods:
+                              description = ast.get_docstring(method)
+                              if description:
+                                  actual_descriptions[cls.name + "." + method.name] = description.strip().splitlines()[0].strip()
               names.sort()
               contract_need(len(names) == len(set(names)) == count
                        and contract_sha(("\n".join(names) + "\n").encode()) == expected_sha, "Source group nominal source roster requires review")
+              contract_need(actual_descriptions == DESCRIPTIONS.get(path, {}),
+                       "Source group nominal source descriptions require review")
               return names
 
 
-          def contract_nominal(raw, expected):
+          def contract_nominal(raw, expected, descriptions):
               text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
               contract_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
                        "Source group noncanonical line separator")
+              contract_need(type(descriptions) is dict and set(descriptions) <= set(expected)
+                       and all(type(value) is str and value and not any(c in value for c in "\r\n")
+                               for value in descriptions.values()), "Source group description scope differs")
               footer = re.search(r"\n-{70}\nRan ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s\n\nOK\n\Z", text)
               contract_need(footer is not None and footer.group(1) == str(len(expected)), "Source group incomplete/failed unittest footer")
               body = text[:footer.start()]
@@ -300,13 +311,18 @@ jobs:
               diagnostic_modules = (".test_native_mlt_g2_observation.", ".test_native_mlt_live_observer_diagnostics.",
                                     ".test_native_film180_original_g2.")
               while index < len(lines):
-                  match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\) \.\.\. (.*)", lines[index])
+                  match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?", lines[index])
                   contract_need(match is not None, "Source group foreign/omitted/unreviewed nominal outcome")
                   method, identity, terminal = match.groups()
                   identity = identity if identity.rsplit(".", 1)[-1] == method else identity + "." + method
                   contract_need(identity in expected, "Source group diagnostic/terminal has no selected case")
                   index += 1
-                  if terminal != "ok":
+                  if identity in descriptions:
+                      contract_need(terminal is None and index < len(lines)
+                               and lines[index] == descriptions[identity] + " ... ok",
+                               "Source group source-bound description/terminal differs")
+                      index += 1
+                  elif terminal != "ok":
                       contract_need(terminal == diagnostic and any(part in "." + identity for part in diagnostic_modules),
                                     "Source group unreviewed diagnostic")
                       count = 1
@@ -358,7 +374,8 @@ jobs:
                   contract_need(type(step.get(stream)) is dict and set(step[stream]) == {"file", "sha256"}
                            and step[stream]["sha256"] == contract_sha(raw), "Source group original stream hash differs")
               prefix = Path(path).stem if mode == "discovery" else module
-              return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids])
+              descriptions = {prefix + "." + name: value for name, value in DESCRIPTIONS.get(path, {}).items()}
+              return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids], descriptions)
 
 
           def admit_contract_source():
