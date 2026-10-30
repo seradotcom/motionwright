@@ -8151,10 +8151,10 @@
     },
     {
       "path": ".github/workflows/native-sdk.yml",
-      "sha256": "ef05160be23a0cb5b3ffd1c3ef458570d9d43e9906d5a04d745099fd7782e3a0",
+      "sha256": "da6917f42ffb6f3aff3475579df005fc911a548a145b6f8c80c42ed3f5309073",
       "preamble_sha256": "c8cc3b79e33419422e501f9d2a9cb361089c20127f4785c3ebcb162c33cdaf5f",
       "evidence_class": "native_host_paths",
-      "purpose": "Pinned Native SDK, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
+      "purpose": "Pinned Native SDK and music/SFX/preview consumer contracts, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
       "inputs": {},
       "input_dispositions": {},
       "jobs": {
@@ -8164,7 +8164,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "f6220bedf66227dbb061b8b433aa21e809818ba5d6a9c23e60aa9bd560d6fe38",
+          "source_sha256": "103a2795cc8760152309239c0f5fbdaa3682f64d2a3d21a63c92431448da5ebc",
           "instance_sets": {
             "candidate": [
               {}
@@ -8216,7 +8216,23 @@
               "name": "Motionwright Native SDK adapter tests",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "1b9a6a70d47faecdea992aedf9962ee8bf91a87bd46e5454a0309f73d71af58b",
+              "source_block_sha256": "681e78ed5819752ccb1a02fd8d9b2f469e637cf34100a00405eaafb2715f3a8c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 11,
+              "name": "Music and SFX domain regression tests",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "4fb12aaec59fa71e960f357dac73123f62cd53209ce3b926e7238355349909bd",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 12,
+              "name": "Preview and music persistence service tests",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "fe5b2e4d453ef55f13532a7c18007c17bc8a2cac24b02377125d984972b914d9",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -8375,7 +8391,9 @@
                 7,
                 8,
                 9,
-                10
+                10,
+                11,
+                12
               ]
             },
             {
@@ -8414,7 +8432,7 @@
               ]
             }
           ],
-          "coverage_basis": "Pinned Native SDK, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
+          "coverage_basis": "Pinned Native SDK and music/SFX/preview consumer contracts, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
           "original_attempt": null,
           "blocking_reason": null
         }

@@ -22,6 +22,7 @@ use uuid::Uuid;
 pub mod assembly;
 pub mod blender_product_scene;
 pub mod canonical;
+mod change_preview;
 mod component_text;
 pub mod creative_doctor;
 mod expressive;
@@ -3873,7 +3874,7 @@ fn build_application_with_graph_store(
             }),
         )?;
     }
-    Ok(app)
+    change_preview::register(app, service)
 }
 
 /// Native provider composition is intentionally separate from the public
@@ -6298,6 +6299,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"driver.motionwright.observe"));
         assert!(names.contains(&"driver.motionwright.project.rename"));
+        assert!(names.contains(&"driver.motionwright.project.preview"));
         assert!(names.contains(&"driver.motionwright.scene.add"));
         assert!(names.contains(&"driver.motionwright.scene.renderer.set"));
         assert!(names.contains(&"driver.motionwright.brief.set"));
@@ -6362,7 +6364,7 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.narration.take.record"));
         assert!(names.contains(&"driver.motionwright.narration.take.release"));
         assert!(names.contains(&"driver.motionwright.operation.get"));
-        assert_eq!(capabilities.len(), 82);
+        assert_eq!(capabilities.len(), 83);
     }
 
     #[test]

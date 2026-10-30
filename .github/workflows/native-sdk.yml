@@ -85,6 +85,16 @@ jobs:
         run: cargo test --locked -p semwright-native-sdk --features driver --test cooperation
       - name: Motionwright Native SDK adapter tests
         run: cargo test --locked -p motionwright-native --all-targets
+      - name: Music and SFX domain regression tests
+        run: >-
+          cargo test --locked -p motionwright-domain
+          --test music_clock --test music_conform
+          --test music_sfx_impact_ack --test semantic_sfx
+      - name: Preview and music persistence service tests
+        run: >-
+          cargo test --locked -p motionwright-service
+          --test change_preview --test music_conform_persistence
+          --test music_cut_persistence
 
   macos-owner-path-alias:
     needs: verify-native-sdk

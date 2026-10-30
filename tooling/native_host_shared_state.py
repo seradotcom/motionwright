@@ -12,13 +12,14 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
 import tomllib
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from native_av_failure_guard import run_sanitized_json
 
@@ -74,6 +75,18 @@ def write_json(path: Path, value: object) -> None:
 
 def actor(env: dict[str, str], database: Path, *args: str) -> dict:
     return run_json([str(ACTOR), str(database), *args], env=env)
+
+
+def stored_content(database: Path) -> tuple:
+    """Compare this real SQLite Store in memory, including receipts and events.
+
+    SQLite may checkpoint WAL bytes during ordinary connection lifetime changes;
+    compare its complete persisted SQL content and physical file identity instead.
+    """
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+        sql = hashlib.sha256("\n".join(connection.iterdump()).encode("utf-8")).hexdigest()
+    info = database.stat()
+    return info.st_dev, info.st_ino, sql
 
 
 def owner_config(data_root: Path, *, manifest: Path | None = None,
@@ -442,8 +455,8 @@ def main() -> None:
                 transport_calls, ok=ok,
             )
             outer = receipt["envelope"]
-            # Preserve the public curator's 13 native-operation views and exact
-            # five-key shape. Each retains its ORIGINAL outer envelope; bootstrap,
+            # Preserve the public curator's exact five-key native-operation shape.
+            # Each retains its ORIGINAL outer envelope; bootstrap,
             # mounts and physical wrapper calls also have separate private custody.
             calls.append({"command": command, "args": args, "session": selected_session.name,
                           "exit_code": receipt["exit_code"], "envelope": outer})
@@ -564,6 +577,56 @@ def main() -> None:
             if human_revision != agent_revision:
                 raise AssertionError("independent clients did not start from the same revision")
 
+            # Exercise the new read through the actual Broker/Host twice, using
+            # each client's own observed ref. The CAS race below then continues
+            # from these SAME refs: preview must neither commit nor stale them.
+            before_preview = stored_content(database)
+            human_preview = invoke(
+                "driver.motionwright.project.preview",
+                {"ref": human_view["ref"],
+                 "edit": {"operation": "project.rename", "title": "Uncommitted preview title"}},
+                session_path=human_session,
+            )["data"]
+            agent_preview = invoke(
+                "driver.motionwright.project.preview",
+                {"ref": agent_view["ref"],
+                 "edit": {"operation": "scene.add", "name": "Uncommitted preview scene",
+                          "objective": "Read-only Host preview", "duration_seconds": 3}},
+                session_path=agent_session,
+            )["data"]
+            for preview in (human_preview, agent_preview):
+                if (preview.get("schema") != "motionwright.change-preview/1"
+                        or preview.get("status") != "READ_ONLY_DOMAIN_VALIDATION"
+                        or preview.get("resource") != resource
+                        or preview.get("generation") != seeded["generation"]
+                        or preview.get("revision") != human_revision
+                        or preview.get("committed") is not False
+                        or preview.get("exact_future_ids_proven") is not False
+                        or type(preview.get("candidate_scene_count")) is not int):
+                    raise AssertionError("Native preview lost its read-only observed-project contract")
+            if (human_preview.get("candidate_title") != "Uncommitted preview title"
+                    or agent_preview.get("candidate_title") != ui_rename["title"]
+                    or agent_preview["candidate_scene_count"] != human_preview["candidate_scene_count"] + 1):
+                raise AssertionError("Native preview did not evaluate the requested uncommitted edit")
+
+            redirected_preview = invoke(
+                "driver.motionwright.project.preview",
+                {"ref": agent_view["ref"], "resource": other["resource"],
+                 "edit": {"operation": "project.rename", "title": "must not cross resources"}},
+                ok=False,
+                session_path=agent_session,
+            )
+            require_known_denial(
+                redirected_preview, "InvalidArgument",
+                "Native preview did not retain its typed payload-override error",
+            )
+            # Only a known typed denial can continue into another native call.
+            # Store equality cannot resolve or promote an UNKNOWN outcome.
+            if stored_content(database) != before_preview:
+                raise AssertionError("Native previews changed physical Store identity or persisted SQLite rows")
+            if actor(env, database, "show", project_id) != ui_rename:
+                raise AssertionError("Separate UI-service reopen observed a preview mutation")
+
             with ThreadPoolExecutor(max_workers=2) as pool:
                 human_future = pool.submit(
                     invoke,
@@ -596,6 +659,21 @@ def main() -> None:
                 raise AssertionError("shared state does not match the winning concurrent mutation")
             if int(after_race["revision"]) != int(human_revision) + 1:
                 raise AssertionError("concurrent CAS advanced the shared revision more than once")
+
+            before_stale_preview = stored_content(database)
+            stale_preview = invoke(
+                "driver.motionwright.project.preview",
+                {"ref": agent_view["ref"],
+                 "edit": {"operation": "project.rename", "title": "stale preview must be rejected"}},
+                ok=False,
+                session_path=agent_session,
+            )
+            require_known_denial(
+                stale_preview, "StaleReference",
+                "Native preview did not retain its typed stale-reference error",
+            )
+            if stored_content(database) != before_stale_preview:
+                raise AssertionError("Rejected stale preview changed the physical Store")
 
             stale_after_race = invoke(
                 "driver.motionwright.project.rename",
@@ -645,6 +723,11 @@ def main() -> None:
                         "forged_actor_field_rejected": True,
                         "cross_project_ref_rejected": True,
                         "two_sessions_share_one_base": True,
+                        "two_sessions_preview_through_real_host": True,
+                        "preview_preserves_store_identity_rows_receipts_and_events": True,
+                        "preview_payload_resource_override_error_retained": True,
+                        "preview_refs_continue_into_real_cas": True,
+                        "stale_preview_error_retained": True,
                         "concurrent_cas_has_exactly_one_winner": True,
                         "concurrent_loser_is_stale": True,
                         "final_sdk_write_visible_to_ui_service": True,

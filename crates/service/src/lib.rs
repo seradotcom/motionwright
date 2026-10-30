@@ -1,6 +1,7 @@
 mod audio;
 mod branch_combination;
 mod brand_fonts;
+mod change_preview;
 mod file_import;
 mod font_portability;
 mod import_limits;
@@ -22,6 +23,7 @@ pub use branch_combination::BranchCombinationPreviewRequest;
 pub use brand_fonts::{
     BrandFontSource, MAX_BRAND_FONT_BYTES, VerifiedBrandFont, brand_font_source,
 };
+pub use change_preview::ChangePreview;
 pub use import_limits::ImportLimits;
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,

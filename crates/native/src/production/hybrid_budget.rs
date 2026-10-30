@@ -51,7 +51,10 @@ struct HybridGrantFile {
 #[serde(deny_unknown_fields)]
 struct HybridGrantDaemon {
     argv: Vec<String>,
+    // Keep the required wire fields; live process identity is checked on Linux.
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     pid: u32,
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     start_ticks: u64,
 }
 
@@ -1045,7 +1048,7 @@ impl HybridBudgetPlan {
         )?;
         let manim_plan = serde_json::to_value(&source.plan)
             .map_err(|_| invalid("Hybrid Manim source cannot be encoded"))?;
-        let manim_profile = serde_json::to_value(&source.plan.render_profile)
+        let manim_profile = serde_json::to_value(source.plan.render_profile)
             .map_err(|_| invalid("Hybrid Manim profile cannot be encoded"))?;
 
         let voice_id = profile

@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack, closing, nullcontext
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_shared_state_public_artifact as pub  # noqa: E402
@@ -38,17 +40,26 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
             },
             "checks": {key: True for key in pub.EXPECTED_CHECKS},
         }
-        commands = (["driver.motionwright.observe"] * 6
-                    + ["driver.motionwright.project.rename"] * 7)
+        outcomes = (
+            [("driver.motionwright.observe", error) for error in
+             (None, None, "PolicyDenied", None, None, None)]
+            + [("driver.motionwright.project.rename", error) for error in
+               (None, "StaleReference", "InvalidArgument", None, "StaleReference", "StaleReference", None)]
+            + [("driver.motionwright.project.preview", error) for error in
+               (None, None, "InvalidArgument", "StaleReference")]
+        )
         self.calls = [
             {
                 "args": {"ref": "OWNER_SECRET_NATIVE_REF"},
                 "command": command,
-                "envelope": {"ok": i < 8, "private": "OWNER_SECRET_ENVELOPE"},
-                "exit_code": 0 if i < 8 else 4,
+                "envelope": {
+                    "ok": error is None, "private": "OWNER_SECRET_ENVELOPE",
+                    "error": None if error is None else {"code": error, "outcome_known": True},
+                },
+                "exit_code": 0 if error is None else 4,
                 "session": "OWNER_PRIVATE_SESSION_FILE",
             }
-            for i, command in enumerate(commands)
+            for command, error in outcomes
         ]
         self.store()
         (self.private / "semwrightd.log").write_text(
@@ -68,11 +79,12 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
         self.assertEqual(error.exception.code, reason)
         self.assertFalse(self.public.exists())
 
-    def test_only_ten_verified_checks_and_hash_receipts_are_public(self):
+    def test_only_fifteen_verified_checks_and_hash_receipts_are_public(self):
         receipt = pub.publish(self.private, self.public, SOURCE, PIN, "success")
         self.assertEqual(receipt["native_shared_state_ci"], "PASS")
         self.assertEqual(receipt["verified_checks"], sorted(pub.EXPECTED_CHECKS))
-        self.assertEqual(receipt["verified_native_invocations"], 13)
+        self.assertEqual(receipt["verified_native_invocations"], 17)
+        self.assertEqual(len(receipt["verified_checks"]), 15)
         self.assertEqual(receipt["source_result_digest_sha256"],
                          hashlib.sha256((self.private / "result.json").read_bytes()).hexdigest())
         self.assertEqual(receipt["source_calls_digest_sha256"],
@@ -141,6 +153,34 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
         self.calls[0]["exit_code"] = 4
         self.store()
         self.reject("contradictory_private_native_call_status")
+
+    def test_unknown_or_missing_denial_never_becomes_verified_public_evidence(self):
+        original = copy.deepcopy(self.calls)
+        negatives = [index for index, call in enumerate(self.calls)
+                     if call["envelope"]["ok"] is False]
+        for index in negatives:
+            for known in (False, 0, 1, "true", None):
+                with self.subTest(call=index, known=known):
+                    self.calls = copy.deepcopy(original)
+                    error = self.calls[index]["envelope"]["error"]
+                    if known is None:
+                        error.pop("outcome_known")
+                    else:
+                        error["outcome_known"] = known
+                    self.store()
+                    before = (self.private / "calls.json").read_bytes()
+                    self.reject("private_native_call_known_denial_unverified")
+                    self.assertEqual((self.private / "calls.json").read_bytes(), before)
+        self.calls = copy.deepcopy(original)
+        self.calls[negatives[0]]["envelope"].pop("error")
+        self.store()
+        self.reject("private_native_call_known_denial_unverified")
+
+    def test_old_thirteen_call_roster_cannot_claim_preview_checks(self):
+        self.calls = [call for call in self.calls
+                      if call["command"] != "driver.motionwright.project.preview"]
+        self.store()
+        self.reject("incomplete_private_call_receipts")
 
     def test_extra_native_command_or_partial_call_chain_rejected(self):
         self.calls[0]["command"] = "driver.other.unapproved"
@@ -246,6 +286,162 @@ class PrivateCliErrorRedactionTests(unittest.TestCase):
                 b'{"ok":true}', self.SECRET * 30000, 0, True
             )
         self.assertNotIn("PRIVATE_OWNER_TICKET", str(error.exception))
+
+    def test_known_denial_requires_literal_true_and_preserves_original_error(self):
+        for code in ("StaleReference", "InvalidArgument", "PolicyDenied"):
+            for known in (False, 0, 1, "true", None):
+                with self.subTest(code=code, known=known):
+                    value = {"ok": False, "error": {"code": code}}
+                    if known is not None:
+                        value["error"]["outcome_known"] = known
+                    original = copy.deepcopy(value)
+                    with self.assertRaisesRegex(AssertionError, "retained UNKNOWN"):
+                        host.require_known_denial(value, code, "wrong typed denial")
+                    self.assertEqual(value, original)
+            value = {"ok": False, "error": {"code": code, "outcome_known": True}}
+            original = copy.deepcopy(value)
+            host.require_known_denial(value, code, "wrong typed denial")
+            self.assertEqual(value, original)
+
+
+class PreviewStoreAndControlFlowTests(unittest.TestCase):
+    """Python harness regressions only; no Broker/Host or product acceptance."""
+
+    def test_store_comparison_ignores_wal_checkpoint_but_detects_rows_and_file_replacement(self):
+        with tempfile.TemporaryDirectory() as raw:
+            database = Path(raw) / "store.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE receipts (id INTEGER PRIMARY KEY, payload TEXT)")
+                connection.execute("INSERT INTO receipts VALUES (1, 'original')")
+                connection.commit()
+                before = host.stored_content(database)
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.assertEqual(host.stored_content(database), before)
+                connection.execute("INSERT INTO receipts VALUES (2, 'changed')")
+                connection.commit()
+                self.assertNotEqual(host.stored_content(database), before)
+                connection.execute("DELETE FROM receipts WHERE id=2")
+                connection.commit()
+                self.assertEqual(host.stored_content(database), before)
+                replacement = Path(raw) / "replacement.sqlite3"
+                with closing(sqlite3.connect(replacement)) as destination:
+                    connection.backup(destination)
+            replacement.replace(database)
+            after = host.stored_content(database)
+            self.assertEqual(after[2], before[2])
+            self.assertNotEqual(after[:2], before[:2])
+
+    def test_unknown_preview_aborts_main_before_any_following_native_operation(self):
+        # Run the real main control flow with transport witnesses. Only the two
+        # preview denial replies vary; an UNKNOWN must stop before CAS or the
+        # next stale mutation, independently of unchanged Store observations.
+        for target, expected_calls in (("redirected", 11), ("stale", 14)):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                evidence = root / "evidence"
+                provider = root / "provider"
+                provider.write_bytes(b"transport witness only")
+                state = {}
+                native_calls = []
+                unknown_seen = False
+                bootstrap_count = 0
+
+                def actor(_env, _database, *args):
+                    if args[0] == "init":
+                        project_id = str(len(state) + 1)
+                        state[project_id] = {"id": project_id, "resource": "project:" + project_id,
+                                             "generation": "same-generation", "revision": "0",
+                                             "title": args[1]}
+                    else:
+                        project_id = args[1]
+                        if args[0] == "rename":
+                            state[project_id]["revision"] = str(int(state[project_id]["revision"]) + 1)
+                            state[project_id]["title"] = args[3]
+                    return copy.deepcopy(state[project_id])
+
+                def invoke_cli(_env, _socket, session, command, args, calls, *, ok=True):
+                    nonlocal unknown_seen, bootstrap_count
+                    if unknown_seen:
+                        self.fail("A following Native operation was dispatched after UNKNOWN")
+                    if command == "project.create":
+                        bootstrap_count += 1
+                        return {"envelope": {"ok": True, "data": {"project": f"prj_{bootstrap_count:032x}"}}}
+                    binding = "binding-" + session.name
+                    if command == "providers.mount.observe":
+                        return {"envelope": {"ok": True, "data": {"binding_ref": binding,
+                                "mount": {"root": "motionwright-data", "write": True}}}}
+                    self.assertEqual(command, "providers.execute_bound")
+                    request = args["request"]
+                    native_command, payload = request["command"], request["args"]
+                    native_calls.append(native_command)
+                    data, error, phase = {}, None, None
+                    if native_command == "driver.motionwright.observe":
+                        if "ref" in payload:
+                            error = "PolicyDenied"
+                        else:
+                            data = {"ref": "observed-ref", "page": {
+                                "version": {"generation": state["1"]["generation"],
+                                            "revision": state["1"]["revision"]},
+                                "items": [{"title": state["1"]["title"]}]}}
+                    elif native_command == "driver.motionwright.project.preview":
+                        if "resource" in payload:
+                            error, phase = "InvalidArgument", "redirected"
+                        elif payload["edit"].get("title", "").startswith("stale preview"):
+                            error, phase = "StaleReference", "stale"
+                        else:
+                            added = payload["edit"]["operation"] == "scene.add"
+                            data = {"schema": "motionwright.change-preview/1",
+                                    "status": "READ_ONLY_DOMAIN_VALIDATION", "resource": "project:1",
+                                    "generation": state["1"]["generation"], "revision": state["1"]["revision"],
+                                    "committed": False, "exact_future_ids_proven": False,
+                                    "candidate_title": state["1"]["title"] if added else payload["edit"]["title"],
+                                    "candidate_scene_count": int(added)}
+                    else:
+                        self.assertEqual(native_command, "driver.motionwright.project.rename")
+                        if "actor" in payload:
+                            error = "InvalidArgument"
+                        elif payload["title"] in ("SDK renamed project", "Human contender", "SDK final shared state"):
+                            state["1"]["title"] = payload["title"]
+                            state["1"]["revision"] = str(int(state["1"]["revision"]) + 1)
+                            data = {"revision": state["1"]["revision"], "project": copy.deepcopy(state["1"])}
+                        else:
+                            error = "StaleReference"
+                    if error is not None:
+                        unknown_seen = phase == target
+                        outer = {"ok": False, "error": {"code": error, "outcome_known": not unknown_seen}}
+                    else:
+                        outer = {"ok": True, "data": {"binding_ref": binding, "result": {
+                            "ok": True, "data": data, "execution": {"provenance": {
+                                "provider": "driver:motionwright", "source": "driver",
+                                "descriptor_sha256": "e" * 64}}}}}
+                    return {"exit_code": 4 if error is not None else 0, "envelope": outer}
+
+                daemon = Mock()
+                daemon.poll.return_value = None
+                with ExitStack() as stack:
+                    replacements = {
+                        "require_exact_inputs": lambda: None,
+                        "EVIDENCE": evidence, "PROVIDER_SOURCE": provider,
+                        "actor": actor, "invoke_cli": invoke_cli,
+                        "stored_content": lambda _database: (1, 2, "unchanged-store"),
+                        "run_json": lambda _argv, *, env: {"state": env["XDG_STATE_HOME"]},
+                        "running_daemon": lambda *_args, **_kwargs: nullcontext(),
+                        "retain_owner_audit": lambda *_args: None,
+                    }
+                    for name, value in replacements.items():
+                        stack.enter_context(patch.object(host, name, value))
+                    stack.enter_context(patch.object(host.subprocess, "Popen", return_value=daemon))
+                    stack.enter_context(patch.object(Path, "is_socket", return_value=True))
+                    with self.assertRaisesRegex(AssertionError, "retained UNKNOWN"):
+                        host.main()
+                self.assertTrue(unknown_seen)
+                self.assertEqual(len(native_calls), expected_calls)
+                self.assertEqual(native_calls[-1], "driver.motionwright.project.preview")
+                self.assertFalse((evidence / "result.json").exists())
+                retained = json.loads((evidence / "calls.json").read_text())
+                self.assertEqual(len(retained), expected_calls)
+                self.assertIs(retained[-1]["envelope"]["error"]["outcome_known"], False)
 
 
 if __name__ == "__main__":

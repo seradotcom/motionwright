@@ -27,6 +27,11 @@ EXPECTED_CHECKS = frozenset({
     "forged_actor_field_rejected",
     "cross_project_ref_rejected",
     "two_sessions_share_one_base",
+    "two_sessions_preview_through_real_host",
+    "preview_preserves_store_identity_rows_receipts_and_events",
+    "preview_payload_resource_override_error_retained",
+    "preview_refs_continue_into_real_cas",
+    "stale_preview_error_retained",
     "concurrent_cas_has_exactly_one_winner",
     "concurrent_loser_is_stale",
     "final_sdk_write_visible_to_ui_service",
@@ -34,6 +39,7 @@ EXPECTED_CHECKS = frozenset({
 EXPECTED_COMMANDS = {
     "driver.motionwright.observe": 6,
     "driver.motionwright.project.rename": 7,
+    "driver.motionwright.project.preview": 4,
 }
 
 
@@ -55,7 +61,7 @@ def parse_private_call_list(blob: bytes) -> list[dict]:
         if isinstance(error, PublicationError):
             raise
         raise PublicationError("invalid_private_call_receipts") from error
-    require(isinstance(result, list) and len(result) == 13,
+    require(isinstance(result, list) and len(result) == 17,
             "incomplete_private_call_receipts")
     command_counts: Counter[str] = Counter()
     succeeded = 0
@@ -74,10 +80,14 @@ def parse_private_call_list(blob: bytes) -> list[dict]:
         okay = entry["envelope"]["ok"]
         require((entry["exit_code"] == 0) is okay,
                 "contradictory_private_native_call_status")
+        if not okay:
+            error = entry["envelope"].get("error")
+            require(isinstance(error, dict) and error.get("outcome_known") is True,
+                    "private_native_call_known_denial_unverified")
         command_counts[entry["command"]] += 1
         succeeded += int(okay)
         failed += int(not okay)
-    require(dict(command_counts) == EXPECTED_COMMANDS and succeeded == 8 and failed == 5,
+    require(dict(command_counts) == EXPECTED_COMMANDS and succeeded == 10 and failed == 7,
             "private_native_call_sequence_unverified")
     return result
 
@@ -116,7 +126,7 @@ def verify_private_shared_state(root: Path, source: str, pin: str) -> dict:
         "private_result_sha256": digest(private_result),
         "private_calls_sha256": digest(private_calls),
         "checks_verified": len(checks),
-        "native_calls_verified": 13,
+        "native_calls_verified": 17,
     }
 
 
