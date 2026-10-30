@@ -86,11 +86,13 @@ jobs:
       - name: Motionwright Native SDK adapter tests
         run: cargo test --locked -p motionwright-native --all-targets
       - name: Music and SFX domain regression tests
+        if: ${{ !cancelled() }}
         run: >-
           cargo test --locked -p motionwright-domain
           --test music_clock --test music_conform
           --test music_sfx_impact_ack --test semantic_sfx
       - name: Preview and music persistence service tests
+        if: ${{ !cancelled() }}
         run: >-
           cargo test --locked -p motionwright-service
           --test change_preview --test music_conform_persistence
@@ -242,3 +244,46 @@ jobs:
           path: verification/native-sdk/public-shared-state
           if-no-files-found: error
           retention-days: 14
+      # Finish the normal provider's capture and public curation before building
+      # the instrumented provider in the same Cargo target directory.
+      - name: Real Core Host Native read scope guards
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence_parent="$GITHUB_WORKSPACE/verification/native-sdk/github-actions/native-read"
+          evidence="$evidence_parent/$GITHUB_SHA"
+          mkdir -p "$evidence_parent"
+          mkdir -m 700 "$evidence"
+          mkdir -m 700 "$evidence/originals"
+          cargo build --locked -p motionwright-native \
+            --features native-graph-owner-fixture \
+            --bin motionwright-native-provider \
+            --example native-graph-owner-fixture \
+            2>&1 | tee "$evidence/build.log"
+          export SEMWRIGHT_TEST_MOTIONWRIGHT_NATIVE_PROVIDER="$GITHUB_WORKSPACE/target/debug/motionwright-native-provider"
+          export SEMWRIGHT_TEST_MOTIONWRIGHT_GRAPH_FIXTURE="$GITHUB_WORKSPACE/target/debug/examples/native-graph-owner-fixture"
+          SEMWRIGHT_TEST_MOTIONWRIGHT_NATIVE_PROVIDER_SHA256="$(sha256sum "$SEMWRIGHT_TEST_MOTIONWRIGHT_NATIVE_PROVIDER" | cut -d ' ' -f 1)"
+          SEMWRIGHT_TEST_MOTIONWRIGHT_GRAPH_FIXTURE_SHA256="$(sha256sum "$SEMWRIGHT_TEST_MOTIONWRIGHT_GRAPH_FIXTURE" | cut -d ' ' -f 1)"
+          export SEMWRIGHT_TEST_MOTIONWRIGHT_NATIVE_PROVIDER_SHA256 SEMWRIGHT_TEST_MOTIONWRIGHT_GRAPH_FIXTURE_SHA256
+          export SEMWRIGHT_TEST_GRAPH_OUTPUT_ROOT="$evidence/originals"
+          echo "native_read_provider_sha256=$SEMWRIGHT_TEST_MOTIONWRIGHT_NATIVE_PROVIDER_SHA256"
+          echo "native_read_seed_tool_sha256=$SEMWRIGHT_TEST_MOTIONWRIGHT_GRAPH_FIXTURE_SHA256"
+          (
+            cd "$SEMWRIGHT_CHECKOUT"
+            cargo test --locked -p semwright-core --lib \
+              owner_operation_process_tests::linux_motionwright_native_read_scope_ \
+              -- --ignored --nocapture --test-threads=1
+          ) 2>&1 | tee "$evidence/native-read.log"
+          python3 - "$evidence/native-read.log" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          output = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          if (len(re.findall(r"^running 7 tests$", output, re.MULTILINE)) != 1
+                  or len(re.findall(r"^test result: ok\. 7 passed; 0 failed; 0 ignored;", output, re.MULTILINE)) != 1):
+              raise SystemExit("Exactly seven real Native read scope guards must execute and pass")
+          PY
+          # The Core helper retains original Host envelopes, policy, SQLite and
+          # process evidence here. They remain private and are never added to the
+          # public shared-state artifact; this CI selection makes no G2 claim.

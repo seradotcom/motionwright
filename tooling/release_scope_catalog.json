@@ -8206,7 +8206,7 @@
     },
     {
       "path": ".github/workflows/native-sdk.yml",
-      "sha256": "da6917f42ffb6f3aff3475579df005fc911a548a145b6f8c80c42ed3f5309073",
+      "sha256": "4776a0e1bae38e68d849d616870e4ccc1535a0c0c98b9acd3fc2643c527a0551",
       "preamble_sha256": "c8cc3b79e33419422e501f9d2a9cb361089c20127f4785c3ebcb162c33cdaf5f",
       "evidence_class": "native_host_paths",
       "purpose": "Pinned Native SDK and music/SFX/preview consumer contracts, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
@@ -8219,7 +8219,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "103a2795cc8760152309239c0f5fbdaa3682f64d2a3d21a63c92431448da5ebc",
+          "source_sha256": "ce042ee791e7cfd473f8db5a08de885a4e2c675791d5739b619ec93c5b829002",
           "instance_sets": {
             "candidate": [
               {}
@@ -8277,17 +8277,17 @@
             {
               "ordinal": 11,
               "name": "Music and SFX domain regression tests",
-              "guard": null,
+              "guard": "${{ !cancelled() }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "4fb12aaec59fa71e960f357dac73123f62cd53209ce3b926e7238355349909bd",
+              "source_block_sha256": "d7a68281309ea369761e8c68e4be661f7c04d2b7f9c2164b1436f0ca5ecdc6b3",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 12,
               "name": "Preview and music persistence service tests",
-              "guard": null,
+              "guard": "${{ !cancelled() }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "fe5b2e4d453ef55f13532a7c18007c17bc8a2cac24b02377125d984972b914d9",
+              "source_block_sha256": "3498625d97ed04a6178a988c2ea65620f56afed3ccec89e85c198ae85d91789c",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -8347,7 +8347,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "verify-native-sdk",
           "strategy": null,
-          "source_sha256": "3cad8621f0b056b5338564d0cd662eb3a1d43dc7a36efca0202c88e4d6d9c0fa",
+          "source_sha256": "de3a786a06cbbd2862bc1c7495c8c1367b4909b2de3d5d4894f6d48d03b9522a",
           "instance_sets": {
             "candidate": [
               {}
@@ -8423,8 +8423,16 @@
               "name": null,
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "5dbf5caa972afcd6a5a46863a8a8bdabbaee55d50ab9afc239f1f6fe36626d8f",
+              "source_block_sha256": "c29621d7324b31cb889653186b9e0ac3ba007543499a7c5462b43a089c23da61",
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            },
+            {
+              "ordinal": 14,
+              "name": "Real Core Host Native read scope guards",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "427dcceb8cac5a1918c9d38e7741e9054bf5a3334f2db7784842d43b5ff04d3f",
+              "api_binding": "EXPLICIT_NAME"
             }
           ]
         }
@@ -8483,7 +8491,8 @@
                 10,
                 11,
                 12,
-                13
+                13,
+                14
               ]
             }
           ],
@@ -8495,7 +8504,8 @@
       "job_dispositions": [],
       "limitations": [
         "Source-specific original evidence must be read back; this definition review admits no execution.",
-        "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes."
+        "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
+        "The seven Core Host Native read scope guards retain private originals on the runner, outside the public shared-state artifact. This selection does not establish G2."
       ]
     },
     {
