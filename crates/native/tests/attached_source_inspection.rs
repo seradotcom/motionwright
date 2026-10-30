@@ -384,7 +384,15 @@ fn zstd_observation_requires_declared_mime_and_exact_original_binding() {
 fn preserved_physical_glb_pair_keeps_original_chunks_counts_and_no_editability_claim() {
     // Preserved originals from a physical author/import/edit/reopen cycle.
     // Running this test is source inspection only; it never recreates that native run.
-    let originals: [(&[u8], usize, &str, usize, usize, &str); 2] = [
+    type GlbOriginal = (
+        &'static [u8],
+        usize,
+        &'static str,
+        usize,
+        usize,
+        &'static str,
+    );
+    let originals: [GlbOriginal; 2] = [
         (
             include_bytes!("fixtures/attached_native_source/authored.glb"),
             1972,
