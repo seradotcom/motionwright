@@ -718,13 +718,28 @@ with open(destination, 'a', encoding='utf-8') as output:
         retained.spent.render_frames,
         before.spent.render_frames + 60
     );
+    let master_token = hex::encode(Sha256::digest(b"original-mixed-master"));
+    let encode_path = format!(
+        "mw-{}-r{}-{}-motion.mkv",
+        project.id.simple(),
+        project.revision,
+        &master_token[..16]
+    );
+    let original_encode_bytes = hybrid_budget::mlt_encode_output_bytes(
+        project.deliverables[0].width,
+        project.deliverables[0].height,
+        60,
+        &encode_path,
+        MLT_MEZZANINE_MAX_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         retained.spent.output_bytes,
-        before.spent.output_bytes + MLT_MEZZANINE_MAX_BYTES + hybrid_budget::FFV1_CUSTODY_BYTES
+        before.spent.output_bytes + original_encode_bytes
     );
     assert!(retained.spent.attempts < retained.limits.attempts);
     assert!(retained.spent.render_frames + 60 <= retained.limits.render_frames);
-    assert!(retained.spent.output_bytes + MLT_MEZZANINE_MAX_BYTES + hybrid_budget::FFV1_CUSTODY_BYTES <= retained.limits.output_bytes);
+    assert!(retained.spent.output_bytes + original_encode_bytes <= retained.limits.output_bytes);
     let watermark = service.production_receipt_watermark(project.id).unwrap();
     // The producer derives another output filename from this label, so this
     // is a different digest. The unresolved original root must still fence it.
@@ -823,6 +838,8 @@ fn retained_mlt_costs_bind_exact_source_frames_and_both_mux_artifacts() {
     };
     let scope = MltDispatchBudget {
         route: MltBudgetRoute::Direct,
+        width: 1920,
+        height: 1080,
         frames: 60,
         encodes: std::collections::BTreeMap::from([("original.json".into(), encode)]),
         timeline_paths: vec![],
@@ -836,7 +853,17 @@ fn retained_mlt_costs_bind_exact_source_frames_and_both_mux_artifacts() {
         .units_for("driver.mlt-video.frames.encode", &encode_args, true)
         .unwrap();
     assert_eq!(units.render_frames, 60);
-    assert_eq!(units.output_bytes, MLT_MEZZANINE_MAX_BYTES + hybrid_budget::FFV1_CUSTODY_BYTES);
+    assert_eq!(
+        units.output_bytes,
+        hybrid_budget::mlt_encode_output_bytes(
+            1920,
+            1080,
+            60,
+            "original.mkv",
+            MLT_MEZZANINE_MAX_BYTES,
+        )
+        .unwrap()
+    );
     let mux = json!({"video_root":"output", "video_path":"original.mkv",
         "output_path":"original.mp4", "frame_count":60,
         "max_bytes":MLT_MASTER_MAX_BYTES, "profile":"h264-aac-mp4"});
@@ -844,7 +871,11 @@ fn retained_mlt_costs_bind_exact_source_frames_and_both_mux_artifacts() {
         .units_for("driver.mlt-video.av.mux", &mux, true)
         .unwrap();
     assert_eq!(units.render_frames, 60);
-    assert_eq!(units.output_bytes, 2 * MLT_MASTER_MAX_BYTES);
+    assert_eq!(
+        units.output_bytes,
+        hybrid_budget::mlt_mux_output_bytes(1920, 1080, 60, "original.mp4", MLT_MASTER_MAX_BYTES,)
+            .unwrap()
+    );
     for (field, bad) in [
         ("manifest_path", json!("foreign.json")),
         ("expected_manifest_sha256", json!("b".repeat(64))),
@@ -863,5 +894,178 @@ fn retained_mlt_costs_bind_exact_source_frames_and_both_mux_artifacts() {
         scope
             .units_for("driver.mlt-video.project.close", &json!({}), true)
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn mlt_import_retained_originals_require_disk_credit_before_cli_even_without_media_output() {
+    let cost = hybrid_budget::mlt_import_output_bytes().unwrap();
+    for capacity in [cost - 1, cost] {
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        // The witness has no MLT implementation and emits no media or JSON for
+        // this command. If reached, that original attempt remains UNKNOWN.
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let mut scoped = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let root = service
+            .create_root_operation_budget(RootOperationBudgetInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                operation_key: "test-original-import".into(),
+                limits: RootBudgetUnits {
+                    attempts: 1,
+                    model_calls: 0,
+                    render_frames: 0,
+                    output_bytes: capacity,
+                },
+            })
+            .unwrap();
+        scoped.active_motion_budget = Some(MotionRootBudgetScope {
+            root_id: root.root_id,
+            max_render_frames: 60,
+            max_frame_bytes: MOTION_ROOT_FRAME_RESERVE_MIN_BYTES,
+            mlt_route: Some(MltBudgetRoute::Timeline),
+            mlt: Some(MltDispatchBudget {
+                route: MltBudgetRoute::Timeline,
+                width: 1920,
+                height: 1080,
+                frames: 60,
+                encodes: std::collections::BTreeMap::from([(
+                    "source.json".into(),
+                    MltEncodeBudget {
+                        manifest_sha256: "a".repeat(64),
+                        frames: 60,
+                        output_path: "original.mkv".into(),
+                        max_bytes: MLT_MEZZANINE_MAX_BYTES,
+                    },
+                )]),
+                timeline_paths: vec!["timeline.mkv".into()],
+                mux_video_path: "timeline.mkv".into(),
+                mux_output_path: None,
+            }),
+            audio_analysis: false,
+        });
+        let result = scoped
+            .execute(
+                project.id,
+                &project.stamp(),
+                "original-import",
+                "driver.mlt-video.asset.import",
+                json!({
+                    "project":"test-native-project", "expected_revision":"test-native-revision",
+                    "kind":"file", "root":"output", "path":"original.mkv", "name":"Original",
+                }),
+                true,
+            )
+            .await;
+        assert!(result.is_err());
+        let after = service
+            .root_operation_budget(project.id, root.root_id)
+            .unwrap();
+        if capacity < cost {
+            assert!(result.unwrap_err().outcome_known);
+            assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(after, root);
+            assert!(
+                service
+                    .production_receipts(project.id, 10)
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            assert!(!result.unwrap_err().outcome_known);
+            assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(after.spent.attempts, 1);
+            assert_eq!(after.spent.render_frames, 0);
+            assert_eq!(after.spent.output_bytes, cost);
+            assert_eq!(
+                service
+                    .latest_production_receipt(project.id, "original-import")
+                    .unwrap()
+                    .unwrap()
+                    .stage,
+                "outcome_unknown"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn mc_capture_keeps_its_root_when_optional_mlt_is_unsupported_but_explicit_mlt_is_rejected() {
+    let (service, initial, temp) = fixture_service();
+    let project = motion_canvas_fixture(&service, initial);
+    let scene_id = project.scenes[0].id;
+    let project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "long-mc-only-source",
+            &Change::SetSceneDuration {
+                scene_id,
+                duration: motionwright_domain::RationalTime::new(30, 1).unwrap(),
+            },
+        )
+        .unwrap()
+        .project;
+    let options = original_options(&project);
+    let deliverable = &project.deliverables[0];
+    assert!(
+        semwright_video_domain::native_observation::observation_budget(
+            deliverable.width,
+            deliverable.height,
+            900,
+        )
+        .is_err()
+    );
+    let connection = fake_render_connection(&temp, project.resource_key());
+    let owner = ProductionCoordinator::new(service.clone(), connection).unwrap();
+    let scoped = owner
+        .with_motion_scene_boundary_scope(&project, deliverable.id, &options, &[scene_id])
+        .unwrap();
+    let scope = scoped.active_motion_budget.as_ref().unwrap();
+    assert_eq!(scope.mlt_route, None);
+    let root = service
+        .root_operation_budget(project.id, scope.root_id)
+        .unwrap();
+    assert_eq!(root.limits.render_frames, 900);
+    assert!(
+        scope
+            .units_for(
+                "driver.motion-canvas.render.start",
+                &original_render_request(),
+                true
+            )
+            .is_ok()
+    );
+    let error = scoped
+        .execute(
+            project.id,
+            &project.stamp(),
+            "explicit-unsupported-mlt",
+            "driver.mlt-video.frames.encode",
+            json!({
+                "root":"output", "manifest_path":"original.json",
+                "expected_manifest_sha256":"a".repeat(64),
+                "output_path":"explicit.mkv", "max_bytes":MLT_MEZZANINE_MAX_BYTES,
+            }),
+            true,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.outcome_known);
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        service
+            .root_operation_budget(project.id, scope.root_id)
+            .unwrap(),
+        root
+    );
+    assert!(
+        service
+            .production_receipts(project.id, 10)
+            .unwrap()
+            .is_empty()
     );
 }

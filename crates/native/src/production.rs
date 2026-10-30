@@ -2211,6 +2211,8 @@ struct MltEncodeBudget {
 #[derive(Debug, Clone)]
 struct MltDispatchBudget {
     route: MltBudgetRoute,
+    width: u32,
+    height: u32,
     frames: u64,
     encodes: std::collections::BTreeMap<String, MltEncodeBudget>,
     timeline_paths: Vec<String>,
@@ -2251,10 +2253,13 @@ impl MltDispatchBudget {
                     ));
                 }
                 units.render_frames = source.frames;
-                units.output_bytes = source
-                    .max_bytes
-                    .checked_add(hybrid_budget::FFV1_CUSTODY_BYTES)
-                    .ok_or_else(|| invalid("MLT encoding custody reservation overflow"))?;
+                units.output_bytes = hybrid_budget::mlt_encode_output_bytes(
+                    self.width,
+                    self.height,
+                    source.frames,
+                    &source.output_path,
+                    source.max_bytes,
+                )?;
             }
             "driver.mlt-video.render.plan" | "driver.mlt-video.render.start" => {
                 let output = args.get("output").and_then(Value::as_str);
@@ -2273,7 +2278,13 @@ impl MltDispatchBudget {
                 }
                 if mutation {
                     units.render_frames = self.frames;
-                    units.output_bytes = MLT_MASTER_MAX_BYTES;
+                    units.output_bytes = hybrid_budget::mlt_timeline_output_bytes(
+                        self.width,
+                        self.height,
+                        self.frames,
+                        self.encodes.len() as u64,
+                        output.ok_or_else(|| invalid("MLT timeline output is absent"))?,
+                    )?;
                 }
             }
             "driver.mlt-video.av.mux" => {
@@ -2291,21 +2302,41 @@ impl MltDispatchBudget {
                     return Err(invalid("MLT mux differs from the retained native plan"));
                 }
                 units.render_frames = self.frames;
-                // Native mux materializes both the MP4 and decoded PCM evidence.
-                units.output_bytes = MLT_MASTER_MAX_BYTES
-                    .checked_mul(2)
-                    .ok_or_else(|| invalid("MLT mux output reservation overflow"))?;
+                units.output_bytes = hybrid_budget::mlt_mux_output_bytes(
+                    self.width,
+                    self.height,
+                    self.frames,
+                    self.mux_output_path
+                        .as_deref()
+                        .ok_or_else(|| invalid("MLT mux output is absent"))?,
+                    MLT_MASTER_MAX_BYTES,
+                )?;
+            }
+            "driver.mlt-video.asset.import" => {
+                if !mutation
+                    || self.route != MltBudgetRoute::Timeline
+                    || args.get("kind").and_then(Value::as_str) != Some("file")
+                    || args.get("root").and_then(Value::as_str) != Some("output")
+                    || !self.encodes.values().any(|source| {
+                        args.get("path").and_then(Value::as_str)
+                            == Some(source.output_path.as_str())
+                    })
+                {
+                    return Err(invalid("MLT import is outside the retained source plan"));
+                }
+                // No media is published by import, but its input/probe originals
+                // are retained even when the operation fails or outputs are empty.
+                units.output_bytes = hybrid_budget::mlt_import_output_bytes()?;
             }
             "driver.mlt-video.project.create"
             | "driver.mlt-video.sequence.create"
             | "driver.mlt-video.track.create"
-            | "driver.mlt-video.asset.import"
             | "driver.mlt-video.clip.insert" => {
                 if !mutation || self.route != MltBudgetRoute::Timeline {
                     return Err(invalid("MLT edit is outside the retained timeline route"));
                 }
                 // These closed edits change the provider's in-memory project.
-                // File materialization is reserved at encode/render/mux.
+                // File materialization is reserved at import/encode/render/mux.
             }
             "driver.mlt-video.sequence.list"
             | "driver.mlt-video.track.list"
@@ -2609,12 +2640,11 @@ impl ProductionCoordinator {
             .and_then(|bytes| bytes.checked_add(source_bytes))
             .ok_or_else(|| invalid("Motion Canvas cumulative byte budget overflow"))?;
         // Reserve the one supported continuation before the first MC effect.
-        // Direct: encode + mux + optional sync, two additional frame passes,
-        // 512 MiB FFV1 + 1 GiB MP4 + 1 GiB decoded PCM.
+        // Direct: encode + mux + optional sync, two additional frame passes.
         // Timeline: 5N + 9 fixed calls including N encodes and one mux, at most
-        // 330 status calls, three additional frame passes, N*512 MiB FFV1,
-        // 1 GiB timeline, 1 GiB MP4 and 1 GiB decoded PCM. Choosing PCM or
-        // video-only consumes the same single timeline allowance, not both.
+        // 330 status calls, three additional frame passes. Publications and
+        // SDK owned/raw originals share the same closed costs as dispatch.
+        // Choosing PCM or video-only consumes the same single timeline allowance.
         let profile = project
             .deliverables
             .iter()
@@ -2639,7 +2669,18 @@ impl ProductionCoordinator {
             && profile.frame_rate.num == i64::from(options.frame_rate.num)
             && profile.frame_rate.den == i64::from(options.frame_rate.den)
             && (segment_count == 1
-                || matches!((profile.width, profile.height), (1280, 720) | (1920, 1080)));
+                || matches!((profile.width, profile.height), (1280, 720) | (1920, 1080)))
+            // An unsupported MLT observation must not prevent an otherwise
+            // valid MC capture. Reserve this continuation only when the SDK
+            // can admit its complete output and each source encode.
+            && semwright_video_domain::native_observation::observation_budget(
+                profile.width, profile.height, total_frames,
+            ).is_ok()
+            && segments.iter().all(|segment| {
+                semwright_video_domain::native_observation::observation_budget(
+                    profile.width, profile.height, segment.frame_count,
+                ).is_ok()
+            });
         let mlt_route = mlt_admitted.then_some(if segment_count == 1 {
             MltBudgetRoute::Direct
         } else {
@@ -2664,13 +2705,62 @@ impl ProductionCoordinator {
             let continuation_frames = total_frames
                 .checked_mul(if timeline { 3 } else { 2 })
                 .ok_or_else(|| invalid("MLT continuation frame reservation overflow"))?;
-            let intermediates = MLT_MEZZANINE_MAX_BYTES
-                .checked_add(hybrid_budget::FFV1_CUSTODY_BYTES)
-                .and_then(|bytes| segment_count.checked_mul(bytes))
-                .ok_or_else(|| invalid("MLT intermediate reservation overflow"))?;
-            let final_outputs = MLT_MASTER_MAX_BYTES
-                .checked_mul(if timeline { 3 } else { 2 })
-                .ok_or_else(|| invalid("MLT final output reservation overflow"))?;
+            // Output tokens are selected later. Their fixed digest widths and
+            // this saved revision already determine the exact metadata bound;
+            // these placeholders reserve lengths and never name an output.
+            let direct_stem = format!(
+                "mw-{}-r{}-{}",
+                project.id.simple(),
+                project.revision,
+                "0".repeat(16),
+            );
+            let timeline_stem = format!("mw-mlt-{}", "0".repeat(20));
+            let mut intermediates = 0_u64;
+            for (index, segment) in segments.iter().enumerate() {
+                let output = if timeline {
+                    format!("{timeline_stem}-s{index:02}-ffv1.mkv")
+                } else {
+                    format!("{direct_stem}-motion.mkv")
+                };
+                let bytes = hybrid_budget::mlt_encode_output_bytes(
+                    profile.width,
+                    profile.height,
+                    segment.frame_count,
+                    &output,
+                    MLT_MEZZANINE_MAX_BYTES,
+                )?;
+                intermediates = intermediates
+                    .checked_add(bytes)
+                    .ok_or_else(|| invalid("MLT intermediate reservation overflow"))?;
+            }
+            let master_path = if timeline {
+                format!("{direct_stem}-multisegment-master.mp4")
+            } else {
+                format!("{direct_stem}-master.mp4")
+            };
+            let mut final_outputs = hybrid_budget::mlt_mux_output_bytes(
+                profile.width,
+                profile.height,
+                total_frames,
+                &master_path,
+                MLT_MASTER_MAX_BYTES,
+            )?;
+            if timeline {
+                let imports = hybrid_budget::mlt_import_output_bytes()?
+                    .checked_mul(segment_count)
+                    .ok_or_else(|| invalid("MLT import original reservation overflow"))?;
+                let render = hybrid_budget::mlt_timeline_output_bytes(
+                    profile.width,
+                    profile.height,
+                    total_frames,
+                    segment_count,
+                    &format!("{timeline_stem}-sequence-video-only-ffv1.mkv"),
+                )?;
+                final_outputs = final_outputs
+                    .checked_add(imports)
+                    .and_then(|bytes| bytes.checked_add(render))
+                    .ok_or_else(|| invalid("MLT final output reservation overflow"))?;
+            }
             // Optional source + decoded-PCM measurements use at most two
             // existing meter calls and two bounded staged input files.
             let continuation_calls = continuation_calls
@@ -2944,6 +3034,8 @@ impl ProductionCoordinator {
         );
         root.mlt = Some(MltDispatchBudget {
             route: MltBudgetRoute::Timeline,
+            width: recipe.provider_profile.width,
+            height: recipe.provider_profile.height,
             frames: recipe.total_frames,
             encodes: recipe
                 .clips
@@ -3676,6 +3768,8 @@ impl ProductionCoordinator {
         }
         root.mlt = Some(MltDispatchBudget {
             route: MltBudgetRoute::Direct,
+            width: deliverable.width,
+            height: deliverable.height,
             frames: segment.frame_count,
             encodes: std::collections::BTreeMap::from([(
                 manifest_path.clone(),

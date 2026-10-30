@@ -12,16 +12,18 @@ const MEDIA_MAX_BYTES: u64 = 256_000_000;
 const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MANIM_OBSERVATION_FRAME_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MANIM_OBSERVATION_REPORT_MAX_BYTES: u64 = 16 * 1024 * 1024;
-// Closed native + Host FFV1 custody for the SDK R63 capture-limit proposal.
-// Five stages retain 16 KiB/channel; complete-probe retains the accepted
-// REPORT_LIMIT/channel. Reserve the same roster in the root and each encode.
-// Adoption still requires the SDK owner's review; this is not a native result.
-pub(super) const FFV1_CUSTODY_BYTES: u64 = 5 * (2 * 16_384 + 65_536)
-    + (2 * native_observation::REPORT_LIMIT as u64 + 65_536)
-    + 65_536
-    + 2 * (65_536 + 2 * 262_144 + 65_536);
-// Selected SDK e64 xml.rs MAX_XML; the native render/mux each retain one
-// original .native-input.mlt. The Host's two-copy scratch check stays separate.
+// Selected SDK driver-mlt-video: jobs.rs, runtime.rs and originals.rs. These
+// are existing writer caps, not permission to enlarge files or retry a job.
+const SDK_MEDIA_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const SDK_PROCESS_PREFIX_BYTES: u64 = 16_384;
+const SDK_PROCESS_METADATA_BYTES: u64 = 65_536;
+const SDK_HOST_STREAM_BYTES: u64 = 262_144;
+const SDK_INPUT_PROBE_BYTES: u64 = 2 * SDK_PROCESS_PREFIX_BYTES + 2 * SDK_PROCESS_METADATA_BYTES;
+const SDK_HOST_CALL_BYTES: u64 = 2 * SDK_HOST_STREAM_BYTES + SDK_PROCESS_METADATA_BYTES;
+// The original Host call and optional catalog call each retain stdin,
+// stdout, stderr and terminal; these are distinct from owned-work captures.
+const SDK_HOST_OPERATION_BYTES: u64 = 2 * (SDK_PROCESS_METADATA_BYTES + SDK_HOST_CALL_BYTES);
+// SDK xml.rs MAX_XML; native render retains staged, before and after XML.
 const NATIVE_INPUT_XML_MAX_BYTES: u64 = 8 * 1024 * 1024;
 // Selected SDK model::MAX_PROJECT_BYTES used by Store, plus a closed receipt.
 const MC_SOURCE_MAX_BYTES: u64 = 524_288;
@@ -596,19 +598,272 @@ fn operation_key(project: &Project, deliverable_id: Uuid) -> String {
         project.id, project.generation, project.revision, deliverable_id
     )
 }
-fn observation_bytes(width: u32, height: u32, frames: u64) -> NativeResult<u64> {
-    let budget =
+// The SDK retains BOTH owned workspaces and published raw originals, including
+// partial and empty outputs. Account for their closed rosters before dispatch;
+// peak_free_bytes contains unrelated scratch slack and is not this debit.
+#[derive(Clone, Copy)]
+enum SdkVideoOriginals {
+    MotionFrames,
+    NativeRender,
+    HostNativeRender,
+}
+
+fn sdk_original_metadata_bytes(
+    output_path: &str,
+    members: u64,
+    inputs: u64,
+    raw_inputs: u64,
+    process_groups: u64,
+) -> NativeResult<u64> {
+    require(
+        !output_path.is_empty() && output_path.len() <= 4096,
+        "MLT original output path exceeds the existing SDK bound",
+    )?;
+    // originals.rs bounds each manifest row by path bytes + 2048, plus
+    // process errors. The workspace document has its own finite role roster.
+    // Its serialized cap is at most this existing structure guard, never a
+    // new fixed metadata allowance. Include the one failure-only work receipt.
+    let row = bounded_add(output_path.len() as u64, 2048)?;
+    let manifest = bounded_add(
+        bounded_mul(members, row)?,
+        bounded_mul(bounded_add(process_groups, 1)?, SDK_PROCESS_METADATA_BYTES)?,
+    )?;
+    let work = members
+        .checked_sub(raw_inputs)
+        .ok_or_else(|| invalid("MLT original input roster is inconsistent"))?;
+    let workspace = bounded_add(
+        bounded_mul(bounded_add(bounded_add(inputs, work)?, 1)?, row)?,
+        SDK_PROCESS_METADATA_BYTES,
+    )?;
+    require(
+        manifest <= native_observation::REPORT_LIMIT as u64
+            && workspace <= native_observation::REPORT_LIMIT as u64,
+        "MLT original metadata exceeds the existing SDK roster bound",
+    )?;
+    bounded_add(
+        bounded_add(bounded_mul(manifest, 2)?, SDK_PROCESS_METADATA_BYTES)?,
+        workspace,
+    )
+}
+
+fn sdk_video_output_bytes(
+    width: u32,
+    height: u32,
+    frames: u64,
+    input_assets: u64,
+    output_path: &str,
+    output_maximum: u64,
+    kind: SdkVideoOriginals,
+) -> NativeResult<u64> {
+    require(
+        output_maximum > 0 && output_maximum <= native_observation::MAX_VIDEO_ARTIFACT_BYTES,
+        "MLT publication exceeds the existing SDK artifact cap",
+    )?;
+    let observation =
         native_observation::observation_budget(width, height, frames).map_err(|error| {
             invalid(format!(
-                "Hybrid native observation exceeds the pinned SDK profile: {error}"
+                "MLT original observation is outside the SDK profile: {error}"
             ))
         })?;
-    // Charge the actual retained bound. The SDK separately checks its measured
-    // peak_free_bytes for scratch/publication; that is not retained disk usage.
-    bounded_add(
-        budget.retained_png_bytes_upper_bound,
-        native_observation::REPORT_LIMIT as u64,
+    let report = native_observation::REPORT_LIMIT as u64;
+    let stage = 2 * SDK_PROCESS_PREFIX_BYTES + SDK_PROCESS_METADATA_BYTES;
+    let complete_probe = 2 * report + SDK_PROCESS_METADATA_BYTES;
+    let (staged, inputs, raw_inputs, stages, probes, host_calls, extra_members, extra_bytes) =
+        match kind {
+            SdkVideoOriginals::MotionFrames => (
+                bounded_mul(frames, native_observation::PNG_LIMIT as u64)?,
+                frames,
+                0,
+                6,
+                0,
+                0,
+                0,
+                0,
+            ),
+            SdkVideoOriginals::NativeRender => (
+                bounded_mul(input_assets, SDK_MEDIA_MAX_BYTES)?,
+                bounded_add(input_assets, 1)?,
+                1,
+                5,
+                input_assets,
+                0,
+                0,
+                bounded_mul(NATIVE_INPUT_XML_MAX_BYTES, 3)?,
+            ),
+            SdkVideoOriginals::HostNativeRender => (
+                bounded_mul(input_assets, SDK_MEDIA_MAX_BYTES)?,
+                bounded_add(input_assets, 2)?,
+                1,
+                4,
+                bounded_add(input_assets, 1)?,
+                bounded_add(input_assets, 2)?,
+                3,
+                // Staged/before/after XML, staged request, work/raw report,
+                // and two diagnostic files in both work and raw publication.
+                bounded_add(
+                    bounded_add(
+                        bounded_mul(NATIVE_INPUT_XML_MAX_BYTES, 3)?,
+                        native_observation::MAX_JSON as u64,
+                    )?,
+                    bounded_add(
+                        bounded_mul(report, 2)?,
+                        bounded_mul(SDK_PROCESS_METADATA_BYTES, 4)?,
+                    )?,
+                )?,
+            ),
+        };
+    let native_process = match kind {
+        // zscale-help retains the full 262144-byte stream, not the 16KiB
+        // diagnostic prefix. All six stages and their summary have two copies.
+        SdkVideoOriginals::MotionFrames => bounded_add(
+            bounded_mul(stage, 4)?,
+            bounded_add(
+                2 * SDK_HOST_STREAM_BYTES + SDK_PROCESS_METADATA_BYTES,
+                complete_probe,
+            )?,
+        )?,
+        SdkVideoOriginals::NativeRender => bounded_add(bounded_mul(stage, 4)?, complete_probe)?,
+        SdkVideoOriginals::HostNativeRender => bounded_add(bounded_mul(stage, 3)?, complete_probe)?,
+    };
+    let process = bounded_mul(
+        bounded_add(
+            bounded_add(native_process, SDK_PROCESS_METADATA_BYTES)?,
+            bounded_add(
+                bounded_mul(probes, SDK_INPUT_PROBE_BYTES)?,
+                bounded_mul(host_calls, SDK_HOST_CALL_BYTES)?,
+            )?,
+        )?,
+        2,
+    )?;
+    let members = bounded_add(
+        bounded_add(frames, 3 + raw_inputs + 3 * stages + extra_members)?,
+        bounded_add(bounded_mul(probes, 4)?, bounded_mul(host_calls, 3)?)?,
+    )?;
+    let metadata = sdk_original_metadata_bytes(
+        output_path,
+        members,
+        inputs,
+        raw_inputs,
+        bounded_add(bounded_add(probes, 1)?, host_calls)?,
+    )?;
+    // The sentinel PNG can survive an unsuccessful decode and raw retention.
+    // Normal PNG publication reuses the raw slot, so there are exactly two
+    // copies, not a third. Video has owned, raw and normal publication roles.
+    let pngs = bounded_mul(
+        bounded_mul(bounded_add(frames, 1)?, observation.png_bytes_upper_bound)?,
+        2,
+    )?;
+    let host = match kind {
+        SdkVideoOriginals::MotionFrames => SDK_HOST_OPERATION_BYTES,
+        SdkVideoOriginals::HostNativeRender => native_host_custody_bytes()?,
+        SdkVideoOriginals::NativeRender => 0,
+    };
+    [
+        staged.min(native_observation::MAX_STAGED_SOURCE_BYTES),
+        2 * native_observation::MAX_VIDEO_ARTIFACT_BYTES,
+        output_maximum,
+        pngs,
+        report,
+        process,
+        metadata,
+        extra_bytes,
+        host,
+    ]
+    .into_iter()
+    .try_fold(0, bounded_add)
+}
+
+pub(super) fn mlt_encode_output_bytes(
+    width: u32,
+    height: u32,
+    frames: u64,
+    output_path: &str,
+    maximum: u64,
+) -> NativeResult<u64> {
+    sdk_video_output_bytes(
+        width,
+        height,
+        frames,
+        0,
+        output_path,
+        maximum,
+        SdkVideoOriginals::MotionFrames,
     )
+}
+
+pub(super) fn mlt_timeline_output_bytes(
+    width: u32,
+    height: u32,
+    frames: u64,
+    inputs: u64,
+    output_path: &str,
+) -> NativeResult<u64> {
+    // The one timeline allowance covers the admitted Host video-only route;
+    // choosing the PCM route cannot create another timeline allowance.
+    sdk_video_output_bytes(
+        width,
+        height,
+        frames,
+        inputs,
+        output_path,
+        MLT_MASTER_MAX_BYTES,
+        SdkVideoOriginals::HostNativeRender,
+    )
+}
+
+pub(super) fn mlt_import_output_bytes() -> NativeResult<u64> {
+    // main.rs hashes the command/args into a fixed-length import scope. The
+    // generic invocation spelling is the longer of the two existing names.
+    let scope = format!("asset-import-invocation-{}", "0".repeat(64));
+    let originals = bounded_add(
+        bounded_add(SDK_MEDIA_MAX_BYTES + 1, native_observation::MAX_JSON as u64)?,
+        bounded_add(SDK_INPUT_PROBE_BYTES, SDK_HOST_CALL_BYTES)?,
+    )?;
+    bounded_add(
+        bounded_mul(originals, 2)?,
+        sdk_original_metadata_bytes(&scope, 9, 2, 2, 2)?,
+    )
+}
+
+pub(super) fn mlt_mux_output_bytes(
+    width: u32,
+    height: u32,
+    frames: u64,
+    output_path: &str,
+    maximum: u64,
+) -> NativeResult<u64> {
+    let render = sdk_video_output_bytes(
+        width,
+        height,
+        frames,
+        2,
+        output_path,
+        maximum,
+        SdkVideoOriginals::NativeRender,
+    )?;
+    // app.rs invokes one pinned native render, then the av-aux closed owner:
+    // two input probes, a master snapshot, decoded PCM, two decode stages and
+    // summary. Each has an owned and raw copy; normal WAV is a third copy.
+    let auxiliary = bounded_add(
+        bounded_add(
+            bounded_mul(SDK_MEDIA_MAX_BYTES + 1, 2)?,
+            bounded_mul(maximum, 2)?,
+        )?,
+        bounded_add(
+            bounded_mul(SDK_INPUT_PROBE_BYTES, 2)?,
+            2 * (2 * SDK_PROCESS_PREFIX_BYTES + SDK_PROCESS_METADATA_BYTES)
+                + SDK_PROCESS_METADATA_BYTES,
+        )?,
+    )?;
+    [
+        render,
+        bounded_mul(auxiliary, 2)?,
+        maximum,
+        SDK_HOST_OPERATION_BYTES,
+        sdk_original_metadata_bytes(&format!("{output_path}.av-aux"), 19, 3, 3, 3)?,
+    ]
+    .into_iter()
+    .try_fold(0, bounded_add)
 }
 fn native_host_custody_bytes() -> NativeResult<u64> {
     // Selected Host main.rs preflight_native_host_custody retains an original
@@ -904,34 +1159,37 @@ impl HybridBudgetPlan {
         for contribution in &motion {
             encode_output = bounded_add(
                 encode_output,
-                bounded_add(
+                mlt_encode_output_bytes(
+                    profile.width,
+                    profile.height,
+                    contribution.frames,
+                    &format!("{namespace}-mc-{}.mkv", contribution.output_ordinal),
                     MEDIA_MAX_BYTES,
-                    bounded_add(
-                        observation_bytes(profile.width, profile.height, contribution.frames)?,
-                        FFV1_CUSTODY_BYTES,
-                    )?,
                 )?,
             )?;
         }
-        let complete_observations = bounded_add(
-            bounded_mul(
-                bounded_add(
-                    observation_bytes(profile.width, profile.height, cursor)?,
-                    NATIVE_INPUT_XML_MAX_BYTES,
-                )?,
-                2,
-            )?,
-            native_host_custody_bytes()?,
-        )?;
-        let mlt_output = bounded_add(
+        let mlt_output = [
             encode_output,
-            bounded_add(
-                bounded_add(MLT_MASTER_MAX_BYTES, bounded_mul(MASTER_MAX_BYTES, 2)?)?,
-                complete_observations,
+            bounded_mul(counts.len() as u64, mlt_import_output_bytes()?)?,
+            mlt_timeline_output_bytes(
+                profile.width,
+                profile.height,
+                cursor,
+                counts.len() as u64,
+                &format!("{namespace}-visual.mkv"),
             )?,
-        )?;
-        // All four native MLT effects retain complete observations: two real
-        // MC encodes, the semantic timeline, and the AAC master.
+            mlt_mux_output_bytes(
+                profile.width,
+                profile.height,
+                cursor,
+                &format!("{namespace}-master.mp4"),
+                MASTER_MAX_BYTES,
+            )?,
+        ]
+        .into_iter()
+        .try_fold(0, bounded_add)?;
+        // Encodes, imports, timeline and master retain owned/raw originals.
+        // The same costs are debited before their first actual SDK dispatch.
         let output_bytes = bounded_add(
             bounded_add(mc_output, manim_output_bytes(manim_frames)?)?,
             bounded_add(mlt_output, source_audio_bytes)?,
@@ -1526,12 +1784,12 @@ impl HybridRootBudgetScope {
                     "Hybrid encoder differs from its retained real MC contribution",
                 )?;
                 units.render_frames = encoded.frames;
-                units.output_bytes = bounded_add(
+                units.output_bytes = mlt_encode_output_bytes(
+                    self.plan.width,
+                    self.plan.height,
+                    encoded.frames,
+                    &encoded.output_path,
                     encoded.max_bytes,
-                    bounded_add(
-                        observation_bytes(self.plan.width, self.plan.height, encoded.frames)?,
-                        FFV1_CUSTODY_BYTES,
-                    )?,
                 )?;
             }
             "driver.mlt-video.render.plan" | "driver.mlt-video.render.start" => {
@@ -1544,16 +1802,12 @@ impl HybridRootBudgetScope {
                 )?;
                 if mutation {
                     units.render_frames = self.plan.total_frames;
-                    units.output_bytes = bounded_add(
-                        MLT_MASTER_MAX_BYTES,
-                        bounded_add(
-                            observation_bytes(
-                                self.plan.width,
-                                self.plan.height,
-                                self.plan.total_frames,
-                            )?,
-                            bounded_add(NATIVE_INPUT_XML_MAX_BYTES, native_host_custody_bytes()?)?,
-                        )?,
+                    units.output_bytes = mlt_timeline_output_bytes(
+                        self.plan.width,
+                        self.plan.height,
+                        self.plan.total_frames,
+                        binding.source_paths.len() as u64,
+                        &visual,
                     )?;
                 }
             }
@@ -1586,18 +1840,12 @@ impl HybridRootBudgetScope {
                     "Hybrid mux differs from its original video/audio plan",
                 )?;
                 units.render_frames = self.plan.total_frames;
-                // The native mux writes BOTH the MP4 and decoded PCM. Neither
-                // product is omitted from the durable output reservation.
-                units.output_bytes = bounded_add(
-                    bounded_mul(MASTER_MAX_BYTES, 2)?,
-                    bounded_add(
-                        observation_bytes(
-                            self.plan.width,
-                            self.plan.height,
-                            self.plan.total_frames,
-                        )?,
-                        NATIVE_INPUT_XML_MAX_BYTES,
-                    )?,
+                units.output_bytes = mlt_mux_output_bytes(
+                    self.plan.width,
+                    self.plan.height,
+                    self.plan.total_frames,
+                    &format!("{}-master.mp4", self.plan.namespace),
+                    MASTER_MAX_BYTES,
                 )?;
             }
             "driver.mlt-video.asset.import" => {
@@ -1613,6 +1861,7 @@ impl HybridRootBudgetScope {
                             }),
                     "Hybrid timeline cannot import an unretained contribution",
                 )?;
+                units.output_bytes = mlt_import_output_bytes()?;
             }
             "driver.mlt-video.project.create"
             | "driver.mlt-video.sequence.create"
@@ -1968,50 +2217,73 @@ impl ProductionCoordinator {
 mod hybrid_project_grant_tests {
     use super::*;
 
-    fn owner_profile() -> Vec<u8> {
+    fn owner_profile() -> (Vec<u8>, PathBuf, PathBuf) {
+        let owner = if cfg!(windows) {
+            Path::new(r"C:\synthetic-owner")
+        } else {
+            Path::new("/synthetic-owner")
+        };
+        let project = owner.join("project");
+        let output = owner.join("output");
         let drivers = [
             "motion-canvas-driver.json",
             "mlt-video-driver.json",
             "manim-driver.json",
         ]
         .iter()
-        .map(|name| format!("/synthetic-owner/config/{name}"))
+        .map(|name| {
+            owner
+                .join("config")
+                .join(name)
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect::<Vec<_>>();
-        format!("drivers = {}\ndriver_network = false\n\n[policy]\nprofile = \"workspace\"\nallow = [\"driver:motion-canvas\", \"driver:mlt-video\", \"driver:manim-community\"]\n\n[[policy.filesystem]]\nname = \"project\"\npath = \"/synthetic-owner/project\"\nread = true\nwrite = true\n\n[[policy.filesystem]]\nname = \"output\"\npath = \"/synthetic-owner/output\"\nread = true\nwrite = true\n", serde_json::to_string(&drivers).unwrap()).into_bytes()
+        let raw = format!(
+            "drivers = {}\ndriver_network = false\n\n[policy]\nprofile = \"workspace\"\nallow = [\"driver:motion-canvas\", \"driver:mlt-video\", \"driver:manim-community\"]\n\n[[policy.filesystem]]\nname = \"project\"\npath = {}\nread = true\nwrite = true\n\n[[policy.filesystem]]\nname = \"output\"\npath = {}\nread = true\nwrite = true\n",
+            serde_json::to_string(&drivers).unwrap(),
+            serde_json::to_string(project.to_str().unwrap()).unwrap(),
+            serde_json::to_string(output.to_str().unwrap()).unwrap(),
+        )
+        .into_bytes();
+        (raw, project, output)
     }
 
     #[test]
     fn hybrid_project_grant_profile_binds_actual_roots_and_rejects_foreign_or_duplicate_grants() {
-        let raw = owner_profile();
-        let project = Path::new("/synthetic-owner/project");
-        let output = Path::new("/synthetic-owner/output");
-        verify_owner_grant_profile(&raw, project, output).unwrap();
+        let (raw, project, output) = owner_profile();
+        assert!(project.is_absolute() && output.is_absolute());
+        verify_owner_grant_profile(&raw, &project, &output).unwrap();
+        let project_literal = serde_json::to_string(project.to_str().unwrap()).unwrap();
+        let foreign_project = project
+            .parent()
+            .unwrap()
+            .with_file_name("foreign-owner")
+            .join("project");
+        let foreign_literal = serde_json::to_string(foreign_project.to_str().unwrap()).unwrap();
         for (from, to) in [
-            ("/synthetic-owner/project", "/foreign-owner/project"),
+            (project_literal.as_str(), foreign_literal.as_str()),
             ("name = \"output\"", "name = \"project\""),
             ("read = true", "read = false"),
             ("write = true", "write = false"),
             ("profile = \"workspace\"", "profile = \"observe\""),
         ] {
             let changed = String::from_utf8(raw.clone()).unwrap().replace(from, to);
-            assert!(verify_owner_grant_profile(changed.as_bytes(), project, output).is_err());
+            assert_ne!(changed.as_bytes(), raw.as_slice());
+            assert!(verify_owner_grant_profile(changed.as_bytes(), &project, &output).is_err());
         }
     }
 
     #[test]
     fn hybrid_project_grant_profile_refuses_extra_toml_syntax_and_preserves_input_bytes() {
-        let raw = owner_profile();
+        let (raw, project, output) = owner_profile();
+        verify_owner_grant_profile(&raw, &project, &output).unwrap();
         let mut changed = raw.clone();
         changed.extend_from_slice(b"\n[build]\nforeign = true\n");
-        assert!(
-            verify_owner_grant_profile(
-                &changed,
-                Path::new("/synthetic-owner/project"),
-                Path::new("/synthetic-owner/output")
-            )
-            .is_err()
-        );
-        assert_eq!(raw, owner_profile());
+        let error = verify_owner_grant_profile(&changed, &project, &output).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(error.message, "Hybrid owner filesystem block changed");
+        assert_eq!(raw, owner_profile().0);
     }
 
     #[test]

@@ -289,6 +289,7 @@ fn test_mlt_scope(scoped: &ProductionCoordinator) -> ProductionCoordinator {
             source_paths: encodes
                 .values()
                 .map(|row| row.output_path.clone())
+                .chain(["test-only-original-manim.mp4".into()])
                 .collect(),
             encodes,
         });
@@ -351,6 +352,17 @@ fn hybrid_root_reserves_all_real_frame_passes_and_original_observations_before_e
             true,
         )
         .unwrap();
+    let import = mlt
+        .units_for(
+            "driver.mlt-video.asset.import",
+            &json!({
+                "kind":"file", "root":"output", "path":format!("{}-mc-0.mkv", root.plan.namespace),
+            }),
+            true,
+        )
+        .unwrap();
+    assert_eq!(import.render_frames, 0);
+    assert_eq!(import.output_bytes, mlt_import_output_bytes().unwrap());
     let mux = mlt.units_for("driver.mlt-video.av.mux", &json!({
         "video_root":"output","video_path":format!("{}-visual.mkv", root.plan.namespace),
         "audio_root":"output","audio_path":format!("{}-source.wav", root.plan.namespace),
@@ -378,11 +390,58 @@ fn hybrid_root_reserves_all_real_frame_passes_and_original_observations_before_e
         2 * mc.output_bytes
             + manim.output_bytes
             + 2 * encode.output_bytes
+            + 3 * import.output_bytes
             + timeline.output_bytes
             + mux.output_bytes
             <= stored.limits.output_bytes
     );
     assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+}
+
+#[test]
+fn sdk_owned_original_roles_are_reserved_even_with_one_byte_or_no_media_publication() {
+    // SDK import roster: two complete copies of 256MiB+sentinel, 1MiB JSON,
+    // one four-member probe and one three-member Host call, plus the bounded
+    // nine-member manifest, failure receipt and ten-role workspace document.
+    // This command publishes no rendered media and still consumes disk credit.
+    assert_eq!(mlt_import_output_bytes().unwrap(), 541_059_490);
+    let one_byte = mlt_encode_output_bytes(1920, 1080, 60, "original.mkv", 1).unwrap();
+    let full = mlt_encode_output_bytes(
+        1920,
+        1080,
+        60,
+        "original.mkv",
+        native_observation::MAX_VIDEO_ARTIFACT_BYTES,
+    )
+    .unwrap();
+    assert_eq!(
+        full - one_byte,
+        native_observation::MAX_VIDEO_ARTIFACT_BYTES - 1
+    );
+    assert!(
+        one_byte
+            > 2 * native_observation::MAX_VIDEO_ARTIFACT_BYTES
+                + native_observation::MAX_STAGED_SOURCE_BYTES
+    );
+    let observation = native_observation::observation_budget(1920, 1080, 60).unwrap();
+    assert!(
+        one_byte
+            > 2 * native_observation::MAX_VIDEO_ARTIFACT_BYTES
+                + native_observation::MAX_STAGED_SOURCE_BYTES
+                + 2 * 61 * observation.png_bytes_upper_bound
+    );
+    assert!(
+        mlt_encode_output_bytes(
+            1920,
+            1080,
+            60,
+            "original.mkv",
+            native_observation::MAX_VIDEO_ARTIFACT_BYTES + 1
+        )
+        .is_err()
+    );
+    assert!(mlt_timeline_output_bytes(1920, 1080, 60, u64::MAX, "original.mkv").is_err());
+    assert!(mlt_mux_output_bytes(1920, 1080, 60, &"x".repeat(4097), MASTER_MAX_BYTES).is_err());
 }
 
 #[tokio::test]
