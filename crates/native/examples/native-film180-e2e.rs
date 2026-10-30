@@ -4382,10 +4382,10 @@ mod stdin_readback {
                 return Err(format!("native success was returned, but original pipe state is {}; child consumption is not observed; no redispatch",
                     terminal.write_state).into());
             }
-            if let Some(closure) = closed? {
-                if !closure.loss_free_close() {
-                    return Err("selected capture was observed, but original receiver closure is incomplete or reports losses; no redispatch".into());
-                }
+            if let Some(closure) = closed?
+                && !closure.loss_free_close()
+            {
+                return Err("selected capture was observed, but original receiver closure is incomplete or reports losses; no redispatch".into());
             }
             // Absent closure is explicitly unobserved, not complete. The owner
             // may still be alive; final G2 sealing remains a separate obligation.
