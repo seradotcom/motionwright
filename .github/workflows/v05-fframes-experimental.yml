@@ -2,6 +2,15 @@ name: V05 fframes disposable upstream experiment (not admitted)
 
 on:
   workflow_dispatch:
+    inputs:
+      evidence_recipient_spki:
+        description: Previously admitted RSA-3072 public SPKI DER in canonical base64
+        type: string
+        required: true
+      evidence_recipient_sha256:
+        description: Independently retained SHA-256 of the admitted public SPKI DER
+        type: string
+        required: true
   pull_request:
     paths:
       - 'tooling/fframes-experiment/**'
@@ -33,16 +42,78 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Require admitted public recipient before native or build work
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import base64, hashlib, os, re, sys
+          if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+              raise SystemExit("FFRAMES_CUSTODY_ADMISSION_REQUIRED: PR trigger has no admitted recipient; native experiment not started")
+          encoded = os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SPKI", "")
+          fingerprint = os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SHA256", "")
+          if not (0 < len(encoded) <= 2048 and re.fullmatch(r"[0-9a-f]{64}", fingerprint)):
+              raise SystemExit("FFRAMES_CUSTODY_ADMISSION_REQUIRED: admitted public SPKI/fingerprint missing")
+          try:
+              der = base64.b64decode(encoded, validate=True)
+          except ValueError:
+              raise SystemExit("FFRAMES_CUSTODY_ADMISSION_REJECTED: noncanonical public SPKI")
+          if base64.b64encode(der).decode() != encoded or hashlib.sha256(der).hexdigest() != fingerprint:
+              raise SystemExit("FFRAMES_CUSTODY_ADMISSION_REJECTED: public SPKI/fingerprint mismatch")
+          if sys.version_info[:2] not in {(3, 12), (3, 13)}:
+              raise SystemExit("FFRAMES_CUSTODY_PYTHON_NOT_IN_PINNED_WHEEL_PROFILE")
+          PY
+      - name: Prepare pinned custody environment and exact source-run inputs
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          export FFRAMES_CUSTODY_PYTHON="$RUNNER_TEMP/fframes-custody-venv/bin/python"
+          export FFRAMES_CUSTODY_INPUT_ROOT="$RUNNER_TEMP/fframes-custody-inputs"
+          printf '%s\n' \
+            "FFRAMES_CUSTODY_PYTHON=$FFRAMES_CUSTODY_PYTHON" \
+            "FFRAMES_CUSTODY_INPUT_ROOT=$FFRAMES_CUSTODY_INPUT_ROOT" >> "$GITHUB_ENV"
+          python3 -m venv "$RUNNER_TEMP/fframes-custody-venv"
+          "$FFRAMES_CUSTODY_PYTHON" -m pip install --disable-pip-version-check \
+            --only-binary=:all: --no-deps --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$FFRAMES_CUSTODY_PYTHON" -B - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0, "tooling")
+          sys.path.insert(0, "tooling/fframes-experiment")
+          from ci_private_evidence import new_json, public_key, require, validate_context
+          from measure import declared_sdk_pin
+          recipient = {"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+                       "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]}
+          public_key(recipient)
+          source = subprocess.check_output(
+              ["git", "--no-optional-locks", "rev-parse", "HEAD"], text=True).strip()
+          require(source == os.environ["GITHUB_SHA"], "custody_checkout_source_differs")
+          sdk = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          require(sdk == declared_sdk_pin(Path("Cargo.toml").read_bytes()), "custody_sdk_lock_manifest_differs")
+          context = {"source_sha": source, "semwright_sha": sdk,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
+          validate_context(context)
+          folder = Path(os.environ["FFRAMES_CUSTODY_INPUT_ROOT"])
+          folder.mkdir(mode=0o700, parents=False, exist_ok=False)
+          new_json(folder / "recipient.json", recipient)
+          new_json(folder / "context.json", context)
+          PY
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: '1.98.1'
       - name: Verify pinned source experiment contract without installing a renderer
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tooling/fframes-experiment -p 'test_*.py' -v
-          python3 -m py_compile tooling/fframes-experiment/*.py
-          python3 tooling/source_policy.py
-          python3 tooling/creative_status_policy.py
+          "$FFRAMES_CUSTODY_PYTHON" -B -m unittest discover -s tooling/fframes-experiment -p 'test_*.py' -v
+          "$FFRAMES_CUSTODY_PYTHON" -m py_compile tooling/fframes-experiment/*.py
+          "$FFRAMES_CUSTODY_PYTHON" -B tooling/source_policy.py
+          "$FFRAMES_CUSTODY_PYTHON" -B tooling/creative_status_policy.py
       - name: Install FFmpeg/Rust native build dependencies on disposable CI only
         run: |
           set -euo pipefail
@@ -53,14 +124,24 @@ jobs:
       - name: Measure upstream exact-SHA Rust/SVG fframes cold/warm/preview/render
         run: |
           set -euo pipefail
-          python3 tooling/fframes-experiment/measure.py
+          "$FFRAMES_CUSTODY_PYTHON" -B tooling/fframes-experiment/measure.py
       - name: Publish only source-bound bounded upstream timing facts
         if: always()
         env:
           UPSTREAM_JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
-          python3 tooling/fframes-experiment/public_artifact.py --source-sha "$GITHUB_SHA" --evidence-root verification/fframes-upstream-experiment --public-root verification/fframes-public --job-status "$UPSTREAM_JOB_STATUS"
+          test -x "${FFRAMES_CUSTODY_PYTHON:-}" || { echo 'FFRAMES_CUSTODY_NOT_PREPARED'; exit 2; }
+          test -n "${FFRAMES_CUSTODY_INPUT_ROOT:-}" || { echo 'FFRAMES_CUSTODY_INPUT_ROOT_NOT_PREPARED'; exit 2; }
+          test -f "$FFRAMES_CUSTODY_INPUT_ROOT/recipient.json" || { echo 'FFRAMES_RECIPIENT_NOT_ADMITTED'; exit 2; }
+          test -f "$FFRAMES_CUSTODY_INPUT_ROOT/context.json" || { echo 'FFRAMES_CONTEXT_NOT_OBSERVED'; exit 2; }
+          "$FFRAMES_CUSTODY_PYTHON" -B tooling/fframes-experiment/public_artifact.py \
+            --source-sha "$GITHUB_SHA" \
+            --evidence-root verification/fframes-upstream-experiment \
+            --public-root verification/fframes-public \
+            --job-status "$UPSTREAM_JOB_STATUS" \
+            --recipient "$FFRAMES_CUSTODY_INPUT_ROOT/recipient.json" \
+            --context "$FFRAMES_CUSTODY_INPUT_ROOT/context.json"
           python3 -m json.tool verification/fframes-public/public-evidence.json >/dev/null
       - name: Upload safe benchmark manifest without binary or upstream stderr
         if: always()
