@@ -8,6 +8,7 @@ the legacy catalogue remains unchanged.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 import selectors
@@ -53,7 +54,7 @@ class OwnerCgroup:
     """An owner-created, initially empty kernel containment leaf, retained by fd."""
     def __init__(self, run_id, phase):
         need(sys.platform == "linux" and type(run_id) is str and run_id.isdecimal()
-             and run_id[0] != "0" and phase in ("work", "custody"), "fixedtxt-cgroup-context")
+             and run_id[0] != "0" and phase in ("preparation", "work", "custody"), "fixedtxt-cgroup-context")
         mount = Path("/sys/fs/cgroup")
         # The mount table comes from the kernel, not from the external plan.
         mounted = any(line.split()[4] == str(mount) and " - cgroup2 " in line
@@ -121,13 +122,20 @@ class OwnerCgroup:
 
 
 class AttemptClock:
-    def __init__(self, limits):
+    def __init__(self, limits, *, started=None, upload_seconds=0):
         need(type(limits) is dict and all(type(limits.get(key)) is int for key in
              ("attempt_seconds", "custody_seconds"))
              and 0 < limits["custody_seconds"] < limits["attempt_seconds"] <= 2**31 - 1,
              "fixedtxt-supervisor-finite-limits")
-        self.started = time.monotonic()
+        now = time.monotonic()
+        need(started is None or type(started) in (int, float)
+             and math.isfinite(started) and 0 <= started <= now,
+             "fixedtxt-supervisor-original-start")
+        need(type(upload_seconds) is int and 0 <= upload_seconds < limits["custody_seconds"],
+             "fixedtxt-supervisor-upload-inside-custody-reserve")
+        self.started = now if started is None else started
         self.total = self.started + limits["attempt_seconds"]
+        self.custody_end = self.total - upload_seconds
         self.work = self.total - limits["custody_seconds"]
         self.custody_seconds = limits["custody_seconds"]
         self.custody = None
@@ -139,7 +147,7 @@ class AttemptClock:
         need(phase != "work" or not self.used, "fixedtxt-supervisor-work-after-custody")
         self.used.add(phase)  # even a failed spawn consumes this original stage
         if phase == "custody":
-            self.custody = min(self.total, time.monotonic() + self.custody_seconds)
+            self.custody = min(self.custody_end, time.monotonic() + self.custody_seconds)
             deadline = self.custody
         else:
             deadline = self.work
@@ -310,7 +318,16 @@ def supervise_owner(held, *, environment, source_root, custody_directory):
     root = Path(source_root)
     need(str(root) == environment.get("GITHUB_WORKSPACE") and root.resolve(strict=True) == root,
          "fixedtxt-supervisor-exact-source-root")
-    clock = AttemptClock(plan["limits"])
+    clock_members = {row["relative_path"] for row in plan["members"] if row["root"] == "control"}
+    if (environment.get("MW_FIXEDTXT_WORKFLOW_ROUTE") == "original-r28-delivery/1"
+            or "clock.original.json" in clock_members or "request.original.json" in clock_members):
+        from native_fixedtxt_workflow import admitted_original_clock
+        original, request = admitted_original_clock(plan, current=current,
+                                                     runner_temp=environment["RUNNER_TEMP"])
+        clock = AttemptClock(plan["limits"], started=original["started_monotonic"],
+                             upload_seconds=request["upload_seconds"])
+    else:
+        clock = AttemptClock(plan["limits"])
     groups = []
     try:
         # Both groups must exist, be authentic and empty BEFORE native spawn.

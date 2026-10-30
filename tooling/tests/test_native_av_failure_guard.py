@@ -243,5 +243,62 @@ class NativeAVFailureRedactionTests(unittest.TestCase):
         self.assert_closed(caught.exception.diagnostic)
 
 
+    def test_native_success_ambiguous_or_nonfinite_json_never_certifies_media(self) -> None:
+        documents = [
+            b'{"completed":true,"completed":false}',
+            b'{"result":{"verified":true,"verified":false}}',
+            b'{"result":NaN}',
+            b'{"result":Infinity}',
+            b'{"result":1e999}',
+            b'{"result":not-json}',
+        ]
+        for response in documents:
+            with self.subTest(response=response[:36]):
+                with patch.object(native_av_master_e2e.subprocess, "run",
+                                  return_value=SimpleNamespace(
+                                      returncode=0, stdout=response,
+                                      stderr=PRIVATE.encode(),
+                                  )):
+                    with self.assertRaises(NativeCommandFailure) as caught:
+                        native_av_master_e2e.run_json([PRIVATE], env={})
+                self.assert_closed(caught.exception.diagnostic)
+                self.assertEqual(
+                    caught.exception.diagnostic["reason"],
+                    "malformed_native_success_response",
+                )
+                self.assertEqual(caught.exception.diagnostic["source_outcome"], "UNKNOWN")
+                self.assertNotIn(PRIVATE, str(caught.exception))
+
+    def test_native_success_oversize_fails_without_forwarding_payload(self) -> None:
+        oversized = b'{"receipt":"' + b'a' * (2 * 1024 * 1024) + b'"}'
+        with patch.object(native_av_master_e2e.subprocess, "run",
+                          return_value=SimpleNamespace(
+                              returncode=0, stdout=oversized, stderr=b"",
+                          )):
+            with self.assertRaises(NativeCommandFailure) as caught:
+                native_av_master_e2e.run_json([PRIVATE], env={})
+        self.assert_closed(caught.exception.diagnostic)
+        self.assertEqual(
+            caught.exception.diagnostic["reason"],
+            "oversized_native_success_response",
+        )
+        self.assertEqual(caught.exception.diagnostic["source_outcome"], "UNKNOWN")
+        self.assertNotIn("receipt", str(caught.exception))
+
+    def test_ambiguous_failure_json_cannot_forge_typed_provider_cause(self) -> None:
+        # Two contradictory error states in one envelope must never allow the
+        # parser's last-key-wins behavior to invent an original-job outcome.
+        ambiguous = (b'{"error":{"code":"Timeout","outcome_known":false,'
+                     b'"outcome_known":true,"message":"Provider capability '
+                     b'generation is inactive"}}')
+        report = classify_native_command_failure(
+            stdout=ambiguous, stderr=b"", exit_code=1
+        )
+        self.assert_closed(report)
+        self.assertEqual(report["reason"], "malformed_native_failure_response")
+        self.assertEqual(report["reported_error_code"], "OtherOrMissing")
+        self.assertFalse(report["provider_generation_inactive_observed"])
+
+
 if __name__ == "__main__":
     unittest.main()

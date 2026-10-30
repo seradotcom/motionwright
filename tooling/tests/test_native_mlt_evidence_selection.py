@@ -1233,7 +1233,11 @@ class Ffv1SeedCustodyTests(unittest.TestCase):
                 legacy=World(scenario)
                 with legacy.patched():
                     _raw,manifest=legacy.capture()
-                self.assertEqual(manifest["schema"],core.MANIFEST_SCHEMA)
+                self.assertEqual(manifest["schema"],
+                    core.MANIFEST_SCHEMA_V3 if scenario=="film180-g2" else core.MANIFEST_SCHEMA)
+                if scenario=="film180-g2":
+                    self.assertIn("diagnostic_contract",manifest)
+                    self.assertIn("diagnostic_roster_complete",manifest)
                 if scenario=="repaired-g2":
                     expected=(("input-custody","input-custody.json","original","mlt_input"),)
                 else:
@@ -1250,7 +1254,8 @@ class Ffv1SeedCustodyTests(unittest.TestCase):
                         ("root","relative_path","phase","layer","kind","policy","state")),
                         ("observation",path,phase,"attempt-custody","json-projection",policy,"INCLUDED"))
                 self.assertFalse(any(item["role"].startswith("ffv1-seed-") for item in manifest["members"]))
-                self.assertNotIn("diagnostic_contract",manifest)
+                if scenario=="repaired-g2":
+                    self.assertNotIn("diagnostic_contract",manifest)
 
     def test_stderr_original_identity_is_checked_before_admission(self):
         world=self.world()

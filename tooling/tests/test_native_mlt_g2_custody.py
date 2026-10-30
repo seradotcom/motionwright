@@ -405,6 +405,8 @@ class G2CustodyTests(unittest.TestCase):
                 self.roots = {name: Path(value) for name, value in roots.items()}
                 self.initial = {name: selection_core.identity(path.stat())
                                 for name, path in self.roots.items()}
+                self.diagnostic_contract = None
+            admit_diagnostic_contract = selection_core.RootHandles.admit_diagnostic_contract
             def close(self): pass
             def stable_roots(self):
                 return all(selection_core.identity(path.stat()) == self.initial[name]
@@ -416,6 +418,11 @@ class G2CustodyTests(unittest.TestCase):
                                        "member-regular-single-link")
                 return selection_core.identity(info)
             def read(self, root, parts, maximum):
+                entry = selection_core._film_command_entry(root, "/".join(parts), self.diagnostic_contract)
+                selection_core.require(not selection_core.excluded(parts) or entry is not None,
+                                       "excluded-before-open")
+                if entry is not None:
+                    maximum = min(maximum, entry["maximum"])
                 path = self.roots[root].joinpath(*parts)
                 raw, _ = custody.regular(path, maximum)
                 return raw, self.stat_member(root, parts)
@@ -531,7 +538,11 @@ class G2CustodyTests(unittest.TestCase):
                         self.assertNotIn("member", row)
                         self.assertFalse(manifest["required_layers_complete"])
                         self.assertFalse(result["selected_layers_complete"])
-                self.assertEqual(result["schema"], "motionwright.native.film180-g2-public/2")
+                self.assertEqual(result["schema"], "motionwright.native.film180-g2-public/3")
+                self.assertEqual(result["selected_evidence_schema"], custody.selected_core.MANIFEST_SCHEMA_V3)
+                self.assertEqual(result["command_originals_contract_sha256"],
+                                 custody.sha(custody.selected_core.canonical(manifest["diagnostic_contract"])))
+                self.assertFalse(result["diagnostic_eof_claimed"])
                 self.assertEqual(result["native_terminal"], "NOT_STARTED")
                 self.assertFalse(result["selected_intake_verified"])
                 self.assertFalse(result["source_content_and_live_module_verified"])
@@ -680,8 +691,10 @@ class Ffv1SeedAndPublicV3Tests(unittest.TestCase):
             evidence=Path(directory)
             with mock.patch.object(guard.subprocess,"run",
                     return_value=subprocess.CompletedProcess(argv,0,stdout,b"")) as run:
-                with self.assertRaises(selection_core.SelectionError):
+                with self.assertRaises(guard.NativeCommandFailure) as observed:
                     producer.run_original_seed(argv,env={},evidence=evidence,current=CURRENT)
+            self.assertEqual(observed.exception.diagnostic["reason"], "malformed_native_success_response")
+            self.assertEqual(observed.exception.diagnostic["source_outcome"], "UNKNOWN")
             self.assertEqual(run.call_count,1)
             self.assertEqual((evidence / Path(selection.FFV1_SEED_STDOUT_PATH).name).read_bytes(),stdout)
 

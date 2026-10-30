@@ -66,7 +66,8 @@ def context(env):
             and env.get("RUNNER_OS") == "Linux"
             and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and env.get("GITHUB_RUN_ATTEMPT") == "1"
-            and env.get("MW_MLT_SCOPE") in {"repaired-g2", FILM_SCOPE}, "closed_manual_selection_required")
+            and env.get("MW_MLT_SCOPE") in {"repaired-g2", FILM_SCOPE, "fixedtxt-v4-one-fixture"},
+            "closed_manual_selection_required")
     require(SOURCE.fullmatch(env.get("GITHUB_SHA", "")) is not None
             and re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", "")) is not None,
             "execution_identity_invalid")
@@ -147,7 +148,7 @@ def validate_dispatch(raw, current, *, scenario="repaired-g2"):
 
 
 def source_guard(repo, current, *, scenario="repaired-g2"):
-    require(scenario in {"repaired-g2", FILM_SCOPE}, "source_scenario")
+    require(scenario in {"repaired-g2", FILM_SCOPE, "fixedtxt-v4-one-fixture"}, "source_scenario")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_SYSTEM=os.devnull,
                GIT_CONFIG_GLOBAL=os.devnull, GIT_GRAFT_FILE=os.devnull,
@@ -157,8 +158,12 @@ def source_guard(repo, current, *, scenario="repaired-g2"):
                                         "-c", "core.fsmonitor=false", *argv], env=env, timeout=20)
     require(git("rev-parse", "HEAD").decode().strip() == current["source_sha"], "source_HEAD_changed")
     require(not git("diff", "--name-only", "HEAD", "--"), "tracked_source_changed")
-    selected_paths = (selected.FILM_SOURCE_PATHS if scenario == FILM_SCOPE
-                      else selected.SOURCE_PATHS)
+    if scenario == "fixedtxt-v4-one-fixture":
+        from native_fixedtxt_g2_admission import source_paths
+        selected_paths = source_paths()
+    else:
+        selected_paths = (selected.FILM_SOURCE_PATHS if scenario == FILM_SCOPE
+                          else selected.SOURCE_PATHS)
     result = {}
     for path in selected_paths:
         raw = git("show", current["source_sha"] + ":" + path)
@@ -362,10 +367,21 @@ def intake_compiler(dispatch, repo, directory):
         directory / "compiler_receipt_path", g2.COMPILER_RECEIPT_SHA256)
 
 
+def runtime_preparation_dispatch(raw, current, *, scenario):
+    """The existing external runtime permit precedes FixedTxt P/R/Q review.
+
+    This accepts the original Film runtime-only dispatch for preparation; it
+    never admits a FixedTxt wrapper or substitutes for its external commitment.
+    Native FixedTxt admission still uses validate_dispatch and its full P/R/Q.
+    """
+    return validate_dispatch(raw, current,
+        scenario=FILM_SCOPE if scenario == "fixedtxt-v4-one-fixture" else scenario)
+
+
 def prepare(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "prepare_requires_normal_Linux_runner")
     current = context(env)
-    dispatch = validate_dispatch(env.get("MW_MLT_G2_ADMISSION", "").encode(), current,
+    dispatch = runtime_preparation_dispatch(env.get("MW_MLT_G2_ADMISSION", "").encode(), current,
                                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     control, installed, session = names(env)
     require(not installed.exists() and not session.exists(), "original_effect_directory_preexists")
@@ -376,12 +392,19 @@ def prepare(env):
     new_json(control / "records/context.json", current)
     new_json(control / "records/source-before.json", source_guard(Path(env["GITHUB_WORKSPACE"]), current,
                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2")))
-    if env.get("MW_MLT_SCOPE", "repaired-g2") != FILM_SCOPE:
+    if env.get("MW_MLT_SCOPE", "repaired-g2") not in {FILM_SCOPE, "fixedtxt-v4-one-fixture"}:
         original = {"artifact_id": 12109323512, "run_id": 39054798740, "run_attempt": 1,
                     "source_sha": g2.REFERENCE_PR_HEAD, "zip_sha256": g2.REFERENCE_ZIP_SHA256}
         archive = download_artifact(original, "reference", control / "intake")
         g2.reference_source(archive)
         new_bytes(control / "intake/original-artifact.zip", archive)
+    elif env.get("MW_MLT_SCOPE") == "fixedtxt-v4-one-fixture":
+        new_json(control / "records/fixedtxt-source-intent.json", {
+            "schema": "motionwright.native.fixedtxt-source-intent/1",
+            "origin": "EXTERNAL_AUTHORED_SOURCE_PENDING_R28_COMMITMENT",
+            "frame_count": 180, "frame_rate": 30,
+            "historical_reference_WAV_reused": False, "native_effect_started": False,
+        })
     else:
         new_json(control / "records/film-source-intent.json", {
             "schema": "motionwright.native.film180-source-intent/1",
@@ -415,7 +438,7 @@ def handoff(env, uid, gid):
     control, installed, _ = names(env)
     require(control.stat().st_uid == uid and control.stat().st_gid == gid
             and control.resolve(strict=True) == control, "handoff_control_owner")
-    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], context(env),
+    dispatch = runtime_preparation_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], context(env),
                                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     directory = control / "handoff"
     require(directory.stat().st_uid == uid and not any(directory.iterdir()), "handoff_target_not_fresh")
@@ -485,7 +508,7 @@ def make_inputs(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "inputs_require_normal_runner")
     control, _, session = names(env)
     current = context(env)
-    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], current,
+    dispatch = runtime_preparation_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], current,
                                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     handoff_proof = strict(regular(control / "handoff/handoff.json", MAX_JSON)[0])
     installed = control / "handoff/installation.json"
@@ -512,8 +535,10 @@ def make_inputs(env):
     data.update({name: str(control / "intake" / name) for name in (
         "original_c_source", "repaired_c_source", "compiled_module", "compiler_receipt_path")})
     expected_keys = g2.INPUT_KEYS
-    if env.get("MW_MLT_SCOPE", "repaired-g2") == FILM_SCOPE:
-        data["schema"] = FILM_INPUT_SCHEMA
+    if env.get("MW_MLT_SCOPE", "repaired-g2") in {FILM_SCOPE, "fixedtxt-v4-one-fixture"}:
+        data["schema"] = ("motionwright.native.fixedtxt-runtime-preparation/1"
+                          if env.get("MW_MLT_SCOPE") == "fixedtxt-v4-one-fixture"
+                          else FILM_INPUT_SCHEMA)
         del data["original_artifact_zip"]
         expected_keys = RUNTIME_INPUT_KEYS | {"schema", "private_evidence_dir"}
     require(set(data) == expected_keys, "producer_input_contract_changed")
@@ -535,6 +560,8 @@ def guard_before_admission(env):
 
 
 def begin(env):
+    require(env.get("MW_MLT_SCOPE", "repaired-g2") in {"repaired-g2", FILM_SCOPE},
+            "fixedtxt_requires_its_original_external_owner")
     require(sys.platform == "linux" and os.geteuid() != 0, "producer_must_not_be_root")
     control, _, _ = names(env)
     require((control / "records/g2-inputs.json").is_file(), "producer_inputs_absent")

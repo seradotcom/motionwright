@@ -26,6 +26,7 @@ NATIVE_SLOT = "output/__original_host_artifact__"
 HELPER_PATHS = (
     "tooling/native_fixedtxt_g2_admission.py",
     "tooling/native_fixedtxt_g2_supervisor.py",
+    "tooling/native_fixedtxt_workflow.py",
 )
 PLAN_MEMBER = "fixedtxt-plan.original.json"
 RUNTIME_MEMBER = "source-input.original.json"

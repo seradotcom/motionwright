@@ -6,7 +6,7 @@ on:
       verification_scope:
         description: Native verification selection
         type: choice
-        options: [normal, source, repaired-g2, film180-g2]
+        options: [normal, source, repaired-g2, film180-g2, fixedtxt-v4-one-fixture]
         default: normal
         required: true
       expected_source_sha:
@@ -15,6 +15,22 @@ on:
         required: false
       g2_admission:
         description: Admitted runtime source artifacts and public recovery key for the selected G2
+        type: string
+        default: ''
+        required: false
+      fixedtxt_mode:
+        description: FixedTxt preparation or external original R28 delivery
+        type: choice
+        options: [prepare, deliver]
+        default: prepare
+        required: true
+      fixedtxt_request:
+        description: Original source inputs and finite preparation budgets; grants no native admission
+        type: string
+        default: ''
+        required: false
+      fixedtxt_delivery:
+        description: Real target run and reviewed preparation artifact ID and SHA256
         type: string
         default: ''
         required: false
@@ -30,6 +46,10 @@ on:
       - 'apps/studio/**'
       - 'tooling/native_mlt_sequence_e2e.py'
       - 'tooling/native_film180_original_g2.py'
+      - 'tooling/native_fixedtxt_g2_admission.py'
+      - 'tooling/native_fixedtxt_g2_supervisor.py'
+      - 'tooling/native_fixedtxt_workflow.py'
+      - 'tooling/tests/test_native_fixedtxt_workflow.py'
       - 'tooling/native_film180_media_readback.py'
       - 'tooling/tests/test_native_film180_original_g2.py'
       - 'tooling/tests/test_fixedtxt_owner_admission.py'
@@ -85,8 +105,8 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2') && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2')) }}
+  group: ${{ inputs.fixedtxt_mode == 'deliver' && format('native-fixedtxt-delivery-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'fixedtxt-v4-one-fixture') && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ inputs.fixedtxt_mode != 'deliver' && !(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'fixedtxt-v4-one-fixture')) }}
 
 defaults:
   run:
@@ -101,7 +121,7 @@ env:
 
 jobs:
   source-contracts:
-    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source') }}
+    if: ${{ inputs.fixedtxt_mode != 'deliver' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -141,6 +161,32 @@ jobs:
           --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
         "$venv/bin/python" -m pip check
         echo "python=$venv/bin/python" >> "$GITHUB_OUTPUT"
+    - name: Verify original FixedTxt admission and delivery source controls
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-fixedtxt-workflow-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py           --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete           --expected-source "$GITHUB_SHA" --report "$root/contracts.json"           --pattern test_native_fixedtxt_external_g2.py --pattern test_native_fixedtxt_workflow.py           > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s - "$root/contracts.json" <<'PY_CONTROLS'
+        import json, os, sys
+        from pathlib import Path
+        report=json.loads(Path(sys.argv[1]).read_bytes())
+        expected={'dotted:tooling.tests.test_native_fixedtxt_external_g2':21,
+                  'dotted:tooling.tests.test_native_fixedtxt_workflow':24}
+        assert report['status']=='PASS' and report['exit_code']==0
+        assert report['executed_source_sha']==os.environ['GITHUB_SHA']
+        assert 'source_postcheck_error' not in report and len(report['steps'])==len(expected)
+        assert {step['entry_point'] for step in report['steps']}==set(expected)
+        for step in report['steps']:
+            counts=step['counts']
+            assert step['status']=='PASS' and step['exit_code']==0 and counts['terminal_status']=='OK'
+            assert counts['tests_run']==counts['passed']==expected[step['entry_point']]
+            assert all(counts[key]==0 for key in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+        PY_CONTROLS
     - name: Verify preflight custody infrastructure controls
       id: g2_workflow_contracts
       env:
@@ -1875,13 +1921,14 @@ jobs:
           ${{ runner.temp }}/mw-mlt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-fixedtxt-owner-admission-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-fixedtxt-owner-close-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          ${{ runner.temp }}/mw-fixedtxt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-inspector-discovery-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-remaining-discovery-${{ github.run_id }}-${{ github.run_attempt }}
         if-no-files-found: error
         retention-days: 14
 
   native-mlt-sequence:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'source' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.fixedtxt_mode != 'deliver' && (inputs.verification_scope == 'normal' || inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     strategy:
@@ -3794,4 +3841,527 @@ jobs:
             ${{ runner.temp }}/mw-film180-contracts-${{ github.run_id }}-${{ github.run_attempt }}
             ${{ runner.temp }}/mw-mlt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
+          retention-days: 14
+
+  fixedtxt-original-owner:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'fixedtxt-v4-one-fixture' && inputs.fixedtxt_mode == 'prepare' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(inputs.fixedtxt_request || '{"attempt_minutes":1}').attempt_minutes }}
+    env:
+      MW_MLT_SCOPE: fixedtxt-v4-one-fixture
+      MOTIONWRIGHT_APPROVED_MLT_G2: '1'
+      CI: 'true'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Retain the one original clock before checkout and preparation
+        id: fixedtxt_clock
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          MW_FIXEDTXT_REQUEST: ${{ inputs.fixedtxt_request }}
+          MW_FIXEDTXT_BOOTSTRAP: ${{ inputs.g2_admission }}
+          MW_FIXEDTXT_DELIVERY: ${{ inputs.fixedtxt_delivery }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B - <<'PY_CLOCK'
+          import hashlib, json, math, os, re, time
+          from pathlib import Path
+          start = time.monotonic()
+          class WorkflowRejected(ValueError):
+              pass
+
+          def need(value, reason):
+              if not value:
+                  raise WorkflowRejected(reason)
+
+          def preflight_request_capacity(value, *, source_zip_bytes=0):
+              """Reject an already impossible declaration before checkout/install effects.
+
+              This pure subset also runs in the inline bootstrap. Its closed role counts
+              are compared with the existing R28 selector after checkout. Unknown future
+              originals are still checked by the unchanged final plan validator.
+              """
+              fixture = value["fixture"]
+              counts_by_fixture = {
+                  "fixed-causal": 4, "flow-control-base": 3, "flow-control-with-fixed": 3,
+                  "flow-text-control": 4, "fixed-multirun": 4, "fixed-multirun-control": 4,
+                  "fixed-transform-clip": 3, "fixed-camera-scene": 4, "fixed-counter-captions": 7,
+                  "fixed-layer-behind": 4, "fixed-layer-equal": 4, "fixed-layer-front": 4,
+              }
+              need(type(fixture) is str and fixture in counts_by_fixture, "fixedtxt-capacity-closed-fixture")
+              once = (
+                  "authored-film", "canvas-observations", "case-final-custody", "case-inputs",
+                  "compile-component", "compiled-project", "cycle-inputs", "cycle-observation",
+                  "final-custody", "fixture-expectations", "fixture-set", "font-inventory",
+                  "font-readiness", "generated-inventory", "host-capture", "host-readback",
+                  "host-readback-intent", "host-return-snapshot", "host-session", "host-source-binding",
+                  "host-stdin", "host-terminal", "native-frame-manifest", "native-observations",
+                  "native-observations-receipt", "native-result", "owner-close", "owner-closed-original",
+                  "owner-shutdown-intent", "owner-shutdown-terminal", "owner-workspace",
+                  "owner-workspace-terminal", "project-snapshot-original", "selected-originals", "selection-plan",
+              )
+              counts = {role: 1 for role in once}
+              counts["native-png"] = 180
+              counts.update({role: counts_by_fixture[fixture] for role in
+                             ("selected-png", "selected-rgba", "decoder-stderr", "decoder-terminal")})
+              roles, limits = value["role_limits"], value["limits"]
+              need(type(roles) is dict and set(roles) == set(counts)
+                   and all(type(bound) is int and 0 <= bound <= 256 * 1024 * 1024
+                           and (bound > 0 or role == "decoder-stderr") for role, bound in roles.items()),
+                   "fixedtxt-capacity-closed-role-bounds")
+              need(roles["selection-plan"] == 512 * 1024 and roles["selected-rgba"] == 1920 * 1080 * 4,
+                   "fixedtxt-capacity-unchanged-full-originals")
+              need(type(limits) is dict and set(limits) == {"capsule_bytes", "files", "attempt_seconds", "custody_seconds"}
+                   and type(limits["capsule_bytes"]) is int and 0 < limits["capsule_bytes"] <= 256 * 1024 * 1024
+                   and type(limits["files"]) is int and 0 < limits["files"] <= 4096,
+                   "fixedtxt-capacity-existing-limits")
+              bounds = [roles[role] for role, count in counts.items() for _ in range(count)]
+              # The exact twelve fixed workflow additions in make_plan: runtime input,
+              # Broker receipt, five supervision and five transport originals. Reserve
+              # the three starting originals too; their existing maxima are unchanged.
+              bounds.extend([65536, 8 * 1024 * 1024,
+                             65536, 65536, 1024 * 1024 + 1, 1024 * 1024 + 1, 65536,
+                             1024 * 1024, 65536, 65536, 65536, 65536,
+                             49152, 65536, 16384])
+              need(len(bounds) <= limits["files"], "fixedtxt-preparation-declared-file-budget")
+              # Same USTAR headers/padding, metadata, record rounding, envelope and
+              # public-projection reserve as the existing R28 plan validator.
+              total = sum(bounds)
+              tar_bound = sum(512 + ((bound + 511) // 512) * 512 for bound in bounds)
+              tar_bound += 512 + 512 * 1024 + 1024
+              tar_bound = ((tar_bound + 10239) // 10240) * 10240
+              capsule_bound = tar_bound + 8192 + 64 + 512 * 1024
+              need(total <= 512 * 1024 * 1024 and capsule_bound <= limits["capsule_bytes"],
+                   "fixedtxt-preparation-declared-capsule-budget")
+              # The intermediate encrypted review uses the same USTAR packer. Reserve
+              # its known mandatory subset before setup, not just the final native plan.
+              # P/R/Q and starting-original maxima are the existing readers' bounds.
+              # Unknown future API/runtime originals still require the exact later check.
+              review = value["review_capsule_bytes"]
+              stream = value["preparation_stream_bytes"]
+              need(type(review) is int and 0 < review <= limits["capsule_bytes"]
+                   and type(stream) is int and 0 < stream <= 8 * 1024 * 1024
+                   and type(source_zip_bytes) is int and 0 <= source_zip_bytes <= 256 * 1024 * 1024,
+                   "fixedtxt-preparation-review-existing-bounds")
+              sources = value["sources"]
+              review_bounds = [49152, 65536, 16384, 512 * 1024, 65536, 1024 * 1024]
+              for key, maximum in (("template_film", 4 * 1024 * 1024), ("managed_project", 4 * 1024 * 1024),
+                  ("caption_source", 65536), ("red_native", 2 * 1024 * 1024), ("measurement_protocol", 65536)):
+                  bound = sources[key]["bytes"]
+                  need(type(bound) is int and 0 < bound <= maximum, "fixedtxt-review-declared-source-size")
+                  review_bounds.append(bound)
+              need(type(sources["project_files"]) is list and len(sources["project_files"]) <= 256,
+                   "fixedtxt-review-declared-asset-roster")
+              for item in sources["project_files"]:
+                  bound = item["original"]["bytes"]
+                  need(type(bound) is int and 0 < bound <= 16 * 1024 * 1024, "fixedtxt-review-declared-asset-size")
+                  review_bounds.append(bound)
+              # Fifteen existing preparation children each retain stdout/stderr under
+              # the declared ceiling and four metadata originals. Their unknown metadata
+              # payloads contribute headers only here; no future size is certified.
+              review_bounds.extend([stream, stream, 0, 0, 0, 0] * 15)
+              # The intake archive appears verbatim twice: API original + source-kit copy.
+              # Before download its size is unknown; after download this same arithmetic
+              # runs with the observed length before the second copy or next command.
+              review_bounds.extend([source_zip_bytes, source_zip_bytes])
+              review_total = sum(review_bounds)
+              review_tar = sum(512 + ((bound + 511) // 512) * 512 for bound in review_bounds)
+              review_tar += 512 + 512 * 1024 + 1024
+              review_tar = ((review_tar + 10239) // 10240) * 10240
+              # Existing encrypted envelope/public-projection reserves plus the review
+              # ZIP's existing 8192 bytes. Keep collect_workflow_originals' 1 MiB reserve.
+              review_bound = review_tar + 8192 + 64 + 512 * 1024 + 8192
+              need(len(review_bounds) <= limits["files"] and review_total <= review - 1024 * 1024
+                   and review_bound <= review, "fixedtxt-preparation-declared-review-capsule-budget")
+              return {"mandatory_role_counts": counts, "declared_files": len(bounds),
+                      "declared_raw_bytes": total, "declared_capsule_bound": capsule_bound,
+                      "review_declared_files": len(review_bounds), "review_declared_raw_bytes": review_total,
+                      "review_declared_capsule_bound": review_bound, "source_zip_observed_bytes": source_zip_bytes,
+                      "future_original_sizes_verified": False}
+          raw = os.environ['MW_FIXEDTXT_REQUEST'].encode()
+          bootstrap = os.environ['MW_FIXEDTXT_BOOTSTRAP'].encode()
+          assert 0 < len(raw) <= 49152 and 0 < len(bootstrap) <= 16384
+          # Workflow_dispatch payload itself has a finite platform bound; no file or
+          # installed effect occurs until this original clock and raw input are kept.
+          assert len(raw) + len(bootstrap) <= 60000
+          def strict_pairs(rows):
+              value = {}
+              for key, item in rows:
+                  assert key not in value
+                  value[key] = item
+              return value
+          request = json.loads(raw, object_pairs_hook=strict_pairs)
+          assert os.environ['MW_FIXEDTXT_DELIVERY'] == ''
+          assert request['schema'] == 'motionwright.native.fixedtxt-workflow-request/1'
+          assert os.environ['GITHUB_REPOSITORY'] == 'seradotcom/motionwright'
+          assert os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
+          assert os.environ['GITHUB_RUN_ATTEMPT'] == '1'
+          assert os.environ['EXPECTED_SOURCE_SHA'] == request['source_sha'] == os.environ['GITHUB_SHA']
+          assert re.fullmatch('[0-9a-f]{40}', request['semwright_sha'])
+          limits = request['limits']
+          assert all(type(limits[k]) is int for k in ('attempt_seconds','custody_seconds'))
+          assert 0 < limits['custody_seconds'] < limits['attempt_seconds'] <= 65 * 60
+          assert type(request['attempt_minutes']) is int
+          assert request['attempt_minutes'] * 60 == limits['attempt_seconds']
+          assert all(type(request[k]) is int and request[k] > 0 for k in ('preparation_seconds','native_seconds','upload_seconds'))
+          assert request['preparation_seconds'] + request['native_seconds'] + limits['custody_seconds'] < limits['attempt_seconds']
+          assert request['upload_seconds'] < limits['custody_seconds']
+          preflight_request_capacity(request)
+          current = dict(source_sha=os.environ['GITHUB_SHA'], semwright_sha=request['semwright_sha'],
+                         run_id=os.environ['GITHUB_RUN_ID'], run_attempt='1')
+          clock = dict(schema='motionwright.native.fixedtxt-original-clock/1', context=current,
+                       boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                       started_monotonic=start, deadline_monotonic=start+limits['attempt_seconds'],
+                       request_sha256=hashlib.sha256(raw).hexdigest())
+          root = Path(os.environ['RUNNER_TEMP'])
+          assert root.resolve(strict=True) == root and str(root).startswith('/home/runner/work/_temp')
+          assert re.fullmatch('[1-9][0-9]*', current['run_id'])
+          control = root / ('mw-fixedtxt-g2-control-' + current['run_id'] + '-1')
+          control.mkdir(mode=0o700, exist_ok=False)
+          for name, value in [('request.original.json',raw), ('runtime-bootstrap.original.json',bootstrap),
+                              ('clock.original.json',(json.dumps(clock,sort_keys=True,separators=(',',':'))+'\n').encode())]:
+              with (control/name).open('xb') as output:
+                  output.write(value); output.flush(); os.fsync(output.fileno())
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write('sdk_sha=' + current['semwright_sha'] + '\n')
+          PY_CLOCK
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Bind the early capacity counts to the original selector before setup
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY_CAPACITY_SOURCE'
+          import hashlib
+          from pathlib import Path
+          source = Path('tooling/native_film180_evidence_selection.py').read_bytes()
+          assert hashlib.sha256(source).hexdigest() == '4b81a292ac2b54579708715d1cfe84aef953274cafffa99a92bd9284b2fbaeee'
+          PY_CAPACITY_SOURCE
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.fixedtxt_clock.outputs.sdk_sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+
+      - name: Prepare the existing pinned custody Python and empty owner cgroups
+        id: fixedtxt_python
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -B tooling/source_policy.py
+          sudo -n apt-get update
+          sudo -n apt-get install --no-install-recommends -y python3.12-venv
+          /usr/bin/python3.12 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          venv="$RUNNER_TEMP/mw-fixedtxt-custody-python-$GITHUB_RUN_ID-1"
+          test ! -e "$venv"
+          /usr/bin/python3.12 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir             --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+          "$venv/bin/python" -m pip check
+          group="/sys/fs/cgroup/motionwright-fixedtxt-$GITHUB_RUN_ID-1"
+          test ! -e "$group"
+          sudo -n mkdir -- "$group"
+          for phase in preparation work custody; do
+            sudo -n mkdir -- "$group/$phase"
+            sudo -n chown -- "$(id -u):$(id -g)" "$group/$phase"               "$group/$phase/cgroup.procs" "$group/$phase/cgroup.kill"
+            test ! -s "$group/$phase/cgroup.procs"
+          done
+          echo "python=$venv/bin/python" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare real originals with the existing provider and runtime installation
+        id: fixedtxt_prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUSTODY_PYTHON: ${{ steps.fixedtxt_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          "$CUSTODY_PYTHON" -B -E -s tooling/native_fixedtxt_workflow.py --prepare-originals
+
+      - name: Upload original encrypted P R Q for independent owner review
+        id: fixedtxt_review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-fixedtxt-preparation-${{ github.run_id }}-1
+          path: |
+            ${{ steps.fixedtxt_prepare.outputs.review_directory }}/sealed-preparation.bin
+            ${{ steps.fixedtxt_prepare.outputs.review_directory }}/preparation-public.json
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
+
+      - name: Consume one external R28 original then execute the existing owner once
+        id: fixedtxt_owner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUSTODY_PYTHON: ${{ steps.fixedtxt_python.outputs.python }}
+          MW_FIXEDTXT_REVIEW_ARTIFACT_ID: ${{ steps.fixedtxt_review.outputs.artifact-id }}
+          MW_FIXEDTXT_REVIEW_ARTIFACT_SHA256: ${{ steps.fixedtxt_review.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          exec "$CUSTODY_PYTHON" -B -E -s tooling/native_fixedtxt_workflow.py --receive-and-run
+
+      - name: Retain workflow originals even after preparation or transport failure
+        if: always() && steps.fixedtxt_python.outcome == 'success'
+        env:
+          CUSTODY_PYTHON: ${{ steps.fixedtxt_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          "$CUSTODY_PYTHON" -B -E -s tooling/native_fixedtxt_workflow.py --seal-workflow-originals
+
+      - name: Upload encrypted workflow originals without inferring a native result
+        if: always() && steps.fixedtxt_python.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-fixedtxt-workflow-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/mw-fixedtxt-g2-workflow-${{ github.run_id }}-1/sealed-workflow-originals.bin
+            ${{ runner.temp }}/mw-fixedtxt-g2-workflow-${{ github.run_id }}-1/workflow-public.json
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload only the existing selected originals and public projection
+        if: always() && steps.fixedtxt_owner.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-fixedtxt-originals-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/mw-fixedtxt-g2-sealed-${{ github.run_id }}-1/sealed-originals.bin
+            ${{ runner.temp }}/mw-fixedtxt-g2-sealed-${{ github.run_id }}-1/public-evidence.json
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
+
+  fixedtxt-r28-original-delivery:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.fixedtxt_mode == 'deliver' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Carry the independently authored R28 original for the actual live target
+        id: delivery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          MW_FIXEDTXT_DELIVERY: ${{ inputs.fixedtxt_delivery }}
+          MW_FIXEDTXT_EXTERNAL_DISPATCH: ${{ inputs.g2_admission }}
+          MW_FIXEDTXT_REQUEST: ${{ inputs.fixedtxt_request }}
+          REQUESTED_SCOPE: ${{ inputs.verification_scope }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B - <<'PY_DELIVERY'
+          import hashlib, json, os, re, subprocess, time
+          from datetime import datetime
+          from pathlib import Path
+          REPO = 'seradotcom/motionwright'
+          WORKFLOW_PATH = '.github/workflows/native-mlt-sequence-e2e.yml'
+          WORKFLOW_ENDPOINT = 'repos/' + REPO + '/actions/workflows/native-mlt-sequence-e2e.yml'
+          DELIVERY_MAX = 65536
+          DELIVERY_MEMBERS_MAX = 60 * 1024
+          SHA = re.compile(r'[0-9a-f]{64}\Z')
+          RUN = re.compile(r'[1-9][0-9]*\Z')
+
+
+          class WorkflowRejected(ValueError):
+              pass
+
+          def need(value, reason):
+              if not value:
+                  raise WorkflowRejected(reason)
+
+          def sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+          def canonical(value):
+              return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                 ensure_ascii=True, allow_nan=False) + "\n").encode()
+
+          def strict(raw, maximum=DELIVERY_MAX):
+              need(type(raw) is bytes and 0 < len(raw) <= maximum, "fixedtxt-workflow-json-bound")
+              def pairs(rows):
+                  value = {}
+                  for key, item in rows:
+                      need(key not in value, "fixedtxt-workflow-duplicate-key")
+                      value[key] = item
+                  return value
+              value = json.loads(raw, object_pairs_hook=pairs,
+                  parse_constant=lambda _: (_ for _ in ()).throw(WorkflowRejected("nonfinite JSON")))
+              need(type(value) is dict, "fixedtxt-workflow-object")
+              return value
+
+          def artifact_name(target_run):
+              need(type(target_run) is str and RUN.fullmatch(target_run), "fixedtxt-delivery-target")
+              return "motionwright-fixedtxt-r28-delivery-" + target_run + "-1"
+
+          def original_descriptor(raw):
+              return {"bytes": len(raw), "sha256": sha(raw)}
+
+          def checked_workflow(workflow):
+              need(type(workflow) is dict and type(workflow.get("id")) is int and workflow["id"] > 0
+                   and workflow.get("path") == WORKFLOW_PATH and workflow.get("state") == "active",
+                   "fixedtxt-delivery-workflow")
+              return workflow["id"]
+
+          def checked_run(run, *, run_id, source_sha, workflow_id):
+              need(type(run) is dict and type(run.get("id")) is int and str(run["id"]) == run_id
+                   and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
+                   and run.get("event") == "workflow_dispatch"
+                   and run.get("head_sha") == source_sha and run.get("workflow_id") == workflow_id
+                   and run.get("path") == WORKFLOW_PATH, "fixedtxt-delivery-exact-run")
+              repo, head, actor = run.get("repository"), run.get("head_repository"), run.get("actor")
+              need(type(repo) is dict and type(repo.get("id")) is int and repo["id"] > 0
+                   and repo.get("full_name") == REPO and type(head) is dict and head.get("id") == repo["id"],
+                   "fixedtxt-delivery-repository")
+              need(type(actor) is dict and actor.get("type") == "User"
+                   and type(actor.get("id")) is int and actor["id"] > 0,
+                   "fixedtxt-delivery-external-user")
+              return repo["id"], actor["id"]
+
+          def checked_delivery_runs(target, delivery, workflow, *, current):
+              workflow_id = checked_workflow(workflow)
+              original = checked_run(target, run_id=current["run_id"],
+                                     source_sha=current["source_sha"], workflow_id=workflow_id)
+              need(type(delivery.get("id")) is int and str(delivery["id"]) != current["run_id"],
+                   "fixedtxt-delivery-must-be-independent-invocation")
+              sender = checked_run(delivery, run_id=str(delivery["id"]),
+                                   source_sha=current["source_sha"], workflow_id=workflow_id)
+              need(sender == original, "fixedtxt-delivery-actor-or-repository-changed")
+              timestamps = [run.get("created_at") for run in (target, delivery)]
+              need(all(type(value) is str and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value)
+                       for value in timestamps), "fixedtxt-original-server-times")
+              need(datetime.fromisoformat(timestamps[1]) >= datetime.fromisoformat(timestamps[0]),
+                   "fixedtxt-delivery-precedes-target")
+              return workflow_id, original[0], original[1]
+
+          def checked_artifact(item, *, run, expected_name, maximum):
+              need(type(item) is dict and item.get("name") == expected_name
+                   and type(item.get("id")) is int and item["id"] > 0
+                   and item.get("expired") is False and type(item.get("size_in_bytes")) is int
+                   and 0 < item["size_in_bytes"] <= maximum
+                   and type(item.get("digest")) is str and item["digest"].startswith("sha256:")
+                   and SHA.fullmatch(item["digest"][7:]), "fixedtxt-delivery-artifact-metadata")
+              origin = item.get("workflow_run")
+              need(type(origin) is dict and origin.get("id") == run["id"]
+                   and origin.get("head_sha") == run["head_sha"]
+                   and origin.get("repository_id") == run["repository"]["id"]
+                   and origin.get("head_repository_id") == run["repository"]["id"],
+                   "fixedtxt-delivery-artifact-run")
+              return item
+
+          def api_stream_file_limit():
+              import resource
+              prior = resource.getrlimit(resource.RLIMIT_FSIZE)
+              maximum = min([DELIVERY_MAX, *(bound for bound in prior if bound != resource.RLIM_INFINITY)])
+              need(0 < maximum <= DELIVERY_MAX, "fixedtxt-delivery-original-file-limit")
+              return maximum
+
+          def limit_api_stream_files():
+              """The courier applies this only in its gh child, before exec or bytes."""
+              import resource
+              maximum = api_stream_file_limit()
+              resource.setrlimit(resource.RLIMIT_FSIZE, (maximum, maximum))
+
+          def main():
+              # No checkout, installation, build, render, commit status or API write.
+              need(os.environ['REQUESTED_SCOPE'] == 'fixedtxt-v4-one-fixture'
+                   and os.environ['MW_FIXEDTXT_REQUEST'] == ''
+                   and os.environ['GITHUB_REPOSITORY'] == REPO
+                   and os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
+                   and os.environ['GITHUB_RUN_ATTEMPT'] == '1'
+                   and os.environ['EXPECTED_SOURCE_SHA'] == os.environ['GITHUB_SHA'], 'delivery-current-run')
+              selection = strict(os.environ['MW_FIXEDTXT_DELIVERY'].encode(), 4096)
+              need(set(selection) == {'target_run_id','review_artifact_id','review_artifact_sha256'}
+                   and type(selection['target_run_id']) is str and RUN.fullmatch(selection['target_run_id'])
+                   and type(selection['review_artifact_id']) is int and selection['review_artifact_id'] > 0
+                   and type(selection['review_artifact_sha256']) is str and SHA.fullmatch(selection['review_artifact_sha256']),
+                   'delivery-exact-target-and-original-review')
+              dispatch = os.environ['MW_FIXEDTXT_EXTERNAL_DISPATCH'].encode()
+              parsed = strict(dispatch, 16384)
+              need(parsed.get('schema') == 'motionwright.native.fixedtxt-g2-dispatch/1'
+                   and parsed.get('motionwright_sha') == os.environ['GITHUB_SHA'], 'delivery-original-R28-source')
+              current = dict(source_sha=os.environ['GITHUB_SHA'], semwright_sha=parsed.get('semwright_sha'),
+                             run_id=selection['target_run_id'],run_attempt='1')
+              need(re.fullmatch('[0-9a-f]{40}',current['semwright_sha'])
+                   and parsed.get('fixedtxt',{}).get('context') == current, 'delivery-original-R28-context')
+              root = Path(os.environ['RUNNER_TEMP'])
+              need(root.resolve(strict=True) == root, 'delivery-real-temporary-root')
+              directory = root / ('mw-fixedtxt-r28-delivery-' + os.environ['GITHUB_RUN_ID'] + '-1')
+              directory.mkdir(mode=0o700, exist_ok=False)
+              until = time.monotonic() + 100  # inside the two-minute delivery job; target deadline is never reset
+              originals = {}
+              def get(route,name):
+                  need(route.startswith('repos/'+REPO+'/actions/') and time.monotonic() < until,'delivery-read-only-route')
+                  command = ['/usr/bin/gh','api','--method','GET',route]
+                  maximum = api_stream_file_limit()
+                  # Raw streams remain private runner originals. Only successful bounded
+                  # API originals enter the six-member transport artifact.
+                  with (directory/(name+'.stdout')).open('xb') as output, (directory/(name+'.stderr')).open('xb') as error:
+                      result = subprocess.run(command,stdin=subprocess.DEVNULL,stdout=output,stderr=error,
+                          env={'PATH':'/usr/bin:/bin','GH_HOST':'github.com','GH_TOKEN':os.environ['GH_TOKEN']},
+                          timeout=max(0.001,min(30,until-time.monotonic())),check=False,
+                          preexec_fn=limit_api_stream_files)
+                  # At the hard ceiling, completeness is unknown even if gh handled
+                  # SIGXFSZ/EFBIG and returned zero. Preserve the bounded originals; DENY.
+                  need(all((directory/(name+'.'+stream)).stat().st_size < maximum
+                           for stream in ('stdout','stderr')), 'delivery-original-stream-limit-reached')
+                  need(result.returncode == 0,'delivery-read-failed-no-retry')
+                  raw = (directory/(name+'.stdout')).read_bytes()
+                  need(0 < len(raw) <= DELIVERY_MAX,'delivery-original-response-bound')
+                  originals[name+'.original.json'] = raw
+                  return strict(raw)
+              workflow = get(WORKFLOW_ENDPOINT,'workflow')
+              target = get('repos/'+REPO+'/actions/runs/'+current['run_id'],'target-run')
+              delivery = get('repos/'+REPO+'/actions/runs/'+os.environ['GITHUB_RUN_ID'],'delivery-run')
+              checked_delivery_runs(target,delivery,workflow,current=current)
+              need(target.get('status') == 'in_progress' and delivery.get('status') == 'in_progress','delivery-real-live-contexts')
+              review = get('repos/'+REPO+'/actions/artifacts/'+str(selection['review_artifact_id']),'review-artifact')
+              checked_artifact(review,run=target,expected_name='motionwright-fixedtxt-preparation-'+current['run_id']+'-1',
+                               maximum=256*1024*1024)
+              need(review['digest'] == 'sha256:'+selection['review_artifact_sha256'],'delivery-reviewed-original-digest')
+              originals['dispatch.original.json'] = dispatch
+              originals['handoff.original.json'] = canonical(dict(schema='motionwright.native.fixedtxt-workflow-delivery/1',
+                  target_run_id=current['run_id'],delivery_run_id=os.environ['GITHUB_RUN_ID'],source_sha=current['source_sha'],
+                  workflow_id=workflow['id'],review_artifact_id=review['id'],review_artifact_sha256=selection['review_artifact_sha256'],
+                  dispatch_original=original_descriptor(dispatch)))
+              need(sum(map(len,originals.values())) <= DELIVERY_MEMBERS_MAX,'delivery-original-member-budget')
+              output = directory/'artifact'
+              output.mkdir(mode=0o700,exist_ok=False)
+              for name,raw in originals.items():
+                  with (output/name).open('xb') as stream:
+                      stream.write(raw);stream.flush();os.fsync(stream.fileno())
+              need(time.monotonic() < until,'delivery-original-job-budget')
+              with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
+                  stream.write('directory='+str(output)+'\nname='+artifact_name(current['run_id'])+'\n')
+
+          main()
+          PY_DELIVERY
+
+      - name: Upload the six original transport members once
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.delivery.outputs.name }}
+          path: ${{ steps.delivery.outputs.directory }}/*
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
           retention-days: 14

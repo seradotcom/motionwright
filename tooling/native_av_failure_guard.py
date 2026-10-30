@@ -7,11 +7,13 @@ This helper NEVER converts an uncertain started native render into success.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from typing import Any
 
 SCHEMA = "motionwright.v01-native-command-failure/1"
 MAX_INPUT_BYTES = 256 * 1024
+MAX_SUCCESS_BYTES = 1024 * 1024
 MAX_RECEIPTS = 4096
 CODES = frozenset((
     "Unsupported", "Unavailable", "PermissionDenied", "ConsentRequired",
@@ -53,6 +55,32 @@ CAPTION_NATIVE_CLASSES = frozenset((
     "runtime_cpu_limit", "runtime_file_size_limit", "runtime_signal",
     "observation", "finalize", "startup", "unclassified",
 ))
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("ambiguous native JSON object")
+        result[name] = value
+    return result
+
+def _reject_nonfinite(_value: str) -> Any:
+    raise ValueError("nonfinite native JSON constant")
+
+def _finite_float(raw: str) -> float:
+    result = float(raw)
+    if not math.isfinite(result):
+        raise ValueError("unrepresentable native JSON number")
+    return result
+
+def _strict_native_json(raw: bytes) -> Any:
+    return json.loads(
+        raw,
+        object_pairs_hook=_unique_object,
+        parse_constant=_reject_nonfinite,
+        parse_float=_finite_float,
+    )
 
 
 def _safe_cli_termination(
@@ -144,18 +172,24 @@ def run_sanitized_json(
             stdout=result.stdout, stderr=result.stderr,
             exit_code=result.returncode,
         )) from None
+    # Exit code 0 does not establish an original native operation's outcome.
+    # Retain exact streams first; admit only one bounded JSON interpretation.
+    oversized = isinstance(result.stdout, bytes) and len(result.stdout) > MAX_SUCCESS_BYTES
     try:
-        parsed = json.loads(result.stdout)
+        parsed = _strict_native_json(result.stdout) if not oversized else None
     except (ValueError, UnicodeError, TypeError):
-        raise rejected(classify_native_command_failure(
-            stdout=b"", stderr=b"invalid-native-response",
-            exit_code=result.returncode,
-        )) from None
+        parsed = None
     if not isinstance(parsed, dict):
-        raise rejected(classify_native_command_failure(
+        diagnostic = classify_native_command_failure(
             stdout=b"", stderr=b"invalid-native-response",
             exit_code=result.returncode,
-        )) from None
+        )
+        diagnostic["reason"] = (
+            "oversized_native_success_response" if oversized
+            else "malformed_native_success_response"
+        )
+        diagnostic["source_outcome"] = "UNKNOWN"
+        raise rejected(diagnostic) from None
     if capture_failed:
         raise rejected(classify_native_command_failure(
             stdout=b"", stderr=b"private-capture-failed", exit_code=result.returncode,
@@ -225,7 +259,7 @@ def classify_native_command_failure(
         if not raw:
             continue
         try:
-            candidate = json.loads(raw)
+            candidate = _strict_native_json(raw)
         except (UnicodeError, ValueError, TypeError):
             continue
         if isinstance(candidate, dict):
