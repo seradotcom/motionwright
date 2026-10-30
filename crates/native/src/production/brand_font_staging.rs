@@ -856,6 +856,7 @@ impl RetainedFontRoot {
                 // Do not observe, replace, unlink or return before custody owns
                 // the exact partial/unsynced/published capsule, when supplied.
                 slot.retained = retained;
+                let error = *error;
                 slot.error = Some(json!(&error));
                 return Err(error);
             }
@@ -1201,7 +1202,10 @@ mod tests {
             let mode = self.0.mode.load(Ordering::SeqCst);
             if mode == 2 {
                 return Err(RetainedStageError {
-                    error: Error::new(ErrorCode::Conflict, "Synthetic no-replace collision"),
+                    error: Box::new(Error::new(
+                        ErrorCode::Conflict,
+                        "Synthetic no-replace collision",
+                    )),
                     retained: None,
                 });
             }
@@ -1229,8 +1233,9 @@ mod tests {
             });
             if mode == 1 {
                 return Err(RetainedStageError {
-                    error: Error::new(ErrorCode::BackendFailed, "Synthetic partial write")
-                        .uncertain(),
+                    error: Box::new(
+                        Error::new(ErrorCode::BackendFailed, "Synthetic partial write").uncertain(),
+                    ),
                     retained: Some(stage),
                 });
             }
