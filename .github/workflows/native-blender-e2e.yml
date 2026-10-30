@@ -2033,6 +2033,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
+      PYTHONDONTWRITEBYTECODE: "1"
       VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
       EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
       MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}

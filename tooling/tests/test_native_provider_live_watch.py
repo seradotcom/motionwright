@@ -226,8 +226,33 @@ class BoundedLiveProviderTests(unittest.TestCase):
         self.assertIn("live_broker_watch.start()", runner)
         self.assertIn("live_broker_watch.finish()", runner)
         self.assertIn("native-provider-live-broker-events.json", runner)
-        self.assertIn('MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: \'1\'', workflow)
-        self.assertEqual(workflow.count("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'"), 2)
+        replay_key = "MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY:"
+        self.assertEqual(workflow.count(replay_key), 2)
+
+        def workflow_step(name):
+            marker = "      - name: " + name + "\n"
+            self.assertEqual(workflow.count(marker), 1)
+            return workflow.split(marker, 1)[1].split("\n      - ", 1)[0]
+
+        original_step = workflow_step("Render application-owned revision through real Broker and Driver Host")
+        repeat_step = workflow_step("Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)")
+        # The ordinary render keeps replay enabled; the finite N83 selection
+        # disables it and cannot enter the separate repeat step.
+        self.assertEqual(
+            [line.strip() for line in original_step.splitlines() if replay_key in line],
+            [replay_key + " ${{ inputs.native_scope == 'n83-preview' && '0' || '1' }}"],
+        )
+        self.assertEqual(
+            [line.strip() for line in repeat_step.splitlines() if replay_key in line],
+            [replay_key + " '1'"],
+        )
+        self.assertEqual(
+            [line.strip() for line in repeat_step.splitlines() if line.strip().startswith("if:")],
+            ["if: ${{ inputs.native_scope != 'n83-preview' && "
+             "((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || "
+             "(github.event_name == 'pull_request' && startsWith(github.head_ref, "
+             "'feat/v01-provider-repeat-ci'))) }}"],
+        )
         self.assertIn("test_native_provider_live_watch.py", workflow)
         self.assertIn(
             'test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json"',

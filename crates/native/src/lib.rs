@@ -5900,6 +5900,48 @@ mod graph_store_provider {
         }
 
         #[tokio::test]
+        async fn store_bound_provider_factory_compiles_native_driver_catalog() {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("motionwright.sqlite3");
+            let project = seed_database(&path);
+            let service = StudioService::open(&path).unwrap();
+            let identity = MountedStoreIdentity::capture(&service).unwrap();
+            let original_identity = identity.as_str().to_owned();
+
+            // This private test uses the real retained Store and the exact
+            // production factory branch. It grants no Host authority and does
+            // not certify the platform mount resolver or invoke an operation.
+            let app = ProviderDatabase::Mounted(GraphStoreBinding {
+                service: service.clone(),
+                identity,
+            })
+            .into_application()
+            .expect("Store-bound provider application construction failed");
+            let mut driver = NativeDriver::new(app)
+                .expect("Store-bound provider NativeDriver construction failed before Hello");
+            let capabilities = driver
+                .capabilities()
+                .await
+                .expect("Store-bound provider capability construction failed");
+            let names: Vec<_> = capabilities
+                .iter()
+                .map(|capability| capability.descriptor.name.as_str())
+                .collect();
+            for required in [
+                "driver.motionwright.observe",
+                "driver.motionwright.graph.upsert",
+                "driver.motionwright.graph.remove",
+            ] {
+                assert!(names.contains(&required), "factory omitted {required}");
+            }
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert_eq!(
+                MountedStoreIdentity::capture(&service).unwrap().as_str(),
+                original_identity
+            );
+        }
+
+        #[tokio::test]
         async fn generic_application_never_installs_a_graph_writer() {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("ordinary.sqlite3");
