@@ -97,8 +97,9 @@ fn single_cut_invalidates_only_the_edited_and_rippled_scene_statuses() {
             scene.status = SceneStatus::Approved;
         }
         let original = p.clone();
-        p.apply_change(&change(&p, second, beat_index, false))
-            .unwrap();
+        let cut = change(&p, second, beat_index, false);
+        p.apply_change(&cut).unwrap();
+        p.commit_revision(original.revision + 1, &cut).unwrap();
         assert_eq!(p.scenes[0], original.scenes[0]);
         assert_eq!(p.scenes[1].start, original.scenes[1].start);
         assert_ne!(p.scenes[1].duration, original.scenes[1].duration);
