@@ -8443,7 +8443,7 @@
     },
     {
       "path": ".github/workflows/native-sdk.yml",
-      "sha256": "8612175dc02c96bdbb9e7bccc63022f68e3e2d80be1ec6c2f53ed863a2c9130d",
+      "sha256": "2bc8456a4037b1e50f8476060e842058d4bc90a0c48098572c0bc0eb50ca05af",
       "preamble_sha256": "4f5581a3526d6494a349c58ef310fbd68a9f50fcacdd8c2beaf9f15ca450a0c3",
       "evidence_class": "native_host_paths",
       "purpose": "Pinned Native SDK, music/SFX/preview and capsule-source Service contracts, Darwin system aliases, real NTFS refusal, actual host/UI-service shared state and the separately selected native capsule source cycle.",
@@ -8700,7 +8700,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "verify-native-sdk",
           "strategy": null,
-          "source_sha256": "f18b81dbf925883a0a5b75e6994f0bdbb585dec77384cb43a2089eb5b607da8a",
+          "source_sha256": "f226e8dc0bf1e779b69e3cf4700cf273271608dd384f60a0f9cf3ae19c91b7dd",
           "instance_sets": {
             "candidate": [
               {}
@@ -8763,7 +8763,7 @@
               "name": "Build exact Semwright daemon, CLI and sandbox",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "35a7e6b5106593ea4df34fcbb8dc2966c8146154553981191e1a16fab2d4c8f1",
+              "source_block_sha256": "88fe54aa2252832d32e9fed806fbdcf784da1e002a18a123d17b1961ce44a122",
               "api_binding": "EXPLICIT_NAME"
             },
             {

@@ -29,6 +29,14 @@ MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 4096
 MAX_JSON = 512 * 1024
+STARTUP_STDERR_PHASES = {"shared-state", "authorized", "reopened", "withdrawn", "restored"}
+STARTUP_STDERR_LIMITS = {
+    "stderr.original": 65536,
+    "session.json": 8192,
+    "manifest.original.json": 8192,
+    "capture.json": 8192,
+    "closed.json": 8192,
+}
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 SOURCE = re.compile(r"[0-9a-f]{40}\Z")
 CONTEXT_KEYS = {"source_sha", "semwright_sha", "run_id", "run_attempt"}
@@ -156,6 +164,28 @@ def gather_snapshot(roots, *, preserve_partial=False):
                 try:
                     snapshot_member(name)
                     observed = path.lstat()
+                    relative_parts = path.relative_to(root).parts
+                    startup_stderr = label == "owner" and relative_parts[0] == "startup-stderr"
+                    file_limit = MAX_FILE
+                    if startup_stderr:
+                        # Retain opaque startup diagnostics only in this closed
+                        # namespace; never give them the generic owner-file cap
+                        # or accept links as metadata-only diagnostic members.
+                        if len(relative_parts) == 1:
+                            require(stat.S_ISDIR(observed.st_mode), "snapshot_startup_stderr_root")
+                        elif len(relative_parts) == 2:
+                            require(relative_parts[1] in STARTUP_STDERR_PHASES
+                                    and stat.S_ISDIR(observed.st_mode),
+                                    "snapshot_startup_stderr_phase")
+                        else:
+                            require(len(relative_parts) == 3
+                                    and relative_parts[1] in STARTUP_STDERR_PHASES
+                                    and relative_parts[2] in STARTUP_STDERR_LIMITS
+                                    and stat.S_ISREG(observed.st_mode),
+                                    "snapshot_startup_stderr_member")
+                            file_limit = STARTUP_STDERR_LIMITS[relative_parts[2]]
+                            require(observed.st_nlink == 1 and observed.st_size <= file_limit,
+                                    "snapshot_startup_stderr_file")
                     if not stat.S_ISREG(observed.st_mode) and not stat.S_ISDIR(observed.st_mode):
                         require(label == "owner", "snapshot_nonregular_input")
                         target = os.readlink(path) if stat.S_ISLNK(observed.st_mode) else None
@@ -188,7 +218,12 @@ def gather_snapshot(roots, *, preserve_partial=False):
                                              "automatic_retry": False})
                         continue
                     require(len(entries) < MAX_FILES, "snapshot_file_count")
-                    data, observation = regular(path, MAX_FILE)
+                    data, observation = regular(path, file_limit)
+                    if startup_stderr:
+                        final = path.lstat()
+                        require(final.st_nlink == 1
+                                and metadata_identity(final) == metadata_identity(observed),
+                                "snapshot_startup_stderr_changed")
                     require(total + len(data) <= MAX_TOTAL, "snapshot_total_size")
                     total += len(data)
                     entries.append((name, data))

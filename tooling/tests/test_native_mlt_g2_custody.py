@@ -208,16 +208,39 @@ class G2CustodyTests(unittest.TestCase):
             root = Path(temporary).resolve()
             values = {"motionwright.sqlite3": b"original DB",
                       "motionwright.sqlite3-wal": b"original WAL",
-                      "motionwright.sqlite3-shm": b"original SHM"}
+                      "motionwright.sqlite3-shm": b"original SHM",
+                      "unrelated.log": b"x" * 65537}
+            startup_limits = {
+                "stderr.original": 65536, "session.json": 8192,
+                "manifest.original.json": 8192, "capture.json": 8192, "closed.json": 8192,
+            }
+            opaque = b'/owner/private startup\x00\xff{"outcome_known":false,"outcome_known":true}'
+            for phase in ("shared-state", "authorized", "reopened", "withdrawn", "restored"):
+                for member, maximum in startup_limits.items():
+                    values[f"startup-stderr/{phase}/{member}"] = opaque.ljust(maximum, b"x")
             for name, raw in values.items():
-                (root / name).write_bytes(raw)
-            archive = custody.gather_snapshot({"owner": root})
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            with mock.patch.object(sealed, "regular", wraps=sealed.regular) as reads:
+                archive = custody.gather_snapshot({"owner": root})
+            limits = {call.args[0].relative_to(root).as_posix(): call.args[1]
+                      for call in reads.call_args_list}
+            for name in values:
+                expected = startup_limits[Path(name).name] if name.startswith("startup-stderr/") else 256 * 1024**2
+                self.assertEqual(limits[name], expected)
+            self.assertEqual((sealed.MAX_FILE, sealed.MAX_TOTAL, sealed.MAX_FILES),
+                             (256 * 1024**2, 512 * 1024**2, 4096))
             encrypted = custody.encrypt_snapshot(archive, self.recipient, CURRENT)
             recovered, _ = custody.decrypt_snapshot(encrypted, self.private)
+            self.assertNotIn(opaque, encrypted)
             with tarfile.open(fileobj=io.BytesIO(recovered), mode="r:") as reader:
                 for name, raw in values.items():
                     self.assertEqual(reader.extractfile("owner/" + name).read(), raw)
                     self.assertEqual((root / name).read_bytes(), raw)
+                manifest = json.load(reader.extractfile("snapshot-manifest.json"))
+                self.assertTrue(manifest["selected_originals_complete"])
+                self.assertFalse(manifest["complete_owner_state_claimed"])
 
     def test_snapshot_detects_namespace_growth_during_capture(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -285,6 +308,97 @@ class G2CustodyTests(unittest.TestCase):
                 self.assertEqual(rows[-1]["status"], "CAPTURE_FAILED")
                 self.assertFalse(rows[-1]["automatic_retry"])
             self.assertEqual((root / "wal").read_bytes(), b"changing WAL")
+
+        # The startup namespace is narrower than the generic owner snapshot.
+        # Strict capture rejects each mutation; partial capture still seals the
+        # independently readable originals without opening or accepting extras.
+        variants = [("oversize", name) for name in (
+            "stderr.original", "session.json", "manifest.original.json", "capture.json", "closed.json")]
+        variants += [("bootstrap", "stderr.original"), ("member", "unexpected.json"),
+                     ("subdirectory", "nested"), ("member-directory", "capture.json"),
+                     ("phase-file", "authorized")]
+        if os.name == "posix":
+            variants += [("file-symlink", "stderr.original"), ("phase-symlink", "authorized"),
+                         ("root-symlink", "startup-stderr"), ("hardlink", "stderr.original"),
+                         ("fifo", "stderr.original")]
+        for kind, member in variants:
+            with self.subTest(startup_mutation=kind, member=member), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                root = base / "owner"
+                root.mkdir()
+                (root / "db").write_bytes(b"readable original DB")
+                outside = base / "outside.original"
+                outside.write_bytes(b"private outside bytes must not be followed")
+                outside_dir = base / "outside-dir"
+                outside_dir.mkdir()
+                (outside_dir / "stderr.original").write_bytes(outside.read_bytes())
+                startup = root / "startup-stderr"
+                good = None
+                if kind == "root-symlink":
+                    startup.symlink_to(outside_dir, target_is_directory=True)
+                    bad = startup
+                else:
+                    good = startup / "shared-state" / "closed.json"
+                    good.parent.mkdir(parents=True)
+                    good.write_bytes(b"\xffopaque readable closure\x00")
+                    phase = startup / "authorized"
+                    if kind == "phase-file":
+                        phase.write_bytes(b"not a phase directory")
+                        bad = phase
+                    elif kind == "phase-symlink":
+                        phase.symlink_to(outside_dir, target_is_directory=True)
+                        bad = phase
+                    elif kind == "bootstrap":
+                        bad = startup / "bootstrap" / member
+                        bad.parent.mkdir()
+                        bad.write_bytes(b"bootstrap is outside the selected phases")
+                    else:
+                        phase.mkdir()
+                        bad = phase / member
+                        if kind == "oversize":
+                            maximum = 65536 if member == "stderr.original" else 8192
+                            bad.write_bytes(b"x" * (maximum + 1))
+                        elif kind == "member":
+                            bad.write_bytes(b"unexpected private member")
+                        elif kind == "subdirectory":
+                            bad.mkdir()
+                            bad = bad / "stderr.original"
+                            bad.write_bytes(b"unexpected nested original")
+                        elif kind == "member-directory":
+                            bad.mkdir()
+                        elif kind == "file-symlink":
+                            bad.symlink_to(outside)
+                        elif kind == "hardlink":
+                            os.link(outside, bad)
+                        elif kind == "fifo":
+                            os.mkfifo(bad)
+                        else:
+                            self.fail("unhandled startup mutation")
+                with self.assertRaises(sealed.CustodyRejected):
+                    custody.gather_snapshot({"owner": root})
+                raw, complete = custody.gather_snapshot({"owner": root}, preserve_partial=True)
+                self.assertFalse(complete)
+                encrypted = custody.encrypt_snapshot(raw, self.recipient, CURRENT)
+                recovered, current = custody.decrypt_snapshot(encrypted, self.private)
+                self.assertEqual(current, CURRENT)
+                with tarfile.open(fileobj=io.BytesIO(recovered), mode="r:") as archive:
+                    self.assertEqual(archive.extractfile("owner/db").read(), b"readable original DB")
+                    if good is not None:
+                        self.assertEqual(archive.extractfile("owner/" + good.relative_to(root).as_posix()).read(),
+                                         good.read_bytes())
+                    bad_name = "owner/" + bad.relative_to(root).as_posix()
+                    self.assertNotIn(bad_name, archive.getnames())
+                    manifest = json.load(archive.extractfile("snapshot-manifest.json"))
+                    self.assertFalse(manifest["selected_originals_complete"])
+                    rows = manifest["roots"]["owner"]["files"]
+                    rejected = [row for row in rows if row["archive_path"] == bad_name]
+                    self.assertEqual(len(rejected), 1)
+                    self.assertEqual(rejected[0]["status"], "CAPTURE_FAILED")
+                    self.assertFalse(rejected[0]["automatic_retry"])
+                    self.assertTrue(rejected[0]["original_retained_in_place"])
+                    self.assertTrue(all(row.get("kind") != "metadata-only-nonregular" for row in rows))
+                self.assertEqual(outside.read_bytes(), b"private outside bytes must not be followed")
+                self.assertTrue(bad.exists() or bad.is_symlink())
 
     def test_namespace_growth_is_retained_as_partial_without_retrying_files(self):
         with tempfile.TemporaryDirectory() as temporary:

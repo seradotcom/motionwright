@@ -425,8 +425,15 @@ jobs:
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
       - name: Build exact Semwright daemon, CLI and sandbox
         working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}
+        env:
+          MW_SHARED_STATE_CUSTODY: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' && '1' || '' }}
         run: |
-          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          set -euo pipefail
+          startup_stderr_features=()
+          if [ "$MW_SHARED_STATE_CUSTODY" = "1" ]; then
+            startup_stderr_features=(--features semwright-daemon/private-driver-startup-stderr)
+          fi
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins "${startup_stderr_features[@]}"
           cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
       - name: Build Motionwright provider and app-state actor
         run: |

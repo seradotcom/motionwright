@@ -5,10 +5,14 @@ import copy
 from contextlib import ExitStack, closing, nullcontext
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import Mock, patch
 
@@ -65,6 +69,10 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
         (self.private / "semwrightd.log").write_text(
             "OWNER_PRIVATE_DAEMON_SECRET", encoding="utf-8"
         )
+        stderr = self.private / "startup-stderr" / "shared-state"
+        stderr.mkdir(parents=True)
+        (stderr / "stderr.original").write_bytes(b"OWNER_PRIVATE_STARTUP_STDERR")
+        (stderr / "capture.json").write_text('{"connection_result":{"returned":"ok"}}')
         (self.private.parent / "sandbox-profile.txt").write_text(
             "OWNER_PRIVATE_NETWORK_CONFIG", encoding="utf-8"
         )
@@ -92,7 +100,8 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
         self.assertEqual([f.name for f in self.public.iterdir()], ["public-evidence.json"])
         txt = (self.public / "public-evidence.json").read_text()
         for secret in ("OWNER_PRIVATE_", "OWNER_SECRET_", "semwrightd.log",
-                       "OWNER_PRIVATE_DAEMON_SECRET", "sandbox-profile.txt"):
+                       "OWNER_PRIVATE_DAEMON_SECRET", "sandbox-profile.txt", "startup-stderr",
+                       "OWNER_PRIVATE_STARTUP_STDERR", "capture.json"):
             self.assertNotIn(secret, txt)
         self.assertFalse(receipt["raw_native_cli_calls_uploaded"])
         self.assertFalse(receipt["raw_daemon_or_provider_logs_uploaded"])
@@ -417,9 +426,13 @@ class PreviewStoreAndControlFlowTests(unittest.TestCase):
         # Run the real main control flow with transport witnesses. Only the two
         # preview denial replies vary; an UNKNOWN must stop before CAS or the
         # next stale mutation, independently of unchanged Store observations.
-        for target, expected_calls in (("redirected", 11), ("stale", 14)):
-            with self.subTest(target=target), tempfile.TemporaryDirectory() as raw:
+        for target, expected_calls, private in (("redirected", 11, False), ("stale", 14, False),
+                                               ("redirected", 11, True), ("stale", 14, True)):
+            with self.subTest(target=target, private=private), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
+                retained_owner = root / "retained-owner" if private else None
+                if retained_owner is not None:
+                    retained_owner.mkdir(mode=0o700)
                 evidence = root / "evidence"
                 provider = root / "provider"
                 provider.write_bytes(b"transport witness only")
@@ -512,17 +525,132 @@ class PreviewStoreAndControlFlowTests(unittest.TestCase):
                     }
                     for name, value in replacements.items():
                         stack.enter_context(patch.object(host, name, value))
-                    stack.enter_context(patch.object(host.subprocess, "Popen", return_value=daemon))
+                    popen = stack.enter_context(patch.object(host.subprocess, "Popen", return_value=daemon))
                     stack.enter_context(patch.object(Path, "is_socket", return_value=True))
                     with self.assertRaisesRegex(AssertionError, "retained UNKNOWN"):
-                        host.main()
+                        host.main(retained_owner=retained_owner)
                 self.assertTrue(unknown_seen)
+                argv = popen.call_args.args[0]
+                if retained_owner is None:
+                    self.assertNotIn("--driver-startup-stderr-dir", argv)
+                else:
+                    self.assertEqual(argv[-4:], ["--driver-startup-stderr-dir",
+                                                str(retained_owner / "startup-stderr" / "shared-state"),
+                                                "--driver-startup-stderr-provider", "driver:motionwright"])
                 self.assertEqual(len(native_calls), expected_calls)
                 self.assertEqual(native_calls[-1], "driver.motionwright.project.preview")
                 self.assertFalse((evidence / "result.json").exists())
                 retained = json.loads((evidence / "calls.json").read_text())
                 self.assertEqual(len(retained), expected_calls)
                 self.assertIs(retained[-1]["envelope"]["error"]["outcome_known"], False)
+
+
+@unittest.skipUnless(sys.platform == "linux", "private SDK startup observation is Linux-only")
+class DriverStartupStderrSelectionTests(unittest.TestCase):
+    """Consumer selection and transport witnesses only; no Broker/Native execution."""
+
+    def test_private_selection_has_closed_paths_and_never_reuses_an_attempt(self):
+        with tempfile.TemporaryDirectory() as raw:
+            owner = Path(raw).resolve()
+            missing = owner / "not-created"
+            self.assertEqual(host.driver_startup_stderr_args(missing, "bootstrap", selected=False), [])
+            self.assertFalse(missing.exists())
+            for label in ("bootstrap", "../escape", "unknown"):
+                with self.assertRaisesRegex(AssertionError, "PRIVATE_STARTUP_STDERR_SELECTION"):
+                    host.driver_startup_stderr_args(owner, label, selected=True)
+            self.assertFalse((owner / "startup-stderr").exists())
+            for label in ("shared-state", "authorized", "reopened", "withdrawn", "restored"):
+                argv = host.driver_startup_stderr_args(owner, label, selected=True)
+                directory = owner / "startup-stderr" / label
+                self.assertEqual(argv, ["--driver-startup-stderr-dir", str(directory),
+                                        "--driver-startup-stderr-provider", "driver:motionwright"])
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(directory.parent.stat().st_mode & 0o777, 0o700)
+                original = directory / "stderr.original"
+                original.write_bytes(b"unmodified original failure")
+                with self.assertRaises(FileExistsError):
+                    host.driver_startup_stderr_args(owner, label, selected=True)
+                self.assertEqual(original.read_bytes(), b"unmodified original failure")
+
+    def test_private_selection_rejects_linked_or_nonprivate_parent_before_launch(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            owner, outside = root / "owner", root / "outside"
+            owner.mkdir(mode=0o700)
+            outside.mkdir(mode=0o700)
+            (owner / "startup-stderr").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(AssertionError, "PRIVATE_STARTUP_STDERR_PARENT"):
+                host.driver_startup_stderr_args(owner, "shared-state", selected=True)
+            self.assertEqual(list(outside.iterdir()), [])
+            (owner / "startup-stderr").unlink()
+            owner.chmod(0o755)
+            with self.assertRaisesRegex(AssertionError, "PRIVATE_STARTUP_STDERR_OWNER"):
+                host.driver_startup_stderr_args(owner, "shared-state", selected=True)
+            self.assertFalse((owner / "startup-stderr").exists())
+
+    def test_capsule_bootstrap_has_no_observer_and_selected_driver_uses_real_daemon_argv(self):
+        for label in ("bootstrap", "authorized", "reopened", "withdrawn", "restored"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw).resolve()
+                owner, evidence = root / "owner", root / "evidence"
+                owner.mkdir(mode=0o700)
+                evidence.mkdir(mode=0o700)
+                (owner / "runtime").mkdir(mode=0o700)
+                config = owner / "owner.toml"
+                config.write_text("drivers = []\n")
+                custody = Mock()
+                custody.new_json.side_effect = host.write_json
+                admitted = {"custody": custody, "evidence": evidence, "owner": owner,
+                            "source": {}, "processes": [], "shutdown": [], "unknown": False}
+                process = Mock(pid=4242)
+                process.poll.return_value = 0
+                with ExitStack() as stack:
+                    popen = stack.enter_context(patch.object(host.subprocess, "Popen", return_value=process))
+                    stack.enter_context(patch.object(Path, "is_socket", return_value=True))
+                    stack.enter_context(patch.object(host, "capsule_pid_identity", return_value={"pid": 4242}))
+                    stack.enter_context(patch.object(host, "capsule_track_descendants"))
+                    stack.enter_context(patch.object(host, "capsule_stop_group", return_value=True))
+                    stack.enter_context(patch.object(host, "capsule_stop_descendants", return_value=True))
+                    with host.capsule_daemon(admitted, label, config, {}):
+                        pass
+                self.assertEqual(popen.call_count, 1)
+                argv = popen.call_args.args[0]
+                self.assertEqual(argv[:5], [str(host.SW_BINS / "semwrightd"), "--config", str(config),
+                                            "--socket", str(owner / "runtime" / f"{label}.sock")])
+                if label == "bootstrap":
+                    self.assertEqual(len(argv), 5)
+                    self.assertFalse((owner / "startup-stderr").exists())
+                else:
+                    self.assertEqual(argv[5:], ["--driver-startup-stderr-dir",
+                                                str(owner / "startup-stderr" / label),
+                                                "--driver-startup-stderr-provider", "driver:motionwright"])
+
+    def test_workflow_builds_feature_only_for_existing_private_selection(self):
+        yml = (Path(__file__).resolve().parents[2] / ".github/workflows/native-sdk.yml").read_text()
+        def step(name):
+            return yml.split("      - name: " + name + "\n", 1)[1].split("\n      - ", 1)[0]
+        build = step("Build exact Semwright daemon, CLI and sandbox")
+        selected = step("Real UI-service to Native Host shared-state acceptance")
+        expression = r"^\s+MW_SHARED_STATE_CUSTODY: (.+)$"
+        self.assertEqual(re.search(expression, build, re.MULTILINE).group(1),
+                         re.search(expression, selected, re.MULTILINE).group(1))
+        self.assertIn("if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.g1_only) }}",
+                      yml.split("  real-host-shared-state:\n", 1)[1])
+        script = textwrap.dedent(build.split("        run: |\n", 1)[1])
+        for selection in ("", "0", "1"):
+            with self.subTest(selection=selection):
+                result = subprocess.run(
+                    ["bash", "-c", 'cargo() { printf "%s\\n" "$*"; }\n' + script],
+                    env={**os.environ, "MW_SHARED_STATE_CUSTODY": selection},
+                    capture_output=True, text=True, check=True,
+                )
+                calls = result.stdout.splitlines()
+                self.assertEqual(len(calls), 2)
+                expected = "build --locked -p semwright-daemon -p semwright-cli --bins"
+                if selection == "1":
+                    expected += " --features semwright-daemon/private-driver-startup-stderr"
+                self.assertEqual(calls[0], expected)
+                self.assertEqual(calls[1], "build --locked -p semwright-plugin-host --bin semwright-sandbox")
 
 
 class CapsuleSourceTransportShapeTests(unittest.TestCase):

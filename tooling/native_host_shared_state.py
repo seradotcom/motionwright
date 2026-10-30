@@ -125,6 +125,34 @@ def owner_config(data_root: Path, *, manifest: Path | None = None,
     return config
 
 
+def driver_startup_stderr_args(owner: Path, label: str, *, selected: bool) -> list[str]:
+    """Select one private SDK observer; never grant or retry a Native operation."""
+    if not selected:
+        return []
+    if sys.platform != "linux" or label not in {
+            "shared-state", "authorized", "reopened", "withdrawn", "restored"}:
+        raise AssertionError("PRIVATE_STARTUP_STDERR_SELECTION")
+    owner = Path(owner)
+    if (not owner.is_absolute() or not owner.is_dir()
+            or owner.resolve(strict=True) != owner
+            or any(path.is_symlink() for path in (owner, *owner.parents))
+            or owner.stat().st_uid != os.getuid() or owner.stat().st_mode & 0o777 != 0o700):
+        raise AssertionError("PRIVATE_STARTUP_STDERR_OWNER")
+    parent = owner / "startup-stderr"
+    if parent.exists() or parent.is_symlink():
+        if (parent.is_symlink() or not parent.is_dir() or parent.resolve(strict=True) != parent
+                or parent.stat().st_uid != os.getuid() or parent.stat().st_mode & 0o777 != 0o700):
+            raise AssertionError("PRIVATE_STARTUP_STDERR_PARENT")
+    else:
+        parent.mkdir(mode=0o700)
+    directory = parent / label
+    # SDK requires an existing empty private directory. A prior attempt is not
+    # reused, cleared, or overwritten; the enclosing owner is sealed in place.
+    directory.mkdir(mode=0o700)
+    return ["--driver-startup-stderr-dir", str(directory),
+            "--driver-startup-stderr-provider", "driver:motionwright"]
+
+
 @contextmanager
 def running_daemon(config: Path, socket: Path, env: dict[str, str], log: Path):
     """Run the real daemon; no fake backend or sandbox fallback is selected."""
@@ -428,6 +456,7 @@ def main(*, retained_owner: Path | None = None) -> None:
                 str(config_path),
                 "--socket",
                 str(socket),
+                *driver_startup_stderr_args(root, "shared-state", selected=retained_owner is not None),
             ],
             env=env,
             stdin=subprocess.DEVNULL,
@@ -967,7 +996,9 @@ def capsule_daemon(admitted: dict, label: str, config: Path, env: dict[str, str]
         log.chmod(0o600)
         try:
             process = subprocess.Popen([str(SW_BINS / "semwrightd"), "--config", str(config),
-                                        "--socket", str(socket)], env=env, stdin=subprocess.DEVNULL,
+                                        "--socket", str(socket),
+                                        *driver_startup_stderr_args(owner, label, selected=label != "bootstrap")],
+                                       env=env, stdin=subprocess.DEVNULL,
                                        stdout=stream, stderr=stream, start_new_session=True)
             tracked = {"process": process, "quiescent": False, "descendants": {}, "identity": None}
             admitted["processes"].append(tracked)
