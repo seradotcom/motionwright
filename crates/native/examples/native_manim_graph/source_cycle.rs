@@ -72,8 +72,9 @@ fn field<'a>(value: &'a serde_json::Value, pointer: &str) -> GraphResult<&'a str
 #[cfg(unix)]
 fn original(path: &Path, limit: u64) -> GraphResult<Vec<u8>> {
     use std::os::unix::fs::MetadataExt;
-    if limit == 0 || limit > MAX_SOURCE_BUNDLE_BYTES_V2 as u64 {
-        return Err("Graph original exceeds the fixed source carrier budget".into());
+    // Reports and source ZIPs retain their separate, existing byte budgets.
+    if limit != REPORT_MAX && limit != MAX_SOURCE_BUNDLE_BYTES_V2 as u64 {
+        return Err("Graph original requires a fixed report or source carrier budget".into());
     }
     let before = std::fs::symlink_metadata(path)?;
     if !path.is_absolute()
@@ -979,6 +980,34 @@ pub(super) async fn realize(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_and_source_originals_keep_their_distinct_fixed_byte_budgets() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let report = root.join("source.json");
+        let value = json!({"padding": "x".repeat(MAX_SOURCE_BUNDLE_BYTES_V2)});
+        new_report(&report, &value).unwrap();
+        let bytes = std::fs::metadata(&report).unwrap().len();
+        assert!(bytes > MAX_SOURCE_BUNDLE_BYTES_V2 as u64 && bytes <= REPORT_MAX);
+        assert_eq!(object(&report).unwrap(), value);
+        let error = original(&report, MAX_SOURCE_BUNDLE_BYTES_V2 as u64).unwrap_err();
+        assert!(error.to_string().contains("bounded canonical regular file"));
+        for limit in [0, MAX_SOURCE_BUNDLE_BYTES_V2 as u64 + 1, REPORT_MAX + 1] {
+            assert!(original(&report, limit).is_err());
+        }
+
+        let oversized = root.join("oversized.json");
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&oversized)
+            .unwrap();
+        file.set_len(REPORT_MAX + 1).unwrap();
+        drop(file);
+        assert!(object(&oversized).is_err());
+        assert_eq!(std::fs::metadata(&oversized).unwrap().len(), REPORT_MAX + 1);
+    }
 
     #[test]
     fn source_seed_keeps_graph_absent_until_the_original_bound_provider_save() {
