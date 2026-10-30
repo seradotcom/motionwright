@@ -188,8 +188,8 @@ pub(super) fn require_distinct_original_output(
 fn require_native_writer_profile(profile: ManimRenderProfile) -> Result<()> {
     // These are the current, unchanged Native5 writer bounds. Refuse before
     // producing files or reserving a Host job; never resize the authored frame.
-    if profile.width % 2 != 0
-        || profile.height % 2 != 0
+    if !profile.width.is_multiple_of(2)
+        || !profile.height.is_multiple_of(2)
         || profile.width > 4096
         || profile.height > 4096
         || u64::from(profile.width) * u64::from(profile.height) > 8_847_360

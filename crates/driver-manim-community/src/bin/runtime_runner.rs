@@ -678,10 +678,10 @@ mod graph_probe_custody {
                 .saturating_sub(kept.len())
                 .min(length);
             let retained = &chunk[..available];
-            if custody_error.is_none() {
-                if let Err(error) = original.file.write_all(retained) {
-                    custody_error = Some(error.to_string());
-                }
+            if custody_error.is_none()
+                && let Err(error) = original.file.write_all(retained)
+            {
+                custody_error = Some(error.to_string());
             }
             kept.extend_from_slice(retained);
             // Drain excess bytes without retaining unbounded data or closing the
@@ -1119,8 +1119,8 @@ mod graph_probe_custody {
                     false,
                 )
             };
-            if let Ok(status) = &status {
-                if let Err(error) = root.write_json(
+            if let Ok(status) = &status
+                && let Err(error) = root.write_json(
                     &mut exit_file,
                     &scoped(
                         json!({
@@ -1131,9 +1131,9 @@ mod graph_probe_custody {
                         }),
                         stdin.is_some(),
                     ),
-                ) {
-                    custody_errors.push(error);
-                }
+                )
+            {
+                custody_errors.push(error);
             }
             // Preserve both reader outcomes beside status; neither join may
             // return early and discard the already observed process exit.
@@ -1183,10 +1183,10 @@ mod graph_probe_custody {
                 Err(error) => custody_errors.push(error.clone()),
             }
         }
-        if let (Some(original), Some(bytes)) = (&mut original_stdin, stdin) {
-            if let Err(error) = root.verify_bytes(original, bytes) {
-                custody_errors.push(error);
-            }
+        if let (Some(original), Some(bytes)) = (&mut original_stdin, stdin)
+            && let Err(error) = root.verify_bytes(original, bytes)
+        {
+            custody_errors.push(error);
         }
         let mut report = scoped(
             captured_terminal(&status, &stdout, &stderr, &custody_errors),

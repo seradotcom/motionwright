@@ -240,7 +240,7 @@ class BoundedLiveProviderTests(unittest.TestCase):
         # disables it and cannot enter the separate repeat step.
         self.assertEqual(
             [line.strip() for line in original_step.splitlines() if replay_key in line],
-            [replay_key + " ${{ inputs.native_scope == 'n83-preview' && '0' || '1' }}"],
+            [replay_key + " ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle') && '0' || '1' }}"],
         )
         self.assertEqual(
             [line.strip() for line in repeat_step.splitlines() if replay_key in line],
@@ -248,7 +248,7 @@ class BoundedLiveProviderTests(unittest.TestCase):
         )
         self.assertEqual(
             [line.strip() for line in repeat_step.splitlines() if line.strip().startswith("if:")],
-            ["if: ${{ inputs.native_scope != 'n83-preview' && "
+            ["if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && "
              "((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || "
              "(github.event_name == 'pull_request' && startsWith(github.head_ref, "
              "'feat/v01-provider-repeat-ci'))) }}"],

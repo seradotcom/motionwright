@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       native_scope:
-        description: "Closed native selection; N83 is an explicit final-source preview fixture"
+        description: "Closed native selection; scoped fixtures require explicit final-source admission"
         type: choice
-        options: [standard, n83-preview]
+        options: [standard, n83-preview, editable-source-cycle]
         default: standard
         required: false
       expected_source_sha:
-        description: "Exact frozen Motionwright SHA; mandatory for n83-preview"
+        description: "Exact frozen Motionwright SHA; mandatory for n83-preview or editable-source-cycle"
         type: string
         required: false
         default: ""
       recovery_recipient:
-        description: "Existing admitted RSA3072 public recipient JSON; mandatory for n83-preview"
+        description: "Existing admitted RSA3072 public recipient JSON; mandatory for n83-preview or editable-source-cycle"
         type: string
         required: false
         default: ""
@@ -58,8 +58,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || '' }}
-  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' }}
+  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || '' }}
+  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
 
 defaults:
   run:
@@ -70,12 +70,13 @@ env:
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
   MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
+  PYTHONDONTWRITEBYTECODE: '1'
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   PLAYWRIGHT_BROWSERS_PATH: '0'
-  SEMWRIGHT_CHECKOUT_PATH: ${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || '_semwright' }}
-  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || '_semwright' }}
+  SEMWRIGHT_CHECKOUT_PATH: ${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || inputs.native_scope == 'editable-source-cycle' && 'verification/mc-cycle-sdk' || '_semwright' }}
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || inputs.native_scope == 'editable-source-cycle' && 'verification/mc-cycle-sdk' || '_semwright' }}
 
 jobs:
   real-native-render:
@@ -91,8 +92,8 @@ jobs:
           python3 - <<'PY'
           import os, re
           scope = os.environ["MOTIONWRIGHT_NATIVE_SCOPE"]
-          assert scope in {"standard", "n83-preview"}, "unsupported native scope"
-          if scope == "n83-preview":
+          assert scope in {"standard", "n83-preview", "editable-source-cycle"}, "unsupported native scope"
+          if scope in {"n83-preview", "editable-source-cycle"}:
               assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
               assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "native rerun forbidden"
               sha = os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"]
@@ -100,8 +101,8 @@ jobs:
               assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
           PY
 
-      - name: Install pinned N83 custody and PNG verifier in a private runner venv
-        if: ${{ inputs.native_scope == 'n83-preview' }}
+      - name: Install pinned custody and PNG verifier in a private runner venv
+        if: ${{ inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' }}
         run: |
           python3 - <<'PY'
           import os
@@ -111,13 +112,61 @@ jobs:
           assert not any(p.is_symlink() for p in (root, *root.parents))
           venv = root / "n83-custody-venv"
           venv.mkdir(mode=0o700, exist_ok=False)
-          preflight = root / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          prefix = "mw-n83-preflight-" if os.environ["MOTIONWRIGHT_NATIVE_SCOPE"] == "n83-preview" else "mw-mc-cycle-preflight-"
+          preflight = root / (prefix + os.environ["GITHUB_RUN_ID"])
           preflight.mkdir(mode=0o700, exist_ok=False)
           PY
           python3 -m venv "$RUNNER_TEMP/n83-custody-venv"
           "$RUNNER_TEMP/n83-custody-venv/bin/python" -m pip install             --disable-pip-version-check --require-hashes --only-binary=:all:             -r tooling/requirements/mlt-g2-custody.txt
           "$RUNNER_TEMP/n83-custody-venv/bin/python" -m pip install             --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
-          "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-admission-only
+          if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ]; then
+            "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-admission-only
+          else
+            "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --cycle-admission-only
+          fi
+
+      - name: Verify editable-source reader before any native attempt
+        id: cycle_source_controls
+        if: ${{ inputs.native_scope == 'editable-source-cycle' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+          python="$RUNNER_TEMP/n83-custody-venv/bin/python"
+          preflight="$RUNNER_TEMP/mw-mc-cycle-preflight-$GITHUB_RUN_ID"
+          "$python" -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-mc-cycle-preflight-" + os.environ["GITHUB_RUN_ID"])
+          files = {}
+          for relative in (
+              "crates/native/examples/native-render-e2e.rs", "tooling/native_render_e2e.py",
+              "tooling/native_motion_canvas_roundtrip.py", "tooling/tests/test_native_motion_canvas_roundtrip.py",
+              "tooling/tests/test_native_provider_live_watch.py", ".github/workflows/native-render-e2e.yml",
+              "tooling/ci_private_evidence.py", "tooling/ci_test_runner.py", "tooling/native_host_shared_state.py",
+              "SOURCE_LOCK.json", "Cargo.lock", "rust-toolchain.toml", "apps/studio/package-lock.json",
+          ):
+              original = Path(relative).read_bytes()
+              target = root / "source" / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              with target.open("xb") as stream:
+                  stream.write(original)
+              files[relative] = {"bytes":len(original), "sha256":hashlib.sha256(original).hexdigest()}
+          with (root / "source-originals.json").open("x") as stream:
+              json.dump({"source_sha":os.environ["GITHUB_SHA"], "files":files}, stream)
+          PY
+          "$python" -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --test-directory tooling/tests --pattern test_native_motion_canvas_roundtrip.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" --timeout 180 \
+            --report "$preflight/reader.json" \
+            >"$preflight/reader-runner.stdout.original" 2>"$preflight/reader-runner.stderr.original"
+          "$python" -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-mc-cycle-preflight-" + os.environ["GITHUB_RUN_ID"])
+          report = json.loads((root / "reader.json").read_bytes())
+          assert report["status"] == "PASS" and report["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert len(report["steps"]) == 1 and report["steps"][0]["status"] == "PASS"
+          PY
 
       - name: Verify exact N83 source controls before Native
         id: n83_source_controls
@@ -270,6 +319,25 @@ jobs:
           cargo test --locked -p motionwright-native --lib \
             smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
 
+      - name: Verify actual editable source Service cycle before Native
+        id: cycle_rust_controls
+        if: ${{ inputs.native_scope == 'editable-source-cycle' }}
+        run: |
+          preflight="$RUNNER_TEMP/mw-mc-cycle-preflight-$GITHUB_RUN_ID"
+          cargo test --locked -p motionwright-native --example native-render-e2e \
+            editable_cycle_source_controls:: -- --test-threads=1 \
+            >"$preflight/source-cycle-rust.stdout.original" 2>"$preflight/source-cycle-rust.stderr.original"
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-mc-cycle-preflight-" + os.environ["GITHUB_RUN_ID"])
+          stdout = (root / "source-cycle-rust.stdout.original").read_text()
+          assert len(re.findall(r"(?m)^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;", stdout)) == 1
+          for name in ("existing_fixture_closes_store_handles_and_commits_only_the_declared_fill",
+                       "substituted_saved_project_is_rejected_before_any_edit_or_revision"):
+              assert "editable_cycle_source_controls::" + name + " ... ok" in stdout
+          PY
+
       - name: Verify exact N83 Rust3 source controls before Native
         id: n83_rust_controls
         if: ${{ inputs.native_scope == 'n83-preview' }}
@@ -324,17 +392,17 @@ jobs:
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
-          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ inputs.native_scope == 'n83-preview' && '0' || '1' }}
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle') && '0' || '1' }}
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ env.SEMWRIGHT_CHECKOUT }}/target/debug/semwright-sandbox
         run: |
-          if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ]; then
+          if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ] || [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "editable-source-cycle" ]; then
             "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py
           else
             python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/run.log
           fi
 
       - name: Verify review evidence
-        if: ${{ inputs.native_scope != 'n83-preview' }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
         run: |
           test -s "verification/native-render-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-render-evidence.json"
@@ -450,7 +518,7 @@ jobs:
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
-        if: ${{ inputs.native_scope != 'n83-preview' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
         env:
           MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
@@ -473,7 +541,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: ${{ always() && inputs.native_scope != 'n83-preview' }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -485,7 +553,7 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() && inputs.native_scope != 'n83-preview' }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public
@@ -522,5 +590,42 @@ jobs:
           path: |
             verification/native-n83-public/sealed-originals.bin
             verification/native-n83-public/public-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve editable-source preflight failure without starting an owner
+        if: ${{ always() && inputs.native_scope == 'editable-source-cycle' && !hashFiles('verification/native-editable-public/sealed-originals.bin') }}
+        run: '"$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --cycle-seal-preflight-failure'
+
+      - name: Verify sealed editable native source cycle
+        if: ${{ inputs.native_scope == 'editable-source-cycle' }}
+        run: |
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/native-editable-public")
+          result = json.loads((root / "public-evidence.json").read_bytes())
+          assert result["selection"] == "editable-source-cycle" and result["status"] == "SCOPED_COMPLETED"
+          assert result["selected_originals_complete"] is True and result["groups_quiescent"] is True
+          assert result["source_unchanged"] is True
+          assert result["context"] == {"source_sha":os.environ["GITHUB_SHA"],
+              "semwright_sha":json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"],
+              "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":"1"}
+          assert result["completed_stages"] == ["original","reopened","edited","edited_reopened"]
+          assert result["observed_native_jobs"] == 5 and result["observed_host_processes"] == 4
+          assert result["automatic_retry"] is False and result["formal_acceptance"] is False
+          assert result["master_eligible"] is False and result["release_authorized"] is False
+          path = root / "sealed-originals.bin"
+          assert result["ciphertext_file"] == path.name and path.stat().st_size == result["ciphertext_bytes"]
+          with path.open("rb") as stream:
+              assert hashlib.file_digest(stream,"sha256").hexdigest() == result["ciphertext_sha256"]
+          PY
+
+      - name: Publish only sealed editable-source originals and closed manifest
+        if: ${{ always() && inputs.native_scope == 'editable-source-cycle' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-editable-source-cycle-${{ github.sha }}
+          path: verification/native-editable-public
           if-no-files-found: error
           retention-days: 14

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: 'Source, accessibility observation, Kdenlive roundtrip, or admitted ALab metadata only'
+        description: 'Source, static distribution inventory, accessibility observation, Kdenlive roundtrip, or admitted ALab metadata only'
         type: choice
-        options: [source, accessibility-only, kdenlive-gui, external-alab-readonly]
+        options: [source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]
         default: source
         required: true
       expected_source_sha:
@@ -848,3 +848,86 @@ jobs:
           path: ${{ runner.temp }}/otio-owner-cut-rust/
           if-no-files-found: warn
           retention-days: 7
+
+
+  kdenlive-distribution-observation:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-distribution'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_KDENLIVE_DISTRIBUTION_SCOPE: ${{ inputs.verification_scope }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      DISTRIBUTION_RECIPIENT_JSON: ${{ inputs.evidence_recipient }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Bind the explicit distribution-only source before preparation
+        run: |
+          set -euo pipefail
+          python3 -B -E -s tooling/otio-media/kdenlive_distribution_observation.py --preflight
+      - name: Install static ELF and private-custody observation dependencies
+        run: |
+          set -euo pipefail
+          umask 077
+          bootstrap="$RUNNER_TEMP/kdenlive-distribution-bootstrap-$GITHUB_RUN_ID-1"
+          mkdir "$bootstrap"
+          venv="$RUNNER_TEMP/kdenlive-distribution-python-$GITHUB_RUN_ID-1"
+          test ! -e "$venv"
+          set +e
+          (
+            set -euo pipefail
+            timeout --signal=TERM --kill-after=10s 180s sudo apt-get update
+            timeout --signal=TERM --kill-after=10s 180s sudo apt-get install --no-install-recommends -y \
+              python3.12-venv binutils libatspi2.0-0 at-spi2-core gir1.2-atspi-2.0
+            /usr/bin/python3.12 -m venv "$venv"
+            "$venv/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir \
+              --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+            "$venv/bin/python" -m pip check
+          ) >"$bootstrap/install.stdout.original.log" 2>"$bootstrap/install.stderr.original.log"
+          code=$?
+          set -e
+          printf '%s\n' "$code" >"$bootstrap/install.exit.original"
+          exit "$code"
+      - name: Reserve one static observation and preserve immutable inputs
+        id: observation_start
+        run: |
+          set -euo pipefail
+          umask 077
+          "$RUNNER_TEMP/kdenlive-distribution-python-$GITHUB_RUN_ID-1/bin/python" -B -E -s \
+            tooling/otio-media/kdenlive_distribution_observation.py --start
+      - name: Require finite distribution source controls without launching the editor
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-distribution-python-$GITHUB_RUN_ID-1/bin/python" -B \
+            tooling/ci_test_runner.py --test-directory tooling/otio-media \
+            --pattern test_kdenlive_distribution_observation.py --mode both --require-complete \
+            --expected-source "$GITHUB_SHA" --timeout 90 \
+            --report "$RUNNER_TEMP/kdenlive-distribution-$GITHUB_RUN_ID-1/originals/controls/contracts.json"
+      - name: Extract once and inspect original hooks and ELF declarations only
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-distribution-python-$GITHUB_RUN_ID-1/bin/python" -B -E -s \
+            tooling/otio-media/kdenlive_distribution_observation.py --observe
+      - name: Seal the one full or partial static observation
+        if: always() && steps.observation_start.outcome == 'success'
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-distribution-python-$GITHUB_RUN_ID-1/bin/python" -B -E -s \
+            tooling/otio-media/kdenlive_distribution_observation.py --seal
+      - name: Retain only ciphertext and the closed distribution projection
+        if: always() && steps.observation_start.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-distribution-sealed-${{ github.sha }}-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/kdenlive-distribution-public-${{ github.run_id }}-1/projection.json
+            ${{ runner.temp }}/kdenlive-distribution-public-${{ github.run_id }}-1/original-evidence.mwseal
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14

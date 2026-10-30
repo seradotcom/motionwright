@@ -284,7 +284,7 @@ fn verify_grant_daemon(daemon: &HybridGrantDaemon) -> NativeResult<()> {
     require(
         read("cmdline")?.as_slice() == argv.as_bytes()
             && fs::read_link(root.join("exe")).ok().as_deref()
-                == daemon.argv.first().map(|path| Path::new(path)),
+                == daemon.argv.first().map(Path::new),
         "Hybrid daemon argv/executable differs from the owner configuration process",
     )?;
     require(

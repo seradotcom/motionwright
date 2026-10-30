@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
+import subprocess
 import zlib
 from typing import Any
 
@@ -160,6 +161,14 @@ def assert_source_edit(original: dict, edited: dict, requested: dict) -> dict:
     expected["revision"] = after
     if "updated_at" in edited and "updated_at" in original:
         expected["updated_at"] = edited["updated_at"]
+    if "branches" in original:
+        active = uuid(original.get("active_branch"))
+        require(edited.get("active_branch") == active and type(original["branches"]) is list,
+                "source_active_branch_changed")
+        branch = [item for item in expected["branches"] if item.get("id") == active]
+        require(len(branch) == 1 and type(branch[0].get("head_revision")) is int
+                and branch[0]["head_revision"] == before, "source_branch_head_not_original_revision")
+        branch[0]["head_revision"] = after
     expected_node = project_node(expected, scene_id, node_id)
     expected_node["style"]["fill"] = new_fill
     require(expected == edited, "source_edit_changed_unrelated_intent_or_rights")
@@ -321,7 +330,8 @@ def managed_snapshot(root: Path, record: object, source_inventory: list[dict],
     return snapshot
 
 
-def assert_managed_edit(original: dict, edited: dict, request: dict) -> None:
+def assert_managed_edit(original: dict, edited: dict, request: dict,
+                        *, bindings_verified: bool = False) -> None:
     require(request["native_property"] == "fill"
             and type(request["native_scene_id"]) is str
             and type(request["native_node_id"]) is str,
@@ -342,13 +352,20 @@ def assert_managed_edit(original: dict, edited: dict, request: dict) -> None:
     expected = copy.deepcopy(before)
     expected["revision"] = after["revision"]
     managed_node(expected, request["native_scene_id"], request["native_node_id"])["properties"]["fill"] = request["to"]
+    if "authoring" in before or "authoring" in after:
+        require(bindings_verified and type(before.get("authoring")) is dict
+                and type(after.get("authoring")) is dict, "managed_binding_derivation_not_verified")
+        # This field is the exact deterministic SDK realization of the retained
+        # Film, checked independently for both stages. It cannot be stripped or
+        # copied from a fabricated expected native Project to pass this gate.
+        expected["authoring"] = copy.deepcopy(after["authoring"])
     require(expected == after, "managed_edit_changed_unrelated_native_state")
     require(original["fingerprint"] != edited["fingerprint"],
             "managed_source_fingerprint_not_changed")
 
 
 def one_stage(root: Path, stage: object, expected_count: int,
-              width: int, height: int) -> dict:
+              width: int, height: int, *, binding_verifier=None) -> dict:
     stage = exact(stage, {"session", "project", "film", "source_files",
                           "managed_inspection", "frames_dir", "native_job_ref"},
                   "invalid_stage_fields")
@@ -365,6 +382,26 @@ def one_stage(root: Path, stage: object, expected_count: int,
     inventory = source_files(root, stage["source_files"])
     native_snapshot = managed_snapshot(
         root, stage["managed_inspection"], inventory, expected_count, width, height)
+    binding = native_snapshot["project"].get("authoring")
+    binding_result = None
+    if binding is not None:
+        require(type(binding) is dict and callable(binding_verifier),
+                "selected_sdk_binding_verifier_required")
+        require(binding.get("intent") == film, "native_binding_intent_differs_from_original_film")
+        binding_result = binding_verifier(
+            safe_path(root, stage["film"]["path"]),
+            safe_path(root, stage["managed_inspection"]["path"]))
+        binding_result = exact(binding_result, {"binding_derivation", "native_execution",
+            "film_sha256", "inspection_sha256", "intent_digest", "realization_digest",
+            "projection_digest"}, "invalid_selected_sdk_binding_result")
+        require(binding_result["binding_derivation"] == "VERIFIED_BY_SELECTED_SDK"
+                and binding_result["native_execution"] is False
+                and binding_result["film_sha256"] == stage["film"]["sha256"]
+                and binding_result["inspection_sha256"] == stage["managed_inspection"]["sha256"],
+                "selected_sdk_binding_result_not_bound_to_originals")
+        for field in ("intent_digest", "realization_digest", "projection_digest"):
+            require(type(binding.get(field)) is str and HEX.fullmatch(binding[field]) is not None
+                    and binding_result[field] == binding[field], "selected_sdk_binding_digest_mismatch")
     frames_path = safe_path(root, stage["frames_dir"], directory=True)
     rendered_frames = frames_path / "frames"
     require(rendered_frames.is_dir() and not rendered_frames.is_symlink()
@@ -388,10 +425,11 @@ def one_stage(root: Path, stage: object, expected_count: int,
         "film_sha256": stage["film"]["sha256"],
         "session": stage["session"], "native_job_ref": stage["native_job_ref"],
         "frame_count": expected_count,
+        "binding_verification": binding_result,
     }
 
 
-def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
+def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False, binding_verifier=None) -> dict:
     witness = exact(witness, {"schema", "profile", "edit", "stages"}, "invalid_roundtrip_witness")
     require(witness["schema"] == SCHEMA, "wrong_roundtrip_schema")
     profile = exact(witness["profile"], {"frames", "width", "height", "fps"},
@@ -408,7 +446,8 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
                   "native_node_id", "native_property", "from", "to"},
                  "invalid_edit_contract")
     stages = exact(witness["stages"], set(STAGES), "incomplete_roundtrip_stages")
-    seen = {key: one_stage(root, stages[key], count, width, height) for key in STAGES}
+    seen = {key: one_stage(root, stages[key], count, width, height,
+                           binding_verifier=binding_verifier) for key in STAGES}
     sessions = [seen[key]["session"] for key in STAGES]
     jobs = [seen[key]["native_job_ref"] for key in STAGES]
     require(len(set(sessions)) == len(sessions), "reopen_did_not_use_fresh_session")
@@ -430,7 +469,8 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
                 label + "_visible_pixels_changed")
     change = assert_source_edit(original["source_project"], edited["source_project"], edit)
     assert_managed_edit(original["native_project_inspection"],
-                        edited["native_project_inspection"], edit)
+                        edited["native_project_inspection"], edit,
+                        bindings_verified=all(seen[name]["binding_verification"] is not None for name in STAGES))
     require(original["film"] != edited["film"], "source_edit_not_realized_in_film")
     require(original["source_inventory"] != edited["source_inventory"],
             "persisted_native_source_did_not_change")
@@ -482,6 +522,7 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False) -> dict:
             for name in STAGES
         },
         "managed_generated_inventory_fully_bound": True,
+        "selected_sdk_binding_derivations": {name: seen[name]["binding_verification"] for name in STAGES},
         "film_sha256_by_stage": {name: seen[name]["film_sha256"] for name in STAGES},
         "decoded_rgba_digest_chain_by_stage": {
             name: digest("".join(seen[name]["rgba_frame_digests"]).encode("ascii"))
@@ -495,6 +536,8 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--witness", type=str, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--source-verifier", type=Path)
+    parser.add_argument("--source-verifier-sha256")
     args = parser.parse_args()
     root = args.root.resolve(strict=True)
     require(root.is_dir() and not root.is_symlink(), "invalid_custody_root")
@@ -513,7 +556,29 @@ def main() -> int:
             "witness_changed_during_read")
     witness = checked_json(evidence_bytes)
     # Inspect only. A new output cannot replace any prior native job or receipt.
-    report = inspect(root, witness)
+    verifier = None
+    if args.source_verifier is not None:
+        executable = args.source_verifier
+        require(type(args.source_verifier_sha256) is str
+                and HEX.fullmatch(args.source_verifier_sha256) is not None
+                and executable.is_file() and not executable.is_symlink(),
+                "source_verifier_identity_required")
+        def verifier(film_path, inspection_path):
+            def checked_executable():
+                with executable.open("rb") as stream:
+                    require(hashlib.file_digest(stream, "sha256").hexdigest() == args.source_verifier_sha256,
+                            "source_verifier_executable_changed")
+            checked_executable()
+            result = subprocess.run([str(executable), "cycle-verify-binding",
+                str(film_path), str(inspection_path)], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
+            checked_executable()
+            require(result.returncode == 0 and 0 < len(result.stdout) <= MAX_JSON,
+                    "selected_sdk_source_verification_failed")
+            return checked_json(result.stdout)
+    else:
+        require(args.source_verifier_sha256 is None, "source_verifier_path_required")
+    report = inspect(root, witness, binding_verifier=verifier)
     require(not args.output.exists() and args.output.parent.is_dir(),
             "new_report_destination_required")
     with args.output.open("xb") as stream:

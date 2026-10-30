@@ -477,5 +477,95 @@ class RealSourceAndFrameInspection(unittest.TestCase):
             self.assertEqual(report.read_bytes(), b"immutable prior receipt")
 
 
+
+class ActualSourceMetadataControls(unittest.TestCase):
+    """Source/reader checks only; stub callbacks cannot certify a native run."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.witness = fixture(self.root)
+
+    def projects(self):
+        return tuple(json.loads((self.root / self.witness["stages"][stage]["project"]["path"]).read_bytes())
+                     for stage in ("original", "edited"))
+
+    def test_real_commit_updates_only_the_active_branch_head(self):
+        before, after = self.projects()
+        active = "77777777-7777-4777-8777-777777777777"
+        foreign = "88888888-8888-4888-8888-888888888888"
+        before.update(active_branch=active, branches=[{"id":active,"head_revision":4,"name":"Main"},
+            {"id":foreign,"head_revision":2,"name":"Retained"}])
+        after.update(active_branch=active, branches=copy.deepcopy(before["branches"]))
+        after["branches"][0]["head_revision"] = 5
+        mc.assert_source_edit(before, after, self.witness["edit"])
+        for mutation in ("foreign-head", "active-identity", "unadvanced-head", "branch-name"):
+            wrong = copy.deepcopy(after)
+            if mutation == "foreign-head": wrong["branches"][1]["head_revision"] = 5
+            if mutation == "active-identity": wrong["active_branch"] = foreign
+            if mutation == "unadvanced-head": wrong["branches"][0]["head_revision"] = 4
+            if mutation == "branch-name": wrong["branches"][0]["name"] = "Changed"
+            with self.subTest(mutation=mutation), self.assertRaises(mc.RoundtripRefused):
+                mc.assert_source_edit(before, wrong, self.witness["edit"])
+
+    def add_declared_binding(self, stage):
+        entry = self.witness["stages"][stage]
+        inspection = json.loads((self.root / entry["managed_inspection"]["path"]).read_bytes())
+        film = json.loads((self.root / entry["film"]["path"]).read_bytes())
+        inspection["project"]["authoring"] = {"schema_version":1,"intent":film,
+            "intent_digest":"c"*64,"realization":{"source_only_test_stub":True},
+            "realization_digest":"d"*64,"projection_digest":"e"*64}
+        replace_record(self.root,self.witness,stage,"managed_inspection",json.dumps(inspection).encode())
+        return inspection
+
+    def declared_callback(self, film_path, inspection_path):
+        binding = json.loads(inspection_path.read_bytes())["project"]["authoring"]
+        return {"binding_derivation":"VERIFIED_BY_SELECTED_SDK","native_execution":False,
+            "film_sha256":sha(film_path.read_bytes()),"inspection_sha256":sha(inspection_path.read_bytes()),
+            **{key:binding[key] for key in ("intent_digest","realization_digest","projection_digest")}}
+
+    def test_authored_source_requires_selected_sdk_derivation_before_decode(self):
+        self.add_declared_binding("original")
+        with mock.patch.object(mc,"decoded_rgba_frame_hashes") as decode:
+            with self.assertRaisesRegex(mc.RoundtripRefused,"selected_sdk_binding_verifier_required"):
+                mc.one_stage(self.root,self.witness["stages"]["original"],3,2,2)
+            decode.assert_not_called()
+
+    def test_binding_result_cannot_refer_to_different_original_bytes_or_claim_native_execution(self):
+        self.add_declared_binding("original")
+        for field, replacement in (("film_sha256","f"*64),("inspection_sha256","f"*64),
+                                   ("projection_digest","f"*64),("native_execution",True)):
+            def invalid(film, inspection):
+                value = self.declared_callback(film,inspection)
+                value[field] = replacement
+                return value
+            with self.subTest(field=field), mock.patch.object(mc,"decoded_rgba_frame_hashes") as decode:
+                with self.assertRaises(mc.RoundtripRefused):
+                    mc.one_stage(self.root,self.witness["stages"]["original"],3,2,2,binding_verifier=invalid)
+                decode.assert_not_called()
+
+    def test_binding_intent_is_compared_to_exact_retained_film_before_verifier(self):
+        inspection = self.add_declared_binding("original")
+        inspection["project"]["authoring"]["intent"]["output"]["width"] = 3
+        replace_record(self.root,self.witness,"original","managed_inspection",json.dumps(inspection).encode())
+        callback = mock.Mock()
+        with self.assertRaisesRegex(mc.RoundtripRefused,"native_binding_intent_differs_from_original_film"):
+            mc.one_stage(self.root,self.witness["stages"]["original"],3,2,2,binding_verifier=callback)
+        callback.assert_not_called()
+
+    def test_derived_binding_never_permits_unrelated_native_state_or_removing_authoring(self):
+        before = self.add_declared_binding("original")
+        after = self.add_declared_binding("edited")
+        with self.assertRaisesRegex(mc.RoundtripRefused,"managed_binding_derivation_not_verified"):
+            mc.assert_managed_edit(before,after,self.witness["edit"])
+        mc.assert_managed_edit(before,after,self.witness["edit"],bindings_verified=True)
+        for mutation in ("unrelated", "strip-binding"):
+            wrong = copy.deepcopy(after)
+            if mutation == "unrelated": wrong["project"]["variables"]["foreign"] = 1
+            else: del wrong["project"]["authoring"]
+            with self.subTest(mutation=mutation), self.assertRaises(mc.RoundtripRefused):
+                mc.assert_managed_edit(before,wrong,self.witness["edit"],bindings_verified=True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,6 +57,8 @@ EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
 
 if NATIVE_SCOPE == "n83-preview":
     EVIDENCE = ROOT / "verification" / "native-n83-private" / GITHUB_SHA
+elif NATIVE_SCOPE == "editable-source-cycle":
+    EVIDENCE = ROOT / "verification" / "native-editable-private" / GITHUB_SHA
 
 
 def digest(path: Path) -> str:
@@ -182,6 +184,8 @@ def write_private_json(path: Path, value: object) -> None:
 
 
 def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 30) -> dict:
+    if CYCLE_CONTEXT is not None:
+        return cycle_run_json(argv, env=env, timeout=timeout)
     return run_sanitized_json(argv, env=env, timeout=timeout)
 
 
@@ -193,6 +197,11 @@ def exact_inputs() -> None:
     ).strip()
     if observed != PIN:
         raise SystemExit(f"Semwright checkout mismatch: expected {PIN}, got {observed}")
+    if NATIVE_SCOPE == "editable-source-cycle":
+        changed = subprocess.check_output(["git", "-C", str(SEMWRIGHT), "status",
+            "--porcelain=v1", "--untracked-files=no"], text=True, stderr=subprocess.PIPE)
+        if changed:
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_SDK_TRACKED_SOURCE_CHANGED")
     for path in [
         SW_BINS / "semwright",
         SW_BINS / "semwrightd",
@@ -544,7 +553,7 @@ def n83_seed(database, env, admitted):
     seeded = n83_read_json(EVIDENCE / "seed" / "fixture.identity.json")
     if (
         seeded.get("width") != 640 or seeded.get("height") != 360
-        or seeded.get("frame_rate") != {"num": 30, "den": 1}
+        or seeded.get("frame_rate") != {"num": "30", "den": "1"}
         or seeded.get("total_frames") != 90
         or seeded.get("source_window") != {"start": 30, "end": 60}
         or not isinstance(seeded.get("resource"), str) or not seeded["resource"]
@@ -654,6 +663,10 @@ def n83_seal(admitted, owner, *, shutdown_complete):
 
 @contextmanager
 def native_workspace(admitted):
+    if CYCLE_CONTEXT is not None:
+        with cycle_workspace(CYCLE_CONTEXT) as raw:
+            yield raw
+        return
     if admitted is None:
         with tempfile.TemporaryDirectory(prefix="motionwright-native-render-") as raw:
             yield raw
@@ -695,13 +708,543 @@ def native_workspace(admitted):
 
 
 
+# This finite cycle uses the existing fixture, Broker policy and private sealer.
+CYCLE_STAGES = ("original", "reopened", "edited", "edited_reopened")
+CYCLE_CONTEXT = None
+
+
+def cycle_admission(*, preflight_only=False):
+    if (NATIVE_SCOPE != "editable-source-cycle"
+            or os.environ.get("GITHUB_REPOSITORY") != "seradotcom/motionwright"
+            or os.environ.get("GITHUB_JOB") != "real-native-render"
+            or os.environ.get("GITHUB_WORKFLOW_SHA") != GITHUB_SHA
+            or os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+            or RUN_LABEL or CAPTION_E2E != "0"
+            or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT", "false") != "false"
+            or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY", "0") not in {"", "0"}):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_REQUIRES_CLOSED_MANUAL_SELECTION")
+    custody = n83_custody()
+    context = custody.validate_context({"source_sha": GITHUB_SHA, "semwright_sha": PIN,
+        "run_id": os.environ.get("GITHUB_RUN_ID", ""), "run_attempt": "1"})
+    recipient = custody.strict(os.environ.get("MOTIONWRIGHT_N83_RECOVERY_RECIPIENT", "").encode())
+    custody.public_key(recipient)
+    temporary = Path(os.environ.get("RUNNER_TEMP", ""))
+    if (not temporary.is_absolute() or not temporary.is_dir()
+            or temporary.resolve(strict=True) != temporary
+            or any(p.is_symlink() for p in (temporary, *temporary.parents))):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PRIVATE_PARENT_REQUIRED")
+    preflight = temporary / ("mw-mc-cycle-preflight-" + context["run_id"])
+    if (not preflight.is_dir() or preflight.is_symlink()
+            or preflight.stat().st_mode & 0o077):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PRIVATE_PREFLIGHT_REQUIRED")
+    from importlib.metadata import version
+    versions = {key: version(key) for key in ("cryptography", "cffi", "pycparser", "Pillow")}
+    if versions != {"cryptography":"50.0.2", "cffi":"2.1.1", "pycparser":"2.23", "Pillow":"10.2.0"}:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PYTHON_PROFILE_MISMATCH")
+    source = None
+    try:
+        source = n83_source_identity()
+    except Exception:
+        if not preflight_only:
+            raise
+    return {"context":context, "recipient":recipient, "source":source,
+        "runner_temp":temporary, "preflight":preflight, "versions":versions,
+        "processes":[], "hosts":[], "calls":0, "jobs":[], "completed":[],
+        "stages":{}, "failed":False, "verified":False}
+
+
+def cycle_seal_preflight_failure():
+    context = cycle_admission(preflight_only=True)
+    owner = context["runner_temp"] / ("mw-mc-cycle-" + context["context"]["run_id"])
+    public = ROOT / "verification" / "native-editable-public"
+    if any(path.exists() or path.is_symlink() for path in (owner, EVIDENCE, public)):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PREFLIGHT_CANNOT_REPLACE_OWNER_CAPTURE")
+    cycle_record(context["preflight"] / "seal.started.original.json", {
+        "context":context["context"],"source_observed":context["source"],
+        "capture_scope":"preflight-only","native_execution_performed":False,"automatic_retry":False})
+    plaintext, complete = n83_custody().gather_snapshot({"preflight":context["preflight"]},preserve_partial=True)
+    envelope = n83_custody().encrypt_snapshot(plaintext,context["recipient"],context["context"])
+    public.mkdir(mode=0o700,parents=True,exist_ok=False)
+    n83_custody().new_bytes(public / "sealed-originals.bin",envelope)
+    cycle_record(public / "public-evidence.json", {"selection":"editable-source-cycle",
+        "status":"NOT_VERIFIED","context":context["context"],"capture_scope":"preflight-only",
+        "recipient_spki_sha256":context["recipient"]["sha256"],"ciphertext_file":"sealed-originals.bin",
+        "ciphertext_bytes":len(envelope),"ciphertext_sha256":hashlib.sha256(envelope).hexdigest(),
+        "preflight_originals_complete":complete,"selected_originals_complete":False,
+        "automatic_retry":False,"formal_acceptance":False,"release_authorized":False})
+
+
+def cycle_record(path, value):
+    n83_custody().new_json(path, value)
+
+
+def cycle_observe_host():
+    row = CYCLE_CONTEXT.get("active_host") if CYCLE_CONTEXT is not None else None
+    if row is None or row.get("quiescent") is True:
+        return
+    from native_host_shared_state import capsule_track_descendants
+    try:
+        capsule_track_descendants({"active_daemon":row})
+    except BaseException:
+        row["inventory_failed"] = True
+        raise
+
+
+def cycle_stop(row):
+    if row.get("quiescent") is True:
+        return True
+    inventory_ok = True
+    if row.get("host"):
+        from native_host_shared_state import capsule_track_descendants, capsule_stop_descendants
+        try:
+            capsule_track_descendants({"active_daemon":row})
+        except BaseException:
+            row["inventory_failed"] = True
+        inventory_ok = not row.get("inventory_failed", False)
+    group_closed = n83_stop_group(row["process"])
+    descendants_closed = True
+    if row.get("host"):
+        descendants_closed = capsule_stop_descendants(row)
+        if not row.get("closure_recorded"):
+            row["closure_recorded"] = True
+            cycle_record(row["closure_path"], {"host_identity":row.get("identity"),
+                "observed_descendants":list(row["descendants"].values()),
+                "final_inventory_verified":inventory_ok,"broker_group_closed":group_closed,
+                "observed_descendants_closed":descendants_closed,"automatic_retry":False})
+    row["quiescent"] = bool(group_closed and descendants_closed and inventory_ok)
+    return row["quiescent"]
+
+
+def cycle_run_json(argv, *, env, timeout=30):
+    context = CYCLE_CONTEXT
+    if context is None or context["calls"] >= 2048:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_CALL_BUDGET")
+    cycle_observe_host()
+    number = context["calls"]
+    context["calls"] += 1
+    folder = EVIDENCE / "calls" / f"{number:04d}"
+    folder.mkdir(mode=0o700, parents=True, exist_ok=False)
+    cycle_record(folder / "started.original.json", {"argv":list(argv), "timeout_seconds":timeout,
+        "source":context["source"], "automatic_retry":False})
+    with (folder / "stdout.original").open("xb") as stdout, (folder / "stderr.original").open("xb") as stderr:
+        process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
+            stdout=stdout, stderr=stderr, start_new_session=True)
+        row = {"process":process, "quiescent":False}
+        context["processes"].append(row)
+        timeout_hit = False
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timeout_hit = True
+            code = None
+        finally:
+            stopped = cycle_stop(row)
+        cycle_record(folder / "terminal.original.json", {"pid":process.pid,
+            "exit_code":code, "deadline_exceeded":timeout_hit, "group_quiescent":stopped,
+            "automatic_retry":False, "outcome_absent_asserted":False})
+    cycle_observe_host()
+    if code != 0 or timeout_hit or not stopped:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_COMMAND_NOT_VERIFIED")
+    raw, _ = n83_custody().regular(folder / "stdout.original", 8 * 1024 * 1024)
+    value = n83_custody().strict(raw)
+    if not isinstance(value, dict):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NONOBJECT_RESPONSE")
+    return value
+
+
+def cycle_execute(command, args, *, socket, session, env, timeout=90):
+    allowed = {"project.inspect", "project.validate", "composition.inspect",
+        "composition.plan", "composition.apply", "composition.verify",
+        "render.start", "render.status", "render.result"}
+    if command not in allowed:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_COMMAND_OUTSIDE_SELECTION")
+    name = "driver.motion-canvas." + command
+    encoded = json.dumps(args, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode()) > 2 * 1024 * 1024:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_ARGUMENT_BUDGET")
+    envelope = cycle_run_json([str(SW_BINS / "semwright"), "--socket", str(socket),
+        "--session-file", str(session), "--json", "execute", name, "--args-json", encoded],
+        env=env, timeout=timeout)
+    execution = envelope.get("execution", {})
+    provenance = execution.get("provenance", {}) if isinstance(execution, dict) else {}
+    if (envelope.get("ok") is not True or envelope.get("command") != name
+            or execution.get("backend") != "driver:motion-canvas"
+            or provenance.get("provider") != "driver:motion-canvas"
+            or provenance.get("source") != "driver"
+            or not re.fullmatch("[0-9a-f]{64}", str(provenance.get("descriptor_sha256", "")))
+            or type(provenance.get("provider_generation")) is not int
+            or provenance["provider_generation"] <= 0 or not isinstance(envelope.get("data"), dict)):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_HOST_RECEIPT_MISMATCH")
+    return envelope["data"]
+
+
+def cycle_register_job(job):
+    context = CYCLE_CONTEXT
+    if not isinstance(job, str) or not job or job in context["jobs"] or len(context["jobs"]) >= 5:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_JOB_REUSED_OR_BUDGET")
+    context["jobs"].append(job)
+
+
+def cycle_native_render(fingerprint, *, socket, session, env):
+    started_ns = time.perf_counter_ns()
+    started = cycle_execute("render.start", {"expected_fingerprint":fingerprint,
+        "profile":{"first_frame":0,"end_frame_exclusive":60,"scale":"full",
+                   "transparent":False,"timeout_ms":300000}}, socket=socket, session=session,
+        env=env, timeout=120)
+    start_us = elapsed_us(started_ns, time.perf_counter_ns())
+    job = started.get("job_ref")
+    cycle_register_job(job)
+    started_ns = time.perf_counter_ns()
+    deadline = time.monotonic() + 330
+    reads = 0
+    while time.monotonic() < deadline:
+        status = cycle_execute("render.status", {"job_ref":job}, socket=socket,
+            session=session, env=env, timeout=45)
+        reads += 1
+        if status.get("job_ref") != job:
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_JOB_IDENTITY_CHANGED")
+        state = status.get("state")
+        if state == "succeeded":
+            break
+        if state not in {"queued", "running", "pending", "starting"}:
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_NOT_SUCCEEDED")
+        time.sleep(1)
+    else:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_OUTCOME_UNKNOWN")
+    wait_us = elapsed_us(started_ns, time.perf_counter_ns())
+    started_ns = time.perf_counter_ns()
+    result = cycle_execute("render.result", {"job_ref":job}, socket=socket,
+        session=session, env=env, timeout=90)
+    if (result.get("job_ref") != job or result.get("state") != "succeeded"
+            or result.get("artifact", {}).get("frame_count") != 60
+            or status.get("artifact", {}).get("frame_count") != 60):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_INCOMPLETE_ARTIFACT")
+    return result, {"start":start_us, "terminal_wait":wait_us,
+        "result":elapsed_us(started_ns, time.perf_counter_ns())}, reads
+
+
+def cycle_direct_film(*, film_file, socket, session, env, mediated_job_ref, **unused):
+    cycle_register_job(mediated_job_ref)
+    overall = time.perf_counter_ns()
+    stage_start = overall
+    film = n83_read_json(film_file)
+    plan = cycle_execute("composition.plan", {"film":film,
+        "budget":{"max_iterations":8,"max_operations":4096,"max_findings":1024,
+                  "max_observations":128,"max_elapsed_ms":120000}},
+        socket=socket, session=session, env=env, timeout=150)
+    costs = {"plan":elapsed_us(stage_start, time.perf_counter_ns())}
+    plan_ref = plan.get("plan_ref")
+    if not isinstance(plan_ref, str) or not plan_ref:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PLAN_MISSING")
+    stage_start = time.perf_counter_ns()
+    applied = cycle_execute("composition.apply", {"plan_ref":plan_ref,"dry_run":False},
+        socket=socket, session=session, env=env, timeout=150)
+    costs["apply"] = elapsed_us(stage_start, time.perf_counter_ns())
+    fingerprint = applied.get("fingerprint")
+    if (applied.get("applied") is not True or applied.get("execution_status") != "completed"
+            or not re.fullmatch("[0-9a-f]{64}", str(fingerprint))):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_APPLY_NOT_VERIFIED")
+    result, render_costs, reads = cycle_native_render(fingerprint, socket=socket, session=session, env=env)
+    costs.update(render_costs)
+    stage_start = time.perf_counter_ns()
+    verification = cycle_execute("composition.verify", {"plan_ref":plan_ref,"job_ref":result["job_ref"]},
+        socket=socket, session=session, env=env, timeout=150)
+    costs["verify"] = elapsed_us(stage_start, time.perf_counter_ns())
+    checks = verification.get("measurement", {}).get("validation", {}).get("checks")
+    if (verification.get("report", {}).get("execution_status") != "completed"
+            or verification.get("report", {}).get("support_level") != "native"
+            or verification.get("measurement", {}).get("findings") != []
+            or not isinstance(checks, list) or not checks
+            or any(row.get("verdict") != "PASS" for row in checks)):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_VERIFICATION_FAILED")
+    return {"artifact":result["artifact"],"job_ref":result["job_ref"],
+        "film_sha256":digest(film_file),"status_reads":reads,
+        "measured_direct_total_micros":elapsed_us(overall,time.perf_counter_ns()),
+        "measured_direct_substages_micros":costs,"independent_job_confirmed":True,
+        "native_validation_checks":len(checks),
+        "scope":"ci_direct_broker_vs_motionwright_mediated_same_film"}
+
+
+def cycle_new_stage(name):
+    context = CYCLE_CONTEXT
+    if name != CYCLE_STAGES[len(context["stages"])]:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_STAGE_REPLAY")
+    path = EVIDENCE / "cycle" / name
+    path.mkdir(mode=0o700, parents=True, exist_ok=False)
+    cycle_record(path / "stage.started.original.json", {"stage":name,"source":context["source"],
+        "automatic_retry":False})
+    context["stages"][name] = path
+    return path
+
+
+def cycle_copy(source, destination, maximum):
+    if any(parent.is_symlink() for parent in (source, *source.parents)):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_SYMLINKED_ORIGINAL")
+    raw, _ = n83_custody().regular(source, maximum)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    n83_custody().new_bytes(destination, raw)
+    return {"path":destination.relative_to(EVIDENCE).as_posix(),
+        "bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()}
+
+
+def cycle_file(path):
+    raw, _ = n83_custody().regular(path, 16 * 1024 * 1024)
+    return {"path":path.relative_to(EVIDENCE).as_posix(),"bytes":len(raw),
+        "sha256":hashlib.sha256(raw).hexdigest()}
+
+
+def cycle_capture(name, *, paths, socket, session, env, artifact, job):
+    folder = CYCLE_CONTEXT["stages"][name]
+    inspected = cycle_execute("project.inspect", {}, socket=socket, session=session, env=env)
+    valid = cycle_execute("project.validate", {}, socket=socket, session=session, env=env)
+    if (valid.get("valid") is not True or valid.get("fingerprint") != inspected.get("fingerprint")
+            or valid.get("revision") != inspected.get("project", {}).get("revision")
+            or not re.fullmatch("[0-9a-f]{64}", str(valid.get("generated_fingerprint", "")))):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_SOURCE_INVALID")
+    original = cycle_copy(paths["project"] / "semwright-motion.json",
+        folder / "native" / "semwright-motion.original.json", 16 * 1024 * 1024)
+    if (original["sha256"] != inspected["fingerprint"]
+            or n83_read_json(EVIDENCE / original["path"]) != inspected["project"]):
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_SAVED_SOURCE_DIFFERS_FROM_HOST")
+    cycle_record(folder / "native" / "project-inspect.json", inspected)
+    cycle_record(folder / "native" / "project-validate.json", valid)
+    binding = cycle_run_json([str(MW_BIN), "cycle-verify-binding",
+        str(folder / "film.original.json"), str(folder / "native" / "project-inspect.json")], env=env)
+    cycle_record(folder / "native" / "binding-verification.original.json", binding)
+    generated = paths["project"] / (".semwright-generated-" + valid["generated_fingerprint"])
+    files = []
+    inventory = inspected.get("generated")
+    if not isinstance(inventory, list) or not 1 <= len(inventory) <= 64:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_SOURCE_INVENTORY_BUDGET")
+    for item in inventory:
+        relative = item.get("path", "")
+        parts = relative.split("/") if isinstance(relative, str) else []
+        if (not parts or any(part in {"", ".", ".."} for part in parts)
+                or "\\" in relative or ":" in relative):
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_SOURCE_PATH")
+        record = cycle_copy(generated.joinpath(*parts), folder / "native" / "generated" / relative,
+            16 * 1024 * 1024)
+        if record["bytes"] != item.get("bytes") or record["sha256"] != item.get("sha256"):
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_SOURCE_DIGEST")
+        files.append({"role":relative, **record})
+    artifact_root = checked_direct_artifact(paths["output"], artifact)
+    from native_direct_mediated_parity import native_png_hashes
+    native_png_hashes(artifact_root, 60)
+    cycle_copy(artifact_root / "artifact-manifest.json", folder / "render" / "artifact-manifest.json", 8*1024*1024)
+    for index in range(60):
+        relative = f"frames/{index:06d}.png"
+        cycle_copy(artifact_root / relative, folder / "render" / relative, 24*1024*1024)
+    row = {"session":str(session),"project":cycle_file(folder / "project.original.json"),
+        "film":cycle_file(folder / "film.original.json"),"source_files":files,
+        "managed_inspection":cycle_file(folder / "native" / "project-inspect.json"),
+        "frames_dir":(folder / "render").relative_to(EVIDENCE).as_posix(),"native_job_ref":job}
+    cycle_record(folder / "stage.terminal.original.json", {"stage":name,"capture":row,
+        "native_saved_source":original,"original_host_pid":CYCLE_CONTEXT["hosts"][-1],
+        "native_authority_rebound":False,"automatic_retry":False})
+    CYCLE_CONTEXT["completed"].append(name)
+    return row
+
+
+def cycle_start_host(name, paths, config_path, env):
+    folder = CYCLE_CONTEXT["stages"][name]
+    host = folder / "host"
+    host.mkdir(mode=0o700)
+    child_env = dict(env)
+    for key, leaf in (("HOME","home"),("XDG_STATE_HOME","state"),("XDG_RUNTIME_DIR","runtime")):
+        path = host / leaf
+        path.mkdir(mode=0o700)
+        child_env[key] = str(path)
+    socket = host / "runtime" / "broker.sock"
+    session = host / "runtime" / "owner.session"
+    # Use a short owned socket root. The full retained stage path may exceed sun_path.
+    runtime = CYCLE_CONTEXT["owner"] / ("r-" + name.replace("_", "-"))
+    runtime.mkdir(mode=0o700, exist_ok=False)
+    socket = runtime / "broker.sock"
+    session = runtime / "owner.session"
+    child_env["XDG_RUNTIME_DIR"] = str(runtime)
+    log = folder / "semwrightd.original.log"
+    log_stream = log.open("xb")
+    process = subprocess.Popen([str(SW_BINS / "semwrightd"), "--config", str(config_path),
+        "--socket", str(socket)], env=child_env, stdin=subprocess.DEVNULL,
+        stdout=log_stream, stderr=log_stream, start_new_session=True)
+    row = {"process":process,"quiescent":False}
+    CYCLE_CONTEXT["processes"].append(row)
+    from native_host_shared_state import capsule_pid_identity
+    row.update(host=True,identity=capsule_pid_identity(process.pid),descendants={},
+        closure_path=folder / "host-closure.original.json")
+    CYCLE_CONTEXT["active_host"] = row
+    if row["identity"] is None:
+        row["inventory_failed"] = True
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_HOST_IDENTITY_NOT_OBSERVED")
+    if process.pid in CYCLE_CONTEXT["hosts"]:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_HOST_PID_REUSED")
+    CYCLE_CONTEXT["hosts"].append(process.pid)
+    cycle_record(folder / "host.started.original.json", {"pid":process.pid,
+        "config_sha256":digest(config_path),"daemon_sha256":digest(SW_BINS / "semwrightd"),
+        "same_saved_native_project":str(paths["project"]),"fresh_runtime":str(runtime)})
+    try:
+        wait_for_socket(process, socket, log)
+        discovered = cycle_run_json([str(SW_BINS / "semwright"),"--socket",str(socket),
+            "--session-file",str(session),"--json","capabilities","search","motion-canvas",
+            "--provider","driver:motion-canvas"],env=child_env)
+        if (not discovered.get("data", {}).get("capabilities") or not session.is_file()
+                or session.stat().st_mode & 0o777 != 0o600):
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_FRESH_HOST_NOT_ADMITTED")
+    except BaseException:
+        cycle_stop(row)
+        log_stream.close()
+        raise
+    return row, log_stream, socket, session, child_env, runtime
+
+
+def cycle_remaining(database, paths, config_path, env, original_row):
+    rows = {"original":original_row}
+    for name in CYCLE_STAGES[1:]:
+        folder = cycle_new_stage(name)
+        if name == "edited":
+            cycle_run_json([str(MW_BIN),"cycle-edit",str(database),
+                str(EVIDENCE / rows["reopened"]["project"]["path"]),str(folder)],env=env)
+        else:
+            cycle_run_json([str(MW_BIN),"cycle-snapshot",str(database),str(folder)],env=env)
+        row, stream, socket, session, child_env, runtime = cycle_start_host(name, paths, config_path, env)
+        try:
+            if name == "edited":
+                connection = folder / "connection.original.json"
+                cycle_record(connection, {"schema":"motionwright-semwright-connection/1",
+                    "executable":str((SW_BINS / "semwright").resolve()),
+                    "executable_sha256":digest(SW_BINS / "semwright"),"socket":str(socket),
+                    "session_file":str(session),"output_root":str(paths["output"]),
+                    "resource":n83_read_json(folder / "source.identity.original.json")["resource"]})
+                result = cycle_run_json([str(MW_BIN),"cycle-render-edited",str(database),
+                    str(connection),str(folder / "native-render-evidence.original.json")],
+                    env=child_env,timeout=420)
+                if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != 60:
+                    raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_EDIT_RENDER_FAILED")
+                cycle_register_job(result.get("job_ref"))
+            else:
+                # Inspect the persisted source in the fresh driver. No plan/apply,
+                # no inherited plan_ref and no replay of a prior native job.
+                inspected = cycle_execute("project.inspect", {},socket=socket,session=session,env=child_env)
+                previous = rows["original" if name == "reopened" else "edited"]
+                expected = n83_read_json(EVIDENCE / previous["managed_inspection"]["path"])
+                if inspected != expected:
+                    raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_REOPEN_CHANGED_NATIVE_SOURCE")
+                result, _, _ = cycle_native_render(inspected["fingerprint"],socket=socket,
+                    session=session,env=child_env)
+            rows[name] = cycle_capture(name,paths=paths,socket=socket,session=session,env=child_env,
+                artifact=result["artifact"],job=result["job_ref"])
+        finally:
+            quiescent = cycle_stop(row)
+            stream.close()
+            cycle_record(folder / "host.terminal.original.json", {"pid":row["process"].pid,
+                "exit_code":row["process"].returncode,"group_quiescent":quiescent,
+                "automatic_retry":False,"no_absence_of_effects_inferred":True})
+            # Preserve session/config originals under the owner before sealing.
+            if not quiescent:
+                raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_HOST_SHUTDOWN_UNKNOWN")
+    original_identity = n83_read_json(CYCLE_CONTEXT["stages"]["original"] / "source.identity.original.json")
+    original_native = n83_read_json(EVIDENCE / rows["original"]["managed_inspection"]["path"])["project"]
+    # Native identities come from the compiler's actual persisted projection.
+    matches = [(scene["id"], node["id"]) for scene in original_native["scenes"] for node in scene["nodes"]
+        if node["id"] == original_identity["native_node_id"]
+        and scene["id"] == original_identity["native_scene_id"]
+        and node.get("properties", {}).get("fill") == "#F5F5F2"]
+    if len(matches) != 1:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_SUBJECT_NOT_UNIQUE")
+    native_scene, native_node = matches[0]
+    witness = {"schema":"motionwright.motion-canvas-source-roundtrip/1",
+        "profile":{"frames":60,"width":1920,"height":1080,"fps":"30/1"},
+        "edit":{"scene_id":original_identity["scene_id"],"node_id":original_identity["node_id"],
+                "property":"style.fill","native_scene_id":native_scene,"native_node_id":native_node,
+                "native_property":"fill","from":"#F5F5F2","to":"#E85A35"},"stages":rows}
+    cycle_record(EVIDENCE / "roundtrip-witness.original.json", witness)
+    import native_motion_canvas_roundtrip as reader
+    def verify_binding(film_path, inspection_path):
+        return cycle_run_json([str(MW_BIN),"cycle-verify-binding",str(film_path),str(inspection_path)],env=env)
+    report = reader.inspect(EVIDENCE, witness, binding_verifier=verify_binding)
+    cycle_record(EVIDENCE / "roundtrip-reader.original.json", report)
+    if len(CYCLE_CONTEXT["jobs"]) != 5 or len(CYCLE_CONTEXT["hosts"]) != 4:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_OBSERVED_PROCESS_OR_JOB_COUNT")
+    CYCLE_CONTEXT["verified"] = True
+
+
+@contextmanager
+def cycle_workspace(context):
+    owner = context["runner_temp"] / ("mw-mc-cycle-" + context["context"]["run_id"])
+    owner.mkdir(mode=0o700, exist_ok=False)
+    context["owner"] = owner
+    try:
+        context["executables"] = {str(path):digest(path) for path in (MW_BIN, SW_BINS / "semwright",
+            SW_BINS / "semwrightd", SW_BINS / "semwright-sandbox", SW_BINS / "semwright-motion-canvas-driver")}
+        cycle_record(EVIDENCE / "executables.original.json", context["executables"])
+        cycle_record(EVIDENCE / "cycle.started.original.json", {"source":context["source"],
+            "selected_stages":list(CYCLE_STAGES),"maximum_native_jobs":5,"maximum_full_frames":300,
+            "automatic_retry":False,"formal_acceptance":False})
+        yield str(owner)
+    except BaseException as error:
+        context["failed"] = True
+        try:
+            cycle_record(EVIDENCE / "runner-error.original.json", {"type":type(error).__name__,
+                "error":str(error),"automatic_retry":False,"absence_of_effects_asserted":False})
+        except BaseException:
+            pass
+    finally:
+        quiet = []
+        for row in context["processes"]:
+            try:
+                quiet.append(cycle_stop(row))
+            except BaseException:
+                quiet.append(False)
+        unchanged = False
+        try:
+            unchanged = (n83_source_identity() == context["source"]
+                and all(digest(Path(path)) == expected for path, expected in context["executables"].items()))
+        except BaseException:
+            pass
+        persisted = True
+        try:
+            cycle_record(EVIDENCE / "runner.terminal.original.json", {
+                "source":context["source"],"completed_stages":context["completed"],
+                "host_pids":context["hosts"],"native_jobs":context["jobs"],
+                "comparison_verified":context["verified"],"failed":context["failed"],
+                "groups_quiescent":all(quiet),"source_unchanged":unchanged,
+                "automatic_retry":False,"formal_acceptance":False})
+        except BaseException:
+            persisted = False
+        paths = {"owner":owner,"evidence":EVIDENCE,"preflight":context["preflight"]}
+        plaintext, complete = n83_custody().gather_snapshot(paths,preserve_partial=True)
+        ciphertext = n83_custody().encrypt_snapshot(plaintext,context["recipient"],context["context"])
+        public = ROOT / "verification" / "native-editable-public"
+        public.mkdir(mode=0o700,parents=True,exist_ok=False)
+        n83_custody().new_bytes(public / "sealed-originals.bin",ciphertext)
+        success = bool(complete and all(quiet) and persisted and unchanged and not context["failed"]
+            and context["verified"] and context["completed"] == list(CYCLE_STAGES))
+        cycle_record(public / "public-evidence.json", {"selection":"editable-source-cycle",
+            "status":"SCOPED_COMPLETED" if success else "NOT_VERIFIED","context":context["context"],
+            "recipient_spki_sha256":context["recipient"]["sha256"],"ciphertext_file":"sealed-originals.bin",
+            "ciphertext_bytes":len(ciphertext),"ciphertext_sha256":hashlib.sha256(ciphertext).hexdigest(),
+            "selected_originals_complete":bool(complete and all(quiet) and persisted),
+            "groups_quiescent":all(quiet),"source_unchanged":unchanged,
+            "completed_stages":context["completed"],"observed_native_jobs":len(context["jobs"]),
+            "observed_host_processes":len(context["hosts"]),"automatic_retry":False,
+            "master_eligible":False,"formal_acceptance":False,"release_authorized":False,
+            "absence_of_effects_asserted":False})
+        if not success:
+            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NOT_VERIFIED")
+
+
 def main() -> None:
-    if NATIVE_SCOPE not in {"standard", "n83-preview"}:
+    global CYCLE_CONTEXT
+    if NATIVE_SCOPE not in {"standard", "n83-preview", "editable-source-cycle"}:
         raise N83RunnerFailure("N83_UNKNOWN_SCOPE")
+    if NATIVE_SCOPE == "editable-source-cycle":
+        CYCLE_CONTEXT = cycle_admission()
     admitted = n83_admission() if NATIVE_SCOPE == "n83-preview" else None
     exact_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
-    if admitted is not None:
+    if admitted is not None or CYCLE_CONTEXT is not None:
         EVIDENCE.chmod(0o700)
 
     with native_workspace(admitted) as raw:
@@ -758,6 +1301,9 @@ def main() -> None:
                 or canonical_film.get("frame_count") != 60
             ):
                 raise AssertionError("app-owned direct parity Film is not the pinned project revision")
+            if CYCLE_CONTEXT is not None:
+                original_stage = cycle_new_stage("original")
+                cycle_run_json([str(MW_BIN), "cycle-snapshot", str(database), str(original_stage)], env=env)
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -873,6 +1419,19 @@ def main() -> None:
         )
         if admitted is not None:
             admitted["daemon"] = daemon
+        if CYCLE_CONTEXT is not None:
+            first_host = {"process":daemon,"quiescent":False}
+            CYCLE_CONTEXT["processes"].append(first_host)
+            from native_host_shared_state import capsule_pid_identity
+            first_host.update(host=True, identity=capsule_pid_identity(daemon.pid), descendants={},
+                closure_path=EVIDENCE / "first-host-closure.original.json")
+            CYCLE_CONTEXT["active_host"] = first_host
+            if first_host["identity"] is None:
+                first_host["inventory_failed"] = True
+                raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_FIRST_HOST_IDENTITY_NOT_OBSERVED")
+            CYCLE_CONTEXT["hosts"].append(daemon.pid)
+            cycle_record(EVIDENCE / "first-host.started.original.json", {"pid":daemon.pid,
+                "config_sha256":digest(config_path),"daemon_sha256":digest(SW_BINS / "semwrightd")})
         # Passive, bounded lifecycle evidence on disposable CI only. The
         # sampler never inspects argv, env, sessions or rendered media and
         # cannot relaunch provider processes or jobs.
@@ -1054,7 +1613,7 @@ def main() -> None:
             # revision. This is a separate conformance run, never an automatic
             # retry of the original mediated render. Any uncertain observation
             # fails closed and preserves the original job identity.
-            direct = run_direct_native_film(
+            direct = (cycle_direct_film if CYCLE_CONTEXT is not None else run_direct_native_film)(
                 film_file=film_source,
                 executable=SW_BINS / "semwright",
                 socket=socket,
@@ -1206,6 +1765,10 @@ def main() -> None:
                 },
             )
 
+            if CYCLE_CONTEXT is not None:
+                original_cycle_row = cycle_capture("original", paths=paths, socket=socket,
+                    session=session, env=env, artifact=direct["artifact"], job=direct["job_ref"])
+
             if CAPTION_E2E == "1":
                 # A second, explicitly authored NEW revision of the same
                 # canonical owner project; never a retry of the baseline job.
@@ -1355,7 +1918,10 @@ def main() -> None:
                 lifecycle.stop()
             finally:
                 try:
-                    if daemon.poll() is None:
+                    if CYCLE_CONTEXT is not None:
+                        if not cycle_stop(first_host):
+                            raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_HOST_CLOSURE_UNKNOWN")
+                    elif daemon.poll() is None:
                         pid = daemon.pid
                         daemon.terminate()
                         try:
@@ -1366,6 +1932,15 @@ def main() -> None:
                 finally:
                     log_stream.close()
 
+        if CYCLE_CONTEXT is not None:
+            if not cycle_stop(first_host):
+                raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_FIRST_HOST_SHUTDOWN_UNKNOWN")
+            cycle_record(EVIDENCE / "first-host.terminal.original.json", {"pid":daemon.pid,
+                "exit_code":daemon.returncode,"group_quiescent":True})
+            cycle_remaining(database, paths, config_path, env, original_cycle_row)
+
+    if CYCLE_CONTEXT is not None:
+        return
     print(
         json.dumps(
             {
@@ -1380,6 +1955,21 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if NATIVE_SCOPE == "editable-source-cycle":
+        try:
+            if sys.argv[1:] == ["--cycle-admission-only"]:
+                cycle_admission()
+            elif sys.argv[1:] == ["--cycle-seal-preflight-failure"]:
+                cycle_seal_preflight_failure()
+            elif sys.argv[1:]:
+                raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_UNKNOWN_ARGUMENT")
+            else:
+                main()
+        except BaseException:
+            print(json.dumps({"selection":"editable-source-cycle","status":"NOT_VERIFIED",
+                "automatic_retry":False,"raw_diagnostics_public":False}),flush=True)
+            raise SystemExit(1) from None
+        raise SystemExit(0)
     if NATIVE_SCOPE == "n83-preview":
         try:
             if sys.argv[1:] == ["--n83-admission-only"]:
