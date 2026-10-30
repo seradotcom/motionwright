@@ -8,6 +8,7 @@ mod import_limits;
 mod jobs;
 mod mlt_cleanup;
 mod models;
+mod native_capsule_source;
 mod portability;
 mod project_creation;
 mod project_projection;
@@ -33,6 +34,7 @@ pub use mlt_cleanup::MltCleanupInventory;
 pub use models::{
     ModelContextDisclosure, ModelProviderKind, ModelRequestDraft, ModelRequestPreflight,
 };
+pub use native_capsule_source::{MAX_NATIVE_CAPSULE_INSPECT_BYTES, VerifiedNativeCapsuleSource};
 pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
     NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,

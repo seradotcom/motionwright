@@ -525,5 +525,49 @@ class PreviewStoreAndControlFlowTests(unittest.TestCase):
                 self.assertIs(retained[-1]["envelope"]["error"]["outcome_known"], False)
 
 
+class CapsuleSourceTransportShapeTests(unittest.TestCase):
+    def test_malformed_or_unknown_error_retains_original_and_stops_before_followup(self):
+        for error in (None, [], "malformed", {"code": "Internal", "outcome_known": False}):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                evidence = Path(temporary)
+                envelope = {"ok": False, "error": error, "private": "OWNER_PRIVATE_SOURCE"}
+                stdout = json.dumps(envelope).encode()
+                stderr = b"OWNER_PRIVATE_DIAGNOSTIC"
+                admitted = {"evidence": evidence, "transport_calls": [], "unknown": False}
+                result = Mock(returncode=4, stdout=stdout, stderr=stderr)
+                with patch.object(host.subprocess, "run", return_value=result) as dispatched, \
+                        patch.object(host, "capsule_track_descendants"):
+                    with self.assertRaisesRegex(AssertionError, "E11_NATIVE_OUTCOME_UNKNOWN_RETAINED"):
+                        host.capsule_cli(admitted, {}, evidence / "owner.sock",
+                                         evidence / "owner.session", "providers.execute_bound", {}, ok=False)
+                        host.capsule_cli(admitted, {}, evidence / "owner.sock",
+                                         evidence / "owner.session", "forbidden-followup", {})
+                self.assertEqual(dispatched.call_count, 1)
+                self.assertIs(admitted["unknown"], True)
+                self.assertEqual(len(admitted["transport_calls"]), 1)
+                retained = admitted["transport_calls"][0]
+                self.assertEqual(retained["envelope"], envelope)
+                self.assertEqual(retained["exit_code"], 4)
+                self.assertIs(retained["automatic_retry"], False)
+                self.assertEqual((evidence / f"{retained['receipt']}.stdout.original").read_bytes(), stdout)
+                self.assertEqual((evidence / f"{retained['receipt']}.stderr.original").read_bytes(), stderr)
+
+    def test_original_known_denial_is_returned_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            envelope = {"ok": False, "error": {"code": "PolicyDenied", "outcome_known": True}}
+            stdout = json.dumps(envelope).encode()
+            admitted = {"evidence": evidence, "transport_calls": [], "unknown": False}
+            result = Mock(returncode=4, stdout=stdout, stderr=b"")
+            with patch.object(host.subprocess, "run", return_value=result) as dispatched, \
+                    patch.object(host, "capsule_track_descendants"):
+                actual = host.capsule_cli(admitted, {}, evidence / "owner.sock",
+                                          evidence / "owner.session", "providers.execute_bound", {}, ok=False)
+            self.assertEqual(dispatched.call_count, 1)
+            self.assertEqual(actual, envelope)
+            self.assertIs(admitted["unknown"], False)
+            self.assertEqual(admitted["transport_calls"][0]["envelope"], envelope)
+
+
 if __name__ == "__main__":
     unittest.main()

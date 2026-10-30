@@ -8206,12 +8206,70 @@
     },
     {
       "path": ".github/workflows/native-sdk.yml",
-      "sha256": "4776a0e1bae38e68d849d616870e4ccc1535a0c0c98b9acd3fc2643c527a0551",
-      "preamble_sha256": "c8cc3b79e33419422e501f9d2a9cb361089c20127f4785c3ebcb162c33cdaf5f",
+      "sha256": "8612175dc02c96bdbb9e7bccc63022f68e3e2d80be1ec6c2f53ed863a2c9130d",
+      "preamble_sha256": "4f5581a3526d6494a349c58ef310fbd68a9f50fcacdd8c2beaf9f15ca450a0c3",
       "evidence_class": "native_host_paths",
-      "purpose": "Pinned Native SDK and music/SFX/preview consumer contracts, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
-      "inputs": {},
-      "input_dispositions": {},
+      "purpose": "Pinned Native SDK, music/SFX/preview and capsule-source Service contracts, Darwin system aliases, real NTFS refusal, actual host/UI-service shared state and the separately selected native capsule source cycle.",
+      "inputs": {
+        "g1_only": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "e11_capsule_source": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "expected_source_sha": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "options": []
+        },
+        "recovery_recipient": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "options": []
+        }
+      },
+      "input_dispositions": {
+        "g1_only": {
+          "true": {
+            "covered_by": [
+              "g1-only"
+            ],
+            "basis": "Requires e11_capsule_source=true and successful first-attempt source/recipient admission. The Host job is excluded in full; the false capsule-source combination is rejected, not an alternative success scope."
+          },
+          "false": {
+            "covered_by": [
+              "candidate",
+              "e11-capsule-source"
+            ],
+            "basis": "Preserves the standard Host and Core guards; e11_capsule_source independently selects the additional admitted capsule cycle and encrypted private custody."
+          }
+        },
+        "e11_capsule_source": {
+          "true": {
+            "covered_by": [
+              "e11-capsule-source",
+              "g1-only"
+            ],
+            "basis": "Both explicit first-attempt selections require the exact candidate SHA and admitted public recipient. Only g1_only=false selects the native Host cycles; Service/source coverage alone cannot replace their original observations."
+          },
+          "false": {
+            "covered_by": [
+              "candidate"
+            ],
+            "basis": "Default source/platform and standard Host/Core selection; g1_only=true without capsule-source admission is rejected."
+          }
+        },
+        "expected_source_sha": {},
+        "recovery_recipient": {}
+      },
       "jobs": {
         "verify-native-sdk": {
           "source_name": "verify-native-sdk",
@@ -8219,15 +8277,45 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "ce042ee791e7cfd473f8db5a08de885a4e2c675791d5739b619ec93c5b829002",
+          "source_sha256": "e16cfaa5261e9c5a3a5a8f1798a708a2a8105f1ae012e4dd1fc32a42c024511b",
           "instance_sets": {
             "candidate": [
+              {}
+            ],
+            "e11-capsule-source": [
+              {}
+            ],
+            "g1-only": [
               {}
             ]
           },
           "steps": [
             {
               "ordinal": 2,
+              "name": "Require capsule source admission for G1-only selection",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.g1_only }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "a0f8f854e96aabecae1c7af41bc8dbe968ee1c740892f25ee054da1c6175db7a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 3,
+              "name": "Admit the selected capsule source context and recovery recipient",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "d5e1eae595bd27fd6d517769e61da8c882d0d093f7118734a759f695b9f286b9",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
+              "name": "Record admitted G1-only scope without Host or G2 acceptance",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.g1_only && steps.e11_admission.outcome == 'success' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b2217ca55e9b76a10de52ea92e4b26527a69dfdfdf118216d240feafeec8500a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
               "name": "Resolve pinned Semwright revision",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8235,7 +8323,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 4,
+              "ordinal": 7,
               "name": "Verify immutable checkout",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8243,7 +8331,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 10,
               "name": "Verify source-bound JSON command failure redaction",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8251,7 +8339,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 11,
               "name": "Refuse private shared-state receipts in public artifact",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8259,7 +8347,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 12,
               "name": "Upstream public Native SDK contract tests",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8267,7 +8355,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 13,
               "name": "Motionwright Native SDK adapter tests",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8275,19 +8363,35 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
-              "name": "Music and SFX domain regression tests",
-              "guard": "${{ !cancelled() }}",
+              "ordinal": 14,
+              "name": "Native capsule source Service verification",
+              "guard": "${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && steps.e11_admission.outcome == 'success' }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "d7a68281309ea369761e8c68e4be661f7c04d2b7f9c2164b1436f0ca5ecdc6b3",
+              "source_block_sha256": "ec18c7b3e6d5673ecc13b4aa0153d6feecb8c69248eba2a4acbdd92bd5699263",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
-              "name": "Preview and music persistence service tests",
-              "guard": "${{ !cancelled() }}",
+              "ordinal": 15,
+              "name": "Music and SFX domain regression tests",
+              "guard": "${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.e11_capsule_source || steps.e11_admission.outcome == 'success') && (github.event_name != 'workflow_dispatch' || !inputs.g1_only || steps.e11_admission.outcome == 'success') }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "3498625d97ed04a6178a988c2ea65620f56afed3ccec89e85c198ae85d91789c",
+              "source_block_sha256": "021f1f68a5e2377a4a119bec12cdde8f722106f0867355a2335332a6f271b239",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 16,
+              "name": "Preview and music persistence service tests",
+              "guard": "${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.e11_capsule_source || steps.e11_admission.outcome == 'success') && (github.event_name != 'workflow_dispatch' || !inputs.g1_only || steps.e11_admission.outcome == 'success') }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "16aa4026b647d8b3502d86db710e0ad82883b01f0679e74e676b018908fb2e66",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 17,
+              "name": "Retain the G1-only scope receipt",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.g1_only && steps.g1_scope.outcome == 'success' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "78f0ee0f6f4ab8826f8e8953900da9ce329e627478cfbaa5e72a2ca0cb5bd053",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -8301,6 +8405,12 @@
           "source_sha256": "c5b460a30462785609f6eb17fe9ede5af4e1ba340a5903d87c04b483aed20726",
           "instance_sets": {
             "candidate": [
+              {}
+            ],
+            "e11-capsule-source": [
+              {}
+            ],
+            "g1-only": [
               {}
             ]
           },
@@ -8328,6 +8438,12 @@
           "instance_sets": {
             "candidate": [
               {}
+            ],
+            "e11-capsule-source": [
+              {}
+            ],
+            "g1-only": [
+              {}
             ]
           },
           "steps": [
@@ -8343,19 +8459,30 @@
         },
         "real-host-shared-state": {
           "source_name": "real-host-shared-state",
-          "guard": null,
+          "guard": "${{ !(github.event_name == 'workflow_dispatch' && inputs.g1_only) }}",
           "runs_on": "ubuntu-24.04",
           "needs": "verify-native-sdk",
           "strategy": null,
-          "source_sha256": "de3a786a06cbbd2862bc1c7495c8c1367b4909b2de3d5d4894f6d48d03b9522a",
+          "source_sha256": "f18b81dbf925883a0a5b75e6994f0bdbb585dec77384cb43a2089eb5b607da8a",
           "instance_sets": {
             "candidate": [
+              {}
+            ],
+            "e11-capsule-source": [
               {}
             ]
           },
           "steps": [
             {
               "ordinal": 2,
+              "name": "Admit the selected capsule source context and recovery recipient",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "d5e1eae595bd27fd6d517769e61da8c882d0d093f7118734a759f695b9f286b9",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 3,
               "name": "Resolve pinned Semwright revision",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8363,23 +8490,31 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 4,
+              "ordinal": 5,
               "name": "Verify exact source identities",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "125a34aae915a91b4c59d828d9bd8f87695d479e07f3baa638ef000c8d6acce7",
+              "source_block_sha256": "b14dcaf559372143f4e15c06f1f0097c218db38071eecc647baef84b5406cc79",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 6,
+              "name": "Verify the selected capsule source and SDK locks",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "ea2483c0482e06246e64130d232f7683467ce42fd39aded64c41fba2609c1d4c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
               "name": "Configure disposable-runner Driver Host sandbox",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "ac3985afeb33c51f4879d480476100c051a05fe8fb880a25e21f4f8a0b2209c4",
+              "source_block_sha256": "3b100e3b87e70fca0b83d96d0ce3e8f5fa53f9e5836a8fabe6e7d21bec31a539",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 10,
               "name": "Install exact Semwright daemon build dependencies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8387,15 +8522,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 11,
               "name": "Build exact Semwright daemon, CLI and sandbox",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "8c566b93d60e1e3a0495295924f6351252417cbe530124bf92071f6aebab0b29",
+              "source_block_sha256": "35a7e6b5106593ea4df34fcbb8dc2966c8146154553981191e1a16fab2d4c8f1",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 12,
               "name": "Build Motionwright provider and app-state actor",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8403,15 +8538,23 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 13,
               "name": "Real UI-service to Native Host shared-state acceptance",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "ae3193e1bb551708e0d3aa08344b2399bfbf892ad53635280202cf486b52f0f2",
+              "source_block_sha256": "b8c10d9505b4d6b2663acff05b24e6608b11f9de0c69c7aae865dab8889779f1",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
+              "ordinal": 14,
+              "name": "Retain encrypted standard shared-state originals",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "6fe6d2d2571cc31981b88a2150526462b9c7ef343850770c8b13ce657bed908a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 15,
               "name": "Stage verified public shared-state checks, never owner calls or daemon logs",
               "guard": "always()",
               "kind": "EXECUTABLE_STEP",
@@ -8419,15 +8562,31 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 13,
+              "ordinal": 16,
               "name": null,
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "c29621d7324b31cb889653186b9e0ac3ba007543499a7c5462b43a089c23da61",
+              "source_block_sha256": "ad977442279b89b717867ead867c993fb10b3d9d88c382b6ee11a792db9c4606",
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
             },
             {
-              "ordinal": 14,
+              "ordinal": 17,
+              "name": "Real native capsule source Host cycle",
+              "guard": "${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "a77550d3fdcfc9a5961128fc06af8311d162927233f98d3e3a40b639e36c8c2d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 18,
+              "name": "Retain encrypted capsule source originals",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "1e014394b157bdd99380e8dcbcc4c437ada332a426f5b3c8d9e4e1991e177d74",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 19,
               "name": "Real Core Host Native read scope guards",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -8440,7 +8599,12 @@
       "cases": [
         {
           "id": "candidate",
-          "inputs": {},
+          "inputs": {
+            "g1_only": false,
+            "e11_capsule_source": false,
+            "expected_source_sha": "",
+            "recovery_recipient": ""
+          },
           "kind": "TECHNICAL_SCOPE",
           "required_job_instances": [
             {
@@ -8449,14 +8613,87 @@
               "matrix": {},
               "name_binding": "literal_definition",
               "required_steps": [
-                2,
-                4,
+                5,
                 7,
-                8,
+                10,
+                11,
+                12,
+                13,
+                15,
+                16
+              ]
+            },
+            {
+              "job_id": "macos-owner-path-alias",
+              "display_name": "macos-owner-path-alias",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                4
+              ]
+            },
+            {
+              "job_id": "windows-ntfs-owner-path",
+              "display_name": "windows-ntfs-owner-path",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                4
+              ]
+            },
+            {
+              "job_id": "real-host-shared-state",
+              "display_name": "real-host-shared-state",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                3,
+                5,
                 9,
                 10,
                 11,
-                12
+                12,
+                13,
+                15,
+                16,
+                19
+              ]
+            }
+          ],
+          "coverage_basis": "The default selection preserves pinned Native SDK and consumer contracts, music/SFX/preview and capsule-source Service tests, Darwin aliases, real NTFS refusal, the standard Host17 shared-state cycle and seven real Core Host read guards. Capsule-source admission, encrypted capsule custody and the additional native capsule source cycle are not selected. Public shared-state checks exclude private owner calls and daemon logs; the seven Core guards retain separate runner originals.",
+          "original_attempt": null,
+          "blocking_reason": null
+        },
+        {
+          "id": "e11-capsule-source",
+          "inputs": {
+            "g1_only": false,
+            "e11_capsule_source": true,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            }
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "required_job_instances": [
+            {
+              "job_id": "verify-native-sdk",
+              "display_name": "verify-native-sdk",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                3,
+                5,
+                7,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -8484,20 +8721,83 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                4,
-                7,
-                8,
+                3,
+                5,
+                6,
                 9,
                 10,
                 11,
                 12,
                 13,
-                14
+                14,
+                15,
+                16,
+                17,
+                18,
+                19
               ]
             }
           ],
-          "coverage_basis": "Pinned Native SDK and music/SFX/preview consumer contracts, Darwin system aliases, real NTFS refusal and actual host/UI-service shared state.",
-          "original_attempt": null,
+          "coverage_basis": "The explicit first-attempt capsule selection requires the exact clean candidate SHA and an admitted public RSA3072 recipient before effects. It retains the five capsule-source Service controls, all existing source/platform guards, the standard Host17 cycle with encrypted private originals, curated public checks, the separate real capsule source Host cycle and its encrypted originals, and the seven Core Host read guards. Both native cycles must complete with their own original observations; startup UNKNOWN stops further Native operations and never satisfies this success case.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "g1-only",
+          "inputs": {
+            "g1_only": true,
+            "e11_capsule_source": true,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            }
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "required_job_instances": [
+            {
+              "job_id": "verify-native-sdk",
+              "display_name": "verify-native-sdk",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                4,
+                5,
+                7,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17
+              ]
+            },
+            {
+              "job_id": "macos-owner-path-alias",
+              "display_name": "macos-owner-path-alias",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                4
+              ]
+            },
+            {
+              "job_id": "windows-ntfs-owner-path",
+              "display_name": "windows-ntfs-owner-path",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                4
+              ]
+            }
+          ],
+          "coverage_basis": "The explicit first-attempt G1-only selection requires e11_capsule_source=true, exact clean candidate SHA and the admitted public RSA3072 recipient. It runs the source and platform guards, including five capsule-source Service controls, and retains the scope receipt. The entire real-host-shared-state job is excluded: Host17, the seven real Core Host guards and the physical capsule source cycle are not selected or credited. The scope receipt asserts no test results or G2 acceptance.",
+          "original_attempt": 1,
           "blocking_reason": null
         }
       ],
@@ -8505,7 +8805,10 @@
       "limitations": [
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
-        "The seven Core Host Native read scope guards retain private originals on the runner, outside the public shared-state artifact. This selection does not establish G2."
+        "The seven Core Host Native read scope guards retain private originals on the runner, outside the public shared-state artifact. This selection does not establish G2.",
+        "The G1-only selection excludes the entire Host job, including Host17, seven real Core Host guards and the physical E11 capsule source cycle. Its retained scope receipt asserts no execution results and cannot satisfy those omitted obligations.",
+        "The explicit E11 selection requires an existing admitted public recipient and first-attempt exact-source binding. Standard and capsule private originals are encrypted separately; public shared-state artifacts remain curated. No UNKNOWN result or retained failure diagnostic grants permission to replay.",
+        "These are the existing selectable workflow scopes, not a requirement to execute every selector for every change. Candidate applicability and genuine original evidence remain required; this definition update dispatches nothing and admits no PASS."
       ]
     },
     {
