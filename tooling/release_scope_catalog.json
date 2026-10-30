@@ -8443,7 +8443,7 @@
     },
     {
       "path": ".github/workflows/native-sdk.yml",
-      "sha256": "2bc8456a4037b1e50f8476060e842058d4bc90a0c48098572c0bc0eb50ca05af",
+      "sha256": "f47fcf76bc30cd5986e923966890046ba0e55f4d2f48d20d06199a5660adc9ef",
       "preamble_sha256": "4f5581a3526d6494a349c58ef310fbd68a9f50fcacdd8c2beaf9f15ca450a0c3",
       "evidence_class": "native_host_paths",
       "purpose": "Pinned Native SDK, music/SFX/preview and capsule-source Service contracts, Darwin system aliases, real NTFS refusal, actual host/UI-service shared state and the separately selected native capsule source cycle.",
@@ -8514,7 +8514,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "e16cfaa5261e9c5a3a5a8f1798a708a2a8105f1ae012e4dd1fc32a42c024511b",
+          "source_sha256": "c076631df77ffa772d20928163c2e501000c9b1afaae0c838f232ebc6a18d449",
           "instance_sets": {
             "candidate": [
               {}
@@ -8596,7 +8596,7 @@
               "name": "Motionwright Native SDK adapter tests",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "681e78ed5819752ccb1a02fd8d9b2f469e637cf34100a00405eaafb2715f3a8c",
+              "source_block_sha256": "aef54d9fde5f41cf4e5de4aa828088876de931ebad7d21445b607a73c63c6d52",
               "api_binding": "EXPLICIT_NAME"
             },
             {

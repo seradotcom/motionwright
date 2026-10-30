@@ -196,7 +196,13 @@ jobs:
         working-directory: _semwright
         run: cargo test --locked -p semwright-native-sdk --features driver --test cooperation
       - name: Motionwright Native SDK adapter tests
-        run: cargo test --locked -p motionwright-native --all-targets
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-storage --lib cas_retention::namespace_tests
+          cargo test --locked -p motionwright-storage --lib cas_retention_process_tests::real_replaced_live_intent_lock_keeps_unknown_and_preserves_foreign_lock -- --exact
+          cargo test --locked -p motionwright-storage --lib cas_retention_process_tests::real_unix_fifo_control_entries_reject_without_blocking -- --exact
+          cargo test --locked -p motionwright-storage --lib tests::cas_symlinked_staging_and_root_are_rejected_before_writes -- --exact
+          cargo test --locked -p motionwright-native --all-targets
       - name: Native capsule source Service verification
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && steps.e11_admission.outcome == 'success' }}
         run: |

@@ -139,6 +139,7 @@ struct Catalog {
 pub(super) struct ManagedRoot {
     root: PathBuf,
     control: PathBuf,
+    recorded_root: PathBuf,
     root_id: Uuid,
     directory_id: String,
     control_id: String,
@@ -388,6 +389,17 @@ fn control_path(parent: &Path, root_id: Uuid) -> PathBuf {
     parent.join(format!(".motionwright-cas-{root_id}"))
 }
 
+fn absolute_normalized_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        && path.as_os_str() == path.components().collect::<PathBuf>().as_os_str()
+}
+
 pub(super) fn discover(root: &Path) -> Result<Option<ManagedRoot>> {
     super::ensure_regular_directory(root, "CAS root")?;
     let canonical_root = fs::canonicalize(root)?;
@@ -401,21 +413,33 @@ pub(super) fn discover(root: &Path) -> Result<Option<ManagedRoot>> {
     let parent = canonical_root
         .parent()
         .ok_or_else(|| invalid("root parent is missing"))?;
+    let recorded_parent = anchor
+        .canonical_root
+        .parent()
+        .ok_or_else(|| invalid("recorded root parent is missing"))?;
+    // The same admitted directories can have different absolute names in an
+    // owner-mounted sandbox. Stored paths remain immutable provenance, never
+    // paths to open outside this view. Derive the local sibling and require
+    // the original physical root, control directory and gate file below.
+    let control = control_path(parent, anchor.root_id);
+    let recorded_control = control_path(recorded_parent, anchor.root_id);
     if anchor.format_version != FORMAT_VERSION
-        || anchor.canonical_root != canonical_root
-        || anchor.control != control_path(parent, anchor.root_id)
+        || !absolute_normalized_path(&anchor.canonical_root)
+        || !absolute_normalized_path(&anchor.control)
+        || anchor.control.as_os_str() != recorded_control.as_os_str()
         || directory_identity(&canonical_root)? != anchor.directory_id
-        || directory_identity(&anchor.control)? != anchor.control_id
+        || directory_identity(&control)? != anchor.control_id
     {
         return Err(invalid("managed root identity changed"));
     }
-    let lock = open_control(&anchor.control.join("root.lock"), false, true, false)?;
+    let lock = open_control(&control.join("root.lock"), false, true, false)?;
     if file_identity(&lock)? != anchor.lock_id {
         return Err(invalid("root gate identity changed"));
     }
     Ok(Some(ManagedRoot {
         root: canonical_root,
-        control: anchor.control,
+        control,
+        recorded_root: anchor.canonical_root,
         root_id: anchor.root_id,
         directory_id: anchor.directory_id,
         control_id: anchor.control_id,
@@ -535,6 +559,7 @@ impl ManagedRoot {
         let current = discover(&self.root)?.ok_or_else(|| invalid("managed anchor disappeared"))?;
         if current.root_id != self.root_id
             || current.control != self.control
+            || current.recorded_root != self.recorded_root
             || current.directory_id != self.directory_id
             || current.control_id != self.control_id
             || current.lock_id != self.lock_id
@@ -562,7 +587,7 @@ impl ManagedRoot {
             || !((catalog.format_version == FORMAT_VERSION && catalog.derived.is_none())
                 || (catalog.format_version == CATALOG_FORMAT_VERSION && catalog.derived.is_some()))
             || catalog.root_id != self.root_id
-            || catalog.canonical_root != self.root
+            || catalog.canonical_root.as_os_str() != self.recorded_root.as_os_str()
             || catalog.directory_id != self.directory_id
             || catalog.control_id != self.control_id
         {
@@ -1848,5 +1873,212 @@ impl Store {
             gate.save()?;
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod namespace_tests {
+    use super::*;
+
+    fn fixture() -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("owner/blobs");
+        prepare_blob_root(&root, true).unwrap();
+        (directory, root)
+    }
+
+    fn copy_control(source: &Path, destination: &Path) {
+        fs::create_dir(destination).unwrap();
+        fs::create_dir(destination.join("locks")).unwrap();
+        for name in ["catalog.json", "root.lock"] {
+            fs::copy(source.join(name), destination.join(name)).unwrap();
+        }
+    }
+
+    #[test]
+    fn same_physical_root_reopens_after_parent_relocation_without_rewriting_provenance() {
+        let (directory, root) = fixture();
+        let original = discover(&root).unwrap().unwrap();
+        let anchor_bytes = fs::read(root.join(ROOT_ANCHOR)).unwrap();
+        let catalog_bytes = fs::read(original.control.join("catalog.json")).unwrap();
+        let relocated_parent = directory.path().canonicalize().unwrap().join("view");
+        fs::rename(root.parent().unwrap(), &relocated_parent).unwrap();
+        let view = relocated_parent.join("blobs");
+
+        let relocated = discover(&view).unwrap().unwrap();
+        assert_ne!(relocated.root, original.root);
+        assert_eq!(relocated.recorded_root, original.recorded_root);
+        assert_eq!(relocated.root_id, original.root_id);
+        assert_eq!(relocated.directory_id, original.directory_id);
+        assert_eq!(relocated.control_id, original.control_id);
+        assert_eq!(relocated.lock_id, original.lock_id);
+        {
+            let gate = relocated.gate().unwrap();
+            assert_eq!(gate.catalog.canonical_root, original.root);
+        }
+        assert_eq!(fs::read(view.join(ROOT_ANCHOR)).unwrap(), anchor_bytes);
+        assert_eq!(
+            fs::read(relocated.control.join("catalog.json")).unwrap(),
+            catalog_bytes
+        );
+
+        // Exercise the real gate/save path in the new view. Only the pin is
+        // changed; the original anchor, catalog provenance and physical IDs stay.
+        let digest = "a".repeat(64);
+        pin_digests(&view, [digest.as_str()]).unwrap();
+        let reopened = discover(&view).unwrap().unwrap();
+        let gate = reopened.gate().unwrap();
+        assert!(gate.catalog.legacy_pins.contains(&digest));
+        assert_eq!(gate.catalog.canonical_root, original.root);
+        assert_eq!(gate.catalog.directory_id, original.directory_id);
+        assert_eq!(gate.catalog.control_id, original.control_id);
+        assert_eq!(fs::read(view.join(ROOT_ANCHOR)).unwrap(), anchor_bytes);
+    }
+
+    #[test]
+    fn copied_anchor_and_catalog_do_not_admit_a_different_physical_root() {
+        let (directory, root) = fixture();
+        let original = discover(&root).unwrap().unwrap();
+        let copied_parent = directory.path().canonicalize().unwrap().join("copy");
+        let copied_root = copied_parent.join("blobs");
+        fs::create_dir_all(&copied_root).unwrap();
+        let copied_control = control_path(&copied_parent, original.root_id);
+        copy_control(&original.control, &copied_control);
+        fs::copy(root.join(ROOT_ANCHOR), copied_root.join(ROOT_ANCHOR)).unwrap();
+        let anchor_bytes = fs::read(copied_root.join(ROOT_ANCHOR)).unwrap();
+        let catalog_bytes = fs::read(copied_control.join("catalog.json")).unwrap();
+        assert_ne!(
+            directory_identity(&copied_root).unwrap(),
+            original.directory_id
+        );
+        assert_ne!(
+            directory_identity(&copied_control).unwrap(),
+            original.control_id
+        );
+
+        assert!(matches!(
+            discover(&copied_root),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert_eq!(
+            fs::read(copied_root.join(ROOT_ANCHOR)).unwrap(),
+            anchor_bytes
+        );
+        assert_eq!(
+            fs::read(copied_control.join("catalog.json")).unwrap(),
+            catalog_bytes
+        );
+        original.gate().unwrap();
+    }
+
+    #[test]
+    fn replaced_root_control_or_gate_is_rejected_after_acquisition() {
+        for replaced in ["root", "control", "gate"] {
+            let (directory, root) = fixture();
+            let retained = discover(&root).unwrap().unwrap();
+            let saved = directory.path().canonicalize().unwrap().join("displaced");
+            let anchor_bytes = fs::read(root.join(ROOT_ANCHOR)).unwrap();
+            let catalog_bytes = fs::read(retained.control.join("catalog.json")).unwrap();
+            match replaced {
+                "root" => {
+                    fs::rename(&root, &saved).unwrap();
+                    fs::create_dir(&root).unwrap();
+                    fs::write(root.join(ROOT_ANCHOR), &anchor_bytes).unwrap();
+                    assert_eq!(directory_identity(&saved).unwrap(), retained.directory_id);
+                    assert_ne!(directory_identity(&root).unwrap(), retained.directory_id);
+                }
+                "control" => {
+                    fs::rename(&retained.control, &saved).unwrap();
+                    copy_control(&saved, &retained.control);
+                    assert_eq!(directory_identity(&saved).unwrap(), retained.control_id);
+                    assert_ne!(
+                        directory_identity(&retained.control).unwrap(),
+                        retained.control_id
+                    );
+                }
+                "gate" => {
+                    let lock = retained.control.join("root.lock");
+                    fs::rename(&lock, &saved).unwrap();
+                    fs::copy(&saved, &lock).unwrap();
+                    assert_eq!(test_file_identity(&saved).unwrap(), retained.lock_id);
+                    assert_ne!(test_file_identity(&lock).unwrap(), retained.lock_id);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(discover(&root), Err(StorageError::InvalidBackup(_))),
+                "{replaced}"
+            );
+            assert!(retained.gate().is_err(), "retained {replaced} was accepted");
+            assert_eq!(fs::read(root.join(ROOT_ANCHOR)).unwrap(), anchor_bytes);
+            assert_eq!(
+                fs::read(retained.control.join("catalog.json")).unwrap(),
+                catalog_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn historical_paths_must_remain_absolute_normalized_siblings() {
+        for invalid_path in ["relative", "parent", "current", "wrong-sibling"] {
+            let (_directory, root) = fixture();
+            let retained = discover(&root).unwrap().unwrap();
+            let anchor_path = root.join(ROOT_ANCHOR);
+            let mut anchor: RootAnchor = read_control(&anchor_path).unwrap();
+            let parent = root.parent().unwrap();
+            anchor.canonical_root = match invalid_path {
+                "relative" => PathBuf::from("relative/blobs"),
+                "parent" => parent.join("child/../blobs"),
+                "current" => parent.join("./blobs"),
+                "wrong-sibling" => root.clone(),
+                _ => unreachable!(),
+            };
+            anchor.control = control_path(anchor.canonical_root.parent().unwrap(), anchor.root_id);
+            if invalid_path == "wrong-sibling" {
+                anchor.control = parent.join("unrelated-control");
+            }
+            let changed = serde_json::to_vec(&anchor).unwrap();
+            fs::write(&anchor_path, &changed).unwrap();
+            let catalog_bytes = fs::read(retained.control.join("catalog.json")).unwrap();
+
+            assert!(
+                matches!(discover(&root), Err(StorageError::InvalidBackup(_))),
+                "{invalid_path}"
+            );
+            assert!(retained.gate().is_err());
+            assert_eq!(fs::read(&anchor_path).unwrap(), changed);
+            assert_eq!(
+                fs::read(retained.control.join("catalog.json")).unwrap(),
+                catalog_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn changed_historical_provenance_does_not_rebind_a_retained_root_or_catalog() {
+        let (directory, root) = fixture();
+        let retained = discover(&root).unwrap().unwrap();
+        let anchor_path = root.join(ROOT_ANCHOR);
+        let mut anchor: RootAnchor = read_control(&anchor_path).unwrap();
+        anchor.canonical_root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("other-view/blobs");
+        anchor.control = control_path(anchor.canonical_root.parent().unwrap(), anchor.root_id);
+        let changed = serde_json::to_vec(&anchor).unwrap();
+        fs::write(&anchor_path, &changed).unwrap();
+        let catalog_bytes = fs::read(retained.control.join("catalog.json")).unwrap();
+
+        // The physical witness remains valid, but an already retained view
+        // cannot change provenance, nor can the unchanged catalog adopt it.
+        assert!(retained.gate().is_err());
+        let changed_view = discover(&root).unwrap().unwrap();
+        assert!(changed_view.gate().is_err());
+        assert_eq!(fs::read(&anchor_path).unwrap(), changed);
+        assert_eq!(
+            fs::read(retained.control.join("catalog.json")).unwrap(),
+            catalog_bytes
+        );
     }
 }
