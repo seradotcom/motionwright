@@ -158,6 +158,18 @@ impl Project {
         } else {
             old_end
         };
+        // Review the full projected schedule, including tails that cross cuts
+        // or must fit a shorter delivery profile, before reporting a safe cut.
+        if !self.audio.sfx_cues.is_empty() {
+            let mut projected = self.clone();
+            projected.scenes[scene_index].duration = new_duration;
+            projected.reflow_scene_starts()?;
+            projected.validated_sfx_schedule().map_err(|error| {
+                DomainError::Invalid(format!(
+                    "music cut would invalidate a semantic SFX tail or mix: {error}"
+                ))
+            })?;
+        }
         Ok(MusicCutReview {
             scene_id,
             beat_index,
@@ -220,14 +232,18 @@ impl Project {
         if reviewed.anchors_need_acknowledgement() && !acknowledge_absolute_anchors {
             return Err(DomainError::Invalid("music cut affects fixed timeline anchors or scene-linked SFX; acknowledge retained absolute anchors and any SFX retiming".into()));
         }
-        let scene = self
+        let scene_index = self
             .scenes
-            .iter_mut()
-            .find(|scene| scene.id == scene_id)
+            .iter()
+            .position(|scene| scene.id == scene_id)
             .ok_or_else(|| DomainError::NotFound(format!("scene:{scene_id}")))?;
-        scene.duration = reviewed.new_duration;
-        scene.status = SceneStatus::Draft;
+        self.scenes[scene_index].duration = reviewed.new_duration;
         self.reflow_scene_starts()?;
+        // The reviewed ripple is nonzero, so every subsequent start changed.
+        // Preserve statuses only for scenes before the edited boundary.
+        for scene in &mut self.scenes[scene_index..] {
+            scene.status = SceneStatus::Draft;
+        }
         // An approval digest of a concept is not approval for re-timed shots.
         if let Some(plan) = self.production_design.plan.as_mut() {
             plan.approval = None;

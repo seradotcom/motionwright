@@ -238,6 +238,20 @@ impl Project {
         }
         let threshold = earliest_cut_change
             .ok_or_else(|| DomainError::Invalid("no selected music boundary changes".into()))?;
+        // Validate the combined projection, not each boundary in isolation:
+        // a later shortening can invalidate an earlier source-bound SFX tail.
+        if !self.audio.sfx_cues.is_empty() {
+            let mut projected = self.clone();
+            for (scene, mapped) in projected.scenes.iter_mut().zip(&changes) {
+                scene.start = mapped.new_start;
+                scene.duration = mapped.new_duration;
+            }
+            projected.validated_sfx_schedule().map_err(|error| {
+                DomainError::Invalid(format!(
+                    "music conform would invalidate a semantic SFX tail or mix: {error}"
+                ))
+            })?;
+        }
         let affected_sfx_cue_count = self
             .audio
             .sfx_cues

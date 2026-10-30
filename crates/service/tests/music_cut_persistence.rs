@@ -1,13 +1,13 @@
 use motionwright_domain::*;
 use motionwright_service::StudioService;
+use rusqlite::{Connection, OpenFlags};
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-fn write_original_wav(path: &std::path::Path) {
+fn write_original_wav(path: &std::path::Path, frames: u32) {
     // Real, valid PCM16 RIFF source; no forged CAS digest or bypass of asset
     // admission. The service computes the hash from these exact bytes.
     let sample_rate = 48_000_u32;
-    let frames = 480_u32;
     let data_bytes = frames * 2;
     let mut wav = Vec::with_capacity(44 + data_bytes as usize);
     wav.extend_from_slice(b"RIFF");
@@ -71,7 +71,7 @@ fn exact_music_cut_persists_under_one_native_service_transaction_and_stale_cas_f
     let first = p.scenes[0].id;
     let second = p.scenes[1].id;
     let source = temp.path().join("original-music.wav");
-    write_original_wav(&source);
+    write_original_wav(&source, 480);
     p = service
         .import_asset_file(
             p.id,
@@ -191,4 +191,225 @@ fn changing_an_absolute_marker_never_grants_a_stale_mutation() {
             .is_err()
     );
     assert_eq!(service.project(p.id).unwrap(), p);
+}
+
+#[test]
+fn sfx_cut_veto_has_no_write_and_valid_ripple_reopens_with_one_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("music-sfx.sqlite3");
+    let source = temp.path().join("original-six-second.wav");
+    write_original_wav(&source, 6 * 48_000);
+    let original_bytes = std::fs::read(&source).unwrap();
+    let service = StudioService::open(&db).unwrap();
+    let mut p = service
+        .create_project("Source-bound SFX music cut")
+        .unwrap();
+    for (id, seconds) in [("opening", 7), ("following", 9)] {
+        p = apply(
+            &service,
+            &p,
+            id,
+            Change::AddScene {
+                name: id.into(),
+                objective: "Retain the original scene and audio source".into(),
+                duration_seconds: seconds,
+            },
+        );
+    }
+    p = service
+        .import_asset_file(
+            p.id,
+            &p.stamp(),
+            "import-sfx-source",
+            &source,
+            "Original six-second WAV".into(),
+            "audio/wav".into(),
+        )
+        .unwrap()
+        .project;
+    let asset = p
+        .assets
+        .iter()
+        .find(|asset| asset.name == "Original six-second WAV")
+        .unwrap()
+        .clone();
+    let digest = asset.content_sha256.clone().unwrap();
+    let first = p.scenes[0].id;
+    let second = p.scenes[1].id;
+    let shots = p
+        .scenes
+        .iter()
+        .map(|scene| PlannedShot {
+            scene_id: scene.id,
+            purpose: scene.objective.clone(),
+            claim_ids: vec![],
+            asset_ids: vec![],
+            evidence_kind: NarrativeEvidenceKind::GraphicStudy,
+        })
+        .collect();
+    p = apply(
+        &service,
+        &p,
+        "music-grid",
+        Change::SetProductionPlan {
+            plan: Some(ProductionPlan {
+                objective: "Keep complete source-bound SFX tails".into(),
+                audience: "Editors".into(),
+                concept: "Review the exact saved cut before one durable change".into(),
+                reference_constraints: vec![],
+                exclusions: vec!["No implicit audio trim".into()],
+                shots,
+                clock: ProductionClock::Music {
+                    asset_id: asset.id,
+                    beats: vec![
+                        RationalTime::ZERO,
+                        RationalTime::new(5, 1).unwrap(),
+                        RationalTime::new(8, 1).unwrap(),
+                    ],
+                },
+                approval: None,
+            }),
+        },
+    );
+    for (id, scene_id, source_frames) in [("sfx-tail", first, 180), ("sfx-ripple", second, 30)] {
+        p = apply(
+            &service,
+            &p,
+            id,
+            Change::UpsertSemanticSfx {
+                cue: SemanticSfxCue {
+                    schema: SFX_CUE_SCHEMA.into(),
+                    id: uuid::Uuid::new_v4(),
+                    scene_id,
+                    event: SfxEvent::UiFocus,
+                    anchor: SfxAnchor::SceneStart,
+                    offset_frames: 0,
+                    source_asset_id: asset.id,
+                    source_sha256: digest.clone(),
+                    source_frames,
+                    gain_milli_db: -12_000,
+                    attack_frames: 3,
+                    release_frames: 8,
+                    tail_policy: SfxTailPolicy::WithinScene,
+                    original_source_attestation: "Original synthetic PCM test source".into(),
+                },
+            },
+        );
+    }
+    assert_eq!(
+        service
+            .verified_semantic_sfx_wav(p.id, &p.stamp(), asset.id, &digest)
+            .unwrap(),
+        original_bytes
+    );
+    let before_schedule = p.validated_sfx_schedule().unwrap();
+    let before_events = service.export_project(p.id).unwrap().events;
+    let monitor = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let observe = || {
+        (
+            monitor
+                .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            monitor
+                .query_row(
+                    "SELECT count(*) FROM receipts WHERE project_id=?1",
+                    [p.id.to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+        )
+    };
+    let before_store = observe();
+    let bad = Change::SnapSceneCutToMusic {
+        scene_id: first,
+        beat_index: 1,
+        source_sha256: digest.clone(),
+        base_revision: p.revision,
+        acknowledge_absolute_anchors: true,
+    };
+    assert!(
+        service
+            .project(p.id)
+            .unwrap()
+            .inspect_music_cut(first, 1, &digest)
+            .unwrap_err()
+            .to_string()
+            .contains("release tail")
+    );
+    assert!(
+        service
+            .apply(p.id, &p.stamp(), "denied-tail", &bad)
+            .is_err()
+    );
+    assert_eq!(observe(), before_store);
+    assert_eq!(service.project(p.id).unwrap(), p);
+    assert_eq!(service.export_project(p.id).unwrap().events, before_events);
+
+    let review = p.inspect_music_cut(first, 2, &digest).unwrap();
+    assert_eq!(review.affected_sfx_cue_count, 2);
+    let mut good = Change::SnapSceneCutToMusic {
+        scene_id: first,
+        beat_index: 2,
+        source_sha256: digest.clone(),
+        base_revision: p.revision,
+        acknowledge_absolute_anchors: false,
+    };
+    assert!(
+        service
+            .apply(p.id, &p.stamp(), "unreviewed-sfx", &good)
+            .is_err()
+    );
+    assert_eq!(observe(), before_store);
+    if let Change::SnapSceneCutToMusic {
+        acknowledge_absolute_anchors,
+        ..
+    } = &mut good
+    {
+        *acknowledge_absolute_anchors = true;
+    }
+    let updated = apply(&service, &p, "reviewed-sfx-cut", good.clone());
+    assert_eq!(
+        service
+            .verified_semantic_sfx_wav(updated.id, &updated.stamp(), asset.id, &digest)
+            .unwrap(),
+        original_bytes
+    );
+    assert_eq!(updated.revision, p.revision + 1);
+    assert_eq!(updated.generation, p.generation);
+    assert_eq!(updated.assets, p.assets);
+    assert_eq!(updated.audio.sfx_cues, p.audio.sfx_cues);
+    assert_eq!(updated.scenes[1].id, second);
+    assert_eq!(updated.scenes[1].start, RationalTime::new(8, 1).unwrap());
+    assert_eq!(updated.scenes[1].status, SceneStatus::Draft);
+    let after_schedule = updated.validated_sfx_schedule().unwrap();
+    assert_eq!(after_schedule[0], before_schedule[0]);
+    assert_eq!(
+        after_schedule[1].first_sample,
+        before_schedule[1].first_sample + 48_000
+    );
+    assert_eq!(
+        after_schedule[1].sample_count,
+        before_schedule[1].sample_count
+    );
+    assert_eq!(observe().1, before_store.1 + 1);
+    let committed_store = observe();
+    assert!(
+        service
+            .apply(p.id, &p.stamp(), "stale-sfx-cut", &good)
+            .is_err()
+    );
+    assert_eq!(observe(), committed_store);
+    drop(monitor);
+    drop(service);
+    let reopened_service = StudioService::open(&db).unwrap();
+    let reopened = reopened_service.project(p.id).unwrap();
+    assert_eq!(reopened, updated);
+    assert_eq!(reopened.validated_sfx_schedule().unwrap(), after_schedule);
+    assert_eq!(
+        reopened_service
+            .verified_semantic_sfx_wav(reopened.id, &reopened.stamp(), asset.id, &digest)
+            .unwrap(),
+        original_bytes
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), original_bytes);
 }

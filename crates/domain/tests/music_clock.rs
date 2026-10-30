@@ -90,6 +90,28 @@ fn exact_rational_cut_ripples_subsequent_scenes_and_roundtrips() {
 }
 
 #[test]
+fn single_cut_invalidates_only_the_edited_and_rippled_scene_statuses() {
+    for beat_index in [3, 4] {
+        let (mut p, _, second) = test_project();
+        for scene in &mut p.scenes {
+            scene.status = SceneStatus::Approved;
+        }
+        let original = p.clone();
+        p.apply_change(&change(&p, second, beat_index, false))
+            .unwrap();
+        assert_eq!(p.scenes[0], original.scenes[0]);
+        assert_eq!(p.scenes[1].start, original.scenes[1].start);
+        assert_ne!(p.scenes[1].duration, original.scenes[1].duration);
+        assert_eq!(p.scenes[1].status, SceneStatus::Draft);
+        assert_ne!(p.scenes[2].start, original.scenes[2].start);
+        assert_eq!(p.scenes[2].duration, original.scenes[2].duration);
+        assert_eq!(p.scenes[2].status, SceneStatus::Draft);
+        assert_eq!(p.revision, original.revision + 1);
+        p.validate().unwrap();
+    }
+}
+
+#[test]
 fn explicit_source_and_revision_guards_reject_stale_or_swapped_audio() {
     let (mut p, first, _) = test_project();
     let prior = p.clone();
