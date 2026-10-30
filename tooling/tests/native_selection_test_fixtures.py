@@ -62,6 +62,39 @@ CONTENT33=inspect_source_pcm16_stereo_content(WAV33,PCM33,original_wav_sha256=co
 CONTENT180=inspect_source_pcm16_stereo_content(WAV180,PCM180,original_wav_sha256=core.sha(WAV180),decoded_pcm_sha256=core.sha(PCM180))
 
 
+def film_shared_records(phase, project, render_sha, master_sha):
+    """Synthetic source-control receipts, never a Native observation."""
+    import native_film180_command_custody as commands
+    canonical = core.sha((phase + "-canonical-film").encode())
+    common = dict(phase=phase, producer_pid=4321, project_id=project["id"],
+                  generation=project["generation"], revision=project["revision"],
+                  canonical_Film_sha256=canonical, automatic_retry=False)
+    render = dict(schema="motionwright.native.film180.original-result/1",
+        native_film180_host="SUCCEEDED_REPORTED", canonical_Film_sha256=canonical,
+        project_id=project["id"], generation=project["generation"], revision=project["revision"],
+        frame_count=180, physical_pixels_independently_decoded=False,
+        original_audio_master_produced=False, human_approval=False)
+    master = dict(schema="motionwright.native.film180.av-master/1",
+        native_result_reported="SUCCEEDED", source_project_id=project["id"],
+        generation=project["generation"], revision=project["revision"],
+        canonical_Film_sha256=canonical, frame_count=180,
+        original_source_audio_sha256=core.sha(WAV180),
+        master_audio_tail_sample_fidelity_verified=False,
+        all_180_decoded_frame_pixels_verified=False, human_listening_or_visual_approval=False)
+    records = {}
+    for stage, result, evidence_sha in (("render", render, render_sha), ("master", master, master_sha)):
+        request = (f"film180-{phase}-native-single-run-v1" if stage == "render"
+                   else f"film180-{phase}-av-master-v1")
+        base = dict(common, schema=commands.SHARED_STAGE_SCHEMA, stage=stage,
+                    request_id=request)
+        records[stage + ".started.json"] = dict(base, state="STARTED", result=None, evidence_sha256=None)
+        records[stage + ".terminal.json"] = dict(base, state="SUCCESS_REPORTED", result=result,
+                                                evidence_sha256=evidence_sha)
+    session = dict(common, schema=commands.SHARED_SESSION_SCHEMA,
+                   render=render, master=master, coordinator_recreated_between_stages=False)
+    return records, session
+
+
 from functools import lru_cache
 
 @lru_cache(maxsize=8, typed=True)
@@ -330,6 +363,7 @@ class World:
             MLT_original_installer_receipt_sha256=self.installation_sha,repaired_MLT_ELF_sha256=self.pins["REPAIRED_ELF"])
         self.put("observation","source-plan.json",plan)
         stages={}
+        sessions={}
         for phase in film.PHASES:
             project=copy.deepcopy(film.PROJECT_TEMPLATE)
             project["assets"][0]["content_sha256"]=core.sha(WAV180)
@@ -395,6 +429,11 @@ class World:
                 all180_native_PNG_vs_H264_RGB_observation_sha256=psnr_sha,actual_loaded_repaired_MLT_module=self.pins["REPAIRED_ELF"])
             stage["Film_manifest"].update(original_manifest_sha256=manifest_sha,first_original_png_sha256=manifest["frames"][0]["sha256"],last_original_png_sha256=manifest["frames"][-1]["sha256"])
             stages[phase]=stage
+            records, sessions[phase] = film_shared_records(phase, project,
+                core.sha(self.files[("observation", phase+"-native-Film180-evidence.json")]),
+                core.sha(self.files[("observation", phase+"-H264-AAC-native-master.json")]))
+            for name, value in records.items():
+                self.put("observation", phase+"-shared-session/"+name, value)
         status=sample(film.STATUS);status.update(product_source_sha=CURRENT["source_sha"],original=stages["original"],edited=stages["edited"],MLT_module_installed_SHA=self.pins["REPAIRED_ELF"])
         status["original_edited_pixel_change"]["changed_decoded_pixels"]=250
         self.put("observation","original-stage-status.json",status)
@@ -407,7 +446,8 @@ class World:
         for label, phase, has_intent in COMMANDS:
             if label == "original.failed-subprocess":
                 continue
-            stdout = ("synthetic original command: " + label).encode()
+            stdout = (core.canonical(sessions[phase]) if label.endswith(".session")
+                      else ("synthetic original command: " + label).encode())
             stderr = b""
             self.put("observation", label+".stdout", stdout)
             self.put("observation", label+".stderr", stderr)

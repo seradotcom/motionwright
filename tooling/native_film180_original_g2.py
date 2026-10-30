@@ -1007,6 +1007,105 @@ class FilmAttempt:
                 "Film180_native_terminal_without_original_start")
         self.native_commands[label] = "SUCCESS_REPORTED"
 
+    def observe_shared_stages(self, phase, stages, saved, render_path, master_path, *, complete):
+        """Read the child's original stage records; never synthesize process streams."""
+        from native_film180_command_custody import checked_stage, checked_stage_pair, MAX_STAGE
+        require(stages == self.evidence_dir / (phase + "-shared-session")
+                and not stages.is_symlink(), "Film180_shared_stage_root_changed")
+        if not stages.exists():
+            require(not complete, "Film180_shared_stage_root_absent")
+            return {}
+        require(stages.is_dir() and stages.resolve(strict=True) == stages,
+                "Film180_shared_stage_root_not_canonical")
+        reopened = observed.strict_object(regular(
+            self.evidence_dir / (phase + "-reopened-before-render.json"), MAX_STAGE)[0])
+        require(all(reopened.get(key) == saved[key]
+                    for key in ("generation", "revision"))
+                and reopened.get("project_id") == saved["id"],
+                "Film180_shared_stage_reopen_source_changed")
+        terminals = {}
+        producer_pid = None
+        for stage, evidence in (("render", render_path), ("master", master_path)):
+            label = phase + "." + stage
+            start_path = stages / (stage + ".started.json")
+            terminal_path = stages / (stage + ".terminal.json")
+            require(not start_path.is_symlink() and not terminal_path.is_symlink(),
+                    "Film180_shared_stage_record_is_symlink")
+            if not start_path.exists():
+                require(not complete and not terminal_path.exists(),
+                        "Film180_shared_terminal_without_original_start")
+                continue
+            # Preserve a possible effect even if later identity/custody checks fail.
+            self.native_commands[label] = "ERROR_OR_UNKNOWN"
+            start = observed.strict_object(regular(start_path, MAX_STAGE)[0])
+            checked_stage(start, phase, stage)
+            require(start["state"] == "STARTED"
+                    and start["project_id"] == saved["id"]
+                    and start["generation"] == saved["generation"]
+                    and start["revision"] == saved["revision"]
+                    and start["canonical_Film_sha256"] == reopened.get("saved_film_sha256"),
+                    "Film180_shared_stage_foreign_source")
+            if producer_pid is None:
+                producer_pid = start["producer_pid"]
+            require(start["producer_pid"] == producer_pid,
+                    "Film180_shared_coordinator_process_changed")
+            if stage == "master":
+                require(terminals.get("render", {}).get("state") == "SUCCESS_REPORTED",
+                        "Film180_master_precedes_original_render_terminal")
+            if not terminal_path.exists():
+                require(not complete, "Film180_shared_stage_terminal_absent")
+                continue
+            terminal = checked_stage_pair(start,
+                observed.strict_object(regular(terminal_path, MAX_STAGE)[0]), phase, stage)
+            terminals[stage] = terminal
+            if terminal["state"] == "SUCCESS_REPORTED":
+                original = regular(evidence, 8 * 1024 * 1024)[0]
+                value = observed.strict_object(original)
+                require(hashlib.sha256(original).hexdigest() == terminal["evidence_sha256"]
+                        and value.get("project_resource") == "project:" + saved["id"]
+                        and value.get("generation") == saved["generation"]
+                        and value.get("revision") == saved["revision"],
+                        "Film180_shared_stage_evidence_changed")
+                self.confirm_native(label)
+        if complete:
+            require(set(terminals) == {"render", "master"}
+                    and all(row["state"] == "SUCCESS_REPORTED" for row in terminals.values()),
+                    "Film180_shared_stages_incomplete")
+        return terminals
+
+    def command_pair(self, phase, database, connection, render_path, source_sha,
+                     master_path, saved, env):
+        """One process, one retained coordinator, two distinct native stages."""
+        from native_film180_command_custody import checked_session
+        require(phase in {"original", "edited"}, "Film180_shared_phase")
+        label = phase + ".session"
+        labels = {label, phase + ".render", phase + ".master"}
+        require(not labels.intersection(self.command_labels), "Film180_command_replay_refused")
+        stages = self.evidence_dir / (phase + "-shared-session")
+        require(not stages.exists() and not stages.is_symlink(), "Film180_shared_session_preexists")
+        args = ["render-master", str(database), str(connection), str(render_path),
+                ORIGINAL_AUDIO_OWNER_NAME, source_sha, str(master_path), str(stages)]
+        self.command_labels.update(labels)
+        write_private_json(self.evidence_dir / (label + ".intent.json"), {
+            "argv": [str(FILM_BIN), *args], "timeout_seconds": STAGE_TIMEOUT,
+            "automatic_retry": False, "native_renderer_command": True,
+            "native_renderer_stages": [phase + ".render", phase + ".master"],
+        })
+        # As with the existing single command, a lost process response starts
+        # uncertain. A master is tracked separately when its original start exists.
+        self.native_commands[phase + ".render"] = "ERROR_OR_UNKNOWN"
+        try:
+            result = source_command(args, env, timeout=STAGE_TIMEOUT, capture=self.capture(label))
+        except BaseException:
+            try:
+                self.observe_shared_stages(phase, stages, saved, render_path, master_path, complete=False)
+            except BaseException:
+                self.secondary(phase + ".shared-stage-custody")
+            raise
+        terminals = self.observe_shared_stages(
+            phase, stages, saved, render_path, master_path, complete=True)
+        return checked_session(result, phase, terminals)
+
     def retain_wave(self, path):
         raw = regular(path, 2 * 1024 * 1024)[0]
         with wave.open(io.BytesIO(raw), "rb") as reader:
@@ -1275,16 +1374,6 @@ def stage_and_decode(paths: dict[str, Path], connection: Path,
     source_sha = digest(source_audio)
     require(source_sha == attempt.wave_sha, "Film180_source_WAV_changed_between_stages")
     render_path = evidence / f"{stage}-native-Film180-evidence.json"
-    native = attempt.command(stage + ".render",
-        ["render", str(database), str(connection), str(render_path)],
-        env, timeout=STAGE_TIMEOUT, native=True,
-    )
-    require(native.get("native_film180_host") == "SUCCEEDED_REPORTED"
-            and native.get("frame_count") == 180,
-            "original_native_Film180_Broker_did_not_complete")
-    attempt.confirm_native(stage + ".render")
-    film = json.loads(render_path.read_text(encoding="utf-8"))
-    pixels = original_png_index(paths["output"], film)
     staged = evidence / f"{stage}-staged-PCM.json"
     if stage == "original":
         attempt.command(stage + ".stage-audio",
@@ -1300,16 +1389,13 @@ def stage_and_decode(paths: dict[str, Path], connection: Path,
     saved = json.loads(project_file.read_text(encoding="utf-8"))
     with retained_live_observer(
             attempt, stage, daemon_pid, paths["output"]) as (watcher, stop_and_retain, witness_custody):
-        native_master = attempt.command(stage + ".master",
-            ["master", str(database), str(connection), str(render_path),
-             ORIGINAL_AUDIO_OWNER_NAME, source_sha, str(master_evidence)],
-            env, timeout=STAGE_TIMEOUT, native=True,
-        )
-        require(native_master.get("frame_count") == 180
-                and native_master.get("native_result_reported") == "SUCCEEDED",
-                "original_Film180_H264_AAC_master_not_completed")
-        attempt.confirm_native(stage + ".master")
+        attempt.command_pair(stage, database, connection, render_path, source_sha,
+                             master_evidence, saved, env)
+        # Terminal stage observations are retained before independent observer
+        # custody; a later witness failure never erases an original native result.
         stop_and_retain()
+        film = json.loads(render_path.read_text(encoding="utf-8"))
+        pixels = original_png_index(paths["output"], film)
         master = json.loads(master_evidence.read_text(encoding="utf-8"))
         relative = master.get("master", {}).get("artifact", {}).get("path")
         require(type(relative) is str and relative.endswith(".mp4")

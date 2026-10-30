@@ -172,7 +172,7 @@ jobs:
             ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/node.tap
           if-no-files-found: error
           retention-days: 14
-      - name: Verify AAC custody consumers (292 selected source contracts)
+      - name: Verify AAC custody consumers (298 selected source contracts)
         id: aac_source_contracts
         if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
         env:
@@ -206,11 +206,11 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_film180_evidence_selection.py', 55, '15ffcbb8cb2968432d051e3d8b921dfb0a980e4a915e077901c19a127b32f3b5'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125')]
+          SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_film180_evidence_selection.py', 61, '58967d2d98df1205216b4a2762f821ee8ac7366d14c79faaaad57561bc022740'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125')]
           DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
           MODE = 'dotted'
           GROUP = 'production'
-          TOTAL = 292
+          TOTAL = 298
 
           import ast
           from datetime import datetime

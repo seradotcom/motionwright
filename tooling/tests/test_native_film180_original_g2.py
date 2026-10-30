@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_film180_original_g2 as runner
 
 
@@ -486,10 +487,10 @@ class PrivateCommandCaptureTests(unittest.TestCase):
         result = types.SimpleNamespace(stdout=b'{"result":"source-only"}\n',
                                        stderr=b"\x00/owner/private\r\n\x1a\xff", returncode=0)
         actual_loads = command_guard.json.loads
-        def parse(raw):
+        def parse(raw, **kwargs):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["stdout"], raw)
-            return actual_loads(raw)
+            return actual_loads(raw, **kwargs)
         with mock.patch.object(command_guard.subprocess, "run", return_value=result) as call, \
              mock.patch.object(command_guard.json, "loads", side_effect=parse):
             value = command_guard.run_sanitized_json(["test-double"], env={}, capture=events.append)
@@ -952,6 +953,151 @@ class FilmAttemptCustodyTests(unittest.TestCase):
                     self.assertFalse(final["source_content_and_live_module_verified"])
 
 
+
+class FilmSharedSessionTests(unittest.TestCase):
+    """Synthetic child receipts exercise custody only; no Native process starts."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.evidence = self.root / "private"
+        self.evidence.mkdir()
+        self.attempt = runner.FilmAttempt({"known_melt_sha256": "a" * 64}, self.evidence)
+        self.saved = {"id": "00000000-0000-4000-8000-000000000001",
+                      "generation": "00000000-0000-4000-8000-000000000002", "revision": 7}
+        self.render = self.evidence / "original-native-Film180-evidence.json"
+        self.master = self.evidence / "original-H264-AAC-native-master.json"
+        self.stages = self.evidence / "original-shared-session"
+        for path in (self.render, self.master):
+            path.write_text(json.dumps(dict(project_resource="project:" + self.saved["id"],
+                generation=self.saved["generation"], revision=self.saved["revision"])))
+        from native_selection_test_fixtures import film_shared_records
+        self.records, self.session = film_shared_records("original", self.saved,
+            runner.digest(self.render), runner.digest(self.master))
+        (self.evidence / "original-reopened-before-render.json").write_text(json.dumps(dict(
+            project_id=self.saved["id"], generation=self.saved["generation"], revision=7,
+            saved_film_sha256=self.session["canonical_Film_sha256"])))
+
+    def put_records(self, names=None):
+        self.stages.mkdir(mode=0o700)
+        for name in names or self.records:
+            (self.stages / name).write_text(json.dumps(self.records[name]))
+
+    def invoke(self, child):
+        with mock.patch.object(runner, "source_command", side_effect=child) as command:
+            try:
+                return self.attempt.command_pair("original", self.root / "db",
+                    self.root / "connection", self.render, "a" * 64,
+                    self.master, self.saved, {})
+            finally:
+                self.calls = list(command.call_args_list)
+
+    def capture(self, capture, *, error=False):
+        capture(dict(stdout=b"" if error else json.dumps(self.session).encode(), stderr=b"",
+            exit_code=1 if error else 0, deadline_exceeded=False, automatic_retry=False))
+
+    def test_single_process_retains_two_stages_and_refuses_replay(self):
+        def child(args, env, **kwargs):
+            self.assertEqual(args[0], "render-master")
+            self.put_records(); self.capture(kwargs["capture"])
+            return self.session
+        self.assertEqual(self.invoke(child), self.session)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.attempt.native_commands,
+            {"original.render": "SUCCESS_REPORTED", "original.master": "SUCCESS_REPORTED"})
+        self.assertTrue((self.evidence / "original.session.stdout").is_file())
+        self.assertFalse((self.evidence / "original.render.stdout").exists())
+        self.assertFalse((self.evidence / "original.master.terminal.json").exists())
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "replay_refused"):
+            self.invoke(child)
+        self.assertEqual(self.calls, [])
+
+    def test_render_error_never_invents_master_start(self):
+        primary = RuntimeError("synthetic native render UNKNOWN")
+        self.records["render.terminal.json"].update(state="ERROR_OR_UNKNOWN", result=None, evidence_sha256=None)
+        def child(args, env, **kwargs):
+            self.put_records(("render.started.json", "render.terminal.json"))
+            self.capture(kwargs["capture"], error=True)
+            raise primary
+        with self.assertRaises(RuntimeError) as caught: self.invoke(child)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.attempt.native_commands, {"original.render": "ERROR_OR_UNKNOWN"})
+        self.assertFalse((self.stages / "master.started.json").exists())
+
+    def test_master_error_preserves_successful_render_without_a_second_process(self):
+        primary = RuntimeError("synthetic native master UNKNOWN")
+        self.records["master.terminal.json"].update(state="ERROR_OR_UNKNOWN", result=None, evidence_sha256=None)
+        def child(args, env, **kwargs):
+            self.put_records(); self.capture(kwargs["capture"], error=True); raise primary
+        with self.assertRaises(RuntimeError) as caught: self.invoke(child)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.attempt.native_commands,
+            {"original.render": "SUCCESS_REPORTED", "original.master": "ERROR_OR_UNKNOWN"})
+
+    def test_lost_master_terminal_remains_unknown_and_originals_stay_intact(self):
+        primary = TimeoutError("synthetic child response lost")
+        def child(args, env, **kwargs):
+            self.put_records(("render.started.json", "render.terminal.json", "master.started.json"))
+            self.capture(kwargs["capture"], error=True); raise primary
+        with self.assertRaises(TimeoutError): self.invoke(child)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.attempt.native_commands["original.render"], "SUCCESS_REPORTED")
+        self.assertEqual(self.attempt.native_commands["original.master"], "ERROR_OR_UNKNOWN")
+        self.assertFalse((self.stages / "master.terminal.json").exists())
+        self.assertTrue(self.render.is_file())
+
+    def test_foreign_pid_source_or_canonical_receipts_are_rejected(self):
+        for field, value in (("producer_pid", 8765), ("revision", 8), ("canonical_Film_sha256", "f" * 64)):
+            with self.subTest(field=field):
+                case = FilmSharedSessionTests("runTest"); case.setUp()
+                try:
+                    for suffix in ("started", "terminal"):
+                        case.records["master." + suffix + ".json"][field] = value
+                    def child(args, env, **kwargs):
+                        case.put_records(); case.capture(kwargs["capture"]); return case.session
+                    with self.assertRaises(ValueError): case.invoke(child)
+                    self.assertEqual(len(case.calls), 1)
+                    self.assertEqual(case.attempt.native_commands["original.render"], "SUCCESS_REPORTED")
+                    self.assertEqual(case.attempt.native_commands["original.master"], "ERROR_OR_UNKNOWN")
+                finally: case.doCleanups()
+
+    def test_changed_native_bytes_or_missing_terminal_cannot_be_exit_zero_success(self):
+        for change in ("bytes", "terminal"):
+            with self.subTest(change=change):
+                case = FilmSharedSessionTests("runTest"); case.setUp()
+                try:
+                    def child(args, env, **kwargs):
+                        case.put_records()
+                        if change == "bytes": case.render.write_bytes(b"{}")
+                        else: (case.stages / "render.terminal.json").unlink()
+                        case.capture(kwargs["capture"]); return case.session
+                    with self.assertRaises(ValueError): case.invoke(child)
+                    self.assertEqual(len(case.calls), 1)
+                    self.assertEqual(case.attempt.native_commands["original.render"], "ERROR_OR_UNKNOWN")
+                    self.assertNotIn("original.master", case.attempt.native_commands)
+                finally: case.doCleanups()
+
+    def test_preexisting_session_is_rejected_before_child_start(self):
+        self.stages.mkdir()
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "preexists"):
+            self.invoke(mock.Mock())
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.attempt.native_commands, {})
+
+    def test_secondary_custody_failure_does_not_replace_primary_or_retry(self):
+        primary = RuntimeError("original primary UNKNOWN")
+        self.records["render.started.json"]["revision"] = 999
+        def child(args, env, **kwargs):
+            self.put_records(("render.started.json",)); self.capture(kwargs["capture"], error=True)
+            raise primary
+        with self.assertRaises(RuntimeError) as caught: self.invoke(child)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.attempt.native_commands, {"original.render": "ERROR_OR_UNKNOWN"})
+        self.assertTrue((self.stages / "render.started.json").is_file())
+
 class FilmStageOrderingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -979,19 +1125,22 @@ class FilmStageOrderingTests(unittest.TestCase):
 
     def run_stage(self, callback):
         def command(label, args, env, **kwargs):
-            if kwargs.get("native"):
-                self.attempt.native_commands[label] = "ERROR_OR_UNKNOWN"
-            if label == "original.render":
-                (self.evidence / "original-native-Film180-evidence.json").write_text("{}")
-                return {"native_film180_host": "SUCCEEDED_REPORTED", "frame_count": 180}
-            if label == "original.stage-audio":
-                return {"staged": True}
-            self.assertEqual(label, "original.master")
+            self.assertEqual(label, "original.stage-audio")
+            return {"staged": True}
+        def pair(phase, *args):
+            self.assertEqual(phase, "original")
             self.witness.start.assert_called_once()
-            return callback()
+            self.attempt.native_commands["original.render"] = "ERROR_OR_UNKNOWN"
+            (self.evidence / "original-native-Film180-evidence.json").write_text("{}")
+            self.attempt.confirm_native("original.render")
+            self.attempt.native_commands["original.master"] = "ERROR_OR_UNKNOWN"
+            result = callback()
+            self.attempt.confirm_native("original.master")
+            return result
         with mock.patch.object(runner, "original_png_index", return_value={"source-only": True}), \
              mock.patch.object(observed, "LiveObserver", return_value=self.witness), \
-             mock.patch.object(self.attempt, "command", side_effect=command) as calls:
+             mock.patch.object(self.attempt, "command", side_effect=command), \
+             mock.patch.object(self.attempt, "command_pair", side_effect=pair) as calls:
             try:
                 return runner.stage_and_decode(
                     {"output": self.output}, self.root / "connection", self.root / "db",
@@ -1007,7 +1156,7 @@ class FilmStageOrderingTests(unittest.TestCase):
             self.run_stage(lambda: {"frame_count": 180, "native_result_reported": "SUCCEEDED"})
         self.assertIs(caught.exception, failure)
         self.assertEqual(self.attempt.native_commands["original.master"], "SUCCESS_REPORTED")
-        self.assertEqual(sum(call.args[0] == "original.master" for call in self.calls), 1)
+        self.assertEqual(sum(call.args[0] == "original" for call in self.calls), 1)
 
     def test_native_failure_is_not_replaced_by_a_secondary_observer_failure(self):
         primary = command_guard.NativeCommandFailure(command_guard.classify_native_command_failure(
@@ -1019,7 +1168,7 @@ class FilmStageOrderingTests(unittest.TestCase):
             self.run_stage(callback)
         self.assertIs(caught.exception, primary)
         self.assertEqual(self.attempt.native_commands["original.master"], "ERROR_OR_UNKNOWN")
-        self.assertEqual(sum(call.args[0] == "original.master" for call in self.calls), 1)
+        self.assertEqual(sum(call.args[0] == "original" for call in self.calls), 1)
 
     def test_observer_start_failure_prevents_the_native_master_call(self):
         self.witness.start.side_effect = OSError("observer absent")
@@ -1027,7 +1176,7 @@ class FilmStageOrderingTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.run_stage(callback)
         callback.assert_not_called()
-        self.assertFalse(any(call.args[0] == "original.master" for call in self.calls))
+        self.assertFalse(any(call.args[0] == "original" for call in self.calls))
 
     def test_unknown_original_stage_prevents_edit_and_retains_owner_database(self):
         import native_mlt_sequence_e2e as canonical
@@ -1121,7 +1270,7 @@ class FilmStageOrderingTests(unittest.TestCase):
                     fixture.witness.close.assert_called_once()
                     self.assertFalse((fixture.evidence / "original-original-live-MLT-loaded-module.json").exists())
                     self.assertEqual(fixture.attempt.native_commands["original.master"],"SUCCESS_REPORTED")
-                    self.assertEqual(sum(call.args[0]=="original.master" for call in fixture.calls),1)
+                    self.assertEqual(sum(call.args[0]=="original" for call in fixture.calls),1)
                 finally:
                     fixture.tearDown()
 
@@ -1164,7 +1313,7 @@ class FilmStageOrderingTests(unittest.TestCase):
         self.assertEqual(proof["original_live_pid_observer_receipt"]["published_output_sha256"],
                          self.original_digest)
         self.assertEqual(result["master_sha"],self.original_digest)
-        self.assertEqual(sum(call.args[0]=="original.master" for call in self.calls),1)
+        self.assertEqual(sum(call.args[0]=="original" for call in self.calls),1)
         self.assertEqual(self.attempt.native_commands["original.master"],"SUCCESS_REPORTED")
 
     def assert_readback_error_precedes_clock_error(self, failing_stage):
@@ -1198,7 +1347,7 @@ class FilmStageOrderingTests(unittest.TestCase):
         self.assertIn("original.clock-custody-failed",self.attempt.secondary_failures)
         self.witness.require_one.assert_called_once_with(self.original_master)
         self.witness.close.assert_called_once()
-        self.assertEqual(sum(call.args[0]=="original.master" for call in self.calls),1)
+        self.assertEqual(sum(call.args[0]=="original" for call in self.calls),1)
         self.assertEqual(self.attempt.native_commands["original.master"],"SUCCESS_REPORTED")
 
     def test_original_packet_failure_remains_primary_when_clock_custody_fails(self):
