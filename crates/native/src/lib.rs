@@ -20,6 +20,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod assembly;
+pub mod attached_source_inspection;
 pub mod blender_product_scene;
 pub mod canonical;
 mod change_preview;
@@ -256,6 +257,135 @@ fn production_cursor(
     })
 }
 
+const NATIVE_CAPSULE_SOURCE_SCOPE_PREFIX: &str = "native-capsule-source-inspection:";
+
+fn native_capsule_source_selection(query: &Query) -> NativeResult<Option<Uuid>> {
+    let Some(raw) = query.scope.strip_prefix(NATIVE_CAPSULE_SOURCE_SCOPE_PREFIX) else {
+        return Ok(None);
+    };
+    query.validate()?;
+    if query.limit != 1 || query.cursor.is_some() {
+        return Err(Error::invalid(
+            "Native capsule source inspection requires one item and no cursor",
+        ));
+    }
+    let id = Uuid::parse_str(raw)
+        .ok()
+        .filter(|id| id.to_string() == raw)
+        .ok_or_else(|| Error::invalid("Native capsule source scope requires a canonical UUID"))?;
+    Ok(Some(id))
+}
+
+fn native_capsule_source_expected(
+    expected: Option<&ResourceVersion>,
+    current: &ResourceVersion,
+) -> NativeResult<()> {
+    if let Some(expected) = expected {
+        expected.validate()?;
+        if expected != current {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Native capsule inspection reference differs from the observed project",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_capsule_verified_binding<'a>(
+    project: &'a Project,
+    capsule_id: Uuid,
+    source: &motionwright_service::VerifiedNativeCapsuleSource,
+) -> NativeResult<(
+    &'a motionwright_domain::NativeCapsule,
+    &'a motionwright_domain::Asset,
+)> {
+    let capsule = project
+        .production_design
+        .capsules
+        .iter()
+        .find(|capsule| capsule.id == capsule_id)
+        .ok_or_else(|| Error::new(ErrorCode::NotFound, "Native capsule source was not found"))?;
+    let asset = project
+        .assets
+        .iter()
+        .find(|asset| asset.id == capsule.source_asset_id)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::NotFound,
+                "Native capsule source asset was not found",
+            )
+        })?;
+    if source.stamp != RevisionStamp::from(project)
+        || source.capsule_id != capsule.id
+        || source.scene_id != capsule.scene_id
+        || source.source_asset_id != asset.id
+        || source.source_sha256 != capsule.source_sha256
+        || asset.content_sha256.as_deref() != Some(source.source_sha256.as_str())
+        || source.media_type != asset.media_type
+    {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Verified native source differs from the observed capsule and asset",
+        ));
+    }
+    Ok((capsule, asset))
+}
+
+/// Owner-local implementation only. The Native observer admits genuine Host
+/// context before entering this worker; this private helper mints no authority.
+/// Original CAS bytes never leave the worker or enter the observation JSON.
+fn native_capsule_source_page(
+    service: &StudioService,
+    project: &Project,
+    query: &Query,
+    capsule_id: Uuid,
+) -> NativeResult<ObservationPage> {
+    if native_capsule_source_selection(query)? != Some(capsule_id) {
+        return Err(Error::invalid(
+            "Native capsule inspection selection changed",
+        ));
+    }
+    if query.resource != project.resource_key() {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Native capsule inspection resource differs from the observed project",
+        ));
+    }
+    let source = service
+        .verified_native_capsule_source(project.id, &RevisionStamp::from(project), capsule_id)
+        .map_err(storage_error)?;
+    let (capsule, asset) = native_capsule_verified_binding(project, capsule_id, &source)?;
+    let inspection = crate::attached_source_inspection::inspect_attached_native_source(
+        capsule,
+        asset,
+        source.bytes(),
+    )?;
+    let page = ObservationPage {
+        version: resource_version(project)?,
+        scope: query.scope.clone(),
+        items: vec![serde_json::to_value(inspection).map_err(|_| {
+            Error::new(
+                ErrorCode::BackendFailed,
+                "Native source inspection could not be encoded",
+            )
+        })?],
+        complete: true,
+        next: None,
+    };
+    // Use the selected SDK's real whole-page budget, shape and integer rules
+    // (MAX_VALUE_BYTES), not a client-supplied limit or an invented context API.
+    // NativeDriver also validates its final page/ref envelope before delivery.
+    page.validate_for(query)?;
+    if service.project(project.id).map_err(storage_error)? != *project {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Project changed while inspecting its native capsule source",
+        ));
+    }
+    Ok(page)
+}
+
 #[derive(Clone)]
 pub struct MotionwrightObserver {
     service: StudioService,
@@ -279,6 +409,12 @@ impl ObservationProvider for MotionwrightObserver {
     async fn observe(&self, query: &Query, context: &CallContext) -> NativeResult<ObservationPage> {
         context.check_cancelled()?;
         query.validate()?;
+        let native_capsule_source = native_capsule_source_selection(query)?;
+        if native_capsule_source.is_some() {
+            // The Application descriptor requires resource-read admission in
+            // Core. A local CallContext cannot enter this source-byte route.
+            context.driver_context()?;
+        }
         #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
         graph_store_provider::trace_native_observer(query, context)?;
         context.check_cancelled()?;
@@ -290,6 +426,34 @@ impl ObservationProvider for MotionwrightObserver {
             _ => self.service.project(project_id).map_err(storage_error)?,
         };
         let version = resource_version(&project)?;
+
+        if let Some(capsule_id) = native_capsule_source {
+            native_capsule_source_expected(context.expected(), &version)?;
+            let service = self.service.clone();
+            let observed_project = project.clone();
+            let observed_query = query.clone();
+            let page = tokio::task::spawn_blocking(move || {
+                native_capsule_source_page(&service, &observed_project, &observed_query, capsule_id)
+            })
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::BackendFailed,
+                    "Native capsule inspection worker failed",
+                )
+            })??;
+            context.check_cancelled()?;
+            // The worker re-read the full Project after inspection. Recheck
+            // after its await so a newer project cannot receive an older page.
+            if self.service.project(project_id).map_err(storage_error)? != project {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Project changed before native capsule inspection delivery",
+                ));
+            }
+            context.check_cancelled()?;
+            return Ok(page);
+        }
 
         if query.scope == "graph-authoring" {
             let identity = self.mounted_graph_store.as_ref().ok_or_else(|| {
@@ -8258,5 +8422,372 @@ mod apply_recovery_candidate_tests {
         assert!(!error.outcome_known);
         assert_eq!(error.code, ErrorCode::BackendFailed);
         assert_eq!(store.load_project(original.id).unwrap(), committed.project);
+    }
+}
+
+#[cfg(test)]
+mod native_capsule_source_observation_tests {
+    use super::*;
+    use motionwright_domain::NativeCapsuleSourceSpec;
+
+    // These tests exercise the owner-local Service/inspector seam and rejection
+    // of a local context. They never construct Host authority or claim Host G2.
+    const AUTHORED_GLB: &[u8] =
+        include_bytes!("../tests/fixtures/attached_native_source/authored.glb");
+    const EDITED_GLB: &[u8] = include_bytes!("../tests/fixtures/attached_native_source/edited.glb");
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        database: std::path::PathBuf,
+        service: StudioService,
+        project: Project,
+        capsule_id: Uuid,
+    }
+
+    fn fixture(bytes: &[u8]) -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("native-source.sqlite3");
+        let source = root.path().join("original.glb");
+        std::fs::write(&source, bytes).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let first = service
+            .create_project("Native source observation fixture")
+            .unwrap();
+        let scene = service
+            .apply(
+                first.id,
+                &RevisionStamp::from(&first),
+                "add-source-scene",
+                &Change::AddScene {
+                    name: "Original scene".into(),
+                    objective: "Inspect original source".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project;
+        let capsule_id = Uuid::new_v4();
+        let project = service
+            .import_native_capsule_source_file(
+                scene.id,
+                &RevisionStamp::from(&scene),
+                "attach-original-source",
+                &source,
+                NativeCapsuleSourceSpec {
+                    name: "Original GLB".into(),
+                    media_type: "model/gltf-binary".into(),
+                    capsule_id,
+                    scene_id: scene.scenes[0].id,
+                    label: "Original attached source".into(),
+                    editable_parameters: vec!["label".into()],
+                    native_editor_hint: "Blender".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        Fixture {
+            _root: root,
+            database,
+            service,
+            project,
+            capsule_id,
+        }
+    }
+
+    fn query(project: &Project, capsule_id: Uuid) -> Query {
+        Query {
+            resource: project.resource_key(),
+            scope: format!("{NATIVE_CAPSULE_SOURCE_SCOPE_PREFIX}{capsule_id}"),
+            limit: 1,
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn owner_local_original_glb_observation_is_read_only_bound_and_reopens() {
+        for bytes in [AUTHORED_GLB, EDITED_GLB] {
+            let f = fixture(bytes);
+            let q = query(&f.project, f.capsule_id);
+            let before = f.service.project(f.project.id).unwrap();
+            let history =
+                serde_json::to_value(f.service.history(f.project.id, 0, 100).unwrap()).unwrap();
+            let page =
+                native_capsule_source_page(&f.service, &f.project, &q, f.capsule_id).unwrap();
+            page.validate_for(&q).unwrap();
+            assert_eq!(page.version, resource_version(&before).unwrap());
+            assert_eq!(page.items.len(), 1);
+            assert!(page.complete && page.next.is_none());
+            let item = &page.items[0];
+            let capsule = &before.production_design.capsules[0];
+            assert_eq!(item["capsule_id"], json!(capsule.id));
+            assert_eq!(item["scene_id"], json!(capsule.scene_id));
+            assert_eq!(item["source_asset_id"], json!(capsule.source_asset_id));
+            assert_eq!(item["source_sha256"], json!(capsule.source_sha256));
+            assert_eq!(item["source_bytes"], json!(bytes.len()));
+            assert_eq!(item["original_binary_preserved"], json!(true));
+            for field in [
+                "runtime_or_imported_code_executed",
+                "native_renderer_fidelity_observed",
+                "project_snapshot_was_modified",
+                "semantically_editable_by_motionwright",
+                "human_creative_approval",
+                "external_rights_or_install_granted",
+            ] {
+                assert_eq!(
+                    item[field],
+                    json!(false),
+                    "inspection cannot upgrade {field}"
+                );
+            }
+            for field in [
+                "bytes",
+                "raw_bytes",
+                "source_path",
+                "cas_path",
+                "source_base64",
+            ] {
+                assert!(item.get(field).is_none());
+            }
+            let wire = serde_json::to_string(&page).unwrap();
+            assert!(!wire.contains(f.database.to_str().unwrap()));
+            assert!(!wire.contains("original.glb"));
+            assert_eq!(f.service.project(f.project.id).unwrap(), before);
+            assert_eq!(
+                serde_json::to_value(f.service.history(f.project.id, 0, 100).unwrap()).unwrap(),
+                history
+            );
+            drop(f.service);
+            let reopened = StudioService::open(&f.database).unwrap();
+            let after = reopened.project(before.id).unwrap();
+            let again = native_capsule_source_page(&reopened, &after, &q, f.capsule_id).unwrap();
+            assert_eq!(
+                serde_json::to_value(again).unwrap(),
+                serde_json::to_value(page).unwrap()
+            );
+            assert_eq!(after, before);
+        }
+    }
+
+    #[test]
+    fn source_scope_requires_canonical_uuid_one_item_and_no_cursor() {
+        let project = Project::new("Scope facts only").unwrap();
+        let id = Uuid::parse_str("40000000-0000-4000-8000-0000000000ab").unwrap();
+        let q = query(&project, id);
+        assert_eq!(native_capsule_source_selection(&q).unwrap(), Some(id));
+        for suffix in [
+            String::new(),
+            id.to_string().to_uppercase(),
+            id.simple().to_string(),
+            format!("{{{id}}}"),
+            format!("urn:uuid:{id}"),
+            format!("{id}:extra"),
+            format!(" {id}"),
+        ] {
+            let mut bad = q.clone();
+            bad.scope = format!("{NATIVE_CAPSULE_SOURCE_SCOPE_PREFIX}{suffix}");
+            assert!(native_capsule_source_selection(&bad).is_err());
+        }
+        for limit in [0, 2, 256] {
+            let mut bad = q.clone();
+            bad.limit = limit;
+            assert!(native_capsule_source_selection(&bad).is_err());
+        }
+        let mut paged = q.clone();
+        paged.cursor = Some(PageCursor {
+            version: resource_version(&project).unwrap(),
+            scope: q.scope.clone(),
+            token: "offset:1".into(),
+        });
+        assert!(native_capsule_source_selection(&paged).is_err());
+        let ordinary = Query {
+            scope: "native-capsules".into(),
+            limit: 8,
+            ..q
+        };
+        assert_eq!(native_capsule_source_selection(&ordinary).unwrap(), None);
+    }
+
+    #[test]
+    fn expected_reference_and_verified_source_cannot_be_rebound_to_other_facts() {
+        let f = fixture(AUTHORED_GLB);
+        let version = resource_version(&f.project).unwrap();
+        native_capsule_source_expected(None, &version).unwrap();
+        native_capsule_source_expected(Some(&version), &version).unwrap();
+        for case in 0..4 {
+            let mut other = version.clone();
+            match case {
+                0 => other.resource = format!("project:{}", Uuid::new_v4()),
+                1 => other.generation = Uuid::new_v4().to_string(),
+                2 => {
+                    other.revision =
+                        RevisionToken::new((f.project.revision + 1).to_string()).unwrap()
+                }
+                _ => {
+                    other.revision = RevisionToken::new(format!("0{}", f.project.revision)).unwrap()
+                }
+            }
+            assert_eq!(
+                native_capsule_source_expected(Some(&other), &version)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::StaleReference
+            );
+        }
+        let source = f
+            .service
+            .verified_native_capsule_source(
+                f.project.id,
+                &RevisionStamp::from(&f.project),
+                f.capsule_id,
+            )
+            .unwrap();
+        native_capsule_verified_binding(&f.project, f.capsule_id, &source).unwrap();
+        for case in 0..4 {
+            let mut other = f.project.clone();
+            let asset_id = other.production_design.capsules[0].source_asset_id;
+            match case {
+                0 => other.production_design.capsules[0].source_sha256 = "f".repeat(64),
+                1 => other.production_design.capsules[0].scene_id = Uuid::new_v4(),
+                2 => {
+                    other
+                        .assets
+                        .iter_mut()
+                        .find(|asset| asset.id == asset_id)
+                        .unwrap()
+                        .media_type = "application/octet-stream".into()
+                }
+                _ => {
+                    other
+                        .assets
+                        .iter_mut()
+                        .find(|asset| asset.id == asset_id)
+                        .unwrap()
+                        .content_sha256 = Some("e".repeat(64))
+                }
+            }
+            assert_eq!(
+                native_capsule_verified_binding(&other, f.capsule_id, &source)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::StaleReference
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn source_observer_denies_application_local_context_before_project_or_cas_read() {
+        let root = tempfile::tempdir().unwrap();
+        let service = StudioService::open(root.path().join("empty.sqlite3")).unwrap();
+        let observer = MotionwrightObserver::new(service);
+        // This project has never been saved. A NotFound would reveal that the
+        // consumer performed a Store read before its genuine Host guard.
+        let unsaved = Project::new("No Host authority").unwrap();
+        let q = query(&unsaved, Uuid::new_v4());
+        let error = observer
+            .observe(
+                &q,
+                &CallContext::application_local("local-denial-only").unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
+        assert!(error.outcome_known);
+    }
+
+    #[test]
+    fn source_page_preserves_missing_foreign_and_stale_failures_without_a_page() {
+        let f = fixture(AUTHORED_GLB);
+        let missing = Uuid::new_v4();
+        assert_eq!(
+            native_capsule_source_page(
+                &f.service,
+                &f.project,
+                &query(&f.project, missing),
+                missing
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
+        let foreign = f
+            .service
+            .create_project("Independent capsule owner")
+            .unwrap();
+        assert_eq!(
+            native_capsule_source_page(
+                &f.service,
+                &foreign,
+                &query(&foreign, f.capsule_id),
+                f.capsule_id
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            native_capsule_source_page(
+                &f.service,
+                &f.project,
+                &query(&foreign, f.capsule_id),
+                f.capsule_id
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::StaleReference
+        );
+        let after = f
+            .service
+            .apply(
+                f.project.id,
+                &RevisionStamp::from(&f.project),
+                "actual-later-revision",
+                &Change::RenameProject {
+                    title: "Current after observation".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert_eq!(
+            native_capsule_source_page(
+                &f.service,
+                &f.project,
+                &query(&f.project, f.capsule_id),
+                f.capsule_id
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::StaleReference
+        );
+        assert_eq!(f.service.project(after.id).unwrap(), after);
+    }
+
+    #[test]
+    fn source_page_uses_the_actual_sdk_value_budget_without_truncation() {
+        use semwright_native_sdk::cooperation::MAX_VALUE_BYTES;
+        // Synthetic negative source only: an unusually large unknown JSON key
+        // is preserved by the inspector, but must not evade the SDK reply cap.
+        let mut root = serde_json::Map::new();
+        root.insert("asset".into(), json!({"version":"2.0"}));
+        root.insert("x".repeat(MAX_VALUE_BYTES + 1), Value::Null);
+        let mut body = serde_json::to_vec(&Value::Object(root)).unwrap();
+        while !body.len().is_multiple_of(4) {
+            body.push(b' ');
+        }
+        let mut bytes = b"glTF".to_vec();
+        bytes.extend(2_u32.to_le_bytes());
+        bytes.extend(u32::try_from(20 + body.len()).unwrap().to_le_bytes());
+        bytes.extend(u32::try_from(body.len()).unwrap().to_le_bytes());
+        bytes.extend(0x4E4F_534A_u32.to_le_bytes());
+        bytes.extend(body);
+        let f = fixture(&bytes);
+        let error = native_capsule_source_page(
+            &f.service,
+            &f.project,
+            &query(&f.project, f.capsule_id),
+            f.capsule_id,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
     }
 }
