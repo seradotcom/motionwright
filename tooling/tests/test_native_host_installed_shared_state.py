@@ -490,5 +490,440 @@ class SnapshotContractTests(PrivateScenarioCase):
         self.assertEqual(database.read_bytes(), raw_before)
 
 
+class InstalledCiCustodyWiringTests(PrivateScenarioCase):
+    """Inert source/custody controls, never installed or Native acceptance."""
+
+    def public_fixture(self):
+        namespace = self.root / "scenario"
+        extracted = namespace / "appimage/squashfs-root"
+        (extracted / "usr/bin").mkdir(parents=True)
+        (extracted / "usr/bin/fixture").write_bytes(b"INERT_PUBLIC_PAYLOAD")
+        (extracted / "AppRun").symlink_to("usr/bin/fixture")
+        artifact = self.root / "inert.AppImage"; artifact.write_bytes(b"INERT_NOT_EXECUTABLE")
+        before = installed.installed_bundle_inventory(extracted)
+        installed.publish(namespace / "appimage-extraction-terminal.json", {"status": "PASS", "extracted_tree": before})
+        installed.publish(namespace / "appimage-tree-after.original.json", before)
+        installed.publish(namespace / "appimage-extraction-intent.json", {
+            "command": [str(artifact), "--appimage-extract"],
+            "artifact": installed.source.regular_file(artifact)})
+        return namespace, extracted, artifact
+
+    def test_public_extraction_inventory_retains_all_bytes_identities_modes_and_unfollowed_links(self):
+        namespace, extracted, _ = self.public_fixture()
+        first = installed.installed_bundle_inventory(extracted)
+        rows = {row["path"]: row for row in first["entries"]}
+        self.assertEqual(set(rows), {".", "AppRun", "usr", "usr/bin", "usr/bin/fixture"})
+        self.assertEqual(rows["AppRun"]["kind"], "symlink")
+        self.assertEqual(rows["AppRun"]["link_target"], "usr/bin/fixture")
+        self.assertEqual(rows["usr/bin/fixture"]["inode"], (extracted / "usr/bin/fixture").stat().st_ino)
+        self.assertEqual(installed.ci_public_extraction_proof(namespace)["extraction"], first)
+        (extracted / "usr/bin/fixture").chmod(0o700)
+        self.assertNotEqual(first, installed.installed_bundle_inventory(extracted))
+        with self.assertRaisesRegex(installed.ScenarioError, "UNARCHIVED_UNIQUE_BYTES"):
+            installed.ci_public_extraction_proof(namespace)
+
+    def test_changed_public_duplicate_is_not_omitted_and_unique_bytes_remain_private_originals(self):
+        namespace, extracted, _ = self.public_fixture()
+        changed = extracted / "usr/bin/fixture"; changed.write_bytes(b"UNIQUE_PRIVATE_FAILURE_BYTES")
+        evidence = self.root / "evidence"; evidence.mkdir()
+        stage = self.root / "stage"
+        manifest = installed.ci_stage_private(evidence, namespace, stage)
+        self.assertIsNone(manifest["public_duplicate_extraction"])
+        self.assertFalse(manifest["complete"])
+        row = next(row for row in manifest["original_entries"] if row["path"] == str(changed))
+        self.assertEqual((stage / row["retained_file"]).read_bytes(), changed.read_bytes())
+        self.assertEqual(row["inode"], changed.stat().st_ino)
+
+    def test_whole_private_profile_host_hidden_empty_and_actual_short_runtime_are_captured(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        namespace = self.root / "scenario"
+        (namespace / "isolated-gui/data/cas").mkdir(parents=True)
+        (namespace / "host/.control").mkdir(parents=True)
+        (namespace / "host/empty-reservation").mkdir()
+        originals = {"isolated-gui/data/motionwright.sqlite3": b"DB", "isolated-gui/data/motionwright.sqlite3-wal": b"WAL",
+            "isolated-gui/data/cas/blob": b"CAS", "host/.control/intent": b"INTENT", "host/config.toml": b"CONFIG"}
+        for name, raw in originals.items():
+            (namespace / name).write_bytes(raw)
+        with tempfile.TemporaryDirectory(prefix="mwi-", dir="/tmp") as directory:
+            runtime = Path(directory); (runtime / "native.session").write_bytes(b"INERT_TICKET")
+            (runtime / "socket-link").symlink_to("not-opened")
+            installed.publish(namespace / "host/runtime-custody.json", {"path": str(runtime), "owner_uid": os.getuid(), "retained": True})
+            stage = self.root / "stage"; manifest = installed.ci_stage_private(evidence, namespace, stage)
+            self.assertTrue(manifest["complete"])
+            rows = {row["path"]: row for row in manifest["original_entries"]}
+            for name, raw in originals.items():
+                row = rows[str(namespace / name)]
+                self.assertEqual((stage / row["retained_file"]).read_bytes(), raw)
+                self.assertEqual(row["inode"], (namespace / name).stat().st_ino)
+            self.assertEqual(rows[str(namespace / "host/empty-reservation")]["kind"], "directory")
+            self.assertEqual(rows[str(runtime / "socket-link")]["link_target"], "not-opened")
+            self.assertFalse(rows[str(runtime / "socket-link")]["followed_or_opened"])
+            self.assertEqual((stage / rows[str(runtime / "native.session")]["retained_file"]).read_bytes(), b"INERT_TICKET")
+
+    def test_private_capacity_exhaustion_is_explicit_and_never_overwrites_or_removes_originals(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        namespace = self.root / "scenario"; namespace.mkdir()
+        original = namespace / "original"; original.write_bytes(b"1234")
+        identity = original.stat().st_ino; stage = self.root / "stage"
+        with patch.object(installed, "CI_PRIVATE_BYTES", 3):
+            manifest = installed.ci_stage_private(evidence, namespace, stage)
+        self.assertFalse(manifest["complete"])
+        self.assertEqual(manifest["captured_bytes"], 0)
+        self.assertIn("CAPACITY_EXHAUSTED", manifest["failures"][0]["detail"])
+        self.assertEqual(original.read_bytes(), b"1234"); self.assertEqual(original.stat().st_ino, identity)
+        with self.assertRaises(FileExistsError): installed.ci_stage_private(evidence, namespace, stage)
+
+    def test_measured_provider_copy_and_private_tail_must_fit_before_any_scenario_effect(self):
+        evidence = self.root / "evidence"; evidence.mkdir(); (evidence / "actual-build").write_bytes(b"1234")
+        effects = []
+        with patch.object(installed, "CI_PRIVATE_BYTES", 16), patch.object(installed, "CI_FUTURE_PRIVATE_BYTES", 8), \
+             patch.object(installed, "CI_PRIVATE_FILES", 8), patch.object(installed, "CI_FUTURE_PRIVATE_FILES", 2):
+            allocation = installed.ci_capacity_before_scenario(evidence, 4)
+            self.assertEqual(allocation["observed_producer_bytes"], 4)
+            with self.assertRaisesRegex(installed.ScenarioError, "CAPACITY_BEFORE_EFFECT"):
+                installed.ci_capacity_before_scenario(evidence, 5)
+                effects.append("must not launch")
+        self.assertEqual(effects, [])
+        namespace = self.root / "scenario"; namespace.mkdir()
+        installed.publish(evidence / "private-capacity-before-scenario.original.json",
+                          installed.ci_capacity_before_scenario(evidence, 4))
+        with patch.object(installed, "ci_require_time") as clock:
+            installed.ci_capacity_before_native(evidence, namespace, 4)
+            clock.assert_called_once()
+        with (namespace / "oversize-private-fixture").open("wb") as out:
+            out.truncate(33 * 1024 * 1024)
+        with patch.object(installed, "ci_require_time") as clock:
+            with self.assertRaisesRegex(installed.ScenarioError, "CLOSURE_CAPACITY_BEFORE_EFFECT"):
+                installed.ci_capacity_before_native(evidence, namespace, 4)
+            clock.assert_not_called()
+
+    def test_original_job_deadline_does_not_reset_for_another_phase_or_boot(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        record = {"source_sha": "a" * 40, "run_id": "123", "run_attempt": "1", "job_seconds": 2700,
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "deadline_mono_ns": 1000000000000}
+        installed.publish(evidence / "job-deadline.original.json", record)
+        with patch.dict(os.environ, GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1"), \
+             patch.object(installed.time, "monotonic_ns", return_value=900000000000):
+            self.assertEqual(installed.ci_require_time(evidence, 100), record)
+            with self.assertRaisesRegex(installed.ScenarioError, "DO_NOT_FIT"):
+                installed.ci_require_time(evidence, 101)
+            with patch.dict(os.environ, GITHUB_RUN_ATTEMPT="2"), self.assertRaisesRegex(installed.ScenarioError, "DEADLINE_BINDING"):
+                installed.ci_require_time(evidence, 1)
+        self.assertEqual(installed.read_json(evidence / "job-deadline.original.json"), record)
+
+    def test_source_original_copies_bind_actual_bytes_and_refuse_changed_source(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        source_root = self.root / "source"; source_root.mkdir(); original = source_root / "Cargo.lock"
+        original.write_bytes(b"SOURCE_FIXTURE\n")
+        observation = {"files": {"Cargo.lock": {"checkout": installed.source.regular_file(original)}}}
+        installed.ci_capture_sources(evidence, "fixture", source_root, observation)
+        self.assertEqual((evidence / "fixture-source/Cargo.lock").read_bytes(), original.read_bytes())
+        original.write_bytes(b"CHANGED_FIXTURE\n")
+        with self.assertRaisesRegex(installed.ScenarioError, "SOURCE_COPY_DIFFERS"):
+            installed.ci_capture_sources(evidence, "changed", source_root, observation)
+
+    def test_upload_header_reader_rejects_raw_private_bytes_and_structural_cipher_drift(self):
+        import base64
+        # This is an inert structural fixture, not an encryption/admission claim.
+        header = {"schema": "motionwright.ci.private-evidence-seal/1", "algorithm": "RSA-OAEP-SHA256+AES-256-GCM",
+            "recipient_spki_sha256": "a" * 64, "context": {"fixture": True}, "nonce": base64.b64encode(b"n" * 12).decode(),
+            "wrapped_key": base64.b64encode(b"w" * 384).decode(), "plaintext_sha256": "b" * 64, "plaintext_bytes": 1}
+        encoded = (json.dumps(header, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
+        raw = b"MWCISEAL1\n" + len(encoded).to_bytes(4, "big") + encoded + b"x" * 17
+        self.assertEqual(installed.ci_envelope_header(raw), header)
+        for changed in (b"PRIVATE STORE", raw[:-1], raw + b"extra", b"MWCISEAL1\n" + (8193).to_bytes(4, "big") + encoded):
+            with self.subTest(changed=changed[:16]), self.assertRaises(installed.ScenarioError):
+                installed.ci_envelope_header(changed)
+
+
+class InstalledCiPriorCapacityTests(PrivateScenarioCase):
+    """Inert producer-byte controls; no SDK, GitHub, installed or Native vote."""
+
+    def test_response_transfer_and_retention_cannot_extend_the_original_job_clock(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        now = [1_000_000_000_000]
+        calls, anchors = [], []
+        class Response:
+            status = 200
+            headers = {"Date": "Tue, 14 Nov 2023 22:18:20 GMT", "Age": "0"}
+            def __init__(self, body, delayed=False):
+                self.raw, self.delayed = json.dumps(body).encode(), delayed
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, count):
+                self_test.assertEqual(count, 262145)
+                if self.delayed: now[0] += 12_000_000_000
+                return self.raw
+        class Opener:
+            def open(self, request, timeout):
+                self_test.assertEqual(timeout, 12)
+                calls.append(request.full_url)
+                if len(calls) == 1:
+                    return Response({"id": 123, "run_attempt": 1, "head_sha": "a" * 40,
+                        "event": "workflow_dispatch", "status": "in_progress",
+                        "repository": {"full_name": "seradotcom/motionwright"},
+                        "head_repository": {"full_name": "seradotcom/motionwright"},
+                        "path": ".github/workflows/package-candidate.yml"})
+                anchors.append(now[0])
+                return Response({"jobs": [{"name": "linux-first-use-installed", "status": "in_progress",
+                    "run_id": 123, "head_sha": "a" * 40, "id": 456,
+                    "started_at": "2023-11-14T22:13:20Z"}]}, True)
+        self_test = self
+        with patch.dict(os.environ, MW_INSTALLED_METADATA_TOKEN="INERT_NOT_A_CREDENTIAL",
+                        GITHUB_RUN_ID="123", GITHUB_SHA="a" * 40), \
+             patch("urllib.request.build_opener", return_value=Opener()), \
+             patch.object(installed.time, "monotonic_ns", side_effect=lambda: now[0]):
+            result = installed.ci_capture_job_deadline(evidence)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["deadline_mono_ns"], anchors[0] + (2700 - 300 - 2) * 1_000_000_000)
+        self.assertEqual(result["server_anchor_mono_ns"], anchors[0])
+        self.assertLess(result["deadline_mono_ns"], now[0] + (2700 - 300) * 1_000_000_000)
+
+    def test_measured_copies_are_charged_before_open_and_the_allocation_is_never_refunded(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        namespace = self.root / "scenario"
+        original = self.root / "binary.fixture"; original.write_bytes(b"x" * (1024 * 1024))
+        baseline = installed.CI_CAPACITY_JOURNAL_BYTES + installed.CI_PRODUCER_CLOSE_BYTES + installed.CI_FUTURE_PRIVATE_BYTES
+        with patch.object(installed, "CI_PRIVATE_BYTES", baseline + 2 * 1024 * 1024), \
+             installed.ci_capacity_scope(evidence, namespace) as capacity:
+            installed.ci_copy_original(original, evidence / "first.original", 2 * 1024 * 1024)
+            first = capacity.snapshot()
+            installed.ci_copy_original(original, evidence / "second.original", 2 * 1024 * 1024)
+            second = capacity.snapshot()
+            with self.assertRaisesRegex(installed.ScenarioError, "CAPACITY_BEFORE_WRITE"):
+                installed.ci_copy_original(original, evidence / "denied.original", 2 * 1024 * 1024)
+            self.assertFalse((evidence / "denied.original").exists())
+            self.assertEqual(second["reserved_total_bytes"] - first["reserved_total_bytes"], original.stat().st_size)
+            self.assertEqual(second, capacity.snapshot())
+            with self.assertRaisesRegex(installed.ScenarioError, "RESERVATION"):
+                installed.ci_copy_original(original, evidence / "first.original", 2 * 1024 * 1024)
+        self.assertEqual(original.read_bytes(), b"x" * (1024 * 1024))
+        events = [json.loads(line) for line in (evidence / "private-capacity.original.ndjson").read_text().splitlines()]
+        self.assertTrue(all(row.get("no_refund", True) for row in events))
+        self.assertEqual(events[0]["refunds"], False)
+
+    def test_file_slots_are_held_before_write_and_the_same_namespace_cannot_reset(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        namespace = self.root / "scenario"
+        baseline = 1 + installed.CI_PRODUCER_CLOSE_FILES + installed.CI_FUTURE_PRIVATE_FILES
+        with patch.object(installed, "CI_PRIVATE_FILES", baseline + 1), \
+             installed.ci_capacity_scope(evidence, namespace):
+            installed.publish(evidence / "one.json", {"fixture": True})
+            with self.assertRaisesRegex(installed.ScenarioError, "CAPACITY_BEFORE_WRITE"):
+                installed.publish(evidence / "denied.json", {"fixture": True})
+        self.assertFalse((evidence / "denied.json").exists())
+        original = (evidence / "private-capacity.original.ndjson").read_bytes()
+        with self.assertRaises(FileExistsError):
+            with installed.ci_capacity_scope(evidence, namespace): pass
+        self.assertEqual((evidence / "private-capacity.original.ndjson").read_bytes(), original)
+        # Unused producer space cannot be borrowed to exceed the case's own
+        # prior remainder, even when the aggregate 240 MiB ceiling would fit.
+        selected = self.root / "selected"; selected.mkdir()
+        case = self.root / "case"; case.mkdir(); (case / "actual.original").write_bytes(b"12345")
+        installed.publish(selected / "private-capacity-before-scenario.original.json", {
+            "observed_producer_bytes": 0, "observed_producer_files": 0,
+            "reserved_provider_copy_bytes": 0, "reserved_private_bytes": 4, "reserved_private_files": 1,
+            "reserved_total_bytes": installed.CI_PRIVATE_BYTES, "reserved_total_files": installed.CI_PRIVATE_FILES})
+        manifest = installed.ci_stage_private(selected, case, self.root / "stage")
+        self.assertFalse(manifest["complete"])
+        self.assertTrue(any(row.get("scope") == "original-scenario-allocation" for row in manifest["failures"]))
+        self.assertEqual((case / "actual.original").read_bytes(), b"12345")
+
+    def test_real_inert_stream_overflow_keeps_the_observed_byte_and_never_claims_complete(self):
+        @contextmanager
+        def inert_scope(receipt, **_):
+            # The original real-orphan test remains mandatory in actual CI.
+            try: yield
+            finally: installed.publish(receipt, {"status": "INERT_SINGLE_CHILD_ONLY", "native": False})
+        for descriptor, stream in ((1, "stdout"), (2, "stderr")):
+            with self.subTest(stream=stream):
+                evidence = self.root / stream; evidence.mkdir()
+                namespace = self.root / (stream + "-scenario")
+                code = "import os; b=b'x'*65536; [os.write(%d,b) for _ in range(128)]; os.write(%d,b'x')" % (descriptor, descriptor)
+                with installed.ci_capacity_scope(evidence, namespace) as capacity, \
+                     patch.object(installed, "ci_require_time"), patch.object(installed, "owned_process_scope", inert_scope), \
+                     patch.dict(os.environ, GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123"):
+                    with self.assertRaisesRegex(installed.ScenarioError, "STREAM_OR_CLOSURE_INCOMPLETE"):
+                        installed.ci_command(evidence, "inert-overflow", [sys.executable, "-B", "-c", code],
+                                             self.root, dict(os.environ), 10)
+                    allocation = capacity.snapshot()
+                self.assertEqual((evidence / ("inert-overflow." + stream + ".original")).stat().st_size, 8 * 1024 * 1024)
+                self.assertEqual((evidence / ("inert-overflow." + stream + "-overflow.original")).read_bytes(), b"x")
+                terminal = installed.read_json(evidence / "inert-overflow.terminal.original.json")
+                self.assertEqual(terminal["status"], "UNKNOWN")
+                self.assertTrue(terminal["overflow"])
+                self.assertFalse(terminal["retention_exhausted"])
+                self.assertEqual(terminal["observed_stream_bytes"][stream], 8 * 1024 * 1024 + 1)
+                self.assertLessEqual(allocation["reserved_total_bytes"], installed.CI_PRIVATE_BYTES)
+
+    def test_command_denies_before_spawn_and_pipes_do_not_limit_a_child_binary_file(self):
+        evidence = self.root / "denied"; evidence.mkdir()
+        baseline = installed.CI_CAPACITY_JOURNAL_BYTES + installed.CI_PRODUCER_CLOSE_BYTES + installed.CI_FUTURE_PRIVATE_BYTES
+        with patch.object(installed, "CI_PRIVATE_BYTES", baseline + 1), \
+             installed.ci_capacity_scope(evidence, self.root / "denied-scenario"), \
+             patch.object(installed, "ci_require_time"), patch.object(installed.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(installed.ScenarioError, "CAPACITY_BEFORE_WRITE"):
+                installed.ci_command(evidence, "inert-denied", [sys.executable, "-c", "raise AssertionError('must not run')"],
+                                     self.root, dict(os.environ), 5)
+            spawn.assert_not_called()
+        evidence = self.root / "allowed"; evidence.mkdir()
+        binary = self.root / "inert-public-build-output"
+        @contextmanager
+        def inert_scope(receipt, **_):
+            try: yield
+            finally: installed.publish(receipt, {"status": "INERT_SINGLE_CHILD_ONLY", "native": False})
+        code = "from pathlib import Path; Path(%r).write_bytes(b'b'*(4*1024*1024)); print('inert-complete')" % str(binary)
+        with installed.ci_capacity_scope(evidence, self.root / "allowed-scenario"), \
+             patch.object(installed, "ci_require_time"), patch.object(installed, "owned_process_scope", inert_scope), \
+             patch.dict(os.environ, GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123"):
+            result = installed.ci_command(evidence, "inert-allowed", [sys.executable, "-B", "-c", code],
+                                          self.root, dict(os.environ), 10, stream_bytes=65536)
+        self.assertEqual(result, b"inert-complete\n")
+        self.assertEqual(binary.stat().st_size, 4 * 1024 * 1024)
+
+    def test_copy_growth_is_denied_before_an_unreserved_chunk_and_prior_bytes_stay(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        original = self.root / "source.fixture"; original.write_bytes(b"x" * 65536)
+        reader = installed.source.regular_file
+        grew = []
+        def observe(path, maximum=installed.MAX_INPUT_BYTES):
+            value = reader(path, maximum)
+            if Path(path) == original and not grew:
+                with original.open("ab") as output: output.write(b"y")
+                grew.append(True)
+            return value
+        target = evidence / "copied.original"
+        with installed.ci_capacity_scope(evidence, self.root / "scenario"), \
+             patch.object(installed.source, "regular_file", side_effect=observe):
+            with self.assertRaisesRegex(installed.ScenarioError, "GREW_BEFORE_COPY_WRITE"):
+                installed.ci_copy_original(original, target, 1024 * 1024)
+        self.assertEqual(target.read_bytes(), b"x" * 65536)
+        self.assertEqual(original.read_bytes(), b"x" * 65536 + b"y")
+
+
+class InstalledEarlyControlsJoinTests(PrivateScenarioCase):
+    """Causal source/capacity controls, never real installed admission."""
+
+    def test_same_original_allocation_resumes_once_without_refund_or_reopening_claimed_files(self):
+        evidence = self.root / "evidence"; evidence.mkdir()
+        namespace = self.root / "scenario"
+        environment = {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}
+        with patch.dict(os.environ, environment), installed.ci_capacity_scope(evidence, namespace) as capacity:
+            capacity.reserve(evidence / "future.json", 65536)
+            installed.publish(evidence / "early.json", {"fixture": "original"})
+            held = capacity.snapshot()
+        journal = evidence / "private-capacity.original.ndjson"
+        prefix = journal.read_bytes(); digest = hashlib.sha256(prefix).hexdigest()
+        with patch.dict(os.environ, environment):
+            with self.assertRaisesRegex(installed.ScenarioError, "ORIGINAL_CHANGED"):
+                with installed.ci_capacity_scope(evidence, namespace, resume_sha256="0" * 64): pass
+            self.assertEqual(journal.read_bytes(), prefix)
+            with installed.ci_capacity_scope(evidence, namespace, resume_sha256=digest) as capacity:
+                self.assertEqual(capacity.snapshot(), held)
+                with self.assertRaisesRegex(installed.ScenarioError, "PRIOR_RESERVATION"):
+                    installed.publish(evidence / "early.json", {"fixture": "replacement"})
+                installed.publish(evidence / "future.json", {"fixture": "later"})
+                self.assertEqual(capacity.snapshot(), held)
+            self.assertTrue(journal.read_bytes().startswith(prefix))
+            resumed = journal.read_bytes()
+            with self.assertRaisesRegex(installed.ScenarioError, "FIRST_CLOSED_PHASE"):
+                with installed.ci_capacity_scope(evidence, namespace,
+                    resume_sha256=hashlib.sha256(resumed).hexdigest()): pass
+            self.assertEqual(journal.read_bytes(), resumed)
+        self.assertEqual(installed.read_json(evidence / "early.json"), {"fixture": "original"})
+
+    def test_early_control_originals_bind_hashes_identity_source_and_complete_counts(self):
+        import ci_test_runner as runner
+        repo = self.root / "source"; evidence = self.root / "evidence"
+        evidence.mkdir(); (repo / "tooling/tests").mkdir(parents=True); (repo / "apps/studio").mkdir(parents=True)
+        for name in ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json",
+                     "tooling/ci_test_runner.py", "tooling/tests/test_native_host_installed_shared_state.py"):
+            (repo / name).write_bytes(b"EXPLICIT INERT SOURCE IDENTITY FIXTURE\n")
+        environment = {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+                       "GITHUB_WORKFLOW_REF": "inert-fixture@" + "a" * 40, "GITHUB_JOB": "linux-first-use-installed"}
+        paths = installed.ci_controls_paths(evidence)
+        stderr = f"Ran {installed.CI_EXPECTED_CONTROLS} tests in 0.1s\n\nOK\n".encode()
+        for name, path in paths.items():
+            if name != "installed-controls.json":
+                path.write_bytes(stderr if name == "installed-controls-00-stderr.log" else b"")
+        capture = {"status": "COMPLETE", "stream_limit_bytes": 1024 * 1024,
+                   "overflow_limit_per_stream_bytes": installed.CI_OVERFLOW_BYTES,
+                   "eof": {"stdout": True, "stderr": True}, "overflow": False,
+                   "retention_exhausted": False, "deadline_exceeded": False,
+                   "child_file_size_limit_changed": False, "overflow_originals": {},
+                   "observed_stream_bytes": {}, "retained_stream_bytes": {}}
+        step = {"entry_point": "discovery:test_native_host_installed_shared_state.py", "status": "PASS", "exit_code": 0,
+                "command": [sys.executable, "-B", "-E", "-s", "-m", "unittest", "discover", "-s", "tooling/tests",
+                    "-p", "test_native_host_installed_shared_state.py", "-v"],
+                "counts": runner.parse_unittest_summary(stderr.decode()), "bounded_capture": capture}
+        for name in ("stdout", "stderr", "stdout-overflow", "stderr-overflow"):
+            path = paths["installed-controls-00-" + name + ".log"]
+            row = installed.source.regular_file(path)
+            descriptor = {"file": path.name, "sha256": row["sha256"]}
+            capture["retained_stream_bytes"][name] = row["bytes"]
+            if name.endswith("-overflow"): capture["overflow_originals"][name] = descriptor
+            else:
+                step[name] = descriptor; capture["observed_stream_bytes"][name] = row["bytes"]
+        report = {"schema": "motionwright.unittest-execution/1", "status": "PASS", "exit_code": 0,
+                  "executed_source_sha": "a" * 40, "tree_sha": "b" * 40, "require_complete": True,
+                  "github": environment, "steps": [step],
+                  "test_definition_sha256": {"tooling/tests/test_native_host_installed_shared_state.py":
+                      installed.source.regular_file(repo / "tooling/tests/test_native_host_installed_shared_state.py")["sha256"]},
+                  "runner_sha256": installed.source.regular_file(repo / "tooling/ci_test_runner.py")["sha256"],
+                  "python_executable_sha256": installed.source.regular_file(Path(sys.executable).resolve())["sha256"],
+                  "source_locks": {name: installed.source.regular_file(repo / name)["sha256"] for name in
+                                   ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")}}
+        installed.publish(paths["installed-controls.json"], report)
+        binding = {"github": environment, "source_sha": "a" * 40, "tree_sha": "b" * 40,
+                   "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                   "native_effects": 0, "automatic_retry": False,
+                   "originals": {name: {**installed.source.regular_file(path),
+                       "identity": list(installed.custody.stamp(path.lstat()))} for name, path in paths.items()}}
+        binding_path = evidence / "early-controls-binding.original.json"
+        installed.publish(binding_path, binding); digest = installed.source.regular_file(binding_path)["sha256"]
+        with patch.dict(os.environ, environment), patch.object(runner, "__file__", str(repo / "tooling/ci_test_runner.py")), \
+             patch.object(installed.source, "source_observation", return_value={"tree": "b" * 40}):
+            self.assertEqual(installed.ci_verify_early_controls(repo, evidence, digest), binding)
+            with self.assertRaisesRegex(installed.ScenarioError, "BINDING_CHANGED"):
+                installed.ci_verify_early_controls(repo, evidence, "0" * 64)
+            path = paths["installed-controls-00-stderr.log"]
+            # Preserve the fixture original and replace only the test path with
+            # identical bytes. A hash alone cannot hide its changed identity.
+            path.rename(path.with_suffix(".retained-fixture")); path.write_bytes(stderr)
+            with self.assertRaisesRegex(installed.ScenarioError, "ORIGINAL_CHANGED"):
+                installed.ci_verify_early_controls(repo, evidence, digest)
+
+    def test_sdk_profile_sidecar_has_a_child_only_kernel_bound_before_tee_writes(self):
+        import resource
+        before = resource.getrlimit(resource.RLIMIT_FSIZE)
+        evidence = self.root / "evidence"; evidence.mkdir()
+        script = self.root / "ci-driver-bwrap-profile.sh"
+        # This is an inert emission fixture with the same final tee file
+        # writer. Its stdout is redirected only in this fixture so the parent
+        # stream cap cannot explain the observed file-size denial.
+        # It contains no SDK, sudo, sysctl, installation or Native operation.
+        script.write_text("set -euo pipefail\n" +
+            "\"$INERT_PYTHON\" -c 'import os; os.write(1,b\"x\"*65537)' | tee \"$1\" >/dev/null\n")
+        profile = evidence / "sandbox-profile.original.txt"
+        @contextmanager
+        def inert_scope(receipt, **_):
+            try: yield
+            finally: installed.publish(receipt, {"status": "INERT_EMISSION_FIXTURE_ONLY", "native": False})
+        with installed.ci_capacity_scope(evidence, self.root / "scenario") as capacity, \
+             patch.object(installed, "ci_require_time"), patch.object(installed, "owned_process_scope", inert_scope), \
+             patch.dict(os.environ, GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123"):
+            capacity.reserve(profile, 65536); capacity.claim(profile, 0)
+            with self.assertRaises(installed.ScenarioError):
+                installed.ci_command(evidence, "sdk-sandbox-profile", ["bash", str(script), str(profile)],
+                    self.root, dict(os.environ, INERT_PYTHON=sys.executable), 5, sidecar_file_limit=65536)
+        self.assertEqual(profile.stat().st_size, 65536)
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_FSIZE), before)
+        terminal = installed.read_json(evidence / "sdk-sandbox-profile.terminal.original.json")
+        self.assertEqual(terminal["status"], "UNKNOWN")
+        self.assertNotEqual(terminal["exit_code"], 0)
+        self.assertFalse(terminal["overflow"])
+        self.assertEqual(terminal["retained_stream_bytes"]["stdout"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

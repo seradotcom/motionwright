@@ -19,6 +19,14 @@ on:
           - nsis_lifecycle
           - linux_first_use_source
           - linux_first_use
+      evidence_recipient_spki:
+        description: Approved RSA-3072 public SPKI DER in base64 for installed Native originals
+        required: false
+        type: string
+      evidence_recipient_sha256:
+        description: SHA256 of that canonical public SPKI DER; required for linux_first_use
+        required: false
+        type: string
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -466,10 +474,16 @@ jobs:
     needs: [receipt-policy, linux-first-use-source]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-first-use-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
@@ -482,6 +496,22 @@ jobs:
             --repo "$GITHUB_WORKSPACE" --source "$GITHUB_SHA" \
             --namespace "$RUNNER_TEMP/linux-first-use-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA" \
             --source-evidence "$RUNNER_TEMP/linux-first-use-source-admitted"
+      - name: Install Linux desktop bundling and system Python AT-SPI prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0 at-spi2-core python3-venv bubblewrap libpipewire-0.3-dev pkg-config clang
+      - name: Complete installed source controls on the pristine checkout
+        id: installed_native_controls
+        timeout-minutes: 6
+        shell: bash
+        env:
+          MW_INSTALLED_METADATA_TOKEN: ${{ github.token }}
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          /usr/bin/python3 -B -E -s tooling/native_host_installed_shared_state.py --ci-controls
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -493,10 +523,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: false
-      - name: Install Linux desktop bundling and system Python AT-SPI prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0 at-spi2-core
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Linux candidate bundles
@@ -616,6 +642,47 @@ jobs:
           path: |
             ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-custody/originals.zip
             ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-custody/custody.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Same-job original installed Desktop to Native and back
+        id: installed-native
+        timeout-minutes: 35
+        shell: bash
+        env:
+          MW_INSTALLED_CONTROLS_BINDING_SHA256: ${{ steps.installed_native_controls.outputs.controls_binding_sha256 }}
+          MW_INSTALLED_CAPACITY_JOURNAL_SHA256: ${{ steps.installed_native_controls.outputs.capacity_journal_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- \
+            /usr/bin/python3 -B -E -s tooling/native_host_installed_shared_state.py --ci-run
+      - name: Seal complete private installed originals or explicit partial custody
+        if: always() && steps.installed_native_controls.outcome != 'skipped'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          producer="$RUNNER_TEMP/native-host-installed-producer-$GITHUB_RUN_ID-1-$GITHUB_SHA"
+          test -x "$producer/seal-venv/bin/python"
+          "$producer/seal-venv/bin/python" -B -E -s tooling/native_host_installed_shared_state.py --ci-seal
+      - name: Admit only the installed private ciphertext and public custody receipt
+        id: installed-native-upload
+        if: always() && steps.installed_native_controls.outcome != 'skipped'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -B -E -s tooling/native_host_installed_shared_state.py --ci-upload >> "$GITHUB_OUTPUT"
+      - name: Preserve encrypted installed Native originals
+        if: always() && steps.installed-native-upload.outputs.ready == 'true'
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-installed-native-private-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/native-host-installed-producer-${{ github.run_id }}-1-${{ github.sha }}/transport/installed-private.mwseal
+            ${{ runner.temp }}/native-host-installed-producer-${{ github.run_id }}-1-${{ github.sha }}/transport/custody-public.json
           if-no-files-found: error
           retention-days: 30
       - name: Preserve exact unsigned package payloads for the installed attempt
