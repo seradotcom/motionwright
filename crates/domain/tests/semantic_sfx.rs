@@ -327,6 +327,13 @@ fn profile_schedule_uses_authored_selection_order_and_only_omits_excluded_scene_
         .iter()
         .map(|scene| scene.id)
         .collect::<Vec<_>>();
+    // Author this order on the project; a delivery selection cannot reorder it.
+    project
+        .apply_change(&Change::MoveScene {
+            scene_id: source.scene_id,
+            to_index: 1,
+        })
+        .unwrap();
     profile.included_scene_ids = vec![ids[1], ids[0], ids[2]];
     project
         .apply_change(&Change::UpsertDeliverable {

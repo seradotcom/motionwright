@@ -1,12 +1,12 @@
 """Finite private Film180 process originals; no dispatch, retry or acceptance.
 
 The roster is source owned and includes only names actually emitted by the
-legacy FilmAttempt. A missing file is an observation, never an invented empty
+FilmAttempt. A missing file is an observation, never an invented empty
 stream, terminal or proof that no effects occurred. FixedTxt is a separate scope.
 """
 from __future__ import annotations
 
-# Tuple order is the actual legacy producer's causal sequence. Packet/PCM and
+# Tuple order is the actual producer's causal sequence. Packet/PCM and
 # failed-subprocess captures have no separate intent file in that producer.
 COMMANDS = (
     ("source.seed", "original", True),
@@ -15,21 +15,22 @@ COMMANDS = (
     ("broker.frames-encode", "single", True),
     ("broker.av-mux", "single", True),
     ("broker.sync-probe", "single", True),
-    ("original.render", "original", True),
     ("original.stage-audio", "original", True),
-    ("original.master", "original", True),
+    ("original.session", "original", True),
     ("original.original-packet-probe", "original", False),
     ("original.original-pcm-decode", "original", False),
     ("source.edit", "edited", True),
     ("edited.source-reopen", "edited", True),
-    ("edited.render", "edited", True),
-    ("edited.master", "edited", True),
+    ("edited.session", "edited", True),
     ("edited.original-packet-probe", "edited", False),
     ("edited.original-pcm-decode", "edited", False),
     ("original.failed-subprocess", "single", False),
 )
 TYPE = "film-command-original"
-SUMMARY_SCHEMA = "motionwright.native.film180-command-originals/1"
+SUMMARY_SCHEMA = "motionwright.native.film180-command-originals/2"
+SHARED_STAGE_SCHEMA = "motionwright.native.film180.shared-stage/1"
+SHARED_SESSION_SCHEMA = "motionwright.native.film180.shared-session/1"
+MAX_STAGE = 64 * 1024
 MAX_STDOUT = 4 * 1024 * 1024
 MAX_STDERR = 1024 * 1024
 MAX_JSON = 1024 * 1024
@@ -49,6 +50,13 @@ def entries():
             rows.append(dict(root="observation", relative_path=label + "." + suffix,
                 phase=phase, layer="attempt-custody", role="film-command-" + suffix.split(".")[0],
                 type=TYPE, maximum=maximum, policy=None))
+    for phase in ("original", "edited"):
+        for stage in ("render", "master"):
+            for suffix in ("started", "terminal"):
+                rows.append(dict(root="observation",
+                    relative_path=f"{phase}-shared-session/{stage}.{suffix}.json",
+                    phase=phase, layer="attempt-custody", role="film-native-stage-" + suffix,
+                    type=TYPE, maximum=MAX_STAGE, policy=None))
     rows.append(dict(root="observation", relative_path=ERROR_PATH, phase="single",
         layer="attempt-custody", role="film-attempt-error", type=TYPE, maximum=MAX_JSON, policy=None))
     return rows
@@ -103,6 +111,101 @@ def _json(raw):
         return None
 
 
+def checked_stage(value, phase, stage):
+    """Validate a native stage receipt; it is not a subprocess terminal."""
+    import re
+    import native_evidence_projection as core
+    keys = {"schema", "phase", "stage", "producer_pid", "project_id", "generation",
+            "revision", "canonical_Film_sha256", "request_id", "state", "result",
+            "evidence_sha256", "automatic_retry"}
+    core.require(phase in ("original", "edited") and stage in ("render", "master")
+        and type(value) is dict and set(value) == keys
+        and value["schema"] == SHARED_STAGE_SCHEMA and value["phase"] == phase
+        and value["stage"] == stage and value["automatic_retry"] is False,
+        "film-shared-stage-contract")
+    uuid = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    core.require(type(value["producer_pid"]) is int and value["producer_pid"] > 0
+        and type(value["revision"]) is int and value["revision"] >= 1
+        and all(type(value[k]) is str and re.fullmatch(uuid, value[k])
+                for k in ("project_id", "generation"))
+        and type(value["canonical_Film_sha256"]) is str
+        and re.fullmatch(r"[0-9a-f]{64}", value["canonical_Film_sha256"]),
+        "film-shared-stage-source")
+    expected_request = (f"film180-{phase}-native-single-run-v1" if stage == "render"
+                        else f"film180-{phase}-av-master-v1")
+    core.require(value["request_id"] == expected_request
+        and value["state"] in ("STARTED", "SUCCESS_REPORTED", "ERROR_OR_UNKNOWN"),
+        "film-shared-stage-request")
+    result = value["result"]
+    if value["state"] != "SUCCESS_REPORTED":
+        core.require(result is None and value["evidence_sha256"] is None,
+                     "film-shared-stage-nonterminal-success")
+        return value
+    core.require(type(result) is dict and type(value["evidence_sha256"]) is str
+        and re.fullmatch(r"[0-9a-f]{64}", value["evidence_sha256"]),
+        "film-shared-stage-result")
+    render_keys = {"schema", "native_film180_host", "canonical_Film_sha256", "project_id",
+        "generation", "revision", "frame_count", "physical_pixels_independently_decoded",
+        "original_audio_master_produced", "human_approval"}
+    master_keys = {"schema", "native_result_reported", "source_project_id", "generation",
+        "revision", "canonical_Film_sha256", "frame_count", "original_source_audio_sha256",
+        "master_audio_tail_sample_fidelity_verified", "all_180_decoded_frame_pixels_verified",
+        "human_listening_or_visual_approval"}
+    flags = (render_keys - {"schema", "native_film180_host", "canonical_Film_sha256",
+             "project_id", "generation", "revision", "frame_count"} if stage == "render"
+             else {"master_audio_tail_sample_fidelity_verified", "all_180_decoded_frame_pixels_verified",
+                   "human_listening_or_visual_approval"})
+    core.require(set(result) == (render_keys if stage == "render" else master_keys)
+        and all(result[k] is False for k in flags), "film-shared-stage-no-acceptance")
+    if stage == "master":
+        core.require(type(result["original_source_audio_sha256"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}", result["original_source_audio_sha256"]),
+            "film-shared-stage-audio-source")
+    project_key = "project_id" if stage == "render" else "source_project_id"
+    core.require(result.get(project_key) == value["project_id"]
+        and result.get("generation") == value["generation"]
+        and type(result.get("revision")) is int and result["revision"] == value["revision"]
+        and result.get("canonical_Film_sha256") == value["canonical_Film_sha256"]
+        and type(result.get("frame_count")) is int and result["frame_count"] == 180,
+        "film-shared-stage-result-source")
+    core.require((stage == "render" and result.get("schema") == "motionwright.native.film180.original-result/1"
+                  and result.get("native_film180_host") == "SUCCEEDED_REPORTED")
+        or (stage == "master" and result.get("schema") == "motionwright.native.film180.av-master/1"
+                  and result.get("native_result_reported") == "SUCCEEDED"),
+        "film-shared-stage-result-kind")
+    return value
+
+
+def checked_stage_pair(started, terminal, phase, stage):
+    import native_evidence_projection as core
+    checked_stage(started, phase, stage)
+    checked_stage(terminal, phase, stage)
+    fixed = set(started) - {"state", "result", "evidence_sha256"}
+    core.require(started["state"] == "STARTED"
+        and terminal["state"] in ("SUCCESS_REPORTED", "ERROR_OR_UNKNOWN")
+        and all(started[k] == terminal[k] for k in fixed), "film-shared-stage-continuity")
+    return terminal
+
+
+def checked_session(value, phase, stages):
+    import native_evidence_projection as core
+    core.require(type(value) is dict and set(value) == {
+        "schema", "phase", "producer_pid", "project_id", "generation", "revision",
+        "canonical_Film_sha256", "render", "master", "coordinator_recreated_between_stages",
+        "automatic_retry"} and value["schema"] == SHARED_SESSION_SCHEMA
+        and value["phase"] == phase and value["automatic_retry"] is False
+        and value["coordinator_recreated_between_stages"] is False
+        and type(value["producer_pid"]) is int and type(value["revision"]) is int
+        and set(stages) == {"render", "master"}, "film-shared-session-contract")
+    for stage, terminal in stages.items():
+        checked_stage(terminal, phase, stage)
+        core.require(terminal["state"] == "SUCCESS_REPORTED"
+            and all(value[k] == terminal[k] for k in (
+                "phase", "producer_pid", "project_id", "generation", "revision", "canonical_Film_sha256"))
+            and value[stage] == terminal["result"], "film-shared-session-stage-link")
+    return value
+
+
 def summarize(rows, guards, payloads, selected_contract):
     """Derive only custody facts from the SAME retained buffers, never reopen.
 
@@ -113,6 +216,24 @@ def summarize(rows, guards, payloads, selected_contract):
     core.require(is_contract(selected_contract), "film-command-contract")
     by_path = {(r["root"], r["relative_path"]): r for r in rows}
     absent = {(g["root"], g["relative_path"]): g for g in guards}
+    def retained_value(row):
+        # Existing source receipts are selected as bounded policy projections.
+        # Bind the original hash carried by that envelope; never claim that the
+        # full original JSON bytes were substituted into the selected archive.
+        raw = payloads[row["member"]]
+        value = core.strict(raw)
+        core.require(type(value) is dict, "film-shared-stage-retained-object")
+        if row["kind"] == "json-projection":
+            core.require(value.get("schema") == core.PROJECTION_SCHEMA
+                and value.get("context") == selected_contract["context"]
+                and value.get("policy") == row["policy"]
+                and value.get("source_sha256") == row["expected_sha256"]
+                and value.get("full_original_json_claimed") is False,
+                "film-shared-stage-projection-source")
+            return value["value"]
+        core.require(row["kind"] == "json-original"
+            and core.sha(raw) == row["expected_sha256"], "film-shared-stage-original-source")
+        return value
     members = {}
     total = 0
     for entry in selected_contract["entries"]:
@@ -157,9 +278,62 @@ def summarize(rows, guards, payloads, selected_contract):
             capture_status="ORIGINALS_RETAINED" if all_present and linked else
                 "ABSENT_OBSERVED" if all_absent else "INCOMPLETE_OR_UNKNOWN",
             terminal_links_original_streams=bool(linked), reported_result=result))
+    native_stages = []
+    for phase in ("original", "edited"):
+        linked_stages = {}
+        phase_rows = []
+        for stage in ("render", "master"):
+            base = f"{phase}-shared-session/{stage}"
+            parts = {suffix: members[base + "." + suffix + ".json"]
+                     for suffix in ("started", "terminal")}
+            valid = False
+            state = "UNKNOWN"
+            try:
+                originals = []
+                for suffix in ("started", "terminal"):
+                    row = by_path[("observation", base + "." + suffix + ".json")]
+                    core.require(row["state"] == "INCLUDED", "film-shared-stage-not-retained")
+                    originals.append(core.strict(payloads[row["member"]]))
+                terminal = checked_stage_pair(*originals, phase, stage)
+                state = terminal["state"]
+                if state == "SUCCESS_REPORTED":
+                    source_name = (f"{phase}-native-Film180-evidence.json" if stage == "render"
+                                   else f"{phase}-H264-AAC-native-master.json")
+                    source = by_path[("observation", source_name)]
+                    core.require(source["state"] == "INCLUDED"
+                        and source["expected_sha256"] == terminal["evidence_sha256"],
+                        "film-shared-stage-evidence-hash")
+                    source_value = retained_value(source)
+                    core.require(source_value.get("project_resource") == "project:" + terminal["project_id"]
+                        and source_value.get("generation") == terminal["generation"]
+                        and source_value.get("revision") == terminal["revision"],
+                        "film-shared-stage-native-source")
+                    reopen_row = by_path[("observation", f"{phase}-reopened-before-render.json")]
+                    core.require(reopen_row["state"] == "INCLUDED", "film-shared-stage-reopen-absent")
+                    reopened = retained_value(reopen_row)
+                    core.require(reopened.get("saved_film_sha256") == terminal["canonical_Film_sha256"]
+                        and all(reopened.get(k) == terminal[k]
+                                for k in ("project_id", "generation", "revision")),
+                        "film-shared-stage-reopened-source")
+                linked_stages[stage] = terminal
+                valid = True
+            except (ValueError, TypeError, KeyError, core.SelectionError):
+                pass
+            phase_rows.append(dict(label=phase + "." + stage, phase=phase, parts=parts,
+                capture_status="ORIGINAL_STAGE_RETAINED" if valid else "INCOMPLETE_OR_UNKNOWN",
+                reported_result=state, session_link_verified=False))
+        try:
+            session_row = by_path[("observation", phase + ".session.stdout")]
+            core.require(session_row["state"] == "INCLUDED", "film-shared-session-original-absent")
+            checked_session(core.strict(payloads[session_row["member"]]), phase, linked_stages)
+            for row in phase_rows:
+                row["session_link_verified"] = True
+        except (ValueError, TypeError, KeyError, core.SelectionError):
+            pass
+        native_stages.extend(phase_rows)
     return dict(schema=SUMMARY_SCHEMA, context=selected_contract["context"],
         fixed_members=MAX_MEMBERS, maximum_total_bytes=MAX_TOTAL, retained_original_bytes=total,
-        commands=commands, attempt_error=members[ERROR_PATH],
+        commands=commands, native_stages=native_stages, attempt_error=members[ERROR_PATH],
         absent_means_no_effects=False, stream_eof_claimed=False,
         automatic_retry=False, physical_acceptance=False, human_acceptance=False,
         release_authorized=False)
@@ -170,7 +344,15 @@ def require_successful_capture(summary):
     core.require(type(summary) is dict and summary.get("schema") == SUMMARY_SCHEMA,
                  "film-command-summary")
     required = [row for row in summary["commands"] if row["label"] != "original.failed-subprocess"]
-    core.require(len(required) == 17 and all(row["capture_status"] == "ORIGINALS_RETAINED"
+    stages = summary.get("native_stages")
+    core.require(type(stages) is list and len(stages) == 4
+        and {row["label"] for row in stages} == {
+            "original.render", "original.master", "edited.render", "edited.master"}
+        and all(row["capture_status"] == "ORIGINAL_STAGE_RETAINED"
+            and row["reported_result"] == "SUCCESS_REPORTED"
+            and row["session_link_verified"] is True for row in stages),
+        "film-shared-stages-not-complete")
+    core.require(len(required) == 15 and all(row["capture_status"] == "ORIGINALS_RETAINED"
         and row["reported_result"] == "EXIT_ZERO_REPORTED" for row in required)
         and summary["attempt_error"]["state"] == "ABSENT_OBSERVED"
         and next(row for row in summary["commands"] if row["label"] == "original.failed-subprocess")

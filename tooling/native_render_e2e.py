@@ -413,18 +413,65 @@ def n83_seal_preflight_failure():
     print(json.dumps(manifest, sort_keys=True), flush=True)
 
 
+def n83_original_terminal(name, admitted, *, paired_pid=None, connection_digest=None):
+    terminal = n83_read_json(EVIDENCE / name / "stage.terminal.json")
+    started = n83_read_json(EVIDENCE / name / "stage.started.json")
+    if (
+        terminal.get("schema") != "motionwright.native-incremental-stage-terminal/1"
+        or terminal.get("status") != "COMPLETED"
+        or terminal.get("source") != admitted["source"]
+        or started.get("stage") != name or started.get("source") != admitted["source"]
+        or terminal.get("automatic_retry") is not False
+        or terminal.get("master_eligible") is not False
+        or terminal.get("acceptance_granted") is not False
+        or (EVIDENCE / name / "stage.unknown.json").exists()
+    ):
+        raise N83RunnerFailure("N83_ORIGINAL_TERMINAL_NOT_BOUND")
+    if paired_pid is None:
+        return None
+    receipt = n83_read_json(EVIDENCE / name / "paired-producer.original.json")
+    digest = receipt.get("connection_file_sha256")
+    if (
+        type(paired_pid) is not int or paired_pid <= 0
+        or type(started.get("pid")) is not int or started["pid"] != paired_pid
+        or receipt.get("schema") != "motionwright.native-incremental-paired-producer/1"
+        or receipt.get("operation") != "dirty-and-full-after"
+        or receipt.get("logical_stages") != ["dirty", "full-after"]
+        or receipt.get("stage") != name
+        or type(receipt.get("producer_pid")) is not int or receipt["producer_pid"] != paired_pid
+        or receipt.get("same_process_coordinator") is not True
+        or receipt.get("source") != admitted["source"]
+        or receipt.get("automatic_retry") is not False
+        or receipt.get("master_eligible") is not False
+        or receipt.get("acceptance_granted") is not False
+        or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or (connection_digest is not None and digest != connection_digest)
+    ):
+        raise N83RunnerFailure("N83_PAIRED_ORIGINAL_NOT_BOUND")
+    return digest
+
+
 def n83_stage(name, arguments, *, env, admitted, timeout=420):
     # Rust CLI stdout is empty; original terminal is the sole completion input.
-    if name not in N83_STAGES or arguments[0] != str(MW_BIN) or arguments[1] != name:
+    paired = name == "dirty-and-full-after"
+    logical = ("dirty", "full-after") if paired else (name,)
+    if (
+        (not paired and name not in N83_STAGES)
+        or len(arguments) < 2 or arguments[0] != str(MW_BIN) or arguments[1] != name
+        or (paired and len(arguments) != 5)
+    ):
         raise N83RunnerFailure("N83_STAGE_SCOPE")
     done = admitted["completed_stages"]
-    if len(done) >= len(N83_STAGES) or name != N83_STAGES[len(done)] or (EVIDENCE / name).exists():
+    if (
+        tuple(N83_STAGES[len(done):len(done) + len(logical)]) != logical
+        or any((EVIDENCE / stage).exists() or (EVIDENCE / stage).is_symlink() for stage in logical)
+    ):
         raise N83RunnerFailure("N83_STAGE_REPLAY_FORBIDDEN")
     commands = EVIDENCE / "runner-commands"
     commands.mkdir(mode=0o700, exist_ok=True)
     custody = n83_custody()
     custody.new_json(commands / (name + ".started.json"), {
-        "stage": name, "argv": arguments, "source": admitted["source"],
+        "stage": name, "logical_stages": list(logical), "argv": arguments, "source": admitted["source"],
         "automatic_retry": False, "started_ns": time.time_ns(),
     })
     code, timed_out, wait_error, quiescent = None, False, None, False
@@ -453,28 +500,41 @@ def n83_stage(name, arguments, *, env, admitted, timeout=420):
                 quiescent = False
             code = process.poll()
     custody.new_json(commands / (name + ".exit.original.json"), {
-        "stage": name, "exit_code": code, "timed_out": timed_out,
+        "stage": name, "logical_stages": list(logical), "exit_code": code, "timed_out": timed_out,
         "wait_error": wait_error, "process_group_quiescent": quiescent,
         "automatic_retry": False, "effects_absent_asserted": False,
         "finished_ns": time.time_ns(),
     })
-    if timed_out or wait_error is not None or code != 0 or not quiescent:
+    bad_exit = timed_out or wait_error is not None or code != 0 or not quiescent
+    stdout_present = (commands / (name + ".stdout.original")).stat().st_size != 0
+    if paired:
+        # A failure after dirty completed must preserve that exact logical
+        # prefix without restarting either native job or asserting full-after.
+        observed, terminal_error, digest = [], None, None
+        for stage in logical:
+            try:
+                digest = n83_original_terminal(
+                    stage, admitted, paired_pid=process.pid, connection_digest=digest,
+                )
+            except Exception as error:
+                terminal_error = {"exception_type": type(error).__name__, "error": str(error)}
+                break
+            admitted["completed_stages"].append(stage)
+            observed.append(stage)
+        custody.new_json(commands / (name + ".original-stage-status.json"), {
+            "stage": name, "logical_stages": list(logical),
+            "producer_pid": process.pid, "same_process_coordinator": True,
+            "observed_completed_stages": observed, "terminal_validation_error": terminal_error,
+            "automatic_retry": False, "effects_absent_asserted": False,
+        })
+        if bad_exit or terminal_error is not None or stdout_present or observed != list(logical):
+            raise N83RunnerFailure("N83_PAIRED_STAGE_NOT_COMPLETED")
+        return
+    if bad_exit:
         raise N83RunnerFailure("N83_STAGE_NOT_COMPLETED")
-    if (commands / (name + ".stdout.original")).stat().st_size:
+    if stdout_present:
         raise N83RunnerFailure("N83_EMPTY_STDOUT_CONTRACT")
-    terminal = n83_read_json(EVIDENCE / name / "stage.terminal.json")
-    started = n83_read_json(EVIDENCE / name / "stage.started.json")
-    if (
-        terminal.get("schema") != "motionwright.native-incremental-stage-terminal/1"
-        or terminal.get("status") != "COMPLETED"
-        or terminal.get("source") != admitted["source"]
-        or started.get("stage") != name or started.get("source") != admitted["source"]
-        or terminal.get("automatic_retry") is not False
-        or terminal.get("master_eligible") is not False
-        or terminal.get("acceptance_granted") is not False
-        or (EVIDENCE / name / "stage.unknown.json").exists()
-    ):
-        raise N83RunnerFailure("N83_ORIGINAL_TERMINAL_NOT_BOUND")
+    n83_original_terminal(name, admitted)
     admitted["completed_stages"].append(name)
 
 
@@ -494,14 +554,16 @@ def n83_seed(database, env, admitted):
 
 
 def n83_remaining_stages(database, connection_path, env, admitted):
-    for name in N83_STAGES[1:]:
+    for name in ("before", "edit", "dirty-and-full-after", "assemble-input",
+                 "admit-preview", "reopen-preview", "dependency-negative"):
         arguments = [str(MW_BIN), name, str(database)]
-        if name in {"before", "dirty", "full-after"}:
+        if name in {"before", "dirty-and-full-after"}:
             arguments.append(str(connection_path))
         elif name == "admit-preview":
             arguments.append(sys.executable)
         arguments.append(str(EVIDENCE))
-        n83_stage(name, arguments, env=env, admitted=admitted)
+        n83_stage(name, arguments, env=env, admitted=admitted,
+                  timeout=840 if name == "dirty-and-full-after" else 420)
     # Three actual producer invocations only: before90 + dirty60 + full-after90.
     # The final dependency-negative is model/Store only, with no fourth render.
 

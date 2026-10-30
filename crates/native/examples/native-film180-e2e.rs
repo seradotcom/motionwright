@@ -74,7 +74,8 @@ fn usage() -> ! {
          window-cycle EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_HOST_CUSTODY_DIR NEW_EVIDENCE_DIR |\
          render-fixed-text-v4 EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_HOST_CUSTODY_DIR CASE_JSON NEW_EVIDENCE_JSON |\
          stage-audio EXISTING_DATABASE OWNED_CONNECTION SOURCE_WAV OWNER_FILENAME NEW_AUDIO_RECEIPT |\
-         master EXISTING_DATABASE OWNED_CONNECTION NATIVE_FILM_RESULT WAV_OWNER_RELATIVE WAV_SHA256 NEW_MASTER_EVIDENCE"
+         master EXISTING_DATABASE OWNED_CONNECTION NATIVE_FILM_RESULT WAV_OWNER_RELATIVE WAV_SHA256 NEW_MASTER_EVIDENCE |\
+         render-master EXISTING_DATABASE OWNED_CONNECTION NEW_FILM_RESULT WAV_OWNER_RELATIVE WAV_SHA256 NEW_MASTER_EVIDENCE NEW_STAGE_DIRECTORY"
     );
     std::process::exit(2);
 }
@@ -593,6 +594,28 @@ async fn render_source(
     custody_source: Option<&Path>,
     source: NativeSource<'_>,
 ) -> FixtureResult<MotionCanvasRenderEvidence> {
+    render_source_with_owner(
+        database,
+        connection,
+        evidence,
+        custody_source,
+        source,
+        None,
+        true,
+    )
+    .await
+    .map(|(native, _)| native)
+}
+
+async fn render_source_with_owner(
+    database: &Path,
+    connection: &Path,
+    evidence: &Path,
+    custody_source: Option<&Path>,
+    source: NativeSource<'_>,
+    owner: Option<&ProductionCoordinator>,
+    emit_summary: bool,
+) -> FixtureResult<(MotionCanvasRenderEvidence, serde_json::Value)> {
     if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
         return Err("Film180 original native effects require disposable GitHub Actions".into());
     }
@@ -663,7 +686,10 @@ async fn render_source(
     let stdin_readback = custody_source
         .map(|source| stdin_readback::Readback::begin(source, &connection, evidence))
         .transpose()?;
-    let coordinator = ProductionCoordinator::new(service.clone(), connection)?;
+    let coordinator = match owner {
+        Some(owner) => owner.clone(),
+        None => ProductionCoordinator::new(service.clone(), connection)?,
+    };
     let coordinator = match source {
         NativeSource::Original => coordinator,
         NativeSource::BrandFont { owner_media_root } => {
@@ -729,20 +755,19 @@ async fn render_source(
                 file.write_all(&body)?;
                 file.write_all(b"\n")?;
                 file.sync_all()?;
-                println!(
-                    "{}",
-                    serde_json::to_string(&json!({
-                        "schema":"motionwright.native.film180.original-result/1",
-                        "native_film180_host":"SUCCEEDED_REPORTED",
-                        "canonical_Film_sha256":film_sha,
-                        "project_id":original.id,"generation":original.generation,
-                        "revision":original.revision,"frame_count":FRAME_COUNT,
-                        "physical_pixels_independently_decoded":false,
-                        "original_audio_master_produced":false,
-                        "human_approval":false
-                    }))?
-                );
-                retained_native_result = Some(native);
+                let summary = json!({
+                    "schema":"motionwright.native.film180.original-result/1",
+                    "native_film180_host":"SUCCEEDED_REPORTED",
+                    "canonical_Film_sha256":film_sha,
+                    "project_id":original.id,"generation":original.generation,
+                    "revision":original.revision,"frame_count":FRAME_COUNT,
+                    "physical_pixels_independently_decoded":false,
+                    "original_audio_master_produced":false,"human_approval":false
+                });
+                if emit_summary {
+                    println!("{}", serde_json::to_string(&summary)?);
+                }
+                retained_native_result = Some((native, summary));
             }
             Err(error) => {
                 if stdin_readback.is_some() {
@@ -1094,6 +1119,31 @@ async fn master_original(
     wav_sha256: &str,
     evidence: &Path,
 ) -> FixtureResult<()> {
+    master_original_with_owner(
+        database,
+        connection,
+        motion_evidence,
+        wav_relative_path,
+        wav_sha256,
+        evidence,
+        None,
+        true,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)] // Preserve the existing fixture CLI inputs and shared owner.
+async fn master_original_with_owner(
+    database: &Path,
+    connection: &Path,
+    motion_evidence: &Path,
+    wav_relative_path: &str,
+    wav_sha256: &str,
+    evidence: &Path,
+    owner: Option<&ProductionCoordinator>,
+    emit_summary: bool,
+) -> FixtureResult<serde_json::Value> {
     if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
         return Err("Film180 full AV master requires an authorized disposable CI Host".into());
     }
@@ -1187,7 +1237,10 @@ async fn master_original(
     if connection.resource != project.resource_key() {
         return Err("MLT master owner connection belongs to a different saved project".into());
     }
-    let coordinator = ProductionCoordinator::new(service, connection)?;
+    let coordinator = match owner {
+        Some(owner) => owner.clone(),
+        None => ProductionCoordinator::new(service, connection)?,
+    };
     let audio = MltAudioArtifact {
         relative_path: wav_relative_path.into(),
         sha256: wav_sha256.into(),
@@ -1259,18 +1312,231 @@ async fn master_original(
     file.write_all(&bytes)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
+    let summary = json!({
+        "schema":"motionwright.native.film180.av-master/1",
+        "native_result_reported":"SUCCEEDED",
+        "source_project_id":project.id,"generation":project.generation,
+        "revision":project.revision,"canonical_Film_sha256":original_film_sha,
+        "frame_count":result.frame_count,"original_source_audio_sha256":wav_sha256,
+        "master_audio_tail_sample_fidelity_verified":false,
+        "all_180_decoded_frame_pixels_verified":false,"human_listening_or_visual_approval":false
+    });
+    if emit_summary {
+        println!("{}", serde_json::to_string(&summary)?);
+    }
+    Ok(summary)
+}
+
+// One producer process owns both existing native stages for this saved revision.
+// The four original/edited stage identities stay separate; these are stage
+// receipts, never synthetic subprocess stdout/stderr or new accounting roots.
+#[allow(clippy::too_many_arguments)] // This closed receipt binds one existing native stage.
+fn shared_stage_receipt(
+    directory: &Path,
+    phase: &str,
+    stage: &str,
+    project: &Project,
+    film_sha: &str,
+    state: &str,
+    result: Option<&serde_json::Value>,
+    evidence: &Path,
+) -> FixtureResult<()> {
+    if !matches!(phase, "original" | "edited")
+        || !matches!(stage, "render" | "master")
+        || !matches!(state, "STARTED" | "SUCCESS_REPORTED" | "ERROR_OR_UNKNOWN")
+        || (state == "SUCCESS_REPORTED") != result.is_some()
+    {
+        return Err("invalid shared stage receipt identity".into());
+    }
+    let suffix = if state == "STARTED" {
+        "started"
+    } else {
+        "terminal"
+    };
+    let target = directory.join(format!("{stage}.{suffix}.json"));
+    must_be_unused(&target)?;
+    let request = match stage {
+        "render" => bound_stage_request(project)?,
+        "master" if phase == "original" => "film180-original-av-master-v1",
+        "master" => "film180-edited-av-master-v1",
+        _ => return Err("unknown shared native stage".into()),
+    };
+    let evidence_sha = if state == "SUCCESS_REPORTED" {
+        Some(hex::encode(Sha256::digest(fs::read(evidence)?)))
+    } else {
+        None
+    };
+    let body = serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.native.film180.shared-stage/1", "phase":phase,
+        "stage":stage,"producer_pid":std::process::id(),"project_id":project.id,
+        "generation":project.generation,"revision":project.revision,
+        "canonical_Film_sha256":film_sha,"request_id":request,"state":state,
+        "result":result,"evidence_sha256":evidence_sha,"automatic_retry":false
+    }))?;
+    if body.len() >= 65_536 {
+        return Err("shared stage receipt exceeds its closed bound".into());
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(target)?;
+    file.write_all(&body)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
+async fn render_and_master_original(
+    database: &Path,
+    connection_path: &Path,
+    motion_evidence: &Path,
+    wav_relative_path: &str,
+    wav_sha256: &str,
+    master_evidence: &Path,
+    stages: &Path,
+) -> FixtureResult<()> {
+    if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Err("shared Film180 native stages require disposable GitHub Actions".into());
+    }
+    for target in [motion_evidence, master_evidence, stages] {
+        must_be_unused(target)?;
+    }
+    if motion_evidence == master_evidence || motion_evidence == stages || master_evidence == stages
+    {
+        return Err("shared Film180 outputs must be distinct".into());
+    }
+    verify_original_audio_file_binding(wav_relative_path, wav_sha256)?;
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    let [project] = projects.as_slice() else {
+        return Err("shared Film180 requires one original saved project".into());
+    };
+    let film_sha = verified_projection(project)?;
+    let phase = if bound_stage_request(project)? == NATIVE_REQUEST {
+        "original"
+    } else {
+        "edited"
+    };
+    let connection = ProductionConnection::load(connection_path)?;
+    if connection.resource != project.resource_key() {
+        return Err("shared Film180 owner belongs to another source project".into());
+    }
+    // A genuinely new coordinator is created once. Its clones share the private
+    // root established by render; no caller-supplied root ID or reattach exists.
+    let owner = ProductionCoordinator::new(service.clone(), connection)?;
+    let mut directory = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    directory.create(stages)?;
+    shared_stage_receipt(
+        stages,
+        phase,
+        "render",
+        project,
+        &film_sha,
+        "STARTED",
+        None,
+        motion_evidence,
+    )?;
+    let rendered = render_source_with_owner(
+        database,
+        connection_path,
+        motion_evidence,
+        None,
+        NativeSource::Original,
+        Some(&owner),
+        false,
+    )
+    .await;
+    let render_terminal = shared_stage_receipt(
+        stages,
+        phase,
+        "render",
+        project,
+        &film_sha,
+        if rendered.is_ok() {
+            "SUCCESS_REPORTED"
+        } else {
+            "ERROR_OR_UNKNOWN"
+        },
+        rendered.as_ref().ok().map(|(_, summary)| summary),
+        motion_evidence,
+    );
+    let (_, render_summary) = match rendered {
+        Ok(value) => {
+            render_terminal?;
+            value
+        }
+        Err(primary) => {
+            if let Err(secondary) = render_terminal {
+                eprintln!("Shared render custody failed: {secondary}");
+            }
+            return Err(primary);
+        }
+    };
+    // A failed render or its terminal custody stops before any master mutation.
+    shared_stage_receipt(
+        stages,
+        phase,
+        "master",
+        project,
+        &film_sha,
+        "STARTED",
+        None,
+        master_evidence,
+    )?;
+    let mastered = master_original_with_owner(
+        database,
+        connection_path,
+        motion_evidence,
+        wav_relative_path,
+        wav_sha256,
+        master_evidence,
+        Some(&owner),
+        false,
+    )
+    .await;
+    let master_terminal = shared_stage_receipt(
+        stages,
+        phase,
+        "master",
+        project,
+        &film_sha,
+        if mastered.is_ok() {
+            "SUCCESS_REPORTED"
+        } else {
+            "ERROR_OR_UNKNOWN"
+        },
+        mastered.as_ref().ok(),
+        master_evidence,
+    );
+    let master_summary = match mastered {
+        Ok(value) => {
+            master_terminal?;
+            value
+        }
+        Err(primary) => {
+            if let Err(secondary) = master_terminal {
+                eprintln!("Shared master custody failed: {secondary}");
+            }
+            return Err(primary);
+        }
+    };
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schema":"motionwright.native.film180.av-master/1",
-            "native_result_reported":"SUCCEEDED",
-            "source_project_id":project.id,"generation":project.generation,
-            "revision":project.revision,"canonical_Film_sha256":original_film_sha,
-            "frame_count":result.frame_count,
-            "original_source_audio_sha256":wav_sha256,
-            "master_audio_tail_sample_fidelity_verified":false,
-            "all_180_decoded_frame_pixels_verified":false,
-            "human_listening_or_visual_approval":false
+            "schema":"motionwright.native.film180.shared-session/1", "phase":phase,
+            "producer_pid":std::process::id(),"project_id":project.id,
+            "generation":project.generation,"revision":project.revision,
+            "canonical_Film_sha256":film_sha,"render":render_summary,"master":master_summary,
+            "coordinator_recreated_between_stages":false,"automatic_retry":false
         }))?
     );
     Ok(())
@@ -3108,6 +3374,34 @@ async fn main() -> FixtureResult<()> {
                 usage();
             }
             stage_owned_source_wav(&database, &connection, &wave, &owner_name, &receipt)?;
+        }
+        "render-master" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let film_result = path_arg(&mut args);
+            let wav_relative = args
+                .next()
+                .and_then(|v| v.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let wav_sha = args
+                .next()
+                .and_then(|v| v.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let master = path_arg(&mut args);
+            let stages = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            render_and_master_original(
+                &database,
+                &connection,
+                &film_result,
+                &wav_relative,
+                &wav_sha,
+                &master,
+                &stages,
+            )
+            .await?;
         }
         "master" => {
             let database = path_arg(&mut args);

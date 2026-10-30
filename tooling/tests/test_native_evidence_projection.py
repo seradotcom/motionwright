@@ -680,7 +680,7 @@ class DiagnosticSelectionV3Tests(unittest.TestCase):
             {"absent_before": True, "absent_after": True, "opened": False, "hashed": False})
 
     def test_all_diagnostics_observed_absent_do_not_claim_raw_payloads(self):
-        for subtype in n.DIAGNOSTIC_MAXIMUM: self.guard(subtype)
+        for entry in self.contract["entries"]: self.guard(entry["type"])
         raw, manifest = self.capture()
         self.assertEqual(self.inspect(raw), manifest)
         self.assertFalse(manifest["raw_diagnostics_included"])
@@ -1490,10 +1490,18 @@ class ScopedJsonSnapshotLeafTests(unittest.TestCase):
                 with self.assertRaises(n.SelectionError):
                     n.capture_selected_originals(spec, policies=self.policies, role_contract=self.roles)
                 handles.assert_not_called()
-        spec = copy.deepcopy(self.spec); spec["schema"] = n.SPEC_SCHEMA_V3
+        # Supply the existing valid v3 diagnostic fixture so this negative
+        # reaches the snapshot schema boundary rather than missing-contract.
+        diagnostics = DiagnosticSelectionV3Tests("runTest")
+        diagnostics.setUp()
+        spec = copy.deepcopy(diagnostics.spec)
+        spec["roots"]["records"] = self.spec["roots"]["records"]
+        spec["members"].append(copy.deepcopy(row))
+        roles = {**diagnostics.roles, **self.roles}
         with mock.patch.object(n, "RootHandles") as handles, self.assertRaisesRegex(
                 n.SelectionError, "json-snapshot-policy-scope"):
-            n.capture_selected_originals(spec, policies=self.policies, role_contract=self.roles)
+            n.capture_selected_originals(spec, policies=self.policies, role_contract=roles,
+                diagnostic_contract=diagnostics.contract)
         handles.assert_not_called()
         self.assertEqual(row["relative_path"], "original-render.failure.json")
 

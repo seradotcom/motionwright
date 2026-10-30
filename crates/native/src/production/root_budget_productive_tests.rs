@@ -56,6 +56,146 @@ async fn productive_root_debits_sqlite_before_cli_and_exhausts_actual_frames() {
     );
     assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
 
+    // N83's dirty/full-after jobs must retain this same genuine Coordinator.
+    // A second scoped operation shares the original durable root and cannot
+    // reset its accounting. Merely recreating a Coordinator after a Store
+    // reopen is deliberately insufficient: Store rejects duplicate creation.
+    let original_root = service.root_operation_budget(project.id, root_id).unwrap();
+    let second_scope = coordinator
+        .with_motion_scene_boundary_scope(&project, deliverable_id, &options, &[scene_id])
+        .unwrap();
+    assert_eq!(
+        second_scope.active_motion_budget.as_ref().unwrap().root_id,
+        root_id
+    );
+    assert_eq!(
+        service.root_operation_budget(project.id, root_id).unwrap(),
+        original_root
+    );
+    assert_eq!(second_scope.client.execute_calls.load(Ordering::SeqCst), 0);
+    drop(second_scope);
+    let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+    let recreated = ProductionCoordinator::new(reopened.clone(), connection.clone()).unwrap();
+    let denied_recreation = match recreated.with_motion_scene_boundary_scope(
+        &project,
+        deliverable_id,
+        &options,
+        &[scene_id],
+    ) {
+        Ok(_) => {
+            panic!("a new Coordinator must not silently recreate or reattach the accounting root")
+        }
+        Err(error) => error,
+    };
+    assert_eq!(denied_recreation.code, ErrorCode::Conflict);
+    assert_eq!(
+        denied_recreation.message,
+        "Production request id was reused with different input"
+    );
+    assert_eq!(recreated.client.execute_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        reopened.root_operation_budget(project.id, root_id).unwrap(),
+        original_root
+    );
+    assert!(
+        reopened
+            .production_receipts(project.id, 10)
+            .unwrap()
+            .is_empty()
+    );
+    drop(recreated);
+    drop(reopened);
+
+    // Check the N83 accounting shape (one 90-frame MC segment at 640x360)
+    // through the actual planner and SQLite root, without a native dispatch.
+    // The paired fixture must fit both classified starts in the original cap;
+    // changing a request label or reopening a handle cannot add capacity.
+    {
+        let (n83_service, n83_initial, n83_temp) = fixture_service();
+        let n83_project = motion_canvas_fixture(&n83_service, n83_initial);
+        let n83_scene = n83_project.scenes[0].id;
+        let n83_project = n83_service
+            .apply(
+                n83_project.id,
+                &n83_project.stamp(),
+                "n83-budget-duration",
+                &Change::SetSceneDuration {
+                    scene_id: n83_scene,
+                    duration: motionwright_domain::RationalTime::new(3, 1).unwrap(),
+                },
+            )
+            .unwrap()
+            .project;
+        let mut n83_profile = n83_project.deliverables[0].clone();
+        n83_profile.width = 640;
+        n83_profile.height = 360;
+        let n83_project = n83_service
+            .apply(
+                n83_project.id,
+                &n83_project.stamp(),
+                "n83-budget-output",
+                &Change::UpsertDeliverable {
+                    profile: n83_profile,
+                },
+            )
+            .unwrap()
+            .project;
+        let n83_options = original_options(&n83_project);
+        let n83_connection = fake_connection(&n83_temp, n83_project.resource_key());
+        let n83_coordinator =
+            ProductionCoordinator::new(n83_service.clone(), n83_connection).unwrap();
+        let n83_scoped = n83_coordinator
+            .with_motion_scene_boundary_scope(
+                &n83_project,
+                n83_project.deliverables[0].id,
+                &n83_options,
+                &[n83_scene],
+            )
+            .unwrap();
+        let n83_active = n83_scoped.active_motion_budget.as_ref().unwrap();
+        assert_eq!(n83_active.max_render_frames, 90);
+        let n83_root = n83_service
+            .root_operation_budget(n83_project.id, n83_active.root_id)
+            .unwrap();
+        let dirty = n83_active
+            .units_for(
+                "driver.motion-canvas.render.start",
+                &json!({
+                    "profile":{"first_frame":0,"end_frame_exclusive":60},
+                }),
+                true,
+            )
+            .unwrap();
+        let reference = n83_active
+            .units_for(
+                "driver.motion-canvas.render.start",
+                &json!({
+                    "profile":{"first_frame":0,"end_frame_exclusive":90},
+                }),
+                true,
+            )
+            .unwrap();
+        let source_mutation = n83_active
+            .units_for("driver.motion-canvas.composition.apply", &json!({}), true)
+            .unwrap();
+        let font_import = n83_active
+            .units_for("driver.motion-canvas.asset.import", &json!({}), true)
+            .unwrap();
+        assert_eq!(dirty.render_frames + reference.render_frames, 150);
+        assert!(dirty.render_frames + reference.render_frames <= n83_root.limits.render_frames);
+        // Four source writes and four font imports conservatively cover two
+        // separate jobs; these units are projections, not measured work.
+        assert!(
+            dirty.output_bytes
+                + reference.output_bytes
+                + 4 * source_mutation.output_bytes
+                + 4 * font_import.output_bytes
+                <= n83_root.limits.output_bytes
+        );
+        assert_eq!(n83_root.spent, RootBudgetUnits::default());
+        assert_eq!(n83_scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+
     let args = original_render_request();
     let first = scoped
         .execute(

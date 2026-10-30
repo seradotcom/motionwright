@@ -33,6 +33,22 @@ on:
       - "docs/native-sdk.md"
       - ".github/workflows/native-sdk.yml"
   workflow_dispatch:
+    inputs:
+      e11_capsule_source:
+        description: "Run the original native capsule source Host cycle"
+        type: boolean
+        required: false
+        default: false
+      expected_source_sha:
+        description: "Exact clean source SHA; required for the capsule source cycle"
+        type: string
+        required: false
+        default: ""
+      recovery_recipient:
+        description: "Existing admitted RSA3072 public recipient JSON; required for the capsule source cycle"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -54,6 +70,57 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Admit the selected capsule source context and recovery recipient
+        id: e11_admission
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source }}
+        env:
+          MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          MOTIONWRIGHT_E11_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          expected = os.environ.get("MW_NATIVE_EXPECTED_SOURCE_SHA", "")
+          if (os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                  or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+                  or re.fullmatch(r"[0-9a-f]{40}", expected) is None
+                  or expected != os.environ.get("GITHUB_SHA")):
+              raise SystemExit("Native capsule source context was not admitted")
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.PIPE, text=True).strip()
+          dirty = subprocess.check_output(
+              ["git", "status", "--porcelain", "--untracked-files=all"], stderr=subprocess.PIPE,
+          )
+          if head != expected or dirty:
+              raise SystemExit("Native capsule source requires the exact clean checkout")
+          PY
+          test ! -e "$RUNNER_TEMP/e11-custody-venv"
+          python3 -m venv "$RUNNER_TEMP/e11-custody-venv"
+          "$RUNNER_TEMP/e11-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/e11-custody-venv/bin/python" -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          import ci_private_evidence as custody
+
+          try:
+              pin = json.loads(Path("SOURCE_LOCK.json").read_text(encoding="utf-8"))["dependencies"]["semwright"]["revision"]
+              custody.validate_context({
+                  "source_sha": os.environ["GITHUB_SHA"], "semwright_sha": pin,
+                  "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              })
+              custody.public_key(custody.strict(os.environ["MOTIONWRIGHT_E11_RECOVERY_RECIPIENT"].encode()))
+          except Exception:
+              raise SystemExit("Native capsule source recovery inputs were not admitted") from None
+          PY
       - name: Resolve pinned Semwright revision
         id: pin
         run: |
@@ -85,14 +152,34 @@ jobs:
         run: cargo test --locked -p semwright-native-sdk --features driver --test cooperation
       - name: Motionwright Native SDK adapter tests
         run: cargo test --locked -p motionwright-native --all-targets
+      - name: Native capsule source Service verification
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && steps.e11_admission.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          controls="$RUNNER_TEMP/e11-service-controls.original.log"
+          test ! -e "$controls"
+          cargo test --locked -p motionwright-service \
+            --test native_capsule_source_inspection -- --test-threads=1 \
+            2>&1 | tee "$controls"
+          python3 - "$controls" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          output = Path(sys.argv[1]).read_text(encoding="utf-8")
+          if (len(re.findall(r"^running 5 tests$", output, re.MULTILINE)) != 1
+                  or len(re.findall(r"^test result: ok\. 5 passed; 0 failed; 0 ignored;", output, re.MULTILINE)) != 1):
+              raise SystemExit("Exactly five native capsule source Service tests must execute and pass")
+          PY
       - name: Music and SFX domain regression tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.e11_capsule_source || steps.e11_admission.outcome == 'success') }}
         run: >-
           cargo test --locked -p motionwright-domain
           --test music_clock --test music_conform
           --test music_sfx_impact_ack --test semantic_sfx
       - name: Preview and music persistence service tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.e11_capsule_source || steps.e11_admission.outcome == 'success') }}
         run: >-
           cargo test --locked -p motionwright-service
           --test change_preview --test music_conform_persistence
@@ -177,13 +264,65 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
-      SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+      SEMWRIGHT_CHECKOUT_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && 'verification/e11-sdk' || '_semwright' }}
+      SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && 'verification/e11-sdk' || '_semwright' }}
       SEMWRIGHT_TEST_DRIVER_SANDBOX: "1"
-      SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+      SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && 'verification/e11-sdk' || '_semwright' }}/target/debug/semwright-sandbox
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Admit the selected capsule source context and recovery recipient
+        id: e11_admission
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source }}
+        env:
+          MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          MOTIONWRIGHT_E11_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          expected = os.environ.get("MW_NATIVE_EXPECTED_SOURCE_SHA", "")
+          if (os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                  or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+                  or re.fullmatch(r"[0-9a-f]{40}", expected) is None
+                  or expected != os.environ.get("GITHUB_SHA")):
+              raise SystemExit("Native capsule source context was not admitted")
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.PIPE, text=True).strip()
+          dirty = subprocess.check_output(
+              ["git", "status", "--porcelain", "--untracked-files=all"], stderr=subprocess.PIPE,
+          )
+          if head != expected or dirty:
+              raise SystemExit("Native capsule source requires the exact clean checkout")
+          PY
+          test ! -e "$RUNNER_TEMP/e11-custody-venv"
+          python3 -m venv "$RUNNER_TEMP/e11-custody-venv"
+          "$RUNNER_TEMP/e11-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/e11-custody-venv/bin/python" -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          import ci_private_evidence as custody
+
+          try:
+              pin = json.loads(Path("SOURCE_LOCK.json").read_text(encoding="utf-8"))["dependencies"]["semwright"]["revision"]
+              custody.validate_context({
+                  "source_sha": os.environ["GITHUB_SHA"], "semwright_sha": pin,
+                  "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              })
+              custody.public_key(custody.strict(os.environ["MOTIONWRIGHT_E11_RECOVERY_RECIPIENT"].encode()))
+          except Exception:
+              raise SystemExit("Native capsule source recovery inputs were not admitted") from None
+          PY
       - name: Resolve pinned Semwright revision
         id: pin
         run: |
@@ -193,12 +332,26 @@ jobs:
         with:
           repository: seradotcom/semwright
           ref: ${{ steps.pin.outputs.sha }}
-          path: _semwright
+          path: ${{ env.SEMWRIGHT_CHECKOUT_PATH }}
           persist-credentials: false
       - name: Verify exact source identities
         run: |
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          test "$(git -C "$SEMWRIGHT_CHECKOUT" rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+      - name: Verify the selected capsule source and SDK locks
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source }}
+        env:
+          MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          "$RUNNER_TEMP/e11-custody-venv/bin/python" -B - <<'PY'
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          from native_host_shared_state import capsule_source_identity
+
+          capsule_source_identity()
+          PY
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.98.1
@@ -208,14 +361,14 @@ jobs:
           cache-on-failure: true
       - name: Configure disposable-runner Driver Host sandbox
         run: |
-          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+          bash "$SEMWRIGHT_CHECKOUT/scripts/dev/ci-driver-bwrap-profile.sh" \
             "$GITHUB_WORKSPACE/verification/native-sdk/github-actions/shared-state/sandbox-profile.txt"
       - name: Install exact Semwright daemon build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
       - name: Build exact Semwright daemon, CLI and sandbox
-        working-directory: _semwright
+        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}
         run: |
           cargo build --locked -p semwright-daemon -p semwright-cli --bins
           cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
@@ -242,6 +395,20 @@ jobs:
         with:
           name: motionwright-native-shared-state-${{ github.sha }}
           path: verification/native-sdk/public-shared-state
+          if-no-files-found: error
+          retention-days: 14
+      - name: Real native capsule source Host cycle
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' }}
+        env:
+          MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          MOTIONWRIGHT_E11_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        run: '"$RUNNER_TEMP/e11-custody-venv/bin/python" -B tooling/native_host_shared_state.py --capsule-source'
+      - name: Retain encrypted capsule source originals
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' }}
+        with:
+          name: motionwright-e11-source-sealed-${{ github.sha }}-${{ github.run_id }}-attempt1
+          path: verification/native-sdk/capsule-source-sealed/${{ github.sha }}/sealed-originals.bin
           if-no-files-found: error
           retention-days: 14
       # Finish the normal provider's capture and public curation before building

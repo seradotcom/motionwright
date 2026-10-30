@@ -75,6 +75,11 @@ class FilmSelectionTests(unittest.TestCase):
                     for artifact in (v["decoded_audio"],v["master"]["decoded_audio"]):
                         artifact.update(sha256=digest,bytes=len(original))
                 world.edit("observation",phase+"-H264-AAC-native-master.json",master)
+                # Keep this synthetic child receipt bound to the malformed WAV
+                # acknowledgement so the independent decoder guard is exercised.
+                world.edit("observation",phase+"-shared-session/master.terminal.json",
+                    lambda v:v.update(evidence_sha256=core.sha(
+                        world.files[("observation",phase+"-H264-AAC-native-master.json")])))
                 with world.patched():
                     raw,manifest=world.capture();self.assertTrue(manifest["required_layers_complete"])
                     with self.assertRaisesRegex(core.SelectionError,"decoded-wav"):world.verify(raw)
@@ -224,6 +229,79 @@ class FilmSelectionTests(unittest.TestCase):
         for blob in (b"not a PNG",header[:16]+struct.pack(">I",1)+header[20:],header[:25]+b"\x09"+header[26:]):
             with self.assertRaises(core.SelectionError):film.png_header(blob)
 
+
+
+class FilmSharedStageCustodyTests(unittest.TestCase):
+    """Retained synthetic records cannot borrow success from process exit zero."""
+    def rejected(self, world):
+        with world.patched():
+            raw, manifest = world.capture()
+            with self.assertRaises(core.SelectionError): world.verify(raw)
+        self.assertFalse(manifest["physical_acceptance"])
+        self.assertFalse(manifest["human_acceptance"])
+        self.assertFalse(manifest["release_authorized"])
+        return raw, manifest
+
+    def test_missing_master_terminal_keeps_render_but_blocks_complete_custody(self):
+        world=World("film180-g2")
+        del world.files[("observation","original-shared-session/master.terminal.json")]
+        raw,manifest=self.rejected(world)
+        rows={r["label"]:r for r in manifest["film_command_originals"]["native_stages"]}
+        self.assertEqual(rows["original.render"]["reported_result"],"SUCCESS_REPORTED")
+        self.assertEqual(rows["original.master"]["reported_result"],"UNKNOWN")
+        self.assertIn(world.files[("observation","original-shared-session/master.started.json")],raw)
+
+    def test_different_producer_pids_cannot_claim_one_shared_owner(self):
+        world=World("film180-g2")
+        for suffix in ("started","terminal"):
+            world.edit("observation","edited-shared-session/master."+suffix+".json",lambda v:v.update(producer_pid=9876))
+        _,manifest=self.rejected(world)
+        rows=[r for r in manifest["film_command_originals"]["native_stages"] if r["phase"]=="edited"]
+        self.assertTrue(all(not r["session_link_verified"] for r in rows))
+
+    def test_foreign_canonical_film_is_rejected_even_when_all_child_records_agree(self):
+        world=World("film180-g2")
+        def stage(v):
+            v["canonical_Film_sha256"]="f"*64
+            if v["result"] is not None:v["result"]["canonical_Film_sha256"]="f"*64
+        for name in ("render.started","render.terminal","master.started","master.terminal"):
+            world.edit("observation","original-shared-session/"+name+".json",stage)
+        def session(v):
+            v["canonical_Film_sha256"]="f"*64
+            for key in ("render","master"):v[key]["canonical_Film_sha256"]="f"*64
+        world.edit("observation","original.session.stdout",session)
+        stdout=world.files[("observation","original.session.stdout")]
+        world.edit("observation","original.session.terminal.json",lambda v:v.update(stdout_sha256=core.sha(stdout),stdout_bytes=len(stdout)))
+        self.rejected(world)
+
+    def test_stage_terminal_must_link_actual_selected_native_receipt_bytes(self):
+        world=World("film180-g2")
+        world.edit("observation","edited-shared-session/master.terminal.json",lambda v:v.update(evidence_sha256="0"*64))
+        raw,manifest=self.rejected(world)
+        self.assertIn(world.files[("observation","edited-shared-session/master.terminal.json")],raw)
+        row=next(r for r in manifest["film_command_originals"]["native_stages"] if r["label"]=="edited.master")
+        self.assertEqual(row["capture_status"],"INCOMPLETE_OR_UNKNOWN")
+
+    def test_exit_zero_cannot_attest_a_recreated_coordinator_or_human_acceptance(self):
+        for key in ("coordinator_recreated_between_stages","human_approval"):
+            with self.subTest(key=key):
+                world=World("film180-g2")
+                def change(v):
+                    if key=="human_approval":v["render"][key]=True
+                    else:v[key]=True
+                world.edit("observation","original.session.stdout",change)
+                stdout=world.files[("observation","original.session.stdout")]
+                world.edit("observation","original.session.terminal.json",lambda v:v.update(stdout_sha256=core.sha(stdout),stdout_bytes=len(stdout)))
+                self.rejected(world)
+
+    def test_original_unknown_terminal_is_retained_without_fabricating_success(self):
+        world=World("film180-g2")
+        world.edit("observation","edited-shared-session/master.terminal.json",lambda v:v.update(state="ERROR_OR_UNKNOWN",result=None,evidence_sha256=None))
+        raw,manifest=self.rejected(world)
+        row=next(r for r in manifest["film_command_originals"]["native_stages"] if r["label"]=="edited.master")
+        self.assertEqual(row["capture_status"],"ORIGINAL_STAGE_RETAINED")
+        self.assertEqual(row["reported_result"],"ERROR_OR_UNKNOWN")
+        self.assertIn(world.files[("observation","edited-shared-session/master.terminal.json")],raw)
 
 class DedicatedPcmCaptureTests(unittest.TestCase):
     def fixture(self,raw_failure=False,write_failure=False):
@@ -522,7 +600,7 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         target.chmod(0o600)
         return target
 
-    def command(self, label="original.render", stdout=b"PRIVATE-PARTIAL-STDOUT-\xff\x00", stderr=b"", *, code=None, deadline=True):
+    def command(self, label="original.session", stdout=b"PRIVATE-PARTIAL-STDOUT-\xff\x00", stderr=b"", *, code=None, deadline=True):
         self.put(label+".stdout", stdout)
         self.put(label+".stderr", stderr)
         self.put(label+".intent.json", b'{"argv":["PRIVATE-OWNER-PATH","render"],"automatic_retry":false}')
@@ -571,10 +649,10 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
     def row(self, manifest, path):
         return next(row for row in manifest["members"] if row["relative_path"] == path)
 
-    def test_source_owned_roster_has_18_commands_68_real_names_and_finite_limits(self):
-        self.assertEqual(len(self.commands.COMMANDS), 18)
+    def test_source_owned_roster_has_16_commands_68_real_names_and_finite_limits(self):
+        self.assertEqual(len(self.commands.COMMANDS), 16)
         self.assertEqual(len(self.contract["entries"]), 68)
-        self.assertEqual(self.commands.MAX_TOTAL, 104660992)
+        self.assertEqual(self.commands.MAX_TOTAL, 92471296)
         names = {row["relative_path"] for row in self.contract["entries"]}
         self.assertNotIn("edited.stage-audio.intent.json", names)
         for phase in ("original","edited"):
@@ -591,13 +669,13 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         raw, manifest = self.capture(); self.inspect(raw)
         import tarfile
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-            for path, expected in (("original.render.stdout",stdout),("original.render.stderr",stderr),
+            for path, expected in (("original.session.stdout",stdout),("original.session.stderr",stderr),
                                    ("original-attempt-error.json",error)):
                 row = self.row(manifest,path)
                 self.assertEqual(archive.extractfile(row["member"]).read(), expected)
                 self.assertEqual(row["retained_bytes"], len(expected))
                 self.assertEqual(row["retained_sha256"], core.sha(expected))
-        selected = next(row for row in manifest["film_command_originals"]["commands"] if row["label"]=="original.render")
+        selected = next(row for row in manifest["film_command_originals"]["commands"] if row["label"]=="original.session")
         self.assertEqual(selected["capture_status"], "ORIGINALS_RETAINED")
         self.assertEqual(selected["reported_result"], "UNKNOWN")
         self.assertFalse(manifest["film_command_originals"]["stream_eof_claimed"])
@@ -620,23 +698,23 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
 
     def test_missing_stderr_is_not_an_invented_empty_original(self):
         self.command(stdout=b"",stderr=b"partial")
-        (self.observation/"original.render.stderr").unlink()
+        (self.observation/"original.session.stderr").unlink()
         raw, manifest=self.capture(); self.inspect(raw)
-        self.assertEqual(self.row(manifest,"original.render.stdout")["retained_bytes"],0)
-        self.assertFalse(any(row["relative_path"]=="original.render.stderr" for row in manifest["members"]))
-        row=next(row for row in manifest["film_command_originals"]["commands"] if row["label"]=="original.render")
+        self.assertEqual(self.row(manifest,"original.session.stdout")["retained_bytes"],0)
+        self.assertFalse(any(row["relative_path"]=="original.session.stderr" for row in manifest["members"]))
+        row=next(row for row in manifest["film_command_originals"]["commands"] if row["label"]=="original.session")
         self.assertEqual(row["capture_status"],"INCOMPLETE_OR_UNKNOWN")
         self.assertEqual(row["parts"]["stderr"]["state"],"ABSENT_OBSERVED")
 
     def test_unlisted_neighbors_and_other_scope_cannot_enter_the_nofollow_reader(self):
         self.put("neighbor.stdout",b"NEIGHBOR-MUST-NOT-BE-READ")
-        self.put("nested/original.render.stdout",b"NESTED-MUST-NOT-BE-READ")
+        self.put("nested/original.session.stdout",b"NESTED-MUST-NOT-BE-READ")
         handles=core.RootHandles(dict(observation=str(self.observation)))
         try:
             with self.assertRaises(core.SelectionError):
-                handles.read("observation",("original.render.stdout",),1024)
+                handles.read("observation",("original.session.stdout",),1024)
             handles.admit_diagnostic_contract(self.contract)
-            for path in ("neighbor.stdout","nested/original.render.stdout","fixed.project-inspect.stdout"):
+            for path in ("neighbor.stdout","nested/original.session.stdout","fixed.project-inspect.stdout"):
                 with self.assertRaises(core.SelectionError):
                     handles.read("observation",core.member_path(path),1024)
         finally: handles.close()
@@ -647,29 +725,29 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
     def test_symlink_and_hardlink_are_failed_originals_without_following_them(self):
         import os
         target=self.put("private-target.bin",b"ORIGINAL-SECRET-TARGET")
-        os.symlink(target,self.observation/"original.render.stdout")
-        os.link(target,self.observation/"original.render.stderr")
+        os.symlink(target,self.observation/"original.session.stdout")
+        os.link(target,self.observation/"original.session.stderr")
         raw,manifest=self.capture();self.inspect(raw)
         self.assertNotIn(b"ORIGINAL-SECRET-TARGET",raw)
-        for path in ("original.render.stdout","original.render.stderr"):
+        for path in ("original.session.stdout","original.session.stderr"):
             self.assertEqual(self.row(manifest,path)["state"],"CAPTURE_FAILED")
         self.assertFalse(manifest["diagnostic_roster_complete"])
 
     def test_oversize_is_failed_not_truncated_and_keeps_other_originals(self):
         self.command()
-        path=self.observation/"original.render.stdout"
+        path=self.observation/"original.session.stdout"
         with path.open("wb") as stream: stream.truncate(self.commands.MAX_STDOUT+1)
         raw,manifest=self.capture();self.inspect(raw)
-        self.assertEqual(self.row(manifest,"original.render.stdout")["state"],"CAPTURE_FAILED")
-        self.assertEqual(self.row(manifest,"original.render.stderr")["state"],"INCLUDED")
+        self.assertEqual(self.row(manifest,"original.session.stdout")["state"],"CAPTURE_FAILED")
+        self.assertEqual(self.row(manifest,"original.session.stderr")["state"],"INCLUDED")
         self.assertFalse(manifest["diagnostic_roster_complete"])
 
     def test_changed_selected_bytes_are_retained_as_uncertain_not_replaced(self):
         self.command()
         spec=self.spec()
-        self.put("original.render.stdout",b"CHANGED-AFTER-PREFLIGHT")
+        self.put("original.session.stdout",b"CHANGED-AFTER-PREFLIGHT")
         raw,manifest=self.capture(spec)
-        self.assertEqual(self.row(manifest,"original.render.stdout")["state"],"CHANGED")
+        self.assertEqual(self.row(manifest,"original.session.stdout")["state"],"CHANGED")
         self.assertNotIn(b"CHANGED-AFTER-PREFLIGHT",raw)
         self.assertFalse(manifest["required_layers_complete"])
 
@@ -701,7 +779,7 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         with tarfile.open(fileobj=io.BytesIO(raw),mode="r:") as archive:
             for info in archive.getmembers():entries[info.name]=archive.extractfile(info).read()
         for row in manifest["film_command_originals"]["commands"]:
-            if row["label"]=="original.render":row["reported_result"]="EXIT_ZERO_REPORTED"
+            if row["label"]=="original.session":row["reported_result"]="EXIT_ZERO_REPORTED"
         entries["selected-evidence-manifest.json"]=core.canonical(manifest)
         stream=io.BytesIO()
         with tarfile.open(fileobj=stream,mode="w",format=tarfile.USTAR_FORMAT) as archive:
