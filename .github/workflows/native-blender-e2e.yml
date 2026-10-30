@@ -2033,6 +2033,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      RUSTUP_HOME: ${{ runner.temp }}/blender-lit-rustup-${{ github.run_id }}-${{ github.run_attempt }}
       VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
       EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
       MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
@@ -2064,9 +2066,14 @@ jobs:
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
             out.write('sha=' + sha + '\n')
         PY
+    - name: Prepare isolated Rust toolchain root
+      run: |
+        test ! -e "$RUSTUP_HOME"
+        mkdir -m 700 "$RUSTUP_HOME"
     - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
       with:
         toolchain: 1.98.1
+        components: rustfmt, clippy
     - name: Prepare existing locked custody environment
       run: |
         python3 -m venv "$RUNNER_TEMP/blender-lit-venv"
@@ -2730,6 +2737,11 @@ jobs:
       run: |
         {
           python3 tooling/source_policy.py
+          rustup show active-toolchain
+          rustup component list --installed
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
           cargo fmt --all -- --check
           "$RUNNER_TEMP/blender-lit-venv/bin/python" tooling/ci_test_runner.py \
             --pattern test_native_blender_lit_still_oracle.py \

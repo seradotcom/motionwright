@@ -362,8 +362,8 @@ impl OriginalSourcePlan {
 
 /// Original inputs stay typed until their bytes are released before Host dispatch.
 enum OriginalSourceInput {
-    Editable(editable_source::VerifiedSourceBundle),
-    Graph(graph_source::VerifiedSourceBundle),
+    Editable(Box<editable_source::VerifiedSourceBundle>),
+    Graph(Box<graph_source::VerifiedSourceBundle>),
 }
 
 impl OriginalSourceInput {
@@ -994,7 +994,10 @@ impl ManimCommunityDriver {
             program.plan_sha256,
             args.profile,
             OriginalSourcePlan::Editable(Box::new(args.plan)),
-            program.input_source.map(OriginalSourceInput::Editable),
+            program
+                .input_source
+                .map(Box::new)
+                .map(OriginalSourceInput::Editable),
             context,
         )
         .await
@@ -1015,7 +1018,7 @@ impl ManimCommunityDriver {
             program.plan_sha256,
             args.profile,
             OriginalSourcePlan::Graph(Box::new(args.plan)),
-            original_input.map(OriginalSourceInput::Graph),
+            original_input.map(Box::new).map(OriginalSourceInput::Graph),
             context,
         )
         .await
