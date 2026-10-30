@@ -1072,9 +1072,15 @@ mod tests {
         let project = project_with_renderer(RendererKind::Blender);
         let scene_id = project.scenes[0].id;
         let plan = build_blender_original_scene_plan(&project, scene_id).unwrap();
+        // Original-scene names are persisted; static GLB names use full UUIDs.
         assert_eq!(
             plan.contribution,
-            build_blender_contribution(&project, scene_id).unwrap()
+            build_blender_contribution_with_name_identity(
+                &project,
+                scene_id,
+                BlenderNameIdentity::OriginalSceneLegacyShortUuid,
+            )
+            .unwrap()
         );
         assert_eq!(plan.camera.source, project.scenes[0].camera);
         assert_eq!(plan.camera.resolution, [1920, 1080]);

@@ -6451,8 +6451,20 @@ mod tests {
         for contract in app.contracts() {
             contract.validate(APP_ID).unwrap();
             assert_eq!(contract.descriptor.backends, vec!["driver:motionwright"]);
-            assert!(contract.atomic_revision_cas);
-            assert_eq!(contract.retry, RetrySemantics::DurableRequestKey);
+            if contract.descriptor.name == "driver.motionwright.project.preview" {
+                assert_eq!(contract.descriptor.risk, Risk::ReadOnly);
+                assert_eq!(contract.descriptor.idempotency, Idempotency::ReadOnly);
+                assert_eq!(contract.target, TargetRequirement::ObservedResource);
+                assert_eq!(contract.commit, CommitSemantics::ReadOnly);
+                assert!(!contract.atomic_revision_cas);
+                assert_eq!(contract.retry, RetrySemantics::Never);
+                assert!(contract.descriptor.requires.iter().any(|requirement| {
+                    requirement == semwright_native_sdk::types::NATIVE_RESOURCE_READ_REQUIREMENT
+                }));
+            } else {
+                assert!(contract.atomic_revision_cas);
+                assert_eq!(contract.retry, RetrySemantics::DurableRequestKey);
+            }
         }
     }
     #[test]
