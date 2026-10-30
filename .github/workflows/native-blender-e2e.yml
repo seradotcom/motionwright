@@ -2034,7 +2034,6 @@ jobs:
     timeout-minutes: 90
     env:
       PYTHONDONTWRITEBYTECODE: "1"
-      RUSTUP_HOME: ${{ runner.temp }}/blender-lit-rustup-${{ github.run_id }}-${{ github.run_attempt }}
       VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
       EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
       MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
@@ -2068,8 +2067,12 @@ jobs:
         PY
     - name: Prepare isolated Rust toolchain root
       run: |
+        set -euo pipefail
+        test -n "$RUNNER_TEMP"
+        RUSTUP_HOME="$RUNNER_TEMP/blender-lit-rustup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         test ! -e "$RUSTUP_HOME"
         mkdir -m 700 "$RUSTUP_HOME"
+        printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
       with:
         toolchain: 1.98.1

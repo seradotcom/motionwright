@@ -3627,7 +3627,7 @@
     },
     {
       "path": ".github/workflows/native-blender-e2e.yml",
-      "sha256": "3c45d91053dc7a47d9841076a1c4a1dc766fc80dcffebdadd95b43fa4bc7bd50",
+      "sha256": "5d175928f931bf7d45111434c053f5daedac76e3ee3ec7a8e2b422e104edf9ef",
       "preamble_sha256": "5660052540c45b0ab9f6c80626e12f0498da45ee2922dd8895efe557feb4eaed",
       "evidence_class": "native_media_reopen",
       "purpose": "Separate current source gates, static GLB, original Scene, lit-still and parameterized ProductScene save/edit/reopen native alternatives, with source/recipient bindings and retained originals. Static GLB source/attempt/recipient and outer custody now require explicit semantic binding.",
@@ -4061,7 +4061,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "d058128f5068008b59a1aa19fcbf0b806e9191a69d827e68db4822f08364011d",
+          "source_sha256": "a116e8a2281c17b64417472c7a8eb2bab1185d76894ac6a463928f7965e0b9c9",
           "instance_sets": {
             "lit-still": [
               {}
@@ -4089,7 +4089,7 @@
               "name": "Prepare isolated Rust toolchain root",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "90049311740dce44061095831566b1f609896b0dc05173bb52c76bd8ff1fcfc3",
+              "source_block_sha256": "db3f9b24c34ef4830493c500c369fcbb563347cffa669fd2aec0c42fba246129",
               "api_binding": "EXPLICIT_NAME"
             },
             {

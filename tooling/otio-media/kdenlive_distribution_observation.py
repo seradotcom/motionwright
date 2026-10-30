@@ -323,8 +323,8 @@ def observe():
              and any(p.name.startswith("libQt6Gui.so") for p in targets), "core Qt ELF objects not observed")
         command("runner-package-versions", ["/usr/bin/dpkg-query", "--show",
             "--showformat=${binary:Package}\t${Version}\t${Architecture}\n",
-            "libatspi2.0-0", "at-spi2-core", "gir1.2-atspi-2.0", "binutils"], 15)
-        command("runner-atspi-package-files", ["/usr/bin/dpkg-query", "--listfiles", "libatspi2.0-0", "at-spi2-core"], 15)
+            "libatspi2.0-0t64", "at-spi2-core", "gir1.2-atspi-2.0", "binutils"], 15)
+        command("runner-atspi-package-files", ["/usr/bin/dpkg-query", "--listfiles", "libatspi2.0-0t64", "at-spi2-core"], 15)
         atspi, link = resolve_member(Path("/usr"), "lib/x86_64-linux-gnu/libatspi.so.0")
         atspi_observation = elf_observation(atspi, Path("/usr"))
         command("runner-atspi-elf", ["/usr/bin/readelf", "--file-header", "--dynamic", "--notes", str(atspi)], 15)
