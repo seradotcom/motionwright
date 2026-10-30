@@ -3,6 +3,22 @@ name: Native Motion Canvas production
 on:
   workflow_dispatch:
     inputs:
+      native_scope:
+        description: "Closed native selection; N83 is an explicit final-source preview fixture"
+        type: choice
+        options: [standard, n83-preview]
+        default: standard
+        required: false
+      expected_source_sha:
+        description: "Exact frozen Motionwright SHA; mandatory for n83-preview"
+        type: string
+        required: false
+        default: ""
+      recovery_recipient:
+        description: "Existing admitted RSA3072 public recipient JSON; mandatory for n83-preview"
+        type: string
+        required: false
+        default: ""
       v01_provider_repeat:
         description: "Run a second fresh Broker/Driver Host/owner project and compare native receipts (v0.1 reliability)"
         type: boolean
@@ -42,19 +58,24 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || '' }}
+  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' }}
 
 defaults:
   run:
     shell: bash
 
 env:
+  MOTIONWRIGHT_NATIVE_SCOPE: ${{ (github.event_name == 'workflow_dispatch' && inputs.native_scope) || 'standard' }}
+  MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+  MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+  MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   PLAYWRIGHT_BROWSERS_PATH: '0'
-  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+  SEMWRIGHT_CHECKOUT_PATH: ${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || '_semwright' }}
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || '_semwright' }}
 
 jobs:
   real-native-render:
@@ -64,6 +85,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+
+      - name: Admit closed native selection before bootstrap
+        run: |
+          python3 - <<'PY'
+          import os, re
+          scope = os.environ["MOTIONWRIGHT_NATIVE_SCOPE"]
+          assert scope in {"standard", "n83-preview"}, "unsupported native scope"
+          if scope == "n83-preview":
+              assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+              assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "native rerun forbidden"
+              sha = os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"]
+              assert re.fullmatch("[0-9a-f]{40}", sha) and sha == os.environ["GITHUB_SHA"]
+              assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
+          PY
+
+      - name: Install pinned N83 custody and PNG verifier in a private runner venv
+        if: ${{ inputs.native_scope == 'n83-preview' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          assert root.is_absolute() and root.is_dir() and root.resolve(strict=True) == root
+          assert not any(p.is_symlink() for p in (root, *root.parents))
+          venv = root / "n83-custody-venv"
+          venv.mkdir(mode=0o700, exist_ok=False)
+          preflight = root / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          preflight.mkdir(mode=0o700, exist_ok=False)
+          PY
+          python3 -m venv "$RUNNER_TEMP/n83-custody-venv"
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" -m pip install             --disable-pip-version-check --require-hashes --only-binary=:all:             -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" -m pip install             --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-admission-only
 
       - name: Resolve exact Semwright source pin
         id: pin
@@ -76,13 +130,13 @@ jobs:
         with:
           repository: seradotcom/semwright
           ref: ${{ steps.pin.outputs.sha }}
-          path: _semwright
+          path: ${{ env.SEMWRIGHT_CHECKOUT_PATH }}
           persist-credentials: false
 
       - name: Verify immutable source identities
         run: |
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          test "$(git -C "$SEMWRIGHT_CHECKOUT" rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
           python3 tooling/source_policy.py
 
       - name: Verify v0.1 native CLI failures never expose private job receipts
@@ -106,11 +160,11 @@ jobs:
         with:
           node-version: '22.22.0'
           cache: npm
-          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+          cache-dependency-path: ${{ env.SEMWRIGHT_CHECKOUT_PATH }}/integrations/motion-canvas/runtime/package-lock.json
 
       - name: Configure disposable-runner Driver Host sandbox
         run: |
-          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+          bash "$SEMWRIGHT_CHECKOUT/scripts/dev/ci-driver-bwrap-profile.sh" \
             "$GITHUB_WORKSPACE/verification/native-render-e2e/sandbox-profile.txt"
 
       - name: Install Semwright daemon build dependencies
@@ -119,21 +173,26 @@ jobs:
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang ffmpeg
 
       - name: Install exact Motion Canvas runtime and Firefox
-        working-directory: _semwright/integrations/motion-canvas/runtime
+        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}/integrations/motion-canvas/runtime
         run: |
           npm ci --ignore-scripts
           npx --no-install playwright install --with-deps firefox
           npm run probe
 
       - name: Build exact Semwright Broker, sandbox and Motion Canvas provider
-        working-directory: _semwright
+        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}
         run: |
           cargo build --locked -p semwright-daemon -p semwright-cli --bins
           cargo build --locked \
             -p semwright-plugin-host --bin semwright-sandbox \
             -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver
 
+      - name: Build admitted N83 preview producer
+        if: ${{ inputs.native_scope == 'n83-preview' }}
+        run: cargo build --locked -p motionwright-native --example native-incremental-e2e
+
       - name: Build Motionwright production acceptance
+        if: ${{ inputs.native_scope != 'n83-preview' }}
         run: |
           cargo build --locked -p motionwright-native --example native-render-e2e
           cargo test --locked -p motionwright-native \
@@ -149,6 +208,91 @@ jobs:
             exact_cubic_out_ -- --nocapture
           cargo test --locked -p motionwright-native --lib \
             smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
+
+      - name: Verify exact N83 source controls before Native
+        id: n83_source_controls
+        if: ${{ inputs.native_scope == 'n83-preview' }}
+        run: |
+          preflight="$RUNNER_TEMP/mw-n83-preflight-$GITHUB_RUN_ID"
+          python="$RUNNER_TEMP/n83-custody-venv/bin/python"
+          "$python" -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          selected = (
+              "crates/native/examples/native-incremental-e2e.rs",
+              "tooling/native_incremental_reconstruction.py",
+              "tooling/tests/test_native_incremental_reconstruction.py",
+              "tooling/ci_test_runner.py", "tooling/native_render_e2e.py",
+              ".github/workflows/native-render-e2e.yml", "SOURCE_LOCK.json", "Cargo.lock",
+              "rust-toolchain.toml", "apps/studio/package-lock.json",
+          )
+          originals = {}
+          for relative in selected:
+              raw = Path(relative).read_bytes()
+              target = root / "source" / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              with target.open("xb") as stream:
+                  stream.write(raw)
+              originals[relative] = {"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()}
+          with (root / "source-originals.json").open("x") as stream:
+              json.dump({"expected_source_sha":os.environ["GITHUB_SHA"],"files":originals}, stream)
+          PY
+          "$python" -B - <<'PY'
+          import json, os, unittest
+          from pathlib import Path
+          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_native_incremental_reconstruction.py")
+          def ids(test):
+              if isinstance(test, unittest.TestSuite):
+                  for child in test:
+                      yield from ids(child)
+              else:
+                  yield test.id()
+          roster = sorted(ids(suite))
+          assert len(roster) == 75 and len(set(roster)) == 75
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          with (root / "python75-roster.original.json").open("x") as stream:
+              json.dump({"source_sha":os.environ["GITHUB_SHA"],"test_ids":roster}, stream)
+          PY
+          "$python" -B tooling/ci_test_runner.py             --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests             --pattern test_native_incremental_reconstruction.py             --mode discovery --require-complete --expected-source "$GITHUB_SHA"             --timeout 180 --report "$preflight/python75.json"             >"$preflight/python75-runner.stdout.original" 2>"$preflight/python75-runner.stderr.original"
+          "$python" -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          result = json.loads((root / "python75.json").read_text())
+          assert result["status"] == "PASS" and result["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert len(result["steps"]) == 1 and result["steps"][0]["status"] == "PASS"
+          stderr = (root / "python75-00-stderr.log").read_text()
+          assert len(re.findall(r"(?m)^Ran 75 tests in ", stderr)) == 1
+          PY
+          cargo test --locked -p motionwright-native --example native-incremental-e2e -- --list             >"$preflight/rust3-list.stdout.original" 2>"$preflight/rust3-list.stderr.original"
+          "$python" -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          expected = sorted([
+              "source_controls::seed_edit_reopen_preserves_outer_scenes_and_shared_dependencies",
+              "n83_time_ripple_domain_controls::actual_duration_ripple_moves_frame75_outside_original_visible_window",
+              "n83_time_ripple_domain_controls::visual_only_window_cannot_stand_for_real_time_ripple_dependency",
+          ])
+          observed = sorted(line.removesuffix(": test") for line in
+              (root / "rust3-list.stdout.original").read_text().splitlines() if line.endswith(": test"))
+          assert observed == expected
+          with (root / "rust3-roster.original.json").open("x") as stream:
+              json.dump({"source_sha":os.environ["GITHUB_SHA"],"test_ids":observed}, stream)
+          PY
+          cargo test --locked -p motionwright-native --example native-incremental-e2e -- --test-threads=1             >"$preflight/rust3-run.stdout.original" 2>"$preflight/rust3-run.stderr.original"
+          "$python" -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          stdout = (root / "rust3-run.stdout.original").read_text()
+          assert len(re.findall(r"(?m)^test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;", stdout)) == 1
+          PY
+
+      - name: Seal failed N83 source controls without any owner or Native attempt
+        if: ${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}
+        run: '"$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-seal-preflight-failure'
 
       - name: Verify direct-vs-mediated parity invariants before native rendering
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_direct_mediated_parity.py' -v
@@ -169,12 +313,17 @@ jobs:
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
-          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'
-          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ inputs.native_scope == 'n83-preview' && '0' || '1' }}
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ env.SEMWRIGHT_CHECKOUT }}/target/debug/semwright-sandbox
         run: |
-          python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/run.log
+          if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ]; then
+            "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py
+          else
+            python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/run.log
+          fi
 
       - name: Verify review evidence
+        if: ${{ inputs.native_scope != 'n83-preview' }}
         run: |
           test -s "verification/native-render-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-render-evidence.json"
@@ -290,12 +439,12 @@ jobs:
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci')) }}
+        if: ${{ inputs.native_scope != 'n83-preview' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
         env:
           MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
           MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'
-          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ env.SEMWRIGHT_CHECKOUT }}/target/debug/semwright-sandbox
         run: |
           set -euo pipefail
           python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/repeat-run.log
@@ -313,7 +462,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: always()
+        if: ${{ always() && inputs.native_scope != 'n83-preview' }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -325,9 +474,42 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
+        if: ${{ always() && inputs.native_scope != 'n83-preview' }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify complete sealed N83 fixture outcome
+        if: ${{ inputs.native_scope == 'n83-preview' }}
+        run: |
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("verification/native-n83-public")
+          value = json.loads((root / "public-evidence.json").read_text())
+          assert value["schema"] == "motionwright.n83.sealed-public/1"
+          assert value["status"] == "SCOPED_COMPLETED"
+          assert value["selected_originals_complete"] is True
+          assert value["daemon_shutdown_complete"] is True and value["source_unchanged"] is True
+          assert value["context"] == {"source_sha":os.environ["GITHUB_SHA"], "semwright_sha":json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"], "run_id":os.environ["GITHUB_RUN_ID"], "run_attempt":"1"}
+          assert value["completed_stages"] == ["seed","before","edit","dirty","full-after","assemble-input","admit-preview","reopen-preview","dependency-negative"]
+          assert value["automatic_retry"] is False and value["formal_acceptance"] is False
+          assert value["ciphertext_file"] == "sealed-originals.bin"
+          path = root / "sealed-originals.bin"
+          with path.open("rb") as stream:
+              observed = hashlib.file_digest(stream, "sha256").hexdigest()
+          assert path.stat().st_size == value["ciphertext_bytes"] and observed == value["ciphertext_sha256"]
+          PY
+
+      - name: Publish only sealed N83 originals and closed manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() && inputs.native_scope == 'n83-preview' }}
+        with:
+          name: motionwright-n83-sealed-${{ github.sha }}-${{ github.run_id }}-attempt1
+          path: |
+            verification/native-n83-public/sealed-originals.bin
+            verification/native-n83-public/public-evidence.json
           if-no-files-found: error
           retention-days: 14

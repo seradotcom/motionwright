@@ -113,7 +113,7 @@ for path in iter_source_files(ROOT):
     if re.search(r"(^|/)(MASTER_[^/]*|plantillas_agentes)(/|$)", rel, re.IGNORECASE):
         errors.append(f"private coordination material must not be published: {rel}")
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         continue
     developer_home = "/home/" + "sergio/"
@@ -173,23 +173,29 @@ for path in iter_source_files(ROOT):
             "crates/storage/src/cas_retention_process_tests.rs",
             "crates/driver-manim-community/src/bin/runtime_runner.rs",
         }
-        # Exact reviewed source: the bounded FIFO child exists only in cfg(test).
-        # Keep the production file outside the path-only process allowlist.
+        # Exact reviewed sources for bounded tests and acceptance fixtures.
+        # Keep every fixture outside the path-only process allowlist.
         # read_text normalizes newlines; the reviewed UTF-8 Git source uses LF.
-        process_test_fixture_sources = {
+        reviewed_process_fixture_sources = {
+            # The bounded FIFO child exists only in cfg(test).
             "crates/native/src/production/brand_fonts.rs":
                 "898dbb96ea14e2a24698bd2a97442eaa61debb55b91e627fd40a3ecb9ff14d4c",
             # Retained SQLite identity uses a bounded child only in cfg(test).
             "crates/storage/src/sqlite_identity.rs":
                 "332d6b4789a2a9e00785030ceb965189a90f57f55857388014eeec763b00274c",
+            # N83 acceptance CLI, not cfg(test): fixed Git identity reads and
+            # the committed preview helper under the admitted runner's owned
+            # process group/deadline; no shell or project-selected executable.
+            "crates/native/examples/native-incremental-e2e.rs":
+                "b4d3d313bf2c92c989df668d9cb61682c56bae0e588b6d4a3d46ede1894df9d1",
         }
-        reviewed_test_fixture = (
-            rel in process_test_fixture_sources
+        reviewed_process_fixture = (
+            rel in reviewed_process_fixture_sources
             and hashlib.sha256(text.encode("utf-8")).hexdigest()
-                == process_test_fixture_sources[rel]
+                == reviewed_process_fixture_sources[rel]
         )
         if (any(token in text for token in process_tokens)
-                and rel not in process_allowlist and not reviewed_test_fixture):
+                and rel not in process_allowlist and not reviewed_process_fixture):
             errors.append(f"unreviewed first-party process execution primitive found: {rel}")
 
         direct_network_tokens = [

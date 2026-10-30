@@ -227,7 +227,10 @@ PLAN_KINDS = {"TECHNICAL_SCOPE", "COMPONENT_PREREQUISITE",
 INPUT_BINDINGS = {"PUBLIC_RSA3072_SPKI_DER_BASE64", "PUBLIC_RECIPIENT_SHA256",
                   "REPAIRED_G2_ORIGINAL_SOURCE_ADMISSION",
                   "FILM180_G2_ORIGINAL_SOURCE_ADMISSION", "CANDIDATE_SOURCE_SHA",
-                  "PUBLIC_RSA3072_RECIPIENT_JSON"}
+                  "PUBLIC_RSA3072_RECIPIENT_JSON",
+                  "FIXEDTXT_WORKFLOW_ORIGINAL_REQUEST_JSON",
+                  "FIXEDTXT_R28_ORIGINAL_DISPATCH_JSON",
+                  "FIXEDTXT_R28_ORIGINAL_DELIVERY_JSON"}
 
 
 def _text(value, code, *, nullable=False):
@@ -392,8 +395,17 @@ def _input_value(value, spec):
 
 
 
+# Exact cumulative Graph source diagnostics. Raw source blocks are authenticated
+# again by review_scope_definition, and their earlier positive archive anchor
+# must remain required in every case. No arbitrary guard or hash is exempted.
+REVIEWED_FAILURE_DIAGNOSTICS = {'64e62942aeb82cee4b8a85a36f1383e064660d61404703b083b747478b9ca4db': ['EXECUTABLE_STEP', 'Admit the complete Service47 unsealed upload', "always() && matrix.selection == 'phase1-service47' && steps.archive.outcome != 'success'", 'archive'], 'bc2d20cf3bbf830078b9b84d3b601fa6b1920e455d3f509a8622a5dbc023fdda': ['ARTIFACT_RETENTION', 'Preserve unsealed diagnostics when archive custody fails', "always() && steps.archive.outcome != 'success' && (matrix.selection != 'phase1-service47' || steps.phase1-unsealed-upload-admission.outputs.admitted == 'true') && (matrix.selection != 'phase1-native-graph' || steps.graph-final-upload-admission.outputs.admitted == 'true')", 'archive']}
+
+
 def _retention_failure_reference(step):
-    """Recognize only a failure diagnostic upload; authenticate its anchor below."""
+    """Recognize reviewed failure diagnostics and authenticate their positive anchor."""
+    reviewed = REVIEWED_FAILURE_DIAGNOSTICS.get(step.get("source_block_sha256"))
+    if reviewed is not None and [step.get("kind"), step.get("name"), step.get("guard")] == reviewed[:3]:
+        return reviewed[3]
     if step["kind"] != "ARTIFACT_RETENTION":
         return None
     match = re.fullmatch(

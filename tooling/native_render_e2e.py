@@ -10,6 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import sys
+from contextlib import contextmanager
 import shutil
 import signal
 import subprocess
@@ -33,7 +36,10 @@ SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8")
 PIN = SOURCE_LOCK["dependencies"]["semwright"]["revision"]
 SEMWRIGHT = Path(os.environ.get("SEMWRIGHT_CHECKOUT", ROOT / "_semwright")).resolve()
 SW_BINS = SEMWRIGHT / "target" / "debug"
-MW_BIN = ROOT / "target" / "debug" / "examples" / "native-render-e2e"
+NATIVE_SCOPE = os.environ.get("MOTIONWRIGHT_NATIVE_SCOPE", "standard")
+MW_BIN = ROOT / "target" / "debug" / "examples" / (
+    "native-incremental-e2e" if NATIVE_SCOPE == "n83-preview" else "native-render-e2e"
+)
 RUNTIME = SEMWRIGHT / "integrations" / "motion-canvas" / "runtime"
 GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 # A repeated CI-owned full render gets a distinct durable evidence directory,
@@ -48,6 +54,9 @@ if RUN_LABEL not in {"", "repeat-02"}:
 EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
     GITHUB_SHA if not RUN_LABEL else GITHUB_SHA + "-" + RUN_LABEL
 )
+
+if NATIVE_SCOPE == "n83-preview":
+    EVIDENCE = ROOT / "verification" / "native-n83-private" / GITHUB_SHA
 
 
 def digest(path: Path) -> str:
@@ -263,11 +272,377 @@ def wait_for_socket(
     raise AssertionError("semwrightd did not expose the owner socket")
 
 
+class N83RunnerFailure(RuntimeError):
+    """Closed public failure; original details remain in private evidence."""
+
+
+N83_STAGES = (
+    "seed", "before", "edit", "dirty", "full-after", "assemble-input",
+    "admit-preview", "reopen-preview", "dependency-negative",
+)
+
+
+def n83_custody():
+    import ci_private_evidence
+    return ci_private_evidence
+
+
+def n83_read_json(path):
+    custody = n83_custody()
+    return custody.strict(custody.regular(Path(path), custody.MAX_JSON)[0])
+
+
+def n83_source_identity():
+    expected = os.environ.get("MW_NATIVE_EXPECTED_SOURCE_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected) or expected != GITHUB_SHA:
+        raise N83RunnerFailure("N83_SOURCE_ADMISSION")
+    head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, stderr=subprocess.PIPE).strip()
+    dirty = subprocess.check_output(
+        ["git", "-C", str(ROOT), "status", "--porcelain=v1", "--untracked-files=normal"],
+        text=True, stderr=subprocess.PIPE,
+    )
+    if head != expected or dirty:
+        raise N83RunnerFailure("N83_SOURCE_NOT_CLEAN_F")
+    locks = {}
+    for relative in ("Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json"):
+        raw = (ROOT / relative).read_bytes()
+        committed = subprocess.check_output(["git", "-C", str(ROOT), "show", "HEAD:" + relative], stderr=subprocess.PIPE)
+        if raw != committed:
+            raise N83RunnerFailure("N83_LOCK_CHANGED")
+        locks[relative] = hashlib.sha256(raw).hexdigest()
+    return {
+        "motionwright_sha": head, "sdk_revision": PIN, "locks": locks,
+        "locks_sha256": hashlib.sha256(
+            json.dumps(locks, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
+def n83_admission(*, preflight_seal_only=False):
+    # Pure admission/readback: no owner directory, process or native effect.
+    if (
+        NATIVE_SCOPE != "n83-preview"
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+        or RUN_LABEL or CAPTION_E2E != "0"
+        or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT", "false") != "false"
+        or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY", "0") not in {"", "0"}
+    ):
+        raise N83RunnerFailure("N83_CLOSED_MANUAL_SCOPE_REQUIRED")
+    custody = n83_custody()
+    context = custody.validate_context({
+        "source_sha": GITHUB_SHA, "semwright_sha": PIN,
+        "run_id": os.environ.get("GITHUB_RUN_ID", ""), "run_attempt": "1",
+    })
+    recipient = custody.strict(os.environ.get("MOTIONWRIGHT_N83_RECOVERY_RECIPIENT", "").encode())
+    custody.public_key(recipient)  # RSA3072/SPKI digest validated before effects.
+    temp_text = os.environ.get("RUNNER_TEMP", "")
+    runner_temp = Path(temp_text)
+    if (
+        not temp_text or not runner_temp.is_absolute() or not runner_temp.is_dir()
+        or runner_temp.resolve(strict=True) != runner_temp
+        or any(parent.is_symlink() for parent in (runner_temp, *runner_temp.parents))
+    ):
+        raise N83RunnerFailure("N83_RUNNER_TEMP_REQUIRED")
+    preflight = runner_temp / ("mw-n83-preflight-" + context["run_id"])
+    if (
+        not preflight.is_dir() or preflight.resolve(strict=True) != preflight
+        or preflight.is_symlink() or preflight.stat().st_mode & 0o077
+    ):
+        raise N83RunnerFailure("N83_PRIVATE_PREFLIGHT_ROOT_REQUIRED")
+    from importlib.metadata import version
+    versions = {name: version(name) for name in ("cryptography", "cffi", "pycparser", "Pillow")}
+    if versions != {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "2.23", "Pillow": "10.2.0"}:
+        raise N83RunnerFailure("N83_PYTHON_PROFILE_MISMATCH")
+    source, source_error = None, None
+    try:
+        source = n83_source_identity()
+    except Exception as error:
+        if not preflight_seal_only:
+            raise
+        # A failed clean-F source control is evidence to seal, never admission
+        # to owner creation or Native. This exception is exclusive to salvage.
+        source_error = {"exception_type": type(error).__name__, "error": str(error)}
+    return {
+        "recipient": recipient, "context": context,
+        "source": source, "source_check_error": source_error, "runner_temp": runner_temp,
+        "versions": {"python": sys.version, "executable": sys.executable, **versions},
+        "preflight_root": preflight,
+        "completed_stages": [], "stage_processes": [], "daemon": None, "failed": False,
+    }
+
+
+def n83_seal_preflight_failure():
+    """One capture of failed source controls; cannot create or operate an owner."""
+    admitted = n83_admission(preflight_seal_only=True)
+    owner = admitted["runner_temp"] / ("mw-n83-" + admitted["context"]["run_id"])
+    public = ROOT / "verification" / "native-n83-public"
+    # Refuse any existing owner/evidence/public path, even a dangling symlink.
+    # This path must never replace or supplement a Native attempt's own seal.
+    if any(path.exists() or path.is_symlink() for path in (owner, EVIDENCE, public)):
+        raise N83RunnerFailure("N83_PREFLIGHT_SALVAGE_REQUIRES_NO_OWNER_ATTEMPT")
+    custody = n83_custody()
+    custody.new_json(admitted["preflight_root"] / "preflight-seal.started.original.json", {
+        "schema": "motionwright.n83.preflight-seal-intent/1",
+        "context": admitted["context"], "source_observed": admitted["source"],
+        "source_check_error": admitted.get("source_check_error"),
+        "versions": admitted["versions"], "automatic_retry": False,
+        "native_execution_performed_by_this_entry": False,
+        "effects_absent_asserted": False, "formal_acceptance": False,
+    })
+    plaintext, _ = custody.gather_snapshot(
+        {"preflight": admitted["preflight_root"]}, preserve_partial=True,
+    )
+    envelope = custody.encrypt_snapshot(plaintext, admitted["recipient"], admitted["context"])
+    public.mkdir(mode=0o700, parents=True, exist_ok=False)
+    custody.new_bytes(public / "sealed-originals.bin", envelope)
+    manifest = {
+        "schema": "motionwright.n83.sealed-public/1", "status": "NOT_VERIFIED",
+        "capture_scope": "preflight-failure-only", "context": admitted["context"],
+        "recipient_spki_sha256": admitted["recipient"]["sha256"],
+        "ciphertext_file": "sealed-originals.bin",
+        "ciphertext_sha256": hashlib.sha256(envelope).hexdigest(),
+        "ciphertext_bytes": len(envelope), "selected_originals_complete": False,
+        "daemon_shutdown_complete": False, "source_unchanged": False,
+        "completed_stages": [], "automatic_retry": False, "master_eligible": False,
+        "formal_acceptance": False, "release_authorized": False,
+        "originals_retained_in_place": True,
+    }
+    custody.new_json(public / "public-evidence.json", manifest)
+    print(json.dumps(manifest, sort_keys=True), flush=True)
+
+
+def n83_stage(name, arguments, *, env, admitted, timeout=420):
+    # Rust CLI stdout is empty; original terminal is the sole completion input.
+    if name not in N83_STAGES or arguments[0] != str(MW_BIN) or arguments[1] != name:
+        raise N83RunnerFailure("N83_STAGE_SCOPE")
+    done = admitted["completed_stages"]
+    if len(done) >= len(N83_STAGES) or name != N83_STAGES[len(done)] or (EVIDENCE / name).exists():
+        raise N83RunnerFailure("N83_STAGE_REPLAY_FORBIDDEN")
+    commands = EVIDENCE / "runner-commands"
+    commands.mkdir(mode=0o700, exist_ok=True)
+    custody = n83_custody()
+    custody.new_json(commands / (name + ".started.json"), {
+        "stage": name, "argv": arguments, "source": admitted["source"],
+        "automatic_retry": False, "started_ns": time.time_ns(),
+    })
+    code, timed_out, wait_error, quiescent = None, False, None, False
+    with (commands / (name + ".stdout.original")).open("xb") as out, (
+        commands / (name + ".stderr.original")
+    ).open("xb") as err:
+        os.chmod(out.name, 0o600)
+        os.chmod(err.name, 0o600)
+        process = subprocess.Popen(
+            arguments, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+            start_new_session=True,
+        )
+        # Track immediately: even an exceptional wait is finalized by the owner.
+        admitted.setdefault("stage_processes", []).append(process)
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        except BaseException as error:
+            wait_error = {"exception_type": type(error).__name__, "error": str(error)}
+        finally:
+            try:
+                quiescent = n83_stop_group(process)
+            except BaseException as error:
+                wait_error = {"exception_type": type(error).__name__, "error": str(error)}
+                quiescent = False
+            code = process.poll()
+    custody.new_json(commands / (name + ".exit.original.json"), {
+        "stage": name, "exit_code": code, "timed_out": timed_out,
+        "wait_error": wait_error, "process_group_quiescent": quiescent,
+        "automatic_retry": False, "effects_absent_asserted": False,
+        "finished_ns": time.time_ns(),
+    })
+    if timed_out or wait_error is not None or code != 0 or not quiescent:
+        raise N83RunnerFailure("N83_STAGE_NOT_COMPLETED")
+    if (commands / (name + ".stdout.original")).stat().st_size:
+        raise N83RunnerFailure("N83_EMPTY_STDOUT_CONTRACT")
+    terminal = n83_read_json(EVIDENCE / name / "stage.terminal.json")
+    started = n83_read_json(EVIDENCE / name / "stage.started.json")
+    if (
+        terminal.get("schema") != "motionwright.native-incremental-stage-terminal/1"
+        or terminal.get("status") != "COMPLETED"
+        or terminal.get("source") != admitted["source"]
+        or started.get("stage") != name or started.get("source") != admitted["source"]
+        or terminal.get("automatic_retry") is not False
+        or terminal.get("master_eligible") is not False
+        or terminal.get("acceptance_granted") is not False
+        or (EVIDENCE / name / "stage.unknown.json").exists()
+    ):
+        raise N83RunnerFailure("N83_ORIGINAL_TERMINAL_NOT_BOUND")
+    admitted["completed_stages"].append(name)
+
+
+def n83_seed(database, env, admitted):
+    n83_stage("seed", [str(MW_BIN), "seed", str(database), str(EVIDENCE)],
+              env=env, admitted=admitted, timeout=120)
+    seeded = n83_read_json(EVIDENCE / "seed" / "fixture.identity.json")
+    if (
+        seeded.get("width") != 640 or seeded.get("height") != 360
+        or seeded.get("frame_rate") != {"num": 30, "den": 1}
+        or seeded.get("total_frames") != 90
+        or seeded.get("source_window") != {"start": 30, "end": 60}
+        or not isinstance(seeded.get("resource"), str) or not seeded["resource"]
+    ):
+        raise N83RunnerFailure("N83_SEED_IDENTITY")
+    return seeded
+
+
+def n83_remaining_stages(database, connection_path, env, admitted):
+    for name in N83_STAGES[1:]:
+        arguments = [str(MW_BIN), name, str(database)]
+        if name in {"before", "dirty", "full-after"}:
+            arguments.append(str(connection_path))
+        elif name == "admit-preview":
+            arguments.append(sys.executable)
+        arguments.append(str(EVIDENCE))
+        n83_stage(name, arguments, env=env, admitted=admitted)
+    # Three actual producer invocations only: before90 + dirty60 + full-after90.
+    # The final dependency-negative is model/Store only, with no fourth render.
+
+
+def n83_stop_group(process):
+    # Only groups created by this wrapper with start_new_session=True.
+    # Normal standard-mode cleanup remains unchanged.
+    if process is None:
+        return True
+    for sig, seconds in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            process.wait(timeout=5)
+            return True
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            process.poll()
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                process.wait(timeout=5)
+                return True
+            time.sleep(0.05)
+    return False
+
+
+def n83_seal(admitted, owner, *, shutdown_complete):
+    completed = admitted["completed_stages"]
+    if completed != list(N83_STAGES[:len(completed)]):
+        raise N83RunnerFailure("N83_NONCANONICAL_STAGE_ROSTER")
+    custody = n83_custody()
+    source_unchanged = False
+    try:
+        source_unchanged = n83_source_identity() == admitted["source"]
+    except Exception:
+        pass
+    custody.new_json(EVIDENCE / "runner-final.original.json", {
+        "schema": "motionwright.n83.runner-private/1",
+        "source": admitted["source"], "versions": admitted["versions"],
+        "completed_stages": admitted["completed_stages"],
+        "failed": admitted["failed"], "daemon_shutdown_complete": shutdown_complete,
+        "source_unchanged": source_unchanged,
+        "automatic_retry": False, "owner_retained_in_place": True,
+        "final_project_is_negative_revision_without_current_preview": (
+            admitted["completed_stages"] == list(N83_STAGES)
+        ),
+    })
+    # One bounded salvage capture even if shutdown could not be proved.
+    # A stable read-time inventory never substitutes for process quiescence.
+    plaintext, snapshot_complete = custody.gather_snapshot(
+        {"owner": owner, "evidence": EVIDENCE, "preflight": admitted["preflight_root"]},
+        preserve_partial=True,
+    )
+    complete = bool(snapshot_complete and shutdown_complete)
+    envelope = custody.encrypt_snapshot(plaintext, admitted["recipient"], admitted["context"])
+    public = ROOT / "verification" / "native-n83-public"
+    public.mkdir(mode=0o700, parents=True, exist_ok=False)
+    ciphertext = public / "sealed-originals.bin"
+    custody.new_bytes(ciphertext, envelope)
+    success = (
+        complete and not admitted["failed"] and source_unchanged
+        and admitted["completed_stages"] == list(N83_STAGES)
+    )
+    # Closed public projection: no owner paths, native IDs, sessions, raw errors,
+    # project/generation identities, stdout/stderr, or original frame/audio bytes.
+    manifest = {
+        "schema": "motionwright.n83.sealed-public/1",
+        "status": "SCOPED_COMPLETED" if success else "NOT_VERIFIED",
+        "context": admitted["context"],
+        "recipient_spki_sha256": admitted["recipient"]["sha256"],
+        "ciphertext_file": "sealed-originals.bin",
+        "ciphertext_sha256": hashlib.sha256(envelope).hexdigest(),
+        "ciphertext_bytes": len(envelope),
+        "selected_originals_complete": complete,
+        "daemon_shutdown_complete": shutdown_complete,
+        "source_unchanged": source_unchanged,
+        "completed_stages": list(admitted["completed_stages"]),
+        "automatic_retry": False, "master_eligible": False,
+        "formal_acceptance": False, "release_authorized": False,
+        "originals_retained_in_place": True,
+    }
+    custody.new_json(public / "public-evidence.json", manifest)
+    if not success:
+        raise N83RunnerFailure("N83_NOT_VERIFIED")
+    print(json.dumps(manifest, sort_keys=True), flush=True)
+
+
+@contextmanager
+def native_workspace(admitted):
+    if admitted is None:
+        with tempfile.TemporaryDirectory(prefix="motionwright-native-render-") as raw:
+            yield raw
+        return
+    # No tempfile fallback. Reusing the run's owner path is rejected.
+    owner = admitted["runner_temp"] / ("mw-n83-" + admitted["context"]["run_id"])
+    owner.mkdir(mode=0o700, exist_ok=False)
+    owner.chmod(0o700)
+    try:
+        yield str(owner)
+    except BaseException as error:
+        admitted["failed"] = True
+        try:
+            n83_custody().new_json(EVIDENCE / "runner-error.original.json", {
+                "exception_type": type(error).__name__, "error": str(error),
+                "effects_absent_asserted": False, "automatic_retry": False,
+            })
+        except Exception:
+            pass
+    finally:
+        quiescence = []
+        # Do not short-circuit: every started group must receive bounded cleanup.
+        for process in [admitted["daemon"], *admitted.get("stage_processes", [])]:
+            try:
+                quiescence.append(n83_stop_group(process))
+            except BaseException:
+                quiescence.append(False)
+        try:
+            n83_seal(admitted, owner, shutdown_complete=all(quiescence))
+        except BaseException as error:
+            try:
+                n83_custody().new_json(EVIDENCE / "seal-error.original.json", {
+                    "exception_type": type(error).__name__, "error": str(error),
+                    "automatic_retry": False, "originals_retained_in_place": True,
+                })
+            except Exception:
+                pass
+            raise N83RunnerFailure("N83_SEAL_OR_OUTCOME_NOT_VERIFIED") from None
+
+
+
 def main() -> None:
+    if NATIVE_SCOPE not in {"standard", "n83-preview"}:
+        raise N83RunnerFailure("N83_UNKNOWN_SCOPE")
+    admitted = n83_admission() if NATIVE_SCOPE == "n83-preview" else None
     exact_inputs()
     EVIDENCE.mkdir(parents=True, exist_ok=False)
+    if admitted is not None:
+        EVIDENCE.chmod(0o700)
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-render-") as raw:
+    with native_workspace(admitted) as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         paths: dict[str, Path] = {}
@@ -301,23 +676,26 @@ def main() -> None:
         )
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if (seeded["width"], seeded["height"]) != (1920, 1080):
-            raise AssertionError(f"unexpected master profile: {seeded}")
-        # Non-mutating app-owned Film export, exactly the same source fixture
-        # that ProductionCoordinator projects during the mediated render.
-        film_source = EVIDENCE / "motionwright-direct-parity-film.json"
-        canonical_film = run_json(
-            [str(MW_BIN), "film", str(database), str(film_source)], env=env,
-        )
-        if (
-            canonical_film.get("direct_parity_source") != "PASS"
-            or canonical_film.get("project_id") != seeded["project_id"]
-            or canonical_film.get("generation") != seeded["generation"]
-            or canonical_film.get("revision") != seeded["revision"]
-            or canonical_film.get("frame_count") != 60
-        ):
-            raise AssertionError("app-owned direct parity Film is not the pinned project revision")
+        if admitted is not None:
+            seeded = n83_seed(database, env, admitted)
+        else:
+            seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+            if (seeded["width"], seeded["height"]) != (1920, 1080):
+                raise AssertionError(f"unexpected master profile: {seeded}")
+            # Non-mutating app-owned Film export, exactly the same source fixture
+            # that ProductionCoordinator projects during the mediated render.
+            film_source = EVIDENCE / "motionwright-direct-parity-film.json"
+            canonical_film = run_json(
+                [str(MW_BIN), "film", str(database), str(film_source)], env=env,
+            )
+            if (
+                canonical_film.get("direct_parity_source") != "PASS"
+                or canonical_film.get("project_id") != seeded["project_id"]
+                or canonical_film.get("generation") != seeded["generation"]
+                or canonical_film.get("revision") != seeded["revision"]
+                or canonical_film.get("frame_count") != 60
+            ):
+                raise AssertionError("app-owned direct parity Film is not the pinned project revision")
 
         driver = paths["bin"] / "semwright-motion-canvas-driver"
         node_tool = paths["bin"] / "semwright-motion-node"
@@ -431,6 +809,8 @@ def main() -> None:
             stderr=log_stream,
             start_new_session=True,
         )
+        if admitted is not None:
+            admitted["daemon"] = daemon
         # Passive, bounded lifecycle evidence on disposable CI only. The
         # sampler never inspects argv, env, sessions or rendered media and
         # cannot relaunch provider processes or jobs.
@@ -488,6 +868,10 @@ def main() -> None:
                     "resource": seeded["resource"],
                 },
             )
+
+            if admitted is not None:
+                n83_remaining_stages(database, connection_path, env, admitted)
+                return  # owner context seals only after the shared daemon finally
 
             mediated_started_ns = time.perf_counter_ns()
             try:
@@ -934,4 +1318,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if NATIVE_SCOPE == "n83-preview":
+        try:
+            if sys.argv[1:] == ["--n83-admission-only"]:
+                n83_admission()
+                print(json.dumps({"schema":"motionwright.n83.admission/1","status":"SOURCE_ONLY_ADMITTED","native_execution":False}))
+            elif sys.argv[1:] == ["--n83-seal-preflight-failure"]:
+                n83_seal_preflight_failure()
+            elif sys.argv[1:]:
+                raise N83RunnerFailure("N83_UNKNOWN_ARGUMENT")
+            else:
+                main()
+        except BaseException:
+            print(json.dumps({"schema":"motionwright.n83.runner/1","status":"NOT_VERIFIED","automatic_retry":False,"raw_diagnostics_public":False}), flush=True)
+            raise SystemExit(1) from None
+    else:
+        main()
