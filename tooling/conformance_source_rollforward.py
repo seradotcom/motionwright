@@ -17,8 +17,8 @@ import re
 import sys
 
 from conformance_history_guard import (
-    INDEX, LEDGERS, LIMIT, HistoryViolation, _same, _unredirected_git,
-    encode_assessment_history, inspect, parse_unique, source_limit,
+    INDEX, LEDGERS, LIMIT, MAX_HISTORY_PLAIN_BYTES, HistoryViolation, _same, _unredirected_git,
+    encode_assessment_history, expand_assessment_history, inspect, parse_unique, source_limit,
 )
 from conformance_policy import (
     public_file, source_digest, validate_assessment, validate_catalog_links,
@@ -40,6 +40,18 @@ def digest(value: bytes) -> str:
 
 def unique_append(first: list, other: list) -> list:
     return list(dict.fromkeys([*first, *other]))
+
+
+def archive_history_if_bounded(history: list) -> list:
+    # Validate the complete existing H03 prefix before deciding its storage.
+    # json_bytes uses H03's canonical JSON representation plus one final LF.
+    expanded = expand_assessment_history(history)
+    if len(json_bytes(expanded)) - 1 > MAX_HISTORY_PLAIN_BYTES:
+        # H03 already permits one unchanged archive followed by plain entries.
+        # Keep that original envelope/payload and every ordered suffix entry;
+        # the complete output ledger still has its independent source limit.
+        return history
+    return [encode_assessment_history(expanded)]
 
 
 def git(root: Path, *argv: str) -> str:
@@ -237,11 +249,10 @@ def rollforward(previous: dict, target_sha: str, lock_digest: str, *,
                     "reviewed_at_utc": at_utc,
                     "reason": "New source must be independently re-evaluated; original remains historical.",
                 })
-                # A lossless compressed prefix also prevents subsequent source
-                # transitions from breaching the bounded ledger size limit.
-                row["assessment_history"] = [
-                    encode_assessment_history(row["assessment_history"])
-                ]
+                # Repack only within H03's unchanged decompression bound.
+                row["assessment_history"] = archive_history_if_bounded(
+                    row["assessment_history"]
+                )
                 assessment["source"] = idx["source"]
                 assessment["integration"].update({
                     "status": "main" if integrated else "branch",

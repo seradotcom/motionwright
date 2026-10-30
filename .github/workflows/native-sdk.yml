@@ -378,7 +378,24 @@ jobs:
             --bin motionwright-native-provider \
             --example shared-state-actor
       - name: Real UI-service to Native Host shared-state acceptance
-        run: python3 tooling/native_host_shared_state.py
+        env:
+          MW_SHARED_STATE_CUSTODY: ${{ github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' && '1' || '' }}
+          MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          MOTIONWRIGHT_E11_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        run: |
+          if [ "$MW_SHARED_STATE_CUSTODY" = "1" ]; then
+            "$RUNNER_TEMP/e11-custody-venv/bin/python" -B tooling/native_host_shared_state.py --shared-state-custody
+          else
+            python3 tooling/native_host_shared_state.py
+          fi
+      - name: Retain encrypted standard shared-state originals
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.e11_capsule_source && github.run_attempt == '1' }}
+        with:
+          name: motionwright-e11-standard-sealed-${{ github.sha }}-${{ github.run_id }}-attempt1
+          path: verification/native-sdk/shared-state-sealed/${{ github.sha }}/sealed-originals.bin
+          if-no-files-found: error
+          retention-days: 14
       - name: Stage verified public shared-state checks, never owner calls or daemon logs
         if: always()
         env:

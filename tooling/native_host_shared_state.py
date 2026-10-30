@@ -19,9 +19,10 @@ import sys
 import tempfile
 import time
 import tomllib
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 from native_av_failure_guard import run_sanitized_json
 
@@ -280,13 +281,15 @@ def require_exact_inputs() -> None:
             raise SystemExit("Pinned native shared-host acceptance executable is unavailable")
 
 
-def main() -> None:
+def main(*, retained_owner: Path | None = None) -> None:
     require_exact_inputs()
     EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
     calls: list[dict] = []
     transport_calls: list[dict] = []
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-host-") as raw:
+    workspace = (nullcontext(str(retained_owner)) if retained_owner is not None else
+                 tempfile.TemporaryDirectory(prefix="motionwright-native-host-"))
+    with workspace as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         paths: dict[str, Path] = {}
@@ -1421,6 +1424,106 @@ def capsule_main() -> None:
                       "core_inflight_revocation_e11": "NOT_RUN", "formal_acceptance": False}))
 
 
+def shared_state_custody_main() -> None:
+    """Retain the unchanged standard case when the source cycle is selected.
+
+    A failed standard Broker startup must retain its own original diagnostic;
+    it never becomes a source-cycle attempt or authorizes skipping that case.
+    """
+    require_exact_inputs()
+    import ci_private_evidence as custody
+    from importlib.metadata import version
+    capsule_require(sys.platform == "linux"
+                    and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                    and os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
+                    "SHARED_CUSTODY_MANUAL_FIRST_ATTEMPT_REQUIRED")
+    context = custody.validate_context({"source_sha": GITHUB_SHA, "semwright_sha": PIN,
+                                       "run_id": os.environ.get("GITHUB_RUN_ID", ""), "run_attempt": "1"})
+    recipient = custody.strict(os.environ.get("MOTIONWRIGHT_E11_RECOVERY_RECIPIENT", "").encode())
+    custody.public_key(recipient)
+    versions = {name: version(name) for name in ("cryptography", "cffi", "pycparser")}
+    capsule_require(versions == {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "2.23"},
+                    "SHARED_CUSTODY_PROFILE")
+    source = capsule_source_identity()
+    temporary = Path(os.environ.get("RUNNER_TEMP", ""))
+    capsule_require(temporary.is_absolute() and temporary.is_dir()
+                    and temporary.resolve(strict=True) == temporary
+                    and not any(path.is_symlink() for path in (temporary, *temporary.parents)),
+                    "SHARED_CUSTODY_RUNNER_TEMP")
+    owner = temporary / ("mw-shared-" + context["run_id"])
+    capsule_require(len(os.fsencode(owner / "runtime" / "bootstrap.sock")) < 104,
+                    "SHARED_CUSTODY_SOCKET_PATH_BUDGET")
+    private = ROOT / "verification/native-sdk/github-actions/shared-state-custody" / GITHUB_SHA
+    public = ROOT / "verification/native-sdk/shared-state-sealed" / GITHUB_SHA
+    for path in (owner, EVIDENCE, private, public):
+        capsule_require(not path.exists() and not path.is_symlink(), "SHARED_CUSTODY_ORIGINAL_PATH_EXISTS")
+    private.mkdir(mode=0o700, parents=True)
+    public.mkdir(mode=0o700, parents=True)
+    owner.mkdir(mode=0o700)
+    custody.new_json(private / "runner.started.original.json", {
+        "scope": "existing-standard-shared-state-only", "source": source, "context": context,
+        "custody_versions": versions, "recipient_spki_sha256": recipient["sha256"],
+        "owner_retained_in_place": True, "owner_root": str(owner),
+        "automatic_retry": False, "capsule_source_cycle_started_by_this_entry": False,
+    })
+    returned = False
+    failure = None
+    try:
+        originals = private / "source-originals"
+        originals.mkdir(mode=0o700)
+        for relative in (*CAPSULE_LOCKS, "tooling/native_host_shared_state.py",
+                         "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
+                         ".github/workflows/native-sdk.yml"):
+            raw = custody.regular((ROOT / relative).resolve(), 16 * 1024 * 1024)[0]
+            target = originals / relative
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            custody.new_bytes(target, raw)
+        # Same standard oracle, calls, curator inputs and cleanup. The exclusive
+        # owner directory survives cleanup so its config and raw log can be sealed.
+        main(retained_owner=owner)
+        returned = True
+    except BaseException as error:
+        failure = {"exception_type": type(error).__name__, "error": str(error),
+                   "traceback": "".join(traceback.format_exception(type(error), error, error.__traceback__))}
+    finally:
+        unchanged = False
+        try:
+            unchanged = capsule_source_identity() == source
+        except BaseException:
+            pass
+        terminal = {
+            "scope": "existing-standard-shared-state-only", "source": source, "context": context,
+            "standard_returned_success": returned, "failure": failure, "source_unchanged": unchanged,
+            "process_groups_quiescence_verified": False, "atomic_sqlite_snapshot_claimed": False,
+            "owner_retained_in_place": True, "automatic_retry": False,
+            "capsule_source_cycle_started_by_this_entry": False, "effects_absent_asserted": False,
+            "formal_acceptance": False, "release_authorized": False,
+        }
+        persistence_failures = []
+        for name, value in (("runner.terminal.original.json", terminal),
+                            ("failure.original.json", failure)):
+            try:
+                custody.new_json(private / name, value)
+            except BaseException as error:
+                persistence_failures.append({"file": name, "exception_type": type(error).__name__})
+        # One partial-preserving capture even if terminal persistence failed.
+        # This is diagnostic custody, not proof that every descendant stopped.
+        plaintext, complete = custody.gather_snapshot(
+            {"owner": owner, "evidence": EVIDENCE, "custody": private}, preserve_partial=True)
+        ciphertext = custody.encrypt_snapshot(plaintext, recipient, context)
+        custody.new_bytes(public / "sealed-originals.bin", ciphertext)
+        custody.new_json(private / "seal-receipt.json", {
+            "context": context, "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),
+            "ciphertext_bytes": len(ciphertext), "selected_originals_complete": complete,
+            "required_terminal_receipts_persisted": not persistence_failures,
+            "persistence_failures": persistence_failures, "automatic_retry": False,
+            "process_groups_quiescence_verified": False, "atomic_sqlite_snapshot_claimed": False,
+            "originals_retained_in_place": True,
+        })
+    capsule_require(returned and unchanged and complete and not persistence_failures,
+                    "SHARED_STATE_FAILED_OR_PRIVATE_CUSTODY_PARTIAL")
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--capsule-source"]:
         try:
@@ -1429,7 +1532,13 @@ if __name__ == "__main__":
             # Native originals and actor errors remain in private custody.
             print("E11_NOT_VERIFIED: inspect the retained encrypted originals; no automatic retry", file=sys.stderr)
             raise SystemExit(1) from None
+    elif sys.argv[1:] == ["--shared-state-custody"]:
+        try:
+            shared_state_custody_main()
+        except BaseException:
+            print("SHARED_STATE_NOT_VERIFIED: inspect the retained encrypted originals; no automatic retry", file=sys.stderr)
+            raise SystemExit(1) from None
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("usage: native_host_shared_state.py [--capsule-source]")
+        raise SystemExit("usage: native_host_shared_state.py [--capsule-source|--shared-state-custody]")

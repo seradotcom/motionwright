@@ -15,13 +15,15 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
 from conformance_history_guard import (
-    INDEX, LEDGERS, HistoryViolation, expand_assessment_history,
+    INDEX, LEDGERS, MAX_HISTORY_PLAIN_BYTES, HistoryViolation,
+    encode_assessment_history, expand_assessment_history,
     inspect, parse_unique, source_limit,
 )
 from conformance_policy import source_digest
 import conformance_source_rollforward as rollforward_module
 from conformance_source_rollforward import (
-    assert_source, digest, git, json_bytes, rollforward, verify_frozen_inputs,
+    archive_history_if_bounded, assert_source, digest, git, json_bytes,
+    rollforward, verify_frozen_inputs,
 )
 
 OLD = parse_unique((ROOT / INDEX).read_bytes(), INDEX)["source"]["motionwright_sha"]
@@ -33,6 +35,65 @@ def all_rows(docs):
     for name in LEDGERS:
         for key in ("requirements", "cases", "expansion_cases"):
             yield from docs[name].get(key, [])
+
+
+class BoundedHistoryPackingTests(unittest.TestCase):
+    """Synthetic source controls; no product execution or acceptance evidence."""
+
+    @staticmethod
+    def overflowing_history():
+        prior = [{"note": "x" * (MAX_HISTORY_PLAIN_BYTES - 64)}]
+        archive = encode_assessment_history(prior)
+        snapshot = {"note": "new authentic snapshot placeholder", "padding": "y" * 128}
+        return prior, [archive, snapshot]
+
+    def test_compressible_history_still_uses_existing_lossless_h03(self):
+        history = [{"boolean": False, "integer": 0, "float": 0.0}, {"order": [2, 1]}]
+        packed = archive_history_if_bounded(history)
+        self.assertEqual(len(packed), 1)
+        self.assertEqual(json_bytes(expand_assessment_history(packed)), json_bytes(history))
+
+    def test_overflow_keeps_original_archive_bytes_and_ordered_plain_suffix(self):
+        prior, history = self.overflowing_history()
+        original_stored = json_bytes(history)
+        original_archive = json_bytes(history[0])
+        with self.assertRaisesRegex(HistoryViolation, "history_archive_plain_size_exceeded"):
+            encode_assessment_history(history)
+        packed = archive_history_if_bounded(history)
+        self.assertEqual(json_bytes(packed), original_stored)
+        self.assertEqual(json_bytes(packed[0]), original_archive)
+        self.assertEqual(json_bytes(expand_assessment_history(packed)),
+                         json_bytes(prior + history[1:]))
+        # A later transition retains both original suffix entries and their order.
+        next_history = packed + [{"next": "source transition"}]
+        self.assertEqual(json_bytes(archive_history_if_bounded(next_history)),
+                         json_bytes(next_history))
+
+    def test_exact_plain_boundary_remains_compressed(self):
+        history = [{"padding": ""}]
+        overhead = len(json_bytes(history)) - 1
+        history[0]["padding"] = "x" * (MAX_HISTORY_PLAIN_BYTES - overhead)
+        packed = archive_history_if_bounded(history)
+        self.assertEqual(packed[0]["plain_bytes"], MAX_HISTORY_PLAIN_BYTES)
+        self.assertEqual(json_bytes(expand_assessment_history(packed)), json_bytes(history))
+
+    def test_overflow_does_not_hide_invalid_existing_archive_limit(self):
+        _, history = self.overflowing_history()
+        history[0]["plain_bytes"] = MAX_HISTORY_PLAIN_BYTES + 1
+        with self.assertRaisesRegex(HistoryViolation, "history_archive_plain_size_exceeded"):
+            archive_history_if_bounded(history)
+
+    def test_overflow_does_not_hide_corrupt_existing_archive_digest(self):
+        _, history = self.overflowing_history()
+        history[0]["plain_sha256"] = "0" * 64
+        with self.assertRaisesRegex(HistoryViolation, "history_archive_sha256_mismatch"):
+            archive_history_if_bounded(history)
+
+    def test_multiple_archives_are_still_rejected(self):
+        _, history = self.overflowing_history()
+        history.append(copy.deepcopy(history[0]))
+        with self.assertRaisesRegex(HistoryViolation, "history_archive_must_be_prefix"):
+            archive_history_if_bounded(history)
 
 
 class SourceCurrencyTests(unittest.TestCase):
