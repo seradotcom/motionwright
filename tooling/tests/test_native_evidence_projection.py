@@ -680,7 +680,7 @@ class DiagnosticSelectionV3Tests(unittest.TestCase):
             {"absent_before": True, "absent_after": True, "opened": False, "hashed": False})
 
     def test_all_diagnostics_observed_absent_do_not_claim_raw_payloads(self):
-        for subtype in n.DIAGNOSTIC_MAXIMUM: self.guard(subtype)
+        for entry in self.contract["entries"]: self.guard(entry["type"])
         raw, manifest = self.capture()
         self.assertEqual(self.inspect(raw), manifest)
         self.assertFalse(manifest["raw_diagnostics_included"])
@@ -1491,9 +1491,20 @@ class ScopedJsonSnapshotLeafTests(unittest.TestCase):
                     n.capture_selected_originals(spec, policies=self.policies, role_contract=self.roles)
                 handles.assert_not_called()
         spec = copy.deepcopy(self.spec); spec["schema"] = n.SPEC_SCHEMA_V3
+        diagnostic = {"root": "owner", "relative_path": "stdout.original.bin",
+                      "phase": "original", "layer": "attempt-custody",
+                      "role": "diagnostic-stdout", "type": "stdout",
+                      "maximum": n.DIAGNOSTIC_MAXIMUM["stdout"], "policy": None}
+        contract = {"schema": n.DIAGNOSTIC_CONTRACT_SCHEMA,
+                    "context": dict(CTX), "entries": [diagnostic]}
+        roles = dict(self.roles)
+        roles[("original", "attempt-custody", "diagnostic-stdout")] = (0, 1)
+        spec["absence_guards"] = [{key: diagnostic[key] for key in
+                                  ("root", "relative_path", "phase", "layer", "role")}]
         with mock.patch.object(n, "RootHandles") as handles, self.assertRaisesRegex(
                 n.SelectionError, "json-snapshot-policy-scope"):
-            n.capture_selected_originals(spec, policies=self.policies, role_contract=self.roles)
+            n.capture_selected_originals(spec, policies=self.policies, role_contract=roles,
+                                         diagnostic_contract=contract)
         handles.assert_not_called()
         self.assertEqual(row["relative_path"], "original-render.failure.json")
 

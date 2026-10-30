@@ -106,7 +106,9 @@ fn single_cut_invalidates_only_the_edited_and_rippled_scene_statuses() {
         assert_ne!(p.scenes[2].start, original.scenes[2].start);
         assert_eq!(p.scenes[2].duration, original.scenes[2].duration);
         assert_eq!(p.scenes[2].status, SceneStatus::Draft);
-        assert_eq!(p.revision, original.revision + 1);
+        // Domain applies the edit in memory; the Store transaction owns the
+        // revision increment, covered by music_cut_persistence at Service.
+        assert_eq!(p.revision, original.revision);
         p.validate().unwrap();
     }
 }
