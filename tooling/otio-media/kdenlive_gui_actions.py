@@ -389,6 +389,146 @@ class AtspiSession:
         self.menu(step + ".menu", "File", "OpenTimelineIO Export...")
         self.file_dialog(step, ("OpenTimelineIO Export",), path, "Save")
 
+    def render_state(self, row: dict, name: str) -> bool:
+        require(name in ("CHECKED", "SELECTED", "EXPANDED"), "native_render_state_not_closed")
+        node = self.nodes[row["key"]]
+        require(node.get_process_id() == self.pid, "native_render_state_wrong_pid")
+        return bool(node.get_state_set().contains(getattr(self.api.StateType, name)))
+
+    def render_action(self, step: str, row: dict, allowed: tuple[str, ...]) -> None:
+        node = self.nodes[row["key"]]
+        require(row["visible"] and row["enabled"] and node.get_process_id() == self.pid,
+                "native_render_action_not_visible_owned_control")
+        interface = node.get_action_iface()
+        require(interface is not None, "native_render_action_missing")
+        count = interface.get_n_actions()
+        require(0 < count <= 8, "native_render_action_inventory_unbounded")
+        choices = [(i, interface.get_action_name(i).lower()) for i in range(count)]
+        selected = [(i, name) for i, name in choices if name in allowed]
+        require(len(selected) == 1, "native_render_action_not_unique")
+        index, name = selected[0]
+        self.journal.perform(step, {**row, "action": name}, lambda: interface.do_action(index))
+
+    def generate_editor_render_job(self, step: str, output: Path, playlist: Path) -> dict:
+        """25.08.3 native Generate Script; never Render to File or Start Script."""
+        require(step in ("editor-before", "editor-after") and output.is_absolute()
+                and playlist.is_absolute() and output.parent == playlist.parent
+                and output.suffix == ".mov" and playlist.suffix == ".mlt"
+                and not any(p.exists() or p.is_symlink() for p in (output, playlist)),
+                "native_render_script_targets_not_fresh")
+        self.menu(step + ".menu", "Project", "Render...")
+        dialog = self.dialog(step + ".dialog", ("Rendering",))
+
+        def controls(name, roles=(), *, visible=False):
+            return [r for r in self.descendants(dialog)
+                    if normalized(r["name"]) == name and (not roles or r["role"] in roles)
+                    and (not visible or r["visible"])]
+
+        # Preset and category come from the original 25.08.3 data/profiles.xml.
+        # The similarly named FFV1 alpha preset has f=mov; do not invent a
+        # Matroska profile or rewrite the native job to repair it.
+        category = unique(controls("Video with Alpha", ("table cell", "tree item", "table row"), visible=True),
+                          code="native_render_alpha_category_not_unique")
+        if not self.render_state(category, "EXPANDED"):
+            self.render_action(step + ".expand-alpha", category,
+                               ("expand", "expand or collapse", "expand or contract", "toggle"))
+        preset = self.journal.wait(step + ".preset", lambda: self.find(
+            ("Alpha MOV",), ("table cell", "tree item", "table row"), scope=dialog["key"]))
+        node = self.nodes[preset["key"]]
+        parent = node.get_parent()
+        index = node.get_index_in_parent()
+        require(parent is not None and parent.get_process_id() == self.pid
+                and type(index) is int and 0 <= index < MAX_CHILDREN,
+                "native_render_preset_parent_not_bound")
+        selection = parent.get_selection_iface()
+        require(selection is not None, "native_render_preset_selection_unavailable")
+        self.journal.perform(step + ".select-alpha-mov", {**preset, "child_index": index},
+                             lambda: selection.select_child(index))
+        self.journal.wait(step + ".preset-selected", lambda: any(
+            self.render_state(r, "SELECTED") for r in controls("Alpha MOV", visible=True)))
+
+        observations = []
+        def checkbox(name, wanted, *, optional=False):
+            found = controls(name, ("check box", "radio button", "panel"))
+            if not found and optional:
+                observations.append({"name": name, "present": False})
+                return
+            selected = unique(found, code="native_render_option_not_unique")
+            if self.render_state(selected, "CHECKED") != wanted:
+                self.render_action(step + ".option-" + str(len(observations)), selected,
+                                   ("toggle", "press", "click", "activate"))
+            selected = unique(controls(name, ("check box", "radio button", "panel")),
+                              code="native_render_option_readback_not_unique")
+            checked = self.render_state(selected, "CHECKED")
+            require(checked == wanted, "native_render_option_readback_changed")
+            observations.append({**selected, "checked": checked})
+
+        checkbox("Full project", True)
+        checkbox("More options", True)
+        checkbox("Video", True)
+        for name in ("Guide Multi-Export", "Render at Preview Resolution", "Enabled", "2 pass",
+                     "Separate file for each audio track", "Render full color range"):
+            checkbox(name, False)
+        for name in ("Use Proxy Clips", "Embed subtitles instead of burning them"):
+            checkbox(name, False, optional=True)
+        output_field = labeled_field(self.descendants(dialog), ("Output file",))
+        self.text(step + ".output", output_field, str(output))
+        generate = self.journal.wait(step + ".generate-control", lambda: self.find(
+            ("Generate Script",), ("push button",), scope=dialog["key"]))
+        self.focus(step + ".output-editing-finished", generate)
+        output_field = labeled_field(self.descendants(dialog), ("Output file",))
+        require(output_field["text"] == str(output), "native_render_output_rewritten_by_editor")
+        observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_field": output_field,
+                    "options": observations, "rows_before_generate": self.descendants(dialog),
+                    "Generate_Script_attempts": 1, "Render_to_File_attempts": 0, "Start_Script_attempts": 0}
+        self.journal.emit({"step": step + ".settings", "state": "OBSERVED", "render_settings": observed})
+        generate = self.journal.wait(step + ".generate-once-discover", lambda: self.find(
+            ("Generate Script",), ("push button",), scope=dialog["key"]))
+        self.action(step + ".generate-once", generate)
+        delayed = self.dialog(step + ".delayed-name", ("Delayed Rendering",))
+        fields = [r for r in self.descendants(delayed) if r["visible"] and r["enabled"] and r["editable"]]
+        leaves = [r for r in fields if not any(s["key"].startswith(r["key"] + "/") for s in fields if s is not r)]
+        field = unique(leaves, code="native_render_delayed_name_not_unique")
+        require(any(normalized(r["name"]) == "Select a name for this rendering." for r in self.descendants(delayed)),
+                "native_render_delayed_prompt_changed")
+        self.text(step + ".playlist-name", field, str(playlist))
+        okay = self.journal.wait(step + ".delayed-confirm", lambda: self.find(
+            ("OK",), ("push button",), scope=delayed["key"]))
+        self.action(step + ".delayed-submit-once", okay)
+        self.journal.wait(step + ".delayed-closed", lambda: not self.find(("Delayed Rendering",), ("dialog", "frame")))
+        self.journal.wait(step + ".native-playlist-created", lambda: playlist.is_file())
+        dialog = self.dialog(step + ".rendering-before-close", ("Rendering",))
+        close = self.journal.wait(step + ".rendering-close-control", lambda: self.find(
+            ("Close",), ("push button",), scope=dialog["key"]))
+        self.action(step + ".rendering-close", close)
+        self.journal.wait(step + ".rendering-closed", lambda: not self.find(("Rendering",), ("dialog", "frame")))
+        return observed
+
+    def quit_after_render_script(self, step: str, source: Path) -> None:
+        """Discard only the render preferences made after the saved-source hash."""
+        require(source.name in ("initial.kdenlive", "edited.kdenlive"), "native_render_quit_source_not_closed")
+        self.quit(step)
+        def confirmation():
+            rows = self.tree()
+            labels = [r for r in rows if r["visible"] and r["role"] == "label"
+                      and source.name in r["name"] and "has been changed." in r["name"]
+                      and "Do you want to save your changes?" in r["name"]]
+            if not labels:
+                return None
+            label = unique(labels, code="native_render_unsaved_prompt_not_unique")
+            parents = [r for r in rows if r["visible"] and r["role"] in ("dialog", "alert")
+                       and label["key"].startswith(r["key"] + "/")]
+            dialog = unique(parents, code="native_render_unsaved_dialog_not_unique")
+            buttons = [r for r in rows if r["visible"] and r["enabled"] and r["role"] == "push button"
+                       and r["key"].startswith(dialog["key"] + "/")]
+            names = {normalized(r["name"]) for r in buttons}
+            require(names in ({"Save", "Don't Save", "Cancel"}, {"Save", "Discard", "Cancel"}),
+                    "native_render_unsaved_actions_changed")
+            return unique([r for r in buttons if normalized(r["name"]) in ("Don't Save", "Discard")],
+                          code="native_render_discard_not_unique")
+        discard = self.journal.wait(step + ".render-preferences-prompt", confirmation)
+        self.action(step + ".discard-render-preferences", discard, exits=True)
+
     def ready(self, phase: str) -> None:
         """Observe native startup; acknowledge its sole first-run page once."""
         def startup():

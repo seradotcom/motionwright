@@ -15,12 +15,15 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
+import signal
 import stat
 import subprocess
 import sys
 import tarfile
 import time
 import traceback
+from fractions import Fraction
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -146,6 +149,694 @@ def check_edit(initial: dict, edited: dict, comparison: dict, preview: dict) -> 
                 "type": "set_scene_duration", "scene_id": before[2]["scene_id"],
                 "duration": {"num": "1", "den": "2"}}],
             "native_gui_existing_preview_did_not_preserve_bounded_proposal")
+
+
+# Editor-only render closure. These results never enter the Motionwright
+# production ledger or imply that Native/SDK can execute an attached .kdenlive.
+EDITOR_RENDER_MAX_VIDEO = 128 * 1024 * 1024
+EDITOR_RENDER_MAX_LOG = 4 * 1024 * 1024
+
+
+def editor_original(path: Path, root: Path, limit: int) -> tuple[bytes, dict]:
+    require(path.is_absolute() and path.is_relative_to(root)
+            and path.parent.resolve(strict=True) == path.parent,
+            "editor_render_original_outside_owner")
+    raw, _ = custody.regular(path, limit)
+    require(raw, "editor_render_original_empty")
+    return raw, {"relative_path": path.relative_to(root).as_posix(),
+                 "bytes": len(raw), "sha256": custody.sha(raw)}
+
+
+def verify_editor_playlist(raw: bytes, output: Path, observed: dict, frames: int) -> dict:
+    """Inspect the playlist emitted by Kdenlive; never author or repair XML."""
+    require(type(frames) is int and frames in (90, 75), "editor_render_fixture_frames")
+    document, shimmed = readback.safe_mlt_xml(raw)
+    consumers, profiles = document.findall("consumer"), document.findall("profile")
+    require(len(consumers) == len(profiles) == 1, "editor_render_native_job_shape")
+    consumer, profile = consumers[0], profiles[0]
+    try:
+        width, height = (int(profile.attrib[k]) for k in ("width", "height"))
+        rate = Fraction(int(profile.attrib["frame_rate_num"]), int(profile.attrib["frame_rate_den"]))
+        start, end = int(consumer.attrib["in"]), int(consumer.attrib["out"])
+    except (KeyError, ValueError, ZeroDivisionError) as error:
+        raise GuiRejected("editor_render_native_job_clock") from error
+    require([width, height] == observed.get("native_saved_profile_size")
+            and 16 <= width <= 4096 and 16 <= height <= 4096
+            and rate == Fraction(observed.get("native_saved_frame_rate", "0")) == 30
+            and start == 0 and end == frames - 1,
+            "editor_render_native_job_differs_from_saved_project")
+    require(consumer.get("target") == str(output)
+            and consumer.get("mlt_service") == "avformat"
+            and consumer.get("vcodec") == "qtrle"
+            and consumer.get("f") == "mov"
+            and consumer.get("pass", "0") == "0"
+            and consumer.get("vn", "0") == "0"
+            and consumer.get("video_off", "0") == "0"
+            and not any(key in consumer.attrib for key in
+                        ("passlogfile", "s", "r", "scale", "frame_rate_num", "frame_rate_den"))
+            and consumer.get("width", str(width)) == str(width)
+            and consumer.get("height", str(height)) == str(height),
+            "editor_render_not_single_full_native_lossless_job")
+    return {"frames": frames, "width": width, "height": height,
+            "frame_rate": "30/1", "in": start, "out": end,
+            "consumer": dict(consumer.attrib), "namespace_shim_in_memory_only": shimmed,
+            "playlist_authored_or_rewritten_here": False}
+
+
+def editor_frame_hashes(raw: bytes, *, frames: int, width: int, height: int) -> list[str]:
+    require(0 < len(raw) <= 256 * 1024, "editor_render_framehash_size")
+    try:
+        lines = raw.decode("ascii").splitlines()
+    except UnicodeError as error:
+        raise GuiRejected("editor_render_framehash_encoding") from error
+    require("#hash: SHA256" in lines and "#tb 0: 1/30" in lines
+            and f"#dimensions 0: {width}x{height}" in lines,
+            "editor_render_framehash_clock_or_geometry")
+    rows = [line for line in lines if line.strip() and not line.startswith("#")]
+    require(len(rows) == frames, "editor_render_framehash_count")
+    hashes = []
+    for index, row in enumerate(rows):
+        values = [v.strip() for v in row.split(",")]
+        require(len(values) == 6 and values[:5] ==
+                ["0", str(index), str(index), "1", str(width * height * 3)]
+                and re.fullmatch(r"[0-9a-f]{64}", values[5]),
+                "editor_render_framehash_timeline")
+        hashes.append(values[5])
+    black = hashlib.sha256()
+    remaining = width * height * 3
+    while remaining:
+        count = min(remaining, 65536)
+        black.update(bytes(count))
+        remaining -= count
+    require(black.hexdigest() not in hashes and len(set(hashes)) > 1,
+            "editor_render_empty_or_static_result")
+    return hashes
+
+
+def verify_editor_trim(before: dict, after: dict) -> dict:
+    require(before.get("phase") == "before" and after.get("phase") == "after"
+            and before.get("frames") == 90 and after.get("frames") == 75
+            and before.get("width") == after.get("width")
+            and before.get("height") == after.get("height")
+            and before.get("frame_rate") == after.get("frame_rate") == "30/1"
+            and len(before.get("decoded_rgb_frame_sha256", [])) == 90
+            and len(after.get("decoded_rgb_frame_sha256", [])) == 75
+            and before["decoded_rgb_frame_sha256"][:75] == after["decoded_rgb_frame_sha256"]
+            and before["decoded_rgb_frame_sha256"][-1] != after["decoded_rgb_frame_sha256"][-1]
+            and before.get("native_source", {}).get("sha256") != after.get("native_source", {}).get("sha256"),
+            "editor_render_saved_end_trim_not_physically_observed")
+    return {"schema": "motionwright.native.kdenlive-editor-render-cycle/1",
+            "before": before, "after": after, "native_editor_render_count": 2,
+            "preserved_decoded_frames": 75, "removed_end_frames": 15,
+            "preserved_pixels_exact": True, "last_displayed_frame_changed": True,
+            "integrated_Motionwright_production": False, "audio_fidelity_accepted": False,
+            "automatic_retry": False, "human_acceptance": False, "release_authorized": False}
+
+
+def verify_editor_video_probe(raw: bytes, plan: dict) -> dict:
+    require(0 < len(raw) <= 256 * 1024, "editor_render_probe_size")
+    try:
+        probe = json.loads(raw)
+        streams = probe["streams"]
+        video = [s for s in streams if s.get("codec_type") == "video"]
+        require(len(video) == 1, "editor_render_video_stream_count")
+        stream = video[0]
+        require(stream.get("codec_name") == "qtrle"
+                and stream.get("width") == plan["width"]
+                and stream.get("height") == plan["height"]
+                and Fraction(stream["r_frame_rate"]) == 30
+                and Fraction(stream["avg_frame_rate"]) == 30
+                and int(stream["nb_read_frames"]) == plan["frames"]
+                and "mov" in probe["format"]["format_name"].split(",")
+                and abs(Fraction(probe["format"]["duration"])
+                        - Fraction(plan["frames"], 30)) <= Fraction(1, 30),
+                "editor_render_video_clock_geometry_or_count")
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
+        raise GuiRejected("editor_render_probe_contract") from error
+    return {"video": stream, "format": probe["format"],
+            "audio_streams_observed_only": [s for s in streams if s.get("codec_type") == "audio"],
+            "audio_fidelity_accepted": False}
+
+
+def prepare_editor_render(process, phase: str, source: Path,
+                          source_sha: str, observed: dict, frames: int) -> dict:
+    """Ask the live editor for its original job, then freeze it before closing."""
+    require((phase, process.phase, frames) in (("before", "import", 90),
+                                             ("after", "reopen-edited", 75)),
+            "editor_render_phase_not_in_closed_route")
+    records = process.records
+    root = records.root
+    playlist, output = (root / ("editor-" + phase + suffix) for suffix in (".mlt", ".mov"))
+    native_log = Path(str(output) + ".log")
+    for path in (playlist, playlist.with_suffix(""), output, native_log):
+        require(not path.exists() and not path.is_symlink(), "editor_render_target_not_fresh")
+    _, original = editor_original(source, root, MAX_PROJECT)
+    require(original["sha256"] == source_sha, "editor_render_source_changed_before_prepare")
+    executables = {}
+    for name in ("kdenlive_render", "melt"):
+        path = (process.appdir / "usr" / "bin" / name).resolve(strict=True)
+        require(path.is_relative_to(process.appdir) and os.access(path, os.X_OK),
+                "editor_render_executable_outside_admitted_distribution")
+        raw, _ = custody.regular(path, EDITOR_OUTPUT_LIMIT)
+        require(raw.startswith(b"\x7fELF"), "editor_render_executable_not_native_ELF")
+        executables[name] = {"path": str(path), "sha256": custody.sha(raw), "bytes": len(raw)}
+    # Reuse the original live application's admitted MLT/Qt runtime. These
+    # private values are never placed in the public status projection.
+    with process.native_environment():
+        environment = dict(os.environ)
+    for key, sub in (("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
+                     ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state")):
+        environment[key] = str(process.profile / sub)
+    environment.update(QT_QPA_PLATFORM="xcb", LC_ALL="C.UTF-8", LANGUAGE="en_US:en")
+    require(not environment.get("LD_PRELOAD"), "editor_render_preload_not_admitted")
+    gui = process.ui.generate_editor_render_job("editor-" + phase, output, playlist)
+    _, native_playlist = editor_original(playlist, root, MAX_PROJECT)
+    raw, _ = custody.regular(playlist, MAX_PROJECT)
+    plan = verify_editor_playlist(raw, output, observed, frames)
+    require(digest(source, MAX_PROJECT) == source_sha,
+            "editor_render_generate_script_overwrote_native_source")
+    # Native Generate Script changes document render preferences. Only those
+    # unsaved preferences are discarded; the existing saved source stays exact.
+    process.render_preferences_source = source
+    receipt = {"schema": "motionwright.native.kdenlive-editor-render-prepare/1",
+               "phase": phase, "editor_pid": process.pid, "editor_start_ticks": process.start,
+               "native_source": original, "playlist": native_playlist, "plan": plan,
+               "native_executables": executables, "gui": gui,
+               "environment_sha256": custody.sha(custody.json_bytes(environment)),
+               "playlist_created_by_native_Generate_Script": True,
+               "playlist_authored_or_rewritten_here": False, "renderer_started_here": False,
+               "automatic_retry": False, "human_acceptance": False, "release_authorized": False}
+    records.document("editor-" + phase + ".prepare.json", receipt)
+    return {"receipt": receipt, "source": source, "playlist": playlist,
+            "output": output, "native_log": native_log, "environment": environment}
+
+
+def run_editor_render_once(records, prepared: dict, editor_process) -> dict:
+    """One official editor delivery after natural GUI closure, then real decoding."""
+    receipt = prepared["receipt"]
+    phase, plan = receipt["phase"], receipt["plan"]
+    label = "editor-" + phase
+    root = records.root
+    require(editor_process.process.returncode == 0
+            and editor_process.pid == receipt["editor_pid"]
+            and editor_process.start == receipt["editor_start_ticks"],
+            "editor_render_requires_prior_native_editor_terminal")
+    source, playlist = prepared["source"], prepared["playlist"]
+    output, native_log = prepared["output"], prepared["native_log"]
+    require(digest(source, MAX_PROJECT) == receipt["native_source"]["sha256"]
+            and digest(playlist, MAX_PROJECT) == receipt["playlist"]["sha256"],
+            "editor_render_original_changed_before_delivery")
+    exes = receipt["native_executables"]
+    for descriptor in exes.values():
+        require(digest(Path(descriptor["path"]), EDITOR_OUTPUT_LIMIT) == descriptor["sha256"],
+                "editor_render_distribution_executable_changed")
+    argv = [exes["kdenlive_render"]["path"], "delivery", exes["melt"]["path"],
+            str(playlist), "--debug"]
+    terminal = run_editor_command_once(
+        records, label + ".delivery", argv, prepared["environment"], root, 180,
+        output_limits={output: EDITOR_RENDER_MAX_VIDEO, native_log: EDITOR_RENDER_MAX_LOG})
+    raw_log, log_original = editor_original(native_log, root, EDITOR_RENDER_MAX_LOG)
+    log_text = raw_log.decode("utf-8", errors="replace")
+    expected_start = "Started render process: " + exes["melt"]["path"] + " -loglevel debug -progress2 " + str(playlist)
+    require(expected_start in log_text and "Rendering of " + str(output) + " finished" in log_text
+            and "Rendering of " + str(output) + " aborted" not in log_text,
+            "editor_render_native_melt_success_log_missing")
+    _, video_original = editor_original(output, root, EDITOR_RENDER_MAX_VIDEO)
+    # Independent system decoder, with no AppImage library injection. No
+    # remux, repair, render retry, or synthesized frames are permitted.
+    decoder_env = dict(os.environ)
+    for key in (*RUNTIME_VARIABLES, "LD_PRELOAD"):
+        decoder_env.pop(key, None)
+    decoder_env.update(LC_ALL="C.UTF-8", LANGUAGE="en_US:en")
+    ffprobe = Path("/usr/bin/ffprobe").resolve(strict=True)
+    ffmpeg = Path("/usr/bin/ffmpeg").resolve(strict=True)
+    probe_argv = [str(ffprobe), "-v", "error", "-count_frames", "-show_streams",
+                  "-show_format", "-of", "json", str(output)]
+    probe_terminal = run_editor_command_once(records, label + ".probe", probe_argv,
+                                             decoder_env, root, 60)
+    probe_raw, probe_original = editor_original(root / (label + ".probe.stdout.log"), root, 256 * 1024)
+    probe = verify_editor_video_probe(probe_raw, plan)
+    hashes_argv = [str(ffmpeg), "-v", "error", "-nostdin", "-copyts", "-i", str(output),
+                   "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", str(plan["frames"] + 1),
+                   "-fps_mode", "passthrough", "-c:v", "rawvideo", "-pix_fmt", "rgb24",
+                   "-f", "framehash", "-hash", "sha256", "pipe:1"]
+    hashes_terminal = run_editor_command_once(records, label + ".framehash", hashes_argv,
+                                              decoder_env, root, 60)
+    hashes_raw, hashes_original = editor_original(root / (label + ".framehash.stdout.log"), root, 256 * 1024)
+    hashes = editor_frame_hashes(hashes_raw, frames=plan["frames"],
+                                width=plan["width"], height=plan["height"])
+    require(digest(source, MAX_PROJECT) == receipt["native_source"]["sha256"]
+            and digest(playlist, MAX_PROJECT) == receipt["playlist"]["sha256"]
+            and digest(output, EDITOR_RENDER_MAX_VIDEO) == video_original["sha256"],
+            "editor_render_original_changed_after_delivery_or_decode")
+    for descriptor in exes.values():
+        require(digest(Path(descriptor["path"]), EDITOR_OUTPUT_LIMIT) == descriptor["sha256"],
+                "editor_render_distribution_executable_changed_after_delivery")
+    originals = {"native_source": receipt["native_source"], "playlist": receipt["playlist"],
+                 "master": video_original, "native_render_log": log_original,
+                 "probe": probe_original, "framehash": hashes_original}
+    for suffix in (".prepare.json", ".delivery.intent.json", ".delivery.launch.json", ".delivery.terminal.json",
+                   ".delivery.stdout.log", ".delivery.stderr.log", ".probe.intent.json", ".probe.launch.json",
+                   ".probe.terminal.json", ".probe.stderr.log", ".framehash.intent.json", ".framehash.launch.json",
+                   ".framehash.terminal.json", ".framehash.stderr.log"):
+        path = root / (label + suffix)
+        raw, _ = custody.regular(path, EDITOR_RENDER_MAX_LOG)
+        originals[suffix] = {"relative_path": path.name, "bytes": len(raw), "sha256": custody.sha(raw)}
+    result = {"schema": "motionwright.native.kdenlive-editor-master/1", "phase": phase,
+              "frames": plan["frames"], "width": plan["width"], "height": plan["height"],
+              "frame_rate": plan["frame_rate"], "native_source": receipt["native_source"],
+              "decoded_rgb_frame_sha256": hashes, "probe": probe,
+              "native_editor_closed_before_delivery": True,
+              "delivery_natural_terminal_observed": terminal["natural_completion_observed"],
+              "independent_decoders_natural_terminal_observed": all(
+                  row["natural_completion_observed"] for row in (probe_terminal, hashes_terminal)),
+              "native_render_count": 1, "originals": originals,
+              "integrated_Motionwright_production": False, "audio_fidelity_accepted": False,
+              "automatic_retry": False, "human_acceptance": False, "release_authorized": False}
+    records.document(label + ".result.json", result)
+    _, descriptor = editor_original(root / (label + ".result.json"), root, MAX_OTIO)
+    return {**result, "result_original": descriptor}
+
+
+EDITOR_LOG_LIMIT = 4 * 1024 * 1024
+EDITOR_OUTPUT_LIMIT = 128 * 1024 * 1024
+EDITOR_PROCESS_LIMIT = 4096
+EDITOR_DESCENDANT_LIMIT = 256
+
+
+class EditorCommandUnknown(RuntimeError):
+    def __init__(self, label, receipt):
+        super().__init__(label + ":editor_command_error_or_unknown")
+        self.receipt = receipt
+
+
+def _editor_require(value, reason):
+    if not value:
+        raise ValueError(reason)
+
+
+def editor_process_namespace_available():
+    """Numeric /proc identities must use the same namespace as Popen/pidfds."""
+    try:
+        pid = str(os.getpid())
+        return (os.readlink("/proc/self") == pid
+                and Path("/proc/self/stat").read_text().split(" ", 1)[0] == pid)
+    except OSError:
+        return False
+
+
+def _editor_identity(pid):
+    """E11 PID/starttime identity, extended with original session/group."""
+    proc = Path("/proc") / str(pid)
+    try:
+        with (proc / "stat").open("rb") as source:
+            raw = source.read(8193)
+        uid = proc.stat().st_uid
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    _editor_require(0 < len(raw) <= 8192, "editor_proc_stat_budget")
+    prefix, tail = raw.decode("ascii").rsplit(") ", 1)
+    fields = tail.split()
+    _editor_require(prefix.split(" (", 1)[0] == str(pid) and len(fields) >= 20,
+                    "editor_proc_stat_identity")
+    return {"pid": pid, "parent": int(fields[1]), "start_ticks": int(fields[19]),
+            "group": int(fields[2]), "session": int(fields[3]),
+            "state": fields[0], "uid": uid}
+
+
+def _editor_live(identity):
+    return identity is not None and identity["state"] not in ("Z", "X", "x")
+
+
+class EditorCommandProcess:
+    """Duck type for the existing Recorder's owned_processes list."""
+    def __init__(self, records, label, binary, binary_sha, logs, streams):
+        self.records, self.phase = records, label
+        self.binary, self.binary_sha = binary, binary_sha
+        self.logs, self.streams = logs, streams
+        self.process, self.pid, self.start = None, None, None
+        self.identities, self.pidfds = {}, {}
+        self.cleanup_signals = []
+
+    def guard(self):
+        row = _editor_identity(self.pid)
+        _editor_require(_editor_live(row) and row["start_ticks"] == self.start
+                        and row["uid"] == os.getuid()
+                        and os.readlink(Path("/proc") / str(self.pid) / "exe") == str(self.binary),
+                        "editor_owned_process_identity_changed")
+
+    def inventory(self):
+        """Track actual ancestry plus membership of our still-reserved group."""
+        paths = [p for p in Path("/proc").iterdir() if p.name.isdecimal()]
+        _editor_require(len(paths) <= EDITOR_PROCESS_LIMIT, "editor_process_inventory_budget")
+        table = {int(p.name): _editor_identity(int(p.name)) for p in paths}
+        root = table.get(self.pid)
+        # No poll()/wait() reaps this leader until cleanup has finished. Its
+        # reserved PID prevents killpg from addressing a later reused group.
+        _editor_require(root is not None and root["start_ticks"] == self.start
+                        and root["parent"] == os.getpid()
+                        and root["uid"] == os.getuid(), "editor_leader_identity_unavailable")
+        selected = {self.pid}
+        selected.update(pid for (pid, start) in self.identities
+                        if table.get(pid) is not None and table[pid]["start_ticks"] == start)
+        selected.update(pid for pid, row in table.items() if row is not None
+                        and row["group"] == row["session"] == self.pid)
+        while True:
+            expanded = selected | {pid for pid, row in table.items()
+                                   if row is not None and row["parent"] in selected}
+            if expanded == selected:
+                break
+            selected = expanded
+        _editor_require(len(selected) <= EDITOR_DESCENDANT_LIMIT, "editor_descendant_budget")
+        for pid in sorted(selected):
+            row = table.get(pid)
+            if row is None:
+                continue
+            _editor_require(row["uid"] == os.getuid(), "editor_descendant_uid_changed")
+            key = (pid, row["start_ticks"])
+            if key not in self.identities:
+                _editor_require(len(self.identities) < EDITOR_DESCENDANT_LIMIT,
+                                "editor_accumulated_descendant_budget")
+                self.identities[key] = dict(row)
+                try:
+                    fd = os.pidfd_open(pid)
+                except ProcessLookupError:
+                    continue
+                current = _editor_identity(pid)
+                if current is None or current["start_ticks"] != key[1]:
+                    os.close(fd)
+                    continue
+                self.pidfds[key] = fd
+        return [row for (pid, start) in self.identities
+                if _editor_live(row := table.get(pid)) and row["start_ticks"] == start]
+
+
+def run_editor_command_once(records, label, argv, env, cwd, timeout,
+                            expected_executable=None, *, output_limits=None):
+    """Run one admitted editor command; return custody, never render acceptance.
+
+    E11's session/group and pidfd cleanup pattern is retained. Unlike E11's
+    JSON actor wrapper, forced closure can never satisfy natural completion.
+    Output limits are polling checks, not kernel-enforced per-file quotas.
+    """
+    _editor_require(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
+                    and hasattr(os, "waitid") and hasattr(os, "WNOWAIT"),
+                    "editor_linux_identity_primitives_required")
+    _editor_require(editor_process_namespace_available(), "editor_proc_PID_namespace_mismatch")
+    _editor_require(type(label) is str and re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", label),
+                    "editor_label_not_closed")
+    _editor_require(type(timeout) in (int, float) and 0 < timeout <= 180,
+                    "editor_timeout_budget")
+    _editor_require(type(argv) is list and 1 <= len(argv) <= 64
+                    and all(type(v) is str and v and "\0" not in v for v in argv)
+                    and sum(len(v.encode()) + 1 for v in argv) <= 16384,
+                    "editor_argv_budget")
+    _editor_require(type(env) is dict and all(type(k) is str and type(v) is str
+                    and k and "=" not in k and "\0" not in k + v for k, v in env.items()),
+                    "editor_environment_contract")
+    _editor_require(sum(len(k.encode()) + len(v.encode()) + 2 for k, v in env.items()) <= 128 * 1024,
+                    "editor_environment_budget")
+    cwd, root = Path(cwd), Path(records.root)
+    _editor_require(cwd.is_absolute() and cwd.resolve(strict=True) == cwd
+                    and root.is_absolute() and root.resolve(strict=True) == root
+                    and not any(p.is_symlink() for p in (*cwd.parents, *root.parents)),
+                    "editor_directory_not_canonical")
+    launch_binary = Path(argv[0])
+    _editor_require(launch_binary.is_absolute() and launch_binary.is_file(),
+                    "editor_launch_executable_not_absolute")
+    binary = Path(expected_executable) if expected_executable is not None else launch_binary
+    binary_raw, _ = custody.regular(binary, EDITOR_OUTPUT_LIMIT)
+    binary_sha = hashlib.sha256(binary_raw).hexdigest()
+    del binary_raw
+    names = {kind: root / (label + suffix) for kind, suffix in (
+        ("intent", ".intent.json"), ("launch", ".launch.json"),
+        ("terminal", ".terminal.json"), ("stdout", ".stdout.log"), ("stderr", ".stderr.log"))}
+    _editor_require(output_limits is None or type(output_limits) is dict, "editor_output_limits_contract")
+    limits = {} if output_limits is None else dict(output_limits)
+    _editor_require(len(limits) <= 8, "editor_output_inventory_budget")
+    for path, maximum in limits.items():
+        _editor_require(isinstance(path, Path) and path.is_absolute()
+                        and path.parent.resolve(strict=True) == path.parent
+                        and path.is_relative_to(root) and path not in names.values()
+                        and not any(p.is_symlink() for p in path.parents)
+                        and type(maximum) is int and 0 < maximum <= EDITOR_OUTPUT_LIMIT,
+                        "editor_output_limit_not_admitted")
+    for path in (*names.values(), *limits):
+        _editor_require(not path.exists() and not path.is_symlink(), "editor_attempt_target_exists")
+    intent = {"schema": "motionwright.native.editor-command/1", "state": "INTENT",
+              "argv": list(argv), "cwd": str(cwd), "timeout_seconds": timeout,
+              "expected_executable": str(binary), "expected_executable_sha256": binary_sha,
+              "environment_sha256": hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest(),
+              "stdout_limit": EDITOR_LOG_LIMIT, "stderr_limit": EDITOR_LOG_LIMIT,
+              "output_limits": {str(p): n for p, n in limits.items()},
+              "output_limits_are_polled": True, "automatic_retry": False,
+              "render_success_claimed": False}
+    records.document(names["intent"].name, intent)  # Must persist before the first effect.
+    selector = selectors.DefaultSelector()
+    states, output_observations, errors = {}, {}, []
+    owned, primary, natural, quiescent, returncode = None, None, False, False, None
+    cancellation_signals = []
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    def cancelled(signum, _frame):
+        cancellation_signals.append(signum)
+        if len(cancellation_signals) == 1:
+            raise InterruptedError("editor_command_cancelled_SIGTERM")
+    signal.signal(signal.SIGTERM, cancelled)
+    started = time.monotonic()
+
+    def drain(seconds=0.02):
+        if not selector.get_map():
+            if seconds:
+                time.sleep(seconds)
+            return
+        for key, _ in selector.select(seconds):
+            item = states[key.data]
+            try:
+                raw = os.read(key.fd, 65536)
+            except BlockingIOError:
+                continue
+            if not raw:
+                item["eof"] = True
+                selector.unregister(key.fileobj)
+                key.fileobj.close()
+                continue
+            item["observed_bytes"] += len(raw)
+            remaining = max(0, EDITOR_LOG_LIMIT - item["retained_bytes"])
+            retained = raw[:remaining]
+            item["file"].write(retained)
+            item["retained_bytes"] += len(retained)
+            item["truncated"] |= len(retained) != len(raw)
+
+    def check_outputs():
+        for path, maximum in limits.items():
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            output_observations[str(path)] = {"bytes": info.st_size, "limit": maximum}
+            _editor_require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                            and info.st_uid == os.getuid(), "editor_output_not_owned_regular")
+            _editor_require(info.st_size <= maximum, "editor_output_limit_exceeded")
+
+    def terminal_ready():
+        return os.waitid(os.P_PID, owned.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+
+    def cleanup():
+        """E11 TERM/KILL schedule, scoped to our reserved group and pidfds."""
+        inventory_known = True
+
+        def current_alive():
+            nonlocal inventory_known
+            try:
+                return owned.inventory()
+            except BaseException as error:
+                inventory_known = False
+                message = type(error).__name__ + ":cleanup_inventory"
+                if message not in errors:
+                    errors.append(message)
+                return [row for key in owned.pidfds
+                        if _editor_live(row := _editor_identity(key[0])) and row["start_ticks"] == key[1]]
+
+        for sig, seconds in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+            alive = current_alive()
+            if not alive and inventory_known:
+                return True
+            leader = _editor_identity(owned.pid)
+            group_safe = (leader is not None and leader["start_ticks"] == owned.start
+                          and leader["group"] == leader["session"] == owned.pid
+                          and owned.process.returncode is None)
+            group_members = [r for r in alive if r["group"] == r["session"] == owned.pid]
+            targets = ([{"kind": "group", "id": owned.pid}]
+                       if group_safe and (group_members or not inventory_known) else [])
+            targets += [{"kind": "pidfd", "id": r["pid"], "start_ticks": r["start_ticks"]}
+                        for r in alive if not (group_safe and r in group_members)
+                        and (r["pid"], r["start_ticks"]) in owned.pidfds]
+            _editor_require(bool(targets), "editor_cleanup_identity_unavailable")
+            records.emit({"step": label + ".cleanup", "state": "INTENT", "signal": int(sig),
+                          "targets": targets, "automatic_retry": False})
+            for target in targets:
+                outcome = {**target, "signal": int(sig), "state": "REQUESTED"}
+                owned.cleanup_signals.append(outcome)
+                try:
+                    if target["kind"] == "group":
+                        os.killpg(owned.pid, sig)
+                    else:
+                        signal.pidfd_send_signal(owned.pidfds[(target["id"], target["start_ticks"])], sig)
+                    outcome["state"] = "SENT"
+                except ProcessLookupError:
+                    outcome["state"] = "ALREADY_EXITED"
+            records.emit({"step": label + ".cleanup", "state": "REQUEST_RETURNED",
+                          "signal": int(sig), "automatic_retry": False})
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                drain()
+                if not current_alive():
+                    return inventory_known
+        return False
+
+    try:
+        streams = []
+        for name in ("stdout", "stderr"):
+            fd = os.open(names[name], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            stream = os.fdopen(fd, "wb", buffering=0)
+            streams.append(stream)
+            states[name] = {"file": stream, "path": names[name], "observed_bytes": 0,
+                            "retained_bytes": 0, "eof": False, "truncated": False}
+        owned = EditorCommandProcess(records, label, binary, binary_sha,
+                                    [names["stdout"], names["stderr"]], streams)
+        owned.process = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         start_new_session=True, close_fds=True, shell=False)
+        owned.pid = owned.process.pid
+        records.owned_processes.append(owned)
+        for name, pipe in (("stdout", owned.process.stdout), ("stderr", owned.process.stderr)):
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        first = _editor_identity(owned.pid)
+        _editor_require(first is not None and first["group"] == first["session"] == owned.pid
+                        and first["parent"] == os.getpid()
+                        and first["uid"] == os.getuid(), "editor_launch_identity_unavailable")
+        owned.start = first["start_ticks"]
+        root_key = (owned.pid, owned.start)
+        owned.identities[root_key] = first
+        owned.pidfds[root_key] = os.pidfd_open(owned.pid)
+        owned.guard()
+        owned.inventory()
+        records.document(names["launch"].name, {
+            "schema": intent["schema"], "state": "LAUNCHED", "pid": owned.pid,
+            "start_ticks": owned.start, "process_group": owned.pid,
+            "actual_executable": str(binary), "actual_executable_sha256": binary_sha,
+            "start_new_session": True, "automatic_retry": False})
+        while True:
+            _editor_require(time.monotonic() - started < timeout, "editor_command_timeout")
+            drain()
+            _editor_require(not any(s["truncated"] for s in states.values()), "editor_log_limit_exceeded")
+            check_outputs()
+            alive = owned.inventory()
+            ended = terminal_ready()
+            _editor_require(time.monotonic() - started < timeout, "editor_command_timeout")
+            if ended is not None:
+                _editor_require(ended.si_code == os.CLD_EXITED and ended.si_status == 0,
+                                "editor_command_nonzero_terminal")
+                if not alive and all(s["eof"] for s in states.values()):
+                    natural = quiescent = True
+                    break
+        _editor_require(hashlib.sha256(custody.regular(binary, EDITOR_OUTPUT_LIMIT)[0]).hexdigest()
+                        == binary_sha, "editor_executable_changed")
+    except BaseException as error:
+        primary = error
+    finally:
+        if owned is not None and owned.process is not None:
+            if not natural:
+                try:
+                    # If launch custody failed before binding, the unreaped
+                    # direct child can still be bound for safe cleanup only.
+                    if owned.start is None:
+                        row = _editor_identity(owned.pid)
+                        _editor_require(row is not None and row["parent"] == os.getpid()
+                                        and row["group"] == row["session"] == owned.pid,
+                                        "editor_cleanup_leader_missing_or_not_owned")
+                        owned.start = row["start_ticks"]
+                    quiescent = cleanup()
+                except BaseException as error:
+                    errors.append(type(error).__name__ + ":cleanup")
+            try:
+                returncode = owned.process.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                quiescent = False
+            except BaseException as error:
+                errors.append(type(error).__name__ + ":wait")
+            # Drain available original tail bytes, with a finite bound; no
+            # process or native command is started again to recover them.
+            try:
+                for _ in range(128):
+                    if not selector.get_map():
+                        break
+                    drain(0)
+            except BaseException as error:
+                errors.append(type(error).__name__ + ":stream_tail")
+        for key in list(selector.get_map().values()):
+            try:
+                key.fileobj.close()
+            except BaseException as error:
+                errors.append(type(error).__name__ + ":pipe_close")
+        try:
+            selector.close()
+        except BaseException as error:
+            errors.append(type(error).__name__ + ":selector_close")
+        for item in states.values():
+            try:
+                item["file"].flush()
+                os.fsync(item["file"].fileno())
+                item["file"].close()
+            except BaseException as error:
+                errors.append(type(error).__name__ + ":stream_close")
+        if owned is not None:
+            for fd in owned.pidfds.values():
+                try:
+                    os.close(fd)
+                except BaseException as error:
+                    errors.append(type(error).__name__ + ":pidfd_close")
+    retained = {}
+    for name, item in states.items():
+        try:
+            raw, _ = custody.regular(item["path"], EDITOR_LOG_LIMIT)
+            retained[name] = {"path": str(item["path"]), "bytes": len(raw),
+                              "sha256": hashlib.sha256(raw).hexdigest(),
+                              "observed_bytes": item["observed_bytes"],
+                              "eof": item["eof"], "truncated": item["truncated"]}
+        except BaseException as error:
+            errors.append(type(error).__name__ + ":stream_custody")
+    success = (primary is None and not errors and natural and quiescent and returncode == 0
+               and len(retained) == 2 and all(v["eof"] and not v["truncated"] for v in retained.values())
+               and owned is not None and not owned.cleanup_signals)
+    terminal = {"schema": intent["schema"], "state": "NATURAL_TERMINAL_OBSERVED" if success else "ERROR_OR_UNKNOWN",
+                "pid": None if owned is None else owned.pid, "start_ticks": None if owned is None else owned.start,
+                "returncode": returncode, "natural_completion_observed": natural,
+                "original_group_and_observed_descendants_quiescent": quiescent,
+                "quiescence_scope": "original_process_group_and_observed_descendants",
+                "unobserved_detached_descendants_excluded": False,
+                "descendants": [] if owned is None else [v for k, v in owned.identities.items() if k[0] != owned.pid],
+                "cleanup_signals": [] if owned is None else owned.cleanup_signals,
+                "cancellation_signals": cancellation_signals,
+                "streams": retained, "output_observations": output_observations,
+                "error": None if primary is None else {"type": type(primary).__name__, "message": str(primary)[:2048]},
+                "custody_errors": errors, "elapsed_seconds": time.monotonic() - started,
+                "automatic_retry": False, "render_success_claimed": False}
+    try:
+        records.document(names["terminal"].name, terminal)
+    except BaseException as error:
+        if primary is not None:
+            primary.add_note("editor_terminal_custody_failed:" + type(error).__name__)
+            raise primary from error
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+    if not success:
+        if primary is not None and not isinstance(primary, Exception):
+            raise primary
+        raise EditorCommandUnknown(label, terminal) from primary
+    return terminal
 
 
 class Recorder:
@@ -563,6 +1254,8 @@ class NativeProcess(OwnedProcess):
                 "native_accessibility_selection_cannot_reopen_or_dispatch_gui")
         self.binary, self.binary_sha = binary, binary_sha
         self.phase, self.records, self.appdir = phase, records, appdir
+        self.profile = profile
+        self.render_preferences_source = None
         self.logs = [records.root / (phase + ".stdout.log"),
                      records.root / (phase + ".stderr.log")]
         self.streams = [path.open("xb") for path in self.logs]
@@ -664,7 +1357,11 @@ class NativeProcess(OwnedProcess):
         return result
 
     def close(self):
-        self.ui.quit(self.phase + ".quit")
+        preferences_source = getattr(self, "render_preferences_source", None)
+        if preferences_source is None:
+            self.ui.quit(self.phase + ".quit")
+        else:
+            self.ui.quit_after_render_script(self.phase + ".quit", preferences_source)
         try:
             code = self.process.wait(timeout=30)
         except subprocess.TimeoutExpired as original:
@@ -730,7 +1427,10 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
     records.document("initial-readback.json", initial_readback)
     first_witness = first.witness(original, original_sha, initial, initial_sha)
     records.document("initial-ui-tree.json", {"rows": first.ui.tree()})
+    before_plan = None if retained_alab is not None else prepare_editor_render(
+        first, "before", initial, initial_sha, initial_readback, 90)
     first.close()
+    before_master = None if before_plan is None else run_editor_render_once(records, before_plan, first)
     # The first native file is the exact argv of a new, separately awaited PID.
     second = NativeProcess(appdir, binary, binary_sha, profile, records,
                            "reopen", reopen_input=initial)
@@ -791,7 +1491,16 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
     records.document("reopened-edited-comparison.json", final_comparison)
     records.document("edited-project-distinct-native-sessions.json", edited_sessions)
     records.document("reopened-edited-ui-tree.json", {"rows": third.ui.tree()})
+    after_plan = None if retained_alab is not None else prepare_editor_render(
+        third, "after", edited, edited_sha, final_readback, 75)
     third.close()
+    editor_cycle = None
+    if after_plan is not None:
+        after_master = run_editor_render_once(records, after_plan, third)
+        editor_cycle = verify_editor_trim(before_master, after_master)
+        records.document("editor-render-cycle.json", editor_cycle)
+        _, cycle_original = editor_original(records.root / "editor-render-cycle.json", records.root, MAX_OTIO)
+        editor_cycle = {**editor_cycle, "cycle_original": cycle_original}
     require(digest(initial, MAX_PROJECT) == initial_sha
             and digest(edited, MAX_PROJECT) == edited_sha,
             "native_gui_saved_project_changed_after_reopen")
@@ -825,6 +1534,8 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
             "exact_end_trim_frames": 15 if retained_alab is None else 12}
     if retained_alab is not None:
         result["alab_returned_source"] = alab_returned
+    else:
+        result["editor_master_cycle"] = editor_cycle
     return result
 
 
@@ -880,6 +1591,61 @@ def verified_snapshot_expectations(result: dict, context: dict) -> dict:
         require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value),
                 "native_gui_verified_artifact_digest_missing")
         expected[name] = (value, limit)
+    editor_cycle = result.get("editor_master_cycle")
+    require(type(editor_cycle) is dict
+            and set(editor_cycle) == set(verify_editor_trim(
+                editor_cycle.get("before", {}), editor_cycle.get("after", {}))) | {"cycle_original"}
+            and {k: v for k, v in editor_cycle.items() if k != "cycle_original"}
+                == verify_editor_trim(editor_cycle["before"], editor_cycle["after"]),
+            "native_gui_verified_editor_render_cycle_missing_or_promoted")
+    render_originals = []
+    for phase, source_key in (("before", "initial_project_sha256"), ("after", "edited_project_sha256")):
+        render = editor_cycle[phase]
+        require(render.get("native_source", {}).get("sha256") == result[source_key]
+                and render.get("native_render_count") == 1
+                and all(render.get(k) is True for k in (
+                    "native_editor_closed_before_delivery", "delivery_natural_terminal_observed",
+                    "independent_decoders_natural_terminal_observed"))
+                and all(render.get(k) is False for k in (
+                    "integrated_Motionwright_production", "audio_fidelity_accepted",
+                    "automatic_retry", "human_acceptance", "release_authorized")),
+                "native_gui_verified_editor_render_missing_or_promoted")
+        prefix = "editor-" + phase
+        names = {"native_source": (("initial" if phase == "before" else "edited") + ".kdenlive", MAX_PROJECT),
+                 "playlist": (prefix + ".mlt", MAX_PROJECT), "master": (prefix + ".mov", EDITOR_RENDER_MAX_VIDEO),
+                 "native_render_log": (prefix + ".mov.log", EDITOR_RENDER_MAX_LOG),
+                 "probe": (prefix + ".probe.stdout.log", 256 * 1024),
+                 "framehash": (prefix + ".framehash.stdout.log", 256 * 1024)}
+        for suffix in (".prepare.json", ".delivery.intent.json", ".delivery.launch.json", ".delivery.terminal.json",
+                       ".delivery.stdout.log", ".delivery.stderr.log", ".probe.intent.json", ".probe.launch.json",
+                       ".probe.terminal.json", ".probe.stderr.log", ".framehash.intent.json", ".framehash.launch.json",
+                       ".framehash.terminal.json", ".framehash.stderr.log"):
+            names[suffix] = (prefix + suffix, EDITOR_RENDER_MAX_LOG)
+        originals = render.get("originals")
+        require(type(originals) is dict and set(originals) == set(names)
+                and originals["native_source"] == render["native_source"],
+                "native_gui_verified_editor_originals_missing")
+        render_originals.extend((originals[key], name, limit) for key, (name, limit) in names.items())
+        descriptor = render.get("result_original")
+        require(type(descriptor) is dict and descriptor.get("sha256") == hashlib.sha256(custody.json_bytes(
+            {k: v for k, v in render.items() if k != "result_original"})).hexdigest(),
+            "native_gui_verified_editor_result_digest_changed")
+        render_originals.append((descriptor, prefix + ".result.json", MAX_OTIO))
+    descriptor = editor_cycle["cycle_original"]
+    require(type(descriptor) is dict and descriptor.get("sha256") == hashlib.sha256(custody.json_bytes(
+        {k: v for k, v in editor_cycle.items() if k != "cycle_original"})).hexdigest(),
+        "native_gui_verified_editor_cycle_digest_changed")
+    render_originals.append((descriptor, "editor-render-cycle.json", MAX_OTIO))
+    for item, name, maximum in render_originals:
+        require(type(item) is dict and set(item) == {"relative_path", "bytes", "sha256"}
+                and item["relative_path"] == name
+                and type(item["bytes"]) is int and 0 <= item["bytes"] <= maximum
+                and type(item["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]),
+                "native_gui_verified_editor_original_not_closed")
+        member = "owner/" + name
+        require(member not in expected or expected[member] == (item["sha256"], maximum),
+                "native_gui_verified_editor_original_disagrees")
+        expected[member] = (item["sha256"], maximum)
     owner = result.get("owner_cut_completion")
     require(type(owner) is dict and owner.get("sqlite_owner_cut_committed") is True,
             "native_gui_verified_owner_result_missing")
