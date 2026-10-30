@@ -1,0 +1,484 @@
+{
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "motionwright.graph-browser-owner-final/6"
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "status": {
+      "enum": [
+        "CLOSED",
+        "UNKNOWN"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "repository_root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tree": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sdk_root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "sdk_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "locks": {
+          "type": "object",
+          "properties": {
+            "Cargo.lock": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "SOURCE_LOCK.json": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "apps/studio/package-lock.json": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "rust-toolchain.toml": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "Cargo.lock",
+            "SOURCE_LOCK.json",
+            "apps/studio/package-lock.json",
+            "rust-toolchain.toml"
+          ],
+          "additionalProperties": false
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "repository_root",
+        "sha",
+        "tree",
+        "sdk_root",
+        "sdk_sha",
+        "locks",
+        "run_id",
+        "run_attempt"
+      ],
+      "additionalProperties": false
+    },
+    "spec_original": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "source_inputs": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "client_roster": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/(?:0|[1-9][0-9]*)$"
+          },
+          "helper_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "launch_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "UNKNOWN"
+            ]
+          },
+          "connection_original": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "size_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_original": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "size_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_root": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "client_id",
+          "id",
+          "helper_id",
+          "launch_index",
+          "status",
+          "connection_original",
+          "session_original",
+          "output_root"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 64
+    },
+    "service_closure": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "service_closure_validated": {
+      "type": "boolean"
+    },
+    "owner_close": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "database_initial": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "database_final": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "same_physical_database": {
+      "type": "boolean"
+    },
+    "owner_cohort_absent": {
+      "type": "boolean"
+    },
+    "owner_streams_eof": {
+      "type": "boolean"
+    },
+    "capture_permitted": {
+      "type": "boolean"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "SPEC_INVALID",
+          "SOURCE_MISMATCH",
+          "RUNTIME_INVALID",
+          "STORE_INVALID",
+          "BINARY_MISMATCH",
+          "OWNER_START_FAILED",
+          "CLIENT_LIMIT",
+          "REQUEST_INVALID",
+          "CLIENT_START_FAILED",
+          "SERVICE_BARRIER_INVALID",
+          "OWNER_CLOSE_FAILED",
+          "CUSTODY_FAILED",
+          "DEADLINE_EXCEEDED",
+          "CANCELLED",
+          "INTERNAL_ERROR"
+        ]
+      }
+    },
+    "native_authoring_approved": {
+      "const": false
+    },
+    "formal_acceptance": {
+      "const": false
+    }
+  },
+  "required": [
+    "schema",
+    "case_id",
+    "status",
+    "source",
+    "spec_original",
+    "source_inputs",
+    "client_roster",
+    "service_closure",
+    "service_closure_validated",
+    "owner_close",
+    "database_initial",
+    "database_final",
+    "same_physical_database",
+    "owner_cohort_absent",
+    "owner_streams_eof",
+    "capture_permitted",
+    "errors",
+    "native_authoring_approved",
+    "formal_acceptance"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Graph browser owner private final receipt draft6 R1",
+  "description": "Owner lifecycle/custody receipt; does not assert global shared-pool capture, supported copied-store restore, Native authoring approval, browser PASS, G2 or release acceptance. FileRefs for database observations reference original JSON observations, never database copies."
+}

@@ -7,7 +7,15 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { ServiceLaunchContext } from "./scopedChangeService";
+import type { ServiceLaunchContext } from "./scopedChangeService.ts";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { TestInfo } from "@playwright/test";
+import { ScopedChangeService, type ScopedChangeServiceOptions } from "./scopedChangeService.ts";
+import { createGraphCaseFactory } from "./graph-owner/factory.mjs";
+import { inside } from "./graph-owner/custody.mjs";
+import { captureOriginalOpenedStoreWitness, publishedOracleReference,
+  runIndependentSameStoreReopen } from "./graph-owner/same_store_reopen.mjs";
 
 export type NativeGraphOperation = "authoring_context" | "upsert" | "remove" | "operation_recovery";
 export type NativeGraphCaseId = "graph-source-review" | "graph-flow" | "graph-lost-reply"
@@ -178,4 +186,95 @@ export function sourceBoundNativeLaunchObserver(
     }
   };
   return Object.freeze({ reserve, assertAllObserved });
+}
+
+
+/**
+ * Private composition of the reviewed runtime wrapper with the current
+ * source-only declarations above. Their historical source pin remains
+ * unchanged and is not admission for this composed caller. Production source
+ * identity comes only from factory.admission.source; its receiver remains
+ * DENY until authentic originals and independent review are available.
+ * The final source declaration is still an owner integration dependency.
+ */
+const selectedCases = new Set([
+  "graph-source-review", "graph-flow", "graph-lost-reply", "graph-removal",
+  "graph-label-causal-diagram", "graph-label-system-flow",
+]);
+const factories = new WeakMap<ScopedChangeService, Awaited<ReturnType<typeof createGraphCaseFactory>>>();
+
+export async function createGraphServiceCase(info: TestInfo, caseId: string, ordinary: ScopedChangeServiceOptions): Promise<ScopedChangeService> {
+  const selected = process.env.MOTIONWRIGHT_GRAPH_NATIVE_CASE;
+  if (selected && selected !== "all" && !selectedCases.has(selected)) throw new Error("Unknown explicit Native Graph case selection");
+  if (!selected || selected !== "all" && selected !== caseId) return ScopedChangeService.create(ordinary);
+  const privateRoot = join(info.outputDir, "native-graph-custody");
+  const databasePath = join(privateRoot, "store", "motionwright.sqlite3");
+  // The referenced producer input is not trusted because its path is supplied.
+  // The production guard must verify actual immutable build originals, all
+  // selected executables and the independent reopen producer before creation.
+  const factory = await createGraphCaseFactory({
+    privateRoot, databasePath, caseId,
+    deadlineUnixMs: Date.now() + Math.min(info.timeout, 900_000),
+    producerOriginalPath: process.env.MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL,
+  });
+  const service = await factory.createNativeService(ScopedChangeService,
+    { ...ordinary, databasePath: factory.options.databasePath }, async (project: { id: string }) => {
+      const admitted = factory.admission;
+      const root = join(factory.root, "owner");
+      return {
+        schema: "motionwright.graph-browser-owner-spec/6", case_id: caseId, source: admitted.source,
+        paths: { private_root: root, owner_home: join(root, "home"), owner_runtime: join(root, "runtime"),
+          owner_state: join(root, "state"), owner_socket: join(root, "runtime", "broker.sock"), manim_work: join(root, "work") },
+        binaries: admitted.binaries, runtime: admitted.runtime,
+        store: { database_path: factory.options.databasePath, project_id: project.id },
+        limits: { deadline_unix_ms: factory.deadline, max_clients: 8, max_processes: 128,
+          max_stream_bytes: 1_048_576, cli_timeout_ms: 20_000, close_timeout_ms: 30_000 },
+      };
+    });
+  factories.set(service, factory);
+  return service;
+}
+
+export function graphOutputPath(service: ScopedChangeService, info: TestInfo, ...segments: string[]): string {
+  const factory = factories.get(service);
+  return factory ? inside(factory.root, join(factory.root, "artifacts", ...segments)) : info.outputPath(...segments);
+}
+
+export async function writeGraphEvidence(service: ScopedChangeService, file: string, raw: string, options?: { flag: string }): Promise<void> {
+  const factory = factories.get(service);
+  if (factory) await factory.publish(file, Buffer.from(raw));
+  else await writeFile(file, raw, options);
+}
+
+export async function finalizeGraphCase(service: ScopedChangeService,
+  ...args: Parameters<ScopedChangeService["finalizeClosedStore"]>): Promise<Awaited<ReturnType<ScopedChangeService["finalizeClosedStore"]>>> {
+  const factory = factories.get(service);
+  if (!factory) return service.finalizeClosedStore(...args);
+  const [destination, expected, peers = [], prepare = []] = args;
+  // Keep each original preparation outcome and run each action only once.
+  // The witness waits for every preparation before the existing finalizer
+  // seals admissions; failed preparation still reaches its normal cleanup.
+  const preparations = prepare.map(action => {
+    let outcome: Promise<unknown> | undefined;
+    return () => outcome ??= Promise.resolve().then(action);
+  });
+  let originalPresealWitnessRef: Awaited<ReturnType<typeof captureOriginalOpenedStoreWitness>> | undefined;
+  const result = await service.finalizeClosedStore(destination, expected, peers, [
+    ...preparations,
+    async () => {
+      const outcomes = await Promise.allSettled(preparations.map(action => action()));
+      const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Graph preseal preparation failed");
+      originalPresealWitnessRef = await captureOriginalOpenedStoreWitness(factory, service, expected);
+    },
+  ]);
+  factory.assertClosed();
+  // Reuse the finalizer's published oracle and the immutable observation from
+  // the actual original Service; neither an internal restart nor a copy is
+  // the independent reopen. Production remains closed at the existing J1 guard.
+  await runIndependentSameStoreReopen(factory, {
+    expectedOracleRef: publishedOracleReference(factory, destination, result),
+    originalPresealWitnessRef,
+  });
+  return result;
 }

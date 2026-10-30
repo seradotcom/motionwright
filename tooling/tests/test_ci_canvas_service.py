@@ -6433,8 +6433,266 @@ SERVICE47_DEADLINE_WORKFLOW_REVERT = ((270,
   b"selection == 'phase1-service47' && 5 || 360 }}\n",
   b"        if: always() && steps.archive.outcome != 'success'\n"))
 
+
+GRAPH_R74_WORKFLOW_SHA256 = 'ab66c8ef0961cc789450de0c7dd26a0c68ec133ccf63af14e9c7b9768a94f0eb'
+GRAPH_R74_WORKFLOW_REVERT = ((12,
+  21,
+  b'        options: [studio-service-68, phase1-service47, phase1-native-graph, criterion-partials, window-f'
+  b'rontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-au'
+  b'thoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, al'
+  b'l, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-dra'
+  b'ft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, p'
+  b'rofile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, bran'
+  b'ch-authoring, claim-source, branch-combination]\n      graph_review_spki_der_base64:\n        description:'
+  b' Existing external review recipient RSA3072 public SPKI, required only for phase1-native-graph\n        t'
+  b'ype: string\n        required: false\n      graph_review_spki_sha256:\n        description: SHA256 of that '
+  b'public SPKI DER, required only for phase1-native-graph\n        type: string\n        required: false\n',
+  b'        options: [studio-service-68, phase1-service47, criterion-partials, window-frontend, camera-with-'
+  b'v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, product'
+  b'ion-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, progr'
+  b'am, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delive'
+  b'ry-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, pro'
+  b'jection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-s'
+  b'ource, branch-combination]\n'),
+ (282, 283, b'      statuses: read\n', b''),
+ (290,
+  291,
+  b"    timeout-minutes: ${{ matrix.selection == 'phase1-native-graph' && 180 || matrix.selection == 'phase1"
+  b"-service47' && 110 || matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' &"
+  b"& 120 || matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-brow"
+  b"ser' && 75 || matrix.selection == 'project-authoring-core' && 360 || matrix.selection == 'creative-produ"
+  b'ction\' && 110 || matrix.selection == \'review\' && 70 || contains(fromJSON(\'["creative-production","pr'
+  b'oduction-design","creative-workbench","branch-claim","branch-authoring","claim-source"]\'), matrix.select'
+  b"ion) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' "
+  b'&& 120 || 60 }}\n',
+  b"    timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 110 || matrix.selection == 'camera-wi"
+  b"th-v2' && 90 || matrix.selection == 'branch-claim' && 120 || matrix.selection == 'browser-contracts' && "
+  b"240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring"
+  b"-core' && 360 || matrix.selection == 'creative-production' && 110 || matrix.selection == 'review' && 70 "
+  b'|| contains(fromJSON(\'["creative-production","production-design","creative-workbench","branch-claim","br'
+  b'anch-authoring","claim-source"]\'), matrix.selection) && 90 || matrix.selection == \'complete-authoring\' &'
+  b"& 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}\n"),
+ (436,
+  580,
+  b"      - name: Bind Graph to its authenticated original job deadline\n        if: matrix.selection == 'pha"
+  b"se1-native-graph'\n        working-directory: .\n        timeout-minutes: 2\n        env:\n          MOT"
+  b'IONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}\n        run: |\n          set -euo pipefail\n         '
+  b" python3 -I -B - <<'PY'\n          import hashlib, json, os, re, signal, ssl, time, urllib.error, urllib."
+  b'request\n          from datetime import datetime\n          from email.utils import parsedate_to_datetime\n'
+  b'          from pathlib import Path\n\n          def check(ok, reason):\n              if not ok:\n      '
+  b'            raise SystemExit("Graph NOT_STARTED: " + reason)\n\n          def timeout(_signal, _frame):\n  '
+  b'            raise SystemExit("Graph NOT_STARTED: metadata deadline expired")\n\n          signal.signal(si'
+  b'gnal.SIGALRM, timeout)\n          signal.alarm(60)\n          begin = time.monotonic_ns()\n          bindin'
+  b'g = {key: os.environ.get(key) for key in (\n              "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_R'
+  b'UN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA",\n              "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "RU'
+  b'NNER_NAME")}\n          check(all(isinstance(value, str) and value for value in binding.values()), "job b'
+  b'inding absent")\n          check(binding["GITHUB_JOB"] == "real-service" and os.environ.get("GITHUB_API_U'
+  b'RL") == "https://api.github.com"\n                and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", bi'
+  b'nding["GITHUB_REPOSITORY"])\n                and re.fullmatch(r"[0-9a-f]{40}", binding["GITHUB_SHA"])\n   '
+  b'             and binding["GITHUB_WORKFLOW_SHA"] == binding["GITHUB_SHA"]\n                and binding["GI'
+  b'THUB_WORKFLOW_REF"].startswith(binding["GITHUB_REPOSITORY"]\n                    + "/.github/workflows/st'
+  b'udio-service-verification.yml@")\n                and all(re.fullmatch(r"[1-9][0-9]*", binding[key])\n    '
+  b'                    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")), "job/source binding differs")\n '
+  b'         token = os.environ.pop("MOTIONWRIGHT_GRAPH_METADATA_TOKEN", "")\n          check(token != "", "r'
+  b'ead-only metadata token absent")\n          class NoRedirect(urllib.request.HTTPRedirectHandler):\n       '
+  b'       def redirect_request(self, *args, **kwargs):\n                  raise SystemExit("Graph NOT_STARTE'
+  b'D: metadata redirect refused")\n          opener = urllib.request.build_opener(urllib.request.ProxyHandle'
+  b'r({}), NoRedirect(),\n              urllib.request.HTTPSHandler(context=ssl.create_default_context()))\n  '
+  b'        base = ("https://api.github.com/repos/" + binding["GITHUB_REPOSITORY"] + "/actions/runs/"\n      '
+  b'            + binding["GITHUB_RUN_ID"] + "/attempts/" + binding["GITHUB_RUN_ATTEMPT"])\n          respons'
+  b'es, originals, transport_originals = {}, {}, {}\n          root = Path("v")\n          check(not root.exis'
+  b'ts(), "fresh evidence namespace required")\n          # Only bounded metadata originals are created here.'
+  b' Product preparation follows\n          # authentication of the original GitHub job start and complete-ph'
+  b'ase admission.\n          (root / "tools").mkdir(parents=True, exist_ok=False)\n          def fetch(name, '
+  b'suffix):\n              request = urllib.request.Request(base + suffix, headers={"Authorization": "Bearer'
+  b' " + token,\n                  "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-'
+  b'28", "Cache-Control": "no-cache"})\n              try:\n                  response = opener.open(request, '
+  b'timeout=15)\n              except urllib.error.HTTPError as error:\n                  response = error\n   '
+  b'           with response:\n                  dates = response.headers.get_all("Date", [])\n               '
+  b'   raw = response.read(4 * 1024 * 1024 + 1)\n                  with (root / "tools" / name).open("xb") as'
+  b' stream:\n                      check(stream.write(raw) == len(raw), "metadata original short write")\n   '
+  b'                   stream.flush(); os.fsync(stream.fileno())\n                  originals[name] = {"bytes'
+  b'": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}\n                  responses[name] = {"url": base'
+  b' + suffix, "http_date": dates[0] if len(dates) == 1 else None,\n                                     "htt'
+  b'p_dates": dates, "status": response.status, "age": response.headers.get("Age", "0"),\n                   '
+  b'                  "received_mono_ns": time.monotonic_ns(), "body_bytes": len(raw),\n                     '
+  b'                "body_within_bound": 0 < len(raw) <= 4 * 1024 * 1024}\n                  transport_name ='
+  b' name.replace(".original.json", ".transport.original.json")\n                  transport = (json.dumps(re'
+  b'sponses[name], sort_keys=True, separators=(",", ":")) + "\\n").encode()\n                  check(len(trans'
+  b'port) <= 65536, "metadata transport original exceeds bound")\n                  with (root / "tools" / tr'
+  b'ansport_name).open("xb") as stream:\n                      check(stream.write(transport) == len(transport'
+  b'), "metadata transport original short write")\n                      stream.flush(); os.fsync(stream.file'
+  b'no())\n                  transport_originals[transport_name] = {"bytes": len(transport), "sha256": hashli'
+  b'b.sha256(transport).hexdigest()}\n                  # A failed response retains its original body/Date/st'
+  b'atus before denial.\n                  # It never becomes an authenticated deadline and is never retried.'
+  b'\n                  check(response.status == 200 and len(dates) == 1 and response.headers.get("Age", "0")'
+  b' == "0",\n                        "metadata status/date/cache differs")\n                  check(0 < len(r'
+  b'aw) <= 4 * 1024 * 1024, "metadata original exceeds bound")\n                  return json.loads(raw), dat'
+  b'es[0]\n          run, _ = fetch("graph-run-response.original.json", "")\n          jobs, date = fetch("gra'
+  b'ph-jobs-response.original.json", "/jobs?per_page=100")\n          end = time.monotonic_ns()\n          tok'
+  b'en = None\n          check(type(run.get("id")) is int and type(run.get("run_attempt")) is int\n           '
+  b'     and run.get("id") == int(binding["GITHUB_RUN_ID"])\n                and run.get("run_attempt") == in'
+  b't(binding["GITHUB_RUN_ATTEMPT"])\n                and run.get("head_sha") == binding["GITHUB_SHA"]\n      '
+  b'          and run.get("repository", {}).get("full_name") == binding["GITHUB_REPOSITORY"]\n               '
+  b' and run.get("path", "").split("@", 1)[0] == ".github/workflows/studio-service-verification.yml"\n       '
+  b'         and run.get("event") == "workflow_dispatch" and run.get("status") == "in_progress"\n            '
+  b'    and run.get("head_repository", {}).get("full_name") == "seradotcom/motionwright"\n                and'
+  b' run.get("actor", {}).get("type") == "User" and type(run["actor"].get("id")) is int\n                and '
+  b'run["actor"]["id"] > 0 and binding["GITHUB_REPOSITORY"] == "seradotcom/motionwright"\n                and'
+  b' binding["GITHUB_RUN_ATTEMPT"] == "1", "run original differs")\n          rows = jobs.get("jobs")\n       '
+  b'   check(isinstance(rows, list) and type(jobs.get("total_count")) is int\n                and 0 < jobs["t'
+  b'otal_count"] == len(rows) <= 100, "job list is incomplete or paginated")\n          selected = [row for r'
+  b'ow in rows if isinstance(row, dict)\n                      and row.get("name") == "Real SQLite and Studio'
+  b' / phase1-native-graph"]\n          check(len(selected) == 1, "current job is absent or ambiguous")\n     '
+  b'     job = selected[0]\n          check(type(job.get("run_id")) is int and type(job.get("run_attempt")) i'
+  b's int\n                and job.get("run_id") == int(binding["GITHUB_RUN_ID"])\n                and job.get'
+  b'("run_attempt") == int(binding["GITHUB_RUN_ATTEMPT"])\n                and job.get("head_sha") == binding'
+  b'["GITHUB_SHA"] and job.get("status") == "in_progress"\n                and job.get("conclusion") is None '
+  b'and job.get("runner_name") == binding["RUNNER_NAME"]\n                and type(job.get("id")) is int and '
+  b'job["id"] > 0, "job/runner original differs")\n          server = parsedate_to_datetime(date)\n          s'
+  b'tarted = datetime.fromisoformat(job.get("started_at", "").replace("Z", "+00:00"))\n          check(server'
+  b'.tzinfo is not None and started.tzinfo is not None\n                and server.utcoffset().total_seconds('
+  b') == started.utcoffset().total_seconds() == 0\n                and server >= started, "original job start'
+  b'/HTTP Date differs")\n          age = server - started\n          elapsed_upper_ns = ((age.days * 86400 + '
+  b'age.seconds + 2) * 1_000_000_000 + age.microseconds * 1000)\n          deadline = end + 10800 * 1_000_000'
+  b'_000 - elapsed_upper_ns - (end - begin)\n          phases = {"prepare": 1200, "runtime": 1200, "sdk-build'
+  b'": 1800, "product-build": 1800,\n                    "producer-index": 600, "review-upload": 300, "approv'
+  b'al-wait": 1200,\n                    "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "fina'
+  b'l-upload": 300}\n          anchor_mono, anchor_wall = time.monotonic_ns(), time.time_ns() // 1000000\n    '
+  b'      original = {"schema": "motionwright.graph-job-deadline/1", "binding": binding,\n              "boot'
+  b'_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),\n              "job_seconds": 10800, "'
+  b'phase_seconds": phases, "rounding_allowance_seconds": 2,\n              "request_started_mono_ns": begin,'
+  b' "response_received_mono_ns": end,\n              "deadline_mono_ns": deadline, "jobs_http_date": date,\n '
+  b'             "clock_anchor_mono_ns": anchor_mono, "clock_anchor_wall_ms": anchor_wall,\n              "de'
+  b'adline_unix_ms": anchor_wall + (deadline - anchor_mono) // 1000000, "run": run, "jobs": jobs,\n          '
+  b'    "response_originals": originals, "response_transport_originals": transport_originals,\n              '
+  b'"transport_observations": responses,\n              "transport": "HTTPS_VERIFIED_NO_REDIRECT_NO_PROXY_AUT'
+  b'HENTICATED_READ_ONLY"}\n          raw = (json.dumps(original, sort_keys=True, separators=(",", ":")) + "\\'
+  b'n").encode()\n          check(len(raw) <= 8 * 1024 * 1024 + 65536, "deadline original exceeds bound")\n   '
+  b'       with (root / "tools/graph-deadline.original.json").open("xb") as stream:\n              check(stre'
+  b'am.write(raw) == len(raw), "deadline original short write")\n              stream.flush(); os.fsync(strea'
+  b'm.fileno())\n          check(deadline - time.monotonic_ns() >= sum(phases.values()) * 1_000_000_000,\n    '
+  b'            "all Graph phases plus the original remaining custody does not fit the original job deadline'
+  b'")\n          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as stream:\n              stream.'
+  b'write("MOTIONWRIGHT_GRAPH_DEADLINE_SHA256=" + hashlib.sha256(raw).hexdigest() + "\\n")\n          signal.a'
+  b'larm(0)\n          print("Graph original job deadline admitted; no Service/browser/native process has run'
+  b'")\n          PY\n',
+  b''),
+ (582,
+  583,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 1 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 1 || 360 }}\n"),
+ (591,
+  595,
+  b'          elif [ "$REQUESTED_SELECTION" = phase1-native-graph ]; then\n            test -f v/tools/graph-'
+  b'deadline.original.json\n            test ! -e v/x\n            test ! -e v/c\n',
+  b''),
+ (600,
+  601,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 2 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 2 || 360 }}\n"),
+ (613,
+  614,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 2 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 2 || 360 }}\n"),
+ (623,
+  624,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 2 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 2 || 360 }}\n"),
+ (633,
+  634,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 5 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 5 || 360 }}\n"),
+ (644,
+  645,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 1 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 1 || 360 }}\n"),
+ (657,
+  658,
+  b'        timeout-minutes: ${{ contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.sel'
+  b'ection) && 1 || 360 }}\n',
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 1 || 360 }}\n"),
+ (677,
+  678,
+  b"        if: matrix.selection != 'phase1-service47' && matrix.selection != 'phase1-native-graph'\n",
+  b"        if: matrix.selection != 'phase1-service47'\n"),
+ (683,
+  718,
+  b'      - name: Produce the original Graph builds and private R74 review carrier\n        if: matrix.select'
+  b"ion == 'phase1-native-graph'\n        timeout-minutes: 112\n        env:\n          MOTIONWRIGHT_GRAPH_REVI"
+  b'EW_SPKI_DER_BASE64: ${{ inputs.graph_review_spki_der_base64 }}\n          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_'
+  b'SHA256: ${{ inputs.graph_review_spki_sha256 }}\n        run: |\n          set -euo pipefail\n          pyth'
+  b'on -I -B tooling/ci_canvas_service.py graph produce --repo .\n      - name: Admit Graph review upload aga'
+  b"inst the original deadline\n        if: matrix.selection == 'phase1-native-graph'\n        timeout-minutes"
+  b': 1\n        run: python -I -B tooling/ci_canvas_service.py graph-budget --repo . --phase review-upload\n '
+  b'     - name: Publish encrypted Graph originals for independent R74 review\n        if: matrix.selection ='
+  b"= 'phase1-native-graph'\n        timeout-minutes: 5\n        uses: actions/upload-artifact@ea165f8d65b6e75"
+  b'b540449e92b4886f43607fa02\n        with:\n          name: graph-originals-review-${{ github.sha }}-${{ git'
+  b'hub.run_id }}-${{ github.run_attempt }}\n          path: v/graph-review\n          include-hidden-files: t'
+  b'rue\n          if-no-files-found: error\n          retention-days: 14\n      - name: Observe the independen'
+  b"t Graph statuses before any case or owner\n        if: matrix.selection == 'phase1-native-graph'\n        "
+  b'timeout-minutes: 21\n        env:\n          MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}\n      '
+  b'  run: python -I -B tooling/ci_canvas_service.py graph wait --repo .\n      - name: Execute the six origi'
+  b"nal Graph cases and complete closure\n        if: matrix.selection == 'phase1-native-graph'\n        timeo"
+  b'ut-minutes: 20\n        env:\n          MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}\n        run'
+  b': python -I -B tooling/ci_canvas_service.py graph run --repo .\n',
+  b''),
+ (719, 720, b"        if: matrix.selection != 'phase1-native-graph'\n", b''),
+ (728,
+  729,
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-native-graph' && 11 || matrix.selection == 'pha"
+  b"se1-service47' && 7 || 360 }}\n",
+  b"        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 7 || 360 }}\n"),
+ (796,
+  806,
+  b'      - name: Admit the one Graph final upload within the original deadline\n        id: graph-final-uplo'
+  b"ad-admission\n        if: always() && matrix.selection == 'phase1-native-graph'\n        timeout-minutes: "
+  b'2\n        env:\n          MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}\n        run: |\n     '
+  b'     set -euo pipefail\n          python -I -B tooling/ci_canvas_service.py graph-budget --repo . --phase'
+  b' final-upload\n          echo \'admitted=true\' >> "$GITHUB_OUTPUT"\n',
+  b''),
+ (807,
+  809,
+  b"        if: always() && (matrix.selection != 'phase1-service47' || steps.phase1-closed-upload-admission."
+  b"outputs.admitted == 'true') && (matrix.selection != 'phase1-native-graph' || steps.graph-final-upload-ad"
+  b"mission.outputs.admitted == 'true' && steps.archive.outcome == 'success')\n        timeout-minutes: ${{ c"
+  b'ontains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.selection) && 5 || 360 }}\n',
+  b"        if: always() && (matrix.selection != 'phase1-service47' || steps.phase1-closed-upload-admission."
+  b"outputs.admitted == 'true')\n        timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 5 || "
+  b'360 }}\n'),
+ (880,
+  882,
+  b"        if: always() && steps.archive.outcome != 'success' && (matrix.selection != 'phase1-service47' ||"
+  b" steps.phase1-unsealed-upload-admission.outputs.admitted == 'true') && (matrix.selection != 'phase1-nati"
+  b"ve-graph' || steps.graph-final-upload-admission.outputs.admitted == 'true')\n        timeout-minutes: ${{"
+  b' contains(fromJSON(\'["phase1-service47","phase1-native-graph"]\'), matrix.selection) && 5 || 360 }}\n',
+  b"        if: always() && steps.archive.outcome != 'success' && (matrix.selection != 'phase1-service47' ||"
+  b" steps.phase1-unsealed-upload-admission.outputs.admitted == 'true')\n        timeout-minutes: ${{ matrix."
+  b"selection == 'phase1-service47' && 5 || 360 }}\n"))
+
+def graph_previous_workflow(raw):
+    """Reverse only the exact Graph addition, preserving every Service47 pin."""
+    if gate.hashlib.sha256(raw).hexdigest() != GRAPH_R74_WORKFLOW_SHA256:
+        return raw
+    lines = raw.splitlines(keepends=True)
+    for start, end, added, previous in reversed(GRAPH_R74_WORKFLOW_REVERT):
+        if b"".join(lines[start:end]) != added:
+            raise ValueError("Graph workflow delta differs")
+        lines[start:end] = previous.splitlines(keepends=True)
+    restored = b"".join(lines)
+    if gate.hashlib.sha256(restored).hexdigest() != SERVICE47_DEADLINE_WORKFLOW_SHA256:
+        raise ValueError("Graph modified an unreviewed existing workflow byte")
+    return restored
+
 def service47_deadline_previous_workflow(raw):
     """Reverse only the exact reviewed deadline delta; keep historical pins."""
+    raw = graph_previous_workflow(raw)
     if gate.hashlib.sha256(raw).hexdigest() != SERVICE47_DEADLINE_WORKFLOW_SHA256:
         return raw
     lines = raw.splitlines(keepends=True)
@@ -7450,6 +7708,7 @@ class Phase1Service47Tests(unittest.TestCase):
 
     def test_explicit_workflow_delta_retains_all_historical_pins_and_rejects_drift(self):
         raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        raw = graph_previous_workflow(raw)
         previous = phase1_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), PHASE1_WORKFLOW_BASE_SHA256)
         self.assertNotIn(b"phase1-service47", previous)
@@ -7791,6 +8050,7 @@ class Phase1Service47DeadlineTests(unittest.TestCase):
 
     def test_workflow_preserves_the_carrier_limit_and_accounts_for_both_uploads(self):
         raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        raw = graph_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(service47_deadline_previous_workflow(raw)).hexdigest(), PHASE1_WORKFLOW_POST_SHA256)
         real = raw.decode().split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         self.assertIn("matrix.selection == 'phase1-service47' && 110 ||", real)
@@ -7803,6 +8063,249 @@ class Phase1Service47DeadlineTests(unittest.TestCase):
             self.assertIn("SERVICE47_UPLOAD_MODE: " + mode, real)
         self.assertEqual(real.count("timeout-minutes: ${{ matrix.selection == 'phase1-service47' && 5 || 360 }}"), 3)
 
+
+
+class GraphR74JoinTests(unittest.TestCase):
+    """Local synthetic metadata/parser controls plus inert real process bounds; no G2."""
+
+    def test_case_layouts_fit_the_real_actions_workspace_and_reject_oversize_before_effect(self):
+        root = Path("/home/runner/work/motionwright/motionwright/v/e/graph-cases")
+        ids = sorted(row[0] for row in gate.GRAPH_CASES)
+        layouts = [gate.graph_case_layout(root, case) for case in ids]
+        self.assertEqual(len({row["private_root"] for row in layouts}), 6)
+        for n, row in enumerate(layouts, 1):
+            self.assertEqual(row["private_root"], root / ("g" + str(n)))
+            self.assertEqual(row["database_path"], row["private_root"] / "store/motionwright.sqlite3")
+            self.assertEqual(len(str(row["owner_socket"]).encode()), 88)
+            self.assertEqual(len(str(row["owner_socket"].with_name("bootstrap.sock")).encode()), 91)
+        self.assertEqual(len(str(root / "1/native-graph-custody/owner/runtime/broker.sock").encode()), 108)
+        effects = []
+        for invalid, case, diagnostic in ((root / ("x" * 13), ids[0], "socket path exceeds"),
+            (root / ("é" * 7), ids[0], "socket path exceeds"), (root, "unreviewed-case", "undeclared case"),
+            (str(root) + "/../elsewhere", ids[0], "canonical cases root")):
+            with self.subTest(root=invalid, case=case), self.assertRaisesRegex(ValueError, diagnostic):
+                gate.graph_case_layout(invalid, case)
+                effects.append("must not execute")
+        self.assertEqual(effects, [])
+
+    def test_real_producer_denies_unusable_case_root_before_mkdir_or_build_runtime_effect(self):
+        with tempfile.TemporaryDirectory(prefix="gaf-") as directory:
+            root = Path(directory) / ("x" * 70)
+            with mock.patch.object(gate, "graph_layout", return_value=(Path(directory), root)), \
+                 mock.patch.object(gate, "GraphOriginalClock"), mock.patch.object(gate, "graph_command") as command:
+                with self.assertRaisesRegex(ValueError, "socket path exceeds 100 bytes"):
+                    gate.graph_produce(Path(directory), "INERT_NOT_A_RECIPIENT")
+                command.assert_not_called()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_collector_requires_exact_case_root_bijection_and_rejects_legacy_or_physical_aliases(self):
+        with tempfile.TemporaryDirectory(prefix="gaf-") as directory:
+            root = Path(directory)
+            expected = []
+            for case in sorted(row[0] for row in gate.GRAPH_CASES):
+                case_root = gate.graph_case_layout(root, case)["private_root"]
+                case_root.mkdir(); (case_root / "parent-source-binding.original.json").write_bytes(b"INERT_NOT_AN_ADMISSION")
+                expected.append((case, case_root))
+            self.assertEqual(gate.graph_collected_case_roots(root), expected)
+            legacy = root / "full-playwright-title/native-graph-custody"
+            legacy.mkdir(parents=True); marker = legacy / "parent-source-binding.original.json"
+            marker.write_bytes(b"INERT_LEGACY")
+            with self.assertRaisesRegex(ValueError, "case root bijection"):
+                gate.graph_collected_case_roots(root)
+            marker.rename(legacy / "preserved-legacy-inert.txt")
+            first, second = expected[0][1], expected[1][1]
+            second.rename(root / "preserved-inert-second-root")
+            second.symlink_to(first, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "absent or aliased"):
+                gate.graph_collected_case_roots(root)
+
+    def metadata(self):
+        binding = {"source_sha": "a" * 40, "run_id": "123", "case_id": "graph-source-review", "index_sha256": "f" * 64}
+        run = {"id": 123, "run_attempt": 1, "head_sha": binding["source_sha"], "event": "workflow_dispatch", "status": "in_progress",
+            "repository": {"full_name": gate.GRAPH_REPOSITORY}, "head_repository": {"full_name": gate.GRAPH_REPOSITORY},
+            "path": gate.GRAPH_WORKFLOW, "workflow_id": 12, "actor": {"type": "User", "id": 7}, "triggering_actor": {"type": "User", "id": 99}}
+        status = {"id": 300, "context": "mw-owner/phase1-native-graph/123/1/graph-source-review", "state": "success",
+            "creator": {"type": "User", "id": 7}, "target_url": "https://github.com/seradotcom/motionwright/actions/runs/123",
+            "description": "admission-sha256:" + binding["index_sha256"]}
+        return run, status, binding
+
+    def test_newest_context_across_foreign_creators_and_failed_statuses_prevents_fallback(self):
+        run, status, binding = self.metadata()
+        self.assertEqual(gate.graph_status_core(run, [{**status, "context": status["context"].upper()}], binding)["status_id"], 300)
+        for delta in ({"state": "failure"}, {"state": "pending"}, {"creator": run["triggering_actor"]}):
+            with self.subTest(delta=delta), self.assertRaisesRegex(ValueError, "newest status not authorized"):
+                gate.graph_status_core(run, [{**status, "id": 301, **delta}, status], binding)
+        with self.assertRaisesRegex(ValueError, "status order"):
+            gate.graph_status_core(run, [status, {**status, "id": 301}], binding)
+
+    def test_actual_dispatch_source_attempt_and_raw_digest_are_required(self):
+        run, status, binding = self.metadata()
+        for delta in ({"run_attempt": 2}, {"head_sha": "b" * 40}, {"event": "pull_request"}, {"actor": {"type": "Bot", "id": 7}}):
+            with self.subTest(delta=delta), self.assertRaisesRegex(ValueError, "original run actor/source"):
+                gate.graph_status_core({**run, **delta}, [status], binding)
+        with self.assertRaisesRegex(ValueError, "newest status not authorized"):
+            gate.graph_status_core(run, [{**status, "description": "admission-sha256:" + "0" * 64}], binding)
+        self.assertNotIn("approved", gate.graph_status_core(run, [status], binding))
+
+    def graph_deadline(self):
+        original, binding, now = phase1_deadline_fixture()
+        binding.update(GITHUB_REPOSITORY=gate.GRAPH_REPOSITORY,
+            GITHUB_WORKFLOW_REF=gate.GRAPH_REPOSITORY + "/" + gate.GRAPH_WORKFLOW + "@refs/heads/inert")
+        original.update(schema="motionwright.graph-job-deadline/1", binding=binding.copy(), job_seconds=10800,
+            phase_seconds=dict(gate.GRAPH_PHASES), deadline_mono_ns=(1000 + 10800 - 62) * 1000000000,
+            clock_anchor_mono_ns=now, clock_anchor_wall_ms=1793232060000)
+        original["deadline_unix_ms"] = original["clock_anchor_wall_ms"] + (original["deadline_mono_ns"] - now) // 1000000
+        original["run"].update(repository={"full_name": gate.GRAPH_REPOSITORY}, head_repository={"full_name": gate.GRAPH_REPOSITORY},
+            actor={"type": "User", "id": 7}, workflow_id=12)
+        original["jobs"]["jobs"][0]["name"] = "Real SQLite and Studio / " + gate.GRAPH_SCOPE
+        return original, binding, now
+
+    def test_graph_owns_the_180_minute_original_deadline_without_borrowing_service47(self):
+        original, binding, now = self.graph_deadline()
+        self.assertEqual(gate.graph_deadline_from_original(original, binding, now, "inert-boot"), original["deadline_mono_ns"])
+        self.assertEqual(sum(gate.GRAPH_PHASES.values()), 10140)
+        self.assertEqual(original["deadline_mono_ns"] - now, (10800 - 67) * 1000000000)
+        for field, value in (("job_seconds", 6600), ("deadline_mono_ns", original["deadline_mono_ns"] + 1),
+                             ("deadline_unix_ms", original["deadline_unix_ms"] + 1), ("boot_id", "another")):
+            changed = copy.deepcopy(original); changed[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                gate.graph_deadline_from_original(changed, binding, now, "inert-boot")
+
+    def test_complete_phase_is_denied_before_effect_when_any_required_tail_does_not_fit(self):
+        original, _, now = self.graph_deadline()
+        clock = object.__new__(gate.GraphOriginalClock)
+        clock.deadline_ns = original["deadline_mono_ns"]; clock.last_ns = now
+        clock.phase_name = clock.phase_end = None; clock.unknown = False; clock.admissions = []
+        edge = clock.deadline_ns - (1200 + 600) * 1000000000
+        self.assertEqual(clock.admit("inert", 1200, reserve=600, now_ns=edge)["seconds"], 1200)
+        with self.assertRaisesRegex(ValueError, "full phase"):
+            clock.admit("inert", 1200, reserve=600, now_ns=edge + 1)
+        clock.unknown = True
+        with self.assertRaisesRegex(ValueError, "UNKNOWN"):
+            clock.admit("inert", 1, reserve=0, now_ns=edge + 2)
+
+    def test_allocated_archive_root_is_charged_and_excess_members_or_symlinks_deny(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(gate.graph_tree_allocation(root, 4, 1), {"bytes": 0, "members": 1, "directories": 1})
+            (root / "one").write_bytes(b"1234")
+            self.assertEqual(gate.graph_tree_allocation(root, 4, 2)["members"], 2)
+            with self.assertRaisesRegex(ValueError, "member allocation"):
+                gate.graph_tree_allocation(root, 4, 1)
+            with self.assertRaisesRegex(ValueError, "byte allocation"):
+                gate.graph_tree_allocation(root, 3, 2)
+            (root / "alias").symlink_to(root / "one")
+            with self.assertRaises(ValueError): gate.graph_tree_allocation(root, 20, 10)
+
+    def test_real_inert_child_stream_overflow_retains_unknown_and_never_exceeds_raw_quota(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = gate.execute([gate.sys.executable, "-I", "-c", "import sys; sys.stdout.write('x'*2048)"],
+                root, {}, root, "graph-inert-output", 5, maximum_stream_bytes=1024)
+            self.assertEqual(command["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+            self.assertEqual(command["bounded_original_streams"]["stdout"]["error"], "ORIGINAL_STREAM_ALLOCATION_EXHAUSTED")
+            self.assertLessEqual((root / "graph-inert-output.stdout.log").stat().st_size, 1024)
+            with self.assertRaises(gate.UnknownObservation): gate.require_observed_command(command)
+
+    @unittest.skipUnless(gate.os.name == "posix", "actual Linux file-size control")
+    def test_real_inert_child_inherits_kernel_store_file_bound_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = gate.execute([gate.sys.executable, "-I", "-c", "with open('inert.bin','wb') as stream: stream.write(b'x'*(4194304+1))"],
+                root, {}, root, "graph-cases", 5, maximum_file_bytes=4194304, maximum_stream_bytes=1024)
+            self.assertNotEqual(command["exit_code"], 0)
+            self.assertLessEqual((root / "inert.bin").stat().st_size, 4194304)
+            gate.require_observed_command(command)
+
+    def test_public_upload_holds_unknown_before_reading_or_publishing_sensitive_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "e").mkdir()
+            (root / "e/receipt.json").write_text(json.dumps({"status": "UNKNOWN", "formal_acceptance": False}))
+            with mock.patch.object(gate, "archive_inventory") as inventory, mock.patch.object(gate.time, "sleep") as wait:
+                with self.assertRaisesRegex(ValueError, "public upload HOLD"):
+                    gate.graph_public_upload_closure(root, None, "INERT_NOT_A_TOKEN")
+                inventory.assert_not_called(); wait.assert_not_called()
+            self.assertEqual(sorted(path.relative_to(root).as_posix() for path in root.rglob("*")), ["e", "e/receipt.json"])
+
+    def test_duplicate_json_keys_and_mutated_originals_cannot_be_relabelled(self):
+        with self.assertRaisesRegex(ValueError, "duplicate JSON"):
+            gate.graph_json(b'{"source":1,"source":2}')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "original.json"; path.write_bytes(b'{"fixture":1}\n')
+            ref = gate.graph_ref(path); self.assertEqual(gate.graph_read(ref), path.read_bytes())
+            path.write_bytes(b'{"fixture":2}\n')
+            with self.assertRaisesRegex(ValueError, "original changed"): gate.graph_read(ref)
+
+    def test_literal_owner_and_node_spec_have_exact_ten_role_parity(self):
+        import ast
+        owner = ast.parse((PATH.parent / "native_graph_browser_owner.py").read_bytes())
+        literal = next(ast.literal_eval(node.value) for node in owner.body if isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "_SPEC_SCHEMA")
+        external = json.loads((PATH.parents[1] / "apps/studio/tests/support/graph-owner/schemas/spec.r2.json").read_bytes())
+        self.assertEqual(literal, external)
+        self.assertEqual(set(external["properties"]["binaries"]["properties"]), set(gate.GRAPH_ROLES))
+        self.assertEqual(len(gate.GRAPH_RUST_ROLES), 8)
+
+    def test_six_current_report_identities_match_discovery_and_reject_skips_retries_or_source_drift(self):
+        filename = "semantic-graph-service.spec.ts"
+        listed, executed = phase1_fixture_reports(("phase1-camera", filename, tuple(row[1] for row in gate.GRAPH_CASES)))
+        for value in (listed, executed):
+            value["config"]["maxFailures"] = 1
+        discovery = gate.graph_report(listed, listing=True)
+        observed = gate.graph_report(executed, listing=False, expected=discovery)
+        self.assertEqual(len(observed["identities"]), 6)
+        self.assertTrue(observed["original_discovery_matched"])
+        for mutation in ("skip", "retry", "title", "id", "worker", "foreign-source"):
+            altered = copy.deepcopy(executed); spec = altered["suites"][0]["specs"][0]
+            if mutation == "skip": spec["tests"][0]["results"][0]["status"] = "skipped"
+            elif mutation == "retry": spec["tests"][0]["results"][0]["retry"] = 1
+            elif mutation == "title": spec["title"] += " changed"
+            elif mutation == "id": spec["id"] += " changed"
+            elif mutation == "worker": altered["config"]["workers"] = 2
+            elif mutation == "foreign-source": spec["file"] = "foreign.spec.ts"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.graph_report(altered, listing=False, expected=discovery)
+
+    def test_original_allocation_union_rejects_reset_missing_charge_and_oversubscription(self):
+        mib = 1024 * 1024; rows = []
+        def add(identifier, kind, size, count):
+            rows.append({"id": identifier, "kind": kind, "bytes": size, "files": count, "sequence": len(rows)})
+        for row in (("aggregate-unavailable", "aggregate-holdback", 252*mib, 1096),
+            ("directory-members", "archive-directory-capacity", 1, 256), ("original-sqlite-files", "kernel-bounded-original-store", 16*mib, 4),
+            ("parent-metadata", "metadata", 4*mib, 128), ("parent-close-and-errors", "close", 4*mib, 64),
+            ("service-evidence-metadata", "evidence", 16*mib, 128), ("python-owner", "external-owner", 48*mib, 768),
+            ("python-owner-raw", "owner-raw", 2*mib, 2), ("case-consumption", "immutable-case-consumption", 8192, 1),
+            ("sdk-ticket-prewrite", "sdk-ticket-prewrite", 60*256, 180)):
+            add(*row)
+        for n in range(3): add("journal/"+str(n), "native-journal", 32*mib, 384)
+        for n in range(4): add("raw/"+str(n), "service-raw", 2*mib, 2)
+        add("copy/0", "archive-copy", 16*mib, 4)
+        add("independent-same-store-reopen", "post-seal-originals", 20*mib+768*1024, 268)
+        observed = gate.graph_validate_allocation_union(rows + rows, [5, 2, 0])
+        self.assertLessEqual(observed["bytes"], 260*mib); self.assertLessEqual(observed["members"], 3000)
+        for mutation in ("reset", "missing", "overflow", "refund"):
+            changed = copy.deepcopy(rows)
+            if mutation == "reset": changed[-1]["sequence"] = 0
+            elif mutation == "missing": changed.pop(2)
+            elif mutation == "overflow": changed[-1]["bytes"] = 512*mib
+            elif mutation == "refund": changed[0]["bytes"] -= 1
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.graph_validate_allocation_union(changed, [5, 2, 0])
+
+    def test_graph_clock_inline_workflow_and_collector_use_one_closed_phase_budget(self):
+        import ast
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
+        block = raw.split("Bind Graph to its authenticated original job deadline", 1)[1]
+        block = block.split("python3 -I -B - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+        code = "\n".join(line[10:] for line in block.splitlines()) + "\n"
+        module = ast.parse(code)
+        phases = next(ast.literal_eval(node.value) for node in module.body if isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "phases")
+        self.assertEqual(phases, gate.GRAPH_PHASES)
+        self.assertIn("statuses: read", raw); self.assertNotIn("statuses: write", raw)
+        self.assertIn("steps.graph-final-upload-admission.outputs.admitted == 'true' && steps.archive.outcome == 'success'", raw)
+        self.assertEqual(gate.GRAPH_BUDGET["producer_bytes"] + 6 * gate.GRAPH_BUDGET["case_bytes"] + gate.GRAPH_BUDGET["shared_bytes"], gate.ARCHIVE_LIMITS["total_bytes"])
+        self.assertEqual(gate.GRAPH_BUDGET["producer_members"] + 6 * gate.GRAPH_BUDGET["case_members"] + gate.GRAPH_BUDGET["shared_members"], gate.ARCHIVE_LIMITS["members"])
 
 if __name__ == "__main__":
     unittest.main()

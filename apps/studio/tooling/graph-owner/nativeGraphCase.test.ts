@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
   canonicalNonnegativeUsize, inspectNativeGraphCase, sourceBoundNativeLaunchObserver,
@@ -6,6 +6,32 @@ import {
   requireIndependentlyApprovedNativeCase, sixSourceAuthoredGraphCases,
   type NativeGraphCaseId,
 } from "../../tests/support/nativeGraphCase";
+
+
+// These eleven controls exercise the historical source-only diagnostic, whose
+// HEAD/tree/SDK/file pins intentionally remain immutable. This test-only fs
+// adapter substitutes only the exact historical caller path, after checking the
+// complete original bytes. It cannot create a producer, owner or Native grant.
+const historicalDiagnostic = vi.hoisted(() => ({ enabled: true }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { createHash: hash } = await import("node:crypto");
+  const { fileURLToPath: pathOf } = await import("node:url");
+  const caller = pathOf(new URL("../../tests/semantic-graph-service.spec.ts", import.meta.url));
+  const fixture = pathOf(new URL("./fixtures/native-graph-cases-898d1956.source.txt", import.meta.url));
+  const raw = actual.readFileSync(fixture);
+  if (hash("sha256").update(raw).digest("hex") !==
+      "53fad1abd4ec85afa6f47b5b7b5305230bdef97a1acdbd34260b67ff6ba76beb") {
+    throw Error("GRAPH_HISTORICAL_DIAGNOSTIC_FIXTURE_CHANGED");
+  }
+  return {
+    ...actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) =>
+      actual.readFileSync(historicalDiagnostic.enabled && args[0] === caller ? fixture : args[0], args[1]),
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) =>
+      actual.lstatSync(historicalDiagnostic.enabled && args[0] === caller ? fixture : args[0], args[1]),
+  };
+});
 
 describe("Native Graph candidate source custody", () => {
   const cases = sixSourceAuthoredGraphCases();
@@ -148,5 +174,17 @@ describe("retained source snapshots resist post-construction caller mutations", 
     const final = observer.reserve(Object.freeze({ helper_id, launch_index: 1, ...expected }));
     expect(final.candidate_callback_operations).toEqual([]);
     expect(() => observer.assertAllObserved()).not.toThrow();
+  });
+});
+
+
+describe("historical diagnostic source refusal", () => {
+  it("rejects the current caller instead of relabelling historical source pins", () => {
+    historicalDiagnostic.enabled = false;
+    try {
+      expect(() => sixSourceAuthoredGraphCases()).toThrow("GRAPH_CASE_SOURCE_CHANGED");
+    } finally {
+      historicalDiagnostic.enabled = true;
+    }
   });
 });

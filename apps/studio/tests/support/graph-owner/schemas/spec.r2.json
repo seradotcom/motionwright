@@ -1,0 +1,541 @@
+{
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "motionwright.graph-browser-owner-spec/6"
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "repository_root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tree": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sdk_root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "sdk_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "locks": {
+          "type": "object",
+          "properties": {
+            "Cargo.lock": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "SOURCE_LOCK.json": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "apps/studio/package-lock.json": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "rust-toolchain.toml": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "Cargo.lock",
+            "SOURCE_LOCK.json",
+            "apps/studio/package-lock.json",
+            "rust-toolchain.toml"
+          ],
+          "additionalProperties": false
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "repository_root",
+        "sha",
+        "tree",
+        "sdk_root",
+        "sdk_sha",
+        "locks",
+        "run_id",
+        "run_attempt"
+      ],
+      "additionalProperties": false
+    },
+    "paths": {
+      "type": "object",
+      "properties": {
+        "private_root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "owner_home": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "owner_runtime": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "owner_state": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "owner_socket": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "manim_work": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        }
+      },
+      "required": [
+        "private_root",
+        "owner_home",
+        "owner_runtime",
+        "owner_state",
+        "owner_socket",
+        "manim_work"
+      ],
+      "additionalProperties": false
+    },
+    "binaries": {
+      "type": "object",
+      "properties": {
+        "semwright": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "semwrightd": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "native_provider": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "shared_state_actor": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "manim_runner": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "python3": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "ffmpeg": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "ordinary_service": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "native_graph_session": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "semwright_sandbox": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "semwright",
+        "semwrightd",
+        "native_provider",
+        "shared_state_actor",
+        "manim_runner",
+        "python3",
+        "ffmpeg",
+        "ordinary_service",
+        "native_graph_session",
+        "semwright_sandbox"
+      ],
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "manifest": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "intake_receipt": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        },
+        "intake_receipt_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fontconfig_root": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute local path on the runtime OS; reject NUL, do not infer existence or authority from the spelling."
+        }
+      },
+      "required": [
+        "root",
+        "manifest",
+        "manifest_sha256",
+        "intake_receipt",
+        "intake_receipt_sha256",
+        "fontconfig_root"
+      ],
+      "additionalProperties": false
+    },
+    "store": {
+      "type": "object",
+      "properties": {
+        "database_path": {
+          "type": "string",
+          "minLength": 1,
+          "x-runtime-validation": "Absolute existing file named exactly motionwright.sqlite3; actual physical identity retained; no init/rename/copy/rebind."
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "database_path",
+        "project_id"
+      ],
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "deadline_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "x-runtime-validation": "Absolute future deadline, no more than900000ms from owner start; cannot be extended."
+        },
+        "max_clients": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_processes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128
+        },
+        "max_stream_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "cli_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20000
+        },
+        "close_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        }
+      },
+      "required": [
+        "deadline_unix_ms",
+        "max_clients",
+        "max_processes",
+        "max_stream_bytes",
+        "cli_timeout_ms",
+        "close_timeout_ms"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "case_id",
+    "source",
+    "paths",
+    "binaries",
+    "runtime",
+    "store",
+    "limits"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Motionwright Graph browser owner input, draft6 R1",
+  "description": "Closed data contract for the new original-backed owner implementation. This schema is not evidence that draft5 supports it or that any runtime/gate has executed. Runtime path/source/binary/physical-store validation is mandatory in addition to structural validation."
+}

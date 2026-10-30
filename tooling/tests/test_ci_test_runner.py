@@ -316,6 +316,118 @@ class ExecutionBoundaryTests(unittest.TestCase):
         self.assertEqual(observed.returncode, report["exit_code"])
 
 
+class BoundedInstalledCaptureTests(unittest.TestCase):
+    """Inert child/writer controls with explicit Git-observation doubles."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-installed-capture-")
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name).resolve()
+        self.root = self.directory / "source"
+        self.folder = self.root / "tooling/tests"
+        self.folder.mkdir(parents=True)
+        self.path = self.folder / "test_native_host_installed_shared_state.py"
+        self.report = self.directory / "installed-controls.json"
+        self.observations = []
+
+    def observed_git(self, root, *args):
+        self.assertEqual(root, self.root)
+        self.observations.append(args)
+        if args == ("rev-parse", "HEAD"): return "a" * 40
+        if args == ("rev-parse", "HEAD^{tree}"): return "b" * 40
+        if args[0] in {"status", "ls-files"}: return ""
+        raise AssertionError("unexpected read-only Git observation")
+
+    def run_bounded(self, **overrides):
+        arguments = dict(bounded_installed_capture=True)
+        arguments.update(overrides)
+        with patch.object(runner, "git", side_effect=self.observed_git), contextlib.redirect_stdout(io.StringIO()):
+            return runner.run_suite(self.root, "tooling/tests", [self.path.name], "discovery",
+                                    self.report, "a" * 40, True, 5, **arguments)
+
+    def reject_unsupported_platform(self):
+        if sys.platform == "linux":
+            return False
+        with self.assertRaisesRegex(ValueError, "one complete source selection"), \
+             patch.object(runner, "capture_installed_entry") as child:
+            runner.run_suite(self.root, "tooling/tests", [self.path.name], "discovery",
+                             self.report, "a" * 40, True, 5, bounded_installed_capture=True)
+        child.assert_not_called()
+        self.assertFalse(self.report.exists())
+        return True
+
+    def test_complete_real_child_keeps_non_utf8_bytes_and_can_write_a_four_mib_binary(self):
+        if self.reject_unsupported_platform(): return
+        import resource
+        before = resource.getrlimit(resource.RLIMIT_FSIZE)
+        binary = self.directory / "inert-build-output"
+        self.path.write_text("import sys,unittest\nfrom pathlib import Path\nclass Cases(unittest.TestCase):\n"
+            "    def test_original(self):\n"
+            f"        Path({str(binary)!r}).write_bytes(b'b'*(4*1024*1024))\n"
+            "        sys.stdout.buffer.write(b'\\xff\\r\\noriginal')\n")
+        code, report = self.run_bounded()
+        self.assertEqual((code, report["status"]), (0, "PASS"))
+        step = report["steps"][0]
+        self.assertEqual(step["bounded_capture"]["status"], "COMPLETE")
+        self.assertEqual(step["counts"]["passed"], 1)
+        self.assertEqual((self.directory / step["stdout"]["file"]).read_bytes(), b"\xff\r\noriginal")
+        self.assertEqual(binary.stat().st_size, 4 * 1024 * 1024)
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_FSIZE), before)
+        self.assertLessEqual(self.report.stat().st_size, runner.INSTALLED_RECEIPT_BYTES)
+        self.assertEqual(self.observations.count(("ls-files", "--others", "--ignored", "--exclude-standard")), 2)
+
+    def test_real_stream_overflow_stays_bounded_preserves_observed_bytes_and_is_unknown(self):
+        if self.reject_unsupported_platform(): return
+        for fd, name in ((1, "stdout"), (2, "stderr")):
+            with self.subTest(stream=name):
+                self.report = self.directory / (name + ".json")
+                self.path.write_text("import os,unittest\nclass Cases(unittest.TestCase):\n"
+                    "    def test_overflow(self):\n"
+                    f"        os.write({fd}, b'x'*({runner.INSTALLED_STREAM_BYTES}+1))\n")
+                code, report = self.run_bounded()
+                self.assertNotEqual(code, 0)
+                self.assertEqual(report["status"], "UNKNOWN")
+                step = report["steps"][0]
+                capture = step["bounded_capture"]
+                self.assertTrue(capture["overflow"])
+                self.assertFalse(capture["retention_exhausted"])
+                self.assertEqual((self.directory / step[name]["file"]).stat().st_size, runner.INSTALLED_STREAM_BYTES)
+                extra = self.directory / capture["overflow_originals"][name + "-overflow"]["file"]
+                self.assertGreater(extra.stat().st_size, 0)
+                self.assertLessEqual(extra.stat().st_size, runner.INSTALLED_OVERFLOW_BYTES)
+                self.assertEqual(capture["observed_stream_bytes"][name],
+                    capture["retained_stream_bytes"][name] + capture["retained_stream_bytes"][name + "-overflow"])
+
+    def test_receipt_size_is_checked_before_open_and_the_opt_in_is_one_exact_complete_selection(self):
+        if self.reject_unsupported_platform(): return
+        self.path.write_text("import unittest\nclass Cases(unittest.TestCase):\n"
+                             "    def test_original(self): self.assertEqual(2+2,4)\n")
+        with patch.object(runner, "INSTALLED_RECEIPT_BYTES", 1):
+            with self.assertRaisesRegex(ValueError, "prior reservation"):
+                self.run_bounded()
+        self.assertFalse(self.report.exists())
+        self.assertTrue((self.directory / "installed-controls-00-stderr.log").is_file())
+        with patch.object(runner, "capture_installed_entry") as child:
+            with self.assertRaisesRegex(ValueError, "one complete source selection"):
+                runner.run_suite(self.root, "tooling/tests", [self.path.name], "both",
+                    self.directory / "denied.json", "a" * 40, True, 5, bounded_installed_capture=True)
+            child.assert_not_called()
+
+    def test_original_ordinary_and_ignored_source_guards_still_deny_before_capture(self):
+        self.path.write_text("# This explicitly inert source must never execute.\n")
+        for ignored in (False, True):
+            def observed(root, *args):
+                if args[0] == "ls-files" and "--others" in args and ("--ignored" in args) == ignored:
+                    return "target/generated" if ignored else "generated-original.json"
+                return self.observed_git(root, *args)
+            with self.subTest(ignored=ignored), patch.object(runner, "git", side_effect=observed), \
+                 patch.object(runner, "capture_installed_entry") as child:
+                with self.assertRaisesRegex(ValueError, "not bound to the source SHA"):
+                    runner.run_suite(self.root, "tooling/tests", [self.path.name], "discovery",
+                        self.report, "a" * 40, True, 5, bounded_installed_capture=sys.platform == "linux")
+                child.assert_not_called()
+                self.assertFalse(self.report.exists())
+
+
 class SummaryBoundaryTests(unittest.TestCase):
     def test_failed_footer_counts_do_not_determine_successful_test_cases(self):
         summary = runner.parse_unittest_summary(

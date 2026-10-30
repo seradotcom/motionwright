@@ -1,6 +1,6 @@
 /** App + real StudioService/SQLite oracles. This file has no browser Graph adapter.
  * Missing DTO/consumer admission fails the selected test, never becomes a mock PASS. */
-import { writeFile } from "node:fs/promises";
+import { createGraphServiceCase, graphOutputPath, writeGraphEvidence, finalizeGraphCase } from "./support/nativeGraphCase";
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { ScopedChangeService } from "./support/scopedChangeService";
@@ -42,7 +42,8 @@ async function prepare(page: Page, kind: "causal_diagram" | "system_flow") {
 }
 
 test("Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing", async ({ page }, info) => {
-  const service = await ScopedChangeService.create({ databasePath: info.outputPath("store", "semantic-graph.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
+  const service = await createGraphServiceCase(info, "graph-source-review", { databasePath: info.outputPath("store", "semantic-graph.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
+  let bodyFailed = false, primaryFailure: unknown;
   try {
     const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId);
     await prepare(page, "causal_diagram"); await field(page, "Vertex 1 label").fill("Declared intervention"); await field(page, "Vertex 1 box x").fill("1e");
@@ -67,14 +68,23 @@ test("Graph creates, edits, reopens SQLite, persists an actual review and rechec
     const history = await service.history(initial.id, initial.revision); expect(history.map(event => event.change.type)).toEqual(["upsert_semantic_graph", "add_review", "resolve_review", "upsert_semantic_graph"]);
     await service.close(); await service.start(); await page.reload(); await open(page, setup.sceneId); await expect(field(page, "Vertex 1 label")).toHaveValue("Revised declared intervention");
     expect(await service.project(initial.id)).toEqual(latest); expect(await service.history(initial.id, initial.revision)).toEqual(history); expect(graphRequests(service)).toHaveLength(2);
-    const path = info.outputPath("graph-real-source-review-reopen.json"); await writeFile(path, JSON.stringify({ scope: "Actual App + StudioService + SQLite only", initialRevision: initial.revision,
+    const path = graphOutputPath(service, info, "graph-real-source-review-reopen.json"); await writeGraphEvidence(service, path, JSON.stringify({ scope: "Actual App + StudioService + SQLite only", initialRevision: initial.revision,
       finalRevision: latest.revision, graph: final, review: latest.reviews.find(item => item.id === review.id), events: history.map(event => event.change.type),
       excludes: ["native rendered output", "provider parity", "installed app", "human craft approval"] }, null, 2)); await info.attach("graph-real-source-review-reopen", { path, contentType: "application/json" });
-  } finally { await service.finalizeClosedStore(info.outputPath("closed-graph-store"), latest, [], [() => page.close()]); }
+  } catch (error) { bodyFailed = true; primaryFailure = error; throw error; }
+  finally {
+    try { await finalizeGraphCase(service, graphOutputPath(service, info, "closed-graph-store"), latest, [], [() => page.close()]); }
+    catch (cleanupError) {
+      if (bodyFailed) throw new AggregateError([primaryFailure, cleanupError],
+        "Graph case body and finalization both failed; the original errors are retained");
+      throw cleanupError;
+    }
+  }
 });
 
 test("Synthetic flow stores exact event times and rejects a real stale CAS without a new event", async ({ page }, info) => {
-  const service = await ScopedChangeService.create({ databasePath: info.outputPath("store", "semantic-flow.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
+  const service = await createGraphServiceCase(info, "graph-flow", { databasePath: info.outputPath("store", "semantic-flow.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
+  let bodyFailed = false, primaryFailure: unknown;
   try {
     const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "system_flow");
     await field(page, "Graph motion").selectOption("off"); await button(page, "Add synthetic event").click(); await page.locator("[data-graph-event] summary").first().click(); await field(page, "Event 1 label").fill("Illustrated message transfer");
@@ -90,12 +100,21 @@ test("Synthetic flow stores exact event times and rejects a real stale CAS witho
       change: { type: "upsert_semantic_graph", graph: intended } } })).rejects.toThrow();
     expect(await service.project(initial.id)).toEqual(before); expect(await service.history(initial.id, initial.revision)).toEqual(journal);
     await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(before); latest = before;
-  } finally { await service.finalizeClosedStore(info.outputPath("closed-flow-store"), latest, [], [() => page.close()]); }
+  } catch (error) { bodyFailed = true; primaryFailure = error; throw error; }
+  finally {
+    try { await finalizeGraphCase(service, graphOutputPath(service, info, "closed-flow-store"), latest, [], [() => page.close()]); }
+    catch (cleanupError) {
+      if (bodyFailed) throw new AggregateError([primaryFailure, cleanupError],
+        "Graph case body and finalization both failed; the original errors are retained");
+      throw cleanupError;
+    }
+  }
 });
 
 test("A lost Graph reply cannot replay a committed SQLite mutation after reload", async ({ page }, info) => {
-  const service = await ScopedChangeService.create({ databasePath: info.outputPath("store", "semantic-graph-lost-reply.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
+  const service = await createGraphServiceCase(info, "graph-lost-reply", { databasePath: info.outputPath("store", "semantic-graph-lost-reply.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
   const original = service.invoke.bind(service); let lost = false;
+  let bodyFailed = false, primaryFailure: unknown;
   try {
     const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "causal_diagram");
     service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
@@ -128,11 +147,19 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
     expect((latest as GraphProject).production_design!.semantic_graphs!.find(graph => graph.scene_id === setup.sceneId)!.content.vertices[0].label).toBe("New human intention after lost reply");
     const journal = await service.history(initial.id, initial.revision); expect(journal.map(event => event.change.type)).toEqual(["upsert_semantic_graph", "upsert_semantic_graph"]); expect(graphRequests(service)).toHaveLength(2);
     await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(latest); expect(await service.history(initial.id, initial.revision)).toEqual(journal);
-  } finally { await service.finalizeClosedStore(info.outputPath("closed-graph-lost-reply-store"), latest, [], [() => page.close()]); }
+  } catch (error) { bodyFailed = true; primaryFailure = error; throw error; }
+  finally {
+    try { await finalizeGraphCase(service, graphOutputPath(service, info, "closed-graph-lost-reply-store"), latest, [], [() => page.close()]); }
+    catch (cleanupError) {
+      if (bodyFailed) throw new AggregateError([primaryFailure, cleanupError],
+        "Graph case body and finalization both failed; the original errors are retained");
+      throw cleanupError;
+    }
+  }
 });
 
 test("Graph removal rejects a prior-session grant and stale base, then removes once through the real UI and survives SQLite restart", async ({ page }, info) => {
-  const service = await ScopedChangeService.create({ databasePath: info.outputPath("store", "semantic-graph-removal.sqlite3"), desktopInvokeFixture: true });
+  const service = await createGraphServiceCase(info, "graph-removal", { databasePath: info.outputPath("store", "semantic-graph-removal.sqlite3"), desktopInvokeFixture: true });
   const originalInvoke = service.invoke.bind(service);
   let latest: Project | undefined, bodyFailed = false, primaryFailure: unknown;
   const observations: Record<string, unknown>[] = [];
@@ -234,12 +261,12 @@ test("Graph removal rejects a prior-session grant and stale base, then removes o
     service.invoke = originalInvoke;
     const cleanupErrors: unknown[] = [];
     let finalization: Awaited<ReturnType<ScopedChangeService["finalizeClosedStore"]>> | null = null;
-    const destination = info.outputPath("closed-graph-removal-store");
-    try { finalization = await service.finalizeClosedStore(destination, latest, [], [() => page.close()]); } catch (error) { cleanupErrors.push(error); }
+    const destination = graphOutputPath(service, info, "closed-graph-removal-store");
+    try { finalization = await finalizeGraphCase(service, destination, latest, [], [() => page.close()]); } catch (error) { cleanupErrors.push(error); }
     try { await info.attach("closed-graph-removal-outcomes", { path: destination + "-outcomes.json", contentType: "application/json" }); } catch (error) { cleanupErrors.push(error); }
     try {
-      const path = info.outputPath("graph-removal-service-evidence.json");
-      await writeFile(path, JSON.stringify({ scope: "Actual App + admitted service + SQLite only", testBodyCompleted: !bodyFailed,
+      const path = graphOutputPath(service, info, "graph-removal-service-evidence.json");
+      await writeGraphEvidence(service, path, JSON.stringify({ scope: "Actual App + admitted service + SQLite only", testBodyCompleted: !bodyFailed,
         primaryFailure: bodyFailed ? String(primaryFailure) : null, cleanupErrors: cleanupErrors.map(String), observations, finalization,
         excludes: ["installed Tauri", "native rendered pixels", "human creative acceptance"] }, null, 2), { flag: "wx" });
       await info.attach("graph-removal-service-evidence", { path, contentType: "application/json" });
@@ -251,7 +278,7 @@ test("Graph removal rejects a prior-session grant and stale base, then removes o
 
 for (const kind of ["causal_diagram", "system_flow"] as const) {
   test(`Graph ${kind} follows the edge midpoint through real saves and restores manual placement after SQLite restart`, async ({ page }, info) => {
-    const service = await ScopedChangeService.create({
+    const service = await createGraphServiceCase(info, "graph-label-" + kind.replaceAll("_", "-"), {
       databasePath: info.outputPath("store", "semantic-graph-label-" + kind + ".sqlite3"), desktopInvokeFixture: true,
     });
     let latest: Project | undefined, initial: Project | undefined;
@@ -521,15 +548,15 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
     } finally {
       const cleanupErrors: unknown[] = [];
       let finalization: Awaited<ReturnType<ScopedChangeService["finalizeClosedStore"]>> | null = null;
-      const destination = info.outputPath("closed-graph-label-store");
-      try { finalization = await service.finalizeClosedStore(destination, latest, [], [() => page.close()]); }
+      const destination = graphOutputPath(service, info, "closed-graph-label-store");
+      try { finalization = await finalizeGraphCase(service, destination, latest, [], [() => page.close()]); }
       catch (error) { cleanupErrors.push(error); }
       try {
         await info.attach("closed-store-outcomes", { path: destination + "-outcomes.json", contentType: "application/json" });
       } catch (error) { cleanupErrors.push(error); }
       try {
-        const path = info.outputPath("graph-label-placement-service-evidence.json");
-        await writeFile(path, JSON.stringify({
+        const path = graphOutputPath(service, info, "graph-label-placement-service-evidence.json");
+        await writeGraphEvidence(service, path, JSON.stringify({
           scope: "Actual App controls + StudioService + SQLite, with editorial SVG coordinates",
           kind, testBodyCompleted: !bodyFailed, primaryFailure: bodyFailed ? errors(primaryFailure) : null,
           cleanupErrors: cleanupErrors.map(errors), initial: initial ?? null, final: latest ?? null,

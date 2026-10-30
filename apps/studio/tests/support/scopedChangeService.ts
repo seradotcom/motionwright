@@ -15,7 +15,7 @@ import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
-import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError";
+import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError.ts";
 import type { FileImportInput, FileImportReceipt, PreparedFileImport } from "../../src/fileImport";
 import type {
   StudioBootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
@@ -28,7 +28,7 @@ type InvokeArgs = Record<string, unknown>;
 export interface ServiceRpcRequest {
   id?: RpcId;
   command: string;
-  args?: InvokeArgs;
+  args?: InvokeArgs | null;
 }
 
 export type ServiceProjectionFailure =
@@ -628,7 +628,7 @@ export class ScopedChangeService {
     if (typeof request.command !== "string" || !request.command.trim()) throw new Error("RPC command must be a nonempty string");
     const key = JSON.stringify(id);
     if (this.usedIds.has(key)) throw new Error(`RPC id ${key} was already used by this process; use another correlation id`);
-    const wire = JSON.stringify({ id, command: request.command, args: request.args ?? {} });
+    const wire = JSON.stringify({ id, command: request.command, args: request.args === undefined ? {} : request.args });
     const serialized = JSON.parse(wire) as ServiceRpcRequest;
     const graphMutation = serializedGraphMutation(serialized);
     this.usedIds.add(key);

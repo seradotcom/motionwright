@@ -3832,7 +3832,7 @@ def phase1_service47_preflight_original(output, sdk_revision):
     return phase1_service47_validate_preflight(raw, sdk_revision)
 
 
-def phase1_service47_sdk_preflight(repo, output, binary, env, *, deadline=None):
+def phase1_service47_sdk_preflight(repo, output, binary, env, *, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None):
     label = "phase1-service-preflight"
     if deadline is not None:
         deadline.admit(label, 30)
@@ -3842,7 +3842,9 @@ def phase1_service47_sdk_preflight(repo, output, binary, env, *, deadline=None):
         require(stream.write(raw) == len(raw), "Phase1 stdin short write"); stream.flush(); os.fsync(stream.fileno())
     stores = output / "phase1-preflight-stores"; stores.mkdir()
     command = execute([str(binary), "--database", str(stores / "service.sqlite3")], repo, env, output, label, 30,
-                      stdin_original=stdin_original, deadline=deadline)
+                      stdin_original=stdin_original, deadline=deadline,
+                      **({"maximum_file_bytes": maximum_file_bytes, "maximum_stream_bytes": maximum_stream_bytes}
+                         if maximum_file_bytes is not None or maximum_stream_bytes is not None else {}))
     require_observed_command(command)
     require(command["exit_code"] == 0, "Phase1 actual Service bootstrap failed")
     sdk_revision = json.loads((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
@@ -4486,6 +4488,9 @@ BRANCH_COMBINATION_SOURCE_PATHS = ('apps/desktop/src-tauri/build.rs',
 
 
 def source_observation(repo, selection=None):
+    if selection == GRAPH_SCOPE:
+        index = graph_json((repo.parent / "v/e/graph-producer/producer-index.original.json").read_bytes())
+        return graph_source_view(graph_source_observe(repo, os.environ["GITHUB_SHA"], tuple(index["contract"]["source_files"])))
     require(selection is None or is_browser_scope(selection) or selection in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE),
             "unknown source observation scope")
     if selection == CAMERA_EIGHT_SCOPE:
@@ -4722,7 +4727,7 @@ def require_observed_command(command):
             "owned process group exit was not observed; no closed execution credit")
 
 
-def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None):
+def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None):
     env = dict(env)
     env.pop(PHASE1_SERVICE47_TOKEN_ENV, None)
     env.pop(PHASE1_SERVICE47_DEADLINE_ENV, None)
@@ -4734,6 +4739,21 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
         env.pop(BRANCH_COMBINATION_ADMISSION_ENV, None)
     observed_environment = (*PROCESS_ENVIRONMENT_KEYS, *((BRANCH_COMBINATION_ADMISSION_ENV,)
                             if phase1_branch_admission_label(label) else ()))
+    if env.get("MOTIONWRIGHT_GRAPH_PRODUCER_RUN") == "1":
+        observed_environment += ("CARGO_INCREMENTAL", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG",
+            "SEMWRIGHT_CHECKOUT", "SEMWRIGHT_TEST_MANIM_RUNTIME", "SEMWRIGHT_TEST_PYTHON", "SEMWRIGHT_TEST_FFMPEG")
+    child_limits = None
+    if maximum_stream_bytes is not None:
+        require((label.startswith("graph-") or label == "phase1-service-preflight")
+                and type(maximum_stream_bytes) is int and 1024 <= maximum_stream_bytes <= 8 * 1024 * 1024,
+                "Graph bounded original raw stream")
+    if maximum_file_bytes is not None:
+        require(os.name == "posix" and (label in ("graph-cases", "phase1-service-preflight") and maximum_file_bytes == 4 * 1024 * 1024
+                or label == "graph-runtime-download" and maximum_file_bytes == 128 * 1024 * 1024),
+                "Graph fixed actual Store file-size limit")
+        def child_limits():
+            import resource
+            resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_file_bytes, maximum_file_bytes))
     owned_group = os.name == "posix"
     command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat(),
                "process_observation_schema": PROCESS_OBSERVATION_SCHEMA,
@@ -4743,6 +4763,13 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
                "cleanup_errors": []}
     if deadline is not None:
         command["deadline_admission"] = admission
+    if env.get("MOTIONWRIGHT_GRAPH_PRODUCER_RUN") == "1":
+        require(isinstance(deadline, GraphOriginalClock), "Graph process requires its original job clock")
+        actual_job = next(row for row in deadline.original["jobs"]["jobs"]
+                          if row["name"] == "Real SQLite and Studio / " + GRAPH_SCOPE)
+        command["graph_job"] = {"source_sha": deadline.original["binding"]["GITHUB_SHA"],
+            "run_id": deadline.original["binding"]["GITHUB_RUN_ID"], "run_attempt": 1,
+            "job_id": actual_job["id"], "deadline_original": deadline.original_ref}
     process = None
     if stdin_original is not None:
         require(label == "phase1-service-preflight" and stdin_original == output / (label + ".stdin.original"),
@@ -4753,8 +4780,11 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
             if deadline is not None:
                 command["deadline_admission"] = deadline.admit(label, timeout)
             try:
-                process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
-                                           start_new_session=owned_group, **({"stdin": inp} if stdin_original is not None else {}))
+                process = subprocess.Popen(argv, cwd=cwd, env=env,
+                                           stdout=subprocess.PIPE if maximum_stream_bytes is not None else out,
+                                           stderr=subprocess.PIPE if maximum_stream_bytes is not None else err,
+                                           start_new_session=owned_group, **({"stdin": inp} if stdin_original is not None else {}),
+                                           **({"preexec_fn": child_limits} if child_limits is not None else {}))
             except (FileNotFoundError, PermissionError) as error:
                 command.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
             except OSError as error:
@@ -4762,6 +4792,28 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
                                uncertainty_reason="SPAWN_HANDLE_NOT_OBSERVED", error=type(error).__name__ + ": " + str(error))
             else:
                 command["pid"] = process.pid
+                drains = []
+                if maximum_stream_bytes is not None:
+                    import threading
+                    # The existing owned process remains the only producer.
+                    # Charge each raw byte before writing; an exhausted stream
+                    # is drained without retention and permanently marks UNKNOWN.
+                    def capture(pipe, destination, observation):
+                        try:
+                            while block := pipe.read(65536):
+                                if observation["error"] is None and observation["bytes"] + len(block) <= maximum_stream_bytes:
+                                    destination.write(block); observation["bytes"] += len(block)
+                                else:
+                                    observation["error"] = "ORIGINAL_STREAM_ALLOCATION_EXHAUSTED"
+                            observation["eof"] = True
+                        except BaseException as error:
+                            observation["error"] = type(error).__name__ + ": " + str(error)
+                        finally:
+                            pipe.close()
+                    for stream, destination in (("stdout", out), ("stderr", err)):
+                        observation = {"maximum_bytes": maximum_stream_bytes, "bytes": 0, "eof": False, "error": None}
+                        thread = threading.Thread(target=capture, args=(getattr(process, stream), destination, observation), daemon=True)
+                        drains.append((stream, thread, observation)); thread.start()
                 if deadline is not None:
                     deadline.active_process = process
                 try:
@@ -4786,6 +4838,15 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
                         command["cleanup_errors"] = stop_observed_process(process, owned_group)
                     except BaseException as error:
                         command["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
+                if maximum_stream_bytes is not None:
+                    for stream, thread, observation in drains:
+                        thread.join(timeout=1)
+                        if thread.is_alive() or not observation["eof"] or observation["error"] is not None:
+                            observation["error"] = observation["error"] or "ORIGINAL_STREAM_EOF_NOT_OBSERVED"
+                            command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="BOUNDED_ORIGINAL_STREAM_INCOMPLETE")
+                    command["bounded_original_streams"] = {stream: dict(observation) for stream, _, observation in drains}
+                    if execution_unknown(command):
+                        command["cleanup_errors"].extend(stop_observed_process(process, owned_group))
     except Phase1Service47BudgetDenied as error:
         command.update(exit_code=None, observation="NOT_STARTED_INSUFFICIENT_ORIGINAL_BUDGET",
                        budget_denial=error.observation, error=str(error))
@@ -5109,6 +5170,8 @@ def creative_production_store_bindings(root, inventory, selections, captures, bi
 
 
 def archive_closed_bindings(root, inventory, source):
+    if archive_json(root, inventory, "e/receipt.json").get("selection_plan", {}).get("requested") == GRAPH_SCOPE:
+        return graph_archive_bindings(root, inventory, source)
     receipt = archive_json(root, inventory, "e/receipt.json")
     browser_mode = is_browser_scope(receipt.get("selection_plan", {}).get("requested"))
     tools = ("node", "npm", "python") if browser_mode else ("rustc", "cargo", "node", "npm", "python")
@@ -5502,7 +5565,8 @@ def retain_closed_archive(repo, root):
         for command in commands:
             if execution_unknown(command):
                 raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
-        require(original_receipt.get("status") == "PASS", "original execution is not complete")
+        graph_mode = original_receipt.get("selection_plan", {}).get("requested") == GRAPH_SCOPE
+        require(original_receipt.get("status") == ("CLOSED_GRAPH_OBSERVATIONS" if graph_mode else "PASS"), "original execution is not complete")
         if original_receipt.get("selection_plan", {}).get("requested") == PHASE1_SERVICE47_SCOPE:
             require(re.fullmatch(r"[0-9a-f]{64}", os.environ.get(PHASE1_SERVICE47_DEADLINE_ENV, "")) is not None
                     and original_receipt.get("phase1_deadline", {}).get("original_sha256")
@@ -5513,7 +5577,7 @@ def retain_closed_archive(repo, root):
                 and archive_json(root, before, receipt_name) == original_receipt,
                 "original receipt changed before archive admission")
         selected = original_receipt.get("selection_plan", {}).get("requested")
-        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE) else None
+        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, PHASE1_SERVICE47_SCOPE, GRAPH_SCOPE) else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -5548,7 +5612,16 @@ def archive_main(arguments):
     require(repo.name == "g" and root == repo.parent / "v"
             and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent,
             "archive command requires the isolated CI g/v layout")
-    if os.environ.get(PHASE1_SERVICE47_DEADLINE_ENV) is not None:
+    if os.environ.get(GRAPH_DEADLINE_ENV) is not None:
+        clock = GraphOriginalClock(root)
+        receipt = graph_json((root / "e/receipt.json").read_bytes())
+        require(receipt.get("status") == "CLOSED_GRAPH_OBSERVATIONS"
+                and receipt.get("graph_deadline", {}).get("original") == clock.original_ref
+                and receipt["graph_deadline"].get("unknown") is False,
+                "Graph incomplete or UNKNOWN originals cannot be sealed")
+        with clock.phase("archive"):
+            report = retain_closed_archive(repo, root)
+    elif os.environ.get(PHASE1_SERVICE47_DEADLINE_ENV) is not None:
         with phase1_service47_guard():
             original_raw, _ = studio68_original(root / "e/receipt.json", 64 * 1024 * 1024)
             original_receipt = json.loads(original_raw)
@@ -7803,7 +7876,1530 @@ def studio68_main(arguments):
                       "receipt": str(output / "STUDIO68_RESULT.json"), "service_cases": receipt["service_cases"]}), flush=True)
     return exit_code
 
+import time
+
+# Existing Graph J1/R74 selection. All outputs below remain private evidence;
+# source intake, external owner admission and closed custody are not G2/A5 PASS.
+GRAPH_SCOPE = "phase1-native-graph"
+GRAPH_REPOSITORY = "seradotcom/motionwright"
+GRAPH_WORKFLOW = ".github/workflows/studio-service-verification.yml"
+GRAPH_DEADLINE_ENV = "MOTIONWRIGHT_GRAPH_DEADLINE_SHA256"
+GRAPH_TOKEN_ENV = "MOTIONWRIGHT_GRAPH_METADATA_TOKEN"
+GRAPH_INDEX_SCHEMA = "motionwright.private.graph-producer-reference-index/0"
+GRAPH_BYTES = 1024 * 1024
+GRAPH_BUDGET = {
+    "producer_bytes": 384 * GRAPH_BYTES, "producer_members": 768,
+    "case_bytes": 260 * GRAPH_BYTES, "case_members": 3000,
+    "shared_bytes": 104 * GRAPH_BYTES, "shared_members": 1232,
+    "owner_bytes": 48 * GRAPH_BYTES, "owner_files": 768,
+    "journal_bytes": 32 * GRAPH_BYTES, "journal_files": 384,
+    "store_file_bytes": 4 * GRAPH_BYTES, "store_files": 4,
+}
+GRAPH_PHASES = {
+    "prepare": 1200, "runtime": 1200, "sdk-build": 1800, "product-build": 1800,
+    "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
+    "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300,
+}
+GRAPH_CASES = (
+    ("graph-source-review", "Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing", (5, 0)),
+    ("graph-flow", "Synthetic flow stores exact event times and rejects a real stale CAS without a new event", (2, 0)),
+    ("graph-lost-reply", "A lost Graph reply cannot replay a committed SQLite mutation after reload", (5, 0)),
+    ("graph-removal", "Graph removal rejects a prior-session grant and stale base, then removes once through the real UI and survives SQLite restart", (2, 2, 0)),
+    ("graph-label-causal-diagram", "Graph causal_diagram follows the edge midpoint through real saves and restores manual placement after SQLite restart", (5, 2, 0)),
+    ("graph-label-system-flow", "Graph system_flow follows the edge midpoint through real saves and restores manual placement after SQLite restart", (5, 2, 0)),
+)
+GRAPH_ROLES = ("semwright", "semwrightd", "native_provider", "shared_state_actor", "manim_runner",
+               "python3", "ffmpeg", "ordinary_service", "native_graph_session", "semwright_sandbox")
+GRAPH_SDK_ROLES = ("semwright", "semwrightd", "semwright_sandbox")
+GRAPH_RUST_ROLES = tuple(role for role in GRAPH_ROLES if role not in ("python3", "ffmpeg"))
+GRAPH_TARGETS = {
+    "semwright": ("semwright-cli", "semwright", "bin"),
+    "semwrightd": ("semwright-daemon", "semwrightd", "bin"),
+    "semwright_sandbox": ("semwright-plugin-host", "semwright-sandbox", "bin"),
+    "native_provider": ("motionwright-native", "motionwright-native-provider", "bin"),
+    "shared_state_actor": ("motionwright-native", "shared-state-actor", "example"),
+    "manim_runner": ("motionwright-manim-community-driver", "motionwright-manim-runner", "bin"),
+    "ordinary_service": ("motionwright-service", "studio_review_session", "example"),
+    "native_graph_session": ("motionwright-native", "native-graph-review-session", "example"),
+}
+GRAPH_IMPORTS = tuple("tooling/" + name + ".py" for name in (
+    "native_graph_browser_owner", "native_host_shared_state", "native_host_installed_shared_state",
+    "native_manim_graph_runtime_intake", "native_av_failure_guard", "candidate_smoke",
+    "linux_first_use_custody", "linux_cold_start", "linux_first_use_accessible",
+    "source_checkout_observation", "storage_schema_contract", "linux_gui_probe",
+    "native_provider_lifecycle", "runtime_first_use_audit", "manim_bundled_font_intake", "mlt_official_runtime_intake"))
+GRAPH_CALLGRAPH = (
+    "apps/studio/tests/semantic-graph-service.spec.ts", "apps/studio/tests/support/scopedChangeService.ts",
+    "apps/studio/src/SemanticGraphWorkbench.tsx", "apps/studio/src/semanticGraphService.ts",
+    "apps/studio/src/App.tsx", "apps/studio/src/api.ts", "apps/studio/src/projectMutation.ts",
+    "apps/studio/src/semanticGraphDraft.ts", "apps/studio/src/ProductionDesignWorkspace.tsx",
+    "crates/service/examples/studio_review_session.rs", "crates/native/examples/native-graph-review-session.rs",
+    "crates/native/src/production/transport_custody.rs", "crates/native/src/production/graph_authoring.rs",
+    "crates/native/src/production.rs")
+GRAPH_AUTHORITY = (*GRAPH_IMPORTS, *GRAPH_CALLGRAPH,
+    "tooling/ci_canvas_service.py", "tooling/ci_private_evidence.py", "tooling/requirements/mlt-g2-custody.txt", GRAPH_WORKFLOW,
+    "apps/studio/tests/support/nativeGraphCase.ts", "apps/studio/playwright.config.ts",
+    *("apps/studio/tests/support/graph-owner/" + name for name in (
+        "producer_guard.mjs", "factory.mjs", "sdk_ticket_prewrite.mjs", "custody.mjs", "contracts.mjs",
+        "same_store_reopen.mjs", "opened_store_descriptor.mjs", "opened_store_identity_join.mjs",
+        "schemas/spec.r2.json", "schemas/final.r2.json")))
+GRAPH_CONTRACT_FIELDS = {"source_files", "sdk_tree", "sdk_files", "builds", "ordinary_preflight",
+    "runtime", "callback_roster", "native_enforcement", "native_enforcing_source", "cases", "writer_sources", "execution"}
+GRAPH_API_BYTES, GRAPH_API_PAGES = 256 * 1024, 4
+
+
+def graph_case_layout(cases_root, case_id):
+    """Pure path calculation; only the original index and R74 admit a case."""
+    raw = os.fspath(cases_root)
+    require(isinstance(raw, str) and "\0" not in raw and raw == os.path.normpath(raw)
+            and Path(raw).is_absolute() and not raw.startswith("//"), "Graph canonical cases root")
+    cases = sorted(row[0] for row in GRAPH_CASES)
+    require(case_id in cases, "Graph undeclared case layout")
+    private_root = Path(raw) / ("g" + str(cases.index(case_id) + 1))
+    owner_socket = private_root / "owner/runtime/broker.sock"
+    require(len(str(owner_socket).encode("utf-8")) <= 100, "Graph owner socket path exceeds 100 bytes")
+    return {"private_root": private_root, "database_path": private_root / "store/motionwright.sqlite3",
+            "owner_socket": owner_socket}
+
+
+def graph_collected_case_roots(cases_root):
+    """Require the same six exclusive roots, never select a historical alias."""
+    cases_root = Path(cases_root)
+    require(cases_root.is_dir() and cases_root.resolve(strict=True) == cases_root, "Graph canonical cases root absent")
+    rows = [(case, graph_case_layout(cases_root, case)["private_root"]) for case in sorted(row[0] for row in GRAPH_CASES)]
+    require(all(root.is_dir() and not root.is_symlink() and root.resolve(strict=True) == root for _, root in rows),
+            "Graph final canonical case root absent or aliased")
+    identities = [(root.stat().st_dev, root.stat().st_ino) for _, root in rows]
+    require(len(set(identities)) == 6, "Graph final case roots share physical identity")
+    expected = {root / "parent-source-binding.original.json" for _, root in rows}
+    require(set(cases_root.rglob("parent-source-binding.original.json")) == expected,
+            "Graph final original case root bijection")
+    return rows
+
+
+def graph_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, "Graph duplicate JSON key")
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=pairs,
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Graph nonfinite JSON")))
+
+
+def graph_ref(path, maximum=512 * GRAPH_BYTES):
+    path = Path(path)
+    raw, value = studio68_original(path, maximum)
+    return {"path": str(path), "sha256": value["sha256"], "size_bytes": value["bytes"]}
+
+
+def graph_read(reference, maximum=512 * GRAPH_BYTES):
+    require(type(reference) is dict and set(reference) == {"path", "sha256", "size_bytes"}
+            and type(reference["size_bytes"]) is int and 0 <= reference["size_bytes"] <= maximum
+            and re.fullmatch(r"[0-9a-f]{64}", reference["sha256"]) is not None, "Graph original reference")
+    path = Path(reference["path"])
+    require(path.is_absolute() and path.resolve(strict=True) == path, "Graph original canonical path")
+    raw, value = studio68_original(path, maximum)
+    require(value == {"bytes": reference["size_bytes"], "sha256": reference["sha256"]}, "Graph original changed")
+    return raw
+
+
+def graph_put(path, raw):
+    path = Path(path)
+    require(path.parent.resolve(strict=True) == path.parent and type(raw) is bytes, "Graph publication path")
+    with path.open("xb") as stream:
+        require(stream.write(raw) == len(raw), "Graph original short write")
+        stream.flush(); os.fsync(stream.fileno())
+    require(studio68_original(path, max(len(raw), 1))[0] == raw, "Graph publication readback")
+    return graph_ref(path)
+
+
+def graph_put_json(path, value):
+    return graph_put(path, (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode())
+
+
+def graph_run_binding(run, binding):
+    require(type(run) is dict and type(run.get("id")) is int and str(run["id"]) == binding["run_id"]
+            and type(run.get("run_attempt")) is int and run["run_attempt"] == 1 and run.get("head_sha") == binding["source_sha"]
+            and run.get("repository", {}).get("full_name") == GRAPH_REPOSITORY
+            and run.get("head_repository", {}).get("full_name") == GRAPH_REPOSITORY
+            and run.get("event") == "workflow_dispatch" and run.get("status") == "in_progress"
+            and run.get("path", "").split("@", 1)[0] == GRAPH_WORKFLOW
+            and type(run.get("workflow_id")) is int and run["workflow_id"] > 0
+            and run.get("actor", {}).get("type") == "User"
+            and type(run.get("actor", {}).get("id")) is int and run["actor"]["id"] > 0,
+            "Graph R74 original run actor/source")
+
+
+def graph_status_core(run, rows, binding):
+    """Pure validation, not an approval writer or production admission flag."""
+    require(set(binding) == {"source_sha", "run_id", "case_id", "index_sha256"}
+            and re.fullmatch(r"[0-9a-f]{40}", binding["source_sha"])
+            and re.fullmatch(r"[1-9][0-9]*", binding["run_id"])
+            and re.fullmatch(r"[0-9a-f]{64}", binding["index_sha256"])
+            and binding["case_id"] in {row[0] for row in GRAPH_CASES}, "Graph R74 binding")
+    graph_run_binding(run, binding)
+    context = "mw-owner/" + GRAPH_SCOPE + "/" + binding["run_id"] + "/1/" + binding["case_id"]
+    require(type(rows) is list and len(rows) <= GRAPH_API_PAGES * 100, "Graph R74 status bound")
+    previous = 2**53 - 1
+    for row in rows:
+        require(type(row) is dict and type(row.get("id")) is int and 0 < row["id"] < previous,
+                "Graph R74 status order")
+        previous = row["id"]
+    chosen = next((row for row in rows if type(row.get("context")) is str and row["context"].lower() == context.lower()), None)
+    require(chosen is not None, "Graph R74 status not present")
+    require(chosen.get("state") == "success" and chosen.get("creator", {}).get("type") == "User"
+            and type(chosen["creator"].get("id")) is int and chosen["creator"]["id"] == run["actor"]["id"]
+            and chosen.get("target_url") == "https://github.com/" + GRAPH_REPOSITORY + "/actions/runs/" + binding["run_id"]
+            and chosen.get("description") == "admission-sha256:" + binding["index_sha256"],
+            "Graph R74 newest status not authorized")
+    return {"context": context, "status_id": chosen["id"], "actor_id": run["actor"]["id"],
+            "source_sha": binding["source_sha"], "run_id": binding["run_id"], "run_attempt": 1,
+            "index_sha256": binding["index_sha256"], "meaning": "OWNER_ADMISSION_ONLY_NEVER_PRODUCT_OR_A5_ACCEPTANCE"}
+
+
+def graph_api_get(suffix, token, publish, label, end):
+    import ssl
+    import urllib.error
+    import urllib.request
+    require(suffix.startswith(("/actions/runs/", "/commits/")) and time.monotonic() < end, "Graph fixed API request deadline")
+    url = "https://api.github.com/repos/" + GRAPH_REPOSITORY + suffix
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            raise ValueError("Graph R74 redirect refused")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Cache-Control": "no-cache"})
+    started = time.monotonic_ns()
+    try:
+        response = opener.open(request, timeout=max(.001, min(12, end - time.monotonic())))
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        raw = response.read(GRAPH_API_BYTES + 1)
+        original = publish(label + ".response.original.json", raw)
+        meta = {"url": url, "status": response.status, "date": response.headers.get("Date"),
+                "age": response.headers.get("Age", "0"), "link": response.headers.get("Link", ""),
+                "request_id": response.headers.get("X-GitHub-Request-Id"),
+                "started_mono_ns": started, "finished_mono_ns": time.monotonic_ns(), "body": original}
+        publish(label + ".transport.original.json", (json.dumps(meta, sort_keys=True) + "\n").encode())
+        require(response.status == 200 and meta["age"] == "0" and type(meta["date"]) is str
+                and 0 < len(raw) <= GRAPH_API_BYTES and time.monotonic() <= end, "Graph R74 HTTP response denied")
+        return graph_json(raw), meta
+
+
+def graph_api_observation(index, index_ref, token, publish, label, end):
+    require(os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform == "linux"
+            and os.environ.get("GITHUB_REPOSITORY") == GRAPH_REPOSITORY
+            and os.environ.get("GITHUB_API_URL") == "https://api.github.com"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_JOB") == "real-service"
+            and os.environ.get("GITHUB_SHA") == index["source"]["sha"]
+            and os.environ.get("GITHUB_WORKFLOW_SHA") == index["source"]["sha"]
+            and os.environ.get("GITHUB_RUN_ID") == index["source"]["run_id"]
+            and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and index["source"]["run_attempt"] == 1 and type(token) is str and token, "Graph authenticated job context")
+    run, run_meta = graph_api_get("/actions/runs/" + index["source"]["run_id"], token, publish, label + "-run", end)
+    graph_run_binding(run, {"source_sha": index["source"]["sha"], "run_id": index["source"]["run_id"]})
+    rows, pages = [], []
+    contexts = {("mw-owner/" + GRAPH_SCOPE + "/" + index["source"]["run_id"] + "/1/" + row[0]).lower() for row in GRAPH_CASES}
+    for page in range(1, GRAPH_API_PAGES + 1):
+        value, meta = graph_api_get("/commits/" + index["source"]["sha"] + "/statuses?per_page=100&page=" + str(page),
+                                    token, publish, label + "-statuses-" + str(page), end)
+        require(type(value) is list and len(value) <= 100, "Graph status page")
+        rows.extend(value); pages.append(meta)
+        seen = {row.get("context", "").lower() for row in rows if type(row.get("context")) is str}
+        if contexts <= seen or len(value) < 100 and 'rel="next"' not in meta["link"]:
+            break
+        require(page < GRAPH_API_PAGES, "Graph status pagination bound")
+    return run, rows, {"run": run_meta, "pages": pages, "index": index_ref}
+
+
+def graph_source_view(raw):
+    require(type(raw) is dict and set(raw) == {"sha", "tree", "files"}, "Graph explicit source observation")
+    files = {}
+    for name, row in raw["files"].items():
+        require(type(row) is dict and set(row) == {"git_bytes", "git_sha256", "checkout", "checkout_encoding"}
+                and row["checkout_encoding"] == "EXACT_GIT_BYTES"
+                and row["checkout"] == {"bytes": row["git_bytes"], "sha256": row["git_sha256"]},
+                "Graph Linux checkout bytes are not original Git bytes")
+        files[name] = row["checkout"]
+    return {"checkout": raw["sha"], "tree": raw["tree"], "files": files}
+
+
+def graph_process_original(value, expected, remember):
+    require(set(value) == {"command", "stdout", "stderr"}, "Graph producer process fields")
+    command = graph_json(remember(value["command"], GRAPH_BYTES))
+    require(command.get("argv") == expected["argv"] and command.get("cwd") == expected["cwd"]
+            and command.get("selected_environment") == expected["selected_environment"], "Graph original command binding")
+    require_observed_command(command)
+    require(command.get("exit_code") == 0 and command.get("cleanup_errors") == []
+            and not any(key in command for key in ("observation", "uncertainty_reason", "error", "receipt_error", "secondary_observation_errors")),
+            "Graph original process incomplete")
+    require(datetime.fromisoformat(command["finished_utc"]) >= datetime.fromisoformat(command["started_utc"]), "Graph original process time")
+    for name in ("stdout", "stderr"):
+        raw = remember(value[name], 64 * GRAPH_BYTES)
+        require(command.get(name) == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, "Graph command stream original differs")
+    return command, remember(value["stdout"], 64 * GRAPH_BYTES)
+
+
+def graph_verify_producer_index(index_ref, case_id):
+    """Original byte/causality checks. The caller must separately authenticate R74.
+
+    This function never turns a reference map into authority. The owner invokes
+    it only after independently observing the exact external status and binding
+    this module's original bytes before import.
+    """
+    refs, physical = {}, {}
+    def remember(ref, maximum=512 * GRAPH_BYTES):
+        require(len(refs) < 512 or ref["path"] in refs, "Graph original count")
+        path = Path(ref["path"])
+        before = path.lstat()
+        raw = graph_read(ref, maximum)
+        stamp = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        require(ref["path"] not in refs or refs[ref["path"]] == ref and physical[ref["path"]] == stamp,
+                "Graph original path retargeted")
+        refs[ref["path"]], physical[ref["path"]] = ref, stamp
+        return raw
+    index = graph_json(remember(index_ref, GRAPH_BYTES))
+    require(set(index) == {"schema", "source", "binaries", "runtime", "source_original", "sdk_original", "builds",
+                           "ordinary_preflight", "runtime_originals", "callback_roster", "native_enforcement", "contract"}
+            and index["schema"] == GRAPH_INDEX_SCHEMA and set(index["contract"]) == GRAPH_CONTRACT_FIELDS,
+            "Graph acyclic index contract fields")
+    contract, source, binaries = index["contract"], index["source"], index["binaries"]
+    require(set(binaries) == set(GRAPH_ROLES) and len({ref["path"] for ref in binaries.values()}) == 10,
+            "Graph ten distinct runtime roles")
+    execution = contract["execution"]
+    require(set(execution) == {"scope", "job", "job_id", "deadline_original", "deadline_unix_ms", "producer_root", "cases_root", "budget"}
+            and execution["scope"] == GRAPH_SCOPE and execution["job"] == "real-service"
+            and execution["budget"] == GRAPH_BUDGET, "Graph finite original allocation")
+    require(set(contract["cases"]) == {row[0] for row in GRAPH_CASES} and case_id in contract["cases"], "Graph closed six-case roster")
+    for name in GRAPH_AUTHORITY:
+        require(name in contract["source_files"], "Graph authority source omitted: " + name)
+    for ref_name, root_name, expected_sha, expected_tree, files in (
+        ("source_original", "repository_root", source["sha"], source["tree"], contract["source_files"]),
+        ("sdk_original", "sdk_root", source["sdk_sha"], contract["sdk_tree"], contract["sdk_files"])):
+        value = graph_json(remember(index[ref_name], 8 * GRAPH_BYTES))
+        require(value["run_id"] == source["run_id"] and str(value["run_attempt"]) == str(source["run_attempt"]) == "1"
+                and value["source_before"] == value["source_after"], "Graph source original run/attempt or before/after")
+        view = graph_source_view(value["source_before"])
+        require(view == {"checkout": expected_sha, "tree": expected_tree, "files": files}, "Graph exact source original differs")
+        require(set(value["retained_files"]) == set(files), "Graph retained source roster")
+        root = Path(source[root_name])
+        for name, identity in files.items():
+            require(name and not name.startswith("/") and "\\" not in name
+                    and all(part not in ("", ".", "..") for part in name.split("/")), "Graph relative source name")
+            remember({"path": str(root / name), "sha256": identity["sha256"], "size_bytes": identity["bytes"]})
+            retained = value["retained_files"][name]
+            require(Path(retained["path"]).is_relative_to(Path(execution["producer_root"]))
+                    and retained["path"] != str(root / name)
+                    and {"bytes": retained["size_bytes"], "sha256": retained["sha256"]} == identity, "Graph retained source differs")
+            remember(retained)
+    locks = ("Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json")
+    require(set(source["locks"]) == set(locks) and all(source["locks"][name] == contract["source_files"][name]["sha256"] for name in locks), "Graph exact four locks")
+    lock = graph_json(remember({"path": str(Path(source["repository_root"]) / "SOURCE_LOCK.json"),
+        "sha256": contract["source_files"]["SOURCE_LOCK.json"]["sha256"], "size_bytes": contract["source_files"]["SOURCE_LOCK.json"]["bytes"]}))
+    require(lock["dependencies"]["semwright"]["revision"] == source["sdk_sha"], "Graph SOURCE_LOCK SDK pin")
+    require(set(index["builds"]) == set(contract["builds"]) == set(GRAPH_RUST_ROLES), "Graph eight build roles")
+    writer_roles = {*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime"}
+    require(set(contract["writer_sources"]) == writer_roles, "Graph writer source roster")
+    for names in contract["writer_sources"].values():
+        require(type(names) is list and 1 <= len(names) <= 16 and len(set(names)) == len(names)
+                and all(name in contract["source_files"] for name in names), "Graph writer source binding")
+    for role in GRAPH_RUST_ROLES:
+        original, expected = index["builds"][role], contract["builds"][role]
+        require(set(original) == {"process", "retained_binary"}, "Graph build original fields")
+        command, stdout = graph_process_original(original["process"], expected["command"], remember)
+        root_name = "sdk_root" if role in GRAPH_SDK_ROLES else "repository_root"
+        require(command["cwd"] == source[root_name] and all(flag in command["argv"] for flag in ("build", "--locked", "--message-format=json")), "Graph original Cargo build")
+        rows = [graph_json(line) for line in stdout.splitlines() if line]
+        ends = [row for row in rows if row.get("reason") == "build-finished"]
+        require(len(ends) == 1 and rows[-1] == ends[0] and ends[0].get("success") is True, "Graph Cargo terminal")
+        matches = [row for row in rows if row.get("reason") == "compiler-artifact" and row.get("executable") == binaries[role]["path"]]
+        require(len(matches) == 1, "Graph Cargo executable bijection")
+        artifact = matches[0]
+        target = {"package_id": artifact.get("package_id"), **{key: artifact.get("target", {}).get(key) for key in ("name", "kind", "src_path")}}
+        require(target == expected["target"] and artifact.get("fresh") is False and artifact.get("profile", {}).get("test") is False,
+                "Graph Cargo target source/cache")
+        relative = Path(target["src_path"]).relative_to(source[root_name]).as_posix()
+        require(relative in contract["sdk_files" if role in GRAPH_SDK_ROLES else "source_files"], "Graph target source omitted")
+        remember(binaries[role]); remember(original["retained_binary"])
+        require(original["retained_binary"]["path"] != binaries[role]["path"]
+                and all(original["retained_binary"][key] == binaries[role][key] for key in ("sha256", "size_bytes")), "Graph retained executable differs")
+    command, stdout = graph_process_original(index["ordinary_preflight"]["process"], contract["ordinary_preflight"], remember)
+    stdin_ref = index["ordinary_preflight"]["stdin"]
+    require(command["argv"][0] == binaries["ordinary_service"]["path"]
+            and graph_json(remember(stdin_ref, 16384)) == phase1_service47_preflight_request()
+            and command.get("stdin") == {"path": Path(stdin_ref["path"]).name, "sha256": stdin_ref["sha256"], "bytes": stdin_ref["size_bytes"]}, "Graph compiled SDK preflight input")
+    phase1_service47_validate_preflight(stdout, source["sdk_sha"])
+    runtime, originals = index["runtime"], index["runtime_originals"]
+    require(set(originals) == {"producer", "inventory", "receipt", "intake", "profile_files"}, "Graph runtime originals")
+    graph_process_original(originals["producer"], contract["runtime"]["command"], remember)
+    inventory = graph_json(remember(originals["inventory"], 2 * GRAPH_BYTES))
+    intake = graph_json(remember(originals["intake"], 2 * GRAPH_BYTES))
+    require(inventory == contract["runtime"]["inventory"] and intake == contract["runtime"]["intake"]
+            and originals["inventory"]["path"] == runtime["manifest"] and originals["inventory"]["sha256"] == runtime["manifest_sha256"]
+            and originals["intake"]["path"] == runtime["intake_receipt"] and originals["intake"]["sha256"] == runtime["intake_receipt_sha256"], "Graph original runtime binding")
+    require(inventory["schema"] == "motionwright.manim.runtime-inventory/2" and inventory["context"] == {
+        "source_sha": source["sha"], "semwright_sha": source["sdk_sha"], "run_id": source["run_id"], "run_attempt": "1"}
+        and inventory["manim_version"] == "0.21.0" and inventory["pyav_version"] == "15.0.0"
+        and inventory["native_render_performed"] is False, "Graph real runtime producer context")
+    remember(originals["receipt"], 2 * GRAPH_BYTES)
+    require(originals["receipt"]["path"] == str(Path(runtime["root"]) / "runtime.json")
+            and originals["receipt"]["sha256"] == inventory["runtime_receipt_sha256"], "Graph runtime receipt")
+    for role, label in (("python3", "python"), ("ffmpeg", "ffmpeg")):
+        remember(binaries[role])
+        require(inventory["binaries"][label] == {"path": binaries[role]["path"], "sha256": binaries[role]["sha256"], "bytes": binaries[role]["size_bytes"]}, "Graph runtime executable original")
+    require(intake["schema"] == "motionwright.manim.graph-runtime-source-intake/1" and intake["status"] == "SOURCE_INTAKE_ONLY"
+            and intake["profile_id"] == "mw-manim-semantic-graph-v1" and intake["source_root"] == source["repository_root"]
+            and intake["runtime_root"] == runtime["root"] and all(intake[key] is False for key in (
+                "profile_admitted", "native_render_performed", "compiled_runner_pin_agreement_verified", "native_font_open_observed", "pango_layout_observed")), "Graph source intake is not acceptance")
+    require(originals["profile_files"] == contract["runtime"]["profile_files"] and len(originals["profile_files"]) == 15
+            and intake["files_count"] == len(intake["files"]) == 15, "Graph fifteen runtime originals")
+    by_name = {row["relative_path"]: row["ref"] for row in originals["profile_files"]}
+    require(len(by_name) == 15, "Graph runtime duplicate path")
+    for row in intake["files"]:
+        ref = by_name[row["runtime_relative_path"]]
+        require(ref["path"] == str(Path(runtime["root"]) / row["runtime_relative_path"])
+                and ref["sha256"] == row["sha256"] and ref["size_bytes"] == row["size_bytes"]
+                and contract["source_files"][row["source_relative_path"]] == {"bytes": row["size_bytes"], "sha256": row["sha256"]}, "Graph source/runtime asset binding")
+        remember(ref, 8 * GRAPH_BYTES)
+    closure = Path(runtime["root"]) / "graph-profile-v1/source-closure.json"
+    remember({"path": str(closure), "sha256": originals["intake"]["sha256"], "size_bytes": originals["intake"]["size_bytes"]}, 2 * GRAPH_BYTES)
+    for field in ("compiler_source", "source_lock"):
+        row = intake[field]
+        require(contract["source_files"][row["relative_path"]] == {"bytes": row["size_bytes"], "sha256": row["sha256"]}, "Graph compiler/source lock binding")
+    roster = graph_json(remember(index["callback_roster"], GRAPH_BYTES))
+    native = graph_json(remember(index["native_enforcement"], GRAPH_BYTES))
+    require(roster == contract["callback_roster"] and native == contract["native_enforcement"]
+            and contract["native_enforcing_source"] == contract["source_files"]["crates/native/examples/native-graph-review-session.rs"]
+            and contract["native_enforcing_source"]["sha256"] != "f0cc2efc496f1ab13458395c10b09f502a5cbdc12f906827378c5e40b1716dd9", "Graph reviewed Native cumulative enforcement source")
+    require(roster["cases"] == [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in GRAPH_CASES], "Graph callback source roster")
+    for case, title, caps in GRAPH_CASES:
+        row = contract["cases"][case]
+        require(set(row) == {"title", "callback_caps", "roster_source_files"} and row["title"] == title
+                and row["callback_caps"] == list(caps) and set(GRAPH_CALLGRAPH) <= set(row["roster_source_files"])
+                and len(set(row["roster_source_files"])) == len(row["roster_source_files"])
+                and all(name in contract["source_files"] for name in row["roster_source_files"]), "Graph callback callgraph binding")
+    deadline = graph_json(remember(execution["deadline_original"], 8 * GRAPH_BYTES + 65536))
+    require(deadline["schema"] == "motionwright.graph-job-deadline/1" and deadline["job_seconds"] == 10800
+            and deadline["deadline_unix_ms"] == execution["deadline_unix_ms"]
+            and deadline["binding"]["GITHUB_SHA"] == source["sha"] and deadline["binding"]["GITHUB_RUN_ID"] == source["run_id"]
+            and deadline["binding"]["GITHUB_RUN_ATTEMPT"] == "1", "Graph original deadline binding")
+    jobs = [row for row in deadline["jobs"]["jobs"] if row.get("id") == execution["job_id"]
+            and row.get("name") == "Real SQLite and Studio / " + GRAPH_SCOPE]
+    require(len(jobs) == 1, "Graph producer original job")
+    job_started = datetime.fromisoformat(jobs[0]["started_at"].replace("Z", "+00:00"))
+    for process in [*(item["process"] for item in index["builds"].values()),
+                    index["ordinary_preflight"]["process"], index["runtime_originals"]["producer"]]:
+        command = graph_json(remember(process["command"], GRAPH_BYTES))
+        require(command.get("graph_job") == {"source_sha": source["sha"], "run_id": source["run_id"],
+                "run_attempt": 1, "job_id": execution["job_id"], "deadline_original": execution["deadline_original"]}
+                and command.get("deadline_admission", {}).get("deadline_mono_ns") == deadline["deadline_mono_ns"],
+                "Graph producer command belongs to another original job")
+        begin = datetime.fromisoformat(command["started_utc"]); end = datetime.fromisoformat(command["finished_utc"])
+        require(job_started <= begin <= end and (end - job_started).total_seconds() < 10800,
+                "Graph producer command predates or exceeds its original job")
+    for ref in tuple(refs.values()):
+        remember(ref)
+    return {"index": index, "references": list(refs.values()),
+            "physical": {name: list(value) for name, value in physical.items()},
+            "meaning": "ORIGINALS_VALIDATED_REQUIRES_SEPARATE_AUTHENTICATED_R74"}
+
+
+def graph_deadline_from_original(original, environment, now_ns, boot_id):
+    binding = phase1_service47_deadline_binding(environment)
+    require(binding["GITHUB_REPOSITORY"] == GRAPH_REPOSITORY and binding["GITHUB_RUN_ATTEMPT"] == "1"
+            and original.get("schema") == "motionwright.graph-job-deadline/1"
+            and original.get("binding") == binding and original.get("boot_id") == boot_id
+            and original.get("job_seconds") == 10800 and original.get("phase_seconds") == GRAPH_PHASES
+            and original.get("rounding_allowance_seconds") == 2, "Graph original deadline binding")
+    begin, end = original.get("request_started_mono_ns"), original.get("response_received_mono_ns")
+    require(type(begin) is int and type(end) is int and 0 < begin <= end <= now_ns, "Graph original clock")
+    run, jobs = original["run"], original["jobs"]
+    require(type(run.get("id")) is int and run["id"] == int(binding["GITHUB_RUN_ID"])
+            and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
+            and run.get("head_sha") == binding["GITHUB_SHA"] and run.get("repository", {}).get("full_name") == GRAPH_REPOSITORY
+            and run.get("path", "").split("@", 1)[0] == GRAPH_WORKFLOW
+            and run.get("event") == "workflow_dispatch" and run.get("status") == "in_progress"
+            and run.get("actor", {}).get("type") == "User" and type(run["actor"].get("id")) is int and run["actor"]["id"] > 0,
+            "Graph actual original dispatch actor")
+    rows = jobs.get("jobs")
+    require(type(rows) is list and type(jobs.get("total_count")) is int and 0 < jobs["total_count"] == len(rows) <= 100,
+            "Graph original jobs incomplete")
+    selected = [row for row in rows if row.get("name") == "Real SQLite and Studio / " + GRAPH_SCOPE]
+    require(len(selected) == 1, "Graph current original job absent or ambiguous")
+    job = selected[0]
+    require(type(job.get("run_id")) is int and job["run_id"] == int(binding["GITHUB_RUN_ID"])
+            and type(job.get("run_attempt")) is int and job["run_attempt"] == 1
+            and job.get("head_sha") == binding["GITHUB_SHA"] and job.get("status") == "in_progress"
+            and job.get("conclusion") is None and job.get("runner_name") == binding["RUNNER_NAME"]
+            and type(job.get("id")) is int and job["id"] > 0, "Graph actual job/runner binding")
+    from email.utils import parsedate_to_datetime
+    server = parsedate_to_datetime(original["jobs_http_date"])
+    start = datetime.fromisoformat(job["started_at"].replace("Z", "+00:00"))
+    require(server.tzinfo is not None and start.tzinfo is not None
+            and server.utcoffset().total_seconds() == start.utcoffset().total_seconds() == 0 and server >= start,
+            "Graph original job start and HTTP Date")
+    age = server - start
+    elapsed = (age.days * 86400 + age.seconds + 2) * 1000000000 + age.microseconds * 1000
+    deadline = end + 10800 * 1000000000 - elapsed - (end - begin)
+    require(original.get("deadline_mono_ns") == deadline and deadline > now_ns
+            and type(original.get("clock_anchor_mono_ns")) is int
+            and end <= original["clock_anchor_mono_ns"] <= now_ns
+            and original.get("deadline_unix_ms") == original["clock_anchor_wall_ms"]
+                + (deadline - original["clock_anchor_mono_ns"]) // 1000000, "Graph original aggregate deadline changed")
+    return deadline
+
+
+class GraphOriginalClock(Phase1Service47Clock):
+    """Reuse the existing signal/owned-process boundary with Graph's own origin."""
+    def __init__(self, root):
+        self.root = root
+        ref = graph_ref(root / "tools/graph-deadline.original.json", 8 * GRAPH_BYTES + 65536)
+        require(ref["sha256"] == os.environ.get(GRAPH_DEADLINE_ENV), "Graph authenticated deadline pin")
+        original = graph_json(graph_read(ref, 8 * GRAPH_BYTES + 65536))
+        for name, field in (("graph-run-response.original.json", "run"), ("graph-jobs-response.original.json", "jobs")):
+            raw, identity = studio68_original(root / "tools" / name, 4 * GRAPH_BYTES)
+            require(identity == original["response_originals"][name] and graph_json(raw) == original[field], "Graph authenticated API original changed")
+            transport_name = name.replace(".original.json", ".transport.original.json")
+            raw, identity = studio68_original(root / "tools" / transport_name, 65536)
+            require(identity == original["response_transport_originals"][transport_name]
+                    and graph_json(raw) == original["transport_observations"][name], "Graph HTTP transport original changed")
+        now = time.monotonic_ns()
+        self.deadline_ns = graph_deadline_from_original(original, os.environ, now, Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+        self.original, self.original_ref, self.last_ns = original, ref, now
+        self.unknown = self.expired = False; self.active_process = None
+        self.admissions = []; self.phase_name = None; self.phase_end = None
+
+    def future(self, phase):
+        names = list(GRAPH_PHASES)
+        require(phase in GRAPH_PHASES, "Graph closed phase")
+        return sum(GRAPH_PHASES[name] for name in names[names.index(phase) + 1:])
+
+    def admit(self, label, seconds, *, reserve=None, now_ns=None):
+        now = time.monotonic_ns() if now_ns is None else now_ns
+        reserve = self.future(self.phase_name) if reserve is None and self.phase_name else (reserve or 0)
+        require(type(seconds) is int and 0 < seconds <= 10800 and type(reserve) is int and 0 <= reserve < 10800
+                and now >= self.last_ns and not self.unknown, "Graph phase cap, clock or UNKNOWN")
+        self.last_ns = now
+        record = {"phase": self.phase_name, "label": label, "seconds": seconds, "reserve_seconds": reserve,
+                  "observed_mono_ns": now, "deadline_mono_ns": self.deadline_ns, "retry": "FORBIDDEN"}
+        require(now + (seconds + reserve) * 1000000000 <= self.deadline_ns
+                and (self.phase_end is None or now + seconds * 1000000000 <= self.phase_end),
+                "Graph full phase and remaining custody cannot fit before effect")
+        self.admissions.append(record)
+        return record
+
+    @contextmanager
+    def phase(self, name):
+        require(self.phase_name is None and name in GRAPH_PHASES, "Graph nested or foreign phase")
+        seconds, future = GRAPH_PHASES[name], self.future(name)
+        admitted = self.admit(name, seconds, reserve=future)
+        self.phase_name, self.phase_end = name, time.monotonic_ns() + seconds * 1000000000
+        graph_put_json(self.root / "tools" / ("graph-phase-" + name + ".intent.original.json"), admitted)
+        try:
+            with self.window(reserve=future):
+                signal.setitimer(signal.ITIMER_REAL, max(.001, (self.phase_end - time.monotonic_ns()) / 1000000000))
+                yield self
+                require(not self.unknown and time.monotonic_ns() < self.phase_end, "Graph phase did not close")
+            terminal_root = self.root / ("retained" if name == "archive" else "tools")
+            graph_put_json(terminal_root / ("graph-phase-" + name + ".terminal.original.json"), {
+                "meaning": "PHASE_COMMANDS_AND_OBSERVATIONS_RETURNED_ONLY", "finished_mono_ns": time.monotonic_ns(),
+                "deadline_original": self.original_ref, "admissions": self.admissions})
+        finally:
+            self.phase_name = self.phase_end = None
+
+
+def graph_layout(repo):
+    repo = repo.resolve(strict=True); root = repo.parent / "v"
+    require(os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform == "linux" and repo.name == "g"
+            and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent
+            and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "Graph actual first-attempt Linux g/v job")
+    return repo, root
+
+
+def graph_source_observe(repo, expected, paths):
+    import importlib.util
+    module_path = repo / "tooling/source_checkout_observation.py"
+    # SDK callers pass the already source-bound Motionwright helper explicitly.
+    helper_root = Path(os.environ["GITHUB_WORKSPACE"]) / "g"
+    module_path = helper_root / "tooling/source_checkout_observation.py"
+    module_spec = importlib.util.spec_from_file_location("graph_existing_source_observer", module_path)
+    module = importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(module)
+    return module.source_observation(repo, expected, tuple(sorted(set(paths))))
+
+
+def graph_tree_allocation(root, maximum_bytes, maximum_members):
+    require(root.is_dir() and root.resolve(strict=True) == root, "Graph allocated root")
+    # The allocated root itself is a TAR member and consumes its directory slot.
+    total, members, directories = 0, 1, 1
+    require(maximum_members >= 1, "Graph root member allocation exhausted")
+    for item in sorted(root.rglob("*")):
+        state = archive_stat(item); members += 1
+        require(members <= maximum_members, "Graph member allocation exhausted")
+        if stat.S_ISDIR(state.st_mode):
+            directories += 1
+        else:
+            require(stat.S_ISREG(state.st_mode) and state.st_nlink == 1, "Graph allocated original is not regular")
+            total += state.st_size
+            require(total <= maximum_bytes, "Graph byte allocation exhausted")
+    return {"bytes": total, "members": members, "directories": directories}
+
+
+def graph_producer_room(root, extra_bytes, extra_members):
+    observed = graph_tree_allocation(root, GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
+    # Leave a finite 8 MiB/96-member remainder for the index, source observations,
+    # six consumed-case records and original review seal metadata.
+    require(observed["bytes"] + extra_bytes + 8 * GRAPH_BYTES <= GRAPH_BUDGET["producer_bytes"]
+            and observed["members"] + extra_members + 96 <= GRAPH_BUDGET["producer_members"],
+            "Graph original producer/copy allocation cannot fit before publication")
+
+
+def graph_copy_original(source, destination, producer):
+    reference = graph_ref(source, 256 * GRAPH_BYTES)
+    parents = []
+    current = destination.parent
+    while not current.exists():
+        parents.append(current); current = current.parent
+    graph_producer_room(producer, reference["size_bytes"], len(parents) + 1)
+    for parent in reversed(parents):
+        parent.mkdir(mode=0o700)
+    result = graph_put(destination, graph_read(reference, 256 * GRAPH_BYTES))
+    require(all(result[key] == reference[key] for key in ("sha256", "size_bytes")), "Graph retained original copy differs")
+    return result
+
+
+def graph_command(env, argv, cwd, producer, label, seconds, clock, *, maximum_file_bytes=None):
+    env = dict(env); env.pop(GRAPH_TOKEN_ENV, None)
+    graph_producer_room(producer, 16 * GRAPH_BYTES + 65536, 3)
+    result = execute(argv, cwd, env, producer, label, seconds, deadline=clock, maximum_stream_bytes=8 * GRAPH_BYTES,
+                     maximum_file_bytes=maximum_file_bytes)
+    require_observed_command(result); require(result.get("exit_code") == 0, "Graph real producer command failed: " + label)
+    graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
+    return {"command": graph_ref(producer / (label + ".command.json")),
+            "stdout": graph_ref(producer / (label + ".stdout.log")), "stderr": graph_ref(producer / (label + ".stderr.log"))}, result
+
+
+def graph_cargo_targets(metadata, roles, root):
+    result = {}
+    for role in roles:
+        package_name, target_name, kind = GRAPH_TARGETS[role]
+        packages = [item for item in metadata["packages"] if item["name"] == package_name
+                    and Path(item["manifest_path"]).is_relative_to(root)]
+        require(len(packages) == 1, "Graph actual Cargo package absent/ambiguous: " + role)
+        package = packages[0]
+        targets = [row for row in package["targets"] if row["name"] == target_name and row["kind"] == [kind]]
+        require(len(targets) == 1, "Graph actual Cargo target absent/ambiguous: " + role)
+        target = targets[0]
+        require(Path(target["src_path"]).is_relative_to(root), "Graph Cargo target escaped source")
+        result[role] = {"package_id": package["id"], "name": target["name"], "kind": target["kind"], "src_path": target["src_path"]}
+    return result
+
+
+def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
+    roles = GRAPH_SDK_ROLES if sdk else tuple(role for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES)
+    source_root = root if sdk else repo
+    phase, label = ("sdk-build", "graph-sdk-build") if sdk else ("product-build", "graph-product-build")
+    arguments = [cargo, "build", "--locked", "--jobs", "1", "--message-format=json",
+                 "--config", "profile.dev.debug=0", "--config", "profile.test.debug=0"]
+    packages = list(dict.fromkeys(GRAPH_TARGETS[role][0] for role in roles))
+    for package in packages:
+        arguments += ["-p", package]
+    for role in roles:
+        arguments += ["--" + GRAPH_TARGETS[role][2], GRAPH_TARGETS[role][1]]
+    env = dict(env, CARGO_TARGET_DIR=str(root / "target" if sdk else repo.parent / "v/t"))
+    require(not Path(env["CARGO_TARGET_DIR"]).exists(), "Graph fresh target required; cached binaries are not producers")
+    with clock.phase(phase):
+        original, command = graph_command(env, arguments, source_root, producer, label, 1740, clock)
+        rows = [graph_json(line) for line in graph_read(original["stdout"], 64 * GRAPH_BYTES).splitlines() if line]
+        require(len([row for row in rows if row.get("reason") == "build-finished"]) == 1
+                and rows[-1].get("reason") == "build-finished" and rows[-1].get("success") is True, "Graph actual Cargo build terminal")
+        outputs, records, contracts = {}, {}, {}
+        expected_command = {key: command[key] for key in ("argv", "cwd", "selected_environment")}
+        for role in roles:
+            target = targets[role]
+            matches = [row for row in rows if row.get("reason") == "compiler-artifact" and row.get("executable")
+                       and {"package_id": row.get("package_id"), **{key: row.get("target", {}).get(key) for key in ("name", "kind", "src_path")}} == target]
+            require(len(matches) == 1 and matches[0].get("fresh") is False and matches[0].get("profile", {}).get("test") is False,
+                    "Graph actual executable was not freshly built: " + role)
+            binary = Path(matches[0]["executable"])
+            outputs[role] = graph_ref(binary, 256 * GRAPH_BYTES)
+            retained = graph_copy_original(binary, producer / "binaries" / role, producer)
+            records[role] = {"process": original, "retained_binary": retained}
+            contracts[role] = {"command": expected_command, "target": target}
+    return outputs, records, contracts
+
+
+def graph_runtime_inventory(repo, runtime, producer):
+    # Existing Manim /2 producer body, retaining its actual observed wheel/imports.
+    import hashlib, json, os, platform, shutil, subprocess, sys, zipfile
+    from pathlib import Path
+    sys.path.insert(0, str(runtime / "site-packages"))
+    import av
+    import av._core
+    import av.filter
+    import av.logging
+    import manim
+    root = runtime.resolve(strict=True)
+    packages = (root / "site-packages").resolve(strict=True)
+    private = producer / "runtime-provision"
+    if manim.__version__ != "0.21.0" or av.__version__ != "15.0.0":
+        raise SystemExit("Installed Manim/PyAV versions differ from runtime schema 2")
+    if not all(Path(module.__file__).resolve(strict=True).is_relative_to(packages)
+               for module in (manim, av, av._core)):
+        raise SystemExit("Runtime imports escaped the installed bundle")
+    if not {"buffer", "showinfo", "buffersink"} <= set(av.filter.filters_available):
+        raise SystemExit("PyAV native metadata filters are unavailable")
+    if not all(callable(getattr(av.logging, name, None)) for name in (
+            "get_level", "set_level", "set_libav_level",
+            "get_skip_repeated", "set_skip_repeated")):
+        raise SystemExit("PyAV native logging observation API is unavailable")
+
+    def file_identity(path):
+        path = path.resolve(strict=True)
+        h = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                h.update(chunk)
+        return {"path": str(path), "bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+    wheel_info = json.loads((private / "pyav-wheel.json").read_bytes())
+    wheel = private / "wheels" / wheel_info["filename"]
+    observed_wheel = file_identity(wheel)
+    if any(observed_wheel[key] != wheel_info[key] for key in ("bytes", "sha256")):
+        raise SystemExit("Observed PyAV wheel identity changed")
+    loaded = set()
+    for line in Path("/proc/self/maps").read_text(encoding="utf-8").splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) == 6 and fields[5].startswith("/"):
+            path = Path(fields[5])
+            if path.is_file() and path.resolve(strict=True).is_relative_to(packages):
+                loaded.add(path.resolve(strict=True))
+    native_files = []
+    with zipfile.ZipFile(wheel) as archive:
+        members = archive.namelist()
+        if len(members) != len(set(members)):
+            raise SystemExit("PyAV wheel contains duplicate members")
+        for path in sorted(loaded):
+            relative = path.relative_to(packages).as_posix()
+            if relative not in members:
+                continue
+            with path.open("rb") as stream:
+                if stream.read(4) != b"\x7fELF":
+                    continue
+            row = file_identity(path)
+            wheel_sha = hashlib.sha256(archive.read(relative)).hexdigest()
+            if wheel_sha != row["sha256"]:
+                raise SystemExit("Loaded PyAV native bytes differ from the observed wheel")
+            native_files.append({"path": relative, "bytes": row["bytes"],
+                                 "sha256": row["sha256"], "wheel_sha256": wheel_sha})
+    core = Path(av._core.__file__).resolve(strict=True).relative_to(packages).as_posix()
+    if not native_files or core not in {row["path"] for row in native_files}:
+        raise SystemExit("No original wheel binding for the loaded PyAV core")
+    selected_python = Path(os.environ.get("SEMWRIGHT_TEST_PYTHON", sys.executable)).resolve(strict=True)
+    if selected_python != Path(sys.executable).resolve(strict=True):
+        raise SystemExit("Observed Python differs from the selected Driver Host interpreter")
+    binaries = {"python": file_identity(selected_python)}
+    versions = {"python": sys.version}
+    for name in ("ffmpeg", "ffprobe"):
+        selected = os.environ.get("SEMWRIGHT_TEST_" + name.upper()) or shutil.which(name)
+        if not selected:
+            raise SystemExit("Missing selected native executable: " + name)
+        path = Path(selected).resolve(strict=True)
+        binaries[name] = file_identity(path)
+        versions[name] = subprocess.check_output(
+            [str(path), "-version"], text=True, timeout=20).splitlines()[0]
+    rows = []
+    for path in sorted(packages.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit("Runtime inventory refuses a symbolic link")
+        if path.is_file():
+            identity = file_identity(path)
+            rows.append((path.relative_to(root).as_posix(),
+                         identity["bytes"], identity["sha256"]))
+    payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()
+    pin = json.loads((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+    receipt = {
+        "schema": "motionwright.manim.runtime-inventory/2",
+        "context": {"source_sha": os.environ["GITHUB_SHA"], "semwright_sha": pin,
+                    "run_id": os.environ["GITHUB_RUN_ID"],
+                    "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]},
+        "manim_version": manim.__version__, "pyav_version": av.__version__,
+        "libav_versions": {name: list(version) for name, version in sorted(av.library_versions.items())},
+        "platform": {"system": platform.system(), "machine": platform.machine()},
+        "runtime_receipt_sha256": file_identity(root / "runtime.json")["sha256"],
+        "binaries": binaries, "binary_versions": versions,
+        "pyav_wheel": wheel_info, "pyav_native_files": native_files,
+        "files": len(rows), "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+        "native_render_performed": False,
+    }
+    destination = producer
+    with (destination / "runtime-inventory.json").open("x", encoding="utf-8") as stream:
+        json.dump(receipt, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    (destination / "runtime-inventory.json").chmod(0o600)
+    graph_put_json(producer / "runtime-package-rows.original.json", rows)
+
+
+def graph_runtime_inner(repo, runtime, producer):
+    repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    admitted = graph_json((root / "tools/graph-phase-runtime.intent.original.json").read_bytes())
+    clock.phase_name = "runtime"; clock.phase_end = admitted["observed_mono_ns"] + GRAPH_PHASES["runtime"] * 1000000000
+    require(not runtime.exists(), "Graph fresh real runtime required")
+    runtime.mkdir(mode=0o700); (runtime / "site-packages").mkdir(mode=0o700)
+    provision = producer / "runtime-provision"; provision.mkdir(mode=0o700); (provision / "wheels").mkdir(mode=0o700)
+    env = dict(os.environ, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    env.pop(GRAPH_TOKEN_ENV, None)
+    graph_producer_room(producer, 144 * GRAPH_BYTES + 65536, 6)
+    graph_command(env, [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--no-cache-dir",
+        "--no-deps", "--only-binary=:all:", "--dest", str(provision / "wheels"), "av==15.0.0"],
+        repo, producer, "graph-runtime-download", 180, clock, maximum_file_bytes=128 * GRAPH_BYTES)
+    wheels = list((provision / "wheels").glob("av-15.0.0-*.whl"))
+    require(len(wheels) == 1, "Graph one original PyAV wheel")
+    wheel = wheels[0]; original = graph_ref(wheel, 128 * GRAPH_BYTES)
+    install, _ = graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--no-compile", "--quiet",
+        "--target", str(runtime / "site-packages"), "--report", "-",
+        "manim==0.21.0", str(wheel)], repo, producer, "graph-runtime-install", 780, clock)
+    graph_json(graph_read(install["stdout"], 8 * GRAPH_BYTES))
+    graph_copy_original(Path(install["stdout"]["path"]), provision / "pip-install.json", producer)
+    require(graph_ref(wheel) == original, "Graph PyAV wheel changed after installation")
+    graph_put_json(provision / "pyav-wheel.json", {"filename": wheel.name, "bytes": original["size_bytes"], "sha256": original["sha256"]})
+    graph_put_json(runtime / "runtime.json", {"schema": 2, "manim_version": "0.21.0", "pyav_version": "15.0.0",
+        "source_color_policy": "srgb-rgba8-opaque-v1", "color_recipe": "srgb-to-rec709-full12-v2"})
+    clock.admit("runtime-real-import-and-inventory", 60)
+    graph_runtime_inventory(repo, runtime, producer)
+    sys.path.insert(0, str(repo / "tooling"))
+    import native_manim_graph_runtime_intake as intake
+    require(Path(intake.__file__).resolve() == repo / "tooling/native_manim_graph_runtime_intake.py", "Graph existing intake origin")
+    intake.prepare_graph_runtime(repo, runtime, producer / "graph-runtime-intake.original.json")
+    print(json.dumps({"status": "SOURCE_INTAKE_ONLY", "native_render_performed": False, "profile_admitted": False}))
+    return 0
+
+
+def graph_source_paths(repo, targets, intake_rows):
+    extra = ("Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json",
+             "apps/studio/package.json", "crates/manim-profile/src/semantic_graph_source.rs",
+             "apps/desktop/src-tauri/src/effect_grants.rs", "apps/desktop/src-tauri/src/effect_authority.rs",
+             "crates/manim-profile/src/semantic_graph_helper_loader.py", "crates/manim-profile/src/semantic_graph_text_probe.py")
+    return tuple(sorted(set((*GRAPH_AUTHORITY, *extra,
+        *(Path(value["src_path"]).relative_to(repo).as_posix() for value in targets.values()),
+        *(row["source_relative_path"] for row in intake_rows)))))
+
+
+def graph_source_receipt(source_root, expected, names, before, producer, label):
+    after = graph_source_observe(source_root, expected, names)
+    require(before == after, "Graph source changed while producing originals")
+    view = graph_source_view(before)
+    retained = {name: graph_copy_original(source_root / name, producer / (label + "-source") / name, producer) for name in names}
+    receipt = {"run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+               "source_before": before, "source_after": after, "retained_files": retained}
+    return graph_put_json(producer / (label + "-source-original.json"), receipt), view
+
+
+def graph_produce(repo, recipient):
+    repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    output, producer, runtime, sdk = root / "e", root / "e/graph-producer", root / "runtime", root / "sdk"
+    for case, _, _ in GRAPH_CASES:
+        graph_case_layout(output / "graph-cases", case)
+    require(not output.exists() and not sdk.exists() and not runtime.exists(), "Graph once-only fresh production roots")
+    output.mkdir(mode=0o700); producer.mkdir(mode=0o700); (producer / "consumption").mkdir(mode=0o700)
+    source_sha = os.environ["GITHUB_SHA"]
+    env = dict(os.environ, CARGO_INCREMENTAL="0", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
+        MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1", SEMWRIGHT_CHECKOUT=str(sdk),
+        SEMWRIGHT_TEST_MANIM_RUNTIME=str(runtime), SEMWRIGHT_TEST_PYTHON=str(Path(sys.executable).resolve()),
+        PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    env.pop(GRAPH_TOKEN_ENV, None)
+    cargo, node, npm = (shutil.which(name) for name in ("cargo", "node", "npm"))
+    require(cargo and node and npm, "Graph real cargo/node/npm unavailable")
+    cargo, node, npm = (str(Path(value).resolve()) for value in (cargo, node, npm))
+    lock = graph_json((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]
+    require(lock["repository"] == "https://github.com/seradotcom/semwright"
+            and re.fullmatch(r"[0-9a-f]{40}", lock["revision"]), "Graph source-owned immutable SDK pin")
+    try:
+        with clock.phase("prepare"):
+            # Reuse the existing hash-pinned custody dependency list. The public
+            # recipient must parse before a build/runtime can consume its phase.
+            preparation_source = graph_source_observe(repo, source_sha, (
+                "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
+                "tooling/requirements/mlt-g2-custody.txt", "tooling/source_checkout_observation.py"))
+            graph_put_json(producer / "custody-preparation-source.original.json", preparation_source)
+            graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")],
+                repo, producer, "graph-custody-dependencies", 90, clock)
+            sys.path.insert(0, str(repo / "tooling"))
+            import ci_private_evidence as seal
+            require(Path(seal.__file__).resolve() == repo / "tooling/ci_private_evidence.py", "Graph existing sealer origin")
+            seal.public_key(recipient)
+            # This is the same locked Studio/system preparation used by the
+            # existing workflows. Every actual command now has owned originals.
+            graph_command(env, [npm, "ci", "--no-audit", "--no-fund"], repo / "apps/studio", producer, "graph-npm", 300, clock)
+            graph_command(env, [node, str(repo / "apps/studio/node_modules/@playwright/test/cli.js"), "install", "--with-deps", "chromium"],
+                          repo / "apps/studio", producer, "graph-chromium", 300, clock)
+            graph_command(env, ["sudo", "apt-get", "update"], repo, producer, "graph-apt-update", 60, clock)
+            graph_command(env, ["sudo", "apt-get", "install", "--no-install-recommends", "-y", "bubblewrap", "ffmpeg", "fontconfig",
+                "libcairo2-dev", "libpango1.0-dev", "pkg-config", "python3-pip", "python3-dev", "libpipewire-0.3-dev", "clang"],
+                repo, producer, "graph-apt-install", 180, clock)
+            sdk.mkdir(mode=0o700)
+            for label, arguments, seconds in (
+                ("graph-sdk-init", ["git", "init", str(sdk)], 20),
+                ("graph-sdk-fetch", ["git", "-C", str(sdk), "fetch", "--no-tags", "--depth", "1", lock["repository"], lock["revision"]], 120),
+                ("graph-sdk-checkout", ["git", "-C", str(sdk), "checkout", "--detach", "FETCH_HEAD"], 20)):
+                graph_command(env, arguments, repo, producer, label, seconds, clock)
+            sdk_preparation = graph_source_observe(sdk, lock["revision"], ("Cargo.lock", "Cargo.toml", "scripts/dev/ci-driver-bwrap-profile.sh"))
+            graph_put_json(producer / "sdk-preparation-source.original.json", sdk_preparation)
+            graph_command(env, ["bash", str(sdk / "scripts/dev/ci-driver-bwrap-profile.sh"), str(producer / "sandbox-profile.txt")],
+                          repo, producer, "graph-sandbox-profile", 30, clock)
+            metadata = {}
+            for name, source_root in (("sdk", sdk), ("product", repo)):
+                process, _ = graph_command(env, [cargo, "metadata", "--no-deps", "--locked", "--format-version", "1"], source_root,
+                                           producer, "graph-" + name + "-metadata", 30, clock)
+                metadata[name] = graph_json(graph_read(process["stdout"], 64 * GRAPH_BYTES))
+            sdk_targets = graph_cargo_targets(metadata["sdk"], GRAPH_SDK_ROLES, sdk)
+            product_targets = graph_cargo_targets(metadata["product"], tuple(role for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES), repo)
+            sys.path.insert(0, str(repo / "tooling"))
+            import native_manim_graph_runtime_intake as intake
+            _, _, intake_rows = intake._inputs(repo)
+            source_paths = graph_source_paths(repo, product_targets, intake_rows)
+            sdk_paths = tuple(sorted(set(("Cargo.toml", "Cargo.lock", "scripts/dev/ci-driver-bwrap-profile.sh",
+                *(Path(value["src_path"]).relative_to(sdk).as_posix() for value in sdk_targets.values()),
+                *(Path(row["manifest_path"]).relative_to(sdk).as_posix() for row in metadata["sdk"]["packages"]
+                  if row["name"] in {GRAPH_TARGETS[role][0] for role in GRAPH_SDK_ROLES})))))
+            source_before = graph_source_observe(repo, source_sha, source_paths)
+            sdk_before = graph_source_observe(sdk, lock["revision"], sdk_paths)
+            require(all(sdk_before["files"][name] == value for name, value in sdk_preparation["files"].items()), "Graph SDK preparation source changed")
+            require(all(source_before["files"][name] == value for name, value in preparation_source["files"].items()), "Graph custody preparation source changed")
+        with clock.phase("runtime"):
+            runtime_process, runtime_command = graph_command(env, [str(Path(sys.executable).resolve()), "-I", "-B",
+                str(repo / "tooling/ci_canvas_service.py"), "graph-runtime", "--repo", str(repo), "--runtime", str(runtime), "--producer", str(producer)],
+                repo, producer, "graph-runtime-producer", 1140, clock)
+        sdk_bins, sdk_builds, sdk_contracts = graph_build_group(repo, sdk, producer, True, cargo, env, sdk_targets, clock)
+        product_bins, product_builds, product_contracts = graph_build_group(repo, sdk, producer, False, cargo, env, product_targets, clock)
+        with clock.phase("producer-index"):
+            preflight_env = dict(env, CARGO_TARGET_DIR=str(root / "t"))
+            graph_producer_room(producer, 18 * GRAPH_BYTES + 65536, 9)
+            preflight = phase1_service47_sdk_preflight(repo, producer, Path(product_bins["ordinary_service"]["path"]), preflight_env,
+                deadline=clock, maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES)
+            preflight_process = {name: graph_ref(producer / ("phase1-service-preflight." + suffix))
+                                 for name, suffix in (("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))}
+            source_original, source_view = graph_source_receipt(repo, source_sha, source_paths, source_before, producer, "product")
+            sdk_original, sdk_view = graph_source_receipt(sdk, lock["revision"], sdk_paths, sdk_before, producer, "sdk")
+            inventory = graph_json((producer / "runtime-inventory.json").read_bytes())
+            runtime_intake = graph_json((producer / "graph-runtime-intake.original.json").read_bytes())
+            binaries = {**sdk_bins, **product_bins, **{role: {"path": inventory["binaries"][name]["path"],
+                "sha256": inventory["binaries"][name]["sha256"], "size_bytes": inventory["binaries"][name]["bytes"]}
+                for role, name in (("python3", "python"), ("ffmpeg", "ffmpeg"))}}
+            source = {"repository_root": str(repo), "sha": source_sha, "tree": source_view["tree"], "sdk_root": str(sdk),
+                "sdk_sha": lock["revision"], "locks": {name: source_view["files"][name]["sha256"] for name in (
+                    "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json")},
+                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": 1}
+            inventory_ref = graph_ref(producer / "runtime-inventory.json")
+            intake_ref = graph_ref(producer / "graph-runtime-intake.original.json")
+            profiles = [{"relative_path": row["runtime_relative_path"], "ref": graph_ref(runtime / row["runtime_relative_path"])} for row in runtime_intake["files"]]
+            # The reviewer receives faithful copies of originals outside producer,
+            # while live FileRefs keep the same original paths and inodes.
+            review_copies = []
+            outside = [clock.original_ref, graph_ref(runtime / "runtime.json"),
+                       graph_ref(runtime / "graph-profile-v1/source-closure.json"), *(row["ref"] for row in profiles)]
+            outside += [graph_ref(root / "tools" / name) for name in (
+                "graph-run-response.original.json", "graph-run-response.transport.original.json",
+                "graph-jobs-response.original.json", "graph-jobs-response.transport.original.json")]
+            for number, original in enumerate(outside):
+                copy_ref = graph_copy_original(Path(original["path"]), producer / "review-originals" / (str(number) + ".original"), producer)
+                review_copies.append({"original": original, "retained": copy_ref})
+            roster = {"cases": [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in GRAPH_CASES],
+                "meaning": "SOURCE_DERIVED_DECLARATION_REQUIRES_INDEPENDENT_CODE_REVIEW"}
+            native = {"source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],
+                "source_path": "crates/native/examples/native-graph-review-session.rs",
+                "meaning": "CUMULATIVE_PRE_EFFECT_ENFORCEMENT_REQUIRES_INDEPENDENT_CODE_REVIEW"}
+            roster_ref = graph_put_json(producer / "callback-roster.original.json", roster)
+            native_ref = graph_put_json(producer / "native-enforcement-source.original.json", native)
+            job = next(row for row in clock.original["jobs"]["jobs"] if row["name"] == "Real SQLite and Studio / " + GRAPH_SCOPE)
+            execution = {"scope": GRAPH_SCOPE, "job": "real-service", "job_id": job["id"], "deadline_original": clock.original_ref,
+                "deadline_unix_ms": clock.original["deadline_unix_ms"], "producer_root": str(producer),
+                "cases_root": str(output / "graph-cases"), "budget": GRAPH_BUDGET}
+            contract = {"source_files": source_view["files"], "sdk_tree": sdk_view["tree"], "sdk_files": sdk_view["files"],
+                "builds": {**sdk_contracts, **product_contracts},
+                "ordinary_preflight": {key: preflight["command"][key] for key in ("argv", "cwd", "selected_environment")},
+                "runtime": {"command": {key: runtime_command[key] for key in ("argv", "cwd", "selected_environment")},
+                            "inventory": inventory, "intake": runtime_intake, "profile_files": profiles},
+                "callback_roster": roster, "native_enforcement": native,
+                "native_enforcing_source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],
+                "cases": {case: {"title": title, "callback_caps": list(caps), "roster_source_files": list(GRAPH_CALLGRAPH)} for case, title, caps in GRAPH_CASES},
+                "writer_sources": {role: ["tooling/ci_canvas_service.py", GRAPH_WORKFLOW] for role in (*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime")},
+                "execution": execution}
+            index = {"schema": GRAPH_INDEX_SCHEMA, "source": source, "binaries": binaries,
+                "runtime": {"root": str(runtime), "fontconfig_root": str(Path("/etc/fonts").resolve()),
+                    "manifest": inventory_ref["path"], "manifest_sha256": inventory_ref["sha256"],
+                    "intake_receipt": intake_ref["path"], "intake_receipt_sha256": intake_ref["sha256"]},
+                "source_original": source_original, "sdk_original": sdk_original, "builds": {**sdk_builds, **product_builds},
+                "ordinary_preflight": {"process": preflight_process, "stdin": graph_ref(producer / "phase1-service-preflight.stdin.original")},
+                "runtime_originals": {"producer": runtime_process, "inventory": inventory_ref, "receipt": graph_ref(runtime / "runtime.json"),
+                    "intake": intake_ref, "profile_files": profiles}, "callback_roster": roster_ref, "native_enforcement": native_ref,
+                "contract": contract}
+            encoded = (json.dumps(index, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            require(len(encoded) <= GRAPH_BYTES, "Graph exact private index bound")
+            index_ref = graph_put(producer / "producer-index.original.json", encoded)
+            # Acyclic originals validation precedes the external decision. It is
+            # not an approval and cannot launch an owner or a Service case.
+            graph_verify_producer_index(index_ref, GRAPH_CASES[0][0])
+            graph_runtime_unchanged(index, producer)
+            graph_put_json(producer / "review-request.original.json", {"index": index_ref,
+                "source": source, "execution": execution, "outside_original_copies": review_copies,
+                "contexts": ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in GRAPH_CASES],
+                "meaning": "REQUIRES_INDEPENDENT_REVIEW_AND_EXTERNAL_STATUS_NO_NATIVE_CASE_EXECUTED"})
+            graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
+            plaintext = seal.gather_snapshot({"producer": producer})
+            sealed = seal.encrypt_snapshot(plaintext, recipient, {"source_sha": source_sha, "semwright_sha": source["sdk_sha"],
+                "run_id": source["run_id"], "run_attempt": "1"})
+            require(len(sealed) <= seal.MAX_FILE, "Graph existing encrypted carrier file bound; no splitting or enlarged sealer")
+            # Carrier is outside the original e/tools tree. Originals remain in
+            # their actual paths/inodes and are never replaced by a download.
+            review = root / "graph-review"; review.mkdir(mode=0o700)
+            seal.new_bytes(review / "producer-originals.mwseal", sealed)
+            envelope_ref = graph_ref(review / "producer-originals.mwseal")
+            graph_put_json(review / "carrier.original.json", {"index_sha256": index_ref["sha256"],
+                "source_sha": source_sha, "semwright_sha": source["sdk_sha"], "run_id": source["run_id"], "run_attempt": 1,
+                "envelope": {"filename": "producer-originals.mwseal", "sha256": envelope_ref["sha256"], "size_bytes": envelope_ref["size_bytes"]},
+                "recipient_spki_sha256": recipient["sha256"],
+                "meaning": "ENCRYPTED_REVIEW_CARRIER_ONLY_NO_OWNER_ADMISSION"})
+            graph_put_json(output / "source-before.json", source_view)
+        print(json.dumps({"status": "AWAITING_EXTERNAL_R74_REVIEW", "index_sha256": index_ref["sha256"],
+                          "source": source_sha, "native_cases_executed": 0}))
+        return 0
+    except BaseException as error:
+        graph_put_json(output / "receipt.json", {"schema": "motionwright.canvas-service-ci/1", "status": "UNKNOWN" if clock.unknown else "DENY",
+            "selection_plan": {"requested": GRAPH_SCOPE}, "error": type(error).__name__ + ": " + str(error),
+            "native_cases_executed": 0, "automatic_retry": False, "formal_acceptance": False})
+        raise
+
+
+def graph_runtime_unchanged(index, producer):
+    runtime = Path(index["runtime"]["root"]); packages = runtime / "site-packages"
+    rows = []
+    for path in sorted(packages.rglob("*")):
+        require(not path.is_symlink(), "Graph runtime link appeared")
+        if path.is_file():
+            ref = graph_ref(path)
+            rows.append([path.relative_to(runtime).as_posix(), ref["size_bytes"], ref["sha256"]])
+    baseline = graph_json((producer / "runtime-package-rows.original.json").read_bytes())
+    require(rows == baseline and len(rows) == index["contract"]["runtime"]["inventory"]["files"]
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+                == index["contract"]["runtime"]["inventory"]["inventory_sha256"], "Graph complete shared runtime changed")
+    return {"files": len(rows), "inventory_sha256": index["contract"]["runtime"]["inventory"]["inventory_sha256"],
+            "native_render_performed_by_this_check": False}
+
+
+def graph_wait_for_external_review(repo):
+    repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    producer = root / "e/graph-producer"; index_ref = graph_ref(producer / "producer-index.original.json", GRAPH_BYTES)
+    index = graph_json(graph_read(index_ref, GRAPH_BYTES))
+    token = os.environ.pop(GRAPH_TOKEN_ENV, "")
+    require(token, "Graph readonly status credential absent")
+    wait_root = root / "tools/graph-approval-observations"; wait_root.mkdir(mode=0o700)
+    with clock.phase("approval-wait"):
+        try:
+            for attempt in range(40):
+                clock.admit("read-only-status-observation", 15)
+                def publish(name, raw):
+                    observed = graph_tree_allocation(root / "tools", GRAPH_BUDGET["shared_bytes"], GRAPH_BUDGET["shared_members"])
+                    require(observed["bytes"] + len(raw) + 8 * GRAPH_BYTES <= GRAPH_BUDGET["shared_bytes"]
+                            and observed["members"] + 64 <= GRAPH_BUDGET["shared_members"], "Graph shared approval-original capacity")
+                    return graph_put(wait_root / name, raw)
+                run, rows, observed = graph_api_observation(index, index_ref, token, publish, "poll-" + str(attempt), time.monotonic() + 12)
+                accepted = {}
+                for case, _, _ in GRAPH_CASES:
+                    context = "mw-owner/" + GRAPH_SCOPE + "/" + index["source"]["run_id"] + "/1/" + case
+                    newest = next((row for row in rows if type(row.get("context")) is str and row["context"].lower() == context.lower()), None)
+                    if newest is None:
+                        continue
+                    require(newest.get("creator", {}).get("type") == "User"
+                            and newest["creator"].get("id") == run["actor"]["id"], "Graph newest pending status is foreign")
+                    if newest.get("state") == "pending":
+                        # Pending is a read-only wait, never an owner admission.
+                        continue
+                    accepted[case] = graph_status_core(run, rows, {"source_sha": index["source"]["sha"],
+                        "run_id": index["source"]["run_id"], "case_id": case, "index_sha256": index_ref["sha256"]})
+                if len(accepted) == 6:
+                    graph_verify_producer_index(index_ref, GRAPH_CASES[0][0])
+                    graph_runtime_unchanged(index, producer)
+                    graph_put_json(root / "e/r74-wait-complete.original.json", {"index": index_ref, "statuses": accepted,
+                        "observation": observed, "meaning": "EXTERNAL_OWNER_ADMISSION_OBSERVED_CASE_CONSUMERS_MUST_REVALIDATE",
+                        "native_cases_executed": 0})
+                    return 0
+                # Polling ends before any product effect. Each actual response is
+                # an original. No failed HTTP observation is retried.
+                clock.admit("read-only-review-wait", 30)
+                time.sleep(30)
+            raise ValueError("Graph external review did not arrive inside its original 20-minute phase")
+        except BaseException as error:
+            graph_put_json(root / "e/receipt.json", {"schema": "motionwright.canvas-service-ci/1", "status": "UNKNOWN" if clock.unknown else "DENY",
+                "selection_plan": {"requested": GRAPH_SCOPE}, "error": type(error).__name__ + ": " + str(error),
+                "native_cases_executed": 0, "automatic_retry": False, "formal_acceptance": False})
+            raise
+        finally:
+            token = None
+
+
+def graph_report(document, *, listing, expected=None):
+    filename = "semantic-graph-service.spec.ts"; titles = tuple(row[1] for row in GRAPH_CASES)
+    require(document.get("errors") == [], "Graph original report errors")
+    config, stats = document.get("config", {}), document.get("stats", {})
+    projects = config.get("projects", [])
+    require(config.get("workers") == 1 and config.get("forbidOnly") is True and config.get("maxFailures") == 1 and len(projects) == 1
+            and projects[0].get("id") == projects[0].get("name") == "chromium"
+            and projects[0].get("repeatEach") == 1 and projects[0].get("retries") == 0, "Graph original serial/no-retry reporter config")
+    specs = []
+    def visit(suites):
+        require(type(suites) is list, "Graph reporter suites")
+        for suite in suites:
+            specs.extend(suite.get("specs", [])); visit(suite.get("suites", []))
+    visit(document.get("suites"))
+    require(len(specs) == 6 and {row.get("title") for row in specs} == set(titles), "Graph original six titles")
+    identities = []
+    for row in specs:
+        tests = row.get("tests", [])
+        require(row.get("file") == filename and type(row.get("id")) is str and row["id"] and len(tests) == 1,
+                "Graph original source/test identity")
+        case = tests[0]
+        require(case.get("expectedStatus") == "passed" and case.get("annotations", []) == []
+                and case.get("timeout") == 120000 and case.get("projectId") == "chromium", "Graph caller timeout/skip changed")
+        if listing:
+            require(case.get("results") == [], "Graph discovery performed an execution")
+        identities.append({key: row[key] for key in ("id", "file", "title", "line", "column")})
+    identities.sort(key=lambda row: row["title"])
+    require(len({row["id"] for row in identities}) == 6, "Graph duplicate caller IDs")
+    if listing:
+        require(stats.get("expected") == stats.get("unexpected") == stats.get("flaky") == 0 and stats.get("skipped") == 6,
+                "Graph discovery counters")
+        return {"status": "LISTED_NOT_EXECUTED", "identities": identities, "case_timeout_ms": 120000, "selected": 6}
+    verified = validate_browser_execution(document, filename, titles)
+    require(expected and expected.get("identities") == identities and expected.get("selected") == 6,
+            "Graph execution does not match actual discovery")
+    return {**verified, "identities": identities, "original_discovery_matched": True}
+
+
+def graph_validate_allocation_union(observations, caps):
+    """Check the one existing pool from its original immutable reservations."""
+    by_sequence, by_id = {}, {}
+    for row in observations:
+        require(type(row) is dict and set(row) == {"id", "kind", "bytes", "files", "sequence"}
+                and type(row["sequence"]) is int and row["sequence"] >= 0
+                and type(row["bytes"]) is int and row["bytes"] > 0
+                and type(row["files"]) is int and row["files"] > 0, "Graph original pool reservation shape")
+        require(row["sequence"] not in by_sequence or by_sequence[row["sequence"]] == row,
+                "Graph original pool sequence replaced")
+        require(row["id"] not in by_id or by_id[row["id"]] == row, "Graph original pool ID replaced")
+        by_sequence[row["sequence"]] = row; by_id[row["id"]] = row
+    require(set(by_sequence) == set(range(len(by_sequence))), "Graph original pool missing sequence")
+    require(sum(row["bytes"] for row in by_id.values()) <= 512 * GRAPH_BYTES
+            and sum(row["files"] for row in by_id.values()) <= 4096, "Graph original pool aggregate exhausted")
+    expected = {
+        "aggregate-unavailable": ("aggregate-holdback", 252 * GRAPH_BYTES, 1096),
+        "directory-members": ("archive-directory-capacity", 1, 256),
+        "original-sqlite-files": ("kernel-bounded-original-store", 16 * GRAPH_BYTES, 4),
+        "parent-metadata": ("metadata", 4 * GRAPH_BYTES, 128),
+        "parent-close-and-errors": ("close", 4 * GRAPH_BYTES, 64),
+        "service-evidence-metadata": ("evidence", 16 * GRAPH_BYTES, 128),
+        "python-owner": ("external-owner", GRAPH_BUDGET["owner_bytes"], GRAPH_BUDGET["owner_files"]),
+        "python-owner-raw": ("owner-raw", 2 * GRAPH_BYTES, 2),
+        "case-consumption": ("immutable-case-consumption", 8192, 1),
+        "sdk-ticket-prewrite": ("sdk-ticket-prewrite", (1 + len(caps) + 8 * sum(caps)) * 256,
+                                 (1 + len(caps) + 8 * sum(caps)) * 3),
+    }
+    for name, values in expected.items():
+        require(name in by_id and tuple(by_id[name][key] for key in ("kind", "bytes", "files")) == values,
+                "Graph source-bound reservation missing or changed: " + name)
+    journals = [row for row in by_id.values() if row["kind"] == "native-journal"]
+    raws = [row for row in by_id.values() if row["kind"] == "service-raw"]
+    copies = [row for row in by_id.values() if row["kind"] == "archive-copy"]
+    reopens = [row for row in by_id.values() if row["kind"] == "post-seal-originals"]
+    require(len(journals) == len(caps) and all(row["bytes"] == GRAPH_BUDGET["journal_bytes"]
+            and row["files"] == GRAPH_BUDGET["journal_files"] for row in journals), "Graph journal precharge roster")
+    require(len(raws) == len(caps) + 1 and all(row["bytes"] == 2 * GRAPH_BYTES and row["files"] == 2 for row in raws),
+            "Graph Service raw precharge roster")
+    require(len(copies) == 1 and copies[0]["bytes"] <= 16 * GRAPH_BYTES and copies[0]["files"] <= 4,
+            "Graph original Store copy reservation")
+    require(len(reopens) == 1 and reopens[0]["id"] == "independent-same-store-reopen"
+            and reopens[0]["bytes"] <= 20 * GRAPH_BYTES + 768 * 1024 and reopens[0]["files"] <= 268,
+            "Graph independent reopen reservation")
+    require(len(by_id) == len(expected) + len(journals) + len(raws) + 2, "Graph undeclared pool reservation")
+    return {"bytes": sum(row["bytes"] for row in by_id.values()) - 252 * GRAPH_BYTES,
+            "members": sum(row["files"] for row in by_id.values()) - 1096, "reservations": len(by_id)}
+
+
+def graph_archive_bindings(root, inventory, source):
+    """Existing whole-evidence collector's Graph branch, after all reporters."""
+    receipt = archive_json(root, inventory, "e/receipt.json")
+    require(receipt.get("status") == "CLOSED_GRAPH_OBSERVATIONS" and receipt.get("formal_acceptance") is False
+            and receipt.get("selection_plan") == {"requested": GRAPH_SCOPE, "required_tests": 6, "workers": 1, "retries": 0}
+            and receipt.get("source_before") == receipt.get("source_after") == source, "Graph whole-run source/closure")
+    index_ref = receipt["producer_index"]
+    index = graph_json(graph_read(index_ref, GRAPH_BYTES))
+    require(index["source"]["sha"] == os.environ.get("GITHUB_SHA") and index["source"]["run_id"] == os.environ.get("GITHUB_RUN_ID")
+            and str(index["source"]["run_attempt"]) == os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "Graph final same-run/attempt/source")
+    def retained(ref, maximum=512 * GRAPH_BYTES):
+        path = Path(ref["path"])
+        require(path.is_relative_to(root), "Graph final original escaped retained tree")
+        name = path.relative_to(root).as_posix(); row = inventory["entries"].get(name, {})
+        require(row.get("kind") == "file" and row.get("sha256") == ref["sha256"] and row.get("bytes") == ref["size_bytes"], "Graph final retained original differs")
+        return graph_read(ref, maximum)
+    retained(index_ref, GRAPH_BYTES)
+    for name in ("discovery", "execution"):
+        observation = receipt[name]
+        command = graph_json(retained(observation["process"]["command"], GRAPH_BYTES))
+        require_observed_command(command); require(command.get("exit_code") == 0 and command.get("cleanup_errors") == [], "Graph final reporter process")
+        expected_argv = [str(Path(shutil.which("node")).resolve()), str(Path(index["source"]["repository_root"]) / "apps/studio/node_modules/@playwright/test/cli.js"),
+            "test", "semantic-graph-service.spec.ts", "--project=chromium", "--workers=1", "--retries=0", "--repeat-each=1",
+            "--max-failures=1", "--forbid-only", "--reporter=json", "--output=" + str(root / "e/graph-cases")]
+        require(command["argv"] == expected_argv + (["--list"] if name == "discovery" else [])
+                and command["cwd"] == str(Path(index["source"]["repository_root"]) / "apps/studio")
+                and command["selected_environment"]["PLAYWRIGHT_JSON_OUTPUT_FILE"] == str(root / ("e/graph-discovery.json" if name == "discovery" else "e/graph-execution.json"))
+                and command["selected_environment"]["MOTIONWRIGHT_SERVICE_TEST_BIN"] == index["binaries"]["ordinary_service"]["path"],
+                "Graph final reporter original argv/source/selection")
+        for stream in ("stdout", "stderr"):
+            raw = retained(observation["process"][stream], 64 * GRAPH_BYTES)
+            require(command[stream] == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, "Graph original reporter raw differs")
+        document = graph_json(retained(observation["report"], 64 * GRAPH_BYTES))
+        verified = graph_report(document, listing=name == "discovery", expected=receipt["discovery"]["verified"] if name == "execution" else None)
+        require(verified == observation["verified"], "Graph late original reporter changed")
+    cases_root = Path(index["contract"]["execution"]["cases_root"])
+    require(cases_root == root / "e/graph-cases", "Graph final cases root differs from original index")
+    case_roots = graph_collected_case_roots(cases_root)
+    cases, allocated_bytes, allocated_members = [], 0, 0
+    for admitted_case, case_root in case_roots:
+        state = graph_tree_allocation(case_root, GRAPH_BUDGET["case_bytes"], GRAPH_BUDGET["case_members"])
+        require(state["directories"] <= 256, "Graph directory precharge exhausted")
+        allocated_bytes += state["bytes"]; allocated_members += state["members"]
+        parent_ref = graph_ref(case_root / "parent-source-binding.original.json", 4 * GRAPH_BYTES)
+        parent = graph_json(retained(parent_ref, 4 * GRAPH_BYTES))
+        require(parent["source"] == index["source"] and parent["binaries"] == index["binaries"] and parent["runtime"] == index["runtime"]
+                and parent["producer_originals"]["index"] == index_ref and parent["execution"] == index["contract"]["execution"]
+                and parent["approval"]["context"] == "mw-owner/" + GRAPH_SCOPE + "/" + index["source"]["run_id"] + "/1/" + admitted_case,
+                "Graph case exact original admission")
+        final_ref = graph_ref(case_root / "owner/owner-final.original.json", 4 * GRAPH_BYTES)
+        final = graph_json(retained(final_ref, 4 * GRAPH_BYTES)); case = final["case_id"]
+        require(case == admitted_case and case not in {row["case_id"] for row in cases}
+                and final["schema"] == "motionwright.graph-browser-owner-final/6" and final["status"] == "CLOSED"
+                and final["source"] == index["source"] and final["errors"] == []
+                and final["native_authoring_approved"] is final["formal_acceptance"] is False
+                and all(final[key] is True for key in ("service_closure_validated", "same_physical_database", "owner_cohort_absent", "owner_streams_eof", "capture_permitted")), "Graph final original owner incomplete")
+        owner_independent = graph_json(retained(graph_ref(case_root / "owner/producer-originals-independent.original.json")))
+        require(owner_independent["index"] == index_ref and owner_independent["approval"]["status_id"] == parent["approval"]["status_id"]
+                and set(owner_independent["actual_rust_build_roles"]) == set(GRAPH_RUST_ROLES)
+                and set(owner_independent["actual_runtime_roles"]) == set(GRAPH_ROLES)
+                and owner_independent["binary_source_causality_validated"] is True, "Graph independent owner original missing")
+        consumed = graph_json(retained(graph_ref(Path(index["contract"]["execution"]["producer_root"]) / "consumption" / (case + ".original.json"))))
+        require(consumed["case_id"] == case and consumed["private_root"] == str(case_root) and consumed["index"] == index_ref
+                and consumed["status_id"] == parent["approval"]["status_id"], "Graph consumed case/root differs")
+        for name in ("spec_original", "source_inputs", "owner_close", "database_initial", "database_final", "service_closure"):
+            retained(final[name], 4 * GRAPH_BYTES)
+        inputs = graph_json(retained(final["source_inputs"], 4 * GRAPH_BYTES))
+        require(inputs["binary_source_causality_validated_by_this_helper"] is True, "Graph actual producer causality absent")
+        owner_close = graph_json(retained(final["owner_close"], 4 * GRAPH_BYTES))
+        cohort = owner_close.get("cohort", {})
+        require(owner_close.get("status") == "CLOSED" and owner_close.get("lifecycle", {}).get("status") == "CLOSED"
+                and cohort.get("status") == "PASS" and cohort.get("subreaper") is True
+                and cohort.get("complete_empty_descendant_tree", {}).get("root_observed") is True
+                and cohort["complete_empty_descendant_tree"].get("truncated") is False
+                and len(cohort["complete_empty_descendant_tree"].get("processes", [])) == 1,
+                "Graph complete owner descendant closure missing")
+        terminal = graph_json(retained(graph_ref(case_root / "owner-parent-terminal.original.json"), 4 * GRAPH_BYTES))
+        require(terminal["exit"]["code"] == 0 and terminal["exit"]["signal"] is None, "Graph owner actual process exit")
+        for raw in terminal["raw"].values():
+            require(raw["eof"] is True, "Graph owner EOF absent")
+            retained({key: raw[key] for key in ("path", "sha256", "size_bytes")}, GRAPH_BYTES)
+        expected_caps = index["contract"]["cases"][case]["callback_caps"]
+        tickets = graph_json(retained(graph_ref(case_root / "sdk-ticket-roster-binding.original.json"), GRAPH_BYTES))
+        require(tickets["failed"] is False and tickets["bootstrap_attempted"] is True
+                and tickets["attempted_clients"] == tickets["confirmed_clients"] == len(expected_caps)
+                and [row["callback_cap"] for row in tickets["bindings"]] == expected_caps
+                and len(final["client_roster"]) == len(expected_caps), "Graph complete original SDK ticket roster")
+        for client, ticket in zip(final["client_roster"], tickets["bindings"]):
+            require(client["status"] == "READY" and client["id"] == ticket["id"] and ticket["confirmed"] is True
+                    and ticket["attempted"] is True and ticket["request_issued"] is True, "Graph Native client tuple")
+            retained(client["connection_original"], GRAPH_BYTES); retained(client["session_original"], GRAPH_BYTES)
+            graph_tree_allocation(Path(client["connection_original"]["path"] + ".graph-originals"), GRAPH_BUDGET["journal_bytes"], GRAPH_BUDGET["journal_files"])
+        reopen_paths = list(case_root.glob("*/terminal.original.json"))
+        reopens = [(path, graph_json(path.read_bytes())) for path in reopen_paths if graph_json(path.read_bytes()).get("schema") == "motionwright.graph.same-original-store-reopen/1"]
+        require(len(reopens) == 1, "Graph once-only original independent reopen")
+        reopen_path, reopen = reopens[0]
+        retained(graph_ref(reopen_path), 4 * GRAPH_BYTES)
+        require(reopen.get("status") == "CLOSED" and reopen.get("source") == index["source"]
+                and reopen.get("original_owner_final") == final_ref and reopen.get("synthetic_adapter_only") is False
+                and reopen.get("service_process", {}).get("code") == 0 and reopen["service_process"].get("signal") is None
+                and reopen.get("physical_store_before") == reopen.get("physical_store_after")
+                and all(reopen.get(key) is True for key in ("exact_project_equal", "exact_journal_equal", "original_seal_preserved", "owned_process_group_absent",
+                    "actual_child_opened_descriptor_observed", "same_spawn_process_incarnation_observed", "held_store_digest_matches_initializer_physical_identity",
+                    "original_preseal_held_pager_witness_bound")) and reopen.get("formal_acceptance") is False and reopen.get("gate_credit") is False,
+                "Graph original reopen witness/EOF/identity join incomplete")
+        for name in ("expected_oracle", "observed_oracle", "original_preseal_held_pager_witness", "original_preseal_response_raw", "original_service_closure"):
+            ref = reopen[name]
+            retained({key: ref[key] for key in ("path", "sha256", "size_bytes")}, 16 * GRAPH_BYTES)
+        for ref in reopen["opened_descriptor_observations"]:
+            retained(ref, GRAPH_BYTES)
+        for raw in reopen["raw"].values():
+            require(raw["eof"] is True, "Graph independent reopen EOF missing")
+            retained({key: raw[key] for key in ("path", "sha256", "size_bytes")}, GRAPH_BYTES)
+        manifests = list((case_root / "artifacts").rglob("manifest.json"))
+        captures = []
+        for manifest_path in manifests:
+            manifest = graph_json(retained(graph_ref(manifest_path), 16 * GRAPH_BYTES))
+            if "snapshotDirectory" not in manifest:
+                continue
+            entries = manifest["entries"]
+            aggregate = hashlib.sha256(json.dumps(entries, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            require(manifest["sourceBeforeSha256"] == manifest["sourceAfterSha256"] == manifest["snapshotSha256"] == aggregate
+                    and manifest["databaseRelativePath"] == "motionwright.sqlite3"
+                    and Path(manifest["snapshotDirectory"]) == manifest_path.parent / "store", "Graph original Store copy manifest")
+            require(graph_tree_allocation(Path(manifest["snapshotDirectory"]), 16 * GRAPH_BYTES, 5)["bytes"] <= 16 * GRAPH_BYTES,
+                    "Graph original Store copy allocation")
+            actual = []
+            snapshot = Path(manifest["snapshotDirectory"])
+            for file in [snapshot, *sorted(snapshot.rglob("*"))]:
+                relative = file.relative_to(snapshot).as_posix(); relative = "" if relative == "." else relative
+                row = {"path": relative, "kind": "directory" if file.is_dir() else "file"}
+                if file.is_file():
+                    ref = graph_ref(file); retained(ref)
+                    row.update(sizeBytes=ref["size_bytes"], sha256=ref["sha256"])
+                actual.append(row)
+            require(sorted(actual, key=lambda row: row["path"]) == sorted(entries, key=lambda row: row["path"]), "Graph complete Store copy entries differ")
+            captures.append(graph_ref(manifest_path))
+        require(len(captures) == 1, "Graph exactly one retained closed original Store")
+        pool_rows = []
+        for path in sorted(case_root.glob("reservation-*.original.json")):
+            pool_rows.extend(graph_json(retained(graph_ref(path), 4 * GRAPH_BYTES))["allocations"])
+        for path in sorted(case_root.glob("copy-*.intent.original.json")):
+            pool_rows.append(graph_json(retained(graph_ref(path), 4 * GRAPH_BYTES))["allocation"])
+        pool_rows.append(reopen["allocation"])
+        pool = graph_validate_allocation_union(pool_rows, expected_caps)
+        cases.append({"case_id": case, "root": str(case_root), "owner": final_ref, "reopen": graph_ref(reopen_path),
+                      "capture": captures[0], "allocation": state, "original_pool": pool, "status_id": parent["approval"]["status_id"]})
+    require({row["case_id"] for row in cases} == {row[0] for row in GRAPH_CASES}, "Graph final six-case bijection")
+    producer_state = graph_tree_allocation(root / "e/graph-producer", GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
+    shared_members = len(inventory["entries"]) - allocated_members - producer_state["members"]
+    shared_bytes = sum(row.get("bytes", 0) for row in inventory["entries"].values()) - allocated_bytes - producer_state["bytes"]
+    require(0 <= shared_members <= GRAPH_BUDGET["shared_members"] and 0 <= shared_bytes <= GRAPH_BUDGET["shared_bytes"], "Graph complete shared allocation")
+    runtime_after = graph_runtime_unchanged(index, root / "e/graph-producer")
+    require(receipt["runtime_after"] == runtime_after and receipt["runtime_before"] == runtime_after, "Graph complete runtime before/after")
+    return {"meaning": "CLOSED_ORIGINAL_GRAPH_OBSERVATIONS_NOT_G2_OR_A5", "producer_index": index_ref, "cases": cases,
+            "producer": producer_state, "shared": {"members": shared_members, "bytes": shared_bytes}, "formal_acceptance": False}
+
+
+def graph_run_cases(repo):
+    repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    output, producer = root / "e", root / "e/graph-producer"
+    index_ref = graph_ref(producer / "producer-index.original.json", GRAPH_BYTES)
+    index = graph_json(graph_read(index_ref, GRAPH_BYTES))
+    require((output / "r74-wait-complete.original.json").is_file() and not (output / "receipt.json").exists(), "Graph real review wait absent or prior attempt")
+    verified = graph_verify_producer_index(index_ref, GRAPH_CASES[0][0])
+    token = os.environ.get(GRAPH_TOKEN_ENV, ""); require(token, "Graph case independent metadata credential absent")
+    env = dict(os.environ, MOTIONWRIGHT_GRAPH_NATIVE_CASE="all", MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL=index_ref["path"],
+        MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1", MOTIONWRIGHT_SERVICE_TEST_BIN=index["binaries"]["ordinary_service"]["path"],
+        MOTIONWRIGHT_SERVICE_TEST_TMPDIR=str(root / "x"), SEMWRIGHT_CHECKOUT=index["source"]["sdk_root"],
+        SEMWRIGHT_TEST_MANIM_RUNTIME=index["runtime"]["root"], SEMWRIGHT_TEST_PYTHON=index["binaries"]["python3"]["path"],
+        SEMWRIGHT_TEST_FFMPEG=index["binaries"]["ffmpeg"]["path"], PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    node = str(Path(shutil.which("node")).resolve()); cli = str(repo / "apps/studio/node_modules/@playwright/test/cli.js")
+    argv = [node, cli, "test", "semantic-graph-service.spec.ts", "--project=chromium", "--workers=1", "--retries=0",
+            "--repeat-each=1", "--max-failures=1", "--forbid-only", "--reporter=json", "--output=" + str(output / "graph-cases")]
+    report = {"schema": "motionwright.canvas-service-ci/1", "status": "DENY", "formal_acceptance": False,
+              "selection_plan": {"requested": GRAPH_SCOPE, "required_tests": 6, "workers": 1, "retries": 0},
+              "run_id": index["source"]["run_id"], "run_attempt": "1", "job": "real-service", "producer_index": index_ref,
+              "source_before": graph_source_view(graph_json(graph_read(index["source_original"], 8 * GRAPH_BYTES))["source_before"]),
+              "native_render": "PER_CASE_ORIGINALS_REQUIRE_A5_ASSESSMENT", "installed_tauri": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    try:
+        with clock.phase("discovery"):
+            discovery_env = dict(env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(output / "graph-discovery.json")); discovery_env.pop(GRAPH_TOKEN_ENV, None)
+            command = execute([*argv, "--list"], repo / "apps/studio", discovery_env, output, "graph-discovery", 45,
+                              deadline=clock, maximum_stream_bytes=GRAPH_BYTES)
+            require_observed_command(command); require(command["exit_code"] == 0, "Graph actual discovery failed")
+            discovery = graph_report(graph_json((output / "graph-discovery.json").read_bytes()), listing=True)
+            report["discovery"] = {"process": {name: graph_ref(output / ("graph-discovery." + suffix)) for name, suffix in (
+                ("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))},
+                "report": graph_ref(output / "graph-discovery.json"), "verified": discovery}
+        with clock.phase("cases"):
+            report["runtime_before"] = graph_runtime_unchanged(index, producer)
+            case_env = dict(env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(output / "graph-execution.json"))
+            # Kernel file-size limits are installed before Playwright and inherited
+            # by its actual Service/owner/Native children. No launcher substitute.
+            command = execute(argv, repo / "apps/studio", case_env, output, "graph-cases", 750, deadline=clock,
+                              maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES)
+            require_observed_command(command); require(command["exit_code"] == 0, "Graph actual six-case process failed")
+            execution = graph_report(graph_json((output / "graph-execution.json").read_bytes()), listing=False, expected=discovery)
+            report["execution"] = {"process": {name: graph_ref(output / ("graph-cases." + suffix)) for name, suffix in (
+                ("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))},
+                "report": graph_ref(output / "graph-execution.json"), "verified": execution}
+        with clock.phase("closure"):
+            for case, _, _ in GRAPH_CASES:
+                graph_verify_producer_index(index_ref, case)
+            report["runtime_after"] = graph_runtime_unchanged(index, producer)
+            source_original = graph_json(graph_read(index["source_original"], 8 * GRAPH_BYTES))
+            report["source_after"] = graph_source_view(graph_source_observe(repo, index["source"]["sha"], tuple(index["contract"]["source_files"])))
+            require(report["source_after"] == report["source_before"], "Graph final exact source changed")
+            sdk_after = graph_source_observe(Path(index["source"]["sdk_root"]), index["source"]["sdk_sha"], tuple(index["contract"]["sdk_files"]))
+            require(graph_source_view(sdk_after)["tree"] == index["contract"]["sdk_tree"], "Graph final SDK tree changed")
+            report["status"] = "CLOSED_GRAPH_OBSERVATIONS"
+            report["graph_deadline"] = {"original": clock.original_ref, "finished_mono_ns": time.monotonic_ns(),
+                "deadline_mono_ns": clock.deadline_ns, "unknown": False, "retry": "FORBIDDEN"}
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command)
+    except BaseException as error:
+        report.update(status="UNKNOWN" if clock.unknown else "DENY", error=type(error).__name__ + ": " + str(error))
+    graph_put_json(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json"), "formal_acceptance": False}))
+    return 0 if report["status"] == "CLOSED_GRAPH_OBSERVATIONS" else 1
+
+
+def graph_public_upload_closure(root, clock, token):
+    """Select only this public fixture's closed originals; UNKNOWN stays private.
+
+    Secret scanning is supplementary. Local grant scope comes from the reviewed
+    source, original SDK connection/manifest and complete actual process closure.
+    Effect grants must additionally expire under the source-owned 45-second TTL.
+    """
+    receipt = graph_json((root / "e/receipt.json").read_bytes())
+    require(receipt.get("status") == "CLOSED_GRAPH_OBSERVATIONS" and receipt.get("formal_acceptance") is False,
+            "Graph public upload HOLD: original fixture or credential closure is UNKNOWN")
+    inventory = archive_inventory(root)
+    proof = graph_archive_bindings(root, inventory, receipt["source_before"])
+    retained = root / "retained"
+    require(retained.is_dir() and {path.name for path in retained.iterdir()} == {
+        "closed-evidence.tar", "input-inventory.json", "archive-receipt.json", "graph-phase-archive.terminal.original.json"},
+        "Graph public upload HOLD: final retained selection is not closed")
+    archive = graph_json((retained / "archive-receipt.json").read_bytes())
+    require(archive.get("status") == "PASS" and archive.get("custody") == "VERIFIED_ORIGINAL_TREE_COPY"
+            and archive.get("formal_acceptance") is False and archive.get("originals_equal_before_after") is True
+            and archive_file_digest(retained / "closed-evidence.tar", ARCHIVE_LIMITS["total_bytes"] + ARCHIVE_LIMITS["members"] * 4096 + 11264)
+                == archive["verified"]["archive_digest"], "Graph public upload HOLD: archive original changed or is unsealed")
+    index = graph_json(graph_read(proof["producer_index"], GRAPH_BYTES))
+    grant_name = "apps/desktop/src-tauri/src/effect_grants.rs"
+    grant_identity = index["contract"]["source_files"][grant_name]
+    grant_raw = graph_read({"path": str(Path(index["source"]["repository_root"]) / grant_name),
+        "sha256": grant_identity["sha256"], "size_bytes": grant_identity["bytes"]})
+    # The whole file is part of the independently reviewed index, not a new
+    # caller-supplied TTL/approval. Reject any different source-owned lifetime.
+    require(b"const GRANT_TTL: Duration = Duration::from_secs(45);" in grant_raw,
+            "Graph public upload HOLD: source-owned grant expiry differs")
+    latest_close = 0.0
+    for item in proof["cases"]:
+        case_root = Path(item["root"])
+        final = graph_json(graph_read(item["owner"], 4 * GRAPH_BYTES))
+        spec = graph_json(graph_read(final["spec_original"], GRAPH_BYTES))
+        descriptor = graph_json((case_root / "owner/owner-descriptor.json").read_bytes())
+        require(descriptor.get("session_reuse_across_wrapper_instances_allowed") is False
+                and descriptor.get("binding_ref_transfers_allowed") is False
+                and descriptor.get("automatic_retry") is False
+                and descriptor["socket"] == spec["paths"]["owner_socket"]
+                and Path(descriptor["socket"]).is_relative_to(case_root), "Graph public upload HOLD: reusable or foreign SDK scope")
+        manifest_record = descriptor["driver_manifest"]
+        manifest = graph_json(graph_read({"path": manifest_record["path"], "sha256": manifest_record["sha256"],
+            "size_bytes": manifest_record["bytes"]}, GRAPH_BYTES))
+        require(manifest["secrets"] == [] and manifest["network"] is False and manifest["system_config"] == [],
+                "Graph public upload HOLD: external credential or authority channel")
+        for client in final["client_roster"]:
+            connection = graph_json(graph_read(client["connection_original"], GRAPH_BYTES))
+            require(connection["socket"] == descriptor["socket"] and connection["session_file"] == client["session_original"]["path"]
+                    and Path(connection["session_file"]).is_relative_to(case_root / "owner")
+                    and Path(connection["output_root"]).is_relative_to(case_root / "owner"), "Graph public upload HOLD: foreign fixture connection")
+        closure = graph_json(graph_read(final["service_closure"], GRAPH_BYTES))
+        latest_close = max(latest_close, datetime.fromisoformat(closure["recorded_at"].replace("Z", "+00:00")).timestamp())
+    # No new deadline. Reserve the complete upload before any bounded expiry
+    # wait; a wall/monotonic disagreement holds the payload rather than guessing.
+    now = time.time()
+    predicted = clock.original["clock_anchor_wall_ms"] / 1000 + (time.monotonic_ns() - clock.original["clock_anchor_mono_ns"]) / 1e9
+    require(abs(now - predicted) <= 2, "Graph public upload HOLD: expiry clock disagreement")
+    wait = max(0, int(latest_close + 50 - now) + 1)
+    require(wait <= 55, "Graph public upload HOLD: grant close timestamp is not current")
+    if wait:
+        clock.admit("source-owned-fixture-grant-expiry", wait, reserve=GRAPH_PHASES["final-upload"])
+        time.sleep(wait)
+    require(time.time() >= latest_close + 50, "Graph public upload HOLD: effect grants have not expired")
+    top_files = {"receipt.json", "source-before.json", "r74-wait-complete.original.json", "graph-discovery.json", "graph-execution.json"}
+    raw_suffixes = (".command.json", ".stdout.log", ".stderr.log")
+    secrets = [value.encode() for value in (token,) if type(value) is str and value]
+    forbidden = re.compile(rb"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN (?:[A-Z]+ )?PRIVATE " + b"KEY-----)")
+    for name, row in inventory["entries"].items():
+        parts = Path(name).parts
+        require(not any(part.casefold() in {"knowledge", ".git", ".aws", ".ssh", "private", "private-inputs"} for part in parts),
+                "Graph public upload HOLD: private input path")
+        if parts[0] == "e" and len(parts) > 1:
+            require(parts[1] in {"graph-producer", "graph-cases"} or len(parts) == 2
+                    and (parts[1] in top_files or any(parts[1] == label + suffix
+                        for label in ("graph-discovery", "graph-cases") for suffix in raw_suffixes)),
+                    "Graph public upload HOLD: unselected original")
+        if parts[0] == "tools" and len(parts) > 1:
+            require(parts[1] == "graph-approval-observations" or len(parts) == 2 and (
+                parts[1] in {"rustc.txt", "cargo.txt", "node.txt", "npm.txt", "python.txt",
+                    "graph-run-response.original.json", "graph-run-response.transport.original.json",
+                    "graph-jobs-response.original.json", "graph-jobs-response.transport.original.json",
+                    "graph-deadline.original.json", "graph-review-upload-admission.original.json"}
+                or any(parts[1] == "graph-phase-" + phase + suffix for phase in GRAPH_PHASES
+                       for suffix in (".intent.original.json", ".terminal.original.json"))),
+                "Graph public upload HOLD: unselected metadata original")
+        if row["kind"] != "file":
+            continue
+        path = root / name; previous = b""
+        with path.open("rb") as stream:
+            while block := stream.read(GRAPH_BYTES):
+                combined = previous + block
+                require(not forbidden.search(combined) and not any(value in combined for value in secrets),
+                        "Graph public upload HOLD: external credential material")
+                previous = combined[-4096:]
+    require(archive_inventory(root) == inventory, "Graph public upload HOLD: originals changed during data closure")
+    return {"meaning": "PUBLIC_SYNTHETIC_FIXTURE_ORIGINALS_ONLY", "index": proof["producer_index"],
+            "cases": [row["case_id"] for row in proof["cases"]], "members": len(inventory["entries"]),
+            "bytes": inventory["file_bytes"], "local_sdk_channels_closed": True,
+            "source_bound_effect_grants_expired": True, "external_credentials_allowed": False,
+            "private_inputs_allowed": False, "formal_acceptance": False}
+
+
+def graph_budget_main(arguments):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo", type=Path, required=True); parser.add_argument("--phase", choices=("review-upload", "final-upload"), required=True)
+    args = parser.parse_args(arguments); repo, root = graph_layout(args.repo); clock = GraphOriginalClock(root)
+    phase = args.phase
+    data_closure = None
+    if phase == "final-upload":
+        token = os.environ.pop(GRAPH_TOKEN_ENV, "")
+        require(token, "Graph final external credential exclusion requires its actual readonly job token")
+        data_closure = graph_public_upload_closure(root, clock, token)
+    record = clock.admit(phase, GRAPH_PHASES[phase], reserve=clock.future(phase))
+    if data_closure is not None:
+        record["data_closure"] = data_closure
+    folder = root / "retained" if phase == "final-upload" and (root / "retained").exists() else root / "tools"
+    graph_put_json(folder / ("graph-" + phase + "-admission.original.json"), record)
+    return 0
+
+
+def graph_main(arguments):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("phase", choices=("produce", "wait", "run"))
+    parser.add_argument("--repo", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    if args.phase == "produce":
+        recipient = {"spki_der_base64": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64", ""),
+                     "sha256": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256", "")}
+        return graph_produce(args.repo, recipient)
+    return graph_wait_for_external_review(args.repo) if args.phase == "wait" else graph_run_cases(args.repo)
+
+
+def graph_runtime_main(arguments):
+    parser = argparse.ArgumentParser()
+    for name in ("repo", "runtime", "producer"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    args = parser.parse_args(arguments)
+    return graph_runtime_inner(args.repo.resolve(), args.runtime.resolve(), args.producer.resolve())
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["graph"]:
+        raise SystemExit(graph_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["graph-budget"]:
+        raise SystemExit(graph_budget_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["graph-runtime"]:
+        raise SystemExit(graph_runtime_main(sys.argv[2:]))
     if sys.argv[1:2] == ["phase1-budget"]:
         raise SystemExit(phase1_service47_budget_main(sys.argv[2:]))
     if sys.argv[1:2] == ["phase1-dependencies"]:
