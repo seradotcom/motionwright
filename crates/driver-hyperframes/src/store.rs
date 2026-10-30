@@ -1,7 +1,7 @@
 //! Exact source/runtime files under existing Host-granted mounts.
 use crate::{
     Error, ErrorCode, Result,
-    model::{self, CompiledSource, Composition, SourceInventory},
+    model::{self, CompiledSource, SourceInventory},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

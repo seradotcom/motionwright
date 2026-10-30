@@ -181,13 +181,13 @@ impl HyperframesDriver {
         ];
         for (i, left) in roots.iter().enumerate() {
             for right in &roots[i + 1..] {
-                if let (Some(left), Some(right)) = (left, right) {
-                    if left.starts_with(right) || right.starts_with(left) {
-                        return Err(Error::new(
-                            ErrorCode::PermissionDenied,
-                            "HyperFrames grants must be distinct, nonoverlapping roots",
-                        ));
-                    }
+                if let (Some(left), Some(right)) = (left, right)
+                    && (left.starts_with(right) || right.starts_with(left))
+                {
+                    return Err(Error::new(
+                        ErrorCode::PermissionDenied,
+                        "HyperFrames grants must be distinct, nonoverlapping roots",
+                    ));
                 }
             }
         }
