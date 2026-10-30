@@ -146,6 +146,81 @@ class HistoryGuardTests(unittest.TestCase):
         self.new[guard.INDEX]["sufficiency_reviews"][0]["id"]="changed"
         self.assertViolation("index_sufficiency_reviews_rewritten_or_truncated")
 
+    def _synthetic_human_report(self, identity="synthetic-human-01"):
+        # History-only fixture: this is not a person, physical report or approval.
+        return {"id":identity,"source":copy.deepcopy(self.source),
+                "status":"completed","reviewer_kind":"human",
+                "reviewer_reference_sha256":"e"*64,
+                "criterion_ids":[self.field["id"]],
+                "observed_artifact_sha256":["f"*64],
+                "record":{"path":"docs/acceptance/evidence/synthetic-human.json",
+                          "sha256":"0"*64},
+                "fixture_only":True,"extension":{"decision":False}}
+
+    def test_first_human_report_can_append_without_granting_acceptance(self):
+        original=copy.deepcopy(self.old)
+        self.new[guard.INDEX]["human_reviews"].append(self._synthetic_human_report())
+        result=guard.inspect(self.old,self.new)
+        self.assertEqual(result["result"],"history_preserved")
+        self.assertEqual(self.old,original)
+        self.assertFalse(result["product_acceptance"])
+        self.assertFalse(result["release_authorized"])
+        self.assertEqual(result["changed_assessments_with_history"],0)
+
+    def test_later_human_report_preserves_exact_prior_prefix(self):
+        original=self._synthetic_human_report()
+        self.old[guard.INDEX]["human_reviews"]=[copy.deepcopy(original)]
+        self.new[guard.INDEX]["human_reviews"]=[copy.deepcopy(original),
+            self._synthetic_human_report("synthetic-human-02")]
+        self.assertEqual(guard.inspect(self.old,self.new)["result"],"history_preserved")
+
+    def test_human_report_body_and_unknown_typed_fields_cannot_change(self):
+        original=self._synthetic_human_report()
+        mutations=[("reviewer_reference_sha256","1"*64),
+                   ("source",{**self.source,"motionwright_sha":"2"*40}),
+                   ("observed_artifact_sha256",["3"*64]),
+                   ("record",{"path":"docs/acceptance/evidence/changed.json",
+                              "sha256":"4"*64}),
+                   ("extension",{"decision":0})]
+        self.old[guard.INDEX]["human_reviews"]=[copy.deepcopy(original)]
+        for field,value in mutations:
+            with self.subTest(field=field):
+                changed=copy.deepcopy(original)
+                changed[field]=value
+                self.new[guard.INDEX]["human_reviews"]=[changed]
+                self.assertViolation("index_human_reviews_rewritten_or_truncated")
+
+    def test_human_report_cannot_be_removed(self):
+        self.old[guard.INDEX]["human_reviews"]=[self._synthetic_human_report()]
+        self.assertViolation("index_human_reviews_rewritten_or_truncated")
+
+    def test_human_reports_cannot_be_reordered(self):
+        self.old[guard.INDEX]["human_reviews"]=[self._synthetic_human_report(),
+            self._synthetic_human_report("synthetic-human-02")]
+        self.new[guard.INDEX]["human_reviews"]=copy.deepcopy(
+            self.old[guard.INDEX]["human_reviews"][::-1])
+        self.assertViolation("index_human_reviews_rewritten_or_truncated")
+
+    def test_duplicate_human_report_id_fails_in_either_snapshot(self):
+        original=self._synthetic_human_report()
+        for snapshot in (self.old,self.new):
+            with self.subTest(snapshot="before" if snapshot is self.old else "after"):
+                snapshot[guard.INDEX]["human_reviews"]=[copy.deepcopy(original),
+                                                      copy.deepcopy(original)]
+                self.assertViolation("duplicate_index_human_reviews_id")
+                snapshot[guard.INDEX]["human_reviews"]=[]
+
+    def test_human_report_append_requires_an_explicit_unique_id(self):
+        for report in ({}, {"id":None}, {"id":1}):
+            with self.subTest(report=report):
+                self.new[guard.INDEX]["human_reviews"]=[report]
+                self.assertViolation("invalid_index_human_reviews_record")
+
+    def test_missing_human_report_collection_cannot_be_treated_as_empty(self):
+        self.old[guard.INDEX].pop("human_reviews")
+        self.new[guard.INDEX].pop("human_reviews")
+        self.assertViolation("missing_index_human_reviews")
+
     def test_original_normative_source_is_immutable(self):
         self.new[guard.INDEX]["normative_edges"]=[]
         self.assertViolation("canonical_source_catalogue_changed")

@@ -293,13 +293,14 @@ def inspect(before: dict, after: dict) -> dict:
     for index in (old_index, new_index):
         if index.get("schema") != "motionwright.technical-evidence/1" or "history_prefix" in index:
             raise HistoryViolation("unknown_source_index_schema")
-        for listkey in ("records", "sufficiency_reviews"):
+        for listkey in ("records", "sufficiency_reviews", "human_reviews"):
             fixed_identity_map(index.get(listkey), "index_" + listkey)
     for immutable in ("criteria", "contracts", "normative_edges",
-                      "criterion_aliases", "human_reviews"):
+                      "criterion_aliases"):
         if not _same(old_index.get(immutable), new_index.get(immutable)):
             raise HistoryViolation("canonical_source_catalogue_changed")
-    for listkey in ("records", "sufficiency_reviews", "assessment_history"):
+    for listkey in ("records", "sufficiency_reviews", "human_reviews",
+                    "assessment_history"):
         prefix(old_index.get(listkey), new_index.get(listkey), "index_" + listkey)
     assessed = 0
     for ledger in LEDGERS:

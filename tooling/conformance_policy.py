@@ -91,6 +91,177 @@ def public_file(root, pointer, *, allow_missing=False):
     return candidate
 
 
+class _IndexPathCache:
+    """Reuse resolved paths only within one index load, rechecking every link.
+
+    No file bytes or missing-path decisions are cached. Each repeated reference
+    rechecks the root, all ancestors and the leaf with lstat; final artifact
+    verification still uses public_file() and an independent complete hash.
+    """
+
+    def __init__(self, root):
+        self.root = root
+        self.entries = {}
+        self.required = set()
+
+    @staticmethod
+    def _identity(info):
+        attributes = getattr(info, "st_file_attributes", 0)
+        identity = (info.st_dev, info.st_ino, info.st_mode, attributes)
+        # A child disappearing changes its parent's timestamps. Preserve the
+        # canonical optional-input STALE result without accepting a new parent.
+        if stat.S_ISDIR(info.st_mode):
+            return identity
+        return identity + (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _unchanged(self, tracked, message):
+        for path, identity in tracked:
+            try:
+                info = path.lstat()
+            except OSError as error:
+                raise ValueError(message) from error
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400
+                    or self._identity(info) != identity):
+                raise ValueError(message)
+
+    def resolve(self, pointer, *, allow_missing=False):
+        # Let the canonical guard classify malformed or unhashable pointers.
+        if not isinstance(pointer, str):
+            return public_file(self.root, pointer, allow_missing=allow_missing)
+        key = Path(pointer)
+        if not allow_missing:
+            self.required.add(key)
+        # An optional reference cannot weaken a path already required by this
+        # index (including its descriptor, SOURCE_LOCK and original artifacts).
+        optional = allow_missing and key not in self.required
+        # Equivalent spellings share authority, but normalization must never
+        # make a forbidden original spelling (for example backslashes) valid.
+        if pointer != key.as_posix():
+            public_file(self.root, pointer, allow_missing=optional)
+        entry = self.entries.get(key)
+        if entry is None:
+            result = public_file(self.root, pointer, allow_missing=optional)
+            if result is None:
+                return None
+            parts = Path(pointer).parts
+            root = result
+            for _ in parts:
+                root = root.parent
+            # Relative roots and caller-supplied aliases are re-resolved by the
+            # canonical guard each time, not given a cached target identity.
+            root_path = Path(self.root)
+            if not root_path.is_absolute() or root_path != root:
+                return result
+            tracked = [root]
+            for part in parts:
+                tracked.append(tracked[-1] / part)
+            identities = []
+            for path in tracked:
+                try:
+                    info = path.lstat()
+                except OSError as error:
+                    raise ValueError("repository evidence could not be inspected: " + pointer) from error
+                if (stat.S_ISLNK(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & 0x400):
+                    raise ValueError("linked evidence is not admitted: " + pointer)
+                if not (stat.S_ISREG(info.st_mode) if path == result
+                        else stat.S_ISDIR(info.st_mode)):
+                    raise ValueError("evidence path identity changed during verification")
+                identities.append((path, self._identity(info)))
+            self.entries[key] = (result, identities)
+            return result
+
+        result, tracked = entry
+        checked = []
+        for path, identity in tracked:
+            try:
+                info = path.lstat()
+            except FileNotFoundError as error:
+                # Retain the normal missing-source degradation only while all
+                # already observed parents are still the original directories.
+                message = "cached evidence ancestor changed during missing-path verification"
+                self._unchanged(checked, message)
+                if (path == result and optional
+                        and public_file(self.root, pointer, allow_missing=True) is None):
+                    self._unchanged(checked, message)
+                    # Keep the trusted ancestors, never the absence decision.
+                    # A later appearance is inspected and fully hashed anew.
+                    return None
+                raise ValueError("missing repository evidence or changed path: " + pointer) from error
+            except OSError as error:
+                raise ValueError("repository evidence could not be inspected: " + pointer) from error
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                raise ValueError("cached evidence path identity changed during verification")
+            if self._identity(info) != identity:
+                if not (optional and path == result and stat.S_ISREG(info.st_mode)):
+                    raise ValueError("cached evidence path identity changed during verification")
+                # Optional source/oracle leaves are historical inputs. A safe
+                # regular replacement needs the canonical guard and a fresh
+                # full source digest, not a global index failure or old hash.
+                message = "cached evidence ancestor changed during optional-source verification"
+                self._unchanged(checked, message)
+                candidate = public_file(self.root, pointer, allow_missing=True)
+                self._unchanged(checked, message)
+                if candidate is None:
+                    return None
+                if candidate != result:
+                    raise ValueError("optional source path changed during verification")
+                refreshed = (path, self._identity(info))
+                self._unchanged([refreshed], "optional source changed during canonical revalidation")
+                self._unchanged(checked, message)
+                self.entries[key] = (result, [*checked, refreshed])
+                return result
+            checked.append((path, identity))
+        return result
+
+    def source_digest(self, pointer):
+        """Hash one optional source anew, fencing its physical read each time."""
+        path = self.resolve(pointer, allow_missing=True)
+        if path is None:
+            return None
+        key = Path(pointer)
+        tracker = self
+        if key not in self.entries:
+            # Alias/relative caller roots retain canonical per-call behavior.
+            # A temporary absolute tracker still fences this single full read.
+            root = path
+            for _ in Path(pointer).parts:
+                root = root.parent
+            tracker = _IndexPathCache(root)
+            if tracker.resolve(pointer) != path:
+                raise ValueError("source path changed before its digest")
+        _, tracked = tracker.entries[key]
+        parents, leaf = tracked[:-1], tracked[-1:]
+        message = "source path changed during its full digest"
+        tracker._unchanged(tracked, message)
+        missing = False
+        try:
+            observed = source_digest(path)
+        except FileNotFoundError:
+            observed = None
+        finally:
+            tracker._unchanged(parents, message)
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                if (key in self.required
+                        or public_file(self.root, pointer, allow_missing=True) is not None):
+                    raise ValueError(message)
+                missing = True
+            else:
+                tracker._unchanged(leaf, message)
+            tracker._unchanged(parents, message)
+            if tracker is not self:
+                resolved = public_file(self.root, pointer, allow_missing=missing)
+                if resolved != (None if missing else path):
+                    raise ValueError(message)
+        if observed is None and not missing:
+            raise ValueError(message)
+        return None if missing else observed
+
+
 def validate_archive_member(path, artifact):
     if "member" not in artifact and "member_sha256" not in artifact:
         return
@@ -142,15 +313,16 @@ class _BoundedEvidenceSnapshot:
     object never outlives its one load_evidence_index() invocation.
     """
 
-    def __init__(self, root):
+    def __init__(self, root, *, paths=None):
         self.root = root
+        self.paths = paths
         self.files = {}
         self.members = set()
 
     def verify(self, artifact):
         pointer = artifact["path"]
         expected = artifact["sha256"]
-        path = public_file(self.root, pointer)
+        path = public_file(self.root, pointer) if self.paths is None else self.paths.resolve(pointer)
         before = _evidence_stat(path)
         previous = self.files.get(pointer)
         if previous is None:
@@ -318,7 +490,8 @@ def source_identity(source):
 
 def load_evidence_index(root, descriptor):
     descriptor = _object(descriptor, "evidence index")
-    path = public_file(root, descriptor.get("path"))
+    paths = _IndexPathCache(root)
+    path = paths.resolve(descriptor.get("path"))
     expected = _hex(descriptor.get("sha256"), DIGEST, "evidence index digest")
     if descriptor.get("digest_kind") != "git-text-lf":
         raise ValueError("tracked evidence index requires explicit Git text normalization")
@@ -344,7 +517,7 @@ def load_evidence_index(root, descriptor):
     if data.get("schema") != "motionwright.technical-evidence/1":
         raise ValueError("unknown technical evidence schema")
     source_identity(data.get("source"))
-    lock = public_file(root, "SOURCE_LOCK.json")
+    lock = paths.resolve("SOURCE_LOCK.json")
     if source_digest(lock) != data["source"]["source_lock_sha256"]:
         raise ValueError("assessed source lock is stale for this checkout")
     catalog = _object(data.get("criteria"), "criterion catalog")
@@ -379,7 +552,7 @@ def load_evidence_index(root, descriptor):
         raise ValueError("evidence records must be a list")
     by_id = {}
     stale_records = {}
-    verified_artifacts = _BoundedEvidenceSnapshot(root)
+    verified_artifacts = _BoundedEvidenceSnapshot(root, paths=paths)
     for record in records:
         _object(record, "evidence record")
         identity = record.get("id")
@@ -397,17 +570,15 @@ def load_evidence_index(root, descriptor):
         for source_input in inputs:
             _object(source_input, "source input")
             expected_input = _hex(source_input.get("sha256"), DIGEST, "product source digest")
-            path = public_file(root, source_input.get("path"), allow_missing=True)
-            if path is None:
-                stale_inputs.append("product source input missing; reassess stale evidence")
+            try:
+                observed_input = paths.source_digest(source_input.get("path"))
+            except UnicodeDecodeError:
+                stale_inputs.append("non-text input cannot use Git-text normalization; product source evidence is stale")
             else:
-                try:
-                    observed_input = source_digest(path)
-                except UnicodeDecodeError:
-                    stale_inputs.append("non-text input cannot use Git-text normalization; product source evidence is stale")
-                else:
-                    if observed_input != expected_input:
-                        stale_inputs.append("product source input changed; reassess stale evidence")
+                if observed_input is None:
+                    stale_inputs.append("product source input missing; reassess stale evidence")
+                elif observed_input != expected_input:
+                    stale_inputs.append("product source input changed; reassess stale evidence")
         _strings(record.get("assertions"), "observed assertions", nonempty=True)
         execution = _object(record.get("execution"), "execution")
         if execution.get("kind") not in KINDS or execution.get("status") not in RESULTS:
@@ -429,17 +600,15 @@ def load_evidence_index(root, descriptor):
         for definition in definitions:
             _object(definition, "definition")
             expected_definition = _hex(definition.get("sha256"), DIGEST, "definition digest")
-            definition_path = public_file(root, definition.get("path"), allow_missing=True)
-            if definition_path is None:
-                stale_inputs.append("execution definition missing; reassess stale evidence")
+            try:
+                observed_definition = paths.source_digest(definition.get("path"))
+            except UnicodeDecodeError:
+                stale_inputs.append("non-text input cannot use Git-text normalization; execution definition evidence is stale")
             else:
-                try:
-                    observed_definition = source_digest(definition_path)
-                except UnicodeDecodeError:
-                    stale_inputs.append("non-text input cannot use Git-text normalization; execution definition evidence is stale")
-                else:
-                    if observed_definition != expected_definition:
-                        stale_inputs.append("execution definition changed; reassess stale evidence")
+                if observed_definition is None:
+                    stale_inputs.append("execution definition missing; reassess stale evidence")
+                elif observed_definition != expected_definition:
+                    stale_inputs.append("execution definition changed; reassess stale evidence")
         artifacts = record.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
             raise ValueError("execution needs inspectable output artifacts")
@@ -480,7 +649,7 @@ def load_evidence_index(root, descriptor):
         if not observed.issubset(artifact_digests):
             raise ValueError("human review must bind the artifacts actually retained")
         proof = _object(report.get("record"), "human review record")
-        proof_path = public_file(root, proof.get("path"))
+        proof_path = paths.resolve(proof.get("path"))
         if hashlib.sha256(proof_path.read_bytes()).hexdigest() != _hex(proof.get("sha256"), DIGEST, "human review record digest"):
             raise ValueError("human review record bytes changed")
     validate_sufficiency_reviews(data, by_id)
