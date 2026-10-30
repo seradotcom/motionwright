@@ -401,6 +401,321 @@ def _input_value(value, spec):
 REVIEWED_FAILURE_DIAGNOSTICS = {'64e62942aeb82cee4b8a85a36f1383e064660d61404703b083b747478b9ca4db': ['EXECUTABLE_STEP', 'Admit the complete Service47 unsealed upload', "always() && matrix.selection == 'phase1-service47' && steps.archive.outcome != 'success'", 'archive'], 'bc2d20cf3bbf830078b9b84d3b601fa6b1920e455d3f509a8622a5dbc023fdda': ['ARTIFACT_RETENTION', 'Preserve unsealed diagnostics when archive custody fails', "always() && steps.archive.outcome != 'success' && (matrix.selection != 'phase1-service47' || steps.phase1-unsealed-upload-admission.outputs.admitted == 'true') && (matrix.selection != 'phase1-native-graph' || steps.graph-final-upload-admission.outputs.admitted == 'true')", 'archive']}
 
 
+
+# Two exact N83 G1 failure rescues, scoped to the reviewed workflow/job/case.
+# Source hashes and positive anchors are fixed here, not supplied as a waiver
+# by the catalog. These diagnostic steps can never be positive obligations.
+REVIEWED_CONDITIONAL_FAILURE_DIAGNOSTICS = {'842e754ff6c556e4fec657ed38bfdcf7a1c9430eb96a68d00e15c5cd6b17b242': {'anchors': [{'guard': '${{ '
+                                                                                            'inputs.native_scope '
+                                                                                            '== '
+                                                                                            "'n83-preview' "
+                                                                                            '}}',
+                                                                                   'id': 'n83_source_controls',
+                                                                                   'source_block_sha256': '624cfc1bff5a0e2e6792cc0ca252226bb2c3ff250c5d1ec3b0ba807ac7f91267'}],
+                                                                      'case_id': 'n83-preview',
+                                                                      'case_inputs': {'expected_source_sha': {'binding': 'CANDIDATE_SOURCE_SHA'},
+                                                                                      'native_scope': 'n83-preview',
+                                                                                      'recovery_recipient': {'binding': 'PUBLIC_RSA3072_RECIPIENT_JSON'},
+                                                                                      'v01_provider_repeat': False},
+                                                                      'job_id': 'real-native-render',
+                                                                      'step_identity': ['EXECUTABLE_STEP',
+                                                                                        'Seal '
+                                                                                        'failed '
+                                                                                        'N83 '
+                                                                                        'source '
+                                                                                        'controls '
+                                                                                        'without '
+                                                                                        'any owner '
+                                                                                        'or Native '
+                                                                                        'attempt',
+                                                                                        '${{ '
+                                                                                        'always() '
+                                                                                        '&& '
+                                                                                        'inputs.native_scope '
+                                                                                        '== '
+                                                                                        "'n83-preview' "
+                                                                                        '&& '
+                                                                                        'steps.n83_source_controls.outcome '
+                                                                                        '== '
+                                                                                        "'failure' "
+                                                                                        '}}'],
+                                                                      'workflow': '.github/workflows/native-render-e2e.yml'},
+ 'afd649b1cbaafa8c4c4498502a54d4ab13bc2605d62d27f2fe690e0086a3dae3': {'anchors': [{'guard': '${{ '
+                                                                                            'inputs.native_scope '
+                                                                                            '== '
+                                                                                            "'n83-preview' "
+                                                                                            '}}',
+                                                                                   'id': 'n83_source_controls',
+                                                                                   'source_block_sha256': '624cfc1bff5a0e2e6792cc0ca252226bb2c3ff250c5d1ec3b0ba807ac7f91267'},
+                                                                                  {'guard': '${{ '
+                                                                                            'inputs.native_scope '
+                                                                                            '== '
+                                                                                            "'n83-preview' "
+                                                                                            '}}',
+                                                                                   'id': 'n83_rust_controls',
+                                                                                   'source_block_sha256': '08a322eb1f49018f6e2d67cf7c3cc704f4bf0ad0dcf03821c0b6d0f59af02bb2'}],
+                                                                      'case_id': 'n83-preview',
+                                                                      'case_inputs': {'expected_source_sha': {'binding': 'CANDIDATE_SOURCE_SHA'},
+                                                                                      'native_scope': 'n83-preview',
+                                                                                      'recovery_recipient': {'binding': 'PUBLIC_RSA3072_RECIPIENT_JSON'},
+                                                                                      'v01_provider_repeat': False},
+                                                                      'job_id': 'real-native-render',
+                                                                      'step_identity': ['EXECUTABLE_STEP',
+                                                                                        'Seal '
+                                                                                        'failed '
+                                                                                        'N83 Rust3 '
+                                                                                        'source '
+                                                                                        'controls '
+                                                                                        'without '
+                                                                                        'any owner '
+                                                                                        'or Native '
+                                                                                        'attempt',
+                                                                                        '${{ '
+                                                                                        'always() '
+                                                                                        '&& '
+                                                                                        'inputs.native_scope '
+                                                                                        '== '
+                                                                                        "'n83-preview' "
+                                                                                        '&& '
+                                                                                        'steps.n83_source_controls.outcome '
+                                                                                        '== '
+                                                                                        "'success' "
+                                                                                        '&& '
+                                                                                        'steps.n83_rust_controls.outcome '
+                                                                                        '== '
+                                                                                        "'failure' "
+                                                                                        '}}'],
+                                                                      'workflow': '.github/workflows/native-render-e2e.yml'}}
+
+
+# Exact success and two diagnostic branches of the same N83 attempt.
+# Required diagnostic steps are never successful Native acceptance.
+# The reserved identities force review even if every catalogue hash changes.
+REVIEWED_N83_CONDITIONAL_SCOPE = {'workflow': '.github/workflows/native-render-e2e.yml',
+ 'job_id': 'real-native-render',
+ 'case_inputs': {'native_scope': 'n83-preview',
+                 'expected_source_sha': {'binding': 'CANDIDATE_SOURCE_SHA'},
+                 'recovery_recipient': {'binding': 'PUBLIC_RSA3072_RECIPIENT_JSON'},
+                 'v01_provider_repeat': False},
+ 'success_case_id': 'n83-preview',
+ 'success_required_steps': [2, 3, 4, 6, 8, 9, 10, 14, 15, 16, 17, 18, 20, 22, 23, 24, 25, 26, 27, 32, 33],
+ 'failure_cases': {'n83-preflight-failure': {'failed_anchor_id': 'n83_source_controls',
+                                             'failed_anchor_ordinal': 4,
+                                             'failed_anchor_outcome': 'failure',
+                                             'successful_anchor_ids': [],
+                                             'rescue_ordinal': 5,
+                                             'required_steps': [2, 3, 5, 33]},
+                   'n83-rust-controls-failure': {'failed_anchor_id': 'n83_rust_controls',
+                                                 'failed_anchor_ordinal': 20,
+                                                 'failed_anchor_outcome': 'failure',
+                                                 'successful_anchor_ids': ['n83_source_controls'],
+                                                 'rescue_ordinal': 21,
+                                                 'required_steps': [2,
+                                                                    3,
+                                                                    4,
+                                                                    6,
+                                                                    8,
+                                                                    9,
+                                                                    10,
+                                                                    14,
+                                                                    15,
+                                                                    16,
+                                                                    17,
+                                                                    18,
+                                                                    21,
+                                                                    33]}},
+ 'source_steps': [{'ordinal': 2,
+                   'id': None,
+                   'name': 'Admit closed native selection before bootstrap',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': 'c6515f1883b2306f4b5166dc5c4840c29e3066c6a4b04cf872abbb7aa05785e8'},
+                  {'ordinal': 3,
+                   'id': None,
+                   'name': 'Install pinned N83 custody and PNG verifier in a private runner venv',
+                   'guard': "${{ inputs.native_scope == 'n83-preview' }}",
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '9c0f95c7bba55704e3e763f92a466ad8e51f1ddbba56000604592d5435fd56f5'},
+                  {'ordinal': 4,
+                   'id': 'n83_source_controls',
+                   'name': 'Verify exact N83 source controls before Native',
+                   'guard': "${{ inputs.native_scope == 'n83-preview' }}",
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '624cfc1bff5a0e2e6792cc0ca252226bb2c3ff250c5d1ec3b0ba807ac7f91267'},
+                  {'ordinal': 5,
+                   'id': None,
+                   'name': 'Seal failed N83 source controls without any owner or Native attempt',
+                   'guard': "${{ always() && inputs.native_scope == 'n83-preview' && "
+                            "steps.n83_source_controls.outcome == 'failure' }}",
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '842e754ff6c556e4fec657ed38bfdcf7a1c9430eb96a68d00e15c5cd6b17b242'},
+                  {'ordinal': 6,
+                   'id': 'pin',
+                   'name': 'Resolve exact Semwright source pin',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '2295ea5f626f5622e2973cc752993b3fcd7a8c772b3b085f965898a106ffe59c'},
+                  {'ordinal': 8,
+                   'id': None,
+                   'name': 'Verify immutable source identities',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '15efdd3445e2fe8655d0b1730f672d296708b5a01f0367a26d39d37b8957ddd1'},
+                  {'ordinal': 9,
+                   'id': None,
+                   'name': 'Verify v0.1 native CLI failures never expose private job receipts',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '552747fa7915eced006d6b44f6b4fb20ac1ab43d948d3e64e56a5d109e278a42'},
+                  {'ordinal': 10,
+                   'id': None,
+                   'name': 'Reject raw Broker session or forged native parity in public evidence',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '613470b82f57cb77a295358497d6f065b773d223589be8cef44b575fcb52582e'},
+                  {'ordinal': 14,
+                   'id': None,
+                   'name': 'Configure disposable-runner Driver Host sandbox',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '6cca3435dbaa0c5fc9d199a6c801938879eb548084469689132329d3dc4be264'},
+                  {'ordinal': 15,
+                   'id': None,
+                   'name': 'Install Semwright daemon build dependencies',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '7485141fabbc275dff38bd03a2488c7d74574909538aec8ed0f7628439455f17'},
+                  {'ordinal': 16,
+                   'id': None,
+                   'name': 'Install exact Motion Canvas runtime and Firefox',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '800d16321736490511ff761405babd393f555e9757e7287d1db79594fe66c1c7'},
+                  {'ordinal': 17,
+                   'id': None,
+                   'name': 'Build exact Semwright Broker, sandbox and Motion Canvas provider',
+                   'guard': None,
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': 'b29c57238cfba0f0b855988e76d03bdc3a7db30fc1db4c4e84ee6925c0dbf12f'},
+                  {'ordinal': 18,
+                   'id': None,
+                   'name': 'Build admitted N83 preview producer',
+                   'guard': "${{ inputs.native_scope == 'n83-preview' }}",
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '35d36b768f1c3db7f634d79aaf1abe8857482ab4416a95c527571038a1d9a60e'},
+                  {'ordinal': 20,
+                   'id': 'n83_rust_controls',
+                   'name': 'Verify exact N83 Rust3 source controls before Native',
+                   'guard': "${{ inputs.native_scope == 'n83-preview' }}",
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': '08a322eb1f49018f6e2d67cf7c3cc704f4bf0ad0dcf03821c0b6d0f59af02bb2'},
+                  {'ordinal': 21,
+                   'id': None,
+                   'name': 'Seal failed N83 Rust3 source controls without any owner or Native attempt',
+                   'guard': "${{ always() && inputs.native_scope == 'n83-preview' && "
+                            "steps.n83_source_controls.outcome == 'success' && "
+                            "steps.n83_rust_controls.outcome == 'failure' }}",
+                   'kind': 'EXECUTABLE_STEP',
+                   'source_block_sha256': 'afd649b1cbaafa8c4c4498502a54d4ab13bc2605d62d27f2fe690e0086a3dae3'},
+                  {'ordinal': 33,
+                   'id': None,
+                   'name': 'Publish only sealed N83 originals and closed manifest',
+                   'guard': "${{ always() && inputs.native_scope == 'n83-preview' }}",
+                   'kind': 'ARTIFACT_RETENTION',
+                   'source_block_sha256': '087c7921f19d263ec29de22aa2b45d66f8a6536f734e45cd17eabe49612c55a5'}]}
+
+
+def _conditional_failure_reference(entry, job_id, step):
+    reviewed = REVIEWED_CONDITIONAL_FAILURE_DIAGNOSTICS.get(
+        step.get("source_block_sha256"))
+    if reviewed is None or entry.get("path") != reviewed["workflow"] or job_id != reviewed["job_id"]:
+        return None
+    if [step.get("kind"), step.get("name"), step.get("guard")] != reviewed["step_identity"]:
+        return None
+    return reviewed
+
+
+def _review_conditional_failure_scope(entry, jobs):
+    """Review exact N83 success/diagnostic selections; never admit a run."""
+    contract = REVIEWED_N83_CONDITIONAL_SCOPE
+    reserved_cases = {contract["success_case_id"], *contract["failure_cases"]}
+    rescue_ordinals = {spec["rescue_ordinal"] for spec in contract["failure_cases"].values()}
+    reserved_names = {item["name"] for item in contract["source_steps"]
+                      if item["ordinal"] in rescue_ordinals}
+    is_reserved = (entry.get("path") == contract["workflow"]
+                   or any(case.get("id") in reserved_cases for case in entry["cases"])
+                   or any(step.get("name") in reserved_names
+                          for job in entry["jobs"].values() for step in job["steps"]))
+    if not is_reserved:
+        return
+    require(entry["path"] == contract["workflow"], "conditional_diagnostic_workflow")
+    job_id = contract["job_id"]
+    require(set(jobs) == {job_id} and set(entry["jobs"]) == {job_id},
+            "conditional_diagnostic_job")
+    actual = jobs[job_id]
+    # Do not discover this contract only through a known hash. Every reserved
+    # case/source identity reaches these exact checks, even after all caller
+    # supplied catalogue hashes were rebound and both rescues are covered.
+    for expected in contract["source_steps"]:
+        matches = [item for item in actual["steps"]
+                   if item["ordinal"] == expected["ordinal"]]
+        require(len(matches) == 1, "conditional_diagnostic_step_source")
+        observed = matches[0]
+        require(observed["id"] == expected["id"]
+                and observed["name"] == expected["name"]
+                and observed["guard"] == expected["guard"]
+                and _kind(observed) == expected["kind"]
+                and digest(observed["raw"].encode("utf-8"))
+                    == expected["source_block_sha256"],
+                "conditional_diagnostic_step_source")
+    selected = {}
+    for case_id in reserved_cases:
+        matches = [case for case in entry["cases"] if case["id"] == case_id]
+        require(len(matches) == 1, "conditional_diagnostic_case")
+        selected[case_id] = matches[0]
+        expected_kind = ("TECHNICAL_SCOPE" if case_id == contract["success_case_id"]
+                         else "CONDITIONAL_ALTERNATIVE")
+        require(matches[0]["inputs"] == contract["case_inputs"]
+                and matches[0]["kind"] == expected_kind
+                and matches[0]["original_attempt"] == 1,
+                "conditional_diagnostic_case_inputs")
+    allowed_rescues = {spec["rescue_ordinal"]: case_id
+                       for case_id, spec in contract["failure_cases"].items()}
+    for case in entry["cases"]:
+        for instance in case["required_job_instances"]:
+            if instance["job_id"] != job_id:
+                continue
+            for ordinal, permitted_case in allowed_rescues.items():
+                require(ordinal not in instance["required_steps"]
+                        or case["id"] == permitted_case,
+                        "conditional_diagnostic_positive_obligation")
+    def exact_instance(ordinals):
+        return [{"job_id": job_id, "display_name": job_id, "matrix": {},
+                 "name_binding": "literal_definition", "required_steps": ordinals}]
+    success = selected[contract["success_case_id"]]
+    require(success["required_job_instances"]
+            == exact_instance(contract["success_required_steps"]),
+            "conditional_diagnostic_success_steps")
+    for case_id, spec in contract["failure_cases"].items():
+        failure = selected[case_id]
+        require(failure["required_job_instances"] == exact_instance(spec["required_steps"]),
+                "conditional_diagnostic_case_steps")
+        failed = [item for item in actual["steps"]
+                  if item["id"] == spec["failed_anchor_id"]]
+        require(len(failed) == 1 and failed[0]["ordinal"] == spec["failed_anchor_ordinal"]
+                and spec["failed_anchor_outcome"] == "failure"
+                and failed[0]["ordinal"] < spec["rescue_ordinal"]
+                and failed[0]["ordinal"] not in spec["required_steps"]
+                and failed[0]["ordinal"] in contract["success_required_steps"],
+                "conditional_diagnostic_failed_anchor")
+        for anchor_id in spec["successful_anchor_ids"]:
+            anchors = [item for item in actual["steps"] if item["id"] == anchor_id]
+            require(len(anchors) == 1
+                    and anchors[0]["ordinal"] < failed[0]["ordinal"]
+                    and anchors[0]["ordinal"] in spec["required_steps"],
+                    "conditional_diagnostic_prior_anchor")
+
+
 def _retention_failure_reference(step):
     """Recognize reviewed failure diagnostics and authenticate their positive anchor."""
     reviewed = REVIEWED_FAILURE_DIAGNOSTICS.get(step.get("source_block_sha256"))
@@ -562,7 +877,8 @@ def _validate_reviewed_scope(entry):
             # Failure diagnostics remain retained in the definition but are not
             # success-path obligations. No arbitrary skip waiver is supported.
             failure_only = (step["guard"] in ("failure()", "failure() || cancelled()")
-                            or _retention_failure_reference(step) is not None)
+                            or _retention_failure_reference(step) is not None
+                            or _conditional_failure_reference(entry, job_id, step) is not None)
             require(step["ordinal"] in covered_steps[job_id] or failure_only,
                     "reviewed_uncovered_step")
 
@@ -629,6 +945,7 @@ def review_scope_definition(raw, entry):
                             "diagnostic_retention_anchor_not_required")
                     require(step["ordinal"] not in instance["required_steps"],
                             "diagnostic_retention_positive_obligation")
+    _review_conditional_failure_scope(entry, jobs)
 
 
 def _reviewed_obligations(source, workflows, entry, observations, gaps, dispositions):

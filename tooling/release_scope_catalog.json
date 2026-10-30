@@ -7710,7 +7710,7 @@
     },
     {
       "path": ".github/workflows/native-render-e2e.yml",
-      "sha256": "245e2d897c0ea30b93718835d2c089eb0d09d3bb0cae63a17c18801aa76beca6",
+      "sha256": "b174f88863260de57d29b81b054f14de89b9581381f4960ee62fc079fc4cf3bf",
       "preamble_sha256": "b2522b04fb38a3cafaa3ee340c888b1a6e33cd33016d86d9a9d95f03dd4f4386",
       "evidence_class": "native_render",
       "purpose": "Existing standard independent native repeats and the explicitly selected source-bound N83 preview fixture; neither scope grants formal acceptance.",
@@ -7754,9 +7754,10 @@
           "n83-preview": {
             "covered_by": [
               "n83-preview",
-              "n83-preflight-failure"
+              "n83-preflight-failure",
+              "n83-rust-controls-failure"
             ],
-            "basis": "N83 requires an explicit first-attempt manual dispatch, exact candidate source binding and an existing admitted public recovery recipient. The failure-retention alternative applies only when that same attempt fails its source controls; it is not another dispatch or a success requirement."
+            "basis": "N83 requires an explicit first-attempt manual dispatch, exact candidate source binding and an existing admitted public recovery recipient. The failure-retention alternative applies only when that same attempt fails its source controls; it is not another dispatch or a success requirement. The former combined source-control failure is now split explicitly into the early Python75 and later Rust3 retention branches of that same attempt; neither branch is dispatched independently."
           }
         },
         "expected_source_sha": {},
@@ -7772,9 +7773,10 @@
             "covered_by": [
               "independent-repeat",
               "n83-preview",
-              "n83-preflight-failure"
+              "n83-preflight-failure",
+              "n83-rust-controls-failure"
             ],
-            "basis": "For standard, false selects the shared single-run subset covered by the reviewed repeat. N83 requires false and disables repeat/event replay; its conditional source-control failure retention never grants permission for a Native attempt."
+            "basis": "For standard, false selects the shared single-run subset covered by the reviewed repeat. N83 requires false and disables repeat/event replay; its conditional source-control failure retention never grants permission for a Native attempt. The former combined source-control failure is now split explicitly into the early Python75 and later Rust3 retention branches of that same attempt; neither branch is dispatched independently."
           }
         }
       },
@@ -7785,7 +7787,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "d84661040c1dd70bd5750903b0ee5d87a254f432985d7055f671ce836cf28b25",
+          "source_sha256": "c770738dfd228dac961e53610e4ddcb815d4d8be2294eadcaba8c544ff8534ab",
           "instance_sets": {
             "independent-repeat": [
               {}
@@ -7794,6 +7796,9 @@
               {}
             ],
             "n83-preflight-failure": [
+              {}
+            ],
+            "n83-rust-controls-failure": [
               {}
             ]
           },
@@ -7816,94 +7821,14 @@
             },
             {
               "ordinal": 4,
-              "name": "Resolve exact Semwright source pin",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2295ea5f626f5622e2973cc752993b3fcd7a8c772b3b085f965898a106ffe59c",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 6,
-              "name": "Verify immutable source identities",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "15efdd3445e2fe8655d0b1730f672d296708b5a01f0367a26d39d37b8957ddd1",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 7,
-              "name": "Verify v0.1 native CLI failures never expose private job receipts",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "552747fa7915eced006d6b44f6b4fb20ac1ab43d948d3e64e56a5d109e278a42",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 8,
-              "name": "Reject raw Broker session or forged native parity in public evidence",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "613470b82f57cb77a295358497d6f065b773d223589be8cef44b575fcb52582e",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 12,
-              "name": "Configure disposable-runner Driver Host sandbox",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "6cca3435dbaa0c5fc9d199a6c801938879eb548084469689132329d3dc4be264",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 13,
-              "name": "Install Semwright daemon build dependencies",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "7485141fabbc275dff38bd03a2488c7d74574909538aec8ed0f7628439455f17",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 14,
-              "name": "Install exact Motion Canvas runtime and Firefox",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "800d16321736490511ff761405babd393f555e9757e7287d1db79594fe66c1c7",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 15,
-              "name": "Build exact Semwright Broker, sandbox and Motion Canvas provider",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "b29c57238cfba0f0b855988e76d03bdc3a7db30fc1db4c4e84ee6925c0dbf12f",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 16,
-              "name": "Build admitted N83 preview producer",
-              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "35d36b768f1c3db7f634d79aaf1abe8857482ab4416a95c527571038a1d9a60e",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 17,
-              "name": "Build Motionwright production acceptance",
-              "guard": "${{ inputs.native_scope != 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "8571872b28d8582769e1f1b80d784b214cf31f03905ad24a4a0df1e54a64a947",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 18,
               "name": "Verify exact N83 source controls before Native",
               "guard": "${{ inputs.native_scope == 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "81b0de7545f8fcbd3bebcc4e60ce855b95b20b9d3f66f277b55aff7648564084",
+              "source_block_sha256": "624cfc1bff5a0e2e6792cc0ca252226bb2c3ff250c5d1ec3b0ba807ac7f91267",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 19,
+              "ordinal": 5,
               "name": "Seal failed N83 source controls without any owner or Native attempt",
               "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7911,7 +7836,103 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
+              "ordinal": 6,
+              "name": "Resolve exact Semwright source pin",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "2295ea5f626f5622e2973cc752993b3fcd7a8c772b3b085f965898a106ffe59c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Verify immutable source identities",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "15efdd3445e2fe8655d0b1730f672d296708b5a01f0367a26d39d37b8957ddd1",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
+              "name": "Verify v0.1 native CLI failures never expose private job receipts",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "552747fa7915eced006d6b44f6b4fb20ac1ab43d948d3e64e56a5d109e278a42",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 10,
+              "name": "Reject raw Broker session or forged native parity in public evidence",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "613470b82f57cb77a295358497d6f065b773d223589be8cef44b575fcb52582e",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
+              "name": "Configure disposable-runner Driver Host sandbox",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "6cca3435dbaa0c5fc9d199a6c801938879eb548084469689132329d3dc4be264",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 15,
+              "name": "Install Semwright daemon build dependencies",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "7485141fabbc275dff38bd03a2488c7d74574909538aec8ed0f7628439455f17",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 16,
+              "name": "Install exact Motion Canvas runtime and Firefox",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "800d16321736490511ff761405babd393f555e9757e7287d1db79594fe66c1c7",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 17,
+              "name": "Build exact Semwright Broker, sandbox and Motion Canvas provider",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b29c57238cfba0f0b855988e76d03bdc3a7db30fc1db4c4e84ee6925c0dbf12f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 18,
+              "name": "Build admitted N83 preview producer",
+              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "35d36b768f1c3db7f634d79aaf1abe8857482ab4416a95c527571038a1d9a60e",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 19,
+              "name": "Build Motionwright production acceptance",
+              "guard": "${{ inputs.native_scope != 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "8571872b28d8582769e1f1b80d784b214cf31f03905ad24a4a0df1e54a64a947",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
               "ordinal": 20,
+              "name": "Verify exact N83 Rust3 source controls before Native",
+              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "08a322eb1f49018f6e2d67cf7c3cc704f4bf0ad0dcf03821c0b6d0f59af02bb2",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 21,
+              "name": "Seal failed N83 Rust3 source controls without any owner or Native attempt",
+              "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'success' && steps.n83_rust_controls.outcome == 'failure' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "afd649b1cbaafa8c4c4498502a54d4ab13bc2605d62d27f2fe690e0086a3dae3",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 22,
               "name": "Verify direct-vs-mediated parity invariants before native rendering",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7919,7 +7940,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 21,
+              "ordinal": 23,
               "name": "Reject synthetic or incorrectly interpolated cubic ROI evidence",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7927,7 +7948,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 22,
+              "ordinal": 24,
               "name": "Reject invented render stage timing claims",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7935,7 +7956,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 23,
+              "ordinal": 25,
               "name": "Verify bounded provider lifecycle diagnostics",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7943,7 +7964,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 24,
+              "ordinal": 26,
               "name": "Reject fabricated independent-run reliability evidence",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7951,7 +7972,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 25,
+              "ordinal": 27,
               "name": "Render application-owned revision through real Broker and Driver Host",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -7959,7 +7980,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 26,
+              "ordinal": 28,
               "name": "Verify review evidence",
               "guard": "${{ inputs.native_scope != 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7967,7 +7988,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 27,
+              "ordinal": 29,
               "name": "Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)",
               "guard": "${{ inputs.native_scope != 'n83-preview' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}",
               "kind": "EXECUTABLE_STEP",
@@ -7975,7 +7996,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 28,
+              "ordinal": 30,
               "name": "Stage only verified v0.1 native PNG review, not original Broker receipts",
               "guard": "${{ always() && inputs.native_scope != 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7983,7 +8004,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 29,
+              "ordinal": 31,
               "name": null,
               "guard": "${{ always() && inputs.native_scope != 'n83-preview' }}",
               "kind": "ARTIFACT_RETENTION",
@@ -7991,7 +8012,7 @@
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
             },
             {
-              "ordinal": 30,
+              "ordinal": 32,
               "name": "Verify complete sealed N83 fixture outcome",
               "guard": "${{ inputs.native_scope == 'n83-preview' }}",
               "kind": "EXECUTABLE_STEP",
@@ -7999,7 +8020,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 31,
+              "ordinal": 33,
               "name": "Publish only sealed N83 originals and closed manifest",
               "guard": "${{ always() && inputs.native_scope == 'n83-preview' }}",
               "kind": "ARTIFACT_RETENTION",
@@ -8027,17 +8048,15 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                4,
                 6,
-                7,
                 8,
-                12,
-                13,
+                9,
+                10,
                 14,
                 15,
+                16,
                 17,
-                20,
-                21,
+                19,
                 22,
                 23,
                 24,
@@ -8045,11 +8064,13 @@
                 26,
                 27,
                 28,
-                29
+                29,
+                30,
+                31
               ]
             }
           ],
-          "coverage_basis": "The standard repeat preserves the existing native acceptance, direct/mediated parity, fresh owner/Broker/Driver Host repeat and bounded public-artifact steps. N83-only steps 3,16,18,19,30,31 are not selected. Intermittent loss repair remains NOT_PROVEN; exact originals remain necessary.",
+          "coverage_basis": "The standard repeat preserves the existing native acceptance, direct/mediated parity, fresh owner/Broker/Driver Host repeat and bounded public-artifact steps. N83-only steps 3,4,5,18,20,21,32,33 are not selected. Intermittent loss repair remains NOT_PROVEN; exact originals remain necessary.",
           "original_attempt": null,
           "blocking_reason": null
         },
@@ -8077,26 +8098,27 @@
                 3,
                 4,
                 6,
-                7,
                 8,
-                12,
-                13,
+                9,
+                10,
                 14,
                 15,
                 16,
+                17,
                 18,
                 20,
-                21,
                 22,
                 23,
                 24,
                 25,
-                30,
-                31
+                26,
+                27,
+                32,
+                33
               ]
             }
           ],
-          "coverage_basis": "The explicit manual N83 selection requires attempt 1, expected_source_sha equal to GITHUB_SHA and clean HEAD, unchanged committed lock bytes and an already admitted RSA3072 recovery recipient before owner or Native effects. It runs the exact Python75 and Rust3 source controls, then seed/before/edit/dirty/full-after/assemble-input/admit-preview/reopen-preview/dependency-negative once. Only before, dirty and full-after render (90+60+90 frames). The success path requires the complete sealed outcome and upload; source-control failure salvage step19 is excluded. Standard parity/repeat rendering is not selected; no formal acceptance, automatic retry or current preview at the negative TimeRipple revision is inferred.",
+          "coverage_basis": "The explicit manual N83 selection requires attempt 1, expected_source_sha equal to GITHUB_SHA and clean HEAD, unchanged committed lock bytes and an already admitted RSA3072 recovery recipient before owner or Native effects. It runs the exact Python75 and Rust3 source controls, then seed/before/edit/dirty/full-after/assemble-input/admit-preview/reopen-preview/dependency-negative once. Only before, dirty and full-after render (90+60+90 frames). The success path requires the complete sealed outcome and upload; source-control failure salvage steps5 and21 are excluded. Standard parity/repeat rendering is not selected; no formal acceptance, automatic retry or current preview at the negative TimeRipple revision is inferred.",
           "original_attempt": 1,
           "blocking_reason": null
         },
@@ -8122,21 +8144,53 @@
               "required_steps": [
                 2,
                 3,
-                4,
-                6,
-                7,
-                8,
-                12,
-                13,
-                14,
-                15,
-                16,
-                19,
-                31
+                5,
+                33
               ]
             }
           ],
-          "coverage_basis": "This is only the diagnostic-retention branch of the same first N83 attempt when the original n83_source_controls step18 has outcome failure. Its preceding successful bootstrap and step19 seal-only command retain the failed source-control originals for step31 upload. Step18 is an observed failure, not a positive obligation; steps20-25 and30 do not execute. The seal refuses an existing owner, Native evidence or public seal and emits NOT_VERIFIED with no completed Native stages. Do not provoke a failure or dispatch another run to satisfy this branch. It never substitutes for the n83-preview success case or grants source, Native or release acceptance.",
+          "coverage_basis": "This preserves A1's n83-preflight-failure diagnostic-retention obligation, now specifically the early Python75 branch of the same first N83 attempt when n83_source_controls step4 has outcome failure. Only the preceding successful closed admission and private custody setup steps2 and3 are required before step5 seals the failed source-control originals for step33 upload. Step4 is an observed failure, not a positive obligation. SDK checkout, bootstrap, Rust3, Native and complete-outcome verification do not execute on this branch. The seal refuses an existing owner, Native evidence or public seal and emits NOT_VERIFIED with no completed Native stages. Do not provoke a failure or dispatch another run to satisfy this branch. It never substitutes for the n83-preview success case or grants source, Native or release acceptance.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "n83-rust-controls-failure",
+          "inputs": {
+            "native_scope": "n83-preview",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "v01_provider_repeat": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                4,
+                6,
+                8,
+                9,
+                10,
+                14,
+                15,
+                16,
+                17,
+                18,
+                21,
+                33
+              ]
+            }
+          ],
+          "coverage_basis": "This separates the later Rust3 part of A1's original combined preflight-failure obligation within the same first N83 attempt. Python75 step4 and its preceding exact setup must have succeeded; n83_rust_controls step20 has observed outcome failure. The exact successful prerequisites are steps2,3,4,6,8,9,10,14,15,16,17,18, followed by the step21 seal-only command and step33 upload. Step20 is never a positive obligation. The Native owner step27, complete-outcome verifier step32, standard repeat and early Python-failure seal step5 do not execute on this branch. The seal refuses an existing owner, Native evidence or public seal and emits NOT_VERIFIED with no completed Native stages. This is a conditional diagnostic branch, not another dispatch, a required provoked failure or a substitute for the n83-preview success case. UNKNOWN does not authorize replay.",
           "original_attempt": 1,
           "blocking_reason": null
         }
@@ -8146,7 +8200,8 @@
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
         "N83 is a bounded preview fixture, not formal acceptance. Its first-attempt source/lock/recipient admission and selected original custody remain mandatory; no recovery identity is created by this catalog.",
-        "The preflight-failure alternative is conditional retention only. Its NOT_VERIFIED seal cannot satisfy N83 success, and step19 is never required on the success path."
+        "The preserved preflight-failure alternative is Python75 conditional retention only; the separate Rust3 failure alternative carries the later half of the former combined failure obligation. Their NOT_VERIFIED seals cannot satisfy N83 success. Rescue steps5 and21 are required only in their exact diagnostic alternatives and never on the success path; failed source-control anchors4 and20 are not positive requirements of their respective failure branches.",
+        "The catalogue describes possible success and failure observations of one selected N83 attempt. Its182 case declarations are not182 executions or a universal release denominator; no runtime reader, dispatch authority or automatic retry is added."
       ]
     },
     {

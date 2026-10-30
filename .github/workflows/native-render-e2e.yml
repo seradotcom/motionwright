@@ -119,6 +119,67 @@ jobs:
           "$RUNNER_TEMP/n83-custody-venv/bin/python" -m pip install             --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
           "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-admission-only
 
+      - name: Verify exact N83 source controls before Native
+        id: n83_source_controls
+        if: ${{ inputs.native_scope == 'n83-preview' }}
+        run: |
+          preflight="$RUNNER_TEMP/mw-n83-preflight-$GITHUB_RUN_ID"
+          python="$RUNNER_TEMP/n83-custody-venv/bin/python"
+          "$python" -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          selected = (
+              "crates/native/examples/native-incremental-e2e.rs",
+              "tooling/native_incremental_reconstruction.py",
+              "tooling/tests/test_native_incremental_reconstruction.py",
+              "tooling/ci_test_runner.py", "tooling/native_render_e2e.py",
+              ".github/workflows/native-render-e2e.yml", "SOURCE_LOCK.json", "Cargo.lock",
+              "rust-toolchain.toml", "apps/studio/package-lock.json",
+          )
+          originals = {}
+          for relative in selected:
+              raw = Path(relative).read_bytes()
+              target = root / "source" / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              with target.open("xb") as stream:
+                  stream.write(raw)
+              originals[relative] = {"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()}
+          with (root / "source-originals.json").open("x") as stream:
+              json.dump({"expected_source_sha":os.environ["GITHUB_SHA"],"files":originals}, stream)
+          PY
+          "$python" -B - <<'PY'
+          import json, os, unittest
+          from pathlib import Path
+          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_native_incremental_reconstruction.py")
+          def ids(test):
+              if isinstance(test, unittest.TestSuite):
+                  for child in test:
+                      yield from ids(child)
+              else:
+                  yield test.id()
+          roster = sorted(ids(suite))
+          assert len(roster) == 75 and len(set(roster)) == 75
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          with (root / "python75-roster.original.json").open("x") as stream:
+              json.dump({"source_sha":os.environ["GITHUB_SHA"],"test_ids":roster}, stream)
+          PY
+          "$python" -B tooling/ci_test_runner.py             --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests             --pattern test_native_incremental_reconstruction.py             --mode discovery --require-complete --expected-source "$GITHUB_SHA"             --timeout 180 --report "$preflight/python75.json"             >"$preflight/python75-runner.stdout.original" 2>"$preflight/python75-runner.stderr.original"
+          "$python" -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
+          result = json.loads((root / "python75.json").read_text())
+          assert result["status"] == "PASS" and result["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert len(result["steps"]) == 1 and result["steps"][0]["status"] == "PASS"
+          stderr = (root / "python75-00-stderr.log").read_text()
+          assert len(re.findall(r"(?m)^Ran 75 tests in ", stderr)) == 1
+          PY
+
+      - name: Seal failed N83 source controls without any owner or Native attempt
+        if: ${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}
+        run: '"$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-seal-preflight-failure'
+
       - name: Resolve exact Semwright source pin
         id: pin
         run: |
@@ -209,62 +270,12 @@ jobs:
           cargo test --locked -p motionwright-native --lib \
             smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
 
-      - name: Verify exact N83 source controls before Native
-        id: n83_source_controls
+      - name: Verify exact N83 Rust3 source controls before Native
+        id: n83_rust_controls
         if: ${{ inputs.native_scope == 'n83-preview' }}
         run: |
           preflight="$RUNNER_TEMP/mw-n83-preflight-$GITHUB_RUN_ID"
           python="$RUNNER_TEMP/n83-custody-venv/bin/python"
-          "$python" -B - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
-          selected = (
-              "crates/native/examples/native-incremental-e2e.rs",
-              "tooling/native_incremental_reconstruction.py",
-              "tooling/tests/test_native_incremental_reconstruction.py",
-              "tooling/ci_test_runner.py", "tooling/native_render_e2e.py",
-              ".github/workflows/native-render-e2e.yml", "SOURCE_LOCK.json", "Cargo.lock",
-              "rust-toolchain.toml", "apps/studio/package-lock.json",
-          )
-          originals = {}
-          for relative in selected:
-              raw = Path(relative).read_bytes()
-              target = root / "source" / relative
-              target.parent.mkdir(parents=True, exist_ok=True)
-              with target.open("xb") as stream:
-                  stream.write(raw)
-              originals[relative] = {"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()}
-          with (root / "source-originals.json").open("x") as stream:
-              json.dump({"expected_source_sha":os.environ["GITHUB_SHA"],"files":originals}, stream)
-          PY
-          "$python" -B - <<'PY'
-          import json, os, unittest
-          from pathlib import Path
-          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_native_incremental_reconstruction.py")
-          def ids(test):
-              if isinstance(test, unittest.TestSuite):
-                  for child in test:
-                      yield from ids(child)
-              else:
-                  yield test.id()
-          roster = sorted(ids(suite))
-          assert len(roster) == 75 and len(set(roster)) == 75
-          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
-          with (root / "python75-roster.original.json").open("x") as stream:
-              json.dump({"source_sha":os.environ["GITHUB_SHA"],"test_ids":roster}, stream)
-          PY
-          "$python" -B tooling/ci_test_runner.py             --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests             --pattern test_native_incremental_reconstruction.py             --mode discovery --require-complete --expected-source "$GITHUB_SHA"             --timeout 180 --report "$preflight/python75.json"             >"$preflight/python75-runner.stdout.original" 2>"$preflight/python75-runner.stderr.original"
-          "$python" -B - <<'PY'
-          import json, os, re
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-n83-preflight-" + os.environ["GITHUB_RUN_ID"])
-          result = json.loads((root / "python75.json").read_text())
-          assert result["status"] == "PASS" and result["executed_source_sha"] == os.environ["GITHUB_SHA"]
-          assert len(result["steps"]) == 1 and result["steps"][0]["status"] == "PASS"
-          stderr = (root / "python75-00-stderr.log").read_text()
-          assert len(re.findall(r"(?m)^Ran 75 tests in ", stderr)) == 1
-          PY
           cargo test --locked -p motionwright-native --example native-incremental-e2e -- --list             >"$preflight/rust3-list.stdout.original" 2>"$preflight/rust3-list.stderr.original"
           "$python" -B - <<'PY'
           import json, os
@@ -290,8 +301,8 @@ jobs:
           assert len(re.findall(r"(?m)^test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;", stdout)) == 1
           PY
 
-      - name: Seal failed N83 source controls without any owner or Native attempt
-        if: ${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}
+      - name: Seal failed N83 Rust3 source controls without any owner or Native attempt
+        if: ${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'success' && steps.n83_rust_controls.outcome == 'failure' }}
         run: '"$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-seal-preflight-failure'
 
       - name: Verify direct-vs-mediated parity invariants before native rendering

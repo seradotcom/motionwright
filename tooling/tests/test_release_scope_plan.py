@@ -1275,5 +1275,314 @@ class DiagnosticRetentionTests(unittest.TestCase):
 
 
 
+
+
+class N83ConditionalFailureTests(unittest.TestCase):
+    """Exact conditional rescues cannot turn a failed/skipped path into success."""
+
+    def setUp(self):
+        root = Path(__file__).resolve().parents[2]
+        self.raw = (root / ".github/workflows/native-render-e2e.yml").read_bytes()
+        catalog = json.loads((root / "tooling/release_scope_catalog.json").read_bytes())
+        self.entry = copy.deepcopy(next(item for item in catalog["reviewed_scopes"]
+                                        if item["path"] == ".github/workflows/native-render-e2e.yml"))
+        self.job_id = "real-native-render"
+        _, jobs = scope._source_outline(self.raw.decode("utf-8"))
+        self.steps = jobs[self.job_id]["steps"]
+
+    def _review(self, raw=None, entry=None):
+        raw = self.raw if raw is None else raw
+        entry = self.entry if entry is None else entry
+        scope.validate_catalog({"schema": scope.REVIEWED_CATALOG_SCHEMA,
+                                "workflows": [], "reviewed_scopes": [entry],
+                                "limitations": ["Synthetic source controls; no execution credit."]})
+        scope.review_scope_definition(raw, entry)
+
+    def _case(self, name, entry=None):
+        return next(case for case in (self.entry if entry is None else entry)["cases"]
+                    if case["id"] == name)
+
+    def _step(self, name):
+        return next(step for step in self.steps if step["name"] == name or step["id"] == name)
+
+    def _rebind(self, raw):
+        # Model an adversary updating every caller-controlled definition hash.
+        # Hard-coded reviewed diagnostic/anchor identities must still reject it.
+        entry = copy.deepcopy(self.entry)
+        preamble, jobs = scope._source_outline(raw.decode("utf-8"))
+        job = jobs[self.job_id]
+        entry["sha256"] = scope.digest(raw)
+        entry["preamble_sha256"] = scope.digest(preamble.encode("utf-8"))
+        contract = entry["jobs"][self.job_id]
+        contract["source_sha256"] = scope.digest(job["raw"].encode("utf-8"))
+        contract["steps"] = [
+            {"ordinal": step["ordinal"], "name": step["name"], "guard": step["guard"],
+             "kind": scope._kind(step), "source_block_sha256": scope.digest(step["raw"].encode("utf-8")),
+             "api_binding": "EXPLICIT_NAME" if step["name"] else "REQUIRES_ORIGINAL_RUN_MAPPING"}
+            for step in job["steps"] if scope._kind(step)]
+        return entry
+
+    def _changed_step(self, step, replacement):
+        before = step["raw"].encode("utf-8")
+        self.assertEqual(self.raw.count(before), 1)
+        after = replacement.encode("utf-8")
+        self.assertNotEqual(before, after)
+        return self.raw.replace(before, after, 1)
+
+    def test_standard_and_n83_keep_distinct_positive_selections(self):
+        self._review()
+        standard = self._case("independent-repeat")
+        n83 = self._case("n83-preview")
+        self.assertEqual(standard["inputs"]["native_scope"], "standard")
+        self.assertIs(standard["inputs"]["v01_provider_repeat"], True)
+        self.assertEqual(n83["inputs"]["native_scope"], "n83-preview")
+        self.assertIs(n83["inputs"]["v01_provider_repeat"], False)
+        anchors = {self._step(name)["ordinal"] for name in
+                   ("n83_source_controls", "n83_rust_controls")}
+        self.assertTrue(anchors <= set(n83["required_job_instances"][0]["required_steps"]))
+        self.assertFalse(anchors & set(standard["required_job_instances"][0]["required_steps"]))
+
+    def test_reviewed_n83_definition_does_not_admit_execution(self):
+        catalog = {"schema": scope.REVIEWED_CATALOG_SCHEMA, "workflows": [],
+                   "reviewed_scopes": [self.entry], "limitations": ["No runtime evidence."]}
+        result = scope.build_plan(SOURCE, {self.entry["path"]: self.raw}, catalog)
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertIn("READBACK_REQUIRED", serialized)
+        self.assertIn("scope_observation_binding_not_implemented", serialized)
+        self.assertNotIn('"evidence_admission": "ADMITTED"', serialized)
+
+    def test_changed_rescue_source_cannot_be_waived_by_rebinding_hashes(self):
+        step = self._step("Seal failed N83 source controls without any owner or Native attempt")
+        raw = self._changed_step(step, step["raw"] + "\n        # unreviewed rescue edit")
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+            self._review(raw, self._rebind(raw))
+
+    def test_exact_rescue_cannot_be_reused_in_another_workflow(self):
+        entry = copy.deepcopy(self.entry)
+        entry["path"] = ".github/workflows/unreviewed-native-render.yml"
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_workflow"):
+            self._review(entry=entry)
+
+    def test_missing_selected_n83_case_is_refused(self):
+        entry = copy.deepcopy(self.entry)
+        entry["cases"] = [self._case("independent-repeat", entry)]
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case"):
+            scope.review_scope_definition(self.raw, entry)
+
+    def test_selected_n83_case_inputs_and_attempt_cannot_be_substituted(self):
+        for key, value in [("v01_provider_repeat", True), ("expected_source_sha", ""),
+                           ("recovery_recipient", "")]:
+            with self.subTest(input=key):
+                entry = copy.deepcopy(self.entry)
+                self._case("n83-preview", entry)["inputs"][key] = value
+                with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case_inputs"):
+                    self._review(entry=entry)
+        entry = copy.deepcopy(self.entry)
+        self._case("n83-preview", entry)["original_attempt"] = None
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case_inputs"):
+            self._review(entry=entry)
+
+    def test_python_positive_anchor_cannot_be_omitted(self):
+        entry = copy.deepcopy(self.entry)
+        ordinal = self._step("n83_source_controls")["ordinal"]
+        self._case("n83-preview", entry)["required_job_instances"][0]["required_steps"].remove(ordinal)
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_success_steps"):
+            scope.review_scope_definition(self.raw, entry)
+
+    def test_rust_positive_anchor_cannot_be_omitted(self):
+        entry = copy.deepcopy(self.entry)
+        ordinal = self._step("n83_rust_controls")["ordinal"]
+        self._case("n83-preview", entry)["required_job_instances"][0]["required_steps"].remove(ordinal)
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_success_steps"):
+            scope.review_scope_definition(self.raw, entry)
+
+    def test_rescue_is_never_a_positive_obligation_in_either_case(self):
+        names = ["Seal failed N83 source controls without any owner or Native attempt",
+                 "Seal failed N83 Rust3 source controls without any owner or Native attempt"]
+        for name in names:
+            for case_id in ("independent-repeat", "n83-preview"):
+                with self.subTest(rescue=name, case_id=case_id):
+                    entry = copy.deepcopy(self.entry)
+                    self._case(case_id, entry)["required_job_instances"][0]["required_steps"].append(
+                        self._step(name)["ordinal"])
+                    with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_positive_obligation"):
+                        self._review(entry=entry)
+
+    def test_positive_anchor_source_remains_exact_even_after_hash_rebinding(self):
+        step = self._step("n83_source_controls")
+        raw = self._changed_step(step, step["raw"] + "\n        # unreviewed anchor edit")
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+            self._review(raw, self._rebind(raw))
+
+    def test_missing_or_renamed_positive_anchor_is_refused(self):
+        step = self._step("n83_rust_controls")
+        raw = self._changed_step(step, step["raw"].replace("id: n83_rust_controls",
+                                                        "id: unreviewed_rust_controls"))
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+            self._review(raw, self._rebind(raw))
+
+    def test_positive_anchor_guard_cannot_be_relaxed(self):
+        step = self._step("n83_source_controls")
+        raw = self._changed_step(step, step["raw"].replace(
+            "if: ${{ inputs.native_scope == 'n83-preview' }}", "if: ${{ always() }}"))
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+            self._review(raw, self._rebind(raw))
+
+    def test_unknown_conditional_rescue_guard_is_not_a_skip_waiver(self):
+        step = self._step("Seal failed N83 source controls without any owner or Native attempt")
+        raw = self._changed_step(step, step["raw"].replace("outcome == 'failure'",
+                                                        "outcome == 'cancelled'"))
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+            self._review(raw, self._rebind(raw))
+
+
+
+class N83FailureBranchTests(unittest.TestCase):
+    """Two observed failure branches never satisfy the successful N83 fixture."""
+
+    setUp = N83ConditionalFailureTests.setUp
+    _review = N83ConditionalFailureTests._review
+    _case = N83ConditionalFailureTests._case
+    _step = N83ConditionalFailureTests._step
+    _rebind = N83ConditionalFailureTests._rebind
+    _changed_step = N83ConditionalFailureTests._changed_step
+
+    def test_a1_preflight_failure_id_is_retained_for_early_python(self):
+        self._review()
+        case = self._case("n83-preflight-failure")
+        self.assertEqual(case["kind"], "CONDITIONAL_ALTERNATIVE")
+        self.assertEqual(case["required_job_instances"][0]["required_steps"], [2, 3, 5, 33])
+        self.assertNotIn(4, case["required_job_instances"][0]["required_steps"])
+        self.assertNotIn(27, case["required_job_instances"][0]["required_steps"])
+
+    def test_rust_failure_requires_python_success_without_failed_rust_or_native(self):
+        self._review()
+        case = self._case("n83-rust-controls-failure")
+        required = case["required_job_instances"][0]["required_steps"]
+        self.assertEqual(required, [2, 3, 4, 6, 8, 9, 10, 14, 15, 16, 17, 18, 21, 33])
+        self.assertIn(4, required)
+        self.assertNotIn(20, required)
+        self.assertNotIn(27, required)
+        self.assertNotIn(32, required)
+
+    def test_three_n83_branches_share_one_attempt_without_dispatch_authority(self):
+        success = self._case("n83-preview")
+        for name in ("n83-preflight-failure", "n83-rust-controls-failure"):
+            case = self._case(name)
+            self.assertEqual(case["inputs"], success["inputs"])
+            self.assertEqual(case["original_attempt"], 1)
+            self.assertEqual(case["kind"], "CONDITIONAL_ALTERNATIVE")
+        catalog = {"schema": scope.REVIEWED_CATALOG_SCHEMA, "workflows": [],
+                   "reviewed_scopes": [self.entry], "limitations": ["Descriptive only."]}
+        result = scope.build_plan(SOURCE, {self.entry["path"]: self.raw}, catalog)
+        self.assertFalse(result["automatic_dispatch"])
+        self.assertFalse(result["retry_authorized"])
+        self.assertEqual(result["release_verdict"], "NOT_GRANTED")
+        self.assertTrue(all(row["observation"]["evidence_admission"] == "NOT_PERFORMED"
+                            for row in result["obligations"]))
+
+    def test_both_exact_failure_case_ids_are_required(self):
+        for missing in ("n83-preflight-failure", "n83-rust-controls-failure"):
+            with self.subTest(missing=missing):
+                entry = copy.deepcopy(self.entry)
+                entry["cases"] = [case for case in entry["cases"] if case["id"] != missing]
+                with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case"):
+                    scope.review_scope_definition(self.raw, entry)
+
+    def test_failure_case_kind_inputs_and_attempt_cannot_be_substituted(self):
+        for name in ("n83-preflight-failure", "n83-rust-controls-failure"):
+            mutations = [("kind", "TECHNICAL_SCOPE"), ("original_attempt", None),
+                         ("expected_source_sha", ""), ("recovery_recipient", ""),
+                         ("v01_provider_repeat", True)]
+            for field, value in mutations:
+                with self.subTest(case=name, field=field):
+                    entry = copy.deepcopy(self.entry)
+                    case = self._case(name, entry)
+                    if field in ("kind", "original_attempt"):
+                        case[field] = value
+                    else:
+                        case["inputs"][field] = value
+                    with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case_inputs"):
+                        scope.review_scope_definition(self.raw, entry)
+
+    def test_failure_cannot_require_its_failed_anchor_or_native_success(self):
+        for name, failed in (("n83-preflight-failure", 4), ("n83-rust-controls-failure", 20)):
+            for forbidden in (failed, 27, 32):
+                with self.subTest(case=name, step=forbidden):
+                    entry = copy.deepcopy(self.entry)
+                    self._case(name, entry)["required_job_instances"][0]["required_steps"].append(forbidden)
+                    with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case_steps"):
+                        self._review(entry=entry)
+
+    def test_failure_cannot_omit_successful_setup_or_sealed_upload(self):
+        for name, selected in (("n83-preflight-failure", (2, 3, 33)),
+                               ("n83-rust-controls-failure", (2, 3, 4, 18, 33))):
+            for missing in selected:
+                with self.subTest(case=name, step=missing):
+                    entry = copy.deepcopy(self.entry)
+                    self._case(name, entry)["required_job_instances"][0]["required_steps"].remove(missing)
+                    with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case_steps"):
+                        self._review(entry=entry)
+
+    def test_failure_branch_cannot_claim_the_other_rescue(self):
+        for name, old, wrong in (("n83-preflight-failure", 5, 21),
+                                  ("n83-rust-controls-failure", 21, 5)):
+            with self.subTest(case=name):
+                entry = copy.deepcopy(self.entry)
+                required = self._case(name, entry)["required_job_instances"][0]["required_steps"]
+                required[required.index(old)] = wrong
+                with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_positive_obligation"):
+                    self._review(entry=entry)
+
+    def test_both_covered_rescue_sources_stay_exact_after_hash_rebinding(self):
+        for name in ("Seal failed N83 source controls without any owner or Native attempt",
+                     "Seal failed N83 Rust3 source controls without any owner or Native attempt"):
+            with self.subTest(rescue=name):
+                step = self._step(name)
+                raw = self._changed_step(step, step["raw"] + "\n        # altered covered rescue")
+                entry = self._rebind(raw)
+                self.assertTrue(any(step["ordinal"] in instance["required_steps"]
+                                    for case in entry["cases"]
+                                    for instance in case["required_job_instances"]))
+                with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+                    self._review(raw, entry)
+
+    def test_both_covered_rescue_guards_stay_failure_only_after_rebinding(self):
+        for name in ("Seal failed N83 source controls without any owner or Native attempt",
+                     "Seal failed N83 Rust3 source controls without any owner or Native attempt"):
+            with self.subTest(rescue=name):
+                step = self._step(name)
+                raw = self._changed_step(step, step["raw"].replace(
+                    "outcome == 'failure'", "outcome == 'success'"))
+                with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+                    self._review(raw, self._rebind(raw))
+
+    def test_diagnostic_prerequisites_and_publisher_stay_exact_after_rebinding(self):
+        for name in ("Admit closed native selection before bootstrap",
+                     "Install pinned N83 custody and PNG verifier in a private runner venv",
+                     "Build exact Semwright Broker, sandbox and Motion Canvas provider",
+                     "Publish only sealed N83 originals and closed manifest"):
+            with self.subTest(step=name):
+                step = self._step(name)
+                raw = self._changed_step(step, step["raw"] + "\n        # altered prerequisite")
+                with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_step_source"):
+                    self._review(raw, self._rebind(raw))
+
+    def test_failure_branch_requires_one_exact_unexpanded_job_instance(self):
+        for name in ("n83-preflight-failure", "n83-rust-controls-failure"):
+            for mutation in ("matrix", "display", "extra"):
+                with self.subTest(case=name, mutation=mutation):
+                    entry = copy.deepcopy(self.entry)
+                    instances = self._case(name, entry)["required_job_instances"]
+                    if mutation == "matrix":
+                        instances[0]["matrix"] = {"invented": True}
+                    elif mutation == "display":
+                        instances[0]["display_name"] = "unreviewed"
+                    else:
+                        instances.append(copy.deepcopy(instances[0]))
+                    with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_case_steps"):
+                        scope.review_scope_definition(self.raw, entry)
+
+
 if __name__ == "__main__":
     unittest.main()
