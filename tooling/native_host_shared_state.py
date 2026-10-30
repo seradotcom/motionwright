@@ -130,7 +130,8 @@ def driver_startup_stderr_args(owner: Path, label: str, *, selected: bool) -> li
     if not selected:
         return []
     if sys.platform != "linux" or label not in {
-            "shared-state", "authorized", "reopened", "withdrawn", "restored"}:
+            "shared-state", "authorized", "reopened", "withdrawn", "restored",
+            "stale-ui", "stale-preview", "stale-cas", "cas-race", "source-stale"}:
         raise AssertionError("PRIVATE_STARTUP_STDERR_SELECTION")
     owner = Path(owner)
     if (not owner.is_absolute() or not owner.is_dir()
@@ -209,15 +210,17 @@ def invoke_cli(env: dict[str, str], socket: Path, session: Path, command: str,
             raw = getattr(error, name, None)
             if isinstance(raw, bytes):
                 path = evidence / f"{receipt}.{name}.original"
-                path.write_bytes(raw)
-                path.chmod(0o600)
+                with path.open("xb") as stream:
+                    path.chmod(0o600)
+                    stream.write(raw)
         raise AssertionError(
             "Native shared-host CLI unavailable or timed out; no effect is retried and custody is private"
         ) from None
     for name, raw in (("stdout", result.stdout), ("stderr", result.stderr)):
         path = evidence / f"{receipt}.{name}.original"
-        path.write_bytes(raw)
-        path.chmod(0o600)
+        with path.open("xb") as stream:
+            path.chmod(0o600)
+            stream.write(raw)
     entry["exit_code"] = result.returncode
     calls.append(entry)
     value = checked_private_cli_payload(result.stdout, result.stderr, result.returncode, None)
@@ -257,6 +260,100 @@ def require_known_denial(value: dict, code: str, message: str) -> None:
         raise AssertionError(
             "Native shared-host retained UNKNOWN; the known-rejection oracle is not established"
         )
+
+
+SHARED_CASES = ("positive", "stale-ui", "stale-preview", "stale-cas", "cas-race")
+
+
+def evaluate_terminal_case(case: str, originals: list[dict]) -> dict:
+    """Evaluate one declared terminal case without changing any original outcome.
+
+    Driver Host deliberately redacts all execution failures to UNKNOWN. These
+    four cases observe that boundary; they do not establish known rejection or
+    absence of effects. Their owner is already irreversibly closed to dispatch.
+    """
+    if case not in SHARED_CASES[1:]:
+        raise AssertionError("Native shared-host terminal case is not declared")
+    expected = 2 if case == "cas-race" else 1
+    if len(originals) != expected:
+        raise AssertionError("Native shared-host terminal case has an incomplete response set")
+    failures = [value for value in originals if isinstance(value, dict) and value.get("ok") is False]
+    successes = [value for value in originals if isinstance(value, dict) and value.get("ok") is True]
+    if len(failures) != 1 or len(successes) != expected - 1:
+        raise AssertionError("Native shared-host terminal case did not return its exact outcomes")
+    error = failures[0].get("error")
+    if (not isinstance(error, dict) or error.get("code") != "StaleReference"
+            or error.get("outcome_known") is not False):
+        raise AssertionError("Native shared-host terminal case did not retain its expected UNKNOWN")
+    return {"case": case, "evaluation": "EXPECTED_TERMINAL_UNKNOWN", "outcome_known": False,
+            "scope_terminal": True, "effects_absent_asserted": False}
+
+
+class SharedStateCalls:
+    """One owner's finite dispatch sequence, sealed before its terminal batch."""
+
+    def __init__(self, case: str, dispatch):
+        if case not in SHARED_CASES:
+            raise AssertionError("Native shared-host case is not declared")
+        self.case = case
+        self.dispatch = dispatch
+        self.blocked = False
+        self.terminal_evaluation = None
+
+    def invoke(self, command: str, args: dict, *, ok: bool | None = True,
+               session_path: Path | None = None) -> dict:
+        if self.blocked:
+            raise AssertionError("Native shared-host owner is terminal; no further dispatch")
+        try:
+            value = self.dispatch(command, args, ok=ok, session_path=session_path)
+            if not isinstance(value, dict) or type(value.get("ok")) is not bool:
+                raise AssertionError("Native shared-host malformed outcome; owner dispatch stopped")
+            if value.get("ok") is False:
+                error = value.get("error")
+                if not isinstance(error, dict) or error.get("outcome_known") is not True:
+                    raise AssertionError("Native shared-host retained UNKNOWN; owner dispatch stopped")
+            return value
+        except BaseException:
+            self.blocked = True
+            raise
+
+    def terminal(self, requests: list[tuple[str, dict, Path | None]]) -> list[dict]:
+        if self.blocked or self.case == "positive":
+            raise AssertionError("Native shared-host owner cannot admit a terminal request")
+        # Set the fence BEFORE validation, originals, or dispatch. No branch
+        # clears it, including unexpected success or failed original retention.
+        self.blocked = True
+        expected = {
+            "stale-ui": ("driver.motionwright.project.rename", ["must not commit from stale ref"]),
+            "stale-preview": ("driver.motionwright.project.preview", ["stale preview must be rejected"]),
+            "stale-cas": ("driver.motionwright.project.rename", ["old default-session ref must stay stale"]),
+            "cas-race": ("driver.motionwright.project.rename", ["Human contender", "Agent contender"]),
+        }[self.case]
+        if len(requests) != len(expected[1]):
+            raise AssertionError("Native shared-host terminal request roster changed")
+        for (command, args, _session), title in zip(requests, expected[1], strict=True):
+            payload = args.get("edit") if self.case == "stale-preview" else args
+            if (command != expected[0] or not isinstance(args.get("ref"), str) or not args["ref"]
+                    or not isinstance(payload, dict) or payload.get("title") != title
+                    or set(args) != ({"ref", "edit"} if self.case == "stale-preview" else {"ref", "title"})
+                    or (self.case == "stale-preview"
+                        and (set(payload) != {"operation", "title"}
+                             or payload["operation"] != "project.rename"))):
+                raise AssertionError("Native shared-host terminal request does not match its declared case")
+        if self.case == "cas-race":
+            if requests[0][2] is None or requests[1][2] is None or requests[0][2] == requests[1][2]:
+                raise AssertionError("Native shared-host concurrent case requires two genuine sessions")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(self.dispatch, command, args, ok=None, session_path=session)
+                           for command, args, session in requests]
+                # Both calls belong to the already sealed concurrent batch.
+                # Neither returned error admits any later owner operation.
+                originals = [future.result() for future in futures]
+        else:
+            command, args, session = requests[0]
+            originals = [self.dispatch(command, args, ok=None, session_path=session)]
+        self.terminal_evaluation = evaluate_terminal_case(self.case, originals)
+        return originals
 
 
 def retain_owner_audit(state: Path, label: str, *, evidence_root: Path | None = None) -> None:
@@ -309,210 +406,211 @@ def require_exact_inputs() -> None:
             raise SystemExit("Pinned native shared-host acceptance executable is unavailable")
 
 
-def main(*, retained_owner: Path | None = None) -> None:
-    require_exact_inputs()
-    EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
-    calls: list[dict] = []
+def run_shared_case(case: str, owner: Path, evidence: Path, provider: Path, calls: list[dict], *,
+                    custody_owner: Path, capture_startup: bool) -> tuple[dict, dict | None]:
+    """Use a fresh real Store, provider process, owner state and sessions for one case."""
+    if case not in SHARED_CASES:
+        raise AssertionError("Native shared-host case is not declared")
+    owner.mkdir(mode=0o700)
+    evidence.mkdir(mode=0o700)
+    root = owner.resolve(strict=True)
+    calls_before = len(calls)
     transport_calls: list[dict] = []
+    paths: dict[str, Path] = {}
+    for name in ["runtime", "state", "home", "config", "motionwright-data"]:
+        path = root / name
+        path.mkdir(mode=0o700)
+        paths[name] = path
 
-    workspace = (nullcontext(str(retained_owner)) if retained_owner is not None else
-                 tempfile.TemporaryDirectory(prefix="motionwright-native-host-"))
-    with workspace as raw:
-        root = Path(raw).resolve()
-        root.chmod(0o700)
-        paths: dict[str, Path] = {}
-        for name in ["runtime", "state", "home", "config", "binary", "motionwright-data"]:
-            path = root / name
-            path.mkdir(mode=0o700)
-            paths[name] = path
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
+    }
+    env.update(
+        HOME=str(paths["home"]),
+        XDG_RUNTIME_DIR=str(paths["runtime"]),
+        XDG_STATE_HOME=str(paths["state"]),
+        RUST_BACKTRACE="1",
+    )
+    effective_paths = run_json(
+        [str(SW_BINS / "semwright"), "--json", "config", "paths"], env=env,
+    )
+    owner_state = Path(effective_paths["state"]).resolve()
+    if not owner_state.is_relative_to(paths["state"]):
+        raise AssertionError("Native shared-host daemon state is outside the isolated owner profile")
+    write_json(evidence / "owner-paths.original.json", effective_paths)
 
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
-        }
-        env.update(
-            HOME=str(paths["home"]),
-            XDG_RUNTIME_DIR=str(paths["runtime"]),
-            XDG_STATE_HOME=str(paths["state"]),
-            RUST_BACKTRACE="1",
+    database = paths["motionwright-data"] / "motionwright.sqlite3"
+    seeded = actor(env, database, "init", "UI seeded project")
+    project_id = seeded["id"]
+    resource = seeded["resource"]
+    if seeded["revision"] != "0":
+        raise AssertionError("New shared-state project was not at revision zero")
+    # Both resources are genuinely selected so the existing crossed-reference
+    # oracle tests reference isolation, independently of default-deny policy.
+    other = actor(env, database, "init", "Independent project")
+
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))[
+        "workspace"
+    ]["package"]["version"]
+    manifest = {
+        "manifest_version": 1,
+        "protocol": 9,
+        "id": "motionwright",
+        "version": version,
+        "publisher": "motionwright-project",
+        "executable": str(provider),
+        "sha256": digest(provider),
+        "application": {
+            "desktop_id": None,
+            "process_names": ["motionwright-native-provider"],
+            "supported_versions": [],
+        },
+        "transport": "stdio_v1",
+        "network": False,
+        "mounts": [
+            {
+                "root": "motionwright-data",
+                "read_only": False,
+                "execute": False,
+            }
+        ],
+        "resources": {
+            "open_files": 128,
+            "processes": 16,
+            "cpu_seconds": 90,
+            "operation_cpu_seconds": 0,
+            "address_space_bytes": 1_073_741_824,
+            "file_size_bytes": 67_108_864,
+        },
+        "request_timeout_ms": 10_000,
+        "interfaces": {
+            "dynamic_capabilities": False,
+            "cooperative_cancellation": True,
+            "events": False,
+            "progress": False,
+            "artifacts": False,
+            "health": True,
+            "native_refs": True,
+            "host_tools": False,
+        },
+    }
+    manifest_path = paths["config"] / "motionwright-driver.json"
+    write_json(manifest_path, manifest)
+    write_json(evidence / "motionwright-driver.original.json", manifest)
+
+    # The real owner daemon creates canonical Graph projects. A native UUID
+    # or fixture document never creates a prj_ identity or ProjectAccess.
+    # Restart with the SAME private state and an explicitly restricted policy.
+    bootstrap_config = paths["config"] / "owner-bootstrap.toml"
+    bootstrap_text = owner_config(paths["motionwright-data"])
+    for path in (bootstrap_config, evidence / "owner-bootstrap.original.toml"):
+        path.write_text(bootstrap_text, encoding="utf-8")
+        path.chmod(0o600)
+    bootstrap_socket = paths["runtime"] / "bootstrap.sock"
+    selections: list[tuple[str, str]] = []
+    try:
+        with running_daemon(bootstrap_config, bootstrap_socket, env,
+                            evidence / "semwrightd-bootstrap.log"):
+            for selected_resource in (resource, other["resource"]):
+                created = invoke_cli(
+                    env, bootstrap_socket, paths["runtime"] / "owner-bootstrap.session",
+                    "project.create", {"root": "motionwright-data"}, transport_calls,
+                    evidence_root=evidence,
+                )["envelope"]
+                canonical_project = created.get("data", {}).get("project")
+                if not isinstance(canonical_project, str):
+                    raise AssertionError("Owner project.create did not return its real Graph identity")
+                selections.append((selected_resource, canonical_project))
+    finally:
+        write_json(evidence / "calls.json", calls[calls_before:])
+        write_json(evidence / "transport-calls.original.json", transport_calls)
+        retain_owner_audit(owner_state, "owner-bootstrap-audit.original", evidence_root=evidence)
+    if selections[0][1] == selections[1][1]:
+        raise AssertionError("Independent resources did not receive distinct canonical Graph projects")
+    config = owner_config(paths["motionwright-data"], manifest=manifest_path,
+                          selections=selections)
+    config_path = paths["config"] / "owner.toml"
+    for path in (config_path, evidence / "owner-restricted.original.toml"):
+        path.write_text(config, encoding="utf-8")
+        path.chmod(0o600)
+
+    socket = paths["runtime"] / "broker.sock"
+    session = paths["runtime"] / "client.session"
+    bindings: dict[Path, str] = {}
+    daemon_log = evidence / "semwrightd.log"
+    log_stream = daemon_log.open("wb")
+    daemon_log.chmod(0o600)
+    daemon = subprocess.Popen(
+        [
+            str(SW_BINS / "semwrightd"),
+            "--config",
+            str(config_path),
+            "--socket",
+            str(socket),
+            *driver_startup_stderr_args(custody_owner, "shared-state" if case == "positive" else case, selected=capture_startup),
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=log_stream,
+        stderr=log_stream,
+        start_new_session=True,
+    )
+
+    def dispatch(
+        command: str,
+        args: dict,
+        *,
+        ok: bool | None = True,
+        session_path: Path | None = None,
+    ) -> dict:
+        selected_session = session_path or session
+        if selected_session not in bindings:
+            if scope.blocked:
+                raise AssertionError("Native terminal batch cannot create a new mount")
+            mount = invoke_cli(
+                env, socket, selected_session, "providers.mount.observe",
+                {"provider": "driver:motionwright", "root": "motionwright-data"}, transport_calls, evidence_root=evidence,
+            )["envelope"]["data"]
+            binding = mount.get("binding_ref")
+            if (not isinstance(binding, str) or not binding
+                    or mount.get("mount", {}).get("root") != "motionwright-data"
+                    or mount.get("mount", {}).get("write") is not True):
+                raise AssertionError("Native shared-host did not receive its real writable mount")
+            bindings[selected_session] = binding
+        binding = bindings[selected_session]
+        receipt = invoke_cli(
+            env, socket, selected_session, "providers.execute_bound",
+            {"binding_ref": binding,
+             "request": {"command": command, "args": args, "dry_run": False}},
+            transport_calls, ok=ok, evidence_root=evidence,
         )
-        effective_paths = run_json(
-            [str(SW_BINS / "semwright"), "--json", "config", "paths"], env=env,
-        )
-        owner_state = Path(effective_paths["state"]).resolve()
-        if not owner_state.is_relative_to(paths["state"]):
-            raise AssertionError("Native shared-host daemon state is outside the isolated owner profile")
-        write_json(EVIDENCE / "owner-paths.original.json", effective_paths)
+        outer = receipt["envelope"]
+        # Keep the complete original envelope. Case, physical owner and receipt
+        # correlate it to the existing private transport/stream originals.
+        calls.append({"command": command, "args": args, "session": selected_session.name,
+                      "exit_code": receipt["exit_code"], "envelope": outer,
+                      "case": case, "owner": str(root), "receipt": receipt["receipt"]})
+        return checked_native_result(outer, binding)
 
-        provider = paths["binary"] / "motionwright-native-provider"
-        shutil.copyfile(PROVIDER_SOURCE, provider)
-        provider.chmod(0o700)
+    scope = SharedStateCalls(case, dispatch)
+    invoke = scope.invoke
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if daemon.poll() is not None:
+                log_stream.flush()
+                raise AssertionError(
+                    "Native shared-host Broker exited before owner socket startup; raw daemon log suppressed"
+                )
+            if socket.is_socket():
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("semwrightd did not expose its owner socket")
 
-        database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = actor(env, database, "init", "UI seeded project")
-        project_id = seeded["id"]
-        resource = seeded["resource"]
-        if seeded["revision"] != "0":
-            raise AssertionError("New shared-state project was not at revision zero")
-        # Both resources are genuinely selected so the existing crossed-reference
-        # oracle tests reference isolation, independently of default-deny policy.
-        other = actor(env, database, "init", "Independent project")
-
-        version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))[
-            "workspace"
-        ]["package"]["version"]
-        manifest = {
-            "manifest_version": 1,
-            "protocol": 9,
-            "id": "motionwright",
-            "version": version,
-            "publisher": "motionwright-project",
-            "executable": str(provider),
-            "sha256": digest(provider),
-            "application": {
-                "desktop_id": None,
-                "process_names": ["motionwright-native-provider"],
-                "supported_versions": [],
-            },
-            "transport": "stdio_v1",
-            "network": False,
-            "mounts": [
-                {
-                    "root": "motionwright-data",
-                    "read_only": False,
-                    "execute": False,
-                }
-            ],
-            "resources": {
-                "open_files": 128,
-                "processes": 16,
-                "cpu_seconds": 90,
-                "operation_cpu_seconds": 0,
-                "address_space_bytes": 1_073_741_824,
-                "file_size_bytes": 67_108_864,
-            },
-            "request_timeout_ms": 10_000,
-            "interfaces": {
-                "dynamic_capabilities": False,
-                "cooperative_cancellation": True,
-                "events": False,
-                "progress": False,
-                "artifacts": False,
-                "health": True,
-                "native_refs": True,
-                "host_tools": False,
-            },
-        }
-        manifest_path = paths["config"] / "motionwright-driver.json"
-        write_json(manifest_path, manifest)
-        write_json(EVIDENCE / "motionwright-driver.original.json", manifest)
-
-        # The real owner daemon creates canonical Graph projects. A native UUID
-        # or fixture document never creates a prj_ identity or ProjectAccess.
-        # Restart with the SAME private state and an explicitly restricted policy.
-        bootstrap_config = paths["config"] / "owner-bootstrap.toml"
-        bootstrap_text = owner_config(paths["motionwright-data"])
-        for path in (bootstrap_config, EVIDENCE / "owner-bootstrap.original.toml"):
-            path.write_text(bootstrap_text, encoding="utf-8")
-            path.chmod(0o600)
-        bootstrap_socket = paths["runtime"] / "bootstrap.sock"
-        selections: list[tuple[str, str]] = []
-        try:
-            with running_daemon(bootstrap_config, bootstrap_socket, env,
-                                EVIDENCE / "semwrightd-bootstrap.log"):
-                for selected_resource in (resource, other["resource"]):
-                    created = invoke_cli(
-                        env, bootstrap_socket, paths["runtime"] / "owner-bootstrap.session",
-                        "project.create", {"root": "motionwright-data"}, transport_calls,
-                    )["envelope"]
-                    canonical_project = created.get("data", {}).get("project")
-                    if not isinstance(canonical_project, str):
-                        raise AssertionError("Owner project.create did not return its real Graph identity")
-                    selections.append((selected_resource, canonical_project))
-        finally:
-            write_json(EVIDENCE / "calls.json", calls)
-            write_json(EVIDENCE / "transport-calls.original.json", transport_calls)
-            retain_owner_audit(owner_state, "owner-bootstrap-audit.original")
-        if selections[0][1] == selections[1][1]:
-            raise AssertionError("Independent resources did not receive distinct canonical Graph projects")
-        config = owner_config(paths["motionwright-data"], manifest=manifest_path,
-                              selections=selections)
-        config_path = paths["config"] / "owner.toml"
-        for path in (config_path, EVIDENCE / "owner-restricted.original.toml"):
-            path.write_text(config, encoding="utf-8")
-            path.chmod(0o600)
-
-        socket = paths["runtime"] / "broker.sock"
-        session = paths["runtime"] / "client.session"
-        bindings: dict[Path, str] = {}
-        daemon_log = EVIDENCE / "semwrightd.log"
-        log_stream = daemon_log.open("wb")
-        daemon_log.chmod(0o600)
-        daemon = subprocess.Popen(
-            [
-                str(SW_BINS / "semwrightd"),
-                "--config",
-                str(config_path),
-                "--socket",
-                str(socket),
-                *driver_startup_stderr_args(root, "shared-state", selected=retained_owner is not None),
-            ],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_stream,
-            stderr=log_stream,
-            start_new_session=True,
-        )
-
-        def invoke(
-            command: str,
-            args: dict,
-            *,
-            ok: bool | None = True,
-            session_path: Path | None = None,
-        ) -> dict:
-            selected_session = session_path or session
-            if selected_session not in bindings:
-                mount = invoke_cli(
-                    env, socket, selected_session, "providers.mount.observe",
-                    {"provider": "driver:motionwright", "root": "motionwright-data"}, transport_calls,
-                )["envelope"]["data"]
-                binding = mount.get("binding_ref")
-                if (not isinstance(binding, str) or not binding
-                        or mount.get("mount", {}).get("root") != "motionwright-data"
-                        or mount.get("mount", {}).get("write") is not True):
-                    raise AssertionError("Native shared-host did not receive its real writable mount")
-                bindings[selected_session] = binding
-            binding = bindings[selected_session]
-            receipt = invoke_cli(
-                env, socket, selected_session, "providers.execute_bound",
-                {"binding_ref": binding,
-                 "request": {"command": command, "args": args, "dry_run": False}},
-                transport_calls, ok=ok,
-            )
-            outer = receipt["envelope"]
-            # Preserve the public curator's exact five-key native-operation shape.
-            # Each retains its ORIGINAL outer envelope; bootstrap,
-            # mounts and physical wrapper calls also have separate private custody.
-            calls.append({"command": command, "args": args, "session": selected_session.name,
-                          "exit_code": receipt["exit_code"], "envelope": outer})
-            return checked_native_result(outer, binding)
-
-        try:
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
-                if daemon.poll() is not None:
-                    log_stream.flush()
-                    raise AssertionError(
-                        "Native shared-host Broker exited before owner socket startup; raw daemon log suppressed"
-                    )
-                if socket.is_socket():
-                    break
-                time.sleep(0.02)
-            else:
-                raise AssertionError("semwrightd did not expose its owner socket")
-
+        if case == "positive":
             observed = invoke(
                 "driver.motionwright.observe",
                 {"resource": resource, "scope": "summary", "limit": 8},
@@ -545,16 +643,6 @@ def main(*, retained_owner: Path | None = None) -> None:
             )
             if int(ui_rename["revision"]) <= int(after_sdk["revision"]):
                 raise AssertionError("UI-service mutation did not advance shared revision")
-
-            stale = invoke(
-                "driver.motionwright.project.rename",
-                {"ref": observed["ref"], "title": "must not commit from stale ref"},
-                ok=False,
-            )
-            require_known_denial(stale, "StaleReference", "Stale Native SDK reference was not rejected")
-            unchanged = actor(env, database, "show", project_id)
-            if unchanged["title"] != "UI renamed after SDK":
-                raise AssertionError("stale SDK mutation altered app-owned state")
 
             fresh = invoke(
                 "driver.motionwright.observe",
@@ -614,9 +702,9 @@ def main(*, retained_owner: Path | None = None) -> None:
             if human_revision != agent_revision:
                 raise AssertionError("independent clients did not start from the same revision")
 
-            # Exercise the new read through the actual Broker/Host twice, using
-            # each client's own observed ref. The CAS race below then continues
-            # from these SAME refs: preview must neither commit nor stale them.
+            # Exercise both successful previews before the final successful
+            # write. The separate terminal CAS owner repeats these exact
+            # previews and sends their SAME refs into its concurrent batch.
             before_preview = stored_content(database)
             human_preview = invoke(
                 "driver.motionwright.project.preview",
@@ -664,74 +752,16 @@ def main(*, retained_owner: Path | None = None) -> None:
             if actor(env, database, "show", project_id) != ui_rename:
                 raise AssertionError("Separate UI-service reopen observed a preview mutation")
 
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                human_future = pool.submit(
-                    invoke,
-                    "driver.motionwright.project.rename",
-                    {"ref": human_view["ref"], "title": "Human contender"},
-                    ok=None,
-                    session_path=human_session,
-                )
-                agent_future = pool.submit(
-                    invoke,
-                    "driver.motionwright.project.rename",
-                    {"ref": agent_view["ref"], "title": "Agent contender"},
-                    ok=None,
-                    session_path=agent_session,
-                )
-                contenders = [human_future.result(), agent_future.result()]
-
-            winners = [value for value in contenders if value.get("ok") is True]
-            losers = [value for value in contenders if value.get("ok") is False]
-            if len(winners) != 1 or len(losers) != 1:
-                raise AssertionError(
-                    "Concurrent native CAS did not return exactly one winner and one loser"
-                )
-            require_known_denial(
-                losers[0], "StaleReference", "Concurrent losing native CAS was not rejected as stale",
-            )
-            after_race = actor(env, database, "show", project_id)
-            winner_title = winners[0]["data"]["project"]["title"]
-            if after_race["title"] != winner_title:
-                raise AssertionError("shared state does not match the winning concurrent mutation")
-            if int(after_race["revision"]) != int(human_revision) + 1:
-                raise AssertionError("concurrent CAS advanced the shared revision more than once")
-
-            before_stale_preview = stored_content(database)
-            stale_preview = invoke(
-                "driver.motionwright.project.preview",
-                {"ref": agent_view["ref"],
-                 "edit": {"operation": "project.rename", "title": "stale preview must be rejected"}},
-                ok=False,
-                session_path=agent_session,
-            )
-            require_known_denial(
-                stale_preview, "StaleReference",
-                "Native preview did not retain its typed stale-reference error",
-            )
-            if stored_content(database) != before_stale_preview:
-                raise AssertionError("Rejected stale preview changed the physical Store")
-
-            stale_after_race = invoke(
-                "driver.motionwright.project.rename",
-                {"ref": fresh["ref"], "title": "old default-session ref must stay stale"},
-                ok=False,
-            )
-            require_known_denial(
-                stale_after_race, "StaleReference",
-                "pre-race reference remained writable after concurrent edit",
-            )
-
-            post_race = invoke(
+            final_view = invoke(
                 "driver.motionwright.observe",
                 {"resource": resource, "scope": "summary", "limit": 8},
             )["data"]
-            if post_race["page"]["version"]["revision"] != after_race["revision"]:
-                raise AssertionError("post-race observation missed the winning revision")
+            if final_view["page"]["version"]["revision"] != ui_rename["revision"]:
+                raise AssertionError("final positive observation missed the UI-service revision")
 
             sdk_final = invoke(
                 "driver.motionwright.project.rename",
-                {"ref": post_race["ref"], "title": "SDK final shared state"},
+                {"ref": final_view["ref"], "title": "SDK final shared state"},
             )["data"]
             final = actor(env, database, "show", project_id)
             if final["title"] != "SDK final shared state":
@@ -739,66 +769,213 @@ def main(*, retained_owner: Path | None = None) -> None:
             if final["revision"] != sdk_final["revision"]:
                 raise AssertionError("final UI-service and Native SDK revisions differ")
 
-            write_json(
-                EVIDENCE / "result.json",
-                {
-                    "motionwright_sha": GITHUB_SHA,
-                    "semwright_sha": PIN,
-                    "provider_sha256": digest(provider),
-                    "project": {
-                        "id": project_id,
-                        "resource": resource,
-                        "generation": final["generation"],
-                        "final_revision": final["revision"],
-                        "final_title": final["title"],
-                    },
-                    "checks": {
-                        "ui_seed_visible_through_host": True,
-                        "sdk_write_visible_to_ui_service": True,
-                        "ui_write_invalidates_stale_sdk_ref": True,
-                        "fresh_sdk_observes_ui_write": True,
-                        "forged_actor_field_rejected": True,
-                        "cross_project_ref_rejected": True,
-                        "two_sessions_share_one_base": True,
-                        "two_sessions_preview_through_real_host": True,
-                        "preview_preserves_store_identity_rows_receipts_and_events": True,
-                        "preview_payload_resource_override_error_retained": True,
-                        "preview_refs_continue_into_real_cas": True,
-                        "stale_preview_error_retained": True,
-                        "concurrent_cas_has_exactly_one_winner": True,
-                        "concurrent_loser_is_stale": True,
-                        "final_sdk_write_visible_to_ui_service": True,
-                    },
-                },
-            )
-        finally:
-            if daemon.poll() is None:
-                pid = daemon.pid
-                daemon.terminate()
-                try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pid, signal.SIGKILL)
-                    daemon.wait(timeout=5)
-            log_stream.close()
-            write_json(EVIDENCE / "calls.json", calls)
-            write_json(EVIDENCE / "transport-calls.original.json", transport_calls)
-            retain_owner_audit(owner_state, "owner-final-audit.original")
+        elif case == "cas-race":
+            ui_rename = seeded
+            human_session = paths["runtime"] / "human.session"
+            agent_session = paths["runtime"] / "agent.session"
+            human_view = invoke(
+                "driver.motionwright.observe",
+                {"resource": resource, "scope": "summary", "limit": 8},
+                session_path=human_session,
+            )["data"]
+            agent_view = invoke(
+                "driver.motionwright.observe",
+                {"resource": resource, "scope": "summary", "limit": 8},
+                session_path=agent_session,
+            )["data"]
+            human_revision = human_view["page"]["version"]["revision"]
+            agent_revision = agent_view["page"]["version"]["revision"]
+            if human_revision != agent_revision:
+                raise AssertionError("independent clients did not start from the same revision")
 
-    print(
-        json.dumps(
-            {
-                "native_host_shared_state": "PASS",
-                "motionwright_sha": GITHUB_SHA,
-                "semwright_sha": PIN,
-                "evidence": str(EVIDENCE.relative_to(ROOT)),
-            }
-        )
-    )
+            # These two independently issued refs go directly from the original
+            # read-only previews into the one terminal concurrent CAS batch.
+            before_preview = stored_content(database)
+            human_preview = invoke(
+                "driver.motionwright.project.preview",
+                {"ref": human_view["ref"],
+                 "edit": {"operation": "project.rename", "title": "Uncommitted preview title"}},
+                session_path=human_session,
+            )["data"]
+            agent_preview = invoke(
+                "driver.motionwright.project.preview",
+                {"ref": agent_view["ref"],
+                 "edit": {"operation": "scene.add", "name": "Uncommitted preview scene",
+                          "objective": "Read-only Host preview", "duration_seconds": 3}},
+                session_path=agent_session,
+            )["data"]
+            for preview in (human_preview, agent_preview):
+                if (preview.get("schema") != "motionwright.change-preview/1"
+                        or preview.get("status") != "READ_ONLY_DOMAIN_VALIDATION"
+                        or preview.get("resource") != resource
+                        or preview.get("generation") != seeded["generation"]
+                        or preview.get("revision") != human_revision
+                        or preview.get("committed") is not False
+                        or preview.get("exact_future_ids_proven") is not False
+                        or type(preview.get("candidate_scene_count")) is not int):
+                    raise AssertionError("Native preview lost its read-only observed-project contract")
+            if (human_preview.get("candidate_title") != "Uncommitted preview title"
+                    or agent_preview.get("candidate_title") != ui_rename["title"]
+                    or agent_preview["candidate_scene_count"] != human_preview["candidate_scene_count"] + 1):
+                raise AssertionError("Native preview did not evaluate the requested uncommitted edit")
+
+
+            if stored_content(database) != before_preview:
+                raise AssertionError("Native previews changed physical Store identity or persisted SQLite rows")
+            contenders = scope.terminal([
+                ("driver.motionwright.project.rename", {"ref": human_view["ref"], "title": "Human contender"}, human_session),
+                ("driver.motionwright.project.rename", {"ref": agent_view["ref"], "title": "Agent contender"}, agent_session),
+            ])
+            winners = [value for value in contenders if value.get("ok") is True]
+            after_race = actor(env, database, "show", project_id)
+            winner_title = winners[0]["data"]["project"]["title"]
+            if after_race["title"] != winner_title:
+                raise AssertionError("shared state does not match the winning concurrent mutation")
+            if int(after_race["revision"]) != int(human_revision) + 1:
+                raise AssertionError("concurrent CAS advanced the shared revision more than once")
+            # This is a local readback observation. The loser's Error stays UNKNOWN;
+            # neither the winning reply nor matching SQLite proves absence of effects.
+        else:
+            observed = invoke("driver.motionwright.observe", {"resource": resource, "scope": "summary", "limit": 8})["data"]
+            page = observed["page"]
+            if (page["version"]["generation"] != seeded["generation"]
+                    or page["version"]["revision"] != seeded["revision"]
+                    or page["items"][0]["title"] != seeded["title"]):
+                raise AssertionError("Terminal case did not observe its own genuine UI-seeded state")
+            if case == "stale-cas":
+                writer_session = paths["runtime"] / "writer.session"
+                writer_view = invoke("driver.motionwright.observe", {"resource": resource, "scope": "summary", "limit": 8},
+                                     session_path=writer_session)["data"]
+                if writer_view["page"]["version"] != page["version"]:
+                    raise AssertionError("Sequential CAS sessions did not share one real base")
+                committed = invoke("driver.motionwright.project.rename",
+                                   {"ref": writer_view["ref"], "title": "Human contender"},
+                                   session_path=writer_session)["data"]
+                changed = actor(env, database, "show", project_id)
+                if (changed["revision"] != committed["revision"] or changed["title"] != "Human contender"
+                        or int(changed["revision"]) != int(seeded["revision"]) + 1):
+                    raise AssertionError("Sequential CAS commit was not visible through the real Service")
+            else:
+                if case == "stale-preview":
+                    preview = invoke("driver.motionwright.project.preview", {
+                        "ref": observed["ref"],
+                        "edit": {"operation": "project.rename", "title": "Uncommitted preview title"},
+                    })["data"]
+                    if (preview.get("schema") != "motionwright.change-preview/1"
+                            or preview.get("status") != "READ_ONLY_DOMAIN_VALIDATION"
+                            or preview.get("resource") != resource or preview.get("generation") != seeded["generation"]
+                            or preview.get("revision") != seeded["revision"] or preview.get("committed") is not False
+                            or preview.get("exact_future_ids_proven") is not False
+                            or preview.get("candidate_title") != "Uncommitted preview title"
+                            or type(preview.get("candidate_scene_count")) is not int):
+                        raise AssertionError("Terminal preview preparation lost its read-only observed contract")
+                changed = actor(env, database, "rename", project_id, "ui-shared-state-rename", "UI renamed after SDK")
+                if int(changed["revision"]) <= int(seeded["revision"]):
+                    raise AssertionError("Terminal UI edit did not advance its own Store revision")
+            before_terminal = stored_content(database)
+            if case == "stale-preview":
+                request = ("driver.motionwright.project.preview", {
+                    "ref": observed["ref"],
+                    "edit": {"operation": "project.rename", "title": "stale preview must be rejected"},
+                }, None)
+            else:
+                title = ("must not commit from stale ref" if case == "stale-ui"
+                         else "old default-session ref must stay stale")
+                request = ("driver.motionwright.project.rename", {"ref": observed["ref"], "title": title}, None)
+            scope.terminal([request])
+            # Read-only evidence after the terminal attempt never promotes its uncertainty.
+            if actor(env, database, "show", project_id) != changed or stored_content(database) != before_terminal:
+                raise AssertionError("Terminal stale-reference case changed its observed Service/SQLite state")
+    finally:
+        if daemon.poll() is None:
+            pid = daemon.pid
+            daemon.terminate()
+            try:
+                daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(pid, signal.SIGKILL)
+                daemon.wait(timeout=5)
+        log_stream.close()
+        write_json(evidence / "calls.json", calls[calls_before:])
+        write_json(evidence / "transport-calls.original.json", transport_calls)
+        retain_owner_audit(owner_state, "owner-final-audit.original", evidence_root=evidence)
+    info = database.stat()
+    case_result = {
+        "owner": str(root), "database": {"path": str(database), "device": info.st_dev, "inode": info.st_ino},
+        "provider_sha256": digest(provider), "native_calls": len(calls) - calls_before,
+        "terminal": scope.terminal_evaluation,
+    }
+    return case_result, ({"id": project_id, "resource": resource, "generation": final["generation"],
+                          "final_revision": final["revision"], "final_title": final["title"]}
+                         if case == "positive" else None)
+
+
+def main(*, retained_owner: Path | None = None) -> None:
+    require_exact_inputs()
+    EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
+    calls: list[dict] = []
+    cases: dict[str, dict] = {}
+    workspace = (nullcontext(str(retained_owner)) if retained_owner is not None else
+                 tempfile.TemporaryDirectory(prefix="motionwright-native-host-"))
+    with workspace as raw:
+        root = Path(raw).resolve()
+        root.chmod(0o700)
+        binary = root / "binary"
+        binary.mkdir(mode=0o700)
+        provider = binary / "motionwright-native-provider"
+        shutil.copyfile(PROVIDER_SOURCE, provider)
+        provider.chmod(0o700)
+        owners = root / "cases"
+        owners.mkdir(mode=0o700)
+        project = None
+        try:
+            for case in SHARED_CASES:
+                owner = owners / case
+                if len(os.fsencode(owner / "runtime" / "bootstrap.sock")) >= 104:
+                    raise AssertionError("Native shared-host owner socket path exceeds its fixed budget")
+                result, final_project = run_shared_case(
+                    case, owner, EVIDENCE / case, provider, calls,
+                    custody_owner=root, capture_startup=retained_owner is not None,
+                )
+                cases[case] = result
+                if case == "positive":
+                    project = final_project
+            if (len({row["owner"] for row in cases.values()}) != len(SHARED_CASES)
+                    or len({(row["database"]["device"], row["database"]["inode"])
+                            for row in cases.values()}) != len(SHARED_CASES)):
+                raise AssertionError("Native shared-host cases reused physical owner/Store identity")
+            write_json(EVIDENCE / "result.json", {
+                "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
+                "provider_sha256": digest(provider), "project": project, "cases": cases,
+                "checks": {
+                    "ui_seed_visible_through_host": True,
+                    "sdk_write_visible_to_ui_service": True,
+                    "ui_write_invalidates_stale_sdk_ref": True,
+                    "fresh_sdk_observes_ui_write": True,
+                    "forged_actor_field_rejected": True,
+                    "cross_project_ref_rejected": True,
+                    "two_sessions_share_one_base": True,
+                    "two_sessions_preview_through_real_host": True,
+                    "preview_preserves_store_identity_rows_receipts_and_events": True,
+                    "preview_payload_resource_override_error_retained": True,
+                    "preview_refs_continue_into_real_cas": True,
+                    "stale_preview_error_retained": True,
+                    "concurrent_cas_has_exactly_one_winner": True,
+                    "concurrent_loser_is_stale": True,
+                    "final_sdk_write_visible_to_ui_service": True,
+                }
+            })
+        finally:
+            # One aggregate ledger and one later aggregate private snapshot.
+            # A failed case never admits the next case or resets its allowance.
+            write_json(EVIDENCE / "calls.json", calls)
+    print(json.dumps({"native_host_shared_state": "PASS", "motionwright_sha": GITHUB_SHA,
+                      "semwright_sha": PIN, "evidence": str(EVIDENCE.relative_to(ROOT)),
+                      "terminal_driver_outcomes_known": False, "effects_absent_asserted": False}))
 
 
 # This explicit mode has separate custody and never extends the shared-state
-# public curator or its 17-call roster. It performs no render or native edit.
+# public curator or its 27-call roster. It performs no render or native edit.
 CAPSULE_FIXTURES = {
     "authored.glb": (1972, "a7b485ccb2afc368cf0ea2421d2df098f39ed5e10d632dcc7733bd76ba4f69b1"),
     "edited.glb": (1992, "61955fda30b99a883f8cd5908b8fc7f9e1dee1168a3460e005c3baf1b753a55c"),
@@ -918,6 +1095,8 @@ def capsule_stop_descendants(tracked: dict) -> bool:
 
 
 def capsule_process(admitted: dict, label: str, argv: list[str], env: dict[str, str]) -> dict:
+    capsule_require(not admitted.get("unknown", False) and not admitted.get("failed", False)
+                    and not admitted.get("terminal_started", False), "E11_OWNER_TERMINAL_NO_PROCESS")
     custody, evidence = admitted["custody"], admitted["evidence"]
     custody.new_json(evidence / f"{label}.started.json", {
         "argv": argv, "source": admitted["source"], "automatic_retry": False, "started_ns": time.time_ns(),
@@ -982,12 +1161,17 @@ def capsule_stage(admitted: dict, name: str):
     else:
         admitted["completed_stages"].append(name)
         custody.new_json(evidence / f"{name}.terminal.json", {
-            "stage": name, "status": "COMPLETED", "source": admitted["source"], "automatic_retry": False,
+            "stage": name,
+            "status": "TERMINAL_UNKNOWN_EVALUATED" if admitted.get("terminal_evaluation") else "COMPLETED",
+            "source": admitted["source"], "automatic_retry": False,
+            "effects_absent_asserted": False,
         })
 
 
 @contextmanager
 def capsule_daemon(admitted: dict, label: str, config: Path, env: dict[str, str]):
+    capsule_require(not admitted.get("unknown", False) and not admitted.get("failed", False)
+                    and not admitted.get("terminal_started", False), "E11_OWNER_TERMINAL_NO_DAEMON")
     custody, evidence, owner = admitted["custody"], admitted["evidence"], admitted["owner"]
     socket = owner / "runtime" / f"{label}.sock"
     log = evidence / f"{label}.daemon.log.original"
@@ -997,7 +1181,11 @@ def capsule_daemon(admitted: dict, label: str, config: Path, env: dict[str, str]
         try:
             process = subprocess.Popen([str(SW_BINS / "semwrightd"), "--config", str(config),
                                         "--socket", str(socket),
-                                        *driver_startup_stderr_args(owner, label, selected=label != "bootstrap")],
+                                        *driver_startup_stderr_args(
+                                            admitted.get("custody_owner", owner),
+                                            "source-stale" if admitted.get("terminal_source", False)
+                                            and label != "bootstrap" else label,
+                                            selected=label != "bootstrap")],
                                        env=env, stdin=subprocess.DEVNULL,
                                        stdout=stream, stderr=stream, start_new_session=True)
             tracked = {"process": process, "quiescent": False, "descendants": {}, "identity": None}
@@ -1049,6 +1237,8 @@ def capsule_daemon(admitted: dict, label: str, config: Path, env: dict[str, str]
 
 def capsule_cli(admitted: dict, env: dict[str, str], socket: Path, session: Path,
                 command: str, args: dict, *, ok: bool = True) -> dict:
+    capsule_require(not admitted.get("unknown", False) and not admitted.get("failed", False)
+                    and not admitted.get("terminal_started", False), "E11_OWNER_TERMINAL_NO_FOLLOWUP")
     try:
         entry = invoke_cli(env, socket, session, command, args, admitted["transport_calls"],
                            ok=None, evidence_root=admitted["evidence"])
@@ -1065,6 +1255,43 @@ def capsule_cli(admitted: dict, env: dict[str, str], socket: Path, session: Path
             raise AssertionError("E11_NATIVE_OUTCOME_UNKNOWN_RETAINED")
     capsule_require(value.get("ok") is ok, "E11_UNEXPECTED_TYPED_OUTCOME")
     return value
+
+
+def capsule_source_terminal_read(admitted: dict, env: dict[str, str], socket: Path,
+                                 initial: dict, edited: dict, original_read: dict) -> None:
+    """One original-source ref after a real import, terminal in its own owner."""
+    capsule_require(admitted.get("terminal_source") is True
+                    and not admitted.get("terminal_started", False)
+                    and not admitted.get("unknown", False) and not admitted.get("failed", False)
+                    and initial["resource"] == edited["resource"]
+                    and initial["capsule_id"] == edited["capsule_id"]
+                    and int(edited["revision"]) == int(initial["revision"]) + 1,
+                    "E11_SOURCE_TERMINAL_PREPARATION")
+    # Fence first, even if retaining/parsing the original subsequently fails.
+    # The flag is never cleared, and this owner cannot start another process.
+    admitted["terminal_started"] = True
+    admitted["unknown"] = True
+    binding = admitted["bindings"][-1]
+    args = {"resource": edited["resource"],
+            "scope": "native-capsule-source-inspection:" + edited["capsule_id"],
+            "limit": 1, "ref": original_read["ref"]}
+    entry = invoke_cli(
+        env, socket, admitted["owner"] / "runtime" / "authorized.session", "providers.execute_bound",
+        {"binding_ref": binding, "request": {"command": "driver.motionwright.observe",
+                                             "args": args, "dry_run": False}},
+        admitted["transport_calls"], ok=None, evidence_root=admitted["evidence"],
+    )
+    capsule_track_descendants(admitted)
+    value = entry["envelope"]
+    error = value.get("error")
+    capsule_require(value.get("ok") is False and isinstance(error, dict)
+                    and error.get("code") == "StaleReference" and error.get("outcome_known") is False
+                    and value.get("data") is None, "E11_SOURCE_TERMINAL_OUTCOME_UNEXPECTED")
+    admitted["terminal_evaluation"] = {
+        "case": "source-stale", "evaluation": "EXPECTED_TERMINAL_UNKNOWN",
+        "outcome_known": False, "scope_terminal": True, "effects_absent_asserted": False,
+        "receipt": entry["receipt"], "owner": str(admitted["owner"]),
+    }
 
 
 def capsule_observer(admitted: dict, env: dict[str, str], socket: Path, label: str):
@@ -1204,8 +1431,13 @@ def capsule_run(admitted: dict) -> None:
     effective = capsule_process(admitted, "config-paths", [str(SW_BINS / "semwright"), "--json", "config", "paths"], env)
     owner_state = Path(effective["state"]).resolve()
     capsule_require(owner_state.is_relative_to(paths["state"]), "E11_OWNER_STATE_ESCAPE")
-    provider = paths["binary"] / "motionwright-native-provider"
-    custody.new_bytes(provider, custody.regular(PROVIDER_SOURCE.resolve())[0], mode=0o700)
+    provider = admitted.get("provider")
+    if provider is None:
+        provider = paths["binary"] / "motionwright-native-provider"
+        custody.new_bytes(provider, custody.regular(PROVIDER_SOURCE.resolve())[0], mode=0o700)
+        admitted["provider"] = provider
+    else:
+        capsule_require(digest(provider) == digest(PROVIDER_SOURCE), "E11_SHARED_PROVIDER_CHANGED")
     manifest = paths["config"] / "motionwright-driver.json"
     custody.new_json(manifest, capsule_manifest(provider))
     originals = {}
@@ -1255,9 +1487,10 @@ def capsule_run(admitted: dict) -> None:
             observe = capsule_observer(admitted, env, socket, "authorized")
             before = capsule_store(admitted, "before-original-observations")
             original_read = capsule_read(admitted, observe, initial, originals["authored.glb"], "original")
-            denied = observe({"resource": foreign["resource"], "scope": "native-capsule-source-inspection:" + foreign["capsule_id"],
-                              "limit": 1}, ok=False)
-            require_known_denial(denied, "PolicyDenied", "E11_FOREIGN_RESOURCE_NOT_DENIED")
+            if not admitted.get("terminal_source", False):
+                denied = observe({"resource": foreign["resource"], "scope": "native-capsule-source-inspection:" + foreign["capsule_id"],
+                                  "limit": 1}, ok=False)
+                require_known_denial(denied, "PolicyDenied", "E11_FOREIGN_RESOURCE_NOT_DENIED")
             capsule_require(capsule_store(admitted, "after-original-observations") == before, "E11_SOURCE_READ_MUTATED_STORE")
             edited = capsule_fixture(source_actor("edit-source", "capsule-import", initial["id"], initial["generation"],
                                                   initial["revision"], initial["capsule_id"], initial["scene_id"],
@@ -1271,12 +1504,22 @@ def capsule_run(admitted: dict) -> None:
             capsule_require(sorted(edited.get("retained_sources", []), key=lambda row: row["asset_id"]) == expected_assets,
                             "E11_ORIGINAL_SOURCE_NOT_RETAINED")
             before_edited = capsule_store(admitted, "before-edited-observations")
-            stale = observe({"resource": edited["resource"], "scope": "native-capsule-source-inspection:" + edited["capsule_id"],
-                             "limit": 1, "ref": original_read["ref"]}, ok=False)
-            require_known_denial(stale, "StaleReference", "E11_OLD_SOURCE_REFERENCE_NOT_STALE")
-            edited_read = capsule_read(admitted, observe, edited, originals["edited.glb"], "edited")
+            if admitted.get("terminal_source", False):
+                capsule_source_terminal_read(admitted, env, socket, initial, edited, original_read)
+            else:
+                edited_read = capsule_read(admitted, observe, edited, originals["edited.glb"], "edited")
             capsule_require(capsule_store(admitted, "after-edited-observations") == before_edited, "E11_EDITED_READ_MUTATED_STORE")
         retain_owner_audit(owner_state, "authorized-audit.original", evidence_root=evidence)
+
+    if admitted.get("terminal_source", False):
+        custody.new_json(evidence / "result.private.json", {
+            "scope": "source-stale", "source": admitted["source"], "initial": initial, "edited": edited,
+            "terminal": admitted["terminal_evaluation"],
+            "old_native_reference_after_owner_import_error_retained": True,
+            "observed_sqlite_content_unchanged_after_terminal_call": True,
+            "effects_absent_asserted": False, "formal_acceptance": False, "release_authorized": False,
+        })
+        return
 
     baseline = capsule_store(admitted, "before-independent-reopen")
     with capsule_stage(admitted, "reopen"):
@@ -1310,11 +1553,12 @@ def capsule_run(admitted: dict) -> None:
         custody.new_json(evidence / "result.private.json", {
             "status": "SCOPED_COMPLETED", "source": admitted["source"], "initial": initial, "edited": edited,
             "checks": {"host_original_glb_read_with_expected_reference": True, "foreign_resource_denied": True,
-                       "original_and_edited_cas_bytes_retained": True, "old_native_reference_stale_after_owner_import": True,
+                       "original_and_edited_cas_bytes_retained": True,
                        "independent_actor_and_host_reopen": True, "owner_read_selection_withdrawn_after_restart": True,
                        "restored_selection_observed_with_new_session_and_binding": True, "source_unknown_fidelity_preserved": True,
                        "native_reads_did_not_mutate_sqlite": True},
             "core_inflight_revocation_e11": "NOT_RUN", "existing_core_seven_read_scope_tests": "SEPARATE_COVERAGE",
+            "old_native_reference_after_owner_import": "SEPARATE_TERMINAL_OWNER",
             "native_render_performed": False, "native_source_edit_performed": False, "formal_acceptance": False,
             "release_authorized": False, "automatic_retry": False,
         })
@@ -1400,14 +1644,37 @@ def capsule_main() -> None:
         "private_owner_retained_in_place": True, "owner_root": str(owner), "core_inflight_revocation_e11": "NOT_RUN",
     })
     failure = None
+    source_terminal = None
     try:
         capsule_run(admitted)
+        # The positive owner has completed and closed every daemon before the
+        # independent, predeclared source-ref case starts. It has its own Store,
+        # state, grants, sessions and provider process; only binary/input bytes
+        # are reused. Its UNKNOWN is retained and never reopened.
+        terminal_owner = owner / "source-stale"
+        terminal_evidence = evidence / "source-stale"
+        capsule_require(len(os.fsencode(terminal_owner / "runtime" / "authorized.sock")) < 104,
+                        "E11_TERMINAL_SOCKET_PATH_BUDGET")
+        terminal_owner.mkdir(mode=0o700)
+        terminal_evidence.mkdir(mode=0o700)
+        source_terminal = {
+            "custody": custody, "source": source, "context": context,
+            "owner": terminal_owner, "evidence": terminal_evidence, "custody_owner": owner,
+            "provider": admitted["provider"], "terminal_source": True,
+            "completed_stages": [], "transport_calls": [], "bindings": [], "processes": [],
+            "shutdown": [], "unknown": False, "failed": False,
+        }
+        capsule_run(source_terminal)
+        primary_db, terminal_db = admitted["database"].stat(), source_terminal["database"].stat()
+        capsule_require((primary_db.st_dev, primary_db.st_ino) != (terminal_db.st_dev, terminal_db.st_ino),
+                        "E11_TERMINAL_REUSED_POSITIVE_STORE")
     except BaseException as error:
-        admitted["failed"] = True
+        (source_terminal if source_terminal is not None else admitted)["failed"] = True
         failure = {"exception_type": type(error).__name__, "error": str(error)}
     finally:
         closure = []
-        for tracked in admitted["processes"]:
+        cohorts = [admitted] + ([] if source_terminal is None else [source_terminal])
+        for tracked in [tracked for cohort in cohorts for tracked in cohort["processes"]]:
             try:
                 # Never re-signal a previously closed group whose PID might
                 # since have been recycled by the operating system.
@@ -1421,22 +1688,44 @@ def capsule_main() -> None:
                 closure.append(closed)
             except BaseException:
                 closure.append(False)
-        shutdown_complete = all(closure) and all(admitted["shutdown"])
+        shutdown_complete = all(closure) and all(closed for cohort in cohorts for closed in cohort["shutdown"])
         unchanged = False
         try:
             unchanged = capsule_source_identity() == source
         except BaseException:
             pass
+        terminal_evaluated = (
+            source_terminal is not None and not source_terminal["failed"]
+            and source_terminal["completed_stages"] == list(CAPSULE_STAGES[:3])
+            and source_terminal.get("terminal_started") is True and source_terminal["unknown"] is True
+            and source_terminal.get("terminal_evaluation", {}).get("evaluation") == "EXPECTED_TERMINAL_UNKNOWN"
+        )
         complete_run = (admitted["completed_stages"] == list(CAPSULE_STAGES) and not admitted["failed"]
-                        and not admitted["unknown"] and shutdown_complete and unchanged)
+                        and not admitted["unknown"] and terminal_evaluated and shutdown_complete and unchanged)
         terminal = {
-            "status": "SCOPED_COMPLETED" if complete_run else "UNKNOWN" if admitted["unknown"] or not shutdown_complete else "FAIL",
+            "status": "SCOPED_COMPLETED" if complete_run else "UNKNOWN"
+            if any(cohort["unknown"] for cohort in cohorts) or not shutdown_complete else "FAIL",
             "source": source, "context": context, "completed_stages": admitted["completed_stages"], "failure": failure,
             "process_groups_quiescent": shutdown_complete, "source_unchanged": unchanged,
             "automatic_retry": False, "effects_absent_asserted": False, "formal_acceptance": False,
             "core_inflight_revocation_e11": "NOT_RUN", "release_authorized": False,
+            "terminal_source_case": None if source_terminal is None else {
+                "owner": str(source_terminal["owner"]), "outcome_known": False,
+                "evaluation": source_terminal.get("terminal_evaluation"),
+                "completed_stages": source_terminal["completed_stages"],
+            },
         }
         persistence_failures = capsule_preserve_final(admitted, terminal)
+        if source_terminal is not None:
+            persistence_failures += capsule_preserve_final(source_terminal, {
+                "status": "EXPECTED_TERMINAL_UNKNOWN" if terminal_evaluated else "UNKNOWN",
+                "source": source, "context": context, "outcome_known": False,
+                "terminal_evaluation": source_terminal.get("terminal_evaluation"),
+                "failure": failure, "source_unchanged": unchanged,
+                "process_groups_quiescent": shutdown_complete,
+                "automatic_retry": False, "effects_absent_asserted": False,
+                "formal_acceptance": False, "release_authorized": False,
+            })
         if persistence_failures:
             complete_run = False
         # Preserve even uncertain partial originals once. No deletion or replay;

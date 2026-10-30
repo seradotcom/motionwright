@@ -1899,6 +1899,13 @@ mod namespace_tests {
     fn same_physical_root_reopens_after_parent_relocation_without_rewriting_provenance() {
         let (directory, root) = fixture();
         let original = discover(&root).unwrap().unwrap();
+        let initial_access = derived::proxy::acquire(&root, true).unwrap();
+        assert!(matches!(initial_access, derived::proxy::Access::Locked(_)));
+        assert!(matches!(
+            derived::proxy::acquire(&root, false).unwrap(),
+            derived::proxy::Access::Busy
+        ));
+        drop(initial_access);
         let anchor_bytes = fs::read(root.join(ROOT_ANCHOR)).unwrap();
         let catalog_bytes = fs::read(original.control.join("catalog.json")).unwrap();
         let relocated_parent = directory.path().canonicalize().unwrap().join("view");
@@ -1912,8 +1919,15 @@ mod namespace_tests {
         assert_eq!(relocated.directory_id, original.directory_id);
         assert_eq!(relocated.control_id, original.control_id);
         assert_eq!(relocated.lock_id, original.lock_id);
+        let access = derived::proxy::acquire(&view, false).unwrap();
+        assert!(matches!(access, derived::proxy::Access::Locked(_)));
+        assert!(matches!(
+            derived::proxy::acquire(&view, false).unwrap(),
+            derived::proxy::Access::Busy
+        ));
         {
             let gate = relocated.gate().unwrap();
+            derived::proxy::check_access(&access, &gate).unwrap();
             assert_eq!(gate.catalog.canonical_root, original.root);
         }
         assert_eq!(fs::read(view.join(ROOT_ANCHOR)).unwrap(), anchor_bytes);
@@ -1922,12 +1936,27 @@ mod namespace_tests {
             catalog_bytes
         );
 
+        // Both boxed access and an owned eviction guard retain the same lock.
+        // Reacquisition is possible only after each owner releases it.
+        drop(access);
+        let eviction_guard = derived::proxy::explicit_eviction_guard(&view)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            derived::proxy::acquire(&view, false).unwrap(),
+            derived::proxy::Access::Busy
+        ));
+        drop(eviction_guard);
+        let reopened_access = derived::proxy::acquire(&view, false).unwrap();
+        assert!(matches!(reopened_access, derived::proxy::Access::Locked(_)));
+
         // Exercise the real gate/save path in the new view. Only the pin is
         // changed; the original anchor, catalog provenance and physical IDs stay.
         let digest = "a".repeat(64);
         pin_digests(&view, [digest.as_str()]).unwrap();
         let reopened = discover(&view).unwrap().unwrap();
         let gate = reopened.gate().unwrap();
+        derived::proxy::check_access(&reopened_access, &gate).unwrap();
         assert!(gate.catalog.legacy_pins.contains(&digest));
         assert_eq!(gate.catalog.canonical_root, original.root);
         assert_eq!(gate.catalog.directory_id, original.directory_id);
@@ -1958,6 +1987,10 @@ mod namespace_tests {
 
         assert!(matches!(
             discover(&copied_root),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert!(matches!(
+            derived::proxy::acquire(&copied_root, true),
             Err(StorageError::InvalidBackup(_))
         ));
         assert_eq!(
@@ -2075,6 +2108,10 @@ mod namespace_tests {
         assert!(retained.gate().is_err());
         let changed_view = discover(&root).unwrap().unwrap();
         assert!(changed_view.gate().is_err());
+        assert!(matches!(
+            derived::proxy::acquire(&root, false),
+            Err(StorageError::InvalidBackup(_))
+        ));
         assert_eq!(fs::read(&anchor_path).unwrap(), changed);
         assert_eq!(
             fs::read(retained.control.join("catalog.json")).unwrap(),

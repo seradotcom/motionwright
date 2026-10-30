@@ -686,6 +686,14 @@ fn project_binding(project: &Project) -> Value {
     json!({"id": project.id.to_string(), "generation": project.generation})
 }
 
+struct OriginalCapture<'a> {
+    native_evidence: &'a Value,
+    original_capture: &'a Value,
+    capture_id: &'a str,
+    role: &'a str,
+    expected_prefix: u64,
+}
+
 /// Copy exact owner-produced bytes once. This does not create replacement native
 /// evidence, reinterpret a verification verdict, or infer frames from filenames.
 fn capture_original(
@@ -695,12 +703,15 @@ fn capture_original(
     project: &Project,
     source: &Value,
     state: &Value,
-    native_evidence: &Value,
-    original_capture: &Value,
-    capture_id: &str,
-    role: &str,
-    expected_prefix: u64,
+    capture: OriginalCapture<'_>,
 ) -> Result<Value> {
+    let OriginalCapture {
+        native_evidence,
+        original_capture,
+        capture_id,
+        role,
+        expected_prefix,
+    } = capture;
     let evidence_path = stage.path.join("native-evidence.original.json");
     require(
         read_json(&evidence_path)? == *native_evidence,
@@ -1163,11 +1174,13 @@ async fn native_stage(
         &project,
         source,
         &current,
-        &raw,
-        &original,
-        capture_id,
-        role,
-        prefix,
+        OriginalCapture {
+            native_evidence: &raw,
+            original_capture: &original,
+            capture_id,
+            role,
+            expected_prefix: prefix,
+        },
     )?;
     if name == "before" {
         cache_before(&service, &project, root, stage, &current, &captured)?;

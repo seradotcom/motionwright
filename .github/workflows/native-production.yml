@@ -549,7 +549,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Native production and HyperFrames source clippy
-        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native -p motionwright-hyperframes-profile -p motionwright-driver-hyperframes --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native -p motionwright-hyperframes-profile -p motionwright-driver-hyperframes --keep-going --all-targets -- -D warnings
 
   hyperframes-native:
     if: github.event_name == 'workflow_dispatch' && inputs.native_scenario == 'hyperframes'

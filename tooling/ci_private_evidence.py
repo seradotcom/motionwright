@@ -29,7 +29,10 @@ MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 4096
 MAX_JSON = 512 * 1024
-STARTUP_STDERR_PHASES = {"shared-state", "authorized", "reopened", "withdrawn", "restored"}
+STARTUP_STDERR_PHASES = {
+    "shared-state", "authorized", "reopened", "withdrawn", "restored",
+    "stale-ui", "stale-preview", "stale-cas", "cas-race", "source-stale",
+}
 STARTUP_STDERR_LIMITS = {
     "stderr.original": 65536,
     "session.json": 8192,

@@ -6968,7 +6968,7 @@
     },
     {
       "path": ".github/workflows/native-production.yml",
-      "sha256": "779a7dec5524727a79dd2c01a19c70a615476657a05278d4220b415fe1d98666",
+      "sha256": "af4ba273e0a37adf764ababc00545017d15960b35edeb0fd4b975ea7f949669d",
       "preamble_sha256": "d27e572ddab41c8bfd588d9dcb8e6d489c51a4acefdcac6b1e606795934f3a26",
       "evidence_class": "source_and_selected_native_hyperframes",
       "purpose": "Production receipt, Broker and HyperFrames source contracts, plus a separately selected first-attempt native HyperFrames original scenario with public-recipient custody.",
@@ -7020,7 +7020,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "05380db56229e3c8f5461eec536d9d1a3d49a1ec04af184264da95e5d403ff23",
+          "source_sha256": "3b18ab42f6d5229eb9cb7b977b579ed2bd8804e7ccb5cd73cd2dde344ba7b206",
           "instance_sets": {
             "contracts": [
               {}
@@ -7115,7 +7115,7 @@
               "name": "Native production and HyperFrames source clippy",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "0a0ffd38c8ed3e423cfea489e7bfd6f1a5bca1c660813f315c7f5b688a6846f7",
+              "source_block_sha256": "4162a02a0866d50f5a49fbd9810f7a28b4bb45c5dbeaf908e296b1ef673628e1",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -8897,7 +8897,7 @@
               ]
             }
           ],
-          "coverage_basis": "The default selection preserves pinned Native SDK and consumer contracts, music/SFX/preview and capsule-source Service tests, Darwin aliases, real NTFS refusal, the standard Host17 shared-state cycle and seven real Core Host read guards. Capsule-source admission, encrypted capsule custody and the additional native capsule source cycle are not selected. Public shared-state checks exclude private owner calls and daemon logs; the seven Core guards retain separate runner originals.",
+          "coverage_basis": "The default selection preserves pinned Native SDK and consumer contracts, music/SFX/preview and capsule-source Service tests, Darwin aliases, real NTFS refusal, the standard 27-call shared-state cycle across five isolated owners (three known Core denials and four explicitly terminal Driver UNKNOWN cases) and seven real Core Host read guards. Capsule-source admission, encrypted capsule custody and the additional native capsule source cycle are not selected. Public shared-state checks exclude private owner calls and daemon logs; the seven Core guards retain separate runner originals.",
           "original_attempt": null,
           "blocking_reason": null
         },
@@ -8975,7 +8975,7 @@
               ]
             }
           ],
-          "coverage_basis": "The explicit first-attempt capsule selection requires the exact clean candidate SHA and an admitted public RSA3072 recipient before effects. It retains the five capsule-source Service controls, all existing source/platform guards, the standard Host17 cycle with encrypted private originals, curated public checks, the separate real capsule source Host cycle and its encrypted originals, and the seven Core Host read guards. Both native cycles must complete with their own original observations; startup UNKNOWN stops further Native operations and never satisfies this success case.",
+          "coverage_basis": "The explicit first-attempt capsule selection requires the exact clean candidate SHA and an admitted public RSA3072 recipient before effects. It retains the five capsule-source Service controls, all existing source/platform guards, the standard 27-call cycle across five isolated owners with encrypted private originals, curated public checks, the separate real capsule source Host cycle and its encrypted originals, and the seven Core Host read guards. Both native cycles must complete with their own original observations; the capsule cycle evaluates its old-source-reference error only in a separate terminal owner, retaining outcome_known=false. Startup UNKNOWN stops further Native operations and never satisfies this success case.",
           "original_attempt": 1,
           "blocking_reason": null
         },
@@ -9033,7 +9033,7 @@
               ]
             }
           ],
-          "coverage_basis": "The explicit first-attempt G1-only selection requires e11_capsule_source=true, exact clean candidate SHA and the admitted public RSA3072 recipient. It runs the source and platform guards, including five capsule-source Service controls, and retains the scope receipt. The entire real-host-shared-state job is excluded: Host17, the seven real Core Host guards and the physical capsule source cycle are not selected or credited. The scope receipt asserts no test results or G2 acceptance.",
+          "coverage_basis": "The explicit first-attempt G1-only selection requires e11_capsule_source=true, exact clean candidate SHA and the admitted public RSA3072 recipient. It runs the source and platform guards, including five capsule-source Service controls, and retains the scope receipt. The entire real-host-shared-state job is excluded: the 27-call shared-state cycle, the seven real Core Host guards and the physical capsule source cycle are not selected or credited. The scope receipt asserts no test results or G2 acceptance.",
           "original_attempt": 1,
           "blocking_reason": null
         }
@@ -9043,8 +9043,8 @@
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",
         "The seven Core Host Native read scope guards retain private originals on the runner, outside the public shared-state artifact. This selection does not establish G2.",
-        "The G1-only selection excludes the entire Host job, including Host17, seven real Core Host guards and the physical E11 capsule source cycle. Its retained scope receipt asserts no execution results and cannot satisfy those omitted obligations.",
-        "The explicit E11 selection requires an existing admitted public recipient and first-attempt exact-source binding. Standard and capsule private originals are encrypted separately; public shared-state artifacts remain curated. No UNKNOWN result or retained failure diagnostic grants permission to replay.",
+        "The G1-only selection excludes the entire Host job, including the 27-call shared-state cycle, seven real Core Host guards and the physical E11 capsule source cycle. Its retained scope receipt asserts no execution results and cannot satisfy those omitted obligations.",
+        "The explicit E11 selection requires an existing admitted public recipient and first-attempt exact-source binding. Standard and capsule private originals are encrypted separately; public shared-state artifacts remain curated. No UNKNOWN result or retained failure diagnostic grants permission to replay. The four expected terminal Driver cases retain outcome_known=false; the curated receipt separately reports three known Core denials and four evaluated terminal cases and never asserts absence of effects.",
         "These are the existing selectable workflow scopes, not a requirement to execute every selector for every change. Candidate applicability and genuine original evidence remain required; this definition update dispatches nothing and admits no PASS."
       ]
     },

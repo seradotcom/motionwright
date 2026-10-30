@@ -42,7 +42,7 @@ pub(crate) enum Access {
     Unmanaged,
     Empty,
     Busy,
-    Locked(Guard),
+    Locked(Box<Guard>),
 }
 
 impl Guard {
@@ -96,7 +96,7 @@ fn snapshot_lock(root: &ManagedRoot) -> Result<Option<BoundLock>> {
         || !((catalog.format_version == FORMAT_VERSION && catalog.derived.is_none())
             || (catalog.format_version == CATALOG_FORMAT_VERSION && catalog.derived.is_some()))
         || catalog.root_id != root.root_id
-        || catalog.canonical_root != root.root
+        || catalog.canonical_root.as_os_str() != root.recorded_root.as_os_str()
         || catalog.directory_id != root.directory_id
         || catalog.control_id != root.control_id
     {
@@ -152,7 +152,7 @@ pub(crate) fn acquire(blob_root: &Path, create: bool) -> Result<Access> {
     let gate = guard.root.gate()?;
     guard.check(&gate)?;
     drop(gate);
-    Ok(Access::Locked(guard))
+    Ok(Access::Locked(Box::new(guard)))
 }
 
 pub(crate) fn explicit_eviction_guard(blob_root: &Path) -> Result<Option<Guard>> {
@@ -161,7 +161,7 @@ pub(crate) fn explicit_eviction_guard(blob_root: &Path) -> Result<Option<Guard>>
         Access::Busy => Err(invalid(
             "proxy admission is active; eviction was not started",
         )),
-        Access::Locked(guard) => Ok(Some(guard)),
+        Access::Locked(guard) => Ok(Some(*guard)),
     }
 }
 
@@ -190,7 +190,7 @@ impl Admission {
             Access::Empty => Err(invalid("proxy admission journal was not initialized")),
             Access::Busy => Err(invalid("another proxy admission is active")),
             Access::Locked(guard) => Ok(Some(Self {
-                guard,
+                guard: *guard,
                 key: key.clone(),
                 store_id: store.cas_store_id,
                 database_id: store.cas_database_id.clone(),

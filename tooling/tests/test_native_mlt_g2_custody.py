@@ -215,7 +215,8 @@ class G2CustodyTests(unittest.TestCase):
                 "manifest.original.json": 8192, "capture.json": 8192, "closed.json": 8192,
             }
             opaque = b'/owner/private startup\x00\xff{"outcome_known":false,"outcome_known":true}'
-            for phase in ("shared-state", "authorized", "reopened", "withdrawn", "restored"):
+            for phase in ("shared-state", "authorized", "reopened", "withdrawn", "restored",
+                          "stale-ui", "stale-preview", "stale-cas", "cas-race", "source-stale"):
                 for member, maximum in startup_limits.items():
                     values[f"startup-stderr/{phase}/{member}"] = opaque.ljust(maximum, b"x")
             for name, raw in values.items():
@@ -321,8 +322,12 @@ class G2CustodyTests(unittest.TestCase):
             variants += [("file-symlink", "stderr.original"), ("phase-symlink", "authorized"),
                          ("root-symlink", "startup-stderr"), ("hardlink", "stderr.original"),
                          ("fifo", "stderr.original")]
-        for kind, member in variants:
-            with self.subTest(startup_mutation=kind, member=member), tempfile.TemporaryDirectory() as temporary:
+        variants = [(kind, member, "authorized") for kind, member in variants]
+        variants += [("oversize", member, phase)
+                     for phase in ("stale-ui", "stale-preview", "stale-cas", "cas-race", "source-stale")
+                     for member in ("stderr.original", "session.json", "manifest.original.json", "capture.json", "closed.json")]
+        for kind, member, phase_name in variants:
+            with self.subTest(startup_mutation=kind, member=member, phase=phase_name), tempfile.TemporaryDirectory() as temporary:
                 base = Path(temporary).resolve()
                 root = base / "owner"
                 root.mkdir()
@@ -341,7 +346,7 @@ class G2CustodyTests(unittest.TestCase):
                     good = startup / "shared-state" / "closed.json"
                     good.parent.mkdir(parents=True)
                     good.write_bytes(b"\xffopaque readable closure\x00")
-                    phase = startup / "authorized"
+                    phase = startup / phase_name
                     if kind == "phase-file":
                         phase.write_bytes(b"not a phase directory")
                         bad = phase
