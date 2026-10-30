@@ -1,14 +1,19 @@
 """Offline contracts for the single-attempt native Kdenlive GUI lane.
 
-No application, display, media producer, network request or native subprocess
-is used by these tests. Existing XML/OTIO negative fixtures remain unchanged.
+No application, display, media producer, network request or Native command
+is used. Process-custody controls use short synthetic Python children only.
+Existing XML/OTIO negative fixtures remain unchanged.
 """
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import stat
+import sys
 from types import SimpleNamespace
 import subprocess
 import tempfile
@@ -640,6 +645,7 @@ def verified_snapshot_fixture(context):
         "alab_sources_adopted_here": False, "automatic_retry": False,
         "human_acceptance": False, "release_authorized": False,
     }
+    result["editor_master_cycle"] = synthetic_editor_cycle(members, result)
     record = {"status": "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED",
               "source": context, "result": result,
               "recording_errors_before_result": [], "native_operation_retried": False,
@@ -654,6 +660,43 @@ def verified_snapshot_fixture(context):
             member.size = len(raw)
             archive.addfile(member, io.BytesIO(raw))
     return result, members, stream.getvalue()
+
+
+def synthetic_editor_cycle(members, result):
+    """Shape-only source controls: every byte is explicitly synthetic."""
+    import ci_private_evidence as custody
+    def retain(name, raw):
+        members["owner/" + name] = raw
+        return {"relative_path": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    renders = []
+    for phase, frames, source in (("before", 90, "initial.kdenlive"), ("after", 75, "edited.kdenlive")):
+        prefix = "editor-" + phase
+        originals = {}
+        originals["native_source"] = retain(source, members["owner/" + source])
+        for key, name in (("playlist", prefix + ".mlt"), ("master", prefix + ".mov"),
+                          ("native_render_log", prefix + ".mov.log"),
+                          ("probe", prefix + ".probe.stdout.log"),
+                          ("framehash", prefix + ".framehash.stdout.log")):
+            originals[key] = retain(name, b"synthetic fixture bytes; never a physical render\n")
+        for suffix in (".prepare.json", ".delivery.intent.json", ".delivery.launch.json", ".delivery.terminal.json",
+                       ".delivery.stdout.log", ".delivery.stderr.log", ".probe.intent.json", ".probe.launch.json",
+                       ".probe.terminal.json", ".probe.stderr.log", ".framehash.intent.json", ".framehash.launch.json",
+                       ".framehash.terminal.json", ".framehash.stderr.log"):
+            originals[suffix] = retain(prefix + suffix, b"synthetic control only\n")
+        render = {"schema": "motionwright.native.kdenlive-editor-master/1", "phase": phase,
+                  "frames": frames, "width": 320, "height": 180, "frame_rate": "30/1",
+                  "native_source": originals["native_source"],
+                  "decoded_rgb_frame_sha256": [hashlib.sha256(str(i).encode()).hexdigest() for i in range(frames)],
+                  "probe": {"synthetic_control_only": True}, "originals": originals,
+                  "native_editor_closed_before_delivery": True,
+                  "delivery_natural_terminal_observed": True,
+                  "independent_decoders_natural_terminal_observed": True,
+                  "native_render_count": 1, "integrated_Motionwright_production": False,
+                  "audio_fidelity_accepted": False, "automatic_retry": False,
+                  "human_acceptance": False, "release_authorized": False}
+        renders.append({**render, "result_original": retain(prefix + ".result.json", custody.json_bytes(render))})
+    cycle = runner.verify_editor_trim(*renders)
+    return {**cycle, "cycle_original": retain("editor-render-cycle.json", custody.json_bytes(cycle))}
 
 
 class NativeCustodyContracts(unittest.TestCase):
@@ -1306,6 +1349,10 @@ class EditedProjectReopenContracts(unittest.TestCase):
             return hashes[path.name] * 64
         with patch.object(runner, "NativeProcess", side_effect=self.processes) as launch, \
              patch.object(runner, "digest", side_effect=digest), \
+             patch.object(runner, "prepare_editor_render", side_effect=lambda process, phase, *args: {"phase": phase}) as prepare, \
+             patch.object(runner, "run_editor_render_once", side_effect=lambda records, plan, process: plan) as deliver, \
+             patch.object(runner, "verify_editor_trim", return_value={"synthetic_cycle_only": True}), \
+             patch.object(runner, "editor_original", return_value=(b"{}", {"synthetic_cycle_only": True})), \
              patch.object(runner.readback, "inspect_saved_kdenlive",
                           side_effect=[before, after, final]) as inspect, \
              patch.object(runner.readback, "compare_two_native_custody_snapshots",
@@ -1313,6 +1360,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
              patch.object(runner, "preview_kdenlive_cut", side_effect=[
                  preview, preview if final_preview is None else final_preview]) as cut:
             self.launch, self.inspect, self.compare, self.cut = launch, inspect, compare, cut
+            self.prepare, self.deliver = prepare, deliver
             return runner.run_route(appdir, binary, "8" * 64, capsule,
                                     self.records, profile, source_database=source_database)
 
@@ -2501,6 +2549,360 @@ class AlabNativeGuiContracts(unittest.TestCase):
                         elif defect == "wrong-phase-path": members["alab-source/" + key] = members.pop(key)
                         else: members[key]["bytes"] = False
                         with self.assertRaises(actions.GuiRejected): runner.verified_snapshot_expectations(changed, self.context())
+
+
+
+
+class EditorControlRecords:
+    def __init__(self, root, fail_document=None):
+        self.root = root
+        self.owned_processes = []
+        self.fail_document = fail_document
+        self.journal = (root / "journal.jsonl").open("x")
+
+    def document(self, name, value):
+        if name == self.fail_document:
+            raise OSError("synthetic_custody_failure")
+        fd = os.open(self.root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as target:
+            json.dump(value, target, sort_keys=True)
+            target.flush()
+            os.fsync(target.fileno())
+
+    def emit(self, value):
+        self.journal.write(json.dumps(value) + "\n")
+        self.journal.flush()
+        os.fsync(self.journal.fileno())
+
+
+@unittest.skipUnless(sys.platform == "linux" and hasattr(os, "pidfd_open")
+                     and runner.editor_process_namespace_available(),
+                     "Real process custody requires Linux pidfds and /proc in the current PID namespace")
+class EditorCommandControls(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="mw-editor-control-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve(strict=True)
+        import ci_private_evidence as custody
+        binding = patch.object(runner, "custody", custody)
+        binding.start()
+        self.addCleanup(binding.stop)
+        self.records = EditorControlRecords(self.root)
+        self.addCleanup(self.records.journal.close)
+        self.python = Path(sys.executable).resolve(strict=True)
+
+    def run_child(self, code, *, timeout=5, **kwargs):
+        return runner.run_editor_command_once(
+            self.records, "case", [str(self.python), "-c", code], dict(os.environ),
+            self.root, timeout, expected_executable=self.python, **kwargs)
+
+    def terminal(self):
+        return json.loads((self.root / "case.terminal.json").read_text())
+
+    def test_natural_completion_retains_non_json_streams_and_owned_process(self):
+        receipt = self.run_child(
+            "import sys,time; print('not JSON'); print('original stderr',file=sys.stderr); time.sleep(.15)")
+        self.assertEqual(receipt["state"], "NATURAL_TERMINAL_OBSERVED")
+        self.assertFalse(receipt["render_success_claimed"])
+        self.assertEqual(receipt["cleanup_signals"], [])
+        self.assertEqual((self.root / "case.stdout.log").read_bytes(), b"not JSON\n")
+        self.assertEqual(len(self.records.owned_processes), 1)
+        self.assertEqual(self.records.owned_processes[0].process.returncode, 0)
+        self.assertEqual(stat.S_IMODE((self.root / "case.stdout.log").stat().st_mode), 0o600)
+
+    def test_timeout_never_becomes_success_after_cleanup(self):
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child("import time; time.sleep(30)", timeout=.25)
+        receipt = self.terminal()
+        self.assertEqual(receipt["state"], "ERROR_OR_UNKNOWN")
+        self.assertTrue(receipt["cleanup_signals"])
+        self.assertFalse(receipt["natural_completion_observed"])
+
+    def test_zero_exit_launcher_with_live_worker_is_not_completion(self):
+        code = ("import os,time\n"
+                "child=os.fork()\n"
+                "if child==0:\n time.sleep(30); os._exit(0)\n"
+                "time.sleep(.15); os._exit(0)\n")
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child(code, timeout=.4)
+        receipt = self.terminal()
+        self.assertEqual(receipt["returncode"], 0)
+        self.assertTrue(receipt["descendants"])
+        self.assertTrue(receipt["cleanup_signals"])
+        self.assertFalse(receipt["natural_completion_observed"])
+
+    def test_observed_escaped_worker_cleanup_uses_pidfd(self):
+        code = ("import os,time\n"
+                "child=os.fork()\n"
+                "if child==0:\n os.setsid(); time.sleep(30); os._exit(0)\n"
+                "time.sleep(30)\n")
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child(code, timeout=.4)
+        self.assertTrue(any(item["kind"] == "pidfd" for item in self.terminal()["cleanup_signals"]))
+
+    def test_stream_overflow_retains_bounded_original_prefix(self):
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child("import os,time; os.write(1,b'x'*(4194304+1)); time.sleep(30)")
+        receipt = self.terminal()
+        self.assertEqual((self.root / "case.stdout.log").stat().st_size, runner.EDITOR_LOG_LIMIT)
+        self.assertTrue(receipt["streams"]["stdout"]["truncated"])
+        self.assertTrue(receipt["cleanup_signals"])
+
+    def test_fresh_output_limit_failure_preserves_original_overshoot(self):
+        output = self.root / "master.synthetic"
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child("from pathlib import Path; import time; "
+                           "Path('master.synthetic').write_bytes(b'x'*2048); time.sleep(30)",
+                           output_limits={output: 1024})
+        self.assertEqual(output.read_bytes(), b"x" * 2048)
+        self.assertEqual(self.terminal()["error"]["message"], "editor_output_limit_exceeded")
+
+    def test_existing_output_refuses_launch(self):
+        output = self.root / "source.original"
+        output.write_bytes(b"original")
+        with self.assertRaisesRegex(ValueError, "editor_attempt_target_exists"):
+            self.run_child("raise AssertionError('must not launch')", output_limits={output: 1024})
+        self.assertEqual(self.records.owned_processes, [])
+        self.assertEqual(output.read_bytes(), b"original")
+        self.assertFalse((self.root / "case.intent.json").exists())
+
+    def test_launch_custody_failure_still_closes_owned_process_and_stays_unknown(self):
+        self.records.fail_document = "case.launch.json"
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child("import time; time.sleep(30)")
+        self.assertEqual(self.terminal()["state"], "ERROR_OR_UNKNOWN")
+        self.assertTrue(self.terminal()["cleanup_signals"])
+
+    def test_terminal_custody_failure_cannot_return_success(self):
+        self.records.fail_document = "case.terminal.json"
+        with self.assertRaisesRegex(OSError, "synthetic_custody_failure"):
+            self.run_child("import time; print('original'); time.sleep(.15)")
+        self.assertEqual((self.root / "case.stdout.log").read_bytes(), b"original\n")
+        self.assertEqual(len(self.records.owned_processes), 1)
+
+    def test_parent_SIGTERM_becomes_unknown_with_original_child_cleanup(self):
+        old = runner.signal.getsignal(runner.signal.SIGTERM)
+        with self.assertRaises(runner.EditorCommandUnknown):
+            self.run_child("import os,signal,time; time.sleep(.15); os.kill(os.getppid(),signal.SIGTERM); time.sleep(30)")
+        receipt = self.terminal()
+        self.assertEqual(receipt["cancellation_signals"], [runner.signal.SIGTERM])
+        self.assertTrue(receipt["cleanup_signals"])
+        self.assertEqual(receipt["state"], "ERROR_OR_UNKNOWN")
+        self.assertEqual(runner.signal.getsignal(runner.signal.SIGTERM), old)
+
+
+class EditorMasterSourceControls(unittest.TestCase):
+    def test_incompatible_proc_namespace_refuses_before_intent_or_process(self):
+        records = Mock(root=Path("/owner"))
+        with patch.object(runner, "editor_process_namespace_available", return_value=False), \
+             patch.object(runner.subprocess, "Popen") as launch, \
+             self.assertRaisesRegex(ValueError, "editor_proc_PID_namespace_mismatch"):
+            runner.run_editor_command_once(records, "before", ["/unused"], {}, Path("/owner"), 1)
+        launch.assert_not_called()
+        records.document.assert_not_called()
+
+    def playlist(self, **attrs):
+        params = {"mlt_service": "avformat", "f": "mov", "vcodec": "qtrle", "pix_fmt": "argb",
+                  "in": "0", "out": "89", "target": "/owner/editor-before.mov"}
+        params.update(attrs)
+        return ('<mlt><profile width="320" height="180" frame_rate_num="30" frame_rate_den="1"/>'
+                '<consumer ' + ' '.join(k + '="' + v + '"' for k, v in params.items()) + '/></mlt>').encode()
+
+    def inspect_playlist(self, raw):
+        return runner.verify_editor_playlist(raw, Path("/owner/editor-before.mov"),
+            {"native_saved_profile_size": [320, 180], "native_saved_frame_rate": "30/1"}, 90)
+
+    def probe(self, **updates):
+        stream = {"codec_type": "video", "codec_name": "qtrle", "width": 320, "height": 180,
+                  "r_frame_rate": "30/1", "avg_frame_rate": "30/1", "nb_read_frames": "90"}
+        stream.update(updates)
+        return json.dumps({"streams": [stream], "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "3.000000"}}).encode()
+
+    def framehash(self, frames=90):
+        header = "#hash: SHA256\n#tb 0: 1/30\n#dimensions 0: 320x180\n"
+        return (header + ''.join(f"0, {i}, {i}, 1, 172800, {hashlib.sha256(str(i).encode()).hexdigest()}\n"
+                                 for i in range(frames))).encode()
+
+    def test_original_native_playlist_matches_full_saved_profile_without_rewrite(self):
+        raw = self.playlist()
+        before = bytes(raw)
+        result = self.inspect_playlist(raw)
+        self.assertEqual(result["frames"], 90)
+        self.assertFalse(result["playlist_authored_or_rewritten_here"])
+        self.assertEqual(raw, before)
+
+    def test_unprepared_project_XML_is_not_a_delivery_job(self):
+        with self.assertRaises(actions.GuiRejected):
+            self.inspect_playlist(b'<mlt><profile width="320" height="180" frame_rate_num="30" frame_rate_den="1"/></mlt>')
+
+    def test_wrong_output_range_lossless_profile_or_rescale_cannot_render(self):
+        for attrs in ({"target": "/foreign.mov"}, {"out": "74"}, {"in": "1"}, {"pass": "1"},
+                      {"vcodec": "h264"}, {"f": "matroska"}, {"scale": "0.5"}, {"video_off": "1"},
+                      {"width": "640"}, {"r": "25"}):
+            with self.subTest(attrs=attrs), self.assertRaises(actions.GuiRejected):
+                self.inspect_playlist(self.playlist(**attrs))
+
+    def test_native_terminal_requires_real_video_stream_count_and_duration(self):
+        plan = self.inspect_playlist(self.playlist())
+        self.assertEqual(runner.verify_editor_video_probe(self.probe(), plan)["video"]["nb_read_frames"], "90")
+        for attrs in ({"nb_read_frames": "0"}, {"nb_read_frames": "N/A"}, {"nb_read_frames": "89"},
+                      {"codec_name": "h264"}, {"width": 640}, {"avg_frame_rate": "25/1"}):
+            with self.subTest(attrs=attrs), self.assertRaises(actions.GuiRejected):
+                runner.verify_editor_video_probe(self.probe(**attrs), plan)
+        changed = json.loads(self.probe()); changed["format"]["duration"] = "2.5"
+        with self.assertRaises(actions.GuiRejected):
+            runner.verify_editor_video_probe(json.dumps(changed).encode(), plan)
+
+    def test_decoded_hashes_require_exact_count_PTS_geometry_and_nonstatic_pixels(self):
+        raw = self.framehash()
+        self.assertEqual(len(runner.editor_frame_hashes(raw, frames=90, width=320, height=180)), 90)
+        for changed in (self.framehash(89), raw.replace(b"#tb 0: 1/30", b"#tb 0: 1/25"),
+                        raw.replace(b"0, 5, 5, 1,", b"0, 4, 5, 1,"),
+                        raw.replace(b"320x180", b"640x180")):
+            with self.subTest(changed=changed[:50]), self.assertRaises(actions.GuiRejected):
+                runner.editor_frame_hashes(changed, frames=90, width=320, height=180)
+
+    def test_black_and_static_master_do_not_prove_physical_cycle(self):
+        raw = self.framehash().decode()
+        for digest in (hashlib.sha256(bytes(172800)).hexdigest(), "a" * 64):
+            changed = '\n'.join(line.rsplit(', ', 1)[0] + ', ' + digest if not line.startswith('#') and line else line
+                                for line in raw.splitlines()).encode()
+            with self.assertRaises(actions.GuiRejected):
+                runner.editor_frame_hashes(changed, frames=90, width=320, height=180)
+
+    def cycle(self):
+        members = {"owner/initial.kdenlive": b"original-source", "owner/edited.kdenlive": b"saved-edit"}
+        return synthetic_editor_cycle(members, {})
+
+    def test_preserved_prefix_and_changed_last_frame_remain_editor_only(self):
+        cycle = self.cycle()
+        result = runner.verify_editor_trim(cycle["before"], cycle["after"])
+        self.assertEqual(result["native_editor_render_count"], 2)
+        self.assertEqual(result["preserved_decoded_frames"], 75)
+        self.assertFalse(result["integrated_Motionwright_production"])
+        self.assertFalse(result["audio_fidelity_accepted"])
+
+    def test_wrong_new_pixels_stale_duration_or_same_source_cannot_close_cycle(self):
+        cycle = self.cycle()
+        mutations = (lambda a: a.update(frames=90),
+                     lambda a: a["decoded_rgb_frame_sha256"].__setitem__(20, "f" * 64),
+                     lambda a: a.update(native_source=cycle["before"]["native_source"]))
+        for mutation in mutations:
+            after = copy.deepcopy(cycle["after"]); mutation(after)
+            with self.assertRaises(actions.GuiRejected):
+                runner.verify_editor_trim(cycle["before"], after)
+
+    def test_live_editor_cannot_start_any_delivery(self):
+        prepared = {"receipt": {"phase": "before", "plan": {}, "editor_pid": 1, "editor_start_ticks": 2}}
+        process = SimpleNamespace(process=SimpleNamespace(returncode=None), pid=1, start=2)
+        with patch.object(runner, "run_editor_command_once") as command, self.assertRaises(actions.GuiRejected):
+            runner.run_editor_render_once(Mock(root=Path("/owner")), prepared, process)
+        command.assert_not_called()
+
+    def test_zero_renderer_exit_without_success_log_cannot_launch_decoder_or_retry(self):
+        prepared = {"receipt": {"phase": "before", "plan": {}, "editor_pid": 1, "editor_start_ticks": 2,
+                     "native_source": {"sha256": "a" * 64}, "playlist": {"sha256": "a" * 64},
+                     "native_executables": {name: {"path": "/app/" + name, "sha256": "a" * 64}
+                                            for name in ("melt", "kdenlive_render")}},
+                    "source": Path("/owner/initial.kdenlive"), "playlist": Path("/owner/editor-before.mlt"),
+                    "output": Path("/owner/editor-before.mov"), "native_log": Path("/owner/editor-before.mov.log"), "environment": {}}
+        process = SimpleNamespace(process=SimpleNamespace(returncode=0), pid=1, start=2)
+        with patch.object(runner, "digest", return_value="a" * 64), \
+             patch.object(runner, "editor_original", return_value=(b"Rendering aborted", {})), \
+             patch.object(runner, "run_editor_command_once", return_value={"natural_completion_observed": True}) as command, \
+             self.assertRaises(actions.GuiRejected):
+            runner.run_editor_render_once(Mock(root=Path("/owner")), prepared, process)
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[2], ["/app/kdenlive_render", "delivery", "/app/melt", "/owner/editor-before.mlt", "--debug"])
+
+    def test_new_master_and_playlist_originals_are_required_in_exact_sealed_snapshot(self):
+        import ci_private_evidence as custody
+        result, members, packed = verified_snapshot_fixture({})
+        with patch.object(runner, "custody", custody):
+            expected = runner.verified_snapshot_expectations(result, {})
+            runner.require_verified_snapshot(packed, expected)
+            self.assertIn("owner/editor-after.mov", expected)
+            self.assertIn("owner/editor-before.mlt", expected)
+            for name in ("owner/editor-after.mov", "owner/editor-before.mlt", "owner/editor-after.delivery.terminal.json"):
+                stream = io.BytesIO()
+                with runner.tarfile.open(fileobj=stream, mode="w") as archive:
+                    for key, raw in members.items():
+                        if key == name:
+                            continue
+                        entry = runner.tarfile.TarInfo(key); entry.size = len(raw)
+                        archive.addfile(entry, io.BytesIO(raw))
+                with self.subTest(missing=name), self.assertRaises(actions.GuiRejected):
+                    runner.require_verified_snapshot(stream.getvalue(), expected)
+
+    def test_editor_result_cannot_promote_receipts_or_acceptance(self):
+        import ci_private_evidence as custody
+        result, _, _ = verified_snapshot_fixture({})
+        for key in ("integrated_Motionwright_production", "audio_fidelity_accepted", "human_acceptance", "automatic_retry"):
+            changed = copy.deepcopy(result)
+            changed["editor_master_cycle"]["after"][key] = True
+            with self.subTest(key=key), patch.object(runner, "custody", custody), self.assertRaises(actions.GuiRejected):
+                runner.verified_snapshot_expectations(changed, {})
+
+
+class EditorRenderGuiControls(unittest.TestCase):
+    def test_script_target_reuse_is_rejected_before_any_gui_effect(self):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.menu = Mock()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); output = root / "editor-before.mov"
+            output.write_bytes(b"original")
+            with self.assertRaises(actions.GuiRejected):
+                ui.generate_editor_render_job("editor-before", output, root / "editor-before.mlt")
+            self.assertEqual(output.read_bytes(), b"original")
+        ui.menu.assert_not_called()
+
+    def test_render_action_requires_one_observed_owned_action(self):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41; ui.journal = Mock()
+        control = row(key="app/render/option", editable=False)
+        interface = Mock(); interface.get_n_actions.return_value = 2
+        interface.get_action_name.side_effect = ["press", "toggle"]
+        node = Mock(); node.get_process_id.return_value = 41; node.get_action_iface.return_value = interface
+        ui.nodes = {control["key"]: node}
+        with self.assertRaises(actions.GuiRejected):
+            ui.render_action("one", control, ("press", "toggle"))
+        ui.journal.perform.assert_not_called()
+
+    def test_render_state_cannot_read_a_foreign_process_control(self):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41; node = Mock(); node.get_process_id.return_value = 42
+        ui.nodes = {"item": node}
+        with self.assertRaises(actions.GuiRejected):
+            ui.render_state({"key": "item"}, "CHECKED")
+        node.get_state_set.assert_not_called()
+
+    def test_native_discard_is_bound_to_saved_filename_and_only_unsaved_preferences(self):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.quit = Mock(); ui.action = Mock(); ui.journal = Mock()
+        ui.journal.wait.side_effect = lambda _, query: query()
+        dialog = row("app/prompt", role="dialog", editable=False)
+        label = row("app/prompt/label", role="label", editable=False,
+                    name='The project "edited.kdenlive" has been changed.\nDo you want to save your changes?')
+        buttons = [row("app/prompt/" + name, role="push button", editable=False, name=name)
+                   for name in ("Save", "Discard", "Cancel")]
+        ui.tree = Mock(return_value=[dialog, label, *buttons])
+        ui.quit_after_render_script("reopen-edited.quit", Path("/owner/edited.kdenlive"))
+        ui.quit.assert_called_once_with("reopen-edited.quit")
+        self.assertEqual(ui.action.call_args.args[1]["name"], "Discard")
+        self.assertTrue(ui.action.call_args.kwargs["exits"])
+
+    def test_unsaved_dialog_with_extra_action_cannot_discard_or_render(self):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.quit = Mock(); ui.action = Mock(); ui.journal = Mock()
+        ui.journal.wait.side_effect = lambda _, query: query()
+        ui.tree = Mock(return_value=[row("app/prompt", role="dialog"),
+            row("app/prompt/message", role="label", name='edited.kdenlive has been changed. Do you want to save your changes?'),
+            *[row("app/prompt/" + str(i), role="push button", name=name)
+              for i, name in enumerate(("Save", "Discard", "Cancel", "Start them now"))]])
+        with self.assertRaises(actions.GuiRejected):
+            ui.quit_after_render_script("quit", Path("/owner/edited.kdenlive"))
+        ui.action.assert_not_called()
+
 
 
 if __name__ == "__main__":

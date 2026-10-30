@@ -252,9 +252,9 @@ jobs:
 
           discovered = list(test_ids(suite))
           contract_counts = {
-              "test_kdenlive_gui_e2e": 85, "test_kdenlive_complete_g2_fixture": 10,
-              "test_kdenlive_live_process": 23, "test_kdenlive_accessibility_diagnostics": 11,
-              "test_kdenlive_owner_cut": 8, "test_kdenlive_accessibility_preflight": 9,
+              "test_kdenlive_gui_e2e": 142, "test_kdenlive_complete_g2_fixture": 10,
+              "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 11,
+              "test_kdenlive_owner_cut": 31, "test_kdenlive_accessibility_preflight": 9,
           }
           contract_groups = {name: [case for case in discovered if case.startswith(name + ".")]
                              for name in contract_counts}
@@ -294,7 +294,8 @@ jobs:
           print(json.dumps({
               "otio_python_discovery": len(discovered),
               "required_contract_modules": contract_groups,
-              "existing_route_and_owner_cases": 137, "accessibility_preflight_cases": 9,
+              "existing_route_and_owner_cases": 190, "editor_render_source_controls": 28,
+              "accessibility_preflight_cases": 9,
               "tests_run": result.testsRun,
               "required_native_tests": sorted(required_native),
               "skipped": [{"id": test.id(), "reason": reason} for test, reason in result.skipped],
@@ -642,6 +643,8 @@ jobs:
           from gi.repository import Atspi
           required = [(Atspi, "init"), (Atspi, "get_desktop"), (Atspi, "set_timeout"),
                       (Atspi.Accessible, "get_process_id"),
+                      (Atspi.Accessible, "get_parent"), (Atspi.Accessible, "get_index_in_parent"),
+                      (Atspi.Accessible, "get_selection_iface"), (Atspi.Selection, "select_child"),
                       (Atspi.Accessible, "get_editable_text_iface"),
                       (Atspi.Action, "get_action_name"), (Atspi.Action, "do_action"),
                       (Atspi.Text, "get_character_count"), (Atspi.Text, "get_text"),
@@ -666,8 +669,8 @@ jobs:
           import test_kdenlive_owner_cut as owner_tests
           import test_kdenlive_accessibility_preflight as preflight_tests
           modules = [
-              (tests, 85), (original_tests, 10), (process_tests, 23),
-              (diagnostic_tests, 11), (owner_tests, 8), (preflight_tests, 9),
+              (tests, 142), (original_tests, 10), (process_tests, 24),
+              (diagnostic_tests, 11), (owner_tests, 31), (preflight_tests, 9),
           ]
           def ids(node):
               if isinstance(node, unittest.TestSuite):
@@ -684,14 +687,15 @@ jobs:
               suites.append(suite)
               roster.extend(names)
               groups[module.__name__] = names
-          if len(roster) != 146 or len(set(roster)) != 146:
-              raise SystemExit("Require all 146 GUI, route, owner and observer-only cases")
+          if len(roster) != 227 or len(set(roster)) != 227:
+              raise SystemExit("Require all 227 GUI, route, owner, editor-render custody and observer-only cases")
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
-                            "existing_route_and_owner_cases": 137, "accessibility_preflight_cases": 9,
+                            "existing_route_and_owner_cases": 190, "editor_render_source_controls": 28,
+                            "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 146 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 227 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY
