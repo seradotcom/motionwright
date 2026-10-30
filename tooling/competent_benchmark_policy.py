@@ -18,6 +18,7 @@ import json
 import math
 from pathlib import Path, PureWindowsPath
 import sys
+import uuid
 
 CORPUS_SCHEMA = "motionwright.private-benchmark-manifest-append/1"
 RESULT_SCHEMA = "motionwright.competent-comparison-executions/1"
@@ -172,6 +173,322 @@ def artifact(root: Path, record: dict, *, allow_empty: bool = False) -> dict:
     return {"bytes":record["bytes"], "sha256":expected}
 
 
+# These adapters check retained declarations and their physical correspondence.
+# They do not authenticate a producer, a participant, or a creative decision.
+REVISION_BINDING_SCHEMA = "motionwright.competent-revision-binding/1"
+LOCK_OBSERVATION_SCHEMA = "motionwright.competent-lock-observation/1"
+LOCK_SNAPSHOT_SCHEMA = "motionwright.competent-lock-snapshot/1"
+REVIEW_PROTOCOL_SCHEMA = "motionwright.competent-blind-review-protocol/1"
+REVIEW_RECORD_SCHEMA = "motionwright.competent-blind-review-record/1"
+OWNER_DECISION_SCHEMA = "motionwright.competent-owner-decision/1"
+OPERATION_KEYS = {"project_id", "generation", "revision", "request_id",
+                  "request_sha256", "command"}
+
+
+def bounded_text(value, label, limit=4096):
+    need(type(value) is str and 0 < len(value) <= limit
+         and all(ord(c) >= 32 for c in value), label)
+    return value
+
+
+def closed_record(value, fields, label):
+    need(type(value) is dict and set(value) == set(fields), label)
+    return value
+
+
+def binding_json(root, descriptor):
+    artifact(root, descriptor)
+    need(descriptor["bytes"] <= MAX_JSON_BYTES, "bounded binding JSON required")
+    value, raw = read_json(root / descriptor["path"])
+    need(len(raw) == descriptor["bytes"]
+         and digest(raw) == descriptor["sha256"], "binding bytes changed while read")
+    artifact(root, descriptor)
+    return value
+
+
+def operation_identity(value):
+    closed_record(value, OPERATION_KEYS, "immutable operation identity required")
+    for key in ("project_id", "generation"):
+        try:
+            valid = type(value[key]) is str and str(uuid.UUID(value[key])) == value[key]
+        except (ValueError, AttributeError):
+            valid = False
+        need(valid, "operation project/generation UUID required")
+    need(type(value["revision"]) is int and 0 <= value["revision"] < 2**63,
+         "operation revision outside stored receipt range")
+    bounded_text(value["request_id"], "original request ID required", 256)
+    bounded_text(value["command"], "original command required", 256)
+    h = value["request_sha256"]
+    need(type(h) is str and len(h) == 64
+         and all(c in "0123456789abcdef" for c in h), "original request hash required")
+    return value
+
+
+def revision_context(submitted, task, role, attempt, change):
+    return {"original_manifest_sha256": submitted["original_manifest_sha256"],
+            "candidate_source_sha": submitted["candidate_source_sha"],
+            "source_lock_sha256": submitted["source_lock_sha256"],
+            "task_id": task, "arm_role": role, "attempt_id": attempt,
+            "change_id": change}
+
+
+def validate_revision_binding(root, revision, context):
+    """F79-01: relate an immutable receipt to this exact submitted revision."""
+    if revision["status"] == "not_run":
+        need(not any(k in revision for k in
+                     ("binding", "lock_observation", "editable_source", "render")),
+             "unattempted revision has fictional binding or observation")
+        return {"state": "NOT_RUN", "reason": revision["reason"]}
+    binding = revision.get("binding")
+    if binding is None:
+        return {"state": "HOLD_REVISION_BINDING_NOT_SUBMITTED"}
+    closed_record(binding, ("operation", "correspondence"),
+                  "revision binding operation and correspondence required")
+    operation = operation_identity(binding["operation"])
+    receipt = binding_json(root, revision["receipt"])
+    closed_record(receipt, OPERATION_KEYS | {"id", "stage", "payload", "created_at"},
+                  "retained ProductionReceipt shape differs")
+    need(operation_identity({k: receipt[k] for k in OPERATION_KEYS}) == operation,
+         "ProductionReceipt belongs to another immutable request or source revision")
+    bounded_text(receipt["id"], "original receipt ID required", 64)
+    bounded_text(receipt["stage"], "original receipt stage required", 64)
+    timestamp(receipt["created_at"])
+    relation = binding_json(root, binding["correspondence"])
+    closed_record(relation, ("schema", "context", "operation", "production_receipt_sha256",
+                             "status", "editable_source", "render", "reason"),
+                  "closed revision correspondence required")
+    need(relation["schema"] == REVISION_BINDING_SCHEMA
+         and relation["context"] == context and relation["operation"] == operation,
+         "revision correspondence transplanted from another revision or generation")
+    need(relation["production_receipt_sha256"] == revision["receipt"]["sha256"],
+         "revision correspondence uses another production receipt")
+    need(relation["status"] == revision["status"], "revision outcome was relabeled")
+    if revision["status"] != "pass":
+        bounded_text(relation["reason"], "original failed/unknown revision reason required")
+    else:
+        need(relation["reason"] is None, "successful revision cannot hide an error reason")
+    stamp = {k: operation[k] for k in ("project_id", "generation", "revision")}
+    pair = {}
+    for label in ("editable_source", "render"):
+        observed = relation[label]
+        if observed is None:
+            need(revision["status"] != "pass", "successful revision lacks editable/render pair")
+            pair[label] = None
+            continue
+        fields = {"artifact", "source_stamp"}
+        if label == "render":
+            fields.add("editable_source_sha256")
+        closed_record(observed, fields, "source/render observation shape differs")
+        need(observed["source_stamp"] == stamp,
+             "editable/render source stamp belongs to another revision")
+        artifact(root, observed["artifact"])
+        pair[label] = observed["artifact"]
+    if pair["render"] is not None:
+        need(pair["editable_source"] is not None
+             and relation["render"]["editable_source_sha256"]
+             == pair["editable_source"]["sha256"],
+             "render is not associated with this editable source")
+    # Identical source hashes can be valid for an actual no-op. Identity and
+    # retained operation semantics, not a universal changed-hash rule, bind it.
+    return {"state": "BOUND_DECLARATIONS_AND_BYTES_CHECKED",
+            "operation": operation, "status": relation["status"],
+            "pair": pair, "reason": relation["reason"],
+            "production_receipt_sha256": revision["receipt"]["sha256"],
+            "producer_authentication": "NOT_PERFORMED"}
+
+
+def validate_lock_observation(root, revision, context, binding):
+    """F79-02: retain applicable lock outcomes without deriving them from loss."""
+    if revision["status"] == "not_run":
+        return {"state": "NOT_RUN", "reason": revision["reason"]}
+    descriptor = revision.get("lock_observation")
+    if descriptor is None:
+        return {"state": "HOLD_LOCK_OBSERVATION_NOT_SUBMITTED"}
+    need("operation" in binding, "lock observation needs the bound operation")
+    value = binding_json(root, descriptor)
+    closed_record(value, ("schema", "context", "operation", "outcome", "reason",
+                          "lock", "before", "after", "rejection"),
+                  "closed per-revision lock observation required")
+    need(value["schema"] == LOCK_OBSERVATION_SCHEMA
+         and value["context"] == context and value["operation"] == binding["operation"],
+         "lock observation belongs to another revision or operation")
+    outcome = value["outcome"]
+    need(outcome in ("preserved", "violation", "refused", "unknown", "not_applicable"),
+         "lock observation cannot invent verified authority")
+    bounded_text(value["reason"], "lock observation reason required")
+    if outcome == "not_applicable":
+        need(all(value[k] is None for k in ("lock", "before", "after", "rejection")),
+             "not-applicable lock cannot contain a fabricated applicable scope")
+    else:
+        lock = value["lock"]
+        if lock is not None:
+            closed_record(lock, ("id", "resource", "kind", "note"),
+                          "actual scoped ProjectLock fields required")
+            bounded_text(lock["id"], "retained lock identity required", 64)
+            bounded_text(lock["resource"], "retained lock resource required")
+            need(lock["kind"] in ("content", "timing", "position", "style", "renderer"),
+                 "retained lock kind differs")
+            need(type(lock["note"]) is str, "retained lock note required")
+        need(outcome == "unknown" or lock is not None,
+             "applicable outcome requires an actual scoped lock")
+        snapshots = {}
+        for label in ("before", "after"):
+            ref = value[label]
+            if ref is None:
+                snapshots[label] = None
+                continue
+            snap = binding_json(root, ref)
+            closed_record(snap, ("schema", "context", "operation", "lock",
+                                 "protected_values"), "closed lock snapshot required")
+            need(snap["schema"] == LOCK_SNAPSHOT_SCHEMA
+                 and snap["context"] == context and snap["operation"] == binding["operation"]
+                 and snap["lock"] == lock and lock is not None,
+                 "lock snapshot belongs to another source or scope")
+            values = snap["protected_values"]
+            need(type(values) is dict and 0 < len(values) <= 256
+                 and all(type(k) is str and 0 < len(k) <= 256 for k in values),
+                 "declared protected-field snapshot required")
+            snapshots[label] = values
+        if outcome in ("preserved", "violation"):
+            before, after = snapshots["before"], snapshots["after"]
+            need(before is not None and after is not None and set(before) == set(after),
+                 "lock preservation needs corresponding before/after fields")
+            equal = canon(before) == canon(after)
+            need(equal == (outcome == "preserved"),
+                 "claimed lock outcome contradicts retained protected fields")
+            need(value["rejection"] is None, "applied lock outcome hides a refusal")
+        elif outcome == "refused":
+            need(value["rejection"] is not None, "refusal requires original rejection receipt")
+        if value["rejection"] is not None:
+            refusal = binding_json(root, value["rejection"])
+            closed_record(refusal, ("context", "operation", "lock", "code", "reason"),
+                          "closed source-bound refusal receipt required")
+            need(refusal["context"] == context and refusal["operation"] == binding["operation"]
+                 and refusal["lock"] == lock and lock is not None,
+                 "refusal belongs to another source or lock")
+            bounded_text(refusal["code"], "original refusal code required", 256)
+            bounded_text(refusal["reason"], "original refusal reason required")
+    return {"state": outcome.upper(), "reason": value["reason"],
+            "lock": value["lock"], "observation_sha256": descriptor["sha256"],
+            "scope_completeness_and_actor_authentication": "NOT_PERFORMED",
+            "not_derived_from_changes_lost": True}
+
+
+def validate_benchmark_review(root, submitted, reviewable):
+    """F79-03: validate a declared protocol; never create a human verdict."""
+    inputs = submitted.get("independent_review")
+    if inputs is None:
+        return {"state": "HOLD_INDEPENDENT_REVIEW_NOT_SUBMITTED",
+                "owner_decision": "PENDING_EXTERNAL_INPUT"}
+    closed_record(inputs, ("protocol", "record"), "retained review protocol and record required")
+    protocol = binding_json(root, inputs["protocol"])
+    context = {k: submitted[k] for k in
+               ("original_manifest_sha256", "candidate_source_sha", "source_lock_sha256")}
+    closed_record(protocol, ("schema", "context", "blind_required", "rubric", "targets"),
+                  "closed benchmark review protocol required")
+    need(protocol["schema"] == REVIEW_PROTOCOL_SCHEMA and protocol["context"] == context,
+         "review protocol belongs to another benchmark or source")
+    need(protocol["blind_required"] is True, "selected blind protocol cannot waive blinding")
+    rubric = protocol["rubric"]
+    need(type(rubric) is list and 0 < len(rubric) <= 64, "bounded declared rubric required")
+    categories = {}
+    for row in rubric:
+        closed_record(row, ("id", "minimum", "maximum"), "declared rubric bounds required")
+        key = bounded_text(row["id"], "rubric category ID required", 256)
+        need(key not in categories and all(type(row[k]) in (int, float)
+             and math.isfinite(row[k]) for k in ("minimum", "maximum"))
+             and row["minimum"] < row["maximum"], "rubric bounds or identity differ")
+        categories[key] = (row["minimum"], row["maximum"])
+    targets = protocol["targets"]
+    need(type(targets) is list and len(targets) <= 4096, "bounded review targets required")
+    available = {(v["task_id"], v["arm_role"], v["attempt_id"]): v for v in reviewable}
+    blind_ids, covered, operators, finishes = set(), set(), set(), []
+    for target in targets:
+        closed_record(target, ("blind_id", "task_id", "arm_role", "attempt_id",
+                               "artifact", "operator_id"), "review target binding required")
+        bid = bounded_text(target["blind_id"], "blind target ID required", 256)
+        key = (target["task_id"], target["arm_role"], target["attempt_id"])
+        need(bid not in blind_ids and key not in covered and key in available,
+             "review target arm/attempt identity differs")
+        need(target["artifact"] == available[key]["artifact"],
+             "review target artifact belongs to another arm or attempt")
+        artifact(root, target["artifact"])
+        operators.add(bounded_text(target["operator_id"], "actual declared operator required", 256))
+        blind_ids.add(bid)
+        covered.add(key)
+        finishes.append(timestamp(available[key]["finished_at_utc"]))
+    record = binding_json(root, inputs["record"])
+    closed_record(record, ("schema", "context", "protocol_sha256", "state",
+                           "reviews", "owner_decision"), "closed retained review record required")
+    need(record["schema"] == REVIEW_RECORD_SCHEMA and record["context"] == context
+         and record["protocol_sha256"] == inputs["protocol"]["sha256"],
+         "review record belongs to another protocol or benchmark")
+    state = record["state"]
+    need(state in ("not_run", "pending", "completed", "declined"), "explicit review state required")
+    reviews = record["reviews"]
+    need(type(reviews) is list and len(reviews) <= 64, "bounded review records required")
+    need(state != "completed" or (bool(reviews) and bool(targets)),
+         "completed review lacks actual declared reviewers or targets")
+    need(not reviews or bool(targets), "review observations lack actual targets")
+    need(state != "not_run" or not reviews, "not-run review has fictional observations")
+    seen = set()
+    for review in reviews:
+        closed_record(review, ("reviewer_id", "independent", "blind_order_attested",
+                               "reviewed_at_utc", "scores", "limitations"),
+                      "closed actual review row required")
+        reviewer = bounded_text(review["reviewer_id"], "declared reviewer identity required", 256)
+        need(reviewer not in seen and reviewer not in operators and review["independent"] is True,
+             "duplicate or non-independent review cannot satisfy protocol")
+        need(review["blind_order_attested"] is True,
+             "unblinded declaration cannot satisfy selected blind protocol")
+        need(timestamp(review["reviewed_at_utc"]) >= max(finishes),
+             "review predates its retained target execution")
+        scores = review["scores"]
+        need(type(scores) is dict and set(scores) == blind_ids, "review score target coverage differs")
+        for values in scores.values():
+            need(type(values) is dict and set(values) == set(categories),
+                 "review rubric coverage differs")
+            for key, score in values.items():
+                lo, hi = categories[key]
+                need(type(score) in (int, float) and math.isfinite(score) and lo <= score <= hi,
+                     "review score outside declared rubric")
+        need(type(review["limitations"]) is list and len(review["limitations"]) <= 256
+             and all(type(v) is str and 0 < len(v) <= 4096 for v in review["limitations"]),
+             "review limitations must remain explicit")
+        seen.add(reviewer)
+    owner = closed_record(record["owner_decision"], ("state", "receipt"),
+                          "external owner decision state required")
+    need(owner["state"] in ("pending", "declined", "needs_changes", "accepted"),
+         "owner decision state differs")
+    if owner["state"] == "pending":
+        need(owner["receipt"] is None, "pending owner decision cannot invent a decision receipt")
+    else:
+        decision = binding_json(root, owner["receipt"])
+        closed_record(decision, ("schema", "context", "protocol_sha256", "targets_sha256",
+                                 "state", "owner_id", "decided_at_utc", "rationale"),
+                      "retained external owner decision required")
+        need(decision["schema"] == OWNER_DECISION_SCHEMA and decision["context"] == context
+             and decision["protocol_sha256"] == inputs["protocol"]["sha256"]
+             and decision["targets_sha256"] == digest(canon(targets))
+             and decision["state"] == owner["state"], "owner decision binding differs")
+        bounded_text(decision["owner_id"], "declared external owner identity required", 256)
+        bounded_text(decision["rationale"], "external owner rationale required")
+        timestamp(decision["decided_at_utc"])
+    need(state != "not_run" or owner["state"] == "pending",
+         "not-run review cannot carry a fictional owner decision")
+    need(owner["state"] != "accepted"
+         or (state == "completed" and covered == set(available) and bool(available)),
+         "owner acceptance declaration lacks the completed selected comparison")
+    # Cardinalities follow the retained protocol, not an old universal
+    # eight-category/two-reviewer quota. Unfavorable scores remain unchanged.
+    return {"state": state.upper(), "protocol_sha256": inputs["protocol"]["sha256"],
+            "reviewed_artifact_targets": len(covered),
+            "unreviewed_successful_artifact_targets": len(set(available) - covered),
+            "reviews": reviews, "owner_decision": owner["state"],
+            "participant_and_owner_authentication": "NOT_PERFORMED",
+            "creative_acceptance": False}
+
+
 def positive_budget(value: dict) -> None:
     need(type(value) is dict and set(value) == {
         "max_wall_seconds", "max_known_cost_usd", "max_human_active_seconds"},
@@ -197,6 +514,10 @@ def examine(original: dict, original_sha: str,
         "revisions_per_task": len(CHANGES),
         "original_v01_benchmark_protocols_preserved": corpus["legacy_count"],
         "task_execution": [], "actual_arms_observed": 0,
+        "revision_reconciliation": [],
+        "independent_review_binding": {"state": "NOT_RUN",
+                                       "owner_decision": "PENDING_EXTERNAL_INPUT"},
+        "functional_reconciliation_credit": False,
         "actual_attempts_observed": 0,
         "actual_original_streams_checked": 0,
         "actual_artifact_references_checked": 0,
@@ -244,6 +565,7 @@ def examine(original: dict, original_sha: str,
     attempt_count = 0
     stream_count = 0
     artifact_count = 0
+    reviewable = []
     for i, task in enumerate(tasks):
         code = IDS[i]
         need(type(task) is dict and task.get("id") == code,
@@ -345,6 +667,11 @@ def examine(original: dict, original_sha: str,
                     else:
                         artifact(evidence_root, rev.get("receipt"))
                         artifact_count += 1
+                    context = revision_context(submitted, code, role, aid, rev["id"])
+                    bound = validate_revision_binding(evidence_root, rev, context)
+                    lock = validate_lock_observation(evidence_root, rev, context, bound)
+                    result["revision_reconciliation"].append({
+                        "context": context, "editable_render": bound, "lock": lock})
                     observed_done.append(rev_status)
                 need(state != "pass" or all(r == "pass" for r in observed_done),
                      "a completed successful task cannot hide failed or missing revisions")
@@ -376,6 +703,9 @@ def examine(original: dict, original_sha: str,
                     artifact(evidence_root, attempt.get("editable_source"))
                     artifact(evidence_root, attempt.get("master"))
                     artifact_count += 2
+                    reviewable.append({"task_id": code, "arm_role": role,
+                                       "attempt_id": aid, "artifact": attempt["master"],
+                                       "finished_at_utc": attempt["finished_at_utc"]})
                 elif not (type(attempt.get("failure_or_unknown_reason")) is str
                           and attempt["failure_or_unknown_reason"].strip()):
                     raise ComparisonError(
@@ -397,6 +727,16 @@ def examine(original: dict, original_sha: str,
             "attempts": trials,
             "human_fairness_review": "NOT_AUTHENTICATED",
             "product_criterion_PASS": False})
+    result["independent_review_binding"] = validate_benchmark_review(
+        evidence_root, submitted, reviewable)
+    result["revision_binding_states"] = dict(Counter(
+        row["editable_render"]["state"] for row in result["revision_reconciliation"]))
+    result["lock_observation_states"] = dict(Counter(
+        row["lock"]["state"] for row in result["revision_reconciliation"]))
+    # Existing structural status describes the base experiment shape only.
+    # Missing bindings remain named HOLDs; none authenticates an execution,
+    # a protected-field scope, a participant, or an owner decision.
+    result["binding_reference_counts_are_separate"] = True
     result["actual_arms_observed"] = arm_count
     result["actual_attempts_observed"] = attempt_count
     result["actual_original_streams_checked"] = stream_count

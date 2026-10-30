@@ -455,6 +455,199 @@ class CompetentBenchmarkTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertFalse(result.exists())
 
+    def binding_fixture_json(self, name, value):
+        """Explicit synthetic controls, never producer or human evidence."""
+        path = self.root / name
+        raw = gate.canon(value)
+        path.write_bytes(raw)
+        return {"path": name, "bytes": len(raw), "sha256": gate.digest(raw)}
+
+    def bound_revision_fixture(self):
+        proposal = self.submitted()
+        attempt = proposal["tasks"][0]["arms"][0]["attempts"][0]
+        revision = attempt["revisions"][0]
+        context = gate.revision_context(
+            proposal, gate.IDS[0], gate.ROLES[0], attempt["id"], gate.CHANGES[0])
+        operation = {"project_id": "00000000-0000-0000-0000-000000000001",
+                     "generation": "00000000-0000-0000-0000-000000000002",
+                     "revision": 7, "request_id": "synthetic-request",
+                     "request_sha256": "7" * 64, "command": "synthetic.render"}
+        receipt = {**operation, "id": "00000000-0000-0000-0000-000000000003",
+                   "stage": "completed", "payload": {"synthetic_control_only": True},
+                   "created_at": "2026-10-22T01:00:30+00:00"}
+        revision["receipt"] = self.binding_fixture_json("synthetic-production.json", receipt)
+        stamp = {k: operation[k] for k in ("project_id", "generation", "revision")}
+        relation = {"schema": gate.REVISION_BINDING_SCHEMA, "context": context,
+                    "operation": operation,
+                    "production_receipt_sha256": revision["receipt"]["sha256"],
+                    "status": "pass", "reason": None,
+                    "editable_source": {"artifact": copy.deepcopy(self.artifact),
+                                        "source_stamp": copy.deepcopy(stamp)},
+                    "render": {"artifact": copy.deepcopy(self.artifact),
+                               "source_stamp": copy.deepcopy(stamp),
+                               "editable_source_sha256": self.artifact["sha256"]}}
+        revision["binding"] = {
+            "operation": copy.deepcopy(operation),
+            "correspondence": self.binding_fixture_json("synthetic-correspondence.json", relation)}
+        return proposal, revision, receipt, relation
+
+    def lock_fixture(self, revision, relation):
+        lock = {"id": "00000000-0000-0000-0000-000000000004",
+                "resource": "synthetic-scene", "kind": "content",
+                "note": "synthetic control; no real human lock asserted"}
+        snap = {"schema": gate.LOCK_SNAPSHOT_SCHEMA, "context": relation["context"],
+                "operation": relation["operation"], "lock": lock,
+                "protected_values": {"text": "keep this original value"}}
+        value = {"schema": gate.LOCK_OBSERVATION_SCHEMA, "context": relation["context"],
+                 "operation": relation["operation"], "outcome": "preserved",
+                 "reason": "synthetic scoped snapshot correspondence",
+                 "lock": lock,
+                 "before": self.binding_fixture_json("synthetic-before.json", snap),
+                 "after": self.binding_fixture_json("synthetic-after.json", snap),
+                 "rejection": None}
+        revision["lock_observation"] = self.binding_fixture_json("synthetic-lock.json", value)
+        return value, snap
+
+    def review_fixture(self, proposal):
+        attempt = proposal["tasks"][0]["arms"][0]["attempts"][0]
+        context = {k: proposal[k] for k in
+                   ("original_manifest_sha256", "candidate_source_sha", "source_lock_sha256")}
+        protocol = {"schema": gate.REVIEW_PROTOCOL_SCHEMA, "context": context,
+                    "blind_required": True,
+                    "rubric": [{"id": "declared-quality", "minimum": 0, "maximum": 5}],
+                    "targets": [{"blind_id": "synthetic-blind-1", "task_id": gate.IDS[0],
+                                 "arm_role": gate.ROLES[0], "attempt_id": attempt["id"],
+                                 "artifact": copy.deepcopy(attempt["master"]),
+                                 "operator_id": "synthetic-operator-not-authenticated"}]}
+        pref = self.binding_fixture_json("synthetic-protocol.json", protocol)
+        review = {"schema": gate.REVIEW_RECORD_SCHEMA, "context": context,
+                  "protocol_sha256": pref["sha256"], "state": "completed",
+                  "reviews": [{"reviewer_id": "synthetic-reviewer-not-authenticated",
+                               "independent": True, "blind_order_attested": True,
+                               "reviewed_at_utc": "2026-10-22T02:00:00+00:00",
+                               "scores": {"synthetic-blind-1": {"declared-quality": 0}},
+                               "limitations": ["synthetic unfavorable control; not actual review"]}],
+                  "owner_decision": {"state": "pending", "receipt": None}}
+        proposal["independent_review"] = {
+            "protocol": pref, "record": self.binding_fixture_json("synthetic-review.json", review)}
+        return protocol, review
+
+    def test_n79_01_transplanted_correspondence_and_source_stamp_are_rejected(self):
+        proposal, revision, receipt, relation = self.bound_revision_fixture()
+        good = self.examine(proposal)["revision_reconciliation"][0]["editable_render"]
+        self.assertEqual(good["state"], "BOUND_DECLARATIONS_AND_BYTES_CHECKED")
+        # Same editable/render bytes deliberately remain valid for a no-op.
+        self.assertEqual(good["pair"]["editable_source"], good["pair"]["render"])
+        for field in ("context", "render"):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(relation)
+                if field == "context":
+                    bad["context"]["change_id"] = gate.CHANGES[1]
+                    error = "correspondence transplanted"
+                else:
+                    bad["render"]["source_stamp"]["revision"] += 1
+                    error = "source stamp belongs to another revision"
+                revision["binding"]["correspondence"] = self.binding_fixture_json(
+                    "synthetic-correspondence.json", bad)
+                self.fail(proposal, error)
+
+    def test_n79_02_valid_receipt_cannot_establish_a_different_revision_pair(self):
+        proposal, revision, receipt, relation = self.bound_revision_fixture()
+        self.assertEqual(self.examine(proposal)["revision_reconciliation"][0]
+                         ["editable_render"]["producer_authentication"], "NOT_PERFORMED")
+        receipt["revision"] += 1
+        revision["receipt"] = self.binding_fixture_json("synthetic-production.json", receipt)
+        relation["production_receipt_sha256"] = revision["receipt"]["sha256"]
+        revision["binding"]["correspondence"] = self.binding_fixture_json(
+            "synthetic-correspondence.json", relation)
+        self.fail(proposal, "another immutable request or source revision")
+
+    def test_n79_03_zero_loss_cannot_promote_violation_refusal_or_unknown(self):
+        proposal, revision, receipt, relation = self.bound_revision_fixture()
+        observed, after = self.lock_fixture(revision, relation)
+        first = self.examine(proposal)["revision_reconciliation"][0]["lock"]
+        self.assertEqual(first["state"], "PRESERVED")
+        after["protected_values"]["text"] = "changed protected original"
+        observed["after"] = self.binding_fixture_json("synthetic-after.json", after)
+        revision["lock_observation"] = self.binding_fixture_json("synthetic-lock.json", observed)
+        self.fail(proposal, "contradicts retained protected fields")
+        observed["outcome"] = "violation"
+        revision["lock_observation"] = self.binding_fixture_json("synthetic-lock.json", observed)
+        self.assertEqual(self.examine(proposal)["revision_reconciliation"][0]["lock"]["state"],
+                         "VIOLATION")
+        refusal = {"context": relation["context"], "operation": relation["operation"],
+                   "lock": observed["lock"], "code": "SyntheticLocked",
+                   "reason": "synthetic refusal, never actual execution"}
+        observed.update(outcome="refused", after=None,
+                        rejection=self.binding_fixture_json("synthetic-refusal.json", refusal))
+        revision["lock_observation"] = self.binding_fixture_json("synthetic-lock.json", observed)
+        self.assertEqual(self.examine(proposal)["revision_reconciliation"][0]["lock"]["state"],
+                         "REFUSED")
+        observed.update(outcome="unknown", lock=None, before=None, after=None, rejection=None)
+        revision["lock_observation"] = self.binding_fixture_json("synthetic-lock.json", observed)
+        result = self.examine(proposal)
+        self.assertEqual(result["revision_reconciliation"][0]["lock"]["state"], "UNKNOWN")
+        self.assertEqual(result["task_execution"][0]["attempts"][0]["changes_lost"], 0)
+        self.assertFalse(result["release_authorized"])
+
+    def test_n79_04_unattempted_revision_has_no_fictional_pair_or_lock(self):
+        proposal = self.submitted()
+        attempt = proposal["tasks"][0]["arms"][0]["attempts"][0]
+        attempt.update(status="fail", failure_or_unknown_reason="original prior failure")
+        revision = attempt["revisions"][0]
+        revision.update(status="not_run", reason="no retry after earlier failure")
+        revision.pop("receipt")
+        self.assertEqual(self.examine(proposal)["revision_reconciliation"][0]
+                         ["editable_render"]["state"], "NOT_RUN")
+        revision["binding"] = {"operation": {}, "correspondence": copy.deepcopy(self.artifact)}
+        self.fail(proposal, "fictional binding or observation")
+
+    def test_n79_05_unrelated_targets_and_unblinded_review_are_rejected(self):
+        proposal = self.submitted()
+        protocol, review = self.review_fixture(proposal)
+        first = self.examine(proposal)["independent_review_binding"]
+        self.assertEqual(first["unreviewed_successful_artifact_targets"], 35)
+        review["reviews"][0]["blind_order_attested"] = False
+        proposal["independent_review"]["record"] = self.binding_fixture_json(
+            "synthetic-review.json", review)
+        self.fail(proposal, "unblinded declaration")
+        review["reviews"][0]["blind_order_attested"] = True
+        protocol["targets"][0]["artifact"] = self.binding_fixture_json(
+            "synthetic-unrelated-render.json", {"synthetic": "different rendered artifact"})
+        proposal["independent_review"]["protocol"] = self.binding_fixture_json(
+            "synthetic-protocol.json", protocol)
+        review["protocol_sha256"] = proposal["independent_review"]["protocol"]["sha256"]
+        proposal["independent_review"]["record"] = self.binding_fixture_json(
+            "synthetic-review.json", review)
+        self.fail(proposal, "artifact belongs to another arm or attempt")
+
+    def test_n79_06_external_decisions_and_unfavorable_scores_never_auto_accept(self):
+        proposal = self.submitted()
+        protocol, review = self.review_fixture(proposal)
+        result = self.examine(proposal)
+        bound = result["independent_review_binding"]
+        self.assertEqual(bound["owner_decision"], "pending")
+        self.assertEqual(bound["reviews"][0]["scores"]["synthetic-blind-1"]
+                         ["declared-quality"], 0)
+        self.assertEqual(bound["participant_and_owner_authentication"], "NOT_PERFORMED")
+        decision = {"schema": gate.OWNER_DECISION_SCHEMA, "context": protocol["context"],
+                    "protocol_sha256": review["protocol_sha256"],
+                    "targets_sha256": gate.digest(gate.canon(protocol["targets"])),
+                    "state": "declined", "owner_id": "synthetic-owner-not-authenticated",
+                    "decided_at_utc": "2026-10-22T03:00:00+00:00",
+                    "rationale": "synthetic unfavorable decision, not an actual owner vote"}
+        review["owner_decision"] = {
+            "state": "declined",
+            "receipt": self.binding_fixture_json("synthetic-decision.json", decision)}
+        proposal["independent_review"]["record"] = self.binding_fixture_json(
+            "synthetic-review.json", review)
+        result = self.examine(proposal)
+        self.assertEqual(result["independent_review_binding"]["owner_decision"], "declined")
+        self.assertFalse(result["independent_review_binding"]["creative_acceptance"])
+        self.assertFalse(result["user_creative_quality_independently_reviewed"])
+        self.assertFalse(result["release_authorized"])
+        self.assertEqual(result["new_product_contract_PASS"], 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
