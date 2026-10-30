@@ -10,6 +10,7 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -41,6 +42,13 @@ EXPECTED_COMMANDS = {
     "driver.motionwright.project.rename": 7,
     "driver.motionwright.project.preview": 4,
 }
+EXPECTED_ERRORS = {
+    ("driver.motionwright.observe", "PolicyDenied"): 1,
+    ("driver.motionwright.project.rename", "StaleReference"): 3,
+    ("driver.motionwright.project.rename", "InvalidArgument"): 1,
+    ("driver.motionwright.project.preview", "InvalidArgument"): 1,
+    ("driver.motionwright.project.preview", "StaleReference"): 1,
+}
 
 
 def digest(blob: bytes) -> str:
@@ -55,8 +63,18 @@ def parse_private_call_list(blob: bytes) -> list[dict]:
             obj[key] = value
         return obj
 
+    def reject_nonfinite(_value: str):
+        raise ValueError("nonfinite private call JSON")
+
+    def finite_float(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError("unrepresentable private call JSON number")
+        return value
+
     try:
-        result = json.loads(blob.decode("utf-8"), object_pairs_hook=no_duplicate)
+        result = json.loads(blob.decode("utf-8"), object_pairs_hook=no_duplicate,
+                            parse_constant=reject_nonfinite, parse_float=finite_float)
     except (ValueError, UnicodeError) as error:
         if isinstance(error, PublicationError):
             raise
@@ -64,6 +82,7 @@ def parse_private_call_list(blob: bytes) -> list[dict]:
     require(isinstance(result, list) and len(result) == 17,
             "incomplete_private_call_receipts")
     command_counts: Counter[str] = Counter()
+    error_counts: Counter[tuple[str, str]] = Counter()
     succeeded = 0
     failed = 0
     for entry in result:
@@ -84,11 +103,16 @@ def parse_private_call_list(blob: bytes) -> list[dict]:
             error = entry["envelope"].get("error")
             require(isinstance(error, dict) and error.get("outcome_known") is True,
                     "private_native_call_known_denial_unverified")
+            require(isinstance(error.get("code"), str),
+                    "invalid_private_native_error")
+            error_counts[(entry["command"], error["code"])] += 1
         command_counts[entry["command"]] += 1
         succeeded += int(okay)
         failed += int(not okay)
     require(dict(command_counts) == EXPECTED_COMMANDS and succeeded == 10 and failed == 7,
             "private_native_call_sequence_unverified")
+    require(dict(error_counts) == EXPECTED_ERRORS,
+            "private_native_error_sequence_unverified")
     return result
 
 

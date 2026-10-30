@@ -234,6 +234,87 @@ class NativeSharedStatePublicArtifactTests(unittest.TestCase):
                         "Every SHA-pinned GitHub Action must use the full 40 characters")
 
 
+    def test_wrong_or_swapped_error_codes_cannot_match_closed_command_roster(self):
+        original = copy.deepcopy(self.calls)
+        negatives = [i for i, call in enumerate(original)
+                     if call["envelope"]["ok"] is False]
+        for index in negatives:
+            with self.subTest(unapproved_code_at=index):
+                self.calls = copy.deepcopy(original)
+                self.calls[index]["envelope"]["error"]["code"] = "BackendFailed"
+                self.store()
+                before = (self.private / "calls.json").read_bytes()
+                self.reject("private_native_error_sequence_unverified")
+                self.assertEqual((self.private / "calls.json").read_bytes(), before)
+        observe = next(i for i in negatives
+                       if original[i]["command"] == "driver.motionwright.observe")
+        rename = next(i for i in negatives
+                      if original[i]["command"] == "driver.motionwright.project.rename"
+                      and original[i]["envelope"]["error"]["code"] == "StaleReference")
+        for field in ("code", "command"):
+            with self.subTest(swapped=field):
+                self.calls = copy.deepcopy(original)
+                left, right = self.calls[observe], self.calls[rename]
+                if field == "code":
+                    left, right = left["envelope"]["error"], right["envelope"]["error"]
+                left[field], right[field] = right[field], left[field]
+                self.store()
+                before = (self.private / "calls.json").read_bytes()
+                self.reject("private_native_error_sequence_unverified")
+                self.assertEqual((self.private / "calls.json").read_bytes(), before)
+        self.calls = copy.deepcopy(original)
+        rename_invalid = next(i for i in negatives
+                              if original[i]["command"] == "driver.motionwright.project.rename"
+                              and original[i]["envelope"]["error"]["code"] == "InvalidArgument")
+        self.calls[rename_invalid]["envelope"]["error"]["code"] = "StaleReference"
+        self.store()
+        self.reject("private_native_error_sequence_unverified")
+
+    def test_missing_or_untyped_error_codes_preserve_unknown_denial_priority(self):
+        original = copy.deepcopy(self.calls)
+        negatives = [i for i, call in enumerate(original)
+                     if call["envelope"]["ok"] is False]
+        for index in negatives:
+            for missing, value in ((True, None), (False, None), (False, 1),
+                                   (False, True), (False, []), (False, {})):
+                for known in (True, False):
+                    with self.subTest(call=index, missing=missing, code=value, known=known):
+                        self.calls = copy.deepcopy(original)
+                        error = self.calls[index]["envelope"]["error"]
+                        if missing:
+                            error.pop("code")
+                        else:
+                            error["code"] = value
+                        error["outcome_known"] = known
+                        self.store()
+                        before = (self.private / "calls.json").read_bytes()
+                        self.reject("invalid_private_native_error" if known
+                                    else "private_native_call_known_denial_unverified")
+                        self.assertEqual((self.private / "calls.json").read_bytes(), before)
+
+    def test_nonfinite_private_call_json_is_refused_before_publication(self):
+        original = copy.deepcopy(self.calls)
+        for token in ("NaN", "Infinity", "-Infinity", "1e400", "-1e400"):
+            for location in ("args", "envelope", "nested_error"):
+                with self.subTest(token=token, location=location):
+                    self.calls = copy.deepcopy(original)
+                    if location == "nested_error":
+                        target = self.calls[-1]["envelope"]["error"]
+                    else:
+                        target = self.calls[0][location]
+                    target["private_metric"] = {"nested": [0, "NONFINITE_SENTINEL"]}
+                    raw = json.dumps(self.calls)
+                    self.assertEqual(raw.count('"NONFINITE_SENTINEL"'), 1)
+                    raw = raw.replace('"NONFINITE_SENTINEL"', token)
+                    (self.private / "calls.json").write_bytes(raw.encode("utf-8"))
+                    before = (self.private / "calls.json").read_bytes()
+                    self.reject("invalid_private_call_receipts")
+                    self.assertEqual((self.private / "calls.json").read_bytes(), before)
+        finite = copy.deepcopy(original)
+        finite[0]["args"]["private_metric"] = {"nested": [0.25, -1.5, 1e308]}
+        self.assertEqual(pub.parse_private_call_list(json.dumps(finite).encode("utf-8")), finite)
+
+
 class PrivateCliErrorRedactionTests(unittest.TestCase):
     SECRET = b"PRIVATE_OWNER_TICKET_ABC123"
 
