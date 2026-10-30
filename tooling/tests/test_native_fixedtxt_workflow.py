@@ -258,11 +258,15 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             clock = {'schema':'motionwright.native.fixedtxt-original-clock/1','context':self.current,
                 'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                 'started_monotonic':now-10,'deadline_monotonic':now-10+600,'request_sha256':route.sha(raw)}
+            altered_clock = route.canonical({**clock, 'started_monotonic':now})
             originals = {'clock.original.json':route.canonical(clock),'request.original.json':raw}
             for filename,data in originals.items():
                 (root/filename).write_bytes(data)
+                # Keep the negative mutation within the manifest's byte ceiling
+                # even if its decimal monotonic representation is one digit longer.
+                limit = max(len(data), len(altered_clock)) if filename == 'clock.original.json' else len(data)
                 plan['members'].append({'root':'control','relative_path':filename,'role':'input-original',
-                    'maximum':len(data),'expected_sha256':route.sha(data)})
+                    'maximum':limit,'expected_sha256':route.sha(data)})
             observed, _ = route.admitted_original_clock(plan,current=self.current,runner_temp=name)
             self.assertEqual(observed,clock)
             (root/'clock.original.json').write_bytes(route.canonical({**clock,'started_monotonic':now}))
