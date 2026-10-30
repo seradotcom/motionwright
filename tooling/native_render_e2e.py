@@ -887,6 +887,101 @@ def cycle_register_job(job):
     context["jobs"].append(job)
 
 
+def cycle_diagnostic_acknowledgements(diagnostic, identity, phase):
+    """Project selected start receipts without granting completion or replay authority."""
+    prefixes = {"original":"native-render-real-driver-host",
+        "edited":"native-source-cycle-edited-authorized-render"}
+    if phase not in prefixes or type(diagnostic) is not dict or type(identity) is not dict:
+        raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_INPUT")
+    stamp = {key:identity.get(key) for key in ("project_id", "generation", "revision")}
+    uuid_pattern = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    if (any(type(stamp[key]) is not str or re.fullmatch(uuid_pattern, stamp[key]) is None
+            for key in ("project_id", "generation"))
+            or type(stamp["revision"]) is not int or not 0 <= stamp["revision"] < 2**64
+            or diagnostic.get("native_render_e2e") != "FAIL"
+            or type(diagnostic.get("revision")) is not int
+            or any(diagnostic.get(key) != value for key, value in stamp.items())):
+        raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_SOURCE_BINDING")
+    receipts = diagnostic.get("receipts")
+    if type(receipts) is not list or len(receipts) > 128:
+        raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_RECEIPT_BUDGET")
+    observed = []
+    for index, row in enumerate(receipts):
+        if type(row) is not dict:
+            raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_RECEIPT_SHAPE")
+        if (row.get("command") != "driver.motion-canvas.render.start"
+                or row.get("stage") != "completed"
+                or row.get("request_id") != prefixes[phase] + ":motion:0:render-start"):
+            continue
+        if (any(row.get(key) != value for key, value in stamp.items())
+                or type(row.get("revision")) is not int
+                or type(row.get("id")) is not str or type(row.get("request_sha256")) is not str
+                or re.fullmatch(uuid_pattern, str(row.get("id", ""))) is None
+                or re.fullmatch(r"[0-9a-f]{64}", str(row.get("request_sha256", ""))) is None):
+            raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_RECEIPT_BINDING")
+        payload = row.get("payload")
+        result = payload.get("result") if type(payload) is dict else None
+        data = result.get("data") if type(result) is dict else None
+        execution = result.get("execution") if type(result) is dict else None
+        provenance = execution.get("provenance") if type(execution) is dict else None
+        if (type(data) is not dict or type(execution) is not dict or type(provenance) is not dict
+                or result.get("provenance_checked") is not True
+                or execution.get("backend") != "driver:motion-canvas"
+                or execution.get("dry_run") is not False or execution.get("policy_decision") != "allow"
+                or provenance.get("provider") != "driver:motion-canvas" or provenance.get("source") != "driver"
+                or type(provenance.get("provider_generation")) is not int
+                or not 0 < provenance["provider_generation"] < 2**64
+                or type(provenance.get("descriptor_sha256")) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("descriptor_sha256", ""))) is None):
+            raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_PROVIDER_BINDING")
+        job = data.get("job_ref")
+        if (type(job) is not str or len(job) > 2048
+                or re.fullmatch(r"mc1:[^\x00-\x20\x7f]+:render_job:render-[0-9a-f]{32}", job) is None
+                or data.get("state") not in {"queued", "starting", "rendering", "succeeded", "failed", "cancelled"}):
+            raise N83RunnerFailure("EDITABLE_JOB_OBSERVATION_JOB_BINDING")
+        observed.append({"phase":phase,"source_stamp":stamp,"native_job_ref":job,
+            "receipt_pointer":f"/receipts/{index}","receipt_id":row["id"],
+            "request_id":row["request_id"],"request_sha256":row["request_sha256"],
+            "observed_start_state":data["state"],"render_completion_inferred":False})
+    return observed
+
+
+def cycle_job_observation(context):
+    """Private sidecar: the wrapper registry may omit a failed mediated start."""
+    report = {"source":context["source"],"derived_observation":True,
+        "registry":{"refs":list(context["jobs"]),"scope":"wrapper registered job references",
+            "mediated_registration":"after successful command return",
+            "direct_registration":"after acknowledged render.start",
+            "complete_for_verified_selected_cycle":bool(context["verified"]
+                and context["completed"] == list(CYCLE_STAGES) and len(context["jobs"]) == 5)},
+        "diagnostics":[],"acknowledged_job_refs":[],"complete_inventory_of_effects_claimed":False,
+        "absence_of_effects_asserted":False,"render_completion_inferred":False,
+        "receipts_rebound_as_authority":False,"automatic_retry":False,"formal_acceptance":False}
+    custody = n83_custody()
+    terminal = EVIDENCE / "runner.terminal.original.json"
+    report["runner_terminal"] = cycle_file(terminal) if terminal.is_file() else {"status":"NOT_RETAINED"}
+    for phase, folder in (("original", EVIDENCE), ("edited", EVIDENCE / "cycle" / "edited")):
+        path = folder / "motionwright-render-diagnostic.json"
+        row = {"phase":phase,"path":path.relative_to(EVIDENCE).as_posix(),"status":"NOT_RETAINED"}
+        report["diagnostics"].append(row)
+        if not os.path.lexists(path):
+            continue
+        try:
+            raw, _ = custody.regular(path, 2 * 1024 * 1024)
+            row["diagnostic"] = {"path":row["path"],"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()}
+            identity_path = EVIDENCE / "cycle" / phase / "source.identity.original.json"
+            identity_raw, _ = custody.regular(identity_path, 16 * 1024)
+            row["source_identity"] = {"path":identity_path.relative_to(EVIDENCE).as_posix(),
+                "bytes":len(identity_raw),"sha256":hashlib.sha256(identity_raw).hexdigest()}
+            rows = cycle_diagnostic_acknowledgements(custody.strict(raw), custody.strict(identity_raw), phase)
+            row.update(status="ORIGINAL_RECEIPTS_INSPECTED", acknowledgements=rows)
+            report["acknowledged_job_refs"].extend(value["native_job_ref"] for value in rows)
+        except Exception as error:
+            row.update(status="NOT_VERIFIED", error_type=type(error).__name__, error=str(error))
+    report["acknowledged_job_refs"] = sorted(set(report["acknowledged_job_refs"]))
+    return report
+
+
 def cycle_native_render(fingerprint, *, socket, session, env):
     started_ns = time.perf_counter_ns()
     started = cycle_execute("render.start", {"expected_fingerprint":fingerprint,
@@ -1213,6 +1308,17 @@ def cycle_workspace(context):
                 "automatic_retry":False,"formal_acceptance":False})
         except BaseException:
             persisted = False
+        try:
+            cycle_record(EVIDENCE / "native-job-observations.original.json", cycle_job_observation(context))
+        except BaseException as error:
+            # An optional projection failure never prevents sealing the original
+            # diagnostic, source, existing terminal, or partial native output.
+            try:
+                cycle_record(EVIDENCE / "native-job-observation-error.original.json", {
+                    "error_type":type(error).__name__,"error":str(error),
+                    "automatic_retry":False,"absence_of_effects_asserted":False})
+            except BaseException:
+                pass
         paths = {"owner":owner,"evidence":EVIDENCE,"preflight":context["preflight"]}
         plaintext, complete = n83_custody().gather_snapshot(paths,preserve_partial=True)
         ciphertext = n83_custody().encrypt_snapshot(plaintext,context["recipient"],context["context"])

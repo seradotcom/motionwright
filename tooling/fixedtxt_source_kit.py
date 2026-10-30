@@ -120,8 +120,13 @@ def selected_pins():
     cargo = tomllib.loads(original(ROOT / "Cargo.toml", ROOT, 2 * 1024 * 1024).decode())
     pins = [v for v in cargo["workspace"]["dependencies"].values()
             if isinstance(v, dict) and "semwright" in v.get("git", "")]
+    # Match the exact reviewed desktop overrides admitted by source_policy.
+    # No SDK source override or Cargo replacement is permitted.
     need(pins and all(v.get("git") == row["repository"] and v.get("rev") == SDK for v in pins)
-         and not cargo.get("patch"), "SDK direct pins or overrides changed")
+         and cargo.get("patch") == {"crates-io": {
+             "glib": {"path": "vendor/glib-0.18.5"},
+             "tauri": {"path": "vendor/tauri-2.12.1"},
+         }} and "replace" not in cargo, "SDK direct pins or overrides changed")
     packages = tomllib.loads(original(ROOT / "Cargo.lock", ROOT, 2 * 1024 * 1024).decode())["package"]
     locked = [p for p in packages if "semwright" in p.get("source", "")]
     need(locked and all(p["source"] == SDK_SOURCE for p in locked)

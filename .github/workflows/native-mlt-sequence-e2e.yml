@@ -1847,7 +1847,7 @@ jobs:
         rows = re.findall(
             r"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
             log)
-        assert rows == [("5", "0", "0", "0", "0")]
+        assert rows == [("10", "0", "0", "0", "0")]
         PY
     - name: Build the existing Film180 producer and verify its source contracts
       env:
@@ -3251,7 +3251,7 @@ jobs:
           rows = re.findall(
               r"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
               log)
-          assert rows == [("5", "0", "0", "0", "0")]
+          assert rows == [("10", "0", "0", "0", "0")]
           PY
 
       - name: Build the existing Film180 producer and verify its source contracts

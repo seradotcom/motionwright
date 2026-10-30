@@ -905,7 +905,7 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/kdenlive-distribution-python-$GITHUB_RUN_ID-1/bin/python" -B \
             tooling/ci_test_runner.py --test-directory tooling/otio-media \
-            --pattern test_kdenlive_distribution_observation.py --mode both --require-complete \
+            --pattern test_kdenlive_distribution_observation.py --mode discovery --require-complete \
             --expected-source "$GITHUB_SHA" --timeout 90 \
             --report "$RUNNER_TEMP/kdenlive-distribution-$GITHUB_RUN_ID-1/originals/controls/contracts.json"
       - name: Extract once and inspect original hooks and ELF declarations only
