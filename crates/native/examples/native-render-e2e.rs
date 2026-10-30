@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -432,6 +432,245 @@ fn export_direct_parity_film(
     Ok(())
 }
 
+fn cycle_project(
+    database: &Path,
+) -> Result<motionwright_domain::Project, Box<dyn std::error::Error>> {
+    let service = StudioService::open(database)?;
+    let mut projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("editable cycle requires one persisted original project".into());
+    }
+    let project = projects.remove(0);
+    if expected_fixture_frames(&project)? != 60 || project.scenes.len() != 1 {
+        return Err("editable cycle requires the existing two-second fixture".into());
+    }
+    let profile = project
+        .deliverables
+        .first()
+        .ok_or("missing cycle profile")?;
+    if (profile.width, profile.height) != (1920, 1080) {
+        return Err("editable cycle requires the original 1920x1080 profile".into());
+    }
+    Ok(project)
+}
+
+fn cycle_node(
+    project: &motionwright_domain::Project,
+) -> Result<&CanvasNode, Box<dyn std::error::Error>> {
+    let nodes = project.scenes[0]
+        .nodes
+        .iter()
+        .filter(|node| node.name == "Native linear motion tile")
+        .collect::<Vec<_>>();
+    if nodes.len() != 1
+        || nodes[0].kind != "rectangle"
+        || nodes[0].opacity != 1.0
+        || nodes[0].parent_id.is_some()
+    {
+        return Err("editable cycle lost the original opaque source rectangle".into());
+    }
+    Ok(nodes[0])
+}
+
+fn cycle_new_json(
+    path: &Path,
+    value: &impl serde::Serialize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = OpenOptions::new().write(true).create_new(true).open(path)?;
+    stream.write_all(&serde_json::to_vec_pretty(value)?)?;
+    stream.write_all(b"\n")?;
+    stream.sync_all()?;
+    Ok(())
+}
+
+fn cycle_snapshot(database: &Path, directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !directory.is_dir() {
+        return Err("editable cycle stage directory must already exist".into());
+    }
+    let project = cycle_project(database)?;
+    let node = cycle_node(&project)?;
+    let fill = node.style.fill.as_deref().ok_or("cycle fill missing")?;
+    if !matches!(fill, "#F5F5F2" | "#E85A35") {
+        return Err("editable cycle fill is outside the two original fixture values".into());
+    }
+    let options = fixture_film_options(project.scenes[0].id, 60)?;
+    let segments = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)?;
+    if segments.len() != 1 || segments[0].frame_count != 60 {
+        return Err("editable cycle Film changed segment shape".into());
+    }
+    let native_scene_id = format!("scene-{}", project.scenes[0].id.simple());
+    let native_node_id = format!("node-{}", node.id.simple());
+    let native_scenes = &segments[0].film.sequences;
+    if native_scenes.len() != 1 || native_scenes[0].id != native_scene_id {
+        return Err(
+            "editable cycle scene does not match the actual single-scene compiler output".into(),
+        );
+    }
+    let subjects = native_scenes[0]
+        .beats
+        .iter()
+        .flat_map(|beat| &beat.shots)
+        .flat_map(|shot| &shot.subjects)
+        .filter(|subject| subject.id == native_node_id)
+        .collect::<Vec<_>>();
+    if subjects.len() != 1 {
+        return Err("editable cycle source rectangle is not a unique native subject".into());
+    }
+    let subject = serde_json::to_value(subjects[0])?;
+    if subject
+        .pointer("/content/kind")
+        .and_then(serde_json::Value::as_str)
+        != Some("rectangle")
+        || subject
+            .pointer("/content/fill")
+            .and_then(serde_json::Value::as_str)
+            != Some(fill)
+    {
+        return Err(
+            "editable cycle source fill was not preserved by the actual Film compiler".into(),
+        );
+    }
+    cycle_new_json(&directory.join("project.original.json"), &project)?;
+    cycle_new_json(&directory.join("film.original.json"), &segments[0].film)?;
+    let identity = json!({"project_id":project.id,"generation":project.generation,
+        "revision":project.revision,"resource":project.resource_key(),
+        "scene_id":project.scenes[0].id,"node_id":node.id,"fill":fill,
+        "native_scene_id":native_scene_id,"native_node_id":native_node_id,
+        "frame_count":60,"width":1920,"height":1080,"frame_rate":"30/1"});
+    cycle_new_json(&directory.join("source.identity.original.json"), &identity)?;
+    println!("{}", serde_json::to_string(&identity)?);
+    Ok(())
+}
+
+fn cycle_edit(
+    database: &Path,
+    before_path: &Path,
+    directory: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let current = cycle_project(database)?;
+    let before: motionwright_domain::Project = serde_json::from_slice(&fs::read(before_path)?)?;
+    if serde_json::to_value(&before)? != serde_json::to_value(&current)? {
+        return Err("editable cycle source changed after its independent reopen".into());
+    }
+    let node = cycle_node(&current)?;
+    if node.style.fill.as_deref() != Some("#F5F5F2") {
+        return Err("editable cycle refuses a repeated or substituted edit".into());
+    }
+    let scene_id = current.scenes[0].id;
+    let node_id = node.id;
+    let mut style = node.style.clone();
+    style.fill = Some("#E85A35".into());
+    let stamp = RevisionStamp::from(&current);
+    cycle_new_json(
+        &directory.join("edit.started.original.json"),
+        &json!({
+        "project_id":current.id,"expected":stamp,"scene_id":scene_id,
+        "node_id":node_id,"property":"style.fill","from":"#F5F5F2","to":"#E85A35",
+        "automatic_retry":false}),
+    )?;
+    let service = StudioService::open(database)?;
+    let after = service
+        .apply(
+            current.id,
+            &RevisionStamp::from(&current),
+            "native-source-cycle-single-fill-edit",
+            &Change::UpdateCanvasStyle {
+                scene_id,
+                node_id,
+                style,
+            },
+        )?
+        .project;
+    if after.id != current.id
+        || after.generation != current.generation
+        || after.revision != current.revision + 1
+    {
+        return Err("editable cycle did not commit one original revision".into());
+    }
+    drop(service);
+    cycle_snapshot(database, directory)
+}
+
+fn require_cycle_selection() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("MOTIONWRIGHT_NATIVE_SCOPE").as_deref() != Ok("editable-source-cycle")
+    {
+        return Err("editable source cycle requires its explicit disposable CI selection".into());
+    }
+    Ok(())
+}
+
+/// Read-only verification using the selected SDK's actual canonical serializer
+/// and deterministic authoring realization. It never starts a provider.
+fn cycle_verify_binding(
+    film_path: &Path,
+    inspection_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use semwright_semantic_composition::{Digest, canonical_digest, strict_decode};
+    for path in [film_path, inspection_path] {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > 8 * 1024 * 1024
+        {
+            return Err("editable binding verification requires bounded regular originals".into());
+        }
+    }
+    let film_bytes = fs::read(film_path)?;
+    let inspection_bytes = fs::read(inspection_path)?;
+    let film: semwright_motion_authoring::Film = strict_decode(&film_bytes)?;
+    let inspection: serde_json::Value = strict_decode(&inspection_bytes)?;
+    let project = inspection
+        .get("project")
+        .ok_or("managed inspection project missing")?;
+    let binding: semwright_motion_authoring::ManagedBinding = serde_json::from_value(
+        project
+            .get("authoring")
+            .ok_or("actual managed authoring binding missing")?
+            .clone(),
+    )?;
+    binding.validate()?;
+    if binding.intent != film {
+        return Err("managed authoring intent differs from original Film".into());
+    }
+    let mut projection = project.clone();
+    projection
+        .as_object_mut()
+        .ok_or("managed project is not an object")?
+        .remove("authoring");
+    if canonical_digest(&projection)? != binding.projection_digest
+        || project.get("id").and_then(serde_json::Value::as_str) != Some(film.id.as_str())
+        || project
+            .pointer("/settings/width")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(film.output.width))
+        || project
+            .pointer("/settings/height")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(film.output.height))
+        || project
+            .pointer("/settings/fps")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(film.output.frame_rate.num))
+        || project
+            .pointer("/settings/fps_denominator")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1)
+            != u64::from(film.output.frame_rate.den)
+    {
+        return Err("managed projection or clock differs from selected SDK binding".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+        "binding_derivation":"VERIFIED_BY_SELECTED_SDK", "native_execution":false,
+        "film_sha256":Digest::of_bytes(&film_bytes),"inspection_sha256":Digest::of_bytes(&inspection_bytes),
+        "intent_digest":binding.intent_digest,"realization_digest":binding.realization_digest,
+        "projection_digest":binding.projection_digest}))?
+    );
+    Ok(())
+}
+
 /// The native production coordinator already restricts renderer failure
 /// classes to a closed static allowlist. Map only these known static labels,
 /// never echo a driver-supplied message or an opaque job reference to CI.
@@ -824,6 +1063,15 @@ async fn render(
     connection_path: &Path,
     evidence_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    render_requested(database, connection_path, evidence_path, false).await
+}
+
+async fn render_requested(
+    database: &Path,
+    connection_path: &Path,
+    evidence_path: &Path,
+    editable_cycle: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
     if projects.len() != 1 {
@@ -848,6 +1096,29 @@ async fn render(
     if connection.resource != project.resource_key() {
         return Err("owner-provisioned connection is not bound to the seeded project".into());
     }
+    let request_id = if editable_cycle {
+        require_cycle_selection()?;
+        if cycle_node(&project)?.style.fill.as_deref() != Some("#E85A35")
+            || deliverable.burn_in_captions
+        {
+            return Err("editable cycle render requires the single committed fill edit".into());
+        }
+        "native-source-cycle-edited-authorized-render"
+    } else if deliverable.burn_in_captions {
+        "native-caption-first-authorized-render"
+    } else {
+        "native-render-real-driver-host"
+    };
+    if editable_cycle {
+        for suffix in ["apply", "render-start"] {
+            if service
+                .latest_production_receipt(project.id, &format!("{request_id}:motion:0:{suffix}"))?
+                .is_some()
+            {
+                return Err("editable cycle refuses an existing native operation receipt".into());
+            }
+        }
+    }
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let options = if expected_frames == 540 {
         FilmBuildOptions {
@@ -871,11 +1142,7 @@ async fn render(
         .render_motion_canvas_segments(
             project.id,
             &RevisionStamp::from(&project),
-            if deliverable.burn_in_captions {
-                "native-caption-first-authorized-render"
-            } else {
-                "native-render-real-driver-host"
-            },
+            request_id,
             deliverable.id,
             &options,
         )
@@ -1122,6 +1389,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "cycle-verify-binding" => {
+            let film = path_arg(&mut args);
+            let inspection = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            cycle_verify_binding(&film, &inspection)
+        }
+        "cycle-snapshot" => {
+            require_cycle_selection()?;
+            let database = path_arg(&mut args);
+            let directory = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            cycle_snapshot(&database, &directory)
+        }
+        "cycle-edit" => {
+            require_cycle_selection()?;
+            let database = path_arg(&mut args);
+            let before = path_arg(&mut args);
+            let directory = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            cycle_edit(&database, &before, &directory)
+        }
+        "cycle-render-edited" => {
+            require_cycle_selection()?;
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            render_requested(&database, &connection, &evidence, true).await
+        }
         "seed-composition" => {
             let database = path_arg(&mut args);
             let project_json = path_arg(&mut args);
@@ -2644,5 +2948,93 @@ mod native_failure_stdout_contract_tests {
         assert_eq!(response["caption_native_class"], "unclassified");
         assert_eq!(response["caption_verification_gate"], "frame_coverage");
         assert_eq!(response["retry_authorized"], false);
+    }
+}
+
+#[cfg(test)]
+mod editable_cycle_source_controls {
+    use super::*;
+
+    #[test]
+    fn existing_fixture_closes_store_handles_and_commits_only_the_declared_fill() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("studio.sqlite3");
+        seed(&database).unwrap();
+        let original_dir = directory.path().join("original");
+        fs::create_dir(&original_dir).unwrap();
+        cycle_snapshot(&database, &original_dir).unwrap();
+        let before = cycle_project(&database).unwrap();
+        let edited_dir = directory.path().join("edited");
+        fs::create_dir(&edited_dir).unwrap();
+        cycle_edit(
+            &database,
+            &original_dir.join("project.original.json"),
+            &edited_dir,
+        )
+        .unwrap();
+        let after = cycle_project(&database).unwrap();
+        let mut expected = serde_json::to_value(&before).unwrap();
+        let observed = serde_json::to_value(&after).unwrap();
+        expected["revision"] = observed["revision"].clone();
+        expected["updated_at"] = observed["updated_at"].clone();
+        let active = expected["active_branch"].clone();
+        let branch = expected["branches"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|branch| branch["id"] == active)
+            .unwrap();
+        branch["head_revision"] = json!(after.revision);
+        let node_id = cycle_node(&before).unwrap().id.to_string();
+        let node = expected["scenes"][0]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|node| node["id"] == node_id)
+            .unwrap();
+        node["style"]["fill"] = json!("#E85A35");
+        assert_eq!(
+            expected, observed,
+            "Store handle closure must preserve all unrelated source state"
+        );
+        assert_ne!(
+            fs::read(original_dir.join("film.original.json")).unwrap(),
+            fs::read(edited_dir.join("film.original.json")).unwrap()
+        );
+        let repeat = directory.path().join("repeat");
+        fs::create_dir(&repeat).unwrap();
+        assert!(
+            cycle_edit(
+                &database,
+                &edited_dir.join("project.original.json"),
+                &repeat
+            )
+            .is_err()
+        );
+        assert!(!repeat.join("edit.started.original.json").exists());
+        assert_eq!(
+            serde_json::to_value(cycle_project(&database).unwrap()).unwrap(),
+            observed
+        );
+    }
+
+    #[test]
+    fn substituted_saved_project_is_rejected_before_any_edit_or_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("studio.sqlite3");
+        seed(&database).unwrap();
+        let before = cycle_project(&database).unwrap();
+        let mut substituted = serde_json::to_value(&before).unwrap();
+        substituted["scenes"][0]["nodes"][0]["name"] = json!("changed outside declared edit");
+        let original = directory.path().join("substituted.json");
+        cycle_new_json(&original, &substituted).unwrap();
+        let output = directory.path().join("edited");
+        fs::create_dir(&output).unwrap();
+        assert!(cycle_edit(&database, &original, &output).is_err());
+        assert!(!output.join("edit.started.original.json").exists());
+        assert_eq!(
+            serde_json::to_value(cycle_project(&database).unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
     }
 }

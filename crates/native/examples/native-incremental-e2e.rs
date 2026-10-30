@@ -1,8 +1,9 @@
 //! N83: original, bounded native preview reconstruction fixture.
 //!
-//! Each command opens the same SQLite project in a new process. A stage marker
-//! is exclusively created before any Store or native effect. Existing markers
-//! prohibit automatic replay. This producer never grants master acceptance.
+//! Commands reopen the same SQLite project. The dirty/full-after pair retains
+//! one genuine Coordinator in one process while producing distinct native jobs
+//! and original stage terminals. Preview admission and reopen remain separate
+//! processes. Exclusive stage markers prohibit replay; no master acceptance.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -972,6 +973,7 @@ async fn native_stage(
     root: &Path,
     stage: &Stage,
     source: &Value,
+    retained: Option<(&ProductionCoordinator, &str)>,
 ) -> Result<()> {
     let after = name != "before";
     require(
@@ -983,16 +985,37 @@ async fn native_stage(
     let project = single_project(&service)?;
     let current = save_state(stage, &project, source, after)?;
     preserved_state(root, if after { "edit" } else { "seed" }, &current)?;
+    let connection_digest = digest(&fs::read(connection_path)?);
     let connection = ProductionConnection::load(connection_path)?;
+    require(
+        digest(&fs::read(connection_path)?) == connection_digest,
+        "native connection changed while its original binding was loaded",
+    )?;
+    if let Some((_, original_digest)) = retained {
+        require(
+            connection_digest == original_digest,
+            "paired producer cannot change its retained native connection",
+        )?;
+    }
     let owner_output_root = connection.output_root.clone();
     write_json(
         &stage.path.join("connection-identity.original.json"),
         &json!({
-            "connection_file_sha256": digest(&fs::read(connection_path)?), "owner_output_root": owner_output_root,
+            "connection_file_sha256": connection_digest, "owner_output_root": owner_output_root,
             "source": source, "profile": project.deliverables[0], "expected": RevisionStamp::from(&project),
         }),
     )?;
-    let coordinator = ProductionCoordinator::new(service.clone(), connection)?;
+    let created = if retained.is_none() {
+        Some(ProductionCoordinator::new(service.clone(), connection)?)
+    } else {
+        None
+    };
+    let coordinator = match retained {
+        Some((coordinator, _)) => coordinator,
+        None => created
+            .as_ref()
+            .ok_or("native Coordinator was not retained")?,
+    };
     write_json(
         &stage.path.join("receipts-before.original.json"),
         &coordinator.receipts(project.id, 128)?,
@@ -1158,9 +1181,121 @@ async fn native_stage(
         &stage.path.join("project-readback.original.json"),
         &readback,
     )?;
-    drop(coordinator);
     drop(service);
     Ok(())
+}
+
+fn finish_original_stage(stage: &mut Stage, result: Result<()>, source: &Value) -> Result<()> {
+    match result {
+        Ok(()) => stage.complete(source),
+        Err(error) => {
+            if let Err(preservation) = stage.uncertain(&error.to_string()) {
+                eprintln!(
+                    "Original stage remains UNKNOWN; terminal preservation failed: {preservation}"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+fn paired_producer_receipt(
+    stage: &Stage,
+    name: &str,
+    source: &Value,
+    connection_digest: &str,
+) -> Result<()> {
+    write_json(
+        &stage.path.join("paired-producer.original.json"),
+        &json!({
+            "schema": "motionwright.native-incremental-paired-producer/1",
+            "operation": "dirty-and-full-after",
+            "logical_stages": ["dirty", "full-after"],
+            "stage": name,
+            "producer_pid": std::process::id(),
+            "same_process_coordinator": true,
+            "connection_file_sha256": connection_digest,
+            "source": source,
+            "automatic_retry": false,
+            "master_eligible": false,
+            "acceptance_granted": false,
+        }),
+    )
+}
+
+async fn native_dirty_full_after_pair(
+    database: &Path,
+    connection_path: &Path,
+    root: &Path,
+    source: &Value,
+) -> Result<()> {
+    // Admit both logical stages before the first effect. A preserved full-after
+    // marker must never cause the dirty job to be run again under a new label.
+    for name in ["dirty", "full-after"] {
+        match fs::symlink_metadata(root.join(name)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err("paired native stage already exists; preserve without replay".into());
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut dirty = Stage::start(root, "dirty", database, source)?;
+    let setup = (|| -> Result<(ProductionCoordinator, String)> {
+        require(
+            connection_path.is_absolute(),
+            "native connection must be absolute",
+        )?;
+        successful_stage(root, "edit")?;
+        let connection_digest = digest(&fs::read(connection_path)?);
+        let connection = ProductionConnection::load(connection_path)?;
+        require(
+            digest(&fs::read(connection_path)?) == connection_digest,
+            "paired native connection changed during setup",
+        )?;
+        let service = StudioService::open(database)?;
+        let coordinator = ProductionCoordinator::new(service, connection)?;
+        Ok((coordinator, connection_digest))
+    })();
+    let (coordinator, connection_digest) = match setup {
+        Ok(owner) => owner,
+        Err(error) => return finish_original_stage(&mut dirty, Err(error), source),
+    };
+    let dirty_result = async {
+        paired_producer_receipt(&dirty, "dirty", source, &connection_digest)?;
+        native_stage(
+            "dirty",
+            database,
+            connection_path,
+            root,
+            &dirty,
+            source,
+            Some((&coordinator, &connection_digest)),
+        )
+        .await
+    }
+    .await;
+    finish_original_stage(&mut dirty, dirty_result, source)?;
+
+    // The window does not retain a full-render digest. The full-after job is a
+    // fresh native start under the same durable accounting root and Coordinator;
+    // it never uses dirty PNGs as its reference and never replays a saved job.
+    let mut full_after = Stage::start(root, "full-after", database, source)?;
+    let full_result = async {
+        paired_producer_receipt(&full_after, "full-after", source, &connection_digest)?;
+        native_stage(
+            "full-after",
+            database,
+            connection_path,
+            root,
+            &full_after,
+            source,
+            Some((&coordinator, &connection_digest)),
+        )
+        .await
+    }
+    .await;
+    finish_original_stage(&mut full_after, full_result, source)
 }
 
 fn assemble(database: &Path, root: &Path, stage: &Stage, source: &Value) -> Result<()> {
@@ -2178,8 +2313,11 @@ fn dependency_negative(database: &Path, root: &Path, stage: &Stage, source: &Val
 async fn main() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let name = arguments.first().map(String::as_str).ok_or(
-        "usage: native-incremental-e2e seed|edit|assemble-input|reopen-preview|dependency-negative DB EVIDENCE_DIR; before|dirty|full-after DB CONNECTION EVIDENCE_DIR; admit-preview DB PYTHON EVIDENCE_DIR")?;
-    let native = matches!(name, "before" | "dirty" | "full-after");
+        "usage: native-incremental-e2e seed|edit|assemble-input|reopen-preview|dependency-negative DB EVIDENCE_DIR; before|dirty|full-after|dirty-and-full-after DB CONNECTION EVIDENCE_DIR; admit-preview DB PYTHON EVIDENCE_DIR")?;
+    let native = matches!(
+        name,
+        "before" | "dirty" | "full-after" | "dirty-and-full-after"
+    );
     let auxiliary_argument = native || name == "admit-preview";
     require(
         matches!(
@@ -2189,6 +2327,7 @@ async fn main() -> Result<()> {
                 | "edit"
                 | "dirty"
                 | "full-after"
+                | "dirty-and-full-after"
                 | "assemble-input"
                 | "admit-preview"
                 | "reopen-preview"
@@ -2207,6 +2346,10 @@ async fn main() -> Result<()> {
         "database and evidence directory must be absolute",
     )?;
     let source = source_identity()?;
+    if name == "dirty-and-full-after" {
+        return native_dirty_full_after_pair(&database, Path::new(&arguments[2]), &root, &source)
+            .await;
+    }
     let mut stage = Stage::start(&root, name, &database, &source)?;
     let result = match name {
         "seed" => seed(&database, &stage, &source),
@@ -2225,22 +2368,12 @@ async fn main() -> Result<()> {
                 &root,
                 &stage,
                 &source,
+                None,
             )
             .await
         }
     };
-    match result {
-        Ok(()) => stage.complete(&source),
-        Err(error) => {
-            let text = error.to_string();
-            if let Err(preservation) = stage.uncertain(&text) {
-                eprintln!(
-                    "Original stage remains UNKNOWN; terminal preservation failed: {preservation}"
-                );
-            }
-            Err(error)
-        }
-    }
+    finish_original_stage(&mut stage, result, &source)
 }
 
 #[cfg(test)]
