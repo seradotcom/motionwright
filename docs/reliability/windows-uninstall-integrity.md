@@ -29,6 +29,14 @@ The helper uses bounded reads and copies, regular files and ordinary parents, so
 
 Path and descriptor signatures remain separate observations. On Windows, the helper also reads `FILE_BASIC_INFO.ChangeTime` through `GetFileInformationByHandleEx` using the same native handle that supplies the source bytes. It compares that value before and after copying, including after the capture writer closes. It refuses an unavailable or changed value. The check does not infer metadata change from Windows `st_ctime`, which may describe creation time; it preserves the original path and descriptor identity and timestamp checks. The regression changes real bytes and restores `mtime`, then requires an observed native metadata change and refusal before include publication. This is a bounded capture check, not a filesystem transaction or protection against an actor that can restore every native metadata field.
 
+## Isolated installed-candidate verification
+
+The manually selected `windows_installed` workflow compiles the locked application without a bundle, then observes that actual executable with `distribution_build_record.py`. Its automated technical disposition permits only capture and installation in the current disposable runner. It retains the original source licenses and binds the existing admission schema to the exact source inputs and payload. It does not establish public redistribution clearance, human acceptance, signing, or release authorization.
+
+NSIS consumes that admission through the unchanged `verify_distribution_admission` and payload-capture checks. The internal bundle uses `--no-binary-patching --no-sign` so its input remains the observed executable; this route does not verify updater selection between multiple bundle formats. Missing or changed source, evidence or executable bytes still refuse capture.
+
+Only installation result JSON files leave this route. The executable, installer, admission records and target cache are not uploaded or saved. Other workflow events and scopes do not receive this internal disposition and retain their ordinary distribution-admission requirements.
+
 ## Initial installation and source preparation
 
 Before dependency installation or any deletion of installed payloads, the installer prepares the full set of new main, resource and external-binary bytes in its fresh NSIS plugin directory. Each staging name must be absent. Extraction uses `SetOverwrite off`, checks the error, and compares the complete staged file with the SHA256 and size from its build capture.

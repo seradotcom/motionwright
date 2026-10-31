@@ -36,6 +36,7 @@ on:
       - "tooling/nsis_owned_files.py"
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
+      - "tooling/tests/test_ci_windows_internal_candidate.py"
       - "tooling/source_lock_admission.py"
       - "tooling/tests/test_source_lock_admission.py"
       - "tooling/public_surface_policy.py"
@@ -92,6 +93,7 @@ on:
       - "tooling/nsis_owned_files.py"
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
+      - "tooling/tests/test_ci_windows_internal_candidate.py"
       - "tooling/source_lock_admission.py"
       - "tooling/tests/test_source_lock_admission.py"
       - "tooling/public_surface_policy.py"
@@ -880,6 +882,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
+      - name: Verify isolated Windows candidate admission controls
+        shell: pwsh
+        run: |
+          python -B -m unittest tooling.tests.test_ci_windows_internal_candidate -v
+          if ($LASTEXITCODE -ne 0) { throw 'Internal Windows candidate controls failed' }
       - name: Source and acceptance policy before Windows contract execution
         shell: pwsh
         run: |
@@ -1049,6 +1056,12 @@ jobs:
           (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')) }}
     needs: [receipt-policy, windows-contracts, nsis-source-windows, linux]
     runs-on: windows-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      MW_WINDOWS_CANDIDATE_SCOPE: ${{ inputs.verification_scope }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -1065,14 +1078,116 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: false
+          save-if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed' }}
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
-      - name: Build unsigned current-user Windows NSIS candidate
+      - name: Build unsigned Windows candidate
         shell: pwsh
         run: |
-          Set-Location apps/desktop
-          npm --prefix ../studio exec -- tauri build --bundles nsis
-          Set-Location ../..
+          $ErrorActionPreference = 'Stop'
+          Push-Location apps/desktop
+          try {
+            if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
+              npm --prefix ../studio exec -- tauri build --no-bundle --ci -- --locked
+            } else {
+              npm --prefix ../studio exec -- tauri build --bundles nsis
+            }
+            if ($LASTEXITCODE -ne 0) { throw 'Windows candidate build failed' }
+          } finally {
+            Pop-Location
+          }
+      - name: Prepare isolated Windows candidate capture
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(root / "tooling"))
+          from distribution_build_record import distribution_build_record
+          from release_manifest import _checkout, write_new_manifest
+          from source_lock_admission import _read, load_source_lock, verify_distribution_admission
+
+          required = {
+              "GITHUB_ACTIONS": "true",
+              "GITHUB_EVENT_NAME": "workflow_dispatch",
+              "GITHUB_REPOSITORY": "seradotcom/motionwright",
+              "MW_WINDOWS_CANDIDATE_SCOPE": "windows_installed",
+              "GITHUB_RUN_ATTEMPT": "1",
+          }
+          if any(os.environ.get(key) != value for key, value in required.items()):
+              raise ValueError("internal_candidate_scope_refused")
+          source = os.environ["GITHUB_SHA"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          if not run_id.isdecimal():
+              raise ValueError("internal_candidate_run_invalid")
+          _checkout(root, source)
+          payload = root / "target/release/motionwright-desktop.exe"
+          build = distribution_build_record(root, arch="x64", payload=payload)
+          lock = load_source_lock(root)
+          evidence_path = lock["dependencies"]["semwright"]["verification"]["evidence"]["path"]
+          source_evidence = json.loads(_read(root, evidence_path, 64 * 1024))
+
+          def reference(relative):
+              data = _read(root, relative, 64 * 1024)
+              return {"path": relative, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+          review_paths = ["LICENSE", "THIRD_PARTY_NOTICES.md", evidence_path]
+          review_paths.extend(item["path"] for item in source_evidence["files"])
+          review_evidence = [reference(relative) for relative in review_paths]
+          directory = root / "ci-evidence/internal-windows-capture"
+          directory.mkdir(parents=True, exist_ok=False)
+          build_path = "ci-evidence/internal-windows-capture/build.json"
+          record_path = "ci-evidence/internal-windows-capture/admission.json"
+          write_new_manifest(root, root / build_path, build)
+          record = {
+              "schema": "motionwright.distribution-admission/1",
+              "status": "permitted",
+              "scope": build["scope"],
+              "source": build["source"],
+              "review": {
+                  "issuer": "Motionwright automated isolated Windows verification",
+                  "reference": f"workflow_dispatch/windows_installed/{run_id}/1/{source}",
+                  "basis": "Capture and installation of the actual unsigned build in this disposable CI runner. Public redistribution clearance and human acceptance are not asserted.",
+                  "evidence": review_evidence,
+                  "obligations": [
+                      "Keep payload, installer and admission records inside this runner; do not upload them or save the target cache.",
+                      "Retain original source licenses; resolve public distribution notices separately.",
+                      "Do not use this internal capture disposition as release authorization or human acceptance.",
+                  ],
+              },
+              "payload": build["payload"],
+              "build_provenance": reference(build_path),
+          }
+          write_new_manifest(root, root / record_path, record)
+          pin = reference(record_path)["sha256"]
+          if verify_distribution_admission(root, arch="x64", record_path=record_path, record_sha256=pin) != build["payload"]:
+              raise ValueError("internal_candidate_payload_mismatch")
+          _checkout(root, source)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as stream:
+              stream.write("MW_NSIS_DISTRIBUTION_ADMISSION=" + record_path + "\n")
+              stream.write("MW_NSIS_DISTRIBUTION_ADMISSION_SHA256=" + pin + "\n")
+          print("internal-nsis-capture=ready public_distribution=NOT_AUTHORIZED human_acceptance=NOT_RUN")
+          '@ | python -B -
+          if ($LASTEXITCODE -ne 0) { throw 'Internal Windows capture admission failed' }
+      - name: Bundle the exact isolated Windows candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location apps/desktop
+          try {
+            npm --prefix ../studio exec -- tauri bundle --bundles nsis --no-binary-patching --no-sign --ci
+            if ($LASTEXITCODE -ne 0) { throw 'Internal Windows NSIS bundle failed' }
+          } finally {
+            Pop-Location
+          }
       - name: Record exact Windows candidate artifact
         shell: pwsh
         run: |
@@ -1148,7 +1263,18 @@ jobs:
             ci-evidence/windows-nsis-smoke.json
             ci-evidence/windows-nsis-cold-relaunch-diagnostic.json
           if-no-files-found: warn
+      - name: Retain isolated Windows installation results
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-installed-results
+          path: |
+            ci-evidence/windows-candidate.json
+            ci-evidence/windows-nsis-smoke.json
+            ci-evidence/windows-nsis-cold-relaunch.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'
         with:
           name: motionwright-windows-candidate
           path: |
