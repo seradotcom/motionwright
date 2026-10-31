@@ -434,6 +434,37 @@ class HistoryGuardTests(unittest.TestCase):
         self.assertEqual(guard.expand_assessment_history([second]),original)
         self.assertEqual(first["plain_sha256"],second["plain_sha256"])
 
+    def test_H03_second_bounded_archive_preserves_prefix_and_authentic_snapshot(self):
+        original = copy.deepcopy(self.row["assessment_history"])
+        first = guard.encode_assessment_history(original)
+        snapshot = {"source": copy.deepcopy(self.source),
+                    "prior_technical_status": "not_run",
+                    "prior_criteria": [copy.deepcopy(self.field)],
+                    "prior_contract_status": "open",
+                    "prior_current_record_ids": ["record-current"]}
+        second = guard.encode_assessment_history([snapshot])
+        self.assertEqual(guard.expand_assessment_history([first, second]),
+                         original + [snapshot])
+        row = self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["assessment_history"] = [first, second]
+        row["technical_assessment"]["technical_verification"]["status"] = "partial"
+        self.assertEqual(guard.inspect(self.old, self.new)
+                         ["changed_assessments_with_history"], 1)
+
+    def test_H03_third_archive_segment_is_denied_without_raising_limits(self):
+        archive = guard.encode_assessment_history(self.row["assessment_history"])
+        with self.assertRaisesRegex(guard.HistoryViolation,
+                                    "history_archive_segment_count_exceeded"):
+            guard.expand_assessment_history([archive, archive, archive])
+
+    def test_H03_second_archive_hash_mismatch_is_rejected(self):
+        first = guard.encode_assessment_history(self.row["assessment_history"])
+        second = guard.encode_assessment_history([{"source": "test"}])
+        second["plain_sha256"] = "0" * 64
+        with self.assertRaisesRegex(guard.HistoryViolation,
+                                    "history_archive_sha256_mismatch"):
+            guard.expand_assessment_history([first, second])
+
     def test_H03_duplicate_archive_json_keys_rejected(self):
         import base64
         import hashlib

@@ -18,7 +18,7 @@ import sys
 
 from conformance_history_guard import (
     INDEX, LEDGERS, LIMIT, HistoryViolation, _same, _unredirected_git,
-    encode_assessment_history, inspect, parse_unique, source_limit,
+    HISTORY_ARCHIVE_SCHEMA, encode_assessment_history, inspect, parse_unique, source_limit,
 )
 from conformance_policy import (
     public_file, source_digest, validate_assessment, validate_catalog_links,
@@ -237,11 +237,17 @@ def rollforward(previous: dict, target_sha: str, lock_digest: str, *,
                     "reviewed_at_utc": at_utc,
                     "reason": "New source must be independently re-evaluated; original remains historical.",
                 })
-                # A lossless compressed prefix also prevents subsequent source
-                # transitions from breaching the bounded ledger size limit.
-                row["assessment_history"] = [
-                    encode_assessment_history(row["assessment_history"])
-                ]
+                # Preserve the already authenticated H03 archive byte-for-byte.
+                # Re-archive only the uncompressed/new tail; recompressing the
+                # full historical prefix would exceed its unchanged 1 MiB bound.
+                history = row["assessment_history"]
+                if (history and isinstance(history[0], dict) and
+                        history[0].get("schema") == HISTORY_ARCHIVE_SCHEMA):
+                    row["assessment_history"] = [
+                        history[0], encode_assessment_history(history[1:])
+                    ]
+                else:
+                    row["assessment_history"] = [encode_assessment_history(history)]
                 assessment["source"] = idx["source"]
                 assessment["integration"].update({
                     "status": "main" if integrated else "branch",

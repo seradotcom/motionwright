@@ -104,6 +104,20 @@ class SourceCurrencyTests(unittest.TestCase):
             for key, value in tail["prior_visible_fields"].items():
                 self.assertEqual(value, old[key])
 
+    def test_rollforward_keeps_original_H03_archive_byte_exact_and_caps_tail(self):
+        prior = {row["id"]: row for row in all_rows(self.previous)}
+        current = {row["id"]: row for row in all_rows(self.after)}
+        for key, old in prior.items():
+            old_history = old["assessment_history"]
+            new_history = current[key]["assessment_history"]
+            self.assertEqual(len(new_history), 2, key)
+            self.assertEqual(new_history[0], old_history[0], key)
+            self.assertEqual(new_history[1]["schema"],
+                             "motionwright.assessment-history-zlib-json/1", key)
+            self.assertLessEqual(new_history[1]["plain_bytes"], 1_048_576)
+            self.assertEqual(expand_assessment_history(new_history)[:-1],
+                             expand_assessment_history(old_history), key)
+
     def test_zero_relabelled_evidence_records_and_completeness(self):
         original = {r["id"]: r for r in all_rows(self.previous)}
         newer = {r["id"]: r for r in all_rows(self.after)}

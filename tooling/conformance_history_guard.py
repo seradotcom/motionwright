@@ -107,6 +107,7 @@ def prefix(previous: list, candidate: list, label: str) -> None:
 HISTORY_ARCHIVE_SCHEMA = "motionwright.assessment-history-zlib-json/1"
 MAX_HISTORY_PLAIN_BYTES = 1_048_576
 MAX_HISTORY_ENCODED_BYTES = 1_048_576
+MAX_HISTORY_ARCHIVE_SEGMENTS = 2  # immutable historical prefix plus bounded successor tail
 
 
 def _history_canonical(value: list) -> bytes:
@@ -196,15 +197,21 @@ def expand_assessment_history(history: list) -> list:
     if not isinstance(history, list):
         raise HistoryViolation("invalid_assessment_history")
     expanded = []
-    for index, entry in enumerate(history):
+    archived_segments = 0
+    plain_tail_started = False
+    for entry in history:
         if _history_archive_entry(entry):
-            if index != 0:
+            if plain_tail_started:
                 raise HistoryViolation("history_archive_must_be_prefix")
+            archived_segments += 1
+            if archived_segments > MAX_HISTORY_ARCHIVE_SEGMENTS:
+                raise HistoryViolation("history_archive_segment_count_exceeded")
             expanded.extend(_decode_assessment_history_archive(entry))
         elif isinstance(entry, dict) and "schema" in entry and str(entry["schema"]).startswith(
                 "motionwright.assessment-history-"):
             raise HistoryViolation("unknown_history_archive_schema")
         elif isinstance(entry, dict):
+            plain_tail_started = True
             expanded.append(entry)
         else:
             raise HistoryViolation("invalid_assessment_history_entry")
