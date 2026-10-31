@@ -21126,8 +21126,8 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "eef9a330f9128503f84c3df1f410430107274940c8de4b3e50b8251937f43e6a",
-      "preamble_sha256": "a5aa2b7679edad07ab4b8cced01840c47541aa8f8aae6fde5e16658507e06b01",
+      "sha256": "6a4114d7e32034caed9a6012a19799fa698c9ed7d1713d73a8adfd189f4d5129",
+      "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
       "inputs": {
@@ -21646,7 +21646,7 @@
           "runs_on": "windows-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "dd7fec3a36fc355b5e02a0fc0faf79569e996c8166a19b5b91a43c65af0d8c48",
+          "source_sha256": "b942b161f18e132d1e836329c5565e339869d340e4153827e3788134d41f561c",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21661,6 +21661,14 @@
           "steps": [
             {
               "ordinal": 3,
+              "name": "Verify isolated Windows candidate admission controls",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "845ec10a6d013ad2526bfccdcc185bac877760574baa1734000938b8e828be12",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
               "name": "Source and acceptance policy before Windows contract execution",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21668,7 +21676,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 4,
+              "ordinal": 5,
               "name": "Windows cold-start unit contracts before package build",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21676,7 +21684,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 5,
+              "ordinal": 6,
               "name": "Preserve Windows unit contract receipts and original streams",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -21684,7 +21692,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 6,
+              "ordinal": 7,
               "name": "Observe original PowerShell guard with successful and failing child exits",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21692,7 +21700,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 8,
               "name": "Retain original positive and negative PowerShell exit observations",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -21712,7 +21720,7 @@
             "linux"
           ],
           "strategy": null,
-          "source_sha256": "8420694fe3248564bb0d28ae19500500052595d00c5c66a424b94fd47f91d406",
+          "source_sha256": "6e3f68f408e1f0814cc3c682b9ba03b19e837abb49265f9032b7ba83f7e8d8d8",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21732,14 +21740,30 @@
             },
             {
               "ordinal": 7,
-              "name": "Build unsigned current-user Windows NSIS candidate",
+              "name": "Build unsigned Windows candidate",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "5afb90cd00e33d5b454b58f6edb5988f5324487676dd2d0db787796afc9c9263",
+              "source_block_sha256": "827c5f91af8fd1b4bc5bec952e2d5ed65e55ce1475bc8d07f185e14c89c5ed15",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 8,
+              "name": "Prepare isolated Windows candidate capture",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "c840205decd026ee115f5e99f2da28564e967dbc99f85d5e686e327030040776",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
+              "name": "Bundle the exact isolated Windows candidate",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "223a7550b17fe52ac43dfbe5c1c0e3781c927ffadfa2e5039c4923616a37dd23",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 10,
               "name": "Record exact Windows candidate artifact",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21747,7 +21771,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 11,
               "name": "Silent current-user NSIS install and inspect installed Windows executable",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21755,7 +21779,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 12,
               "name": "Cold launch and reopen the real NSIS-installed application",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21763,7 +21787,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 13,
               "name": "Preserve sanitized Windows first-use failure evidence",
               "guard": "failure()",
               "kind": "ARTIFACT_RETENTION",
@@ -21771,11 +21795,19 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
-              "name": null,
-              "guard": null,
+              "ordinal": 14,
+              "name": "Retain isolated Windows installation results",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "6aafb038bf32956ab4cac80b3916778c6b318bcda3715c352c86ef261b743ce1",
+              "source_block_sha256": "7bc1daa726a30175f8e2a921cd5f946349fa536379b4e59bf949e1b8f600c8e7",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 15,
+              "name": null,
+              "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "18b38a0fa50727e2dc783933bba84cdc75b56b385d92d011025d75391996402f",
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
             }
           ]
@@ -22074,7 +22106,8 @@
                 4,
                 5,
                 6,
-                7
+                7,
+                8
               ]
             },
             {
@@ -22085,10 +22118,10 @@
               "required_steps": [
                 6,
                 7,
-                8,
-                9,
                 10,
-                12
+                11,
+                12,
+                15
               ]
             },
             {
@@ -22168,7 +22201,8 @@
                 4,
                 5,
                 6,
-                7
+                7,
+                8
               ]
             }
           ],
@@ -22222,7 +22256,8 @@
                 4,
                 5,
                 6,
-                7
+                7,
+                8
               ]
             },
             {
@@ -22236,11 +22271,13 @@
                 8,
                 9,
                 10,
-                12
+                11,
+                12,
+                14
               ]
             }
           ],
-          "coverage_basis": "The selected Windows installed path includes its source prerequisites, real current-user NSIS package build/install and cold-launch/reopen originals. Linux, macOS, NSIS fixture update and all-only provenance are excluded.",
+          "coverage_basis": "The manually selected internal Windows route compiles the locked executable, admits only its exact bytes for isolated runner capture, bundles without binary patching or signing, installs and cold-reopens the real package. It retains result JSON only, without payload/admission upload or target-cache saving. It is not public redistribution clearance or human acceptance.",
           "original_attempt": null,
           "blocking_reason": null
         },
