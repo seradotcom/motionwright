@@ -723,6 +723,32 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
         self.assert_source_and_installed_routes(text)
 
+    def test_nsis_update_render_preserves_all_product_license_resources(self):
+        import json
+        root = gate.ROOT
+        resources = json.loads((root / "apps/desktop/src-tauri/tauri.conf.json").read_text(
+            encoding="utf-8"))["bundle"]["resources"]
+        expected = {
+            "bundle-licenses/LICENSE": "licenses/motionwright/LICENSE",
+            "bundle-licenses/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+            "bundle-licenses/glib-0.18.5/LICENSE": "licenses/glib-0.18.5/LICENSE",
+            "bundle-licenses/glib-0.18.5/COPYRIGHT": "licenses/glib-0.18.5/COPYRIGHT",
+        }
+        self.assertEqual(resources, expected)
+        self.assertTrue(all((root / "apps/desktop/src-tauri" / key).is_file()
+                            for key in resources))
+        workflow = (root / ".github/workflows/package-candidate.yml").read_text(
+            encoding="utf-8")
+        self.assertEqual(workflow.count("expected_configured_resources = {"), 1)
+        self.assertEqual(workflow.count(
+            'config["bundle"].get("resources") == expected_configured_resources'), 1)
+        self.assertEqual(workflow.count(
+            'resource_inputs = dict(expected_configured_resources)'), 1)
+        self.assertEqual(workflow.count(
+            'expected_fixture[installed] = {"kind": "resource", **identity(source_file)}'), 1)
+        self.assertIn("the_render_fixture_must_preserve_exact_configured_application_payloads",
+                      workflow)
+
     def test_linux_source_scope_cannot_activate_installed_or_legacy_package_effects(self):
         text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
         changes = (

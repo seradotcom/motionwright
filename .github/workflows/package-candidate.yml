@@ -1746,12 +1746,28 @@ jobs:
           require_pe_version(previous_pe, "0.1.0", identity(INPUT / "previous-main.exe"))
           require_pe_version(current_pe, fixture_version, main_before)
 
-          require(not config["bundle"].get("externalBin") and not config["bundle"].get("resources"),
-                  "the_render_fixture_must_not_replace_configured_application_payloads")
+          # The application already carries four pinned license resources.
+          # Keep them all in the update overlay; the synthetic two-resource
+          # fixture must be additive and must never replace product payloads.
+          expected_configured_resources = {
+              "bundle-licenses/LICENSE": "licenses/motionwright/LICENSE",
+              "bundle-licenses/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+              "bundle-licenses/glib-0.18.5/LICENSE": "licenses/glib-0.18.5/LICENSE",
+              "bundle-licenses/glib-0.18.5/COPYRIGHT": "licenses/glib-0.18.5/COPYRIGHT",
+          }
+          require(not config["bundle"].get("externalBin")
+                  and config["bundle"].get("resources") == expected_configured_resources,
+                  "the_render_fixture_must_preserve_exact_configured_application_payloads")
           fixture = WORK / "render-inputs"
           fixture.mkdir()
-          resource_inputs = {}
+          resource_inputs = dict(expected_configured_resources)
           expected_fixture = {}
+          for source_name, installed in expected_configured_resources.items():
+              source_file = ROOT / "apps/desktop/src-tauri" / source_name
+              verified_artifact(ROOT, source_file)
+              require(installed not in expected_fixture,
+                      "the_configured_license_resources_overlap")
+              expected_fixture[installed] = {"kind": "resource", **identity(source_file)}
           for name, body in (("resource-alpha.dat", b"Motionwright NSIS render input alpha\n"),
                              ("resource-beta.dat", b"Motionwright NSIS render input beta: distinct bytes\n")):
               resource = fixture / name
