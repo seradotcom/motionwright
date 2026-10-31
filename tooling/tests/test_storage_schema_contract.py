@@ -579,6 +579,15 @@ class StorageSchemaSixControls(unittest.TestCase):
             storage.validate_schema_six_source(selected, observed, b"budget")
 
     def test_module_provenance_binds_same_source_tree_git_and_physical_bytes(self):
+        # Pin current reviewed product bytes, not just the synthetic negative.
+        # The real checkout admission independently verifies Git source identity.
+        actual = (Path(__file__).resolve().parents[2] /
+                  storage.BUDGET_SOURCE_PATH).read_bytes()
+        normalized = actual.replace(b"\r\n", b"\n")
+        self.assertEqual(
+            (len(normalized), hashlib.sha256(normalized).hexdigest()),
+            (storage.BUDGET_SOURCE_GIT_BYTES, storage.BUDGET_SOURCE_GIT_SHA256),
+        )
         raw = b"reviewed budget source\n"
         observed, ignored = observed_source(6)
         original = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}

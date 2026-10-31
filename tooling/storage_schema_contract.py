@@ -63,8 +63,9 @@ CAS_INDEXES = {
 
 # Exact source622/candidate278 schema-six declarations; input module 27365 bytes.
 BUDGET_SOURCE_PATH = 'crates/storage/src/root_operation_budget.rs'
-BUDGET_SOURCE_GIT_BYTES = 27365
-BUDGET_SOURCE_GIT_SHA256 = 'a09bf76a6c80fdc08cf0304c9127b5b67b0c3f5b8af0dba1f658486a79cec3b6'
+# Reviewed exact current Storage v6 module source; drift must fail closed.
+BUDGET_SOURCE_GIT_BYTES = 32788
+BUDGET_SOURCE_GIT_SHA256 = '08045e15fbab94c9e092fe096760d6e05327ca75d2bd1c3a14bd929b05e8c02c'
 BUDGET_OBJECTS = {'production_operation_debit_budget_gate': ('trigger',
                                             'production_operation_debits',
                                             'CREATE TRIGGER '
