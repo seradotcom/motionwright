@@ -752,7 +752,7 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
         self.base = Path(temp.name).resolve()
         self.counter = 0
         self.workflow = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
-        sections = self.workflow.split('      - name: Require sixty-three lifecycle contracts through both existing runner entrypoints\n')[1:]
+        sections = self.workflow.split('      - name: Require sixty-seven lifecycle contracts through both existing runner entrypoints\n')[1:]
         bodies = []
         for section in sections:
             section = section.split('      - name: Retain exact lifecycle contract receipts\n', 1)[0]
@@ -767,7 +767,7 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
         self.windows = compile(textwrap.dedent('          if sys.platform != "win32":\n' + windows),
                                "<workflow-windows-readback>", "exec")
         self.definitions = {}
-        for name, expected in (("test_windows_installer_lifecycle.py", 63), ("test_windows_cold_start.py", 52)):
+        for name, expected in (("test_windows_installer_lifecycle.py", 67), ("test_windows_cold_start.py", 52)):
             raw = (gate.ROOT / "tooling/tests" / name).read_bytes()
             tree = ast.parse(raw)
             methods = [cls.name + "." + method.name for cls in tree.body if isinstance(cls, ast.ClassDef)
@@ -856,10 +856,10 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
         path.write_bytes(raw)
         step["stderr"]["sha256"] = digest(raw)
 
-    def test_lifecycle_readers_require_all_sixty_three_named_controls_in_both_modes(self):
+    def test_lifecycle_readers_require_all_sixty_seven_named_controls_in_both_modes(self):
         for code in self.lifecycle:
             result = self.run_reader(self.fixture("lifecycle"), "lifecycle", code)
-            self.assertEqual((result["unique_controls"], result["entrypoints"], result["skipped"]), (63, 2, 0))
+            self.assertEqual((result["unique_controls"], result["entrypoints"], result["skipped"]), (67, 2, 0))
             self.assertEqual(result["installer_execution"], "NOT_RUN")
 
     def test_lifecycle_readers_reject_legacy_counts_boolean_exits_omissions_and_foreign_source(self):

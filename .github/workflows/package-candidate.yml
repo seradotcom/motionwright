@@ -181,7 +181,7 @@ jobs:
           set -euo pipefail
           python3 -B -E -s -m unittest tooling.tests.test_ci_nsis_source_selection -v
           python3 -B -E -s -m tooling.ci_suites.nsis_source_selection --scope "$SOURCE_CONTRACT_SCOPE" --repo "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/mw-nsis-linux-source-tests" --expected-source "$GITHUB_SHA"
-      - name: Require sixty-three lifecycle contracts through both existing runner entrypoints
+      - name: Require sixty-seven lifecycle contracts through both existing runner entrypoints
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
         shell: bash
         run: |
@@ -219,7 +219,7 @@ jobs:
           classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
                      and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                              for method in item.body)]
-          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 11}
+          expected_classes = {"RetainedPredecessorEvidenceControls": 4, "WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 11}
           require({item.name for item in classes} == set(expected_classes)
                   and len(classes) == len(expected_classes), "lifecycle_contract_class_count")
           methods = [f"{item.name}.{method.name}" for item in classes for method in item.body
@@ -229,7 +229,7 @@ jobs:
                          and item.name.startswith("test_")]
           require(all(sum(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                           for method in item.body) == expected_classes[item.name] for item in classes)
-                  and len(methods) == len(set(methods)) == len(all_methods) == 63
+                  and len(methods) == len(set(methods)) == len(all_methods) == 67
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -256,8 +256,8 @@ jobs:
               require(step.get("status") == "PASS" and type(step.get("exit_code")) is int
                       and step["exit_code"] == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 63
-                      and type(counts.get("passed")) is int and counts["passed"] == 63
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 67
+                      and type(counts.get("passed")) is int and counts["passed"] == 67
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -269,7 +269,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.{method}" for method in methods}
-              require(len(observed) == 63 and set(observed) == expected,
+              require(len(observed) == 67 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -278,7 +278,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 63, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 67, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -324,7 +324,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The source selection guards failed' }
           python -B -E -s -m tooling.ci_suites.nsis_source_selection --scope "$env:SOURCE_CONTRACT_SCOPE" --repo "$env:GITHUB_WORKSPACE" --output "$env:RUNNER_TEMP/mw-nsis-windows-source-tests" --expected-source "$env:GITHUB_SHA"
           if ($LASTEXITCODE -ne 0) { throw 'The Windows selected source gate failed' }
-      - name: Require sixty-three lifecycle contracts through both existing runner entrypoints
+      - name: Require sixty-seven lifecycle contracts through both existing runner entrypoints
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
         shell: pwsh
         run: |
@@ -362,7 +362,7 @@ jobs:
           classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
                      and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                              for method in item.body)]
-          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 11}
+          expected_classes = {"RetainedPredecessorEvidenceControls": 4, "WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 11}
           require({item.name for item in classes} == set(expected_classes)
                   and len(classes) == len(expected_classes), "lifecycle_contract_class_count")
           methods = [f"{item.name}.{method.name}" for item in classes for method in item.body
@@ -372,7 +372,7 @@ jobs:
                          and item.name.startswith("test_")]
           require(all(sum(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                           for method in item.body) == expected_classes[item.name] for item in classes)
-                  and len(methods) == len(set(methods)) == len(all_methods) == 63
+                  and len(methods) == len(set(methods)) == len(all_methods) == 67
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -399,8 +399,8 @@ jobs:
               require(step.get("status") == "PASS" and type(step.get("exit_code")) is int
                       and step["exit_code"] == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 63
-                      and type(counts.get("passed")) is int and counts["passed"] == 63
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 67
+                      and type(counts.get("passed")) is int and counts["passed"] == 67
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -412,7 +412,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.{method}" for method in methods}
-              require(len(observed) == 63 and set(observed) == expected,
+              require(len(observed) == 67 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -421,7 +421,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 63, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 67, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
