@@ -8502,24 +8502,10 @@ def graph_capture_cargo_executable(source, target_root, role):
             "Graph Cargo executable must be bounded regular source")
     if os.name != "nt":
         require(stat.S_IMODE(before.st_mode) & 0o111, "Graph Cargo executable mode")
-    partner = None
-    if before.st_nlink == 2:
-        partner_root = (target_root / "debug/deps" if kind == "bin" else source.parent)
-        archive_ancestors(partner_root)
-        require(partner_root.is_dir(), "Graph Cargo hardlink partner directory missing")
-        names = list(partner_root.iterdir())
-        require(len(names) <= 8192, "Graph Cargo hardlink partner scan budget")
-        partners = []
-        for candidate in names:
-            if candidate != source and candidate.name.startswith(name + "-"):
-                state = candidate.lstat()
-                if (stat.S_ISREG(state.st_mode) and not stat.S_ISLNK(state.st_mode)
-                        and (state.st_dev, state.st_ino) == (before.st_dev, before.st_ino)):
-                    partners.append(candidate)
-        require(len(partners) == 1
-                and archive_identity(partners[0].lstat()) == archive_identity(before),
-                "Graph Cargo hardlink partner is not owned by fresh target")
-        partner = partners[0]
+    # The alternate filename of a Cargo/rustc hard link is not part of the
+    # compiler-artifact JSON contract. Source trust comes from the exact
+    # emitted path inside the freshly built target plus stable inode/bytes.
+    # Never archive this linked source: publish only an exclusive copy below.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     with os.fdopen(os.open(source, flags), "rb") as stream:
         require(archive_identity(os.fstat(stream.fileno())) == archive_identity(before),
@@ -8528,8 +8514,7 @@ def graph_capture_cargo_executable(source, target_root, role):
         require(len(raw) == before.st_size
                 and archive_identity(os.fstat(stream.fileno())) == archive_identity(before),
                 "Graph Cargo output changed during capture")
-    require(archive_identity(source.lstat()) == archive_identity(before)
-            and (partner is None or archive_identity(partner.lstat()) == archive_identity(before)),
+    require(archive_identity(source.lstat()) == archive_identity(before),
             "Graph Cargo output changed after capture")
     directory = target_root / "mw-r74-captured"
     if not directory.exists():
@@ -8541,8 +8526,7 @@ def graph_capture_cargo_executable(source, target_root, role):
     state = archive_stat(captured)
     require(state.st_nlink == 1
             and (os.name == "nt" or stat.S_IMODE(state.st_mode) == stat.S_IMODE(before.st_mode))
-            and archive_identity(source.lstat()) == archive_identity(before)
-            and (partner is None or archive_identity(partner.lstat()) == archive_identity(before)),
+            and archive_identity(source.lstat()) == archive_identity(before),
             "Graph Cargo copied executable/source identity changed")
     require(graph_ref(captured) == result, "Graph Cargo exclusive source copy differs")
     return result

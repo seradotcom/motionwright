@@ -8141,7 +8141,8 @@ class GraphR74JoinTests(unittest.TestCase):
             dep.mkdir()
             src.write_bytes(b"Cargo original executable bytes\\n" * 3)
             gate.os.chmod(src, 0o755)
-            gate.os.link(src, dep / "semwright-a1b2c3")
+            # Cargo's alternate hard-link basename is not a stable source pin.
+            gate.os.link(src, dep / "cargo-renamed-direct-bin")
             with self.assertRaisesRegex(ValueError, "archive hard-linked input forbidden"):
                 gate.graph_ref(src)
             copied = gate.graph_capture_cargo_executable(src, target, "semwright")
