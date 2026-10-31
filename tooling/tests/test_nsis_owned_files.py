@@ -1250,6 +1250,30 @@ class DistributionOwnedFilesTests(unittest.TestCase):
             self.assertNotIn("MW_NSIS_DISTRIBUTION_ADMISSION", command)
         self.assertLess(macro.index("!execute "), macro.index("!include "))
 
+        # The resource keys become untrusted NSIS capture input. Keep them
+        # lexical-normalized instead of weakening the no-parent-traversal guard.
+        repo = SCRIPT.parent.parent
+        tauri = repo / "apps/desktop/src-tauri"
+        config = json.loads((tauri / "tauri.conf.json").read_text(encoding="utf-8"))
+        resources = config["bundle"]["resources"]
+        expected = {
+            "bundle-licenses/LICENSE": ("licenses/motionwright/LICENSE", "LICENSE"),
+            "bundle-licenses/THIRD_PARTY_NOTICES.md": (
+                "licenses/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
+            "bundle-licenses/glib-0.18.5/LICENSE": (
+                "licenses/glib-0.18.5/LICENSE", "vendor/glib-0.18.5/LICENSE"),
+            "bundle-licenses/glib-0.18.5/COPYRIGHT": (
+                "licenses/glib-0.18.5/COPYRIGHT", "vendor/glib-0.18.5/COPYRIGHT"),
+        }
+        self.assertEqual(resources, {path: dest for path, (dest, _) in expected.items()})
+        for relative, (_, original) in expected.items():
+            with self.subTest(relative=relative):
+                owned._check_path_syntax(relative)
+                self.assertEqual(
+                    (tauri / relative).read_bytes(),
+                    (repo / original).read_bytes(),
+                )
+
 
 
     def test_admitted_main_capture_mutation_cannot_publish_an_include(self):
