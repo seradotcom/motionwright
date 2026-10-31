@@ -706,6 +706,19 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
             self.assertIn("&& 'error' || 'warn'", body)
         for policy in ("source_policy", "acceptance_policy", "creative_status_policy", "public_surface_policy"):
             self.assertIn("python3 tooling/" + policy + ".py", jobs["receipt-policy"])
+        scoped = jobs["receipt-policy"].split(
+            "      - name: Quick source and conformance policies for every verification scope", 1)[1].split(
+            "      - name: Candidate receipt and installed-package smoke policy tests", 1)[0]
+        self.assertIn("MW_SELECTED_SCOPE: ${{ inputs.verification_scope }}", scoped)
+        self.assertIn("set -euo pipefail", scoped)
+        self.assertIn("python3 tooling/source_policy.py", scoped)
+        self.assertIn("python3 tooling/public_surface_policy.py", scoped)
+        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1)", scoped)
+        self.assertIn('case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in', scoped)
+        self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', scoped)
+        self.assertIn('F-G0=NOT_RUN G3=STOP', scoped)
+        self.assertIn("python3 tooling/acceptance_policy.py", scoped.split("            *)", 1)[1])
+        self.assertIn("python3 tooling/creative_status_policy.py", scoped.split("            *)", 1)[1])
         self.assertIn("tooling/tests/test_package_receipt.py", jobs["receipt-policy"])
         self.assertIn("if ($LASTEXITCODE -ne 0)", jobs["nsis-source-windows"])
         source_job = jobs["linux-first-use-source"]

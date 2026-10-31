@@ -21126,7 +21126,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "d03d32a085bd22679023bb30f4dd7ed0eeb374c5ab6e4f3bf542f60f7280bd17",
+      "sha256": "a780a9c608546619a489dfd6937ea7333fdc36a4d52d53c10edf090c581de82d",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21227,7 +21227,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "7174d4c77fdebb4b2b5e971430a989a58e8fa6a7bc483b92ddf739d1744fb7dd",
+          "source_sha256": "f9c6c1984266059dc23a09def270de9f9944575df6590a636c527428344a57dc",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21263,7 +21263,7 @@
               "name": "Quick source and conformance policies for every verification scope",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "8b1f734d5c62ba42a4036cf16ad7a39978e5a31e8795c7092791163ed031a35f",
+              "source_block_sha256": "2b570407769222cdf3ca87c5ac2124bac1bfe6a583716a50688e071d6ccb7ebe",
               "api_binding": "EXPLICIT_NAME"
             },
             {
