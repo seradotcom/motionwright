@@ -1,4 +1,4 @@
-"""Synthetic protocol/custody regressions; these do not execute Blender."""
+"""Protocol/custody and real Linux executable regressions; no Blender is run."""
 from __future__ import annotations
 
 import base64
@@ -7,11 +7,15 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import select
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -787,6 +791,155 @@ class ProcessIdentityTests(unittest.TestCase):
         for raw in (b'{"a":1,"a":2}', b'{"a":NaN}', b'[]', b'null'):
             with self.subTest(raw=raw), self.assertRaises(evidence.OriginalSceneUnverified):
                 evidence.unique_json(raw)
+
+
+@unittest.skipUnless(sys.platform == "linux" and Path("/proc/self/exe").exists(),
+                     "live executable regression requires Linux /proc")
+class LiveExecutableIdentityTests(unittest.TestCase):
+    """Real ELF processes test only executable custody, never native acceptance."""
+    @classmethod
+    def setUpClass(cls):
+        command = shutil.which("sleep")
+        if command is None:
+            raise unittest.SkipTest("sleep ELF unavailable")
+        cls.source = Path(command).resolve(strict=True)
+        cls.body = cls.source.read_bytes()
+        if not cls.body.startswith(b"\x7fELF"):
+            raise unittest.SkipTest("sleep is not an ELF executable")
+        cls.expected_sha = hashlib.sha256(cls.body).hexdigest()
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="mw-observer-elf-")
+        self.addCleanup(self.temporary.cleanup)
+        self.copy = Path(self.temporary.name) / "private-tool"
+        self.copy.write_bytes(self.body)
+        self.copy.chmod(0o500)
+
+    @contextmanager
+    def running(self, executable, *, args=("30",), pass_fds=(), pipes=False):
+        # The child reports its own procfs PID before exec. A container may use
+        # a different PID namespace from its procfs mount; never guess a PID or
+        # scan unrelated processes. Popen still owns termination and reaping.
+        bootstrap = ("import os, sys; "
+                     "os.write(1, (os.readlink('/proc/self') + '\\n').encode('ascii')); "
+                     "os.execv(sys.argv[1], sys.argv[1:])")
+        expected = Path(executable).stat()
+        process = subprocess.Popen(
+            [sys.executable, "-c", bootstrap, str(executable), *args], pass_fds=pass_fds,
+            stdin=subprocess.PIPE if pipes else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
+        )
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 5)[0], "ELF bootstrap did not start")
+            pid_line = process.stdout.readline(64)
+            self.assertTrue(pid_line.endswith(b"\n") and pid_line[:-1].isdigit(),
+                            "child did not report its own procfs PID")
+            proc = Path("/proc") / pid_line[:-1].decode("ascii")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                self.assertIsNone(process.poll(), "ELF helper exited before observation")
+                current = (proc / "exe").stat()
+                if (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino):
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("child did not exec the selected ELF")
+            yield process, proc
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout):
+                if stream is not None:
+                    stream.close()
+
+    def check_copy(self, proc):
+        with evidence._verified_binary(self.source, self.expected_sha, evidence.MAX_EXE) as source:
+            with evidence._verified_live_executable(
+                    proc, source["sha256"], source["stat"].st_size) as live:
+                self.assertEqual(live["sha256"], source["sha256"])
+                actual = (proc / "exe").stat()
+                self.assertEqual((live["stat"].st_dev, live["stat"].st_ino),
+                                 (actual.st_dev, actual.st_ino))
+                self.assertNotEqual((live["stat"].st_dev, live["stat"].st_ino),
+                                    (source["stat"].st_dev, source["stat"].st_ino))
+
+    def test_private_copy_matches_bytes_with_distinct_live_inode(self):
+        with self.running(self.copy) as (_process, proc):
+            self.check_copy(proc)
+
+    @unittest.skipUnless(hasattr(os, "memfd_create"), "sealed memfd unavailable")
+    def test_sealed_memfd_matches_bytes_with_distinct_live_inode(self):
+        import fcntl
+        constants = ("F_SEAL_WRITE", "F_SEAL_GROW", "F_SEAL_SHRINK", "F_SEAL_SEAL",
+                     "F_ADD_SEALS", "F_GET_SEALS")
+        if not all(hasattr(fcntl, name) for name in constants):
+            self.skipTest("Python fcntl does not expose the required Linux seal constants")
+        fd = os.memfd_create("mw-observer-elf", os.MFD_ALLOW_SEALING | os.MFD_CLOEXEC)
+        try:
+            with os.fdopen(os.dup(fd), "wb") as stream:
+                stream.write(self.body)
+            os.fchmod(fd, 0o500)
+            seals = (fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW
+                     | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+            self.assertEqual(fcntl.fcntl(fd, fcntl.F_GET_SEALS) & seals, seals)
+            readonly = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY)
+            try:
+                with self.running(f"/proc/self/fd/{readonly}", pass_fds=(readonly,)) as (_process, proc):
+                    self.assertTrue(os.readlink(proc / "exe").endswith(" (deleted)"))
+                    self.check_copy(proc)
+            finally:
+                os.close(readonly)
+        finally:
+            os.close(fd)
+
+    def test_live_bytes_must_match_admitted_digest(self):
+        with self.running(self.copy) as (_process, proc):
+            with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "sha256_differs"):
+                with evidence._verified_live_executable(proc, "0" * 64, len(self.body)):
+                    self.fail("different executable digest was accepted")
+
+    def test_live_size_must_match_admitted_binary(self):
+        with self.running(self.copy) as (_process, proc):
+            with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "size_differs"):
+                with evidence._verified_live_executable(proc, self.expected_sha, len(self.body) + 1):
+                    self.fail("different executable size was accepted")
+
+    def test_process_exit_during_observation_rejects_held_executable(self):
+        with self.running(self.copy) as (process, proc):
+            with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "changed_during_observation"):
+                with evidence._verified_live_executable(proc, self.expected_sha, len(self.body)):
+                    process.terminate()
+                    process.wait(timeout=5)
+
+    def test_process_exec_change_rejects_still_open_original_descriptor(self):
+        python = Path(sys.executable).resolve(strict=True)
+        body = python.read_bytes()
+        if not body.startswith(b"\x7fELF"):
+            self.skipTest("Python launcher is not an ELF executable")
+        script = ("import os, sys; os.write(1, b'ready\\n'); os.read(0, 1); "
+                  "os.execv(sys.argv[1], [sys.argv[1], '30'])")
+        with self.running(python, args=("-c", script, str(self.copy)), pipes=True) as (process, proc):
+            self.assertTrue(select.select([process.stdout], [], [], 5)[0], "ELF helper did not start")
+            self.assertEqual(process.stdout.readline(), b"ready\n")
+            with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "changed_during_observation"):
+                with evidence._verified_live_executable(proc, hashlib.sha256(body).hexdigest(), len(body)) as live:
+                    process.stdin.write(b"x")
+                    process.stdin.flush()
+                    original = (live["stat"].st_dev, live["stat"].st_ino)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        current = (proc / "exe").stat()
+                        if (current.st_dev, current.st_ino) != original:
+                            break
+                        time.sleep(0.01)
+                    else:
+                        self.fail("ELF helper did not exec the distinct executable")
 
 
 class ProductProfileTests(unittest.TestCase):

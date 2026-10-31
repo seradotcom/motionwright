@@ -553,6 +553,61 @@ def check_native_argv(body: bytes) -> tuple[list[str], str]:
     return argv, argv[14]
 
 
+@contextmanager
+def _verified_live_executable(proc: Path, expected_sha: str, expected_size: int):
+    """Hash and retain the executable actually exposed by the live PID.
+
+    Host tools may be private copies or sealed memfds, so their inode need not
+    equal the admitted installed binary's inode. Only the kernel's fixed exe
+    link is followed; both that link and the opened descriptor must continue
+    identifying the same generation throughout this observation.
+    """
+    path = proc / "exe"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        raise OriginalSceneUnverified("original_scene_live_executable_open_failed") from error
+    try:
+        before = os.fstat(fd)
+        require(stat.S_ISREG(before.st_mode), "original_scene_live_executable_not_regular")
+        require(0 < before.st_size <= MAX_EXE, "original_scene_live_executable_budget")
+        require(before.st_size == expected_size, "original_scene_live_executable_size_differs")
+
+        def generation(value: os.stat_result) -> tuple[int, ...]:
+            return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+                    value.st_mtime_ns, value.st_ctime_ns)
+
+        def unchanged() -> None:
+            try:
+                opened, named = os.fstat(fd), path.stat()
+            except OSError as error:
+                raise OriginalSceneUnverified(
+                    "original_scene_live_executable_changed_during_observation"
+                ) from error
+            require(generation(opened) == generation(before)
+                    and generation(named) == generation(before),
+                    "original_scene_live_executable_changed_during_observation")
+
+        unchanged()
+        digest, size = hashlib.sha256(), 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            require(size <= MAX_EXE, "original_scene_live_executable_budget")
+            digest.update(chunk)
+        require(size == before.st_size, "original_scene_live_executable_size_changed")
+        unchanged()
+        actual = digest.hexdigest()
+        require(actual == expected_sha, "original_scene_live_executable_sha256_differs")
+        yield {"sha256": actual, "stat": before}
+        unchanged()
+    finally:
+        os.close(fd)
+
+
 def inspect_live_blender(
     pid: int, daemon: dict, binary: Path, expected_sha: str, workspace: Path,
     *, proc_root: Path = Path("/proc"),
@@ -562,12 +617,9 @@ def inspect_live_blender(
     proc = proc_root / str(pid)
     chain = ancestry(pid, daemon, proc_root)
     require(chain[0]["comm"] == "blender", "original_scene_live_process_not_Blender")
-    with _verified_binary(binary, expected_sha, MAX_EXE) as source:
-        actual_exe = (proc / "exe").stat()
-        original_exe = source["stat"]
-        require((actual_exe.st_dev, actual_exe.st_ino)
-                == (original_exe.st_dev, original_exe.st_ino),
-                "original_scene_process_executable_inode_differs")
+    with _verified_binary(binary, expected_sha, MAX_EXE) as source, \
+            _verified_live_executable(proc, source["sha256"], source["stat"].st_size) as live:
+        actual_exe = live["stat"]
         status = bounded_proc(proc / "status").decode("ascii")
         uids = [line.split()[1:] for line in status.splitlines() if line.startswith("Uid:")]
         require(len(uids) == 1 and len(uids[0]) == 4
@@ -583,14 +635,14 @@ def inspect_live_blender(
         after_chain = ancestry(pid, daemon, proc_root)
         after_exe = (proc / "exe").stat()
         require(after_chain == chain and (after_exe.st_dev, after_exe.st_ino)
-                == (original_exe.st_dev, original_exe.st_ino),
+                == (actual_exe.st_dev, actual_exe.st_ino),
                 "original_scene_process_identity_changed_during_observation")
         return {
             "schema": "motionwright.blender.original-live-process/1",
             "pid": pid, "start_ticks": chain[0]["start_ticks"],
             "daemon_pid": daemon["pid"], "daemon_start_ticks": daemon["start_ticks"],
             "ancestry": chain, "blender_sha256": source["sha256"],
-            "executable_device": original_exe.st_dev, "executable_inode": original_exe.st_ino,
+            "executable_device": actual_exe.st_dev, "executable_inode": actual_exe.st_ino,
             "workspace_device": original_workspace.st_dev,
             "workspace_inode": original_workspace.st_ino,
             "native_argv": argv, "native_uid": os.geteuid(),
