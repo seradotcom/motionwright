@@ -770,6 +770,25 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertLess(stage.index("write_new_manifest(ROOT, ROOT / admission_relative, disposition)"),
                         stage.index('environment.write("MW_NSIS_DISTRIBUTION_ADMISSION="'))
 
+    def test_nsis_historical_predecessor_requires_exact_old_source_and_binary_only(self):
+        workflow = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        stage = workflow.split("- name: Observe one distinct-version fixture install", 1)[1]
+        stage = stage.split("- name: Retain original lifecycle observations", 1)[0]
+        self.assertNotIn("candidate_smoke.build_receipt(", stage)
+        for token in (
+            "candidate_smoke.verify_installer(", "candidate_smoke.binary_identity(",
+            "candidate_smoke.verify_cargo_build_binding(",
+            "historical_predecessor_notice_exception_not_applicable",
+            "679cc48baf7c6f9bb4a0b803508c9b2a9891d944",
+            "4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8",
+            "HISTORICAL_PREDECESSOR_BINARY_ONLY",
+            "NOT_VERIFIED_HISTORICAL_UNDECLARED",
+            "historical_predecessor_binary_or_receipt_changed",
+            'smoke_ref = publish("previous-installed-smoke.json", smoke)',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, stage)
+
     def test_linux_source_scope_cannot_activate_installed_or_legacy_package_effects(self):
         text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
         changes = (

@@ -2696,15 +2696,61 @@ jobs:
               observe_phase("install", bound_file(EVIDENCE, refs["previous_setup"]),
                             "nsis_install_previous", ["/S", "/D=" + str(install_root)])
               installed = install_root / "motionwright-desktop.exe"
+              # The immutable 0.1.0 predecessor predates all four packaged
+              # license resources. It cannot pass the current notice gate.
+              # Inspect its exact archived setup/source/installed PE instead;
+              # never promote historical lack of notices to release compliance.
+              legacy_expected = {"bytes": 32794112,
+                  "sha256": "4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"}
+              require(old_source == "679cc48baf7c6f9bb4a0b803508c9b2a9891d944"
+                      and verified["previous_payloads"]["motionwright-desktop.exe"] == legacy_expected
+                      and old_config["version"] == "0.1.0"
+                      and not old_config["bundle"].get("resources"),
+                      "historical_predecessor_notice_exception_not_applicable")
               old_root = candidate_smoke.ROOT
               try:
                   candidate_smoke.ROOT = metadata
-                  smoke = candidate_smoke.build_receipt(
-                      candidate_receipt=bound_file(EVIDENCE, previous_candidate_ref),
-                      artifact=old_setup, installed_binary=installed,
-                      kind="nsis", method="nsis_silent_current_user")
+                  observed_previous = candidate_smoke.verify_installer(
+                      json.loads(bound_file(EVIDENCE, previous_candidate_ref).read_bytes()),
+                      "nsis", old_setup)
+                  binary = candidate_smoke.binary_identity(
+                      installed, "windows", observed_previous["candidate"]["arch"])
+                  cargo = candidate_smoke.verify_cargo_build_binding(
+                      candidate=observed_previous["candidate"],
+                      record=observed_previous["record"], installed_binary=installed, kind="nsis")
               finally:
                   candidate_smoke.ROOT = old_root
+              require({"bytes": binary["binary_bytes"],
+                       "sha256": binary["binary_sha256"]} == legacy_expected
+                      and binary["binary_filename"] == "motionwright-desktop.exe"
+                      and observed_previous["candidate"]["source_revision"] == old_source
+                      and observed_previous["candidate"]["version"] == "0.1.0"
+                      and observed_previous["record"]["sha256"] == verified["previous_setup"]["sha256"]
+                      and cargo == {"status": "NOT_VERIFIED",
+                                    "reason": "candidate_receipt_has_no_cargo_capture"},
+                      "historical_predecessor_binary_or_receipt_changed")
+              smoke = {
+                  "schema_version": 1,
+                  "candidate": observed_previous["candidate"],
+                  "bundle_kind": "nsis",
+                  "candidate_archive": {
+                      "filename": old_setup.name, **file_identity(old_setup)},
+                  "automated_inspection": {
+                      "method": "nsis_silent_current_user",
+                      "status": "HISTORICAL_PREDECESSOR_BINARY_ONLY",
+                      "scope": "IMMUTABLE_0_1_0_PREDECESSOR",
+                      "binary": binary,
+                      "license_notices": {
+                          "status": "NOT_VERIFIED_HISTORICAL_UNDECLARED",
+                          "distribution_compliance": "NOT_CLAIMED"},
+                      "cargo_build_binding": cargo,
+                      "gui_window_probe": "NOT_RUN"},
+                  "claims": {
+                      "human_install_acceptance": "NOT_RUN",
+                      "runtime_renderer_acceptance": "SEPARATE_GATE",
+                      "signing": "NOT_CLAIMED",
+                      "notarization": "NOT_CLAIMED",
+                      "release_published": False}}
               smoke_ref = publish("previous-installed-smoke.json", smoke)
               project_output = EVIDENCE / "previous-real-project.json"
               app_scratch = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-lifecycle-real-project"

@@ -21126,7 +21126,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "5ac052817af364afc4e25dc09a39fa115de9f96e413f4364727f2ed4d1bf5652",
+      "sha256": "d03d32a085bd22679023bb30f4dd7ed0eeb374c5ab6e4f3bf542f60f7280bd17",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21821,7 +21821,7 @@
             "nsis-source-windows"
           ],
           "strategy": null,
-          "source_sha256": "160454eaf41326f975d178459eb6ddbc5795532b3186b9450a330c86caab1599",
+          "source_sha256": "6657dad317e92c44283dabaf02eefcab8a5c522b92fa0f27336ad25033849fd5",
           "instance_sets": {
             "nsis-compile": [
               {}
@@ -21908,7 +21908,7 @@
               "name": "Observe one distinct-version fixture install, upgrade and uninstall",
               "guard": "inputs.verification_scope == 'nsis_lifecycle'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "0922d8c83c96aa28d2af1d017bd164ff649d48e83dfa1bc5470727390823ca52",
+              "source_block_sha256": "1742614d180d9652c46c06d14477d7b49c61127351b71a5ab340a056f9ecffad",
               "api_binding": "EXPLICIT_NAME"
             },
             {

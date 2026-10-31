@@ -170,6 +170,37 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         result = windows.check_installed_candidate(receipt, exe, sha)
         self.assertEqual(result["source_sha"], sha)
         self.assertEqual(result["installed_binary_sha256"], windows.sha256_file(exe))
+        receipt_path, synthetic_source = receipt, sha
+        receipt = json.loads(receipt_path.read_text())
+        binary_sha = windows.sha256_file(exe)
+        receipt["automated_inspection"].update({
+            "status": "HISTORICAL_PREDECESSOR_BINARY_ONLY",
+            "scope": "IMMUTABLE_0_1_0_PREDECESSOR",
+            "license_notices": {
+                "status": "NOT_VERIFIED_HISTORICAL_UNDECLARED",
+                "distribution_compliance": "NOT_CLAIMED"}})
+        receipt_path.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(windows.ColdStartError, "no completed technical smoke"):
+            windows.check_installed_candidate(receipt_path, exe, synthetic_source)
+        with patch.object(windows, "LEGACY_FIRST_USE_SOURCE", synthetic_source), patch.object(
+            windows, "LEGACY_FIRST_USE_BINARY", binary_sha):
+            admitted = windows.check_installed_candidate(receipt_path, exe, synthetic_source)
+            self.assertEqual(admitted["installed_binary_sha256"], binary_sha)
+            for field, wrong in (
+                ("scope", "UNREVIEWED"),
+                ("status", "PASSING_LEGACY"),
+                ("license_notices", {"status": "PASS", "distribution_compliance": "VERIFIED"}),
+            ):
+                changed = json.loads(json.dumps(receipt))
+                changed["automated_inspection"][field] = wrong
+                receipt_path.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(windows.ColdStartError, "no completed technical smoke"):
+                    windows.check_installed_candidate(receipt_path, exe, synthetic_source)
+                receipt_path.write_text(json.dumps(receipt))
+            exe.write_bytes(exe.read_bytes() + b"one-byte-change")
+            with self.assertRaises(windows.ColdStartError):
+                windows.check_installed_candidate(receipt_path, exe, synthetic_source)
+
 
     def test_tampered_installed_executable_refused(self):
         exe, receipt, sha = candidate_fixture(self.root)

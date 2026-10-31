@@ -74,9 +74,18 @@ def check_installed_candidate(receipt_file: Path, executable: Path, source_sha: 
             and candidate.get("source_revision") == source_sha,
             "Installed Windows candidate does not belong to the requested source SHA")
     binary = inspection.get("binary")
+    legacy_binary_only = (
+        inspection.get("status") == "HISTORICAL_PREDECESSOR_BINARY_ONLY"
+        and inspection.get("scope") == "IMMUTABLE_0_1_0_PREDECESSOR"
+        and source_sha == LEGACY_FIRST_USE_SOURCE
+        and isinstance(binary, dict)
+        and binary.get("binary_sha256") == LEGACY_FIRST_USE_BINARY
+        and inspection.get("license_notices") == {
+            "status": "NOT_VERIFIED_HISTORICAL_UNDECLARED",
+            "distribution_compliance": "NOT_CLAIMED"})
     require(inspection.get("method") == "nsis_silent_current_user"
-            and inspection.get("status") == "PASS"
-            and isinstance(binary, dict),
+            and isinstance(binary, dict)
+            and (inspection.get("status") == "PASS" or legacy_binary_only),
             "Windows NSIS installation has no completed technical smoke")
     require(binary.get("binary_filename") == executable.name
             and binary.get("binary_bytes") == executable.stat().st_size
