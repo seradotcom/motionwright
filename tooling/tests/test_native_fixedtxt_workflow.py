@@ -664,5 +664,31 @@ class WorkflowDeliveryJobTests(unittest.TestCase):
             self.assertEqual(len(routes),first_count)
 
 
+class FixedTxtSourceKitPinTests(unittest.TestCase):
+    def test_current_repository_admits_the_pinned_factory(self):
+        import fixedtxt_source_kit as kit
+        root = TOOLING.parent
+        lock = json.loads((root / 'SOURCE_LOCK.json').read_bytes())
+        selected = lock['dependencies']['semwright']
+        self.assertEqual(kit.selected_pins(), selected['verification']['evidence']['path'])
+        factory = (root / kit.FACTORY).read_bytes()
+        self.assertEqual(hashlib.sha256(factory).hexdigest(), kit.FACTORY_SHA)
+        declared = re.search(rb'const EXPECTED_SDK: &str = "([0-9a-f]{40})";', factory)
+        self.assertIsNotNone(declared)
+        self.assertEqual(declared.group(1).decode(), selected['revision'])
+        template = re.search(rb'const TEMPLATE_SHA256: &str =\s*"([0-9a-f]{64})";', factory)
+        self.assertIsNotNone(template)
+        self.assertEqual(template.group(1).decode(), kit.TEMPLATE_SHA)
+
+    def test_previous_consumer_pin_is_refused_by_current_source(self):
+        import fixedtxt_source_kit as kit
+        previous = '0a904fd2d7feff806607d6786b9a3575f716cae2'
+        with mock.patch.object(kit, 'SDK', previous), \
+                mock.patch.object(kit, 'SDK_SOURCE',
+                    'git+https://github.com/seradotcom/semwright?rev=' + previous + '#' + previous):
+            with self.assertRaisesRegex(ValueError, 'requires the exact selected SDK'):
+                kit.selected_pins()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -17,7 +17,7 @@ type Result<T> = std::result::Result<T, String>;
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const TEMPLATE_SHA256: &str =
     "5b1f9e7befb11c3ef6354a9b3b292d105647f444cac4a13d6eb8d27bf7c10b97";
-const EXPECTED_SDK: &str = "0a904fd2d7feff806607d6786b9a3575f716cae2";
+const EXPECTED_SDK: &str = "229e27547589cc8369dde78dce2fbf7dff5495fd";
 
 fn need(ok: bool, message: &str) -> Result<()> {
     if ok { Ok(()) } else { Err(message.into()) }

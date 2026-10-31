@@ -5611,7 +5611,7 @@
     },
     {
       "path": ".github/workflows/native-mlt-sequence-e2e.yml",
-      "sha256": "17eb624cf3ae3ff432b48cbff600176d14cf2428402f04080270310b32c27f89",
+      "sha256": "9519144d5513c48aa91047eebf09bde91c988d13ee545079c7544fee64e28275",
       "preamble_sha256": "0f7e3954423ade58188763c39977fd35ef580582c5567df564cb6473c8f0cac8",
       "evidence_class": "native_media_custody",
       "purpose": "Four ordinary MLT media modes plus separate admitted repaired-module and Film180 original G2 branches. The admitted R3 source declares a separate one-fixture FixedTxt prepare/owner route and independent R28 transport.",
@@ -5728,7 +5728,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "f496ab14083b3ee2335a9333883e7b26b2958cbc1f865e62f012ad490b3a6b9b",
+          "source_sha256": "a0d65afc1c95a10401acc806725abedc52890af60d2662ce914c868942a03d97",
           "instance_sets": {
             "source": [
               {}
@@ -5767,7 +5767,7 @@
               "name": "Verify original FixedTxt admission and delivery source controls",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "fd7a36ac98df08eb41e1b10ac47366f29be60e997c971c022d3b9adcb232c150",
+              "source_block_sha256": "0cdaba46a7a97ab8d3eaca82d267c1d2d2fc4b79ea2730b16680649fa0e0a03d",
               "api_binding": "EXPLICIT_NAME"
             },
             {

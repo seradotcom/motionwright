@@ -192,7 +192,7 @@ jobs:
         from pathlib import Path
         report=json.loads(Path(sys.argv[1]).read_bytes())
         expected={'dotted:tooling.tests.test_native_fixedtxt_external_g2':21,
-                  'dotted:tooling.tests.test_native_fixedtxt_workflow':24}
+                  'dotted:tooling.tests.test_native_fixedtxt_workflow':26}
         assert report['status']=='PASS' and report['exit_code']==0
         assert report['executed_source_sha']==os.environ['GITHUB_SHA']
         assert 'source_postcheck_error' not in report and len(report['steps'])==len(expected)
