@@ -8233,9 +8233,14 @@ def graph_verify_producer_index(index_ref, case_id):
                 "Graph Cargo target source/cache")
         relative = Path(target["src_path"]).relative_to(source[root_name]).as_posix()
         require(relative in contract["sdk_files" if role in GRAPH_SDK_ROLES else "source_files"], "Graph target source omitted")
-        remember(binaries[role]); remember(original["retained_binary"])
-        require(original["retained_binary"]["path"] != binaries[role]["path"]
-                and all(original["retained_binary"][key] == binaries[role][key] for key in ("sha256", "size_bytes")), "Graph retained executable differs")
+        raw = remember(binaries[role], 256 * GRAPH_BYTES)
+        retained = original["retained_binary"]
+        require(expected["retention_encoding"] == "zlib-level6"
+                and retained["path"] == str(Path(execution["producer_root"]) / "binaries" / (role + ".zlib"))
+                and retained["path"] != binaries[role]["path"],
+                "Graph compacted executable retention source")
+        require(graph_uncompact_cargo_executable(remember(retained, 256 * GRAPH_BYTES), binaries[role]) == raw,
+                "Graph retained compressed executable differs")
     command, stdout = graph_process_original(index["ordinary_preflight"]["process"], contract["ordinary_preflight"], remember)
     stdin_ref = index["ordinary_preflight"]["stdin"]
     require(command["argv"][0] == binaries["ordinary_service"]["path"]
@@ -8532,6 +8537,50 @@ def graph_capture_cargo_executable(source, target_root, role):
     return result
 
 
+def graph_uncompact_cargo_executable(blob, original):
+    """Verify bounded zlib storage against the actual Cargo executable bytes."""
+    import zlib
+    require(type(blob) is bytes and 0 < len(blob) <= 256 * GRAPH_BYTES
+            and type(original) is dict
+            and set(original) == {"path", "sha256", "size_bytes"}
+            and type(original["size_bytes"]) is int
+            and 0 < original["size_bytes"] <= 256 * GRAPH_BYTES
+            and re.fullmatch(r"[0-9a-f]{64}", original["sha256"]) is not None,
+            "Graph bounded compacted Cargo original")
+    decoder = zlib.decompressobj()
+    recovered = decoder.decompress(blob, original["size_bytes"] + 1)
+    require(decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail
+            and len(recovered) == original["size_bytes"]
+            and hashlib.sha256(recovered).hexdigest() == original["sha256"],
+            "Graph compacted Cargo original differs from the compiled executable")
+    return recovered
+
+
+def graph_retain_compacted_cargo_executable(original, destination, producer, role):
+    """Retain one encrypted-carrier copy, not another full-size ELF per role."""
+    import zlib
+    destination, producer = Path(destination), Path(producer)
+    require(role in GRAPH_RUST_ROLES
+            and destination == producer / "binaries" / (role + ".zlib")
+            and producer.resolve(strict=True) == producer
+            and not destination.exists() and not destination.is_symlink(),
+            "Graph exact compacted cargo retention path")
+    raw = graph_read(original, 256 * GRAPH_BYTES)
+    compacted = zlib.compress(raw, level=6)
+    require(0 < len(compacted) <= 256 * GRAPH_BYTES,
+            "Graph compacted executable exceeds finite custody limit")
+    require(graph_uncompact_cargo_executable(compacted, original) == raw,
+            "Graph compacted executable source readback")
+    graph_producer_room(producer, len(compacted), 2)
+    if not destination.parent.exists():
+        destination.parent.mkdir(mode=0o700)
+    archive_ancestors(destination.parent)
+    kept = graph_put(destination, compacted)
+    require(graph_uncompact_cargo_executable(graph_read(kept, 256 * GRAPH_BYTES), original) == raw,
+            "Graph compacted executable retention differs")
+    return kept
+
+
 def graph_command(env, argv, cwd, producer, label, seconds, clock, *, maximum_file_bytes=None):
     env = dict(env); env.pop(GRAPH_TOKEN_ENV, None)
     graph_producer_room(producer, 16 * GRAPH_BYTES + 65536, 3)
@@ -8587,10 +8636,11 @@ def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
                     "Graph actual executable was not freshly built: " + role)
             binary = Path(matches[0]["executable"])
             outputs[role] = graph_capture_cargo_executable(binary, Path(env["CARGO_TARGET_DIR"]), role)
-            retained = graph_copy_original(Path(outputs[role]["path"]), producer / "binaries" / role, producer)
+            retained = graph_retain_compacted_cargo_executable(
+                outputs[role], producer / "binaries" / (role + ".zlib"), producer, role)
             records[role] = {"process": original, "retained_binary": retained}
             contracts[role] = {"command": expected_command, "target": target,
-                               "cargo_executable": str(binary)}
+                               "cargo_executable": str(binary), "retention_encoding": "zlib-level6"}
     return outputs, records, contracts
 
 

@@ -8149,6 +8149,19 @@ class GraphR74JoinTests(unittest.TestCase):
             self.assertEqual(Path(copied["path"]), target / "mw-r74-captured/semwright")
             self.assertEqual(Path(copied["path"]).lstat().st_nlink, 1)
             self.assertEqual(gate.graph_read(copied), src.read_bytes())
+            producer = root / "graph-producer"
+            producer.mkdir()
+            compressed = gate.graph_retain_compacted_cargo_executable(
+                copied, producer / "binaries/semwright.zlib", producer, "semwright")
+            self.assertEqual(
+                gate.graph_uncompact_cargo_executable(gate.graph_read(compressed), copied),
+                src.read_bytes())
+            with self.assertRaisesRegex(ValueError, "compacted Cargo original differs"):
+                gate.graph_uncompact_cargo_executable(
+                    gate.graph_read(compressed), {**copied, "sha256": "0" * 64})
+            with self.assertRaises(ValueError):
+                gate.graph_uncompact_cargo_executable(gate.graph_read(compressed)[:-1], copied)
+            self.assertEqual((producer / "binaries/semwright.zlib").lstat().st_nlink, 1)
             with self.assertRaisesRegex(ValueError, "outside exact fresh target"):
                 gate.graph_capture_cargo_executable(src, target, "semwrightd")
             gate.os.link(src, dep / "semwright-other")
