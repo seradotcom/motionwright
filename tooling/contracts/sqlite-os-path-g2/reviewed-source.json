@@ -1,25 +1,25 @@
 {
   "schema": "motionwright.sqlite-os-path-reviewed-source/1",
   "scope": "sqlite-os-path-g2",
-  "baseline_sha": "b60848fc08ed7dbfcd590e4a3f950c711184439d",
-  "baseline_tree": "95ec8afa651b33455d18f45766d6f17f98909ca8",
+  "baseline_sha": "d0174cf2c02f96c7562d645f26c50eb4bf02efd4",
+  "baseline_tree": "7732bd0fd0735c68ffac3b659070618701f3e46d",
   "review": {
     "status": "REVIEWED_SOURCE_BASELINE",
     "authority": "A1",
-    "reference": "sha256:7ffe4c1c04a1cfcbdf0d524311538a51817580123146ccb766ef84be2e2f0f5b"
+    "reference": "A1 code review: d0174cf2c02f96c7562d645f26c50eb4bf02efd4; physical Windows/Darwin/CAS case definitions unchanged; no G2 claim"
   },
   "product_pins": {
-    "Cargo.toml": "a4613bfd99d2dc13116daafa834b1738b0929d14da49eabb0d4ce241832beaaa",
-    "Cargo.lock": "484d551f035d6756fa2d7f4c62a4f7f6d09f4ffa6affd3a9521ac8fb33c799f9",
-    "SOURCE_LOCK.json": "63af6934870b4093684501bcf6cefaac2538752316537ec1bdcc5d58ef3ee224",
+    "Cargo.toml": "046900c0da7b9db37de7b34c98155ff4c274f86e2e4407418a21a9a681a086a3",
+    "Cargo.lock": "8f2f8baca6dd008cff25fa6176ca51087137ca11bc733c2e1c621d8796191f1b",
+    "SOURCE_LOCK.json": "4262c74fe0b398af9c1a0b35abd533428a065067ee58f323e8a96471dd4042c2",
     "rust-toolchain.toml": "887f9be066a15585a2c583578e84b0fcb541126d81546276bad3d2ff00d61167",
-    "crates/storage/Cargo.toml": "e7cf62c71c8a5aeec22f86ccb6fd7b7c7f2b41258f3906f88fe15af215f56f4e",
+    "crates/storage/Cargo.toml": "a9be4261b741cec63c55f8e5bfbcfaa36ebd8e230526c62e327e1161604044a2",
     "crates/domain/Cargo.toml": "a51b9e586c664f95d40a537b8933304c0cf27716e3c0b30069a0e37247c50e7d",
-    "crates/storage/src/lib.rs": "99c3a483a469366e7f23f103182a94ee6a000c491f60b71f5dcaadde09c419d6",
+    "crates/storage/src/lib.rs": "ca75cc90c656c57e5160d106f141c143406b27df8bc84abf8026bceae193b309",
     "crates/storage/tests/sqlite_windows_reparse_authority.rs": "4e9ee16caf5f80176a69e134779b35989d76ae65256b18ff34f1c866801eb685",
     "crates/storage/tests/sqlite_darwin_system_alias.rs": "68bbc8cb6b3aeb6d775a81400a4b140ebce1fb5e994fbb3aa8ae48fa8be1fccd",
     "crates/storage/src/blob_hash_tests.rs": "d9f63814bca307ded99f3686f9b5fe6e00c165ae56ee1f591dd731ba53e63a37",
-    "crates/storage/src/file_import.rs": "05d5aefee2e7f3cf9265a2fbe62779776713caea86b6814ec395200212a4b8b5",
-    "crates/storage/src/apply_crash_tests.rs": "f66268b94ae5dee2a7e3c5f29c41e3e093db2ca795db7e18d3e40cb9e312f3e9"
+    "crates/storage/src/file_import.rs": "faac675bc49db51b81f8b9b3b3a86e1108a11b1a3351243be65e6052b698ed10",
+    "crates/storage/src/apply_crash_tests.rs": "5ccd7647e78c8644045721b342835c8bf9cbec3147e3a1a43885aa84f91dbd2d"
   }
 }

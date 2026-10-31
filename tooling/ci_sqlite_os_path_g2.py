@@ -70,7 +70,7 @@ CAS_TEST_SOURCES = {
     "crates/storage/src/blob_hash_tests.rs":
         "d9f63814bca307ded99f3686f9b5fe6e00c165ae56ee1f591dd731ba53e63a37",
     "crates/storage/src/file_import.rs":
-        "05d5aefee2e7f3cf9265a2fbe62779776713caea86b6814ec395200212a4b8b5",
+        "faac675bc49db51b81f8b9b3b3a86e1108a11b1a3351243be65e6052b698ed10",
 }
 REVIEWED_INPUTS = (*REVIEWED_INPUTS, *CAS_TEST_SOURCES,
                    "crates/storage/src/apply_crash_tests.rs")
