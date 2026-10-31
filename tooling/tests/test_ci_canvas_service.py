@@ -8130,6 +8130,31 @@ class GraphR74JoinTests(unittest.TestCase):
                 command.assert_not_called()
             self.assertEqual(list(Path(directory).iterdir()), [])
 
+        # Cargo creates a second hard link to its hashed target. The original
+        # cannot enter Graph evidence; only an independently copied inode can.
+        with tempfile.TemporaryDirectory(prefix="graph-cargo-source-") as directory:
+            root = Path(directory).resolve()
+            target = root / "target"
+            src = target / "debug/semwright"
+            src.parent.mkdir(parents=True)
+            dep = target / "debug/deps"
+            dep.mkdir()
+            src.write_bytes(b"Cargo original executable bytes\\n" * 3)
+            gate.os.chmod(src, 0o755)
+            gate.os.link(src, dep / "semwright-a1b2c3")
+            with self.assertRaisesRegex(ValueError, "archive hard-linked input forbidden"):
+                gate.graph_ref(src)
+            copied = gate.graph_capture_cargo_executable(src, target, "semwright")
+            self.assertEqual(Path(copied["path"]), target / "mw-r74-captured/semwright")
+            self.assertEqual(Path(copied["path"]).lstat().st_nlink, 1)
+            self.assertEqual(gate.graph_read(copied), src.read_bytes())
+            with self.assertRaisesRegex(ValueError, "outside exact fresh target"):
+                gate.graph_capture_cargo_executable(src, target, "semwrightd")
+            gate.os.link(src, dep / "semwright-other")
+            with self.assertRaisesRegex(ValueError, "bounded regular source"):
+                gate.graph_capture_cargo_executable(src, target, "semwright")
+            self.assertEqual(gate.graph_read(copied), src.read_bytes())
+
     def test_collector_requires_exact_case_root_bijection_and_rejects_legacy_or_physical_aliases(self):
         with tempfile.TemporaryDirectory(prefix="gaf-") as directory:
             root = Path(directory)

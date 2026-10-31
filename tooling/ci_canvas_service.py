@@ -8217,7 +8217,15 @@ def graph_verify_producer_index(index_ref, case_id):
         rows = [graph_json(line) for line in stdout.splitlines() if line]
         ends = [row for row in rows if row.get("reason") == "build-finished"]
         require(len(ends) == 1 and rows[-1] == ends[0] and ends[0].get("success") is True, "Graph Cargo terminal")
-        matches = [row for row in rows if row.get("reason") == "compiler-artifact" and row.get("executable") == binaries[role]["path"]]
+        matches = [row for row in rows if row.get("reason") == "compiler-artifact"
+                   and row.get("executable") == expected["cargo_executable"]]
+        root = Path(source["sdk_root"]) / "target" if role in GRAPH_SDK_ROLES else Path(source["repository_root"]).parent / "v/t"
+        kind, name = GRAPH_TARGETS[role][2], GRAPH_TARGETS[role][1]
+        expected_cargo = root / ("debug/examples" if kind == "example" else "debug") / name
+        require(expected["cargo_executable"] == str(expected_cargo)
+                and binaries[role]["path"] == str(root / "mw-r74-captured" / role)
+                and binaries[role]["path"] != expected["cargo_executable"],
+                "Graph Cargo emitted source and exclusive snapshot identity")
         require(len(matches) == 1, "Graph Cargo executable bijection")
         artifact = matches[0]
         target = {"package_id": artifact.get("package_id"), **{key: artifact.get("target", {}).get(key) for key in ("name", "kind", "src_path")}}
@@ -8472,6 +8480,74 @@ def graph_copy_original(source, destination, producer):
     return result
 
 
+def graph_capture_cargo_executable(source, target_root, role):
+    """Copy one Cargo-emitted executable to a single-link source inside its fresh target.
+
+    Rust/Cargo may hard-link a final executable to its hashed deps artifact.
+    Keep archive_stat strict: only the captured independent inode can become a
+    Graph source reference. No hard-linked or foreign file enters the archive.
+    """
+    target_root = Path(target_root)
+    kind, name = GRAPH_TARGETS[role][2], GRAPH_TARGETS[role][1]
+    expected = target_root / ("debug/examples" if kind == "example" else "debug") / name
+    source = Path(source)
+    require(role in GRAPH_RUST_ROLES and target_root.is_absolute()
+            and target_root.resolve(strict=True) == target_root
+            and source == expected, "Graph Cargo executable outside exact fresh target")
+    archive_ancestors(source.parent)
+    before = source.lstat()
+    require(stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode)
+            and not (getattr(before, "st_file_attributes", 0) & 0x400)
+            and before.st_nlink in (1, 2) and 0 < before.st_size <= 256 * GRAPH_BYTES,
+            "Graph Cargo executable must be bounded regular source")
+    if os.name != "nt":
+        require(stat.S_IMODE(before.st_mode) & 0o111, "Graph Cargo executable mode")
+    partner = None
+    if before.st_nlink == 2:
+        partner_root = (target_root / "debug/deps" if kind == "bin" else source.parent)
+        archive_ancestors(partner_root)
+        require(partner_root.is_dir(), "Graph Cargo hardlink partner directory missing")
+        names = list(partner_root.iterdir())
+        require(len(names) <= 8192, "Graph Cargo hardlink partner scan budget")
+        partners = []
+        for candidate in names:
+            if candidate != source and candidate.name.startswith(name + "-"):
+                state = candidate.lstat()
+                if (stat.S_ISREG(state.st_mode) and not stat.S_ISLNK(state.st_mode)
+                        and (state.st_dev, state.st_ino) == (before.st_dev, before.st_ino)):
+                    partners.append(candidate)
+        require(len(partners) == 1
+                and archive_identity(partners[0].lstat()) == archive_identity(before),
+                "Graph Cargo hardlink partner is not owned by fresh target")
+        partner = partners[0]
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(source, flags), "rb") as stream:
+        require(archive_identity(os.fstat(stream.fileno())) == archive_identity(before),
+                "Graph Cargo output changed before capture")
+        raw = stream.read(256 * GRAPH_BYTES + 1)
+        require(len(raw) == before.st_size
+                and archive_identity(os.fstat(stream.fileno())) == archive_identity(before),
+                "Graph Cargo output changed during capture")
+    require(archive_identity(source.lstat()) == archive_identity(before)
+            and (partner is None or archive_identity(partner.lstat()) == archive_identity(before)),
+            "Graph Cargo output changed after capture")
+    directory = target_root / "mw-r74-captured"
+    if not directory.exists():
+        directory.mkdir(mode=0o700)
+    archive_ancestors(directory)
+    captured = directory / role
+    result = graph_put(captured, raw)
+    os.chmod(captured, stat.S_IMODE(before.st_mode))
+    state = archive_stat(captured)
+    require(state.st_nlink == 1
+            and (os.name == "nt" or stat.S_IMODE(state.st_mode) == stat.S_IMODE(before.st_mode))
+            and archive_identity(source.lstat()) == archive_identity(before)
+            and (partner is None or archive_identity(partner.lstat()) == archive_identity(before)),
+            "Graph Cargo copied executable/source identity changed")
+    require(graph_ref(captured) == result, "Graph Cargo exclusive source copy differs")
+    return result
+
+
 def graph_command(env, argv, cwd, producer, label, seconds, clock, *, maximum_file_bytes=None):
     env = dict(env); env.pop(GRAPH_TOKEN_ENV, None)
     graph_producer_room(producer, 16 * GRAPH_BYTES + 65536, 3)
@@ -8526,10 +8602,11 @@ def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
             require(len(matches) == 1 and matches[0].get("fresh") is False and matches[0].get("profile", {}).get("test") is False,
                     "Graph actual executable was not freshly built: " + role)
             binary = Path(matches[0]["executable"])
-            outputs[role] = graph_ref(binary, 256 * GRAPH_BYTES)
-            retained = graph_copy_original(binary, producer / "binaries" / role, producer)
+            outputs[role] = graph_capture_cargo_executable(binary, Path(env["CARGO_TARGET_DIR"]), role)
+            retained = graph_copy_original(Path(outputs[role]["path"]), producer / "binaries" / role, producer)
             records[role] = {"process": original, "retained_binary": retained}
-            contracts[role] = {"command": expected_command, "target": target}
+            contracts[role] = {"command": expected_command, "target": target,
+                               "cargo_executable": str(binary)}
     return outputs, records, contracts
 
 
