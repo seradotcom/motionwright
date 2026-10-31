@@ -680,6 +680,61 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
         self.assertIsNotNone(template)
         self.assertEqual(template.group(1).decode(), kit.TEMPLATE_SHA)
 
+        # The actual first-attempt source kit emits its direct Cargo root at
+        # target/debug, and its six exact externs never gain arbitrary paths.
+        package_id = "root-canvas"
+        manifest = str(root / "Cargo.toml")
+        target = root / "synthetic-target"  # No Rust build or file creation.
+        packages = [{
+            "id": package_id, "name": "semwright-driver-motion-canvas",
+            "source": kit.SDK_SOURCE, "manifest_path": manifest,
+        }]
+        deps = []
+        entries = [(kit.EXTERNS[0], package_id)]
+        for name in kit.EXTERNS[1:]:
+            dep_id = "dep-" + name
+            packages.append({
+                "id": dep_id, "name": name.replace("_", "-"),
+                "source": kit.SDK_SOURCE if name.startswith("semwright_") else None,
+                "manifest_path": manifest,
+            })
+            deps.append({"name": name, "pkg": dep_id,
+                         "dep_kinds": [{"kind": None, "target": None}]})
+            entries.append((name, dep_id))
+        metadata = {"packages": packages, "resolve": {"nodes": [
+            {"id": package_id, "deps": deps},
+        ]}}
+        messages = [{"reason": "build-finished", "success": True}]
+        for name, pid in entries:
+            directory = target / ("debug" if name == kit.EXTERNS[0] else "debug/deps")
+            messages.append({
+                "reason": "compiler-artifact", "package_id": pid,
+                "manifest_path": manifest, "target": {"name": name, "kind": ["lib"]},
+                "profile": {"test": False},
+                "filenames": [str(directory / ("lib" + name + ".rlib"))],
+            })
+        with mock.patch.object(kit.custody, "fingerprint",
+                               return_value={"verified": "synthetic-selector-only"}):
+            driver, libraries, native_paths = kit.cargo_libraries(
+                metadata, messages, target)
+            self.assertEqual(driver["id"], package_id)
+            self.assertEqual(set(libraries), set(kit.EXTERNS))
+            self.assertEqual(native_paths, [])
+            self.assertEqual(
+                Path(libraries[kit.EXTERNS[0]]["path"]).parent, target / "debug")
+            for name in kit.EXTERNS[1:]:
+                self.assertEqual(Path(libraries[name]["path"]).parent,
+                                 target / "debug/deps")
+            # An arbitrary direct-root/dependency swap still fails closed.
+            for index, parent in ((1, target / "debug/deps"),
+                                  (2, target / "debug")):
+                mutated = copy.deepcopy(messages)
+                member = mutated[index]["filenames"][0]
+                mutated[index]["filenames"] = [str(parent / Path(member).name)]
+                with self.subTest(index=index), self.assertRaisesRegex(
+                        ValueError, "rlib is not in the one fresh target"):
+                    kit.cargo_libraries(metadata, mutated, target)
+
     def test_previous_consumer_pin_is_refused_by_current_source(self):
         import fixedtxt_source_kit as kit
         previous = '0a904fd2d7feff806607d6786b9a3575f716cae2'

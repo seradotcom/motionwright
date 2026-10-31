@@ -201,8 +201,11 @@ def cargo_libraries(metadata, messages, target):
         need(Path(row["manifest_path"]).resolve(strict=True) == Path(package["manifest_path"]).resolve(strict=True),
              "artifact belongs to another package manifest")
         paths = [Path(p) for p in row["filenames"] if p.endswith(".rlib")]
+        # Cargo emits the explicitly selected root library directly in debug;
+        # transitive libraries remain in debug/deps. Admit no other root.
+        expected_parent = target / ("debug" if name == EXTERNS[0] else "debug/deps")
         need(len(paths) == 1 and paths[0].is_absolute()
-             and paths[0].parent == target / "debug/deps", "rlib is not in the one fresh target")
+             and paths[0].parent == expected_parent, "rlib is not in the one fresh target")
         result[name] = {"package_id": package_id, "path": str(paths[0]),
                         "original": custody.fingerprint(paths[0], target, 256 * 1024 * 1024)}
     linked_paths = set()
