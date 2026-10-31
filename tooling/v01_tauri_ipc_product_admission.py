@@ -108,10 +108,16 @@ def _read_regular(path: Path, *, max_bytes: int = 8 * 1024 * 1024) -> bytes:
         data = stream.read(max_bytes + 1)
         after = os.fstat(stream.fileno())
     current = path.lstat()
+    # Path and open-handle stat views can disagree on Windows file creation
+    # time even for one unchanged file. Authenticate each observation channel
+    # across the read, then join them by the same physical file ID and size.
     fingerprint = lambda item: (item.st_dev, item.st_ino, item.st_size,
                                 item.st_mtime_ns, item.st_ctime_ns)
-    require(not _is_link(current) and fingerprint(before) == fingerprint(opened)
-            == fingerprint(after) == fingerprint(current)
+    physical = lambda item: (item.st_dev, item.st_ino, item.st_size)
+    require(not _is_link(current)
+            and physical(before) == physical(opened) == physical(after) == physical(current)
+            and fingerprint(before) == fingerprint(current)
+            and fingerprint(opened) == fingerprint(after)
             and len(data) == after.st_size, "source_file_changed_during_read")
     return data
 
