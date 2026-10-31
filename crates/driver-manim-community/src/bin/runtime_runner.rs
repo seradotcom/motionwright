@@ -235,6 +235,21 @@ fn render_fontconfig_root(args: &RenderArgs, work_root: &Path) -> Result<PathBuf
     if resolved != assets || resolved.parent() != Some(work_root) {
         return Err("Editable fontconfig escaped the original work root".into());
     }
+    // The Host grant covers the work root, not arbitrary caller-provided
+    // fonts.conf. Preserve the compiler's exact generated configuration;
+    // a replaced, linked or oversized file must fail before native render.
+    let config = resolved.join("fonts.conf");
+    let info = fs::symlink_metadata(&config)
+        .map_err(|_| "Editable font configuration is unavailable".to_string())?;
+    let expected = motionwright_manim_profile::editable_scene::FONTCONFIG.as_bytes();
+    if info.file_type().is_symlink() || !info.is_file() || info.len() != expected.len() as u64 {
+        return Err("Editable font configuration differs from generated source".into());
+    }
+    let actual =
+        fs::read(&config).map_err(|_| "Editable font configuration cannot be read".to_string())?;
+    if actual != expected {
+        return Err("Editable font configuration differs from generated source".into());
+    }
     Ok(resolved)
 }
 
@@ -2278,6 +2293,11 @@ mod tests {
         let other = root.join("mw_fedcba9876543210fedcba9876543210.assets");
         fs::create_dir(&current).unwrap();
         fs::create_dir(&other).unwrap();
+        fs::write(
+            current.join("fonts.conf"),
+            motionwright_manim_profile::editable_scene::FONTCONFIG,
+        )
+        .unwrap();
         let mut args = parse_render_args(render_argv("--fontconfig-work-root", &root)).unwrap();
         assert_eq!(render_fontconfig_root(&args, &root).unwrap(), current);
         for source in [
@@ -2291,6 +2311,18 @@ mod tests {
         }
         args.source = "mw_0123456789abcdef0123456789abcdef.py".into();
         args.fontconfig_root = other;
+        assert!(render_fontconfig_root(&args, &root).is_err());
+        args.fontconfig_root = root.clone();
+        let config = current.join("fonts.conf");
+        fs::write(&config, b"invalid-font-settings").unwrap();
+        assert!(render_fontconfig_root(&args, &root).is_err());
+        fs::write(
+            &config,
+            motionwright_manim_profile::editable_scene::FONTCONFIG,
+        )
+        .unwrap();
+        assert_eq!(render_fontconfig_root(&args, &root).unwrap(), current);
+        fs::remove_file(&config).unwrap();
         assert!(render_fontconfig_root(&args, &root).is_err());
         let legacy = parse_render_args(render_argv("--fontconfig-root", &current)).unwrap();
         assert_eq!(render_fontconfig_root(&legacy, &root).unwrap(), current);
