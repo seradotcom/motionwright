@@ -21126,7 +21126,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "6a4114d7e32034caed9a6012a19799fa698c9ed7d1713d73a8adfd189f4d5129",
+      "sha256": "0d49dba6235ac2a0ddfd0f0e7bb21a1bdf413008ada8002f48b05a11d8f64ce5",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21227,7 +21227,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "513ef1a814c9fa1c493e715a992004dcfa4468ddc5a14178a0c3525a0e3a292a",
+          "source_sha256": "7174d4c77fdebb4b2b5e971430a989a58e8fa6a7bc483b92ddf739d1744fb7dd",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21292,10 +21292,10 @@
             },
             {
               "ordinal": 7,
-              "name": "Require sixty-three lifecycle contracts through both existing runner entrypoints",
+              "name": "Require sixty-seven lifecycle contracts through both existing runner entrypoints",
               "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "35e9f94c308a2a7a2a3abf80671078f0807e62b0a88b9d9a707344bb3d3002d5",
+              "source_block_sha256": "ab0bb2f434b1b5d23ec19ad593266c1660f5eef68df1c6fbf94575c8e3f0e8ae",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21322,7 +21322,7 @@
           "runs_on": "windows-latest",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "575f87e8e008a969abac44f3ed33f55360efc345f3b5d41b22830a0db5496eb1",
+          "source_sha256": "e02de2bd4f5f4edf3f8bb00e3f98c87a3632a986b871aae991f31b61ef87139b",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21357,10 +21357,10 @@
             },
             {
               "ordinal": 4,
-              "name": "Require sixty-three lifecycle contracts through both existing runner entrypoints",
+              "name": "Require sixty-seven lifecycle contracts through both existing runner entrypoints",
               "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "66fc18f40b06abd318cfa3c64b3ab638359ee22a0822a9fad2e1934c625192db",
+              "source_block_sha256": "b8e471bfa7d3a10a7088dc817d2eef80728bf9b1001229a56e83ee845b6822b8",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21821,7 +21821,7 @@
             "nsis-source-windows"
           ],
           "strategy": null,
-          "source_sha256": "5d906406c43e6e664691003b35c066dead15d0ea511b5c814e97d8408e1b3877",
+          "source_sha256": "2dca5f9a2d89132adf983c6765e68e2255ea4a12a01dfbc16729c9fe1352de27",
           "instance_sets": {
             "nsis-compile": [
               {}
@@ -21868,7 +21868,7 @@
               "name": "Admit exact retained predecessor bytes and prepare the independent render inputs",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "dac55579da039f9b7a13ec9f28c417f398039fd7cdc297c9fb1a6ee118d51392",
+              "source_block_sha256": "2017a5a48dc8dad6037319b5f2f1ea5c8a082f090c6962657a61aef6698121cb",
               "api_binding": "EXPLICIT_NAME"
             },
             {
