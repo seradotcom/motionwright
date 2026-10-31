@@ -36,6 +36,14 @@ MAX_STDERR = 1024 * 1024
 MAX_JSON = 1024 * 1024
 MAX_INTENT = 64 * 1024
 ERROR_PATH = "original-attempt-error.json"
+OBSERVER_ORIGINALS = (
+    ("observer-diagnostic.json", "film-observer-diagnostic", 3 * 1024 * 1024),
+    ("observer-stop-error.json", "film-observer-error", 64 * 1024),
+    ("observer-intermediate-error.json", "film-observer-error", 64 * 1024),
+    ("observer-diagnostic-error.json", "film-observer-error", 64 * 1024),
+    ("observer-close-error.json", "film-observer-error", 64 * 1024),
+    ("original-observation-error.json", "film-observer-error", 64 * 1024),
+)
 
 
 def entries():
@@ -59,10 +67,15 @@ def entries():
                     type=TYPE, maximum=MAX_STAGE, policy=None))
     rows.append(dict(root="observation", relative_path=ERROR_PATH, phase="single",
         layer="attempt-custody", role="film-attempt-error", type=TYPE, maximum=MAX_JSON, policy=None))
+    for phase in ("original", "edited"):
+        for name, role, maximum in OBSERVER_ORIGINALS:
+            rows.append(dict(root="observation", relative_path=f"{phase}-live-observer/{name}",
+                phase=phase, layer="attempt-custody", role=role,
+                type=TYPE, maximum=maximum, policy=None))
     return rows
 
 
-MAX_MEMBERS = 68
+MAX_MEMBERS = 80
 MAX_TOTAL = sum(row["maximum"] for row in entries())
 
 

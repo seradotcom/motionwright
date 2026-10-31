@@ -537,6 +537,12 @@ if __name__=="__main__":unittest.main()
 
 class FilmCommandOriginalCustodyTests(unittest.TestCase):
     """Real private filesystem/ciphertext tests; no native renderer is invoked."""
+    OBSERVER_NAMES = (
+        "observer-diagnostic.json", "observer-stop-error.json",
+        "observer-intermediate-error.json", "observer-diagnostic-error.json",
+        "observer-close-error.json", "original-observation-error.json",
+    )
+
     @classmethod
     def setUpClass(cls):
         import tempfile
@@ -651,8 +657,20 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
 
     def test_source_owned_roster_has_16_commands_68_real_names_and_finite_limits(self):
         self.assertEqual(len(self.commands.COMMANDS), 16)
-        self.assertEqual(len(self.contract["entries"]), 68)
-        self.assertEqual(self.commands.MAX_TOTAL, 92471296)
+        self.assertEqual(len(self.contract["entries"]), 80)
+        self.assertEqual(self.commands.MAX_MEMBERS, 80)
+        self.assertEqual(self.commands.MAX_TOTAL, 99418112)
+        # The original 68 command/stage paths precede the 12 observer originals.
+        observer_rows = self.contract["entries"][68:]
+        self.assertEqual({row["relative_path"] for row in observer_rows}, {
+            f"{phase}-live-observer/{name}"
+            for phase in ("original", "edited") for name in self.OBSERVER_NAMES})
+        for row in observer_rows:
+            diagnostic = row["relative_path"].endswith("/observer-diagnostic.json")
+            self.assertEqual(row["maximum"], 3 * 1024 * 1024 if diagnostic else 64 * 1024)
+            self.assertEqual(row["role"], "film-observer-diagnostic" if diagnostic else "film-observer-error")
+            self.assertEqual(row["type"], "film-command-original")
+            self.assertIsNone(row["policy"])
         names = {row["relative_path"] for row in self.contract["entries"]}
         self.assertNotIn("edited.stage-audio.intent.json", names)
         for phase in ("original","edited"):
@@ -686,9 +704,54 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         recovered, bound = crypto.decrypt_snapshot(sealed,self.key)
         self.assertEqual(recovered,raw); self.assertEqual(bound,context)
 
+    def test_observer_originals_survive_encryption_without_promoting_failure_or_unknown(self):
+        import ci_private_evidence as crypto
+        import tarfile
+        originals = {}
+        for phase, status, code, deadline in (
+                ("original", "FAIL", 1, False), ("edited", "UNKNOWN", None, True)):
+            self.command(label=phase+".session", code=code, deadline=deadline)
+            for name in self.OBSERVER_NAMES:
+                path = f"{phase}-live-observer/{name}"
+                raw = ('{\n  "status": "%s", "error": "PRIVATE-OBSERVER-%s-%s",\n'
+                       '  "automatic_retry": false, "details": [1, 2]\n}\n'
+                       % (status, phase, name)).encode()
+                originals[path] = raw
+                self.put(path, raw)
+        raw, manifest = self.capture(); self.inspect(raw)
+        context = {key:value for key,value in self.current.items() if key!="scenario"}
+        sealed = crypto.encrypt_snapshot(raw, self.recipient, context)
+        self.assertNotIn(b"PRIVATE-OBSERVER-", sealed)
+        recovered, bound = crypto.decrypt_snapshot(sealed, self.key)
+        self.assertEqual(recovered, raw); self.assertEqual(bound, context)
+        self.assertEqual(self.inspect(recovered), manifest)
+        with tarfile.open(fileobj=io.BytesIO(recovered), mode="r:") as archive:
+            for path, expected in originals.items():
+                row = self.row(manifest, path)
+                retained = archive.extractfile(row["member"]).read()
+                self.assertEqual(retained, expected)
+                self.assertEqual(row["kind"], "diagnostic-original")
+                self.assertEqual(row["state"], "INCLUDED")
+                self.assertEqual(row["retained_bytes"], len(expected))
+                self.assertEqual(row["retained_sha256"], core.sha(expected))
+                self.assertEqual(row["expected_sha256"], core.sha(expected))
+                self.assertEqual(core.strict(retained)["status"],
+                                 "FAIL" if path.startswith("original-") else "UNKNOWN")
+        summaries = {row["label"]: row for row in manifest["film_command_originals"]["commands"]}
+        self.assertEqual(summaries["original.session"]["reported_result"], "EXIT_NONZERO_REPORTED")
+        self.assertEqual(summaries["edited.session"]["reported_result"], "UNKNOWN")
+        for name in ("physical_acceptance", "human_acceptance", "release_authorized", "automatic_retry"):
+            self.assertFalse(manifest[name])
+
     def test_absence_is_explicit_and_does_not_invent_a_terminal_or_no_effects(self):
         raw, manifest = self.capture(); self.inspect(raw)
-        self.assertEqual(len(manifest["absence_guards"]),68)
+        self.assertEqual(len(manifest["absence_guards"]),80)
+        guards = {row["relative_path"]: row for row in manifest["absence_guards"]}
+        for phase in ("original", "edited"):
+            for name in self.OBSERVER_NAMES:
+                guard = guards[f"{phase}-live-observer/{name}"]
+                self.assertTrue(guard["absent_before"] and guard["absent_after"])
+                self.assertFalse(guard["opened"] or guard["hashed"])
         self.assertTrue(all(row["capture_status"]=="ABSENT_OBSERVED"
             for row in manifest["film_command_originals"]["commands"]))
         self.assertFalse(manifest["film_command_originals"]["absent_means_no_effects"])
@@ -722,6 +785,27 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         with self.assertRaises(core.SelectionError):
             core._checked_diagnostic_contract(wrong,wrong["context"])
 
+    def test_observer_neighbors_remain_outside_the_selected_roster(self):
+        secret = b"UNLISTED-OBSERVER-NEIGHBOR-MUST-NOT-ENTER"
+        paths = ("original-live-observer/neighbor.json",
+                 "original-live-observer/nested/observer-diagnostic.json",
+                 "edited-live-observer/observer-stop-error.json.bak",
+                 "unlisted-live-observer/observer-diagnostic.json")
+        for path in paths:
+            self.put(path, secret)
+        raw, manifest = self.capture(); self.inspect(raw)
+        self.assertNotIn(secret, raw)
+        selected = {row["relative_path"] for row in manifest["members"] + manifest["absence_guards"]}
+        self.assertTrue(set(paths).isdisjoint(selected))
+        handles = core.RootHandles(dict(observation=str(self.observation)))
+        try:
+            handles.admit_diagnostic_contract(self.contract)
+            for path in (paths[1], paths[3]):
+                with self.assertRaisesRegex(core.SelectionError, "excluded-before-open"):
+                    handles.read("observation", core.member_path(path), 3 * 1024 * 1024)
+        finally:
+            handles.close()
+
     def test_symlink_and_hardlink_are_failed_originals_without_following_them(self):
         import os
         target=self.put("private-target.bin",b"ORIGINAL-SECRET-TARGET")
@@ -733,6 +817,23 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
             self.assertEqual(self.row(manifest,path)["state"],"CAPTURE_FAILED")
         self.assertFalse(manifest["diagnostic_roster_complete"])
 
+    def test_observer_symlink_and_hardlink_are_rejected_without_retaining_the_target(self):
+        import os
+        target = self.put("private-observer-target.bin", b"PRIVATE-OBSERVER-LINK-TARGET")
+        paths = []
+        for phase in ("original", "edited"):
+            folder = self.observation / (phase+"-live-observer")
+            folder.mkdir(mode=0o700)
+            os.symlink(target, folder/"observer-diagnostic.json")
+            os.link(target, folder/"observer-stop-error.json")
+            paths.extend((phase+"-live-observer/observer-diagnostic.json",
+                          phase+"-live-observer/observer-stop-error.json"))
+        raw, manifest = self.capture(); self.inspect(raw)
+        self.assertNotIn(b"PRIVATE-OBSERVER-LINK-TARGET", raw)
+        for path in paths:
+            self.assertEqual(self.row(manifest, path)["state"], "CAPTURE_FAILED")
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+
     def test_oversize_is_failed_not_truncated_and_keeps_other_originals(self):
         self.command()
         path=self.observation/"original.session.stdout"
@@ -740,6 +841,28 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         raw,manifest=self.capture();self.inspect(raw)
         self.assertEqual(self.row(manifest,"original.session.stdout")["state"],"CAPTURE_FAILED")
         self.assertEqual(self.row(manifest,"original.session.stderr")["state"],"INCLUDED")
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+
+    def test_observer_size_limits_fail_closed_without_truncating_other_originals(self):
+        oversized = {
+            "original-live-observer/observer-diagnostic.json": 3 * 1024 * 1024,
+            "edited-live-observer/observer-close-error.json": 64 * 1024,
+        }
+        for path, maximum in oversized.items():
+            with self.put(path, b"").open("wb") as stream:
+                stream.truncate(maximum+1)
+        retained_path = "original-live-observer/observer-stop-error.json"
+        retained = b'{"status":"UNKNOWN","error":"PRIVATE-RETAINED-OBSERVER-ERROR"}'
+        self.put(retained_path, retained)
+        raw, manifest = self.capture(); self.inspect(raw)
+        for path in oversized:
+            row = self.row(manifest, path)
+            self.assertEqual(row["state"], "CAPTURE_FAILED")
+            self.assertNotIn("retained_sha256", row)
+            self.assertNotIn("retained_bytes", row)
+        row = self.row(manifest, retained_path)
+        self.assertEqual(row["state"], "INCLUDED")
+        self.assertEqual(row["retained_sha256"], core.sha(retained))
         self.assertFalse(manifest["diagnostic_roster_complete"])
 
     def test_changed_selected_bytes_are_retained_as_uncertain_not_replaced(self):
@@ -756,6 +879,7 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
                        lambda c:c["context"].update(run_id="34568"),
                        lambda c:c["context"].update(run_attempt="2"),
                        lambda c:c["entries"][0].update(maximum=self.commands.MAX_INTENT+1),
+                       lambda c:c.update(entries=c["entries"][:68]),
                        lambda c:c["entries"][0].update(relative_path="unlisted.intent.json")):
             spec=self.spec(); changed=copy.deepcopy(self.contract);change(changed)
             with mock.patch.object(core,"RootHandles",side_effect=AssertionError("no path may be opened")):
@@ -767,7 +891,7 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         raw,manifest=self.capture(self.spec(root_present=False));self.inspect(raw)
         self.assertEqual(len(manifest["absence_guards"]),0)
         diagnostics=[row for row in manifest["members"] if row["kind"]=="diagnostic-original"]
-        self.assertEqual(len(diagnostics),68)
+        self.assertEqual(len(diagnostics),80)
         self.assertTrue(all(row["state"]=="CAPTURE_FAILED" for row in diagnostics))
         self.assertFalse(manifest["diagnostic_roster_complete"])
 
@@ -795,6 +919,10 @@ class FilmCommandOriginalCustodyTests(unittest.TestCase):
         import ci_private_evidence as crypto
         self.command(stdout=b"PRIVATE-RAW-OUTPUT-SENTINEL")
         self.put("original-attempt-error.json",b'{"error":"PRIVATE-ERROR-SENTINEL"}')
+        self.put("original-live-observer/observer-diagnostic.json",
+                 b'{"status":"UNKNOWN","error":"PRIVATE-OBSERVER-DIAGNOSTIC-SENTINEL"}')
+        self.put("edited-live-observer/observer-stop-error.json",
+                 b'{"error":"PRIVATE-OBSERVER-STOP-SENTINEL"}')
         raw,manifest=self.capture()
         current={key:value for key,value in self.current.items() if key!="scenario"}
         encrypted=crypto.encrypt_snapshot(raw,self.recipient,current)
