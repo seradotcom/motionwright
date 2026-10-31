@@ -52,8 +52,13 @@ except (ImportError, OSError, ValueError) as error:
 try:
     from v01_tauri_ipc_product_admission import admit_patched_tauri
     admit_patched_tauri(ROOT)
-except (ImportError, OSError, ValueError):
-    errors.append("Tauri 2.12.1 IPC diagnostic source custody is unverified")
+except (ImportError, OSError, ValueError) as error:
+    # Report only a bounded fixed verifier code, never paths or raw source.
+    code = str(error) if type(error).__name__ == "TauriSourceAdmissionError" else ""
+    if re.fullmatch(r"[a-z][a-z0-9_]{2,90}", code):
+        errors.append("Tauri 2.12.1 IPC diagnostic source custody is unverified: " + code)
+    else:
+        errors.append("Tauri 2.12.1 IPC diagnostic source custody is unverified")
 
 desktop = (ROOT / "apps/desktop/src-tauri/src/main.rs").read_text()
 if REV not in desktop:

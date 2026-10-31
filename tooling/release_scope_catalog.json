@@ -21126,7 +21126,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "d7343983bccc4eb5ef47c4f813bc5b8855156f913a6ac5bad84507d0cf26e64c",
+      "sha256": "eef9a330f9128503f84c3df1f410430107274940c8de4b3e50b8251937f43e6a",
       "preamble_sha256": "a5aa2b7679edad07ab4b8cced01840c47541aa8f8aae6fde5e16658507e06b01",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21646,7 +21646,7 @@
           "runs_on": "windows-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "d502194ec9765792c5271a0a834fd9d7cac10a098c245ed5955b1ca046bd6fef",
+          "source_sha256": "dd7fec3a36fc355b5e02a0fc0faf79569e996c8166a19b5b91a43c65af0d8c48",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21672,7 +21672,7 @@
               "name": "Windows cold-start unit contracts before package build",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2fa8025b623976c6669dd32403c4ab0b8eed06dcce49811c032532739053bece",
+              "source_block_sha256": "bcadb3f75632dee09094cbcd67e4d37ff15748854aa0b7c638b4d9703d8b13c8",
               "api_binding": "EXPLICIT_NAME"
             },
             {

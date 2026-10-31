@@ -920,29 +920,43 @@ jobs:
           receipt = json.loads(report.read_bytes())
           test_path = "tooling/tests/test_windows_cold_start.py"
           class_name = "WindowsCandidateUnitTests"
-          # AST-bound exact source inventory; reject duplicate or dynamic cases.
+          cohort_class = "StorageSixColdStartControls"
+          exact_six = {
+              "test_explicit_six_snapshot_reads_original_and_preserves_historical_defaults",
+              "test_six_empty_library_requires_budget_and_cas_writer_fences_before_create",
+              "test_six_boot_passes_selected_cohort_to_actual_sqlite_reader",
+              "test_six_unknown_create_is_not_replayed",
+          }
+          # AST-bound exact source inventory: 48 existing and four Storage 6
+          # controls, not a relaxed or dynamically discovered test selection.
           source_tree = ast.parse((root / test_path).read_text(encoding="utf-8"))
           classes = [node for node in source_tree.body
-                     if isinstance(node, ast.ClassDef) and node.name == class_name]
-          if len(classes) != 1:
-              raise SystemExit("The reviewed Windows test class must be unique")
-          cls = classes[0]
-          if not any(isinstance(parent, ast.Attribute) and isinstance(parent.value, ast.Name)
-                     and parent.value.id == "unittest" and parent.attr == "TestCase"
-                     for parent in cls.bases):
-              raise SystemExit("The reviewed Windows class must subclass unittest.TestCase")
-          source_methods = [node.name for node in cls.body
-                            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")]
-          methods = set(source_methods)
+                     if isinstance(node, ast.ClassDef)
+                     and node.name in {class_name, cohort_class}]
+          if len(classes) != 2 or {node.name for node in classes} != {class_name, cohort_class}:
+              raise SystemExit("Both reviewed Windows test classes must be unique")
+          source_methods = {}
+          for cls in classes:
+              if not any(isinstance(parent, ast.Attribute) and isinstance(parent.value, ast.Name)
+                         and parent.value.id == "unittest" and parent.attr == "TestCase"
+                         for parent in cls.bases):
+                  raise SystemExit("Both Windows classes must subclass unittest.TestCase")
+              items = [node.name for node in cls.body
+                       if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")]
+              if len(items) != len(set(items)):
+                  raise SystemExit("Duplicated reviewed Windows test methods")
+              source_methods[cls.name] = set(items)
+          methods = {cls + "." + name for cls, group in source_methods.items() for name in group}
           all_methods = [node.name for node in ast.walk(source_tree)
                          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and node.name.startswith("test_")]
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods) != 48 or len(methods) != 48
-                  or len(all_methods) != 48 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires exactly 48 unique static source methods")
+          if (len(source_methods[class_name]) != 48 or source_methods[cohort_class] != exact_six
+                  or len(methods) != 52 or len(all_methods) != 52
+                  or len(set(all_methods)) != 52 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires 48 plus four exact Storage 6 controls")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("schema") != "motionwright.unittest-execution/1"
                   or receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
@@ -964,11 +978,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 48
-                      or type(counts.get("passed")) is not int or counts["passed"] != 48
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 52
+                      or type(counts.get("passed")) is not int or counts["passed"] != 52
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 48 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 52 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -977,9 +991,9 @@ jobs:
               parsed_view = data.decode("utf-8", "strict").replace("\r\n", "\n").replace("\r", "\n")
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
-              expected = {f"{module}.{class_name}.{method}" for method in methods}
-              if len(observed) != 48 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 48 source controls exactly once")
+              expected = {f"{module}.{method}" for method in methods}
+              if len(observed) != 52 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 52 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -991,14 +1005,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 48, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 52, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=48 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=52 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))

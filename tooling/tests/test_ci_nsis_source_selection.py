@@ -650,9 +650,32 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
             found = re.search(r"(?m)^    if: (.+)$", body)
             if found is None:
                 return True
-            expr = found[1].replace("github.event_name", repr(event)).replace("inputs.verification_scope", repr(scope))
+            expr = found[1]
+            if expr == ">-":
+                # The actual Windows job has a folded YAML condition. Bind its
+                # successful prerequisites here; the separate tests enforce them.
+                continuation = body[found.end():].splitlines()
+                folded = []
+                for line in continuation:
+                    if line and not line.startswith("      "):
+                        break
+                    if line.strip():
+                        folded.append(line.strip())
+                expr = " ".join(folded)
+                self.assertTrue(expr.startswith("${{ ") and expr.endswith(" }}"))
+                expr = expr[4:-3]
+                self.assertIn("!cancelled()", expr)
+                expr = expr.replace("!cancelled()", "True")
+                for dependency in ("receipt-policy", "windows-contracts", "nsis-source-windows"):
+                    expected = "needs['" + dependency + "'].result"
+                    self.assertIn(expected, expr)
+                    expr = expr.replace(expected, "'success'")
+            expr = expr.replace("github.event_name", repr(event)).replace("inputs.verification_scope", repr(scope))
             expr = expr.replace("github.ref", repr(ref)).replace("&&", " and ").replace("||", " or ")
-            return bool(eval(expr, {"__builtins__": {}}, {}))
+            try:
+                return bool(eval(expr, {"__builtins__": {}}, {}))
+            except (SyntaxError, NameError, TypeError) as error:
+                raise AssertionError("Workflow conditional has unreviewed syntax") from error
         two = {"receipt-policy", "nsis-source-windows"}
         for scope, extra in (("distribution_source", set()), ("nsis_source", set()),
                              ("nsis_compile", {"windows-update"}), ("nsis_lifecycle", {"windows-update"}),
@@ -744,7 +767,7 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
         self.windows = compile(textwrap.dedent('          if sys.platform != "win32":\n' + windows),
                                "<workflow-windows-readback>", "exec")
         self.definitions = {}
-        for name, expected in (("test_windows_installer_lifecycle.py", 63), ("test_windows_cold_start.py", 48)):
+        for name, expected in (("test_windows_installer_lifecycle.py", 63), ("test_windows_cold_start.py", 52)):
             raw = (gate.ROOT / "tooling/tests" / name).read_bytes()
             tree = ast.parse(raw)
             methods = [cls.name + "." + method.name for cls in tree.body if isinstance(cls, ast.ClassDef)
@@ -864,9 +887,9 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.run_reader(fixture, "lifecycle", code)
 
-    def test_windows_reader_requires_all_forty_eight_named_controls_in_both_modes(self):
+    def test_windows_reader_requires_all_fifty_two_named_controls_in_both_modes(self):
         result = self.run_reader(self.fixture("windows"), "windows")
-        self.assertEqual((result["unique_source_controls"], result["entrypoints"], result["skipped"]), (48, 2, 0))
+        self.assertEqual((result["unique_source_controls"], result["entrypoints"], result["skipped"]), (52, 2, 0))
         self.assertIs(result["installed_application_execution"], False)
 
     def test_windows_reader_rejects_legacy_counts_omissions_boolean_exit_and_foreign_source(self):
