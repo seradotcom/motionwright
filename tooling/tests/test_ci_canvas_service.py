@@ -7204,7 +7204,10 @@ class CloseoutServiceRosterTests(unittest.TestCase):
                 source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "only"}}
                 queries, calls = [], []
 
-                def observe(_repo):
+                def observe(_repo, selection=None):
+                    # The caller may request scoped source revalidation before dispatch.
+                    # It must remain the exact selected Branch combination scope.
+                    self.assertIn(selection, (None, "branch-combination"))
                     queries.append("source")
                     if len(queries) == 3:
                         if mutation == "source": return {**source, "checkout": "c" * 40}
