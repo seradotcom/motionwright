@@ -8920,9 +8920,18 @@ def graph_produce(repo, recipient):
             outside += [graph_ref(root / "tools" / name) for name in (
                 "graph-run-response.original.json", "graph-run-response.transport.original.json",
                 "graph-jobs-response.original.json", "graph-jobs-response.transport.original.json")]
+            # Independent offline review needs the byte-identical Python and
+            # FFmpeg executables, not just live runtime inventory digests.
+            outside += [binaries[role] for role in ("python3", "ffmpeg")]
             for number, original in enumerate(outside):
                 copy_ref = graph_copy_original(Path(original["path"]), producer / "review-originals" / (str(number) + ".original"), producer)
                 review_copies.append({"original": original, "retained": copy_ref})
+            for role in ("python3", "ffmpeg"):
+                copies = [row for row in review_copies if row["original"] == binaries[role]]
+                require(len(copies) == 1
+                        and all(copies[0]["retained"][key] == binaries[role][key]
+                                for key in ("sha256", "size_bytes")),
+                        "Graph offline runtime binary original missing")
             roster = {"cases": [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in GRAPH_CASES],
                 "meaning": "SOURCE_DERIVED_DECLARATION_REQUIRES_INDEPENDENT_CODE_REVIEW"}
             native = {"source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],

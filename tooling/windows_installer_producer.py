@@ -281,7 +281,10 @@ def prepare_predecessor(*, root=None, source=None, work=None, proof_path=None,
             return json.loads(limited(response, 1024 * 1024))
 
 
-    from windows_installer_lifecycle import SOURCE_PATHS, read_pe_versions, require_pe_version
+    from windows_installer_lifecycle import (
+        SOURCE_PATHS, read_pe_versions, require_pe_version,
+        PREDECESSOR_EVIDENCE_PATH, admit_retained_predecessor_evidence,
+    )
     if source_paths is not None:
         SOURCE_PATHS = tuple(source_paths)
 
@@ -406,7 +409,12 @@ def prepare_predecessor(*, root=None, source=None, work=None, proof_path=None,
             and prior_commit.get("tree", {}).get("sha") == FIXED["tree"],
             "predecessor_run_or_git_tree_mismatch")
     package_zip, package_admission = fetch_artifact("predecessor-package", FIXED["packageArtifact"])
-    evidence_zip, evidence_admission = fetch_artifact("predecessor-evidence", FIXED["evidenceArtifact"])
+    evidence_archive = source_bytes(PREDECESSOR_EVIDENCE_PATH)
+    evidence_admission = admit_retained_predecessor_evidence(evidence_archive, FIXED, SOURCE)
+    evidence_zip = WORK / "predecessor-evidence.zip"
+    write_new(evidence_zip, evidence_archive)
+    require(identity(evidence_zip) == {key: evidence_admission[key] for key in ("bytes", "sha256")},
+            "retained_predecessor_copy_changed")
     member(package_zip, FIXED["package"], INPUT / "previous-setup.exe")
     member(evidence_zip, FIXED["self"], INPUT / "previous-uninstall.exe")
     member(evidence_zip, FIXED["receipt"], INPUT / "previous-capture-receipt.json")

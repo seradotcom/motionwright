@@ -31,3 +31,6 @@ apps/desktop/src-tauri/bundle-licenses/** -text whitespace=-blank-at-eof
 # Preserve the canonical license/notice bytes in Windows checkouts as well.
 /LICENSE -text whitespace=-blank-at-eof
 /THIRD_PARTY_NOTICES.md -text
+
+# Preserve the literal predecessor archive, including its historical failure receipt.
+tooling/tests/fixtures/windows-predecessor-12101216495.original.zip -text

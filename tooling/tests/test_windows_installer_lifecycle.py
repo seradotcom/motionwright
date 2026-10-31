@@ -1,4 +1,4 @@
-"""Offline lifecycle consumer regressions. All installer/PE rows are synthetic."""
+"""Offline lifecycle regressions. Retained archive reads never execute installers."""
 from __future__ import annotations
 import copy
 import hashlib
@@ -19,6 +19,53 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_storage_schema_contract import add_schema_five_cas, cohort as storage_cohort_fixture
 from windows_cold_start import ColdStartError
 from release_manifest import ManifestError
+
+
+
+class RetainedPredecessorEvidenceControls(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.original = (lifecycle.ROOT / lifecycle.PREDECESSOR_EVIDENCE_PATH).read_bytes()
+        cls.fixed = {"run": 39032220978,
+            "source": "679cc48baf7c6f9bb4a0b803508c9b2a9891d944",
+            "tree": "4ce7c4423c73da4f3af638427088ee6e962d12d5",
+            "evidenceArtifact": {"id": 12101216495, "bytes": 125856,
+                "sha256": "cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"}}
+
+    def test_original_identity_and_historical_failure_are_preserved(self):
+        import zipfile
+        admission = lifecycle.admit_retained_predecessor_evidence(self.original, self.fixed, "a" * 40)
+        self.assertEqual(admission["artifact_id"], 12101216495)
+        self.assertEqual(admission["workflow_run"], 39032220978)
+        self.assertEqual(admission["source_sha"], self.fixed["source"])
+        self.assertEqual(admission["transport"], {"kind": "original_archive_retained_in_checkout",
+            "checkout": "a" * 40, "path": lifecycle.PREDECESSOR_EVIDENCE_PATH})
+        with zipfile.ZipFile(io.BytesIO(self.original)) as archive:
+            receipt = json.loads(archive.read("receipt.json"))
+            self.assertEqual(receipt["status"], "FAIL")
+            self.assertEqual(receipt["failure"]["code"], "modified-owned_file_preservation_not_passed")
+            self.assertEqual(hashlib.sha256(archive.read("unchanged-control-original-uninstaller.exe")).hexdigest(),
+                "dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224")
+
+    def test_changed_truncated_or_appended_archives_are_denied(self):
+        changed = bytes([self.original[0] ^ 1]) + self.original[1:]
+        for body in (changed, self.original[:-1], self.original + b"x"):
+            with self.subTest(bytes=len(body)), self.assertRaisesRegex(
+                    lifecycle.LifecycleError, "archive_differs_from_literal_pin"):
+                lifecycle.admit_retained_predecessor_evidence(body, self.fixed, "a" * 40)
+
+    def test_other_predecessor_identity_is_denied(self):
+        for key, value in (("run", 39032220979), ("source", "b" * 40), ("tree", "c" * 40),
+                           ("evidenceArtifact", {**self.fixed["evidenceArtifact"], "id": 12101216496})):
+            fixed = copy.deepcopy(self.fixed)
+            fixed[key] = value
+            with self.subTest(field=key), self.assertRaisesRegex(
+                    lifecycle.LifecycleError, "literal_binding_mismatch"):
+                lifecycle.admit_retained_predecessor_evidence(self.original, fixed, "a" * 40)
+
+    def test_current_checkout_identity_is_required(self):
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "source_identity_invalid"):
+            lifecycle.admit_retained_predecessor_evidence(self.original, self.fixed, "unknown")
 
 
 class Fixture:

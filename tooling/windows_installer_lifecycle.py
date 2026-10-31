@@ -41,7 +41,9 @@ MAX_FILES = 4096
 MAX_BYTES = 512 * 1024 * 1024
 PHASES = ("install", "upgrade", "uninstall")
 STATES = {"ACK", "ERROR", "UNKNOWN"}
+PREDECESSOR_EVIDENCE_PATH = "tooling/tests/fixtures/windows-predecessor-12101216495.original.zip"
 SOURCE_PATHS = (
+    PREDECESSOR_EVIDENCE_PATH,
     ".github/workflows/package-candidate.yml",
     "apps/desktop/src-tauri/tauri.conf.json",
     "apps/desktop/src-tauri/build.rs",
@@ -108,6 +110,34 @@ def version(value):
 def source_id(value):
     require(isinstance(value, str) and SHA40.fullmatch(value), "source_identity_invalid")
     return value
+
+
+
+def admit_retained_predecessor_evidence(body, fixed, checkout):
+    """Admit the exact archived original; its historical FAIL remains unchanged."""
+    import io
+    import zipfile
+
+    pinned = {"id": 12101216495, "bytes": 125856,
+              "sha256": "cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"}
+    require(isinstance(fixed, dict) and fixed.get("run") == 39032220978
+            and fixed.get("source") == "679cc48baf7c6f9bb4a0b803508c9b2a9891d944"
+            and fixed.get("tree") == "4ce7c4423c73da4f3af638427088ee6e962d12d5"
+            and fixed.get("evidenceArtifact") == pinned,
+            "retained_predecessor_literal_binding_mismatch")
+    require(type(body) is bytes and len(body) == pinned["bytes"]
+            and hashlib.sha256(body).hexdigest() == pinned["sha256"],
+            "retained_predecessor_archive_differs_from_literal_pin")
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        entries = archive.infolist()
+        require(0 < len(entries) <= 64
+                and sum(entry.file_size for entry in entries) <= 128 * 1024 * 1024
+                and len({entry.filename.casefold() for entry in entries}) == len(entries)
+                and archive.testzip() is None, "retained_archive_crc_or_inventory_invalid")
+    return {"artifact_id": pinned["id"], "bytes": pinned["bytes"], "sha256": pinned["sha256"],
+            "workflow_run": fixed["run"], "source_sha": fixed["source"],
+            "transport": {"kind": "original_archive_retained_in_checkout",
+                          "checkout": source_id(checkout), "path": PREDECESSOR_EVIDENCE_PATH}}
 
 
 def operation_id(value):
