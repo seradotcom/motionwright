@@ -1507,9 +1507,11 @@ jobs:
           import zipfile
 
           sys.path.insert(0, str(Path.cwd() / "tooling"))
+          from distribution_build_record import distribution_build_record
           from nsis_owned_files import _capture, emit_predecessor_include
+          from source_lock_admission import verify_distribution_admission
           from package_receipt import verified_artifact
-          from release_manifest import _checkout, _path_has_reparse
+          from release_manifest import _checkout, _path_has_reparse, write_new_manifest
           from windows_cold_start import native_windows_launch_environment
 
           ROOT = Path(os.environ["GITHUB_WORKSPACE"])
@@ -1885,10 +1887,56 @@ jobs:
               "release_published": False,
           }
           write_new(PROOF, (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+          # A private CI-only disposition is mandatory for MW_MAIN. No release grant.
+          required_context = {"GITHUB_EVENT_NAME": "workflow_dispatch",
+                              "GITHUB_REPOSITORY": "seradotcom/motionwright",
+                              "GITHUB_RUN_ATTEMPT": "1"}
+          require(all(os.environ.get(k) == v for k, v in required_context.items())
+                  and os.environ.get("GITHUB_RUN_ID", "").isdecimal(),
+                  "nsis_update_internal_scope_refused")
+          distribution_build = distribution_build_record(ROOT, arch="x64", payload=main)
+          require(distribution_build["payload"] == main_before,
+                  "nsis_update_distribution_build_payload_mismatch")
+          build_relative = "ci-evidence/windows-nsis-update-distribution-build.json"
+          admission_relative = "ci-evidence/windows-nsis-update-distribution-admission.json"
+          write_new_manifest(ROOT, ROOT / build_relative, distribution_build)
+          def distribution_reference(relative):
+              return {"path": relative, **identity(ROOT / relative)}
+          disposition = {
+              "schema": "motionwright.distribution-admission/1",
+              "status": "permitted",
+              "scope": distribution_build["scope"],
+              "source": distribution_build["source"],
+              "review": {
+                  "issuer": "Motionwright automated isolated Windows NSIS lifecycle verification",
+                  "reference": f'workflow_dispatch/nsis_lifecycle/{os.environ["GITHUB_RUN_ID"]}/1/{SOURCE}',
+                  "basis": ("Private unsigned source-bound NSIS install/upgrade/uninstall "
+                            "observation; no public distribution or human acceptance."),
+                  "evidence": [distribution_reference("LICENSE"),
+                               distribution_reference("THIRD_PARTY_NOTICES.md"),
+                               distribution_reference("ci-evidence/windows-nsis-update-inputs.json")],
+                  "obligations": [
+                      "Only the exact unsigned payload inside this disposable runner is admitted.",
+                      "Never publish the installer, application or admission as release artifacts.",
+                      "Preserve source licenses and the historical predecessor FAIL.",
+                      "Independent G2/G3 acceptance remains NOT_RUN.",
+                  ],
+              },
+              "payload": distribution_build["payload"],
+              "build_provenance": distribution_reference(build_relative),
+          }
+          write_new_manifest(ROOT, ROOT / admission_relative, disposition)
+          distribution_pin = identity(ROOT / admission_relative)["sha256"]
+          require(verify_distribution_admission(
+              ROOT, arch="x64", record_path=admission_relative,
+              record_sha256=distribution_pin) == main_before,
+              "nsis_update_distribution_admission_not_bound_to_main")
           require(not any(c in str(profile_path) for c in "\r\n"), "profile_environment_path_invalid")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
               environment.write("MW_NSIS_PREDECESSOR_MANIFEST=" + str(profile_path) + "\n")
               environment.write("MW_NSIS_PREDECESSOR_MANIFEST_SHA256=" + profile_sha + "\n")
+              environment.write("MW_NSIS_DISTRIBUTION_ADMISSION=" + admission_relative + "\n")
+              environment.write("MW_NSIS_DISTRIBUTION_ADMISSION_SHA256=" + distribution_pin + "\n")
               require(not any(c in str(overlay_path) for c in "\r\n"), "overlay_environment_path_invalid")
               environment.write("MW_NSIS_RENDER_OVERLAY=" + str(overlay_path) + "\n")
               for variable, value in (("MW_NSIS_BUNDLE_NODE", str(node)),

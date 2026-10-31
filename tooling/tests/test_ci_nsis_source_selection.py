@@ -749,6 +749,27 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("the_render_fixture_must_preserve_exact_configured_application_payloads",
                       workflow)
 
+    def test_nsis_lifecycle_passes_private_source_bound_main_admission_to_bundle(self):
+        source = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        stage = source.split("- name: Admit exact retained predecessor bytes", 1)[1]
+        stage = stage.split("- name: Compile the actual NSIS template", 1)[0]
+        for literal in (
+            "from distribution_build_record import distribution_build_record",
+            "from source_lock_admission import verify_distribution_admission",
+            'distribution_build_record(ROOT, arch="x64", payload=main)',
+            'distribution_build["payload"] == main_before',
+            "write_new_manifest(ROOT, ROOT / admission_relative, disposition)",
+            "record_path=admission_relative,",
+            "record_sha256=distribution_pin) == main_before",
+            'environment.write("MW_NSIS_DISTRIBUTION_ADMISSION="',
+            'environment.write("MW_NSIS_DISTRIBUTION_ADMISSION_SHA256="',
+            "GITHUB_RUN_ATTEMPT", "Independent G2/G3 acceptance remains NOT_RUN.",
+        ):
+            with self.subTest(literal=literal):
+                self.assertIn(literal, stage)
+        self.assertLess(stage.index("write_new_manifest(ROOT, ROOT / admission_relative, disposition)"),
+                        stage.index('environment.write("MW_NSIS_DISTRIBUTION_ADMISSION="'))
+
     def test_linux_source_scope_cannot_activate_installed_or_legacy_package_effects(self):
         text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
         changes = (

@@ -21126,7 +21126,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "0d49dba6235ac2a0ddfd0f0e7bb21a1bdf413008ada8002f48b05a11d8f64ce5",
+      "sha256": "5ac052817af364afc4e25dc09a39fa115de9f96e413f4364727f2ed4d1bf5652",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21821,7 +21821,7 @@
             "nsis-source-windows"
           ],
           "strategy": null,
-          "source_sha256": "2dca5f9a2d89132adf983c6765e68e2255ea4a12a01dfbc16729c9fe1352de27",
+          "source_sha256": "160454eaf41326f975d178459eb6ddbc5795532b3186b9450a330c86caab1599",
           "instance_sets": {
             "nsis-compile": [
               {}
@@ -21868,7 +21868,7 @@
               "name": "Admit exact retained predecessor bytes and prepare the independent render inputs",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2017a5a48dc8dad6037319b5f2f1ea5c8a082f090c6962657a61aef6698121cb",
+              "source_block_sha256": "02820f4f229551fa012f555231d7065fe511dbf86523b9f513b814e4ee5595bf",
               "api_binding": "EXPLICIT_NAME"
             },
             {
