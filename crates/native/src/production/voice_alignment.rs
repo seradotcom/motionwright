@@ -354,7 +354,9 @@ impl ObservedAlignmentAdmission {
                 && provenance["provider_version"] == json!(self.provider_version)
                 && provenance["capability_version"] == json!(self.capability_version)
                 && provenance["descriptor_sha256"] == json!(self.descriptor_sha256)
-                && provenance["untrusted_metadata"] == json!(false)
+                // Semwright marks external Driver metadata untrusted. Native
+                // execution authority is authenticated independently.
+                && provenance["untrusted_metadata"] == json!(true)
                 && provenance["catalog_revision"] == json!(self.catalog_revision)
                 && provenance["execution_provider"] == json!(PROVIDER)
                 && provenance["provider_generation"] == json!(self.provider_generation),

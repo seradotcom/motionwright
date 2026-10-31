@@ -114,7 +114,7 @@ fn backend_fixture() -> BackendFixture {
     let result = json!({"data":data,"warnings":[],"provenance_checked":true,"execution":{
   "backend":PROVIDER,"duration_ms":1,"policy_decision":"allow","fallbacks_attempted":[],"dry_run":false,
   "provenance":{"provider":PROVIDER,"source":SourceKind::Driver,"provider_version":"test","capability_version":"test",
-   "descriptor_sha256":"ab".repeat(32),"untrusted_metadata":false,"catalog_revision":1,"execution_provider":PROVIDER,"provider_generation":17}}});
+   "descriptor_sha256":"ab".repeat(32),"untrusted_metadata":true,"catalog_revision":1,"execution_provider":PROVIDER,"provider_generation":17}}});
     let args = json!({"file_name":format!("{request_id}.wav"),"request":request});
     let receipt=coordinator.service.append_production_receipt(ProductionReceiptInput{
   project_id:project.id,generation:project.generation,revision:project.revision,request_id:request_id.to_string(),
@@ -441,6 +441,21 @@ async fn unknown_production_attempt_never_invokes_the_cli_again() {
 }
 
 #[test]
+fn genuine_driver_metadata_classification_is_required() {
+    let f = backend_fixture();
+    let original = &f.receipt.payload["result"];
+    // An external Driver's capability metadata remains untrusted even when
+    // its independently authenticated completed receipt is genuine.
+    assert!(f.admission.check_result(original).is_ok());
+
+    for forged in [json!(false), json!(null), json!("true")] {
+        let mut result = original.clone();
+        result["execution"]["provenance"]["untrusted_metadata"] = forged;
+        assert!(f.admission.check_result(&result).is_err());
+    }
+}
+
+#[test]
 fn altered_registration_mutation_policy_and_terminal_job_never_qualify() {
     for case in 0..9 {
         let f = backend_fixture();
@@ -457,7 +472,7 @@ fn altered_registration_mutation_policy_and_terminal_job_never_qualify() {
             }
             3 => {
                 observed.completed_receipt.payload["result"]["execution"]["provenance"]["untrusted_metadata"] =
-                    json!(true)
+                    json!(false)
             }
             4 => observed.completed_receipt.payload["result"]["execution"]["dry_run"] = json!(true),
             5 => {
