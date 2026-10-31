@@ -301,7 +301,7 @@ export const fixtureBootstrap: Bootstrap = {
   project: structuredClone(fixtureProject),
   native_sdk: {
     application: "motionwright",
-    pinned_revision: "229e27547589cc8369dde78dce2fbf7dff5495fd",
+    pinned_revision: "5c2ac3107afbb083afb00d67a28edd0f104f8e15",
     version: "1.0.0",
     mode: "browser-demo"
   }

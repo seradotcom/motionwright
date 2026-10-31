@@ -21,7 +21,7 @@ import ci_storage_apply_recovery as custody
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = "managed-project-source-kit"
-SDK = "229e27547589cc8369dde78dce2fbf7dff5495fd"
+SDK = "5c2ac3107afbb083afb00d67a28edd0f104f8e15"
 SDK_SOURCE = "git+https://github.com/seradotcom/semwright?rev=" + SDK + "#" + SDK
 FACTORY = "tooling/fixedtxt/prepare_fixedtxt_managed_project.rs"
 FACTORY_SHA = "1dc0276373d9ddb8d0a09c59be65ae920565d3f098afc7b1bbc7966a348c6156"
