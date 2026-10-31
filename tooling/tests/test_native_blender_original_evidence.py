@@ -112,11 +112,12 @@ def complete_fixture():
     for sequence, value in enumerate(simple, 1):
         request_id = request["request_id"] + ":verify-edited:" + f"{sequence:06}"
         response = {
-            "data": value["data"], "provenance_checked": True,
-            "execution": {"backend": "synthetic-native-driver-backend", "dry_run": False,
+            "data": value["data"], "provenance_checked": True, "warnings": [],
+            "execution": {"backend": "driver:blender", "dry_run": False,
+                          "policy_decision": "allow", "fallbacks_attempted": [],
                           "provenance": {
                               "provider": "driver:blender", "source": "driver",
-                              "execution_provider": "driver:blender", "untrusted_metadata": False,
+                              "execution_provider": "driver:blender", "untrusted_metadata": True,
                               "descriptor_sha256": "ab" * 32, "provider_generation": 17,
                           }},
         }
@@ -257,9 +258,9 @@ class PhaseBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "prior_context"):
             self.check()
 
-    def test_provider_change_and_untrusted_metadata_are_rejected(self):
+    def test_provider_change_and_false_driver_metadata_trust_are_rejected(self):
         for key, value in [("provider_generation", 99), ("provider", "driver:other"),
-                           ("execution_provider", "driver:other"), ("untrusted_metadata", True)]:
+                           ("execution_provider", "driver:other"), ("untrusted_metadata", False)]:
             with self.subTest(key=key):
                 saved = copy.deepcopy(self.persisted)
                 provenance = self.persisted["journal"]["calls"][-1]["native_result"]["result"]["execution"]["provenance"]
@@ -267,6 +268,36 @@ class PhaseBindingTests(unittest.TestCase):
                 with self.assertRaises(evidence.OriginalSceneUnverified):
                     self.check()
                 self.persisted = saved
+
+    def test_complete_mirrored_receipt_cannot_forge_trusted_driver_metadata(self):
+        for value in (False, None, "true"):
+            with self.subTest(value=value):
+                self.setUp()
+                row = self.persisted["journal"]["calls"][0]["native_result"]
+                original = self.persisted["custody"]["production"]["receipts"][0]
+                for response in (row["result"], row["receipt"]["payload"]["result"],
+                                 original["payload"]["result"]):
+                    response["execution"]["provenance"]["untrusted_metadata"] = value
+                with self.assertRaisesRegex(evidence.OriginalSceneUnverified,
+                                            "original_scene_original_native_authority_missing"):
+                    self.check()
+
+    def test_complete_mirrored_receipt_rejects_fallback_or_denied_policy(self):
+        for key, bad in (("backend", "foreign"), ("policy_decision", "deny"),
+                         ("fallbacks_attempted", ["other"]), ("warnings", ["fallback"])):
+            with self.subTest(key=key):
+                self.setUp()
+                row = self.persisted["journal"]["calls"][0]["native_result"]
+                original = self.persisted["custody"]["production"]["receipts"][0]
+                for response in (row["result"], row["receipt"]["payload"]["result"],
+                                 original["payload"]["result"]):
+                    if key == "warnings":
+                        response[key] = bad
+                    else:
+                        response["execution"][key] = bad
+                with self.assertRaisesRegex(evidence.OriginalSceneUnverified,
+                                            "original_scene_original_native_authority_missing"):
+                    self.check()
 
     def test_request_identity_revision_and_boolean_sequence_are_rejected(self):
         for kind in ("scene", "revision", "sequence", "mutation"):

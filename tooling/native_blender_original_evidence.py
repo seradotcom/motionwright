@@ -394,12 +394,18 @@ def verify_phase(
         execution = response.get("execution", {})
         provenance = execution.get("provenance", {})
         generation = provenance.get("provider_generation")
-        require(type(execution.get("backend")) is str and bool(execution["backend"])
+        require(execution.get("backend") == "driver:blender"
                 and execution.get("dry_run") is False
+                and execution.get("policy_decision") in ("allow", "allow_after_confirmation")
+                and execution.get("fallbacks_attempted") == []
+                and response.get("warnings") == []
                 and provenance.get("provider") == "driver:blender"
                 and provenance.get("source") == "driver"
                 and provenance.get("execution_provider") == "driver:blender"
-                and provenance.get("untrusted_metadata") is False
+                # Semwright labels non-builtin capability metadata untrusted by
+                # design. Receipt/Host authority is checked separately; never
+                # convert this field into a false builtin-trust assertion.
+                and provenance.get("untrusted_metadata") is True
                 and type(provenance.get("descriptor_sha256")) is str
                 and HEX.fullmatch(provenance["descriptor_sha256"])
                 and type(generation) is int and generation > 0,

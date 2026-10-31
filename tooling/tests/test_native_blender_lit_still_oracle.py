@@ -279,10 +279,11 @@ def receipt_fixture():
     command = "driver.blender.scene.inspect"
     request_id = "fixture:lit-create:000001"
     response = {"provenance_checked": True, "execution": {
-        "backend": "fixture-only", "dry_run": False, "provenance": {
+        "backend": "driver:blender", "dry_run": False, "policy_decision": "allow",
+        "fallbacks_attempted": [], "provenance": {
             "provider": "driver:blender", "source": "driver", "execution_provider": "driver:blender",
-            "untrusted_metadata": False, "descriptor_sha256": "a" * 64, "provider_generation": 4}},
-        "data": {"synthetic_unit_fixture": True}}
+            "untrusted_metadata": True, "descriptor_sha256": "a" * 64, "provider_generation": 4}},
+        "warnings": [], "data": {"synthetic_unit_fixture": True}}
     common = {"project_id": source["id"], "generation": source["generation"],
               "revision": source["revision"], "command": command,
               "request_id": request_id, "request_sha256": "b" * 64}
@@ -326,6 +327,34 @@ class ProducerReceiptContracts(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(summary["complete_receipt_count"], 2)
         self.assertEqual(summary["provider_generation"], 4)
+
+    def test_mirrored_receipts_require_untrusted_driver_metadata_without_forged_core_trust(self):
+        for value in (False, None, "true"):
+            with self.subTest(value=value):
+                p, request, plan, body = receipt_fixture()
+                row = p["journal"]["calls"][0]["native_result"]
+                original = p["custody"]["production"]["receipts"][0]
+                for response in (row["result"], row["receipt"]["payload"]["result"],
+                                 original["payload"]["result"]):
+                    response["execution"]["provenance"]["untrusted_metadata"] = value
+                with self.assertRaisesRegex(producer.ProducerError, "native-provider-authority"):
+                    producer.receipt_calls(p, request, plan, body)
+
+    def test_mirrored_receipts_reject_wrong_backend_policy_fallbacks_or_warnings(self):
+        for key, bad in (("backend", "foreign"), ("policy_decision", "deny"),
+                         ("fallbacks_attempted", ["other"]), ("warnings", ["fallback"])):
+            with self.subTest(key=key):
+                p, request, plan, body = receipt_fixture()
+                row = p["journal"]["calls"][0]["native_result"]
+                original = p["custody"]["production"]["receipts"][0]
+                for response in (row["result"], row["receipt"]["payload"]["result"],
+                                 original["payload"]["result"]):
+                    if key == "warnings":
+                        response[key] = bad
+                    else:
+                        response["execution"][key] = bad
+                with self.assertRaisesRegex(producer.ProducerError, "native-provider-authority"):
+                    producer.receipt_calls(p, request, plan, body)
 
     def test_original_unknown_older_than_256_rows_is_not_replaced_by_completion(self):
         p, request, plan, body = receipt_fixture()
