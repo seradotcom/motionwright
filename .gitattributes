@@ -28,3 +28,6 @@ third_party/semwright-source-evidence/b80146de20d4eee7866ac0e8ac45917f7fe0d3d0/*
 vendor/tauri-2.12.1/mobile/ios-api/Sources/Tauri/Logger.swift whitespace=-blank-at-eol,-blank-at-eof
 # Retain third-party license bytes, including upstream trailing whitespace.
 apps/desktop/src-tauri/bundle-licenses/** -text whitespace=-blank-at-eof
+# Preserve the canonical license/notice bytes in Windows checkouts as well.
+LICENSE -text whitespace=-blank-at-eof
+THIRD_PARTY_NOTICES.md -text
