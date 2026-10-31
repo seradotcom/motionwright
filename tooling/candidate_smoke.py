@@ -134,7 +134,7 @@ def verify_license_notices(*, installed_binary: Path, kind: str,
                            desktop: dict, root: Path = ROOT) -> dict:
     resources = desktop.get("bundle", {}).get("resources")
     require(isinstance(resources, dict)
-            and all(resources.get("../../../" + source) == target
+            and all(resources.get("bundle-licenses/" + source.removeprefix("vendor/")) == target
                     for source, target in NOTICE_FILES),
             "candidate_notice_resource_mapping_invalid")
     resource_root = notice_resource_directory(installed_binary, kind)
