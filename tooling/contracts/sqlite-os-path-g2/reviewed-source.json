@@ -1,12 +1,12 @@
 {
   "schema": "motionwright.sqlite-os-path-reviewed-source/1",
   "scope": "sqlite-os-path-g2",
-  "baseline_sha": "d0174cf2c02f96c7562d645f26c50eb4bf02efd4",
-  "baseline_tree": "7732bd0fd0735c68ffac3b659070618701f3e46d",
+  "baseline_sha": "367997b2cc7d7d59a73a2d7c52ad04902c3b52d6",
+  "baseline_tree": "6ad935c5c2847222c623f9dee5fcb1e35c4b7756",
   "review": {
     "status": "REVIEWED_SOURCE_BASELINE",
     "authority": "A1",
-    "reference": "A1 code review: d0174cf2c02f96c7562d645f26c50eb4bf02efd4; physical Windows/Darwin/CAS case definitions unchanged; no G2 claim"
+    "reference": "A1 source review 367997b2cc7d7d59a73a2d7c52ad04902c3b52d6; exact product, CAS and OS tests unchanged; physical G2 not yet executed"
   },
   "product_pins": {
     "Cargo.toml": "046900c0da7b9db37de7b34c98155ff4c274f86e2e4407418a21a9a681a086a3",
