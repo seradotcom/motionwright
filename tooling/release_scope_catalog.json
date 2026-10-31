@@ -20722,7 +20722,7 @@
     },
     {
       "path": ".github/workflows/storage-sqlite-os-path-authority.yml",
-      "sha256": "27b6ef154ca6e9de8ee049cf4c876b4a6ba270bacb5d3ca653e4a7a51b451195",
+      "sha256": "49f70c2acf28a8b81af8dda3d5dba6e9ac62eb8dd54060413cfda50faaf06b48",
       "preamble_sha256": "1d7baf84a493a4f3c72117f4a7b5df2e40095831c32d33ff50d2ca30c88aa6b9",
       "evidence_class": "native_os_storage",
       "purpose": "Exact-source genuine Windows NTFS and Darwin path-authority fixtures, plus a separately selected Windows CAS symlink scope.",
@@ -20788,7 +20788,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "1713072713a4eaa5caa9c2fc92a0e36b8bfc30180347c621b11ba21a31d1b6ec",
+          "source_sha256": "264d065d5299d12bd8e29f7ae38908f69683cfa6eb3d3cc13da6ff265548ca95",
           "instance_sets": {
             "windows": [
               {}
@@ -20817,7 +20817,7 @@
               "name": "Enforce G0 source and conformance policies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "24e5f6769f9b47e26116b4710587c752a673520d149fc6a9de19952ab219b894",
+              "source_block_sha256": "a77429de0bee12f9fc4fa2ba4600630c489701ef936fc96bce6c3bc4ff9d25c2",
               "api_binding": "EXPLICIT_NAME"
             },
             {

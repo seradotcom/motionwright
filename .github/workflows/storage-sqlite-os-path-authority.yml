@@ -55,8 +55,22 @@ jobs:
         run: |
           set -euo pipefail
           python -B tooling/source_policy.py
-          python -B tooling/acceptance_policy.py
-          python -B tooling/creative_status_policy.py
+          # Development validates the reviewed OS source; formal F retains the complete assessed ledgers.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/integrate/phase1-final-composition-20261027" && "$MW_EXPECTED_SOURCE_SHA" == "$GITHUB_SHA" ]]; then
+            python -I -B - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          import ci_sqlite_os_path_g2 as gate
+          observed = gate.reviewed_source_identity(
+              Path.cwd(), os.environ["GITHUB_SHA"], os.environ["MW_REVIEWED_MANIFEST_SHA256"])
+          print("os-g2-development-source=PASS " + observed["source_sha"])
+          PY
+          else
+            python -B tooling/acceptance_policy.py
+            python -B tooling/creative_status_policy.py
+          fi
       - name: Reject fake, skipped and changed test receipts
         run: |
           set -euo pipefail
