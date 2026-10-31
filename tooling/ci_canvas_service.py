@@ -6978,7 +6978,7 @@ STUDIO68_READER_PINS = {
 }
 STUDIO68_POLICIES = ("source_policy.py", "public_surface_policy.py",
                      "acceptance_policy.py", "creative_status_policy.py")
-STUDIO68_RUNNER_SHA256 = "b7d39ad4c94be70abcac75880f92d00cf3c8d49eb0198b404a962ce5ab1a712f"
+STUDIO68_RUNNER_SHA256 = "b2b2e4b0aa16ef5740505f5ab84e12e8f2b5a9fb431e89c7113441ad2c53a49b"
 
 def studio68_context(environment, product_source, platform=None):
     platform = sys.platform if platform is None else platform

@@ -928,7 +928,7 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
         self.assertEqual(len(choices), len(set(choices)))
-        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, gate.CAMERA_EIGHT_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
+        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, gate.CAMERA_EIGHT_SCOPE, gate.PHASE1_SERVICE47_SCOPE, gate.GRAPH_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
         service_job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
         self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend'"])
@@ -1689,7 +1689,11 @@ class BrowserContractSelectionTests(unittest.TestCase):
         self.assertGreaterEqual(job.count("!contains(fromJSON('[\"browser-contracts\",\"creative-production-browser\",\"review-browser\",\"workflow-preview-browser\"]'), matrix.selection)"), 2)
         self.assertIn("matrix.selection == 'browser-contracts' && 240", job)
         self.assertIn('tooling/ci_canvas_service.py archive --repo . --evidence ../v', job)
-        self.assertIn("id: archive\n        if: success()", job)
+        archive_title = "      - name: Close complete original evidence into a verified TAR\n"
+        self.assertEqual(job.count(archive_title), 1)
+        archive_step = job.split(archive_title, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("        id: archive\n", archive_step)
+        self.assertIn("        if: success()\n", archive_step)
         self.assertIn('steps.archive.outcome != \'success\'', job)
         self.assertEqual(sum(gate.BROWSER_SELECTION_TIMEOUTS[row[0]] for row in gate.browser_selections("browser-contracts")), 12090)
         self.assertGreater(240 * 60, sum(gate.BROWSER_SELECTION_TIMEOUTS[row[0]] for row in gate.browser_selections("browser-contracts")) + 180 + 1200)
@@ -6676,6 +6680,30 @@ GRAPH_R74_WORKFLOW_REVERT = ((12,
   b" steps.phase1-unsealed-upload-admission.outputs.admitted == 'true')\n        timeout-minutes: ${{ matrix."
   b"selection == 'phase1-service47' && 5 || 360 }}\n"))
 
+A6_DEV_G0_POST_SHA256 = '49af2a0e8bf83ba3a036ab9c2285b818d8edbb15b7bba65ea5eb0ad23a04bed7'
+A6_DEV_G0_PRE_SHA256 = 'ab66c8ef0961cc789450de0c7dd26a0c68ec133ccf63af14e9c7b9768a94f0eb'
+A6_DEV_G0_OLD_STEP_BYTES = b'      - name: Always verify source, contracts and formatting\n        run: |\n          set -euo pipefail\n          python -B tooling/source_policy.py\n          python -B tooling/acceptance_policy.py\n          python -B tooling/creative_status_policy.py\n          python -B tooling/public_surface_policy.py\n          cargo fmt --all -- --check\n      - name: Require source-bound complete selection controls\n        if: ${{ !cancelled() }}\n        run: |\n          set -euo pipefail\n          python -B tooling/ci_test_runner.py --repo . --mode both \\\n            --pattern test_ci_canvas_service.py --expected-source "$GITHUB_SHA" \\\n            --report ../v/g0/receipt.json --require-complete --timeout 600\n'
+A6_DEV_G0_NEW_STEP_SHA256 = '2dd991fa7a2eaf5c1f2c4911a31f3432b3b25efec527f3e0b2bb9434a023e325'
+
+def dev_g0_previous_workflow(raw):
+    """Reverse only reviewed developer G0 changes before historical source pins."""
+    if gate.hashlib.sha256(raw).hexdigest() != A6_DEV_G0_POST_SHA256:
+        if b"REQUESTED_G0_SELECTION: " in raw:
+            raise ValueError("developer G0 source differs from reviewed postimage")
+        return raw
+    start = b"      - name: Always verify source, contracts and formatting\n"
+    end = b"      - name: Observe the immutable independent reader controls\n"
+    if raw.count(start) != 1 or raw.count(end) != 1:
+        raise ValueError("developer G0 step markers differ")
+    a = raw.index(start); b = raw.index(end, a)
+    if gate.hashlib.sha256(raw[a:b]).hexdigest() != A6_DEV_G0_NEW_STEP_SHA256:
+        raise ValueError("developer G0 reviewed step bytes differ")
+    restored = raw[:a] + A6_DEV_G0_OLD_STEP_BYTES + raw[b:]
+    if gate.hashlib.sha256(restored).hexdigest() != A6_DEV_G0_PRE_SHA256:
+        raise ValueError("developer G0 changed an unreviewed workflow byte")
+    return restored
+
+
 def graph_previous_workflow(raw):
     """Reverse only the exact Graph addition, preserving every Service47 pin."""
     if gate.hashlib.sha256(raw).hexdigest() != GRAPH_R74_WORKFLOW_SHA256:
@@ -6692,6 +6720,7 @@ def graph_previous_workflow(raw):
 
 def service47_deadline_previous_workflow(raw):
     """Reverse only the exact reviewed deadline delta; keep historical pins."""
+    raw = dev_g0_previous_workflow(raw)
     raw = graph_previous_workflow(raw)
     if gate.hashlib.sha256(raw).hexdigest() != SERVICE47_DEADLINE_WORKFLOW_SHA256:
         return raw
@@ -7708,7 +7737,7 @@ class Phase1Service47Tests(unittest.TestCase):
 
     def test_explicit_workflow_delta_retains_all_historical_pins_and_rejects_drift(self):
         raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
-        raw = graph_previous_workflow(raw)
+        raw = graph_previous_workflow(dev_g0_previous_workflow(raw))
         previous = phase1_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), PHASE1_WORKFLOW_BASE_SHA256)
         self.assertNotIn(b"phase1-service47", previous)
@@ -8050,7 +8079,7 @@ class Phase1Service47DeadlineTests(unittest.TestCase):
 
     def test_workflow_preserves_the_carrier_limit_and_accounts_for_both_uploads(self):
         raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
-        raw = graph_previous_workflow(raw)
+        raw = graph_previous_workflow(dev_g0_previous_workflow(raw))
         self.assertEqual(gate.hashlib.sha256(service47_deadline_previous_workflow(raw)).hexdigest(), PHASE1_WORKFLOW_POST_SHA256)
         real = raw.decode().split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         self.assertIn("matrix.selection == 'phase1-service47' && 110 ||", real)

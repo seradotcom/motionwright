@@ -14073,7 +14073,7 @@
     },
     {
       "path": ".github/workflows/studio-service-verification.yml",
-      "sha256": "ab66c8ef0961cc789450de0c7dd26a0c68ec133ccf63af14e9c7b9768a94f0eb",
+      "sha256": "49af2a0e8bf83ba3a036ab9c2285b818d8edbb15b7bba65ea5eb0ad23a04bed7",
       "preamble_sha256": "8d7bd9bb3d8ae3f6055ebc9613fbf37cdffe3db45db907408563cafe89e06243",
       "evidence_class": "source_real_service_synthetic_browser_and_selected_native_graph",
       "purpose": "Existing closed Studio selections, actual SQLite/service or synthetic browser scopes, and a separately pinned F278 service readback. The cumulative reviewed source also declares Service47, project-authoring-core, branch-combination and a distinct native Graph owner/review/collector selection.",
@@ -14398,7 +14398,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "001229d25bf712364f98e2abd2b8cdd0c32e8dba49d3e266b006caf6ac37fb70",
+          "source_sha256": "c3d1e7121d8f3bab7bffb96679ba6cf75ea5429e751971d17772be35a30815cd",
           "instance_sets": {
             "studio-service-68": [
               {}
@@ -14530,7 +14530,7 @@
               "name": "Always verify source, contracts and formatting",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "1c8f1dc00b5eba9405d5801189c7c140f7bfc0adf2be83af4f2d5b06cb7eff4e",
+              "source_block_sha256": "8ee83c83df6b98b20f9fd32c3490096c73ac74cf1a7122dadbe1540d4abb97ea",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -14538,7 +14538,7 @@
               "name": "Require source-bound complete selection controls",
               "guard": "${{ !cancelled() }}",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c9cc3eb58fca38bf5c95932205934faadc1e45b2eb36447dfea7591eb546f9bb",
+              "source_block_sha256": "d7fddbc9ee17bc84c51aae0cd830ab58a36bec1719e3aea21cee2d2f55ed8262",
               "api_binding": "EXPLICIT_NAME"
             },
             {

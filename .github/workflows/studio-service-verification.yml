@@ -48,20 +48,37 @@ jobs:
           toolchain: '1.98.1'
           components: rustfmt
       - name: Always verify source, contracts and formatting
+        env:
+          REQUESTED_G0_SELECTION: ${{ inputs.selection }}
         run: |
           set -euo pipefail
           python -B tooling/source_policy.py
-          python -B tooling/acceptance_policy.py
-          python -B tooling/creative_status_policy.py
+          # Development integration uses affected source contracts; F retains full G0 assessment.
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" ) ]]; then
+            python -B tooling/acceptance_policy.py
+            python -B tooling/creative_status_policy.py
+          fi
           python -B tooling/public_surface_policy.py
           cargo fmt --all -- --check
       - name: Require source-bound complete selection controls
         if: ${{ !cancelled() }}
+        env:
+          REQUESTED_G0_SELECTION: ${{ inputs.selection }}
         run: |
           set -euo pipefail
-          python -B tooling/ci_test_runner.py --repo . --mode both \
-            --pattern test_ci_canvas_service.py --expected-source "$GITHUB_SHA" \
-            --report ../v/g0/receipt.json --require-complete --timeout 600
+          case "${GITHUB_EVENT_NAME}:${GITHUB_REF}:${REQUESTED_G0_SELECTION}" in
+            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-service47)
+              python -B -m unittest tooling.tests.test_ci_canvas_service.Phase1Service47Tests tooling.tests.test_ci_canvas_service.Phase1Service47DeadlineTests -q
+              ;;
+            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
+              python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests -q
+              ;;
+            *)
+              python -B tooling/ci_test_runner.py --repo . --mode both \
+                --pattern test_ci_canvas_service.py --expected-source "$GITHUB_SHA" \
+                --report ../v/g0/receipt.json --require-complete --timeout 600
+              ;;
+          esac
       - name: Observe the immutable independent reader controls
         if: ${{ !cancelled() }}
         run: |
