@@ -8714,7 +8714,10 @@ def graph_produce(repo, recipient):
     env.pop(GRAPH_TOKEN_ENV, None)
     cargo, node, npm = (shutil.which(name) for name in ("cargo", "node", "npm"))
     require(cargo and node and npm, "Graph real cargo/node/npm unavailable")
-    cargo, node, npm = (str(Path(value).resolve()) for value in (cargo, node, npm))
+    # Rustup selects proxy mode from argv[0]; resolving cargo to rustup
+    # would turn metadata/build into rustup subcommands.
+    cargo = str(Path(cargo).absolute())
+    node, npm = (str(Path(value).resolve()) for value in (node, npm))
     lock = graph_json((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]
     require(lock["repository"] == "https://github.com/seradotcom/semwright"
             and re.fullmatch(r"[0-9a-f]{40}", lock["revision"]), "Graph source-owned immutable SDK pin")
