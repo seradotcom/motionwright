@@ -17,6 +17,19 @@ on:
         options: [deny, allow-one-original]
         default: deny
         required: true
+  # The existing registered Studio workflow can call this branch-local job.
+  # No push event or automatic native effect is introduced.
+  workflow_call:
+    inputs:
+      expected_source_sha:
+        type: string
+        required: true
+      recipient_json:
+        type: string
+        required: true
+      one_original_owner:
+        type: string
+        required: true
 
 permissions:
   contents: read

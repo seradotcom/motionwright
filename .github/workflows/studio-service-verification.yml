@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: authoring-drafts
-        options: [studio-service-68, phase1-service47, phase1-native-graph, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source, branch-combination]
+        options: [studio-service-68, phase1-service47, phase1-native-graph, phase1-native-gn1, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source, branch-combination]
       graph_review_spki_der_base64:
         description: Existing external review recipient RSA3072 public SPKI, required only for phase1-native-graph
         type: string
@@ -54,7 +54,7 @@ jobs:
           set -euo pipefail
           python -B tooling/source_policy.py
           # Development integration uses affected source contracts; F retains full G0 assessment.
-          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" ) ]]; then
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" ) ]]; then
             python -B tooling/acceptance_policy.py
             python -B tooling/creative_status_policy.py
           fi
@@ -72,6 +72,11 @@ jobs:
               ;;
             workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
               python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests -q
+              ;;
+            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)
+              # Source/inert GN1 G0 only: Native effects require the separate
+              # explicit, source-bound one-original-owner reusable job below.
+              python -B -m unittest                 tooling.tests.test_ci_graph_dev_native_startup.SourceIdentityTests                 tooling.tests.test_ci_graph_dev_native_startup.WorkflowBoundaryTests                 tooling.tests.test_ci_graph_dev_native_startup.PrivateOriginalTests.test_owner_stage_marker_is_not_evidence_of_launched_daemon -q
               ;;
             *)
               python -B tooling/ci_test_runner.py --repo . --mode both \
@@ -291,7 +296,7 @@ jobs:
           retention-days: 14
   real-service:
     name: ${{ contains(fromJSON('["browser-contracts","creative-production-browser","review-browser","workflow-preview-browser"]'), matrix.selection) && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ matrix.selection }}
-    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend'
+    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend' && inputs.selection != 'phase1-native-gn1'
     needs: g0
     # Metadata read is job-wide; only the conditional Service47 guard receives its token.
     permissions:
@@ -971,3 +976,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+  # Reuse this registered manual-dispatch workflow to select the branch-local
+  # first-party Native startup. No push, repeated R74, or release acceptance.
+  phase1-native-gn1:
+    name: GN1 one real disposable Native owner (development only, not G2)
+    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'phase1-native-gn1' && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'
+    needs: g0
+    permissions:
+      contents: read
+    uses: ./.github/workflows/graph-native-startup-dev.yml
+    with:
+      expected_source_sha: ${{ github.sha }}
+      recipient_json: ${{ format('{{"spki_der_base64":"{0}","sha256":"{1}"}}', inputs.graph_review_spki_der_base64, inputs.graph_review_spki_sha256) }}
+      one_original_owner: allow-one-original

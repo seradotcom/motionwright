@@ -270,6 +270,27 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("no-sandbox", source)
         self.assertNotIn("synthetic-authority", source)
 
+    def test_registered_studio_gn1_selection_excludes_regular_service_and_g3(self):
+        studio = (Path(__file__).resolve().parents[2] /
+                  ".github/workflows/studio-service-verification.yml").read_text()
+        native = (Path(__file__).resolve().parents[2] /
+                  ".github/workflows/graph-native-startup-dev.yml").read_text()
+        self.assertIn("phase1-native-gn1, criterion-partials", studio)
+        self.assertIn('"$REQUESTED_G0_SELECTION" != "phase1-native-gn1"', studio)
+        self.assertIn(
+            "workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)",
+            studio)
+        self.assertIn("inputs.selection != 'phase1-native-gn1'", studio)
+        self.assertIn("needs: g0", studio)
+        self.assertIn("uses: ./.github/workflows/graph-native-startup-dev.yml", studio)
+        self.assertIn("recipient_json: ${{ format(", studio)
+        self.assertIn("one_original_owner: allow-one-original", studio)
+        self.assertIn("workflow_call:", native)
+        self.assertIn("cancel-in-progress: false", native)
+        self.assertNotIn("\n  push:", native)
+        self.assertNotIn("\n  pull_request:", native)
+        self.assertIn("inputs.one_original_owner == 'allow-one-original'", native)
+
     def test_workflow_is_one_manual_nonretry_effect_and_ciphertext_only(self):
         text = (Path(__file__).resolve().parents[2] /
                 ".github/workflows/graph-native-startup-dev.yml").read_text()
