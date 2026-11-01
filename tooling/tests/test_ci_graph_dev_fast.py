@@ -23,13 +23,19 @@ PRODUCER = b"""def graph_capture_cargo_executable(source, target_root, role):
     return captured
 """
 
-OWNER = b"""def verify_graph_sdk_capture_roster(spec, producer_index):
+OWNER = ('''def verify_graph_sdk_capture_roster(spec, producer_index):
+    """Inert equality of the exact R74 source-captured SDK executable roster.
+
+    The producer already authenticated Cargo paths, retained bytes and roles.
+    Never substitute mutable target/debug aliases for its exclusive snapshots.
+    """
     require(type(spec) is dict and type(producer_index) is dict
             and spec.get("source") == producer_index.get("source"),
             "graph-sdk-capture-source-mismatch")
     source, declared, original = spec.get("source"), spec.get("binaries"), producer_index.get("binaries")
     require(type(source) is dict and type(declared) is dict and type(original) is dict
-            and type(source.get("sdk_root")) is str, "graph-sdk-capture-roster-shape")
+            and type(source.get("sdk_root")) is str,
+            "graph-sdk-capture-roster-shape")
     capture = Path(source["sdk_root"]) / "target" / "mw-r74-captured"
     for role in ("semwright", "semwrightd", "semwright_sandbox"):
         expected, retained = declared.get(role), original.get(role)
@@ -44,7 +50,7 @@ OWNER = b"""def verify_graph_sdk_capture_roster(spec, producer_index):
 
 def load_shared():
     verify_graph_sdk_capture_roster(_OWNER_SPEC, _GRAPH_J1["index"])
-"""
+''').encode("utf-8")
 
 
 def create_git_fixture(root: Path):
@@ -70,6 +76,22 @@ class CaptureRosterContractTests(unittest.TestCase):
         self.assertIn("wrong_captured_root", result["negative_names"])
         self.assertEqual(result["R74_technical_admissions"], 0)
         self.assertEqual(result["actual_native_processes"], 0)
+
+    def test_unreviewed_predicate_rejected_before_any_execution(self):
+        # A changed AST can contain unbounded effects; never execute it even
+        # if its calls look like an allowed subset of the original predicate.
+        malicious = OWNER.replace(
+            b"    return True\n\ndef load_shared():",
+            b"    while True: pass\n    return True\n\ndef load_shared():")
+        self.assertNotEqual(malicious, OWNER)
+        with self.assertRaisesRegex(
+                gate.GraphFastError, "GRAPH_DEV_UNREVIEWED_CAPTURE_PREDICATE"):
+            gate.probe_capture_roster_source(malicious, PRODUCER)
+        other = OWNER.replace(b"    return True", b"    return True # harmless change")
+        # Comment-only changes do not alter semantics/AST and remain allowed.
+        self.assertEqual(
+            gate.probe_capture_roster_source(other, PRODUCER)["status"],
+            "PASS_INERT_ONLY")
 
     def test_fail_closed_if_owner_join_or_capture_root_is_missing(self):
         variants = (

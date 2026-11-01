@@ -11,6 +11,7 @@ import argparse
 import ast
 import copy
 import datetime
+import io
 import hashlib
 import json
 import os
@@ -19,10 +20,16 @@ import re
 import subprocess
 import sys
 import time
+import tokenize
 
 
 SCHEMA = "motionwright.graph-fast-development/1"
 SDK_ROLES = ("semwright", "semwrightd", "semwright_sandbox")
+# Pin the reviewed predicate as semantic Python token names/values.
+# The AST serialization and numeric token IDs vary across Python 3.11/3.14.
+# Comments/blank lines may change, but actual Python operators or statements
+# cannot change before an explicit code/source review.
+CAPTURE_ROSTER_TOKENS_SHA256 = "e039f97125686b89223077d2b4284a2efb8cc0190c7d4650c03cb8ea7b3181e8"
 MANDATORY_PYTHON = (
     "test_graph_owner_phase_literal_from_nested_playwright_aggregate_only",
     "test_graph_owner_phase_nested_malformed_or_excess_depth_fails_closed",
@@ -147,7 +154,8 @@ def probe_capture_roster_source(owner: bytes, producer: bytes) -> dict:
     No subprocess, native owner, SDK executable or filesystem receipt is opened
     by the predicate.  The synthetic test roots and fake hashes are not grants.
     """
-    owner_tree = ast.parse(owner.decode("utf-8"))
+    owner_text = owner.decode("utf-8").replace("\r\n", "\n")
+    owner_tree = ast.parse(owner_text)
     producer_tree = ast.parse(producer.decode("utf-8"))
     capture = _function(producer_tree, "graph_capture_cargo_executable")
     values = {n.value for n in ast.walk(capture)
@@ -159,6 +167,18 @@ def probe_capture_roster_source(owner: bytes, producer: bytes) -> dict:
                     for n in ast.walk(capture))
     require(role_copy, "GRAPH_DEV_PRODUCER_ROLE_CAPTURE_DRIFT")
     predicate = _function(owner_tree, "verify_graph_sdk_capture_roster")
+    predicate_source = ast.get_source_segment(owner_text, predicate)
+    require(predicate_source is not None, "GRAPH_DEV_CAPTURE_SOURCE_UNAVAILABLE")
+    reviewed_tokens = [
+        (tokenize.tok_name[token.type], token.string)
+        for token in tokenize.generate_tokens(io.StringIO(predicate_source).readline)
+        if token.type not in {tokenize.COMMENT, tokenize.NL, tokenize.ENDMARKER}
+    ]
+    predicate_sha = hashlib.sha256(
+        json.dumps(reviewed_tokens, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+    require(predicate_sha == CAPTURE_ROSTER_TOKENS_SHA256,
+            "GRAPH_DEV_UNREVIEWED_CAPTURE_PREDICATE")
     loading = _function(owner_tree, "load_shared")
     invokes = [n for n in ast.walk(loading) if isinstance(n, ast.Call)
                and isinstance(n.func, ast.Name)
@@ -366,7 +386,7 @@ def execute(repo: Path, base: str, mode: str, *, expected_source: str = "",
         capture = probe_capture_roster_source(
             (repo / SOURCE_FILE).read_bytes(), (repo / PRODUCER_FILE).read_bytes())
         report["first_case"]["inert_capture_roster"] = capture
-    except (GraphFastError, UnicodeError, SyntaxError, OSError, ValueError) as error:
+    except (GraphFastError, UnicodeError, SyntaxError, tokenize.TokenError, OSError, ValueError) as error:
         report["status"] = "FAIL_FIRST_CASE_SOURCE_INTAKE"
         report["first_failure"] = {
             "check": "graph-source-review SOURCE_INTAKE inert producer/owner join",
