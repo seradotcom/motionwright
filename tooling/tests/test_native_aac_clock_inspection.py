@@ -378,5 +378,147 @@ class AacClockInspectionTests(unittest.TestCase):
         self.assertEqual(value, before)
 
 
+
+
+def presentation_fixture(*, end_discard=False, source_count=4800, mp4_changes=None):
+    """Synthetic MP4 tables and PCM geometry only; no encoded AAC or G2 proof."""
+    if __package__:
+        from .test_native_mp4_aac_presentation import fixture as mp4_fixture, box
+    else:
+        from test_native_mp4_aac_presentation import fixture as mp4_fixture, box
+    assert source_count % 48 == 0
+    packet_count = (source_count + 1024 + 1023) // 1024
+    final_delta = source_count + 1024 - (packet_count - 1) * 1024
+    padding = 1024 - final_delta
+    source_pcm = b"".join(struct.pack(
+        "<hh", round(8000 * math.sin(2 * math.pi * 431 * i / 48000)),
+        round(9000 * math.sin(2 * math.pi * 713 * i / 48000)))
+        for i in range(source_count))
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as wav:
+        wav.setnchannels(2); wav.setsampwidth(2); wav.setframerate(48000)
+        wav.writeframes(source_pcm)
+    params = dict(segment=source_count // 48, movie_duration=source_count // 48,
+                  media_duration=source_count + 1024, packet_count=packet_count,
+                  counts=((packet_count - 1, 1024), (1, final_delta)))
+    params.update(mp4_changes or {})
+    master = mp4_fixture(**params) + box(b"mdat", bytes(packet_count * 128 + 1024))
+    header = dict(index=1, codec_name="aac", codec_type="audio", sample_rate="48000",
+        channels=2, time_base="1/48000", start_pts=0, start_time=seconds(0),
+        duration_ts=source_count, duration=seconds(source_count), nb_frames=str(packet_count),
+        nb_read_packets=str(packet_count), initial_padding=0)
+    packets, manual, default = [], [], []
+    for index in range(packet_count):
+        point, position = (index - 1) * 1024, 512 + index * 128
+        duration = final_delta if index == packet_count - 1 else 1024
+        packet = dict(codec_type="audio", stream_index=1, pts=point, dts=point,
+            duration=duration, pts_time=seconds(point), dts_time=seconds(point),
+            duration_time=seconds(duration), pos=str(position), size="96",
+            flags="KD_" if index == 0 else "K__")
+        if index == 0 or (end_discard and index == packet_count - 1):
+            packet["side_data_list"] = [dict(side_data_type="Skip Samples",
+                skip_samples=1024 if index == 0 else 0,
+                discard_padding=padding if index != 0 else 0, skip_reason=0, discard_reason=0)]
+        frame = dict(media_type="audio", stream_index=1, pts=point, nb_samples=1024,
+            channels=2, pkt_pos=str(position), pkt_size="96", sample_fmt="fltp",
+            best_effort_timestamp=point, duration=duration)
+        manual.append(frame)
+        if index:
+            shown = dict(frame)
+            if end_discard and index == packet_count - 1:
+                shown["nb_samples"] = final_delta
+            default.append(shown)
+        packets.append(packet)
+    artifacts = dict(original_wav=stream.getvalue(), master=master,
+        packets=packed(dict(packets=packets, streams=[header])),
+        decoded_pcm=source_pcm + (b"" if end_discard else bytes(padding * 4)),
+        default_frames=packed(dict(frames=default, streams=[header])),
+        manual_frames=packed(dict(frames=manual, streams=[header])))
+    binding = {role: desc(blob) for role, blob in artifacts.items()}
+    binding.update(schema=clock.BINDING_SCHEMA, presentation_start={"num": 0, "den": 1})
+    return dict(binding=binding, **artifacts)
+
+
+class AacPresentationReconciliationTests(unittest.TestCase):
+    def test_container_tail_is_reconciled_without_replacing_legacy_failure(self):
+        value = presentation_fixture()
+        historical_before = packed(clock.inspect_originals(**value))
+        self.assertEqual(json.loads(historical_before)["status"], "FAIL")
+        result = clock.inspect_presentation_originals(**value)
+        self.assertEqual(result["status"], "CONSISTENT_WITHIN_SCOPE")
+        self.assertEqual(result["historical_clock_report_status"], "FAIL")
+        self.assertFalse(result["historical_clock_report_replaced"])
+        self.assertEqual(result["source_sample_frames"], 4800)
+        self.assertEqual(result["retained_decoded_sample_frames"], 5120)
+        self.assertEqual(result["unpresented_access_unit_tail_samples"], 320)
+        self.assertEqual(result["observed_decoder_trimming"]["observed_discard_flag_samples"], 1024)
+        self.assertEqual(packed(clock.inspect_originals(**value)), historical_before)
+        for key in ("input_bytes_changed", "media_reencoded_or_trimmed", "native_execution_attested",
+                    "native_operation_started", "physical_AV_master_acceptance", "release_authorized"):
+            self.assertFalse(result[key])
+
+    def test_observed_terminal_discard_is_supported_without_double_subtraction(self):
+        value = presentation_fixture(end_discard=True)
+        result = clock.inspect_presentation_originals(**value)
+        self.assertEqual(result["retained_decoded_sample_frames"], 4800)
+        self.assertEqual(result["retained_pcm_samples_outside_presentation"], 0)
+        self.assertEqual(result["unpresented_access_unit_tail_samples"], 320)
+        self.assertEqual(result["observed_decoder_trimming"]["observed_removed_end_samples"], 320)
+
+    def test_inert_elst_stts_and_sample_count_changes_are_rejected(self):
+        for changes in (dict(priming=1025),
+                        dict(counts=((5, 1024), (1, 703))),
+                        dict(packet_count=7)):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(clock.AacClockRejected, "presentation-container-"):
+                    clock.inspect_presentation_originals(**presentation_fixture(mp4_changes=changes))
+
+    def test_packet_document_count_cannot_override_original_container(self):
+        value = presentation_fixture()
+        mutate(value, "packets", lambda document: document["packets"].pop())
+        with self.assertRaisesRegex(clock.AacClockRejected, "presentation-original-packet"):
+            clock.inspect_presentation_originals(**value)
+
+    def test_missing_either_frame_mode_is_not_promoted(self):
+        for role in ("default_frames", "manual_frames"):
+            with self.subTest(role=role):
+                value = presentation_fixture()
+                omit(value, role)
+                with self.assertRaisesRegex(clock.AacClockRejected, "both-original-frame-modes"):
+                    clock.inspect_presentation_originals(**value)
+
+    def test_unexplained_pcm_geometry_is_rejected_without_cutting_samples(self):
+        value = presentation_fixture()
+        value["decoded_pcm"] += bytes(4)
+        value["binding"]["decoded_pcm"] = desc(value["decoded_pcm"])
+        with self.assertRaisesRegex(clock.AacClockRejected, "presentation-container-"):
+            clock.inspect_presentation_originals(**value)
+
+    def test_source_content_failure_is_not_excused_by_container_padding(self):
+        value = presentation_fixture()
+        value["decoded_pcm"] = bytes(len(value["decoded_pcm"]))
+        value["binding"]["decoded_pcm"] = desc(value["decoded_pcm"])
+        with self.assertRaisesRegex(clock.AacClockRejected, "source-content-not-verified"):
+            clock.inspect_presentation_originals(**value)
+
+    def test_default_frame_gap_and_manual_packet_mismatch_are_rejected(self):
+        value = presentation_fixture()
+        mutate(value, "default_frames",
+               lambda document: document["frames"][1].update(pts=1025, best_effort_timestamp=1025))
+        with self.assertRaisesRegex(clock.AacClockRejected, "default-frame-geometry"):
+            clock.inspect_presentation_originals(**value)
+        value = presentation_fixture()
+        mutate(value, "manual_frames",
+               lambda document: document["frames"][1].update(pkt_pos="641"))
+        with self.assertRaisesRegex(clock.AacClockRejected, "decode-trimming-not-reconciled"):
+            clock.inspect_presentation_originals(**value)
+
+    def test_nonzero_source_origin_remains_explicitly_unsupported(self):
+        value = presentation_fixture()
+        value["binding"]["presentation_start"] = {"num": 1, "den": 48000}
+        with self.assertRaisesRegex(clock.AacClockRejected, "nonzero-origin-unsupported"):
+            clock.inspect_presentation_originals(**value)
+
+
 if __name__ == "__main__":
     unittest.main()

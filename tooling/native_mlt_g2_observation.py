@@ -7,6 +7,7 @@ Its private receipts may contain owner paths and must not be published wholesale
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -324,6 +325,59 @@ def argv_bytes(raw: bytes) -> list[str]:
     return [value.decode("utf-8") for value in raw[:-1].split(b"\0")]
 
 
+def host_owned_output(cwd: str) -> str:
+    """One operation-owned child of the already granted output namespace."""
+    prefix="/workspace/output/";suffix=".raw-original-work"
+    require(type(cwd) is str and cwd.startswith(prefix) and cwd.endswith(suffix),
+            "g2_host_consumer_cwd_is_not_private_work")
+    output=cwd[len(prefix):-len(suffix)]
+    require(0 < len(output) <= 160 and output.endswith(".mp4")
+            and output[0].isascii() and output[0].isalnum()
+            and all(ch.isascii() and (ch.isalnum() or ch in "._-") for ch in output)
+            and output not in (".",".."),
+            "g2_host_owned_work_output_name")
+    require(loaded.owned_output_work_cwd(output)==cwd,"g2_host_owned_work_output_name")
+    return output
+
+
+@contextlib.contextmanager
+def original_consumer_work(proc: Path, cwd: str, output_root: Path, contract: dict):
+    """Hold both sides of an owned output mapping while witnessing its writer."""
+    fds=[]
+    flags=os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW
+    def own(fd):
+        fds.append(fd)
+        return fd
+    try:
+        if PRIVATE_WORK.fullmatch(cwd) is not None:
+            work=own(namespace_path(proc,cwd,directory=True))
+            yield work,"legacy-private-tmp",None,lambda:None
+            return
+        output=host_owned_output(cwd)
+        relative=output+".raw-original-work"
+        owner=own(os.open(output_root,flags))
+        namespace=own(namespace_path(proc,"/workspace/output",directory=True))
+        expected=tuple(contract["output_identity"])
+        require(node_identity(os.fstat(owner))==node_identity(os.fstat(namespace))==expected
+                ==node_identity(output_root.lstat()),"g2_host_owned_output_grant_changed")
+        local=own(os.open(relative,flags,dir_fd=owner))
+        work=own(os.open(relative,flags,dir_fd=namespace))
+        identity=node_identity(os.fstat(work))
+        require(identity==node_identity(os.fstat(local)),"g2_host_owned_work_mapping_changed")
+        def recheck():
+            require(node_identity(os.fstat(owner))==node_identity(os.fstat(namespace))==expected
+                    ==node_identity(output_root.lstat()),"g2_host_owned_output_grant_changed")
+            require(node_identity(os.fstat(work))==node_identity(os.fstat(local))==identity
+                    ==node_identity(os.stat(relative,dir_fd=owner,follow_symlinks=False))
+                    ==node_identity(os.stat(relative,dir_fd=namespace,follow_symlinks=False))
+                    ==node_identity((proc/"cwd").stat()),"g2_host_owned_work_mapping_changed")
+        recheck()
+        yield work,"owned-output-original",output,recheck
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
 def host_tool_consumer(raw: bytes, cwd: str) -> str | None:
     argv = argv_bytes(raw)
     consumers = [argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "-consumer"]
@@ -334,15 +388,16 @@ def host_tool_consumer(raw: bytes, cwd: str) -> str | None:
     if selected.startswith("avformat:/"):
         output = selected[len("avformat:"):]
         logical_cwd, separator, basename = output.rpartition("/")
-        require(separator and basename == "partial.mp4"
-                and PRIVATE_WORK.fullmatch(logical_cwd) is not None,
+        require(separator and basename == "partial.mp4",
                 "g2_host_consumer_cwd_is_not_private_work")
     else:
-        require(PRIVATE_WORK.fullmatch(cwd) is not None,
-                "g2_host_consumer_cwd_is_not_private_work")
         logical_cwd, output = cwd, cwd + "/partial.mp4"
+    if PRIVATE_WORK.fullmatch(logical_cwd) is None:
+        host_owned_output(logical_cwd)
     require(argv[0] == HOST_MELT, "g2_host_consumer_executable_argument")
-    loaded.verified_melt_cmdline(raw, output, relative_cwd=logical_cwd)
+    loaded.verified_melt_cmdline(raw, output, relative_cwd=logical_cwd,
+        **({"owned_output_path":host_owned_output(logical_cwd)}
+           if PRIVATE_WORK.fullmatch(logical_cwd) is None else {}))
     return output
 
 
@@ -501,63 +556,73 @@ class NamespaceMaster:
         require(node_identity(mapped_output) == tuple(contract["output_identity"])
                 == node_identity(output_root.lstat()),
                 "g2_host_output_mount_not_original_owner")
-        work = namespace_directory(proc, cwd)
-        require(work.st_uid == os.getuid() and stat.S_IMODE(work.st_mode) == 0o700
-                and node_identity(work) == node_identity((proc / "cwd").stat()),
-                "g2_host_private_work_identity")
-        fd = namespace_path(proc, output)
-        try:
-            opened = os.fstat(fd)
-            require(stat.S_ISREG(opened.st_mode) and opened.st_uid == os.getuid()
-                    and not stat.S_IMODE(opened.st_mode) & 0o022
-                    and opened.st_nlink == 1 and 0 <= opened.st_size <= MAX_NATIVE_OUTPUT,
-                    "g2_host_native_output_not_private_regular")
-            writers = matching_write_descriptors(proc, opened)
-            runner_path = parent / "root" / "plugin" / "bin"
-            require((parent / "root" / "plugin").is_dir()
-                    and not (parent / "root" / "plugin").is_symlink(),
-                    "g2_host_runtime_namespace_directory")
-            with loaded._verified_binary(runner_path, contract["runner_sha256"],
-                                         loaded.MAX_MELT) as runner:
-                require(node_identity((parent / "exe").stat()) == node_identity(runner["stat"])
-                        and runner["stat"].st_uid == os.getuid()
-                        and not stat.S_IMODE(runner["stat"].st_mode) & 0o022,
-                        "g2_host_runtime_parent_executable")
-                proof = loaded.inspect_live_original(
-                    pid, MELT, melt_sha, admission.INSTALLED, REPAIRED_MODULE_SHA256,
-                    output, host_sealed_melt=True,
-                )
-                require(process_identity(pid) == (parent_pid, start)
-                        and process_identity(parent_pid)[1] == parent_start
-                        and descendant_of(pid, ancestor)
-                        and node_identity((parent / "exe").stat()) == node_identity(runner["stat"])
-                        and node_identity((proc / "root").stat()) == root_identity
-                        and node_identity((proc / "cwd").stat()) == node_identity(work)
-                        and all(os.readlink(proc / "ns" / name) == value
-                                for name, value in namespace.items()),
-                        "g2_host_process_context_changed")
-                require(matching_write_descriptors(proc, opened),
-                        "g2_host_native_output_writer_changed")
-                receipt = {
-                    "pid": pid, "process_start_ticks": start,
-                    "daemon_pid": ancestor[0], "daemon_start_ticks": ancestor[1],
-                    "output_path": output, "live_module": proof,
-                    "runtime_parent": {"pid": parent_pid, "process_start_ticks": parent_start,
-                                       "sha256": contract["runner_sha256"],
-                                       "file_identity": list(node_identity(runner["stat"]))},
-                    "namespace": namespace, "namespace_root_identity": list(root_identity),
-                    "private_cwd": cwd, "observed_cwd_link": observed_cwd,
-                    "private_cwd_identity": list(node_identity(work)),
-                    "owner_output_identity": list(node_identity(mapped_output)),
-                    "original_output_file_identity": list(node_identity(opened)),
-                    "original_melt_write_descriptors": writers,
-                    "owner_contract": contract,
-                    "publication_binding": "PENDING_ORIGINAL_SOURCE_BYTES",
-                }
-            return cls((pid, start), fd, opened, receipt)
-        except BaseException:
-            os.close(fd)
-            raise
+        with original_consumer_work(proc,cwd,output_root,contract) as (work_fd,work_kind,owned_output,recheck):
+            work=os.fstat(work_fd)
+            require(work.st_uid == os.getuid() and stat.S_IMODE(work.st_mode) == 0o700
+                    and node_identity(work) == node_identity((proc / "cwd").stat()),
+                    "g2_host_private_work_identity")
+            # Read relative to the held work descriptor, including the legacy
+            # namespace. A replacement pathname cannot redirect this read.
+            fd=os.open("partial.mp4",os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK|os.O_NOFOLLOW,
+                       dir_fd=work_fd)
+            try:
+                opened = os.fstat(fd)
+                require(stat.S_ISREG(opened.st_mode) and opened.st_uid == os.getuid()
+                        and not stat.S_IMODE(opened.st_mode) & 0o022
+                        and opened.st_nlink == 1 and 0 <= opened.st_size <= MAX_NATIVE_OUTPUT,
+                        "g2_host_native_output_not_private_regular")
+                writers = matching_write_descriptors(proc, opened)
+                runner_path = parent / "root" / "plugin" / "bin"
+                require((parent / "root" / "plugin").is_dir()
+                        and not (parent / "root" / "plugin").is_symlink(),
+                        "g2_host_runtime_namespace_directory")
+                with loaded._verified_binary(runner_path, contract["runner_sha256"],
+                                             loaded.MAX_MELT) as runner:
+                    require(node_identity((parent / "exe").stat()) == node_identity(runner["stat"])
+                            and runner["stat"].st_uid == os.getuid()
+                            and not stat.S_IMODE(runner["stat"].st_mode) & 0o022,
+                            "g2_host_runtime_parent_executable")
+                    proof = loaded.inspect_live_original(
+                        pid, MELT, melt_sha, admission.INSTALLED, REPAIRED_MODULE_SHA256,
+                        output, host_sealed_melt=True,
+                        **({"owned_output_path":owned_output,"owned_work_fd":work_fd}
+                           if owned_output is not None else {}),
+                    )
+                    require(process_identity(pid) == (parent_pid, start)
+                            and process_identity(parent_pid)[1] == parent_start
+                            and descendant_of(pid, ancestor)
+                            and node_identity((parent / "exe").stat()) == node_identity(runner["stat"])
+                            and node_identity((proc / "root").stat()) == root_identity
+                            and node_identity((proc / "cwd").stat()) == node_identity(work)
+                            and all(os.readlink(proc / "ns" / name) == value
+                                    for name, value in namespace.items()),
+                            "g2_host_process_context_changed")
+                    require(matching_write_descriptors(proc, opened),
+                            "g2_host_native_output_writer_changed")
+                    require(node_identity(os.stat("partial.mp4",dir_fd=work_fd,follow_symlinks=False))
+                            ==node_identity(opened),"g2_host_native_output_path_changed")
+                    recheck()
+                    receipt = {
+                        "pid": pid, "process_start_ticks": start,
+                        "daemon_pid": ancestor[0], "daemon_start_ticks": ancestor[1],
+                        "output_path": output, "live_module": proof,
+                        "runtime_parent": {"pid": parent_pid, "process_start_ticks": parent_start,
+                                           "sha256": contract["runner_sha256"],
+                                           "file_identity": list(node_identity(runner["stat"]))},
+                        "namespace": namespace, "namespace_root_identity": list(root_identity),
+                        "private_cwd": cwd, "observed_cwd_link": observed_cwd,
+                        "private_cwd_identity": list(node_identity(work)),
+                        "owner_output_identity": list(node_identity(mapped_output)),
+                        "original_output_file_identity": list(node_identity(opened)),
+                        "original_melt_write_descriptors": writers,
+                        "owner_contract": contract,
+                        "original_work_kind":work_kind,"original_work_output":owned_output,
+                        "publication_binding": "PENDING_ORIGINAL_SOURCE_BYTES",
+                    }
+                return cls((pid, start), fd, opened, receipt)
+            except BaseException:
+                os.close(fd)
+                raise
 
     def retain(self, evidence: Path) -> None:
         if self.snapshot_attempted:
@@ -586,6 +651,10 @@ class NamespaceMaster:
                 and snapshot["bytes"] == self.private_snapshot["bytes"]
                 and raw == published, "g2_original_consumer_bytes_differ_from_published_master")
         output_root = Path(self.receipt["owner_contract"]["output_path"])
+        if self.receipt.get("original_work_kind")=="owned-output-original":
+            require(master.resolve(strict=True).parent==output_root
+                    and master.name==self.receipt["original_work_output"],
+                    "g2_host_owned_work_publication_mismatch")
         require(output_root in master.resolve(strict=True).parents
                 and self.receipt["owner_contract"] == host_tool_contract(output_root),
                 "g2_host_source_contract_changed_after_native_result")
@@ -1160,6 +1229,77 @@ def hybrid_master_probe_binding(session, original, capture, produced):
     return binding
 
 
+# A private causal projection with finite codes. No process bytes, paths,
+# environment values or exception messages cross this boundary.
+LIVE_WITNESS_REASON_PATH="original-live-module-reason.json"
+LIVE_WITNESS_REASON_MAXIMUM=8192
+LIVE_WITNESS_CODES=(
+    "g2_original_live_module_not_uniquely_witnessed",
+    "g2_observed_consumer_is_not_native_result_artifact",
+    "g2_original_consumer_output_not_retained","g2_original_melt_still_live_after_result",
+    "g2_original_consumer_bytes_differ_from_published_master",
+    "g2_host_consumer_ambiguous","g2_host_consumer_cwd_is_not_private_work",
+    "g2_host_consumer_executable_argument","g2_host_owned_work_output_name",
+    "g2_host_owned_output_grant_changed","g2_host_owned_work_mapping_changed",
+    "g2_host_owned_work_publication_mismatch","g2_host_native_output_path_changed",
+    "g2_host_native_ancestry_or_uid","g2_host_source_contract_changed",
+    "g2_host_runtime_parent_not_original","g2_host_runtime_namespace_mismatch",
+    "g2_host_runtime_root_mismatch","g2_host_output_mount_not_original_owner",
+    "g2_host_private_work_identity","g2_host_native_output_not_private_regular",
+    "g2_original_melt_open_output_not_observed","g2_host_runtime_namespace_directory",
+    "g2_host_runtime_parent_executable","g2_host_process_context_changed",
+    "g2_host_native_output_writer_changed","g2_multiple_original_av_consumers",
+    "g2_native_process_identity_changed","g2_host_candidate_descriptor_budget",
+    "g2_host_process_identity_changed_before_capture",
+    "g2_original_consumer_snapshot_failed","g2_host_source_contract_changed_after_native_result",
+    "g2_original_consumer_differs_from_native_result_ack",
+    "g2_original_observer_missing","g2_observer_did_not_finish",
+    "owned_melt_output_name_not_admitted","owned_melt_work_descriptor_required",
+    "owned_melt_work_descriptor_namespace_changed","owned_melt_work_arguments_invalid",
+    "owned_melt_work_namespace_changed","host_sealed_melt_private_output_changed",
+    "host_sealed_melt_cwd_namespace_changed","host_sealed_melt_cwd_changed_during_observation",
+    "unclassified-verification-error")
+LIVE_WITNESS_STAGES=(
+    "original_live_module_witness","executable_unreadable","executable_mismatch",
+    "process_uid","daemon_ancestry","consumer_selection","loaded_module_attestation",
+    "host_sealed_consumer","observer_start","observer_watch","original_consumer_snapshot","other")
+LIVE_WITNESS_TYPES=("G2Unverified","LoadedModuleUnverified","OSError","ValueError","other")
+
+
+def minimal_witness_failure(error, observer, *, master_sha256, master_bytes):
+    require(type(master_sha256) is str and re.fullmatch(r"[0-9a-f]{64}",master_sha256)
+            and type(master_bytes) is int and 0 < master_bytes <= MAX_NATIVE_OUTPUT,
+            "g2_witness_reason_master_binding")
+    def bounded(stage,kind,code):
+        return {"stage":stage if stage in LIVE_WITNESS_STAGES else "other",
+                "exception_type":kind if kind in LIVE_WITNESS_TYPES else "other",
+                "code":code if code in LIVE_WITNESS_CODES else "unclassified-verification-error"}
+    kind=("OSError" if isinstance(error,OSError) else type(error).__name__)
+    original=bounded("original_live_module_witness",kind,str(error))
+    reasons=[]
+    if observer is not None:
+        for event in observer.events:
+            detail=event.get("error")
+            if type(detail) is not dict:
+                continue
+            row=bounded(event.get("stage"),detail.get("exception_type"),detail.get("message"))
+            if row not in reasons:
+                reasons.append(row)
+            if len(reasons)==16:
+                break
+    value={"schema":"motionwright.native.mlt-live-witness-reason/1",
+           "master_sha256":master_sha256,"master_bytes":master_bytes,
+           "failure":original,"first_observer_failures":reasons,
+           "observer_present":observer is not None,
+           "raw_exception_text_included":False,"raw_proc_included":False,
+           "raw_environment_included":False,"diagnostic_history_complete_claimed":False,
+           "native_terminal_inferred":False,"module_attestation_inferred":False,
+           "native_operation_retried":False,"physical_acceptance":False}
+    require(len((json.dumps(value,sort_keys=True,indent=2)+"\n").encode())<=LIVE_WITNESS_REASON_MAXIMUM,
+            "g2_witness_reason_budget")
+    return value
+
+
 class G2Session:
     def __init__(self, inputs: dict, evidence_dir: Path, wav: bytes, provenance: dict):
         self.inputs = inputs
@@ -1373,6 +1513,9 @@ class G2Session:
                     "observer_diagnostic_sha256": self.observer_diagnostic_sha256,
                     "native_terminal_retained": True, "native_operation_retried": False,
                 })
+                new_json(self.evidence_dir / LIVE_WITNESS_REASON_PATH,
+                    minimal_witness_failure(error,self.observer,
+                        master_sha256=expected_sha,master_bytes=expected_size))
             except Exception as custody_error:
                 self.observer_error_details["live_module_error_custody"] = bounded_error(custody_error)
                 self.secondary("live_module_error_custody")

@@ -337,5 +337,85 @@ class ClockCustodyTests(unittest.TestCase):
                     self.verify(value)
 
 
+
+
+def synthetic_presentation_carrier():
+    """Inert G0 document fixture; no runner, decoder, filesystem or authority."""
+    if __package__:
+        from .test_native_aac_clock_inspection import presentation_fixture
+    else:
+        from test_native_aac_clock_inspection import presentation_fixture
+    sample = presentation_fixture(source_count=52800)
+    document = timeline()
+    identity = custody.desc(custody.packed(document))
+    anchor = custody.derive_anchor(document, identity, phase="original", scenario="repaired-g2")
+    captures = []
+    for mode in custody.MODES:
+        raw = sample[mode + "_frames"]
+        terminal = dict(argv=custody.frame_argv("/synthetic/ffprobe", "/synthetic/master.mp4", mode),
+            timeout_seconds=60, exit_code=0, deadline_exceeded=False, error_class=None,
+            automatic_retry=False, stdout=custody.desc(raw), stderr=custody.desc(b""),
+            stdout_original_included=True, stderr_original_included=False,
+            terminal_captured_before_json_parse=True)
+        captures.append(dict(mode=mode, terminal=terminal, runner_failed=False,
+                             original_stdout=custody.encoded(raw, custody.MAX_PROBE)))
+    report = custody.clock.inspect_originals(**sample)
+    value = dict(schema=custody.SCHEMA, phase="original", scenario="repaired-g2", state="CAPTURED",
+        anchor=anchor, original_wav=custody.desc(sample["original_wav"]), master=custody.desc(sample["master"]),
+        decoded_pcm=custody.desc(sample["decoded_pcm"]), ffprobe=custody.desc(b"synthetic tool identity"),
+        ffprobe_path="/synthetic/ffprobe", master_path="/synthetic/master.mp4",
+        master_unchanged_after_observation=True, ffprobe_unchanged_after_observation=True,
+        packets=custody.encoded(sample["packets"], custody.MAX_PROBE), captures=captures,
+        report=custody.encoded(custody.packed(report), custody.MAX_REPORT), report_status=report["status"],
+        original_capture_authentication="EXTERNAL_CUSTODY_REQUIRED",
+        original_pcm_decoder_equivalence="NOT_ATTESTED_BY_THIS_CAPTURE",
+        native_operation_started=False, native_operation_retried=False,
+        packet_probe_reinvoked=False, pcm_decoder_reinvoked=False, media_reencoded_or_trimmed=False,
+        physical_AV_master_acceptance=False, human_acceptance=False, release_authorized=False)
+    args = dict(phase="original", scenario="repaired-g2", source_document=document,
+        source_identity=identity, original_wav=sample["original_wav"], master=sample["master"],
+        decoded_pcm=sample["decoded_pcm"], packet_identity=custody.desc(sample["packets"]))
+    return value, args
+
+
+class PresentationCarrierReadbackTests(unittest.TestCase):
+    def test_additional_readback_binds_exact_original_carrier_and_keeps_FAIL(self):
+        value, args = synthetic_presentation_carrier()
+        original = custody.packed(value)
+        report = custody.decoded(value["report"], custody.MAX_REPORT)
+        result = custody.verify_selected_presentation_carrier(original, **args)
+        self.assertEqual(value["report_status"], "FAIL")
+        self.assertEqual(result["historical_clock_report_status"], "FAIL")
+        self.assertEqual(result["original_historical_report"], custody.desc(report))
+        self.assertEqual(result["original_carrier"], custody.desc(original))
+        self.assertEqual(result["mp4_presentation"]["unpresented_final_access_unit_samples"], 448)
+        self.assertEqual(custody.packed(value), original)
+        self.assertFalse(result["original_carrier_replaced"])
+        self.assertFalse(result["physical_AV_master_acceptance"])
+
+    def test_historical_report_or_terminal_cannot_be_replaced_by_new_readback(self):
+        for field in ("report", "argv"):
+            with self.subTest(field=field):
+                value, args = synthetic_presentation_carrier()
+                if field == "report":
+                    altered = json.loads(custody.decoded(value["report"], custody.MAX_REPORT))
+                    altered["status"] = "CONSISTENT_WITHIN_SCOPE"
+                    value["report"] = custody.encoded(custody.packed(altered), custody.MAX_REPORT)
+                    value["report_status"] = altered["status"]
+                else:
+                    value["captures"][0]["terminal"]["argv"].insert(1, "-discard-padding")
+                with self.assertRaises((ValueError, AssertionError)):
+                    custody.verify_selected_presentation_carrier(custody.packed(value), **args)
+
+    def test_changed_original_or_missing_packet_identity_stays_rejected(self):
+        value, args = synthetic_presentation_carrier()
+        changed = dict(args, master=args["master"] + b"extra")
+        with self.assertRaisesRegex(ValueError, "clock-selected-original-changed"):
+            custody.verify_selected_presentation_carrier(custody.packed(value), **changed)
+        changed = dict(args, packet_identity={"bytes": 1, "sha256": "0" * 64})
+        with self.assertRaisesRegex(ValueError, "clock-packet-original"):
+            custody.verify_selected_presentation_carrier(custody.packed(value), **changed)
+
+
 if __name__ == "__main__":
     unittest.main()
