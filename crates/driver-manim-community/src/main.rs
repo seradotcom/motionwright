@@ -2001,12 +2001,26 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn runtime_output_custody_failure_does_not_replace_the_original_error_or_leak_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+
         let work = tempfile::tempdir().unwrap();
+        // The custodian requires a canonical, strictly private owner root.
+        // Make that fixture precondition explicit before testing a collision.
+        let private_root = work.path().canonicalize().unwrap();
+        fs::set_permissions(&private_root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            fs::symlink_metadata(&private_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
         let token = "0123456789abcdef0123456789abcdef";
         let job_ref = format!("manim-{token}");
         let mut job = original_failure_job();
         job.source_file = format!("mw_{token}.py");
-        let occupied = work.path().join(format!("mw_{token}.runtime-custody"));
+        let occupied = private_root.join(format!("mw_{token}.runtime-custody"));
         fs::create_dir(&occupied).unwrap();
         fs::write(occupied.join("keep.bin"), b"original custody").unwrap();
         let output = ToolExecutionOutput {
@@ -2014,7 +2028,7 @@ mod tests {
             stdout: b"private stdout sentinel".to_vec(),
             stderr: b"private stderr sentinel".to_vec(),
         };
-        retain_runtime_tool_failure(work.path(), &job_ref, &mut job, &output);
+        retain_runtime_tool_failure(&private_root, &job_ref, &mut job, &output);
         assert_eq!(job.phase, JobPhase::Failed);
         let original = job.original_error.as_ref().unwrap();
         assert_eq!(original.code, ErrorCode::BackendFailed);
@@ -2023,11 +2037,10 @@ mod tests {
         assert!(original.message.contains("exited with code 2"));
         assert!(!original.message.contains("custody_secondary"));
         assert!(original.native_diagnostic.as_ref().unwrap().is_valid());
+        let secondary = job.diagnostic.as_ref().unwrap();
         assert!(
-            job.diagnostic
-                .as_ref()
-                .unwrap()
-                .contains("runtime_output_reservation")
+            secondary.contains("runtime_output_reservation"),
+            "unexpected bounded custody result: {secondary}"
         );
         assert_eq!(
             job.source_custody_error.as_deref(),
@@ -2037,7 +2050,7 @@ mod tests {
         let public = serde_json::to_string(&job_view(&job_ref, &job)).unwrap();
         assert!(!public.contains("private stdout sentinel"));
         assert!(!public.contains("private stderr sentinel"));
-        assert!(!public.contains(work.path().to_str().unwrap()));
+        assert!(!public.contains(private_root.to_str().unwrap()));
         assert_eq!(
             fs::read(occupied.join("keep.bin")).unwrap(),
             b"original custody"
