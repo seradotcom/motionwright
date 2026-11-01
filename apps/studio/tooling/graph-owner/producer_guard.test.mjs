@@ -188,7 +188,8 @@ function fixture(name) {
   const cargoTargets = { sdk: path.join(root, 'sdk-target'), product: path.join(root, 'product-target') };
   const targetFor = role => cargoTargets[['semwright', 'semwrightd', 'semwright_sandbox'].includes(role) ? 'sdk' : 'product'];
   const binaries = Object.fromEntries(BINARY_ROLES.map(role => [role,
-    put(Object.hasOwn(targetSources, role) ? path.join(targetFor(role), 'mw-r74-captured', role) : 'bin/' + role,
+    put(Object.hasOwn(targetSources, role) ? path.join(targetFor(role), 'mw-r74-captured',
+      role === 'semwright_sandbox' ? 'semwright-sandbox' : role) : 'bin/' + role,
       'INERT_NOT_EXECUTABLE:' + role + '\n')]));
   function processRecord(label, argv, cwd, stdout, extra = {}) {
     const out = put('originals/' + label + '.stdout.log', stdout), err = put('originals/' + label + '.stderr.log', '');

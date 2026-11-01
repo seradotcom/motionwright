@@ -249,7 +249,11 @@ function cargoBuild(role, record, expected, index, reviewed, originals) {
   const targetRoot = command.selected_environment.CARGO_TARGET_DIR;
   canonical(targetRoot);
   inside(targetRoot, expected.cargo_executable);
-  need(index.binaries[role].path === path.join(targetRoot, 'mw-r74-captured', role), 'J1_CARGO_CAPTURE_PATH');
+  // Source-bound semwrightd resolves its genuine sandbox by the native
+  // executable basename in its own captured directory, not by the R74 index key.
+  // Require one original at that path; no compatibility aliases or extra copy.
+  const capturedName = role === 'semwright_sandbox' ? 'semwright-sandbox' : role;
+  need(index.binaries[role].path === path.join(targetRoot, 'mw-r74-captured', capturedName), 'J1_CARGO_CAPTURE_PATH');
   need(index.binaries[role].path !== expected.cargo_executable, 'J1_CARGO_CAPTURE_NOT_INDEPENDENT');
   const artifacts = records.filter(row => row.reason === 'compiler-artifact' && row.executable === expected.cargo_executable);
   need(artifacts.length === 1, 'J1_CARGO_EXECUTABLE_BIJECTION');
