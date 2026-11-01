@@ -87,7 +87,130 @@ class SourceIdentityTests(unittest.TestCase):
                     gn1.require_owner_root(parent / "gn1-foreign", "456")
 
 
+class PublicRecipientPrebuildTests(unittest.TestCase):
+    def test_early_public_reviewer_input_is_source_only_and_fail_closed(self):
+        import base64
+        import hashlib
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        der = key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo)
+        valid = {"spki_der_base64": base64.b64encode(der).decode("ascii"),
+                 "sha256": hashlib.sha256(der).hexdigest()}
+        argv = ["--mode", "plan", "--require-public-recipient",
+                "--repo", "/not-used", "--sdk", "/not-used",
+                "--expected-source", "1" * 40, "--root", "/not-used"]
+        with mock.patch.dict(os.environ, {"GN1_RECIPIENT_JSON": json.dumps(valid)},
+                             clear=True):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = gn1.main(argv)
+        value = json.loads(output.getvalue())
+        self.assertEqual(result, 0)
+        self.assertEqual(value["mode"], "PLAN_ONLY_NO_EFFECTS")
+        self.assertEqual(value["public_recipient_preflight"],
+                         "PASS_FORMAT_SHA256_ONLY_NOT_RSA_AUTHENTICATION")
+        self.assertEqual(value["Graph6_cases_accepted"], 0)
+        self.assertEqual(value["G2"], "NOT_GRANTED")
+        self.assertEqual(value["G3"], "STOP")
+        bad_values = [
+            "", "not-json", "{}", "x" * 4097,
+            json.dumps({**valid, "sha256": "0" * 64}),
+            json.dumps({**valid, "extra": "unexpected"}),
+            json.dumps({**valid, "spki_der_base64": "bad??"}),
+            json.dumps({**valid, "spki_der_base64": ""}),
+        ]
+        for bad in bad_values:
+            with self.subTest(example_size=len(bad)):
+                with mock.patch.dict(os.environ, {"GN1_RECIPIENT_JSON": bad},
+                                     clear=True):
+                    buffer = io.StringIO()
+                    with contextlib.redirect_stdout(buffer):
+                        code = gn1.main(argv)
+                denied = json.loads(buffer.getvalue())
+                self.assertEqual(code, 1)
+                self.assertEqual(denied["status"], "DENY_PUBLIC_RECIPIENT_PREFLIGHT")
+                self.assertEqual(denied["Graph6_cases_accepted"], 0)
+                self.assertEqual(denied["G2"], "NOT_GRANTED")
+                self.assertNotIn(valid["spki_der_base64"], buffer.getvalue())
+
+
 class PrivateOriginalTests(unittest.TestCase):
+    def test_effective_child_environment_ignores_poisoned_host_values(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-env-values-") as tmp:
+            root = Path(tmp).resolve()
+            for name in ("runtime", "state", "home", "sdk", "config", "manim-work"):
+                (root / name).mkdir(mode=0o700)
+            helper = str(root / "sdk/target/debug/semwright-sandbox")
+            canary = "PRIVATE_GN1_HOST_ENV_CANARY"
+            sensitive = (
+                "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "GN1_RECIPIENT_JSON",
+                "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+                "CURL_CA_BUNDLE", "AWS_SECRET_ACCESS_KEY", "NODE_OPTIONS",
+                "RUSTFLAGS", "BASH_ENV", "ENV",
+            )
+            poisoned = {key: canary for key in sensitive}
+            private_locations = {
+                "HOME": "home", "XDG_RUNTIME_DIR": "runtime",
+                "XDG_CONFIG_HOME": "config", "XDG_STATE_HOME": "state",
+                "XDG_CACHE_HOME": "manim-work", "TMPDIR": "manim-work",
+            }
+            poisoned.update({key: canary for key in private_locations})
+            poisoned.update({
+                "PATH": canary, "LANG": canary, "LC_ALL": canary, "TZ": canary,
+                "SEMWRIGHT_CHECKOUT": canary,
+                "SEMWRIGHT_TEST_DRIVER_SANDBOX": "1",
+                "SEMWRIGHT_TEST_SANDBOX_HELPER": helper,
+            })
+            with mock.patch.dict(os.environ, poisoned, clear=True):
+                child = gn1._env(root, root / "runtime", root / "state",
+                                 root / "home", root / "sdk")
+                # An absolute interpreter runs only this inert environment
+                # probe. No shell, Native Host, provider or Store is started.
+                observed = subprocess.run(
+                    [sys.executable, "-I", "-S", "-c",
+                     "import json, os; print(json.dumps(dict(os.environ)))"],
+                    env=child, capture_output=True, timeout=10, check=True,
+                )
+            effective = json.loads(observed.stdout)
+            self.assertEqual(effective, child)
+            self.assertNotIn(canary.encode(), observed.stdout)
+            self.assertEqual(observed.stderr, b"")
+            for key in sensitive:
+                self.assertNotIn(key, effective)
+            self.assertEqual(effective["PATH"],
+                             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            self.assertEqual((effective["LANG"], effective["LC_ALL"], effective["TZ"]),
+                             ("C.UTF-8", "C.UTF-8", "UTC"))
+            for key, name in private_locations.items():
+                self.assertEqual(effective[key], str(root / name))
+            self.assertEqual(effective["SEMWRIGHT_CHECKOUT"], str(root / "sdk"))
+            self.assertEqual(effective["SEMWRIGHT_TEST_DRIVER_SANDBOX"], "1")
+            self.assertEqual(effective["SEMWRIGHT_TEST_SANDBOX_HELPER"], helper)
+
+    def test_child_environment_rejects_absent_disabled_or_foreign_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-env-binding-") as tmp:
+            root = Path(tmp).resolve()
+            for name in ("runtime", "state", "home", "sdk"):
+                (root / name).mkdir(mode=0o700)
+            helper = str(root / "sdk/target/debug/semwright-sandbox")
+            for flag, selected in ((None, None), ("0", helper), ("1", None),
+                                   ("1", str(root / "foreign-helper"))):
+                env = {}
+                if flag is not None:
+                    env["SEMWRIGHT_TEST_DRIVER_SANDBOX"] = flag
+                if selected is not None:
+                    env["SEMWRIGHT_TEST_SANDBOX_HELPER"] = selected
+                with self.subTest(flag=flag, helper=selected):
+                    with mock.patch.dict(os.environ, env, clear=True):
+                        with self.assertRaisesRegex(
+                                gn1.GN1Failure, "GN1_FIRST_PARTY_SANDBOX_BINDING_REQUIRED"):
+                            gn1._env(root, root / "runtime", root / "state",
+                                     root / "home", root / "sdk")
+
     def test_native_child_environment_is_explicit_and_secret_free(self):
         with tempfile.TemporaryDirectory(prefix="gn1-env-") as tmp:
             root = Path(tmp).resolve()
@@ -269,6 +392,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("one_original_owner", text)
         self.assertIn("allow-one-original", text)
         self.assertIn("test \"$GITHUB_RUN_ATTEMPT\" = 1", text)
+        self.assertIn("--require-public-recipient", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn("SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'", text)
         self.assertIn("SEMWRIGHT_TEST_SANDBOX_HELPER:", text)

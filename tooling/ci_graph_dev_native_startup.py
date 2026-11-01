@@ -8,6 +8,8 @@ Private originals are RSA3072/AES-GCM sealed before any artifact publication.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import hashlib
 import io
@@ -44,6 +46,30 @@ class GN1Failure(Exception):
 def need(value, code):
     if not value:
         raise GN1Failure(code)
+
+
+def preflight_public_recipient(raw):
+    """Cheap public SPKI format and checksum only; cryptographic trust comes later."""
+    need(type(raw) is str and 0 < len(raw) <= 4096,
+         "GN1_REVIEWER_INPUT_REQUIRED_OR_OVERSIZE")
+    try:
+        recipient = json.loads(raw)
+        need(type(recipient) is dict
+             and set(recipient) == {"spki_der_base64", "sha256"},
+             "GN1_REVIEWER_INPUT_SHAPE")
+        encoded, digest = recipient["spki_der_base64"], recipient["sha256"]
+        need(type(encoded) is str and 0 < len(encoded) <= 2048
+             and type(digest) is str and SHA256.fullmatch(digest) is not None,
+             "GN1_REVIEWER_INPUT_FIELD_SHAPE")
+        der = base64.b64decode(encoded, validate=True)
+        need(256 <= len(der) <= 1024 and der[0] == 0x30
+             and base64.b64encode(der).decode("ascii") == encoded,
+             "GN1_REVIEWER_INPUT_DER_FORMAT")
+        need(hashlib.sha256(der).hexdigest() == digest,
+             "GN1_REVIEWER_INPUT_SHA256_MISMATCH")
+    except (TypeError, ValueError, binascii.Error):
+        raise GN1Failure("GN1_REVIEWER_INPUT_INVALID") from None
+    return True
 
 
 def git(repo: Path, *args):
@@ -564,13 +590,30 @@ def run_once(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("plan", "run"), required=True)
+    parser.add_argument("--require-public-recipient", action="store_true",
+                        help="verify public SPKI shape/hash before any expensive builds")
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--expected-source", required=True)
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.mode == "plan":
+        try:
+            checked = (preflight_public_recipient(
+                os.environ.get("GN1_RECIPIENT_JSON", ""))
+                if args.require_public_recipient else False)
+        except GN1Failure:
+            print(json.dumps({
+                "schema": SCHEMA, "mode": "PLAN_DENIED_NO_EFFECTS",
+                "status": "DENY_PUBLIC_RECIPIENT_PREFLIGHT",
+                "Graph6_cases_accepted": 0, "R74_statuses_issued": 0,
+                "automatic_retry": False, "G2": "NOT_GRANTED",
+                "G3": "STOP"}, sort_keys=True))
+            return 1
         result = {"schema": SCHEMA, "mode": "PLAN_ONLY_NO_EFFECTS",
+                  "public_recipient_preflight": (
+                      "PASS_FORMAT_SHA256_ONLY_NOT_RSA_AUTHENTICATION"
+                      if checked else "NOT_REQUESTED"),
                   "stages": STAGES, "real_driver_required": True,
                   "SDK_PIN_REQUIRED": True, "one_new_physical_store": True,
                   "automatic_retry": False, "R74_statuses_issued": 0,

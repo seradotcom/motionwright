@@ -60,6 +60,7 @@ jobs:
           test "$GITHUB_SHA" = "$GN1_EXPECTED_SOURCE"
           test "$(git rev-parse HEAD)" = "$GN1_EXPECTED_SOURCE"
           python3 -B tooling/ci_graph_dev_native_startup.py --mode plan \
+            --require-public-recipient \
             --repo . --sdk _semwright --expected-source "$GITHUB_SHA" \
             --root "$RUNNER_TEMP/gn1-$GITHUB_RUN_ID"
       - name: Resolve exact first-party Semwright pin

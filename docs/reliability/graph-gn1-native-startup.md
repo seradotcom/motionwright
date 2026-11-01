@@ -14,6 +14,12 @@ an RSA3072 independent reviewer public-key JSON are required. A new
 private owner root must be created directly under `RUNNER_TEMP`; neither
 the checkout, a previous R74 artifact nor any real user Store is reused.
 
+Before installing dependencies or compiling Rust, an inert preflight checks
+the public reviewer input's bounded base64 SPKI shape and SHA-256. This is
+not RSA authentication: the original custody verifier still performs full
+RSA3072/65537 validation before any Native effect. Invalid input fails
+without producing private artifacts or triggering a build.
+
 The job compiles only pinned Semwright CLI/daemon/sandbox, Motionwright
 provider, genuine shared-state actor and Manim runner, using the original
 Cargo locks. It uses Semwright's first-party Linux driver sandbox profile
