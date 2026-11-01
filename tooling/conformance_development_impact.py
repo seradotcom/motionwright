@@ -20,6 +20,7 @@ from pathlib import Path
 from conformance_currency_impact import commit_sha, git, source_path
 from conformance_policy import (
     DIGEST, MAX_EVIDENCE_INDEX_BYTES, SHA, _pairs, load_json, public_file,
+    validate_catalog_links,
 )
 
 SCHEMA = "motionwright.conformance-development-source-impact/1"
@@ -283,6 +284,10 @@ def inspect_development(root: Path, spec: str = "HEAD", *, baseline: str | None 
          and len(catalog) == EXPECTED_FIELDS and len(links) == EXPECTED_EDGES
          and set(rows) == set(contracts),
          "canonical 396/1652/506 catalog was modified")
+    # Reuse the existing normative link/source-record integrity checker over
+    # the already-loaded catalog. Counts alone cannot preserve 506 edge identities.
+    # This is structural, not renewed evidence, new acceptance, or a G3 audit.
+    validate_catalog_links(index, list(rows.values()))
     for rid, row in rows.items():
         fields = row["technical_assessment"]["criteria"]
         actual = {f["id"]: f["source_clause_sha256"] for f in fields}

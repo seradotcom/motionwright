@@ -96,12 +96,46 @@ def development_history(source_name):
         baseline = commit("fixture historical catalog")
         write(source_name, "value = 2\n")
         target = commit("fixture mapped source change")
+        # This tiny synthetic one-row history tests path impact only. The
+        # actual full 396-row normative catalog is validated independently.
         with patch.multiple(dev, EXPECTED_ROWS=1, EXPECTED_FIELDS=1,
-                            EXPECTED_EDGES=0):
+                            EXPECTED_EDGES=0), patch.object(
+                                dev, "validate_catalog_links", return_value=None):
             yield root, baseline, target
 
 
 class DevelopmentSourceImpactPureTests(unittest.TestCase):
+    def test_original_normative_links_are_validated_on_development_impact(self):
+        # Cardinality alone would accept a rewritten 506-edge traceability
+        # graph. Reuse the canonical existing validator, not a new matrix.
+        with patch.object(dev, "validate_catalog_links",
+                          side_effect=ValueError("A5_ORIGINAL_TRACEABILITY_REJECT")):
+            with self.assertRaisesRegex(ValueError, "A5_ORIGINAL_TRACEABILITY_REJECT"):
+                dev.inspect_development(ROOT, "HEAD", baseline="HEAD")
+
+    def test_changed_506_edge_content_cannot_masquerade_as_preserved_catalog(self):
+        index = json.loads((ROOT / "docs/acceptance/technical-evidence.json")
+                           .read_text(encoding="utf-8"))
+        rows = []
+        for name, groups in dev.LEDGERS:
+            doc = json.loads((ROOT / name).read_text(encoding="utf-8"))
+            rows.extend(row for group in groups for row in doc[group])
+        dev.validate_catalog_links(index, rows)
+        # Same 396/1652/506 dimensions and valid IDs, different traceability.
+        clone = json.loads(json.dumps(index))
+        clone["normative_edges"][0]["source_rewrite"] = "not in original"
+        self.assertEqual(len(clone["normative_edges"]), 506)
+        with self.assertRaisesRegex(ValueError, "original normative link identity changed"):
+            dev.validate_catalog_links(clone, rows)
+        # A ledger link that no longer agrees with the original also fails.
+        bad_rows = json.loads(json.dumps(rows))
+        case = next(row for row in bad_rows if row["id"].startswith("ACC-"))
+        valid_other = next(name for name in index["contracts"]
+                           if name.startswith("CR-") and name not in case["requirement_ids"])
+        case["requirement_ids"] = [valid_other]
+        with self.assertRaises(ValueError):
+            dev.validate_catalog_links(index, bad_rows)
+
     def test_unchanged_refs_remain_historical_not_current_execution(self):
         refs = [case()]
         a = {"product.py": BLOB_A, "oracle.py": BLOB_A}
