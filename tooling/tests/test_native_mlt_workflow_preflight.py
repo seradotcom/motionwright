@@ -8,6 +8,7 @@ that boundary and which outcomes may be claimed.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import json
@@ -23,6 +24,17 @@ import unittest
 def workflow_namespace():
     workflow = Path(__file__).resolve().parents[2] / ".github/workflows/native-mlt-sequence-e2e.yml"
     lines = workflow.read_text(encoding="utf-8").splitlines()
+    # Check every existing closed list before exercising its custody fragments.
+    # A valid per-suite pin must not leave the aggregate gate on an older count.
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("SUITES = ["):
+            suites = ast.literal_eval(line.split("=", 1)[1].strip())
+            totals = [ast.literal_eval(row.split("=", 1)[1].strip())
+                      for row in lines[index + 1:index + 5]
+                      if row.lstrip().startswith("TOTAL = ")]
+            if (len(totals) != 1 or type(totals[0]) is not int
+                    or totals[0] != sum(row[1] for row in suites)):
+                raise AssertionError("closed suite roster and declared aggregate differ")
     fragments, start = [], None
     for index, line in enumerate(lines):
         if line.strip() == "# BEGIN A6_MLT_PREFLIGHT_CUSTODY":
