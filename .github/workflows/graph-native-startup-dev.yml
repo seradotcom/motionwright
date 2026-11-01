@@ -88,6 +88,23 @@ jobs:
           ref: ${{ steps.pin.outputs.sha }}
           path: _semwright
           persist-credentials: false
+      - name: Prepare hash-pinned private-original encryption before expensive builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/gn1-custody-venv"
+          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+      - name: Verify selected GN1 staging, custody and safety tests before Cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -B -m unittest \
+            tooling.tests.test_ci_graph_dev_native_startup \
+            tooling.tests.test_ci_graph_dev_native_budget -q
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/public_surface_policy.py
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: '1.98.1'
@@ -122,14 +139,6 @@ jobs:
             --bin motionwright-native-provider --example shared-state-actor
           cargo build --locked -p motionwright-manim-community-driver \
             --bin motionwright-manim-runner
-      - name: Prepare hash-pinned private-original encryption
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/gn1-custody-venv"
-          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -m pip install \
-            --disable-pip-version-check --require-hashes --only-binary=:all: \
-            -r tooling/requirements/mlt-g2-custody.txt
       - name: Execute exactly one real isolated Native owner startup
         shell: bash
         run: |
