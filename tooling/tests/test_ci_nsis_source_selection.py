@@ -751,6 +751,11 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
             self.assertEqual(any(fnmatch.fnmatchcase(start + scope + ":" + attempt, pat) for pat in patterns),
                              expected, (scope, attempt))
         self.assertIn("F-G0=NOT_RUN G3=STOP", receipt)
+        for clause in ('docs/acceptance/requirements-status.json',
+                       'len(required) != 208', 'len({row["id"] for row in required}) != 208',
+                       'row["current_contract_verdict"] != "open"',
+                       'row["technical_assessment"]["contract_acceptance"]["status"] != "open"'):
+            self.assertIn(clause, receipt)
         windows = text.split("      - name: Source and acceptance policy before Windows contract execution", 1)[1].split(
             "      - name: Windows cold-start unit contracts before package build", 1)[0]
         self.assertIn("MW_SELECTED_SCOPE: ${{ inputs.verification_scope }}", windows)
@@ -764,8 +769,27 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("python -B -E -s tooling/public_surface_policy.py", windows)
         self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', windows)
         self.assertIn("F-G0=NOT_RUN G3=STOP", windows)
+        for clause in ('docs/acceptance/requirements-status.json',
+                       'len(required) != 208', 'len({row["id"] for row in required}) != 208',
+                       'row["current_contract_verdict"] != "open"',
+                       'row["technical_assessment"]["contract_acceptance"]["status"] != "open"'):
+            self.assertIn(clause, windows)
         self.assertIn("} else {", windows)
         self.assertIn("python -B -E -s tooling/acceptance_policy.py", windows.split("} else {", 1)[1])
+        # An early policy failure never produced exit-guard originals. It must not
+        # turn into a second failed artifact upload, yet an observed failed
+        # producer still needs to attempt retention with error-on-missing.
+        guard = text.split("      - name: Observe original PowerShell guard with successful and failing child exits", 1)[1].split(
+            "      - name: Retain original positive and negative PowerShell exit observations", 1)[0]
+        upload = text.split("      - name: Retain original positive and negative PowerShell exit observations", 1)[1].split(
+            "\n  windows:\n", 1)[0]
+        self.assertEqual(guard.count("        id: windows_exit_guard"), 1)
+        self.assertEqual(upload.count("if: ${{ always() && steps.windows_exit_guard.outcome != 'skipped' }}"), 1)
+        self.assertIn("if-no-files-found: error", upload)
+        self.assertIn("motionwright-windows-exit-guard-", upload)
+        for outcome, should_upload in (("skipped", False), ("success", True), ("failure", True),
+                                       ("cancelled", True)):
+            self.assertEqual(outcome != "skipped", should_upload)
 
     def test_nsis_update_render_preserves_all_product_license_resources(self):
         import json

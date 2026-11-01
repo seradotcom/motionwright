@@ -21127,7 +21127,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "c0bb563498a4f584e109c8af181152a500145507237594e90b6c04ea6b7348af",
+      "sha256": "70b3ce09ec1aaa60bca54b1eb1b00272c4e03c82510cf200d2cda75eb8e527a1",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21228,7 +21228,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "51c1f95a354e7828abb4d145473c7efeff9688398d89de5f974443e3be499ea4",
+          "source_sha256": "fba76f3aadc0296b40fa46c02d2aa9ff0111e3ca659d4162fd5280143c1fbc90",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21264,7 +21264,7 @@
               "name": "Quick source and conformance policies for every verification scope",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c924edd107f7408de5a064269a64b9349e889cc88c6050820eefc60b464eb835",
+              "source_block_sha256": "dc47f7e41ec060fd0be3da2b1b5407cfab9d05cfc0c2da21ad4ab515ecd112b5",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21647,7 +21647,7 @@
           "runs_on": "windows-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "927b8d6c53335b607f09ee2ff07e45beb55ca43ebe6f025b33dd120a54611e8e",
+          "source_sha256": "cc4c82f74a088990628997ef836ba2a5625ac66c142a45eb519b02d3a83c7d18",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21673,7 +21673,7 @@
               "name": "Source and acceptance policy before Windows contract execution",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "1a930eff3ded6347c3f32a8e471500a1bcbe02ff06dcc21a69767dd89d257583",
+              "source_block_sha256": "2aa3241a6add62f140ee2c341e6883c0296f9c7c9102991faca2c88e94948ec7",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21697,15 +21697,15 @@
               "name": "Observe original PowerShell guard with successful and failing child exits",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "dce08d46e2d9880ec32d4bbbcabb0337a87fa541aaa0bee2ad43af0b40bda9c3",
+              "source_block_sha256": "75c02a986c9502a4f38072937ae99925b6de0cc0faddd5c2c52804d631806368",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 8,
               "name": "Retain original positive and negative PowerShell exit observations",
-              "guard": "always()",
+              "guard": "${{ always() && steps.windows_exit_guard.outcome != 'skipped' }}",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "cabbccae487a3007c57debfe282823656f22b420d56d9a2faa064d74e9d7deae",
+              "source_block_sha256": "410f72a27bfe4aeb40ae9648b4add35bd238cd80ea5f065aed2c8b90f2038a90",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
@@ -22595,7 +22595,9 @@
         "The installed Linux source uses one authenticated original45-minute GitHub job clock including metadata HTTP latency. The6-minute controls and35-minute owner step remain within that original clock; setup, source controls, capacity admission, original effects and custody do not reset it.",
         "Only linux-first-use selects the added Native join and requires the two admitted public recipient values. The other eight existing dispatch alternatives retain explicit empty new inputs and their prior job/step obligations; all does not silently acquire this alternative.",
         "The installed harness requires exact final source/tree/SDK/locks, original attempt1, same boot/job and retained pristine-checkout control bindings. UNKNOWN remains nonreplayable; a ciphertext upload or source review cannot substitute for original physical behavior and independent acceptance.",
-        "Exact-branch, first-attempt development windows_contracts may defer the stale assessed-source acceptance policies only after independent receipt-policy source/public and all 60+64 unasserted acceptance rows plus unfinished creative-status guard. Windows source/public checks remain mandatory. This does not satisfy all or windows_installed, full G0 on F, physical installation, G2 or G3."
+        "Exact-branch, first-attempt development windows_contracts may defer the stale assessed-source acceptance policies only after independent receipt-policy source/public and all 60+64 unasserted acceptance rows plus unfinished creative-status guard. Windows source/public checks remain mandatory. This does not satisfy all or windows_installed, full G0 on F, physical installation, G2 or G3.",
+        "Original PowerShell exit-guard retention runs when the producer finished successfully, failed or was cancelled; when it was skipped due an earlier failure, the upload is also skipped, avoiding false missing-originals errors. Observed producer failures still require original upload and error-on-missing; this never converts failure/UNKNOWN into acceptance.",
+        "The exact first-attempt development-only acceptance deferral requires all 208 unique requirements to retain current_contract_verdict=open and technical_assessment.contract_acceptance.status=open, in addition to 60+64 NOT_RUN acceptance rows and incomplete creative-status requirements. Mutating any single contract verdict causes both pre-final source guards to deny; full final G0 and independent G3 remain unchanged."
       ]
     }
   ],
