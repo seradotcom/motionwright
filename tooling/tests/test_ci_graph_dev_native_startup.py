@@ -88,6 +88,35 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class PrivateOriginalTests(unittest.TestCase):
+    def test_native_child_environment_is_explicit_and_secret_free(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-env-") as tmp:
+            root = Path(tmp).resolve()
+            for name in ("runtime", "state", "home", "sdk", "config", "manim-work"):
+                (root / name).mkdir()
+            helper = root / "sdk/target/debug/semwright-sandbox"
+            secrets = {"GITHUB_TOKEN": "SECRET_GN1_CANARY",
+                       "ACTIONS_RUNTIME_TOKEN": "SECRET_GN1_CANARY",
+                       "GN1_RECIPIENT_JSON": "SECRET_GN1_CANARY",
+                       "PYTHONPATH": "SECRET_GN1_CANARY",
+                       "SEMWRIGHT_TEST_DRIVER_SANDBOX": "1",
+                       "SEMWRIGHT_TEST_SANDBOX_HELPER": str(helper)}
+            with mock.patch.dict(os.environ, secrets):
+                child = gn1._env(root, root / "runtime", root / "state",
+                                 root / "home", root / "sdk")
+                self.assertEqual(child["SEMWRIGHT_TEST_SANDBOX_HELPER"], str(helper))
+                self.assertEqual(child["SEMWRIGHT_TEST_DRIVER_SANDBOX"], "1")
+                self.assertEqual(child["XDG_CONFIG_HOME"], str(root / "config"))
+                self.assertEqual(child["XDG_STATE_HOME"], str(root / "state"))
+                self.assertNotIn("SECRET_GN1_CANARY", repr(child))
+                for key in ("GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+                            "GN1_RECIPIENT_JSON", "PYTHONPATH"):
+                    self.assertNotIn(key, child)
+                with mock.patch.dict(os.environ,
+                                     {"SEMWRIGHT_TEST_SANDBOX_HELPER": str(root / "foreign")}):
+                    with self.assertRaises(gn1.GN1Failure):
+                        gn1._env(root, root / "runtime", root / "state",
+                                 root / "home", root / "sdk")
+
     def test_seal_snapshot_collects_only_owned_original_bytes(self):
         with tempfile.TemporaryDirectory(prefix="gn1-seal-") as tmp:
             root = Path(tmp)

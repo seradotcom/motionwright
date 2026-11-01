@@ -249,12 +249,27 @@ def real_daemon(label: str, executable: str, config: Path, socket: Path,
 
 
 def _env(root: Path, runtime: Path, state: Path, home: Path, sdk: Path):
-    clean = {key: value for key, value in os.environ.items()
-             if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}}
-    clean.update(HOME=str(home), XDG_RUNTIME_DIR=str(runtime),
-                 XDG_STATE_HOME=str(state), SEMWRIGHT_CHECKOUT=str(sdk),
-                 RUST_BACKTRACE="1", PYTHONNOUSERSITE="1")
-    return clean
+    """Closed child environment; never inherit CI, runner or reviewer tokens."""
+    paths = (root, runtime, state, home, sdk)
+    need(all(isinstance(path, Path) and path.is_absolute()
+             and path.resolve(strict=True) == path for path in paths),
+         "GN1_CHILD_PATH_NOT_CANONICAL")
+    helper = sdk / "target" / "debug" / "semwright-sandbox"
+    need(os.environ.get("SEMWRIGHT_TEST_DRIVER_SANDBOX") == "1"
+         and os.environ.get("SEMWRIGHT_TEST_SANDBOX_HELPER") == str(helper),
+         "GN1_FIRST_PARTY_SANDBOX_BINDING_REQUIRED")
+    return {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
+        "PYTHONNOUSERSITE": "1", "RUST_BACKTRACE": "1",
+        "HOME": str(home), "XDG_RUNTIME_DIR": str(runtime),
+        "XDG_STATE_HOME": str(state), "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_CACHE_HOME": str(root / "manim-work"),
+        "TMPDIR": str(root / "manim-work"),
+        "SEMWRIGHT_CHECKOUT": str(sdk),
+        "SEMWRIGHT_TEST_DRIVER_SANDBOX": "1",
+        "SEMWRIGHT_TEST_SANDBOX_HELPER": str(helper),
+    }
 
 
 def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
