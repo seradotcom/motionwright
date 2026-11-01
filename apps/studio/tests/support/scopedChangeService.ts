@@ -36,6 +36,22 @@ export type ServiceProjectionFailure =
   | { code: "too_large"; limit: number }
   | { code: "stale_revision"; expected: string; actual: string };
 
+// Graph's actual SQLite initializer has no Native owner yet, but it must not
+// receive CI credentials or arbitrary loader hooks. Ordinary non-Graph Studio
+// tests preserve their existing process inheritance.
+function closedGraphInitializerEnvironment(databasePath: string): NodeJS.ProcessEnv {
+  const root = dirname(dirname(databasePath));
+  if (!isAbsolute(root)) throw new Error("Graph initializer requires an absolute private root");
+  return {
+    PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TZ: "UTC",
+    PYTHONNOUSERSITE: "1", HOME: root,
+    XDG_RUNTIME_DIR: root, XDG_STATE_HOME: root,
+    XDG_CONFIG_HOME: root, XDG_CACHE_HOME: root, TMPDIR: root,
+    RUST_BACKTRACE: "1",
+  };
+}
+
 const projectionCommands = new Set(["project_projection_head", "project_scene_page", "project_scene_nodes"]);
 
 function projectionFailure(command: string, value: unknown): value is ServiceProjectionFailure {
@@ -481,8 +497,12 @@ export class ScopedChangeService {
       // asynchronous client authorization or any process spawn. Also covers
       // the ordinary initializer, which has no external processOwner.
       this.rawStreamCapture?.reserveLaunch?.(launchContext);
+      // The real Graph owner returns the complete, source-checked child
+      // environment. Never merge the CI runner's credentials, loader hooks or
+      // unreviewed paths back in after the owner has admitted a client.
       const environment = this.processOwner
-        ? { ...process.env, ...await this.processOwner.environmentForNewClient(launchContext) } : undefined;
+        ? await this.processOwner.environmentForNewClient(launchContext)
+        : this.graphCustodyRequired ? closedGraphInitializerEnvironment(this.databasePath) : undefined;
       if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
         throw new Error("Service client admissions were sealed before the process launch");
       if (launchContext.launch_index !== this.processStreams.length)

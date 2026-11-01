@@ -8,11 +8,74 @@ import { tmpdir } from "node:os";
 import { stripTypeScriptTypes } from "node:module";
 import { SharedPool, GLOBAL_BYTES, GLOBAL_FILES } from "../../tests/support/graph-owner/custody.mjs";
 import { GraphCaseFactoryCore, graphCaseLayout, verifyGraphManagedStoreEntries, verifyGraphManagedCopyBounds,
-  GRAPH_CAS_ALLOWANCE } from "../../tests/support/graph-owner/factory.mjs";
+  graphOwnerSpawnEnvironment, graphOwnedClientEnvironment, GRAPH_CAS_ALLOWANCE } from "../../tests/support/graph-owner/factory.mjs";
 import { inspectSourceBoundCandidate, requireNativeGraphParentAdmission,
   admitOriginalProducers, runIndependentSameStoreReopen, inspectR74StatusCore,
   assertOriginalProducerAdmission, inspectProducerOriginalsCore, AUTHORITY_SOURCE_PATHS,
   BINARY_ROLES, PRODUCER_INDEX_SCHEMA, GRAPH_BUDGET } from "../../tests/support/graph-owner/producer_guard.mjs";
+
+test('Graph owner Python environment refuses runner secrets and retains reviewed source identity', () => {
+  const root = '/private/case';
+  // The real R74 source index stores Python/FFmpeg under binaries, NOT
+  // under runtime. A synthetic runtime.python would hide a production failure.
+  const spec = { source: { sha: 'a'.repeat(40), run_id: '987654', run_attempt: 1, sdk_root: '/source/semwright' },
+    runtime: { root: '/source/manim' },
+    binaries: { python3: { path: '/usr/bin/python3' }, ffmpeg: { path: '/usr/bin/ffmpeg' } },
+    paths: { private_root: root, owner_home: root + '/owner/home', owner_state: root + '/owner/state',
+      owner_runtime: root + '/owner/runtime' } };
+  const env = graphOwnerSpawnEnvironment(spec, root, { bytes: 4096, files: 15 },
+    { path: root + '/initializer.original.json', sha256: 'f'.repeat(64) }, 'synthetic-metadata-only',
+    { GITHUB_WORKFLOW_REF: 'seradotcom/motionwright/.github/workflows/studio-service-verification.yml@refs/heads/main',
+      GH_TOKEN: 'SYNTHETIC_SECRET', GITHUB_TOKEN: 'SYNTHETIC_SECRET',
+      GN1_UNREVIEWED_CHILD_CANARY: 'SYNTHETIC_SECRET', LD_PRELOAD: '/unsafe/loader',
+      PYTHONPATH: '/unsafe/library', PATH: '/unsafe/bin', SEMWRIGHT_TEST_PYTHON: '/unsafe/python' });
+  assert.equal(env.PATH, '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
+  assert.equal(env.GITHUB_SHA, spec.source.sha);
+  assert.equal(env.GITHUB_WORKFLOW_REF.includes('/studio-service-verification.yml@'), true);
+  assert.equal(env.SEMWRIGHT_TEST_PYTHON, spec.binaries.python3.path);
+  assert.equal(env.SEMWRIGHT_TEST_FFMPEG, spec.binaries.ffmpeg.path);
+  assert.equal(env.SEMWRIGHT_CHECKOUT, spec.source.sdk_root);
+  assert.equal(env.MOTIONWRIGHT_GRAPH_METADATA_TOKEN, 'synthetic-metadata-only');
+  assert.equal(env.MOTIONWRIGHT_GRAPH_OWNER_MAX_BYTES, '4096');
+  assert.equal(env.MOTIONWRIGHT_GRAPH_INITIALIZER_SHA256, 'f'.repeat(64));
+  for (const forbidden of ['GITHUB_TOKEN', 'GH_TOKEN', 'GN1_UNREVIEWED_CHILD_CANARY',
+    'LD_PRELOAD', 'PYTHONPATH', 'SEMWRIGHT_TEST_FFPROBE', 'GITHUB_STEP_SUMMARY', 'GITHUB_ENV']) {
+    assert.equal(Object.hasOwn(env, forbidden), false, forbidden);
+  }
+  assert.throws(() => graphOwnerSpawnEnvironment(spec, root, { bytes: 4096, files: 15 },
+    { path: root + '/initializer.original.json', sha256: 'f'.repeat(64) }, 'synthetic',
+    { GITHUB_WORKFLOW_REF: 'other-repository/.github/workflows/unsafe.yml@refs/heads/main' }), /GRAPH_OWNER_/);
+});
+
+test('Native Graph service child env is closed, exact and never mixes process.env', () => {
+  const root = '/private/case';
+  const paths = { private_root: root, owner_home: root + '/owner/home',
+    owner_state: root + '/owner/state', owner_runtime: root + '/owner/runtime' };
+  const admitted = {
+    MOTIONWRIGHT_GRAPH_CONNECTION: root + '/owner/clients/client-0001.connection.json',
+    MOTIONWRIGHT_GRAPH_CALLBACK_CAP: '12',
+    MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES: '4096',
+    MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES: '2',
+  };
+  const env = graphOwnedClientEnvironment(admitted, paths);
+  assert.equal(env.MOTIONWRIGHT_GRAPH_CONNECTION, admitted.MOTIONWRIGHT_GRAPH_CONNECTION);
+  assert.equal(env.MOTIONWRIGHT_GRAPH_CALLBACK_CAP, '12');
+  assert.equal(env.PATH, '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
+  assert.equal(env.HOME, paths.owner_home);
+  assert.equal(env.XDG_RUNTIME_DIR, paths.owner_runtime);
+  for (const name of ['GITHUB_TOKEN','GH_TOKEN','LD_PRELOAD','PYTHONPATH']) {
+    assert.equal(Object.hasOwn(env, name), false);
+    assert.throws(() => graphOwnedClientEnvironment({ ...admitted, [name]: 'synthetic' }, paths), /GRAPH_CLIENT_/);
+  }
+  assert.throws(() => graphOwnedClientEnvironment({ ...admitted, MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES: '02' }, paths), /GRAPH_CLIENT_/);
+  const serviceSource = fs.readFileSync(new URL('../../tests/support/scopedChangeService.ts', import.meta.url), 'utf8');
+  assert.match(serviceSource, /\?\s*await this\.processOwner\.environmentForNewClient\(launchContext\)/);
+  assert.match(serviceSource, /:\s*this\.graphCustodyRequired\s*\?\s*closedGraphInitializerEnvironment\(this\.databasePath\)/);
+  assert.doesNotMatch(serviceSource, /\{\s*\.\.\.process\.env,\s*\.\.\.await this\.processOwner\.environmentForNewClient/);
+  const reopenSource = fs.readFileSync(new URL('../../tests/support/graph-owner/same_store_reopen.mjs', import.meta.url), 'utf8');
+  assert.match(reopenSource, /ALL_UNREVIEWED_PARENT_ENV/);
+  assert.doesNotMatch(reopenSource, /Object\.entries\(process\.env\)\.filter/);
+});
 
 function candidate() {
   const operations = ["authoring_context", "upsert"];

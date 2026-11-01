@@ -10,6 +10,102 @@ import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyM
 import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.mjs';
 
 const MiB = 1024 * 1024;
+
+// A real Graph owner must never forward the CI process environment wholesale
+// to native children. Keep trusted source/run identities and approved client
+// capabilities, but not the runner's credentials, loader hooks, or aliases.
+const GRAPH_EXEC_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+const GRAPH_BASE_CHILD_ENV = Object.freeze({
+  PATH: GRAPH_EXEC_PATH, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
+  TZ: 'UTC', PYTHONNOUSERSITE: '1', RUST_BACKTRACE: '1',
+});
+const GRAPH_CLIENT_FIELDS = Object.freeze([
+  'MOTIONWRIGHT_GRAPH_CONNECTION', 'MOTIONWRIGHT_GRAPH_CALLBACK_CAP',
+  'MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES', 'MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES',
+]);
+
+/** Exact source-bound client capability and deterministic private profile. */
+export function graphOwnedClientEnvironment(capability, paths) {
+  need(capability && Object.getPrototypeOf(capability) === Object.prototype,
+    'GRAPH_CLIENT_ENV_BODY');
+  need(Object.keys(capability).sort().join('|') === [...GRAPH_CLIENT_FIELDS].sort().join('|'),
+    'GRAPH_CLIENT_ENV_FIELDS');
+  need(paths && ['private_root','owner_home','owner_runtime','owner_state']
+    .every(name => typeof paths[name] === 'string' && path.isAbsolute(paths[name])),
+    'GRAPH_CLIENT_PRIVATE_PATHS');
+  const connection = capability.MOTIONWRIGHT_GRAPH_CONNECTION;
+  need(typeof connection === 'string' && path.isAbsolute(connection)
+    && !path.isAbsolute(path.relative(paths.private_root, connection))
+    && path.relative(paths.private_root, connection).split(path.sep)[0] === 'owner'
+    && connection !== paths.private_root, 'GRAPH_CLIENT_CONNECTION_UNBOUND');
+  for (const name of GRAPH_CLIENT_FIELDS.slice(1)) {
+    const value = capability[name];
+    need(typeof value === 'string' && /^(0|[1-9][0-9]{0,17})$/.test(value),
+      'GRAPH_CLIENT_QUOTA_UNBOUNDED');
+  }
+  const ownerConfig = path.join(paths.private_root,'owner','config');
+  const ownerWork = path.join(paths.private_root,'owner','work');
+  return Object.freeze({ ...GRAPH_BASE_CHILD_ENV,
+    HOME: paths.owner_home, XDG_RUNTIME_DIR: paths.owner_runtime,
+    XDG_STATE_HOME: paths.owner_state, XDG_CONFIG_HOME: ownerConfig,
+    XDG_CACHE_HOME: ownerWork, TMPDIR: ownerWork,
+    ...capability });
+}
+
+/** One vetted R74 Python owner, never runner-provided arbitrary environment. */
+export function graphOwnerSpawnEnvironment(spec, root, restriction, initializer, metadataToken, runner = process.env) {
+  const source = spec?.source, paths = spec?.paths, runtime = spec?.runtime, binaries = spec?.binaries;
+  need(source && typeof source.sha === 'string' && /^[0-9a-f]{40}$/.test(source.sha)
+    && typeof source.run_id === 'string' && /^[1-9][0-9]*$/.test(source.run_id)
+    && source.run_attempt === 1
+    && typeof source.sdk_root === 'string' && path.isAbsolute(source.sdk_root),
+    'GRAPH_OWNER_SOURCE_IDENTITY');
+  need(paths && typeof paths.private_root === 'string' && paths.private_root === root
+    && ['owner_home', 'owner_runtime', 'owner_state']
+      .every(name => typeof paths[name] === 'string' && path.isAbsolute(paths[name]))
+    && runtime && typeof runtime.root === 'string' && path.isAbsolute(runtime.root)
+    && binaries && typeof binaries.python3?.path === 'string' && path.isAbsolute(binaries.python3.path)
+    && typeof binaries.ffmpeg?.path === 'string' && path.isAbsolute(binaries.ffmpeg.path),
+    'GRAPH_OWNER_RUNTIME_INPUTS');
+  need(restriction && Number.isSafeInteger(restriction.bytes) && restriction.bytes > 0
+    && Number.isSafeInteger(restriction.files) && restriction.files > 0
+    && initializer && typeof initializer.path === 'string' && path.isAbsolute(initializer.path)
+    && typeof initializer.sha256 === 'string' && /^[a-f0-9]{64}$/.test(initializer.sha256),
+    'GRAPH_OWNER_ORIGINAL_BUDGET');
+  const workflowRef = runner?.GITHUB_WORKFLOW_REF;
+  need(typeof workflowRef === 'string'
+    && workflowRef.startsWith('seradotcom/motionwright/.github/workflows/studio-service-verification.yml@')
+    && workflowRef.length < 512, 'GRAPH_OWNER_WORKFLOW_REF');
+  need(metadataToken == null || typeof metadataToken === 'string' && metadataToken.length > 0,
+    'GRAPH_OWNER_READ_ONLY_TOKEN');
+  const result = { ...GRAPH_BASE_CHILD_ENV,
+    HOME: paths.owner_home, XDG_RUNTIME_DIR: paths.owner_runtime,
+    XDG_STATE_HOME: paths.owner_state,
+    XDG_CONFIG_HOME: path.join(paths.private_root, 'owner','config'),
+    XDG_CACHE_HOME: path.join(paths.private_root, 'owner','work'),
+    TMPDIR: paths.private_root,
+    SEMWRIGHT_CHECKOUT: source.sdk_root,
+    SEMWRIGHT_TEST_MANIM_RUNTIME: runtime.root,
+    // The sealed producer stores these actual captured tools under binaries;
+    // runtime contains only the native profile root and manifests.
+    SEMWRIGHT_TEST_PYTHON: binaries.python3.path,
+    SEMWRIGHT_TEST_FFMPEG: binaries.ffmpeg.path,
+    GITHUB_ACTIONS: 'true', GITHUB_API_URL: 'https://api.github.com',
+    GITHUB_REPOSITORY: 'seradotcom/motionwright',
+    GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_JOB: 'real-service',
+    GITHUB_SHA: source.sha, GITHUB_WORKFLOW_SHA: source.sha,
+    GITHUB_RUN_ID: source.run_id, GITHUB_RUN_ATTEMPT: '1',
+    GITHUB_WORKFLOW_REF: workflowRef,
+    GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1',
+    MOTIONWRIGHT_GRAPH_OWNER_MAX_BYTES: String(restriction.bytes),
+    MOTIONWRIGHT_GRAPH_OWNER_MAX_FILES: String(restriction.files),
+    MOTIONWRIGHT_GRAPH_INITIALIZER_ORIGINAL: initializer.path,
+    MOTIONWRIGHT_GRAPH_INITIALIZER_SHA256: initializer.sha256,
+    MOTIONWRIGHT_GRAPH_PARENT_ROOT: root };
+  if (metadataToken != null) result.MOTIONWRIGHT_GRAPH_METADATA_TOKEN = metadataToken;
+  return Object.freeze(result);
+}
+
 function bounded(promise, deadline, code) {
   let timer;
   const rejected = new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error(code)), Math.max(1, deadline - Date.now())); });
@@ -453,8 +549,9 @@ export class GraphCaseFactoryCore {
       record.client = { client_id: response.client_id, connectionPath, connectionOriginal: original.ref, connection };
       this.metadata.json(path.join(this.root, 'client-' + response.client_id + '.original.json'), { id: record.id, reply: response, connection: original.ref, quota: record.journal, sdk_ticket: record.ticket });
       this.checkOpen();
-      return Object.freeze({ ...response.child_env, ...callbackEnv, MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES: String(record.journal.bytes),
-        MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES: String(record.journal.files) });
+      return graphOwnedClientEnvironment({ ...response.child_env, ...callbackEnv,
+        MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES: String(record.journal.bytes),
+        MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES: String(record.journal.files) }, this.spec.paths);
     } catch (error) { this.taint(error); throw error; }
   }
   environmentForNewClient(context) { return this.beforeLaunch(context); }
@@ -476,12 +573,8 @@ export class GraphCaseFactoryCore {
     const argv = ['-I','-B',this.options.ownerScript,'--spec',specOriginal.path];
     const bootstrap = this.sdkTickets.claimBootstrap();
     this.metadata.json(path.join(this.root, 'sdk-ticket-bootstrap.intent.original.json'), bootstrap);
-    const env = { ...process.env, MOTIONWRIGHT_GRAPH_OWNER_MAX_BYTES: String(this.ownerRestriction.bytes),
-      MOTIONWRIGHT_GRAPH_OWNER_MAX_FILES: String(this.ownerRestriction.files),
-      MOTIONWRIGHT_GRAPH_INITIALIZER_ORIGINAL: this.initializerOriginal.path,
-      MOTIONWRIGHT_GRAPH_INITIALIZER_SHA256: this.initializerOriginal.sha256,
-      MOTIONWRIGHT_GRAPH_PARENT_ROOT: this.root };
-    if (this.originalProduction) env.MOTIONWRIGHT_GRAPH_METADATA_TOKEN = ownerReadOnlyMetadataCredential(this.admission);
+    const env = graphOwnerSpawnEnvironment(this.spec, this.root, this.ownerRestriction,
+      this.initializerOriginal, this.originalProduction ? ownerReadOnlyMetadataCredential(this.admission) : null);
     this.metadata.json(path.join(this.root, 'owner-launch.intent.original.json'), { executable: this.options.python, argv,
       quota: this.ownerRestriction, initializer: this.initializerOriginal, source: this.admission.source });
     const child = this.adapters.spawn(this.options.python, argv, { stdio: ['pipe','pipe','pipe'], env, windowsHide: true });

@@ -307,12 +307,21 @@ export async function runSameStoreReopenCore(factory, {
     const argv = [executable.path, '--database', database];
     // No fixture, reopen command, import, mutation, grant, native connection,
     // changed project generation, synthetic seed or extra argument is accepted.
-    const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-      key !== 'MOTIONWRIGHT_GRAPH_CONNECTION' && !key.startsWith('MOTIONWRIGHT_GRAPH_')));
+    // This read-only child may inspect the same sealed physical Store; it
+    // must not inherit the CI runner's credentials, loader hooks or Graph
+    // callback authority. No SOURCE_LOCK, SDK tool or Native owner is changed.
+    const environment = Object.freeze({
+      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', TZ: 'UTC', PYTHONNOUSERSITE: '1',
+      HOME: factory.root, XDG_RUNTIME_DIR: factory.root,
+      XDG_STATE_HOME: factory.root, XDG_CONFIG_HOME: factory.root,
+      XDG_CACHE_HOME: factory.root, TMPDIR: factory.root,
+      RUST_BACKTRACE: '1',
+    });
     writer.json(path.join(outputRoot, 'intent.original.json'), {
       schema: 'motionwright.graph.same-original-store-reopen/1',
       source: factory.admission.source, binary: executable, argv,
-      environment_removed: ['MOTIONWRIGHT_GRAPH_CONNECTION', 'MOTIONWRIGHT_GRAPH_*'],
+      environment_removed: ['ALL_UNREVIEWED_PARENT_ENV', 'MOTIONWRIGHT_GRAPH_*'],
       source_oracle: expectedOracleRef, original_owner_final: factory.finalOriginal,
       physical_store_before: before, parent_pid: processIdAtEntry,
       allocation, original_seal_preserved: true, automatic_retry: false,
