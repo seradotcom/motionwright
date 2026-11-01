@@ -8100,6 +8100,46 @@ class Phase1Service47DeadlineTests(unittest.TestCase):
 class GraphR74JoinTests(unittest.TestCase):
     """Local synthetic metadata/parser controls plus inert real process bounds; no G2."""
 
+
+    def test_graph_system_package_preprovision_keeps_final_original_and_closed_package_set(self):
+        repo, producer, deadline = Path("/inert/repo"), Path("/inert/originals"), object()
+        with mock.patch.object(gate, "graph_command") as command:
+            gate.graph_prepare_system_packages({}, repo, producer, deadline)
+        self.assertEqual(command.call_count, 3)
+        calls = [item.args for item in command.call_args_list]
+        self.assertEqual([row[4] for row in calls],
+                         ["graph-apt-update", "graph-apt-media-preprovision", "graph-apt-install"])
+        self.assertEqual([row[5] for row in calls], [60, 180, 180])
+        self.assertEqual(calls[0][1], ["sudo", "apt-get", "update"])
+        prefix = ["sudo", "apt-get", "install", "--no-install-recommends", "-y"]
+        self.assertEqual(calls[1][1], prefix + ["bubblewrap", "ffmpeg", "fontconfig"])
+        complete = ["bubblewrap", "ffmpeg", "fontconfig", "libcairo2-dev", "libpango1.0-dev",
+                    "pkg-config", "python3-pip", "python3-dev", "libpipewire-0.3-dev", "clang"]
+        self.assertEqual(calls[2][1], prefix + complete)
+        self.assertEqual(len(complete), len(set(complete)))
+        self.assertTrue(all(row[0] == {"DEBIAN_FRONTEND": "noninteractive",
+                                           "NEEDRESTART_MODE": "l",
+                                           "APT_LISTCHANGES_FRONTEND": "none"} and row[2] == repo and row[3] == producer
+                            and row[6] is deadline for row in calls))
+        # Both provisioning intents remain within the existing source-owned prepare phase.
+        self.assertEqual(gate.GRAPH_PHASES["prepare"], 1200)
+
+    def test_graph_preprovision_unknown_blocks_complete_install_without_replaying_effect(self):
+        original = {"observation": "UNKNOWN_TIMEOUT_NO_RETRY", "uncertainty_reason": "DIRECT_WAIT_TIMEOUT"}
+        uncertain = gate.UnknownObservation("inert denied download; no retry", original)
+        def command(*args):
+            if args[4] == "graph-apt-media-preprovision":
+                raise uncertain
+            self.assertEqual(args[4], "graph-apt-update")
+        with mock.patch.object(gate, "graph_command", side_effect=command) as invoke:
+            with self.assertRaises(gate.UnknownObservation) as caught:
+                gate.graph_prepare_system_packages({}, Path("/inert"), Path("/inert"), object())
+        self.assertIs(caught.exception, uncertain)
+        self.assertIs(caught.exception.command, original)
+        self.assertEqual([entry.args[4] for entry in invoke.call_args_list],
+                         ["graph-apt-update", "graph-apt-media-preprovision"])
+
+
     def test_graph_unknown_from_execute_keeps_original_exception_and_stops_readback(self):
         command = {"observation": "UNKNOWN_CUSTODY_NO_RETRY",
                    "uncertainty_reason": "COMMAND_RECEIPT_PERSISTENCE_FAILED",

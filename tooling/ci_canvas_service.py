@@ -8627,6 +8627,29 @@ def graph_command(env, argv, cwd, producer, label, seconds, clock, *, maximum_fi
             "stdout": graph_ref(producer / (label + ".stdout.log")), "stderr": graph_ref(producer / (label + ".stderr.log"))}, result
 
 
+def graph_prepare_system_packages(env, repo, producer, clock):
+    """Bounded original preprovision followed by the unchanged complete apt witness.
+
+    The previously successful original fetched 73.1 MB in 125 s of a 133 s apt
+    effect; the later identical whole install hit its 180 s direct-wait bound.
+    Keep every subprocess in graph_command's original-owned custody and keep
+    the 1200 s prepare-phase/deadline unchanged. No cached package claim can
+    substitute for the final real apt observation.
+    """
+    apt_env = dict(env, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l",
+                   APT_LISTCHANGES_FRONTEND="none")
+    graph_command(apt_env, ["sudo", "apt-get", "update"],
+                  repo, producer, "graph-apt-update", 60, clock)
+    graph_command(apt_env, ["sudo", "apt-get", "install", "--no-install-recommends", "-y",
+                            "bubblewrap", "ffmpeg", "fontconfig"],
+                  repo, producer, "graph-apt-media-preprovision", 180, clock)
+    graph_command(apt_env, ["sudo", "apt-get", "install", "--no-install-recommends", "-y",
+                            "bubblewrap", "ffmpeg", "fontconfig", "libcairo2-dev",
+                            "libpango1.0-dev", "pkg-config", "python3-pip", "python3-dev",
+                            "libpipewire-0.3-dev", "clang"],
+                  repo, producer, "graph-apt-install", 180, clock)
+
+
 def graph_cargo_targets(metadata, roles, root):
     result = {}
     for role in roles:
@@ -8887,10 +8910,7 @@ def graph_produce(repo, recipient):
             graph_command(env, [npm, "ci", "--no-audit", "--no-fund"], repo / "apps/studio", producer, "graph-npm", 300, clock)
             graph_command(env, [node, str(repo / "apps/studio/node_modules/@playwright/test/cli.js"), "install", "--with-deps", "chromium"],
                           repo / "apps/studio", producer, "graph-chromium", 300, clock)
-            graph_command(env, ["sudo", "apt-get", "update"], repo, producer, "graph-apt-update", 60, clock)
-            graph_command(env, ["sudo", "apt-get", "install", "--no-install-recommends", "-y", "bubblewrap", "ffmpeg", "fontconfig",
-                "libcairo2-dev", "libpango1.0-dev", "pkg-config", "python3-pip", "python3-dev", "libpipewire-0.3-dev", "clang"],
-                repo, producer, "graph-apt-install", 180, clock)
+            graph_prepare_system_packages(env, repo, producer, clock)
             sdk.mkdir(mode=0o700)
             for label, arguments, seconds in (
                 ("graph-sdk-init", ["git", "init", str(sdk)], 20),
