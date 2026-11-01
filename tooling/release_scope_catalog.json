@@ -21127,7 +21127,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "a780a9c608546619a489dfd6937ea7333fdc36a4d52d53c10edf090c581de82d",
+      "sha256": "c0bb563498a4f584e109c8af181152a500145507237594e90b6c04ea6b7348af",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21228,7 +21228,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "f9c6c1984266059dc23a09def270de9f9944575df6590a636c527428344a57dc",
+          "source_sha256": "51c1f95a354e7828abb4d145473c7efeff9688398d89de5f974443e3be499ea4",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21264,7 +21264,7 @@
               "name": "Quick source and conformance policies for every verification scope",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2b570407769222cdf3ca87c5ac2124bac1bfe6a583716a50688e071d6ccb7ebe",
+              "source_block_sha256": "c924edd107f7408de5a064269a64b9349e889cc88c6050820eefc60b464eb835",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21647,7 +21647,7 @@
           "runs_on": "windows-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "b942b161f18e132d1e836329c5565e339869d340e4153827e3788134d41f561c",
+          "source_sha256": "927b8d6c53335b607f09ee2ff07e45beb55ca43ebe6f025b33dd120a54611e8e",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21673,7 +21673,7 @@
               "name": "Source and acceptance policy before Windows contract execution",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "66e20f37d912e383563246d363c61668f6833933c0aa4f5c17b5cdd0a7b2fca3",
+              "source_block_sha256": "1a930eff3ded6347c3f32a8e471500a1bcbe02ff06dcc21a69767dd89d257583",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -22594,7 +22594,8 @@
         "The current selections require case-specific step inventories, including distribution_source exclusions and Linux first-use. This definition uses reviewed schema v2; the legacy generic run/jobs observation checker is not an evidence reader for these cases. Every case remains READBACK_REQUIRED.",
         "The installed Linux source uses one authenticated original45-minute GitHub job clock including metadata HTTP latency. The6-minute controls and35-minute owner step remain within that original clock; setup, source controls, capacity admission, original effects and custody do not reset it.",
         "Only linux-first-use selects the added Native join and requires the two admitted public recipient values. The other eight existing dispatch alternatives retain explicit empty new inputs and their prior job/step obligations; all does not silently acquire this alternative.",
-        "The installed harness requires exact final source/tree/SDK/locks, original attempt1, same boot/job and retained pristine-checkout control bindings. UNKNOWN remains nonreplayable; a ciphertext upload or source review cannot substitute for original physical behavior and independent acceptance."
+        "The installed harness requires exact final source/tree/SDK/locks, original attempt1, same boot/job and retained pristine-checkout control bindings. UNKNOWN remains nonreplayable; a ciphertext upload or source review cannot substitute for original physical behavior and independent acceptance.",
+        "Exact-branch, first-attempt development windows_contracts may defer the stale assessed-source acceptance policies only after independent receipt-policy source/public and all 60+64 unasserted acceptance rows plus unfinished creative-status guard. Windows source/public checks remain mandatory. This does not satisfy all or windows_installed, full G0 on F, physical installation, G2 or G3."
       ]
     }
   ],

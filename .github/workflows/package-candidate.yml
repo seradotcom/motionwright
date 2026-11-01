@@ -168,9 +168,10 @@ jobs:
           # Development NSIS G0 cannot promote historical A5 assessments.
           # F and all other refs/scopes still run both complete policies.
           case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in
-            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1)
+            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1)
               python3 -B - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           acceptance = json.loads(Path("docs/acceptance/acceptance-status.json").read_bytes())
@@ -183,7 +184,10 @@ jobs:
                   or any(row["complete_requirement_acceptance"] != "NOT_COMPLETED"
                          for row in creative["requirements"])):
               raise SystemExit("Development NSIS cannot defer claimed acceptance or release")
-          print("dev-nsis-source=PASS historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP")
+          scope = os.environ.get("MW_SELECTED_SCOPE")
+          assert scope in ("nsis_lifecycle", "windows_contracts")
+          print(("dev-nsis-source" if scope == "nsis_lifecycle" else "dev-windows-contracts-source")
+                + "=PASS historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP")
           PY
               ;;
             *)
@@ -916,13 +920,42 @@ jobs:
           python -B -m unittest tooling.tests.test_ci_windows_internal_candidate -v
           if ($LASTEXITCODE -ne 0) { throw 'Internal Windows candidate controls failed' }
       - name: Source and acceptance policy before Windows contract execution
+        env:
+          MW_SELECTED_SCOPE: ${{ inputs.verification_scope }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           python -B -E -s tooling/source_policy.py
           if ($LASTEXITCODE -ne 0) { throw 'Source policy failed before Windows contracts' }
-          python -B -E -s tooling/acceptance_policy.py
-          if ($LASTEXITCODE -ne 0) { throw 'Acceptance policy failed before Windows contracts' }
+          $development = ($env:GITHUB_REPOSITORY -ceq 'seradotcom/motionwright' -and
+              $env:GITHUB_EVENT_NAME -ceq 'workflow_dispatch' -and
+              $env:GITHUB_REF -ceq 'refs/heads/integrate/phase1-final-composition-20261027' -and
+              $env:MW_SELECTED_SCOPE -ceq 'windows_contracts' -and
+              $env:GITHUB_RUN_ATTEMPT -ceq '1')
+          if ($development) {
+            python -B -E -s tooling/public_surface_policy.py
+            if ($LASTEXITCODE -ne 0) { throw 'Public source policy failed before development Windows contracts' }
+            @'
+          import json
+          from pathlib import Path
+
+          acceptance = json.loads(Path("docs/acceptance/acceptance-status.json").read_bytes())
+          creative = json.loads(Path("docs/creative-production/requirements-status.json").read_bytes())
+          rows = acceptance["cases"] + acceptance["expansion_cases"]
+          if (len(acceptance["cases"]) != 60 or len(acceptance["expansion_cases"]) != 64
+                  or any(row["status"] != "NOT_RUN" or row["independent"] is not False
+                         for row in rows)
+                  or creative["v05_release_ready"] is not False
+                  or any(row["complete_requirement_acceptance"] != "NOT_COMPLETED"
+                         for row in creative["requirements"])):
+              raise SystemExit("Development Windows contracts cannot defer claimed acceptance or release")
+          '@ | python -B -E -s -
+            if ($LASTEXITCODE -ne 0) { throw 'Development Windows contract acceptance non-promotion failed' }
+            Write-Output 'dev-windows-contracts-source=PASS historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP'
+          } else {
+            python -B -E -s tooling/acceptance_policy.py
+            if ($LASTEXITCODE -ne 0) { throw 'Acceptance policy failed before Windows contracts' }
+          }
       - name: Windows cold-start unit contracts before package build
         id: windows-contracts
         shell: pwsh

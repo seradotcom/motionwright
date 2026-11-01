@@ -713,7 +713,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", scoped)
         self.assertIn("python3 tooling/source_policy.py", scoped)
         self.assertIn("python3 tooling/public_surface_policy.py", scoped)
-        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1)", scoped)
+        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1)", scoped)
         self.assertIn('case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in', scoped)
         self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', scoped)
         self.assertIn('F-G0=NOT_RUN G3=STOP', scoped)
@@ -733,8 +733,39 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
                         installed_job.index("tauri build --bundles deb,appimage"))
 
     def test_only_existing_two_jobs_select_distribution_and_all_historical_scopes_remain(self):
+        import fnmatch
+        import re
         text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
         self.assert_source_and_installed_routes(text)
+        receipt = text.split("      - name: Quick source and conformance policies for every verification scope", 1)[1].split(
+            "      - name: Candidate receipt and installed-package smoke policy tests", 1)[0]
+        start = "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:"
+        match = re.search(r"(?m)^\s+((?:seradotcom/motionwright:workflow_dispatch:[^()]+))\)\s*$", receipt)
+        self.assertIsNotNone(match)
+        patterns = match.group(1).split("|")
+        self.assertEqual(patterns, [start + "nsis_lifecycle:1", start + "windows_contracts:1"])
+        for scope, attempt, expected in (
+            ("windows_contracts", "1", True), ("nsis_lifecycle", "1", True),
+            ("windows_installed", "1", False), ("all", "1", False),
+            ("windows_contracts", "2", False), ("windows_contracts", "0", False)):
+            self.assertEqual(any(fnmatch.fnmatchcase(start + scope + ":" + attempt, pat) for pat in patterns),
+                             expected, (scope, attempt))
+        self.assertIn("F-G0=NOT_RUN G3=STOP", receipt)
+        windows = text.split("      - name: Source and acceptance policy before Windows contract execution", 1)[1].split(
+            "      - name: Windows cold-start unit contracts before package build", 1)[0]
+        self.assertIn("MW_SELECTED_SCOPE: ${{ inputs.verification_scope }}", windows)
+        for key, val in (("GITHUB_REPOSITORY", "seradotcom/motionwright"),
+                         ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+                         ("GITHUB_REF", "refs/heads/integrate/phase1-final-composition-20261027"),
+                         ("MW_SELECTED_SCOPE", "windows_contracts"), ("GITHUB_RUN_ATTEMPT", "1")):
+            self.assertIn("$env:" + key + " -ceq '" + val + "'", windows)
+        self.assertIn("if ($development)", windows)
+        self.assertIn("python -B -E -s tooling/source_policy.py", windows)
+        self.assertIn("python -B -E -s tooling/public_surface_policy.py", windows)
+        self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', windows)
+        self.assertIn("F-G0=NOT_RUN G3=STOP", windows)
+        self.assertIn("} else {", windows)
+        self.assertIn("python -B -E -s tooling/acceptance_policy.py", windows.split("} else {", 1)[1])
 
     def test_nsis_update_render_preserves_all_product_license_resources(self):
         import json
