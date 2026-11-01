@@ -17,7 +17,7 @@ SDK = "/home/runner/work/motionwright/motionwright/v/sdk"
 def original():
     source = {"sdk_root": SDK, "sha": "a" * 40, "run_id": "98765"}
     binaries = {role: {
-        "path": f"{SDK}/target/mw-r74-captured/{role}",
+        "path": f"{SDK}/target/mw-r74-captured/{'semwright-sandbox' if role == 'semwright_sandbox' else role}",
         "sha256": format(index + 1, "064x"), "size_bytes": 4096 + index,
     } for index, role in enumerate(ROLES)}
     spec = {"source": source, "binaries": binaries}
@@ -36,10 +36,10 @@ class GraphSdkCapturedRosterTests(unittest.TestCase):
         with self.assertRaisesRegex(GraphOwnerFailure, "graph-sdk-capture-role-mismatch:semwright_sandbox"):
             verify_graph_sdk_capture_roster(spec, index)
 
-    def test_captured_alias_not_equivalent_to_role_named_original(self):
+    def test_old_captured_underscore_is_not_runtime_helper(self):
         spec, index = original()
         for value in (spec, index):
-            value["binaries"]["semwright_sandbox"]["path"] = SDK + "/target/mw-r74-captured/semwright-sandbox"
+            value["binaries"]["semwright_sandbox"]["path"] = SDK + "/target/mw-r74-captured/semwright_sandbox"
         with self.assertRaisesRegex(GraphOwnerFailure, "graph-sdk-capture-role-mismatch:semwright_sandbox"):
             verify_graph_sdk_capture_roster(spec, index)
 

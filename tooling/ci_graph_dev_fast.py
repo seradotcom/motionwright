@@ -29,7 +29,7 @@ SDK_ROLES = ("semwright", "semwrightd", "semwright_sandbox")
 # The AST serialization and numeric token IDs vary across Python 3.11/3.14.
 # Comments/blank lines may change, but actual Python operators or statements
 # cannot change before an explicit code/source review.
-CAPTURE_ROSTER_TOKENS_SHA256 = "e039f97125686b89223077d2b4284a2efb8cc0190c7d4650c03cb8ea7b3181e8"
+CAPTURE_ROSTER_TOKENS_SHA256 = "860313d56423f5120f964149c1dadd97f2743ba191f1035c47851b8dce28673a"
 MANDATORY_PYTHON = (
     "test_graph_owner_phase_literal_from_nested_playwright_aggregate_only",
     "test_graph_owner_phase_nested_malformed_or_excess_depth_fails_closed",
@@ -168,11 +168,27 @@ def probe_capture_roster_source(owner: bytes, producer: bytes) -> dict:
     values = {n.value for n in ast.walk(capture)
               if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     require("mw-r74-captured" in values, "GRAPH_DEV_PRODUCER_CAPTURE_ROOT_DRIFT")
+    def pinned_helper_snapshot_name(node):
+        # Exact role-to-runtime filename expected by semwrightd in the
+        # authenticated SDK source. No extra alias, symlink, or mutable debug.
+        return (isinstance(node, ast.IfExp)
+                and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "role"
+                and len(node.test.ops) == 1 and isinstance(node.test.ops[0], ast.Eq)
+                and len(node.test.comparators) == 1
+                and isinstance(node.test.comparators[0], ast.Constant)
+                and node.test.comparators[0].value == "semwright_sandbox"
+                and isinstance(node.body, ast.Constant)
+                and node.body.value == "semwright-sandbox"
+                and isinstance(node.orelse, ast.Name)
+                and node.orelse.id == "role")
+
     role_copy = any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.Div)
                     and isinstance(n.left, ast.Name) and n.left.id == "directory"
-                    and isinstance(n.right, ast.Name) and n.right.id == "role"
+                    and pinned_helper_snapshot_name(n.right)
                     for n in ast.walk(capture))
-    require(role_copy, "GRAPH_DEV_PRODUCER_ROLE_CAPTURE_DRIFT")
+    require(role_copy, "GRAPH_DEV_PRODUCER_RUNTIME_HELPER_NAME_DRIFT")
     predicate = _function(owner_tree, "verify_graph_sdk_capture_roster")
     predicate_source = ast.get_source_segment(owner_text, predicate)
     require(predicate_source is not None, "GRAPH_DEV_CAPTURE_SOURCE_UNAVAILABLE")
@@ -221,7 +237,8 @@ def probe_capture_roster_source(owner: bytes, producer: bytes) -> dict:
     sdk = Path("/motionwright-fast-dev-fixture/sdk")
     source = {"sdk_root": str(sdk), "sha": "1" * 40}
     captured = {
-        role: {"path": str(sdk / "target" / "mw-r74-captured" / role),
+        role: {"path": str(sdk / "target" / "mw-r74-captured" /
+                           ("semwright-sandbox" if role == "semwright_sandbox" else role)),
                "sha256": chr(97 + i) * 64, "size_bytes": 1000 + i}
         for i, role in enumerate(SDK_ROLES)
     }
@@ -249,6 +266,8 @@ def probe_capture_roster_source(owner: bytes, producer: bytes) -> dict:
 
     deny("mutable_debug_alias", change_both(
         "semwright_sandbox", path=str(sdk / "target" / "debug" / "semwright-sandbox")))
+    deny("obsolete_underscore_capture", change_both(
+        "semwright_sandbox", path=str(sdk / "target" / "mw-r74-captured" / "semwright_sandbox")))
     deny("foreign_role_path", change_both(
         "semwright_sandbox", path=str(sdk / "target" / "mw-r74-captured" / "semwrightd")))
     deny("swapped_producer_digest", lambda a, b: b["binaries"]["semwrightd"].update(sha256="f" * 64))
@@ -257,7 +276,7 @@ def probe_capture_roster_source(owner: bytes, producer: bytes) -> dict:
     deny("zero_binary_bytes", change_both("semwright", size_bytes=0))
     deny("wrong_captured_root", change_both("semwright", path="/different/semwright"))
     deny("source_sha_drift", lambda a, b: b["source"].update(sha="2" * 40))
-    require(len(negatives) == 8, "GRAPH_DEV_NEGATIVE_SET_INCOMPLETE")
+    require(len(negatives) == 9, "GRAPH_DEV_NEGATIVE_SET_INCOMPLETE")
     return {"status": "PASS_INERT_ONLY", "positive": 1, "negative": len(negatives),
             "negative_names": negatives, "first_case": "graph-source-review SOURCE_INTAKE ONLY",
             "actual_native_processes": 0, "R74_technical_admissions": 0}

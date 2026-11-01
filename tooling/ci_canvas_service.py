@@ -8223,7 +8223,8 @@ def graph_verify_producer_index(index_ref, case_id):
         kind, name = GRAPH_TARGETS[role][2], GRAPH_TARGETS[role][1]
         expected_cargo = root / ("debug/examples" if kind == "example" else "debug") / name
         require(expected["cargo_executable"] == str(expected_cargo)
-                and binaries[role]["path"] == str(root / "mw-r74-captured" / role)
+                and binaries[role]["path"] == str(root / "mw-r74-captured" /
+                    ("semwright-sandbox" if role == "semwright_sandbox" else role))
                 and binaries[role]["path"] != expected["cargo_executable"],
                 "Graph Cargo emitted source and exclusive snapshot identity")
         require(len(matches) == 1, "Graph Cargo executable bijection")
@@ -8525,7 +8526,11 @@ def graph_capture_cargo_executable(source, target_root, role):
     if not directory.exists():
         directory.mkdir(mode=0o700)
     archive_ancestors(directory)
-    captured = directory / role
+    # The role key is semwright_sandbox, but the pinned semwrightd
+    # constructs its Host helper as current_exe().parent()/semwright-sandbox.
+    # Store one original captured executable under that runtime basename;
+    # neither a mutable debug alias nor a second symlink is authorized.
+    captured = directory / ("semwright-sandbox" if role == "semwright_sandbox" else role)
     result = graph_put(captured, raw)
     os.chmod(captured, stat.S_IMODE(before.st_mode))
     state = archive_stat(captured)

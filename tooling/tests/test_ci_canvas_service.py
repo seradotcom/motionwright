@@ -8538,6 +8538,20 @@ class GraphR74JoinTests(unittest.TestCase):
             self.assertEqual(Path(copied["path"]), target / "mw-r74-captured/semwright")
             self.assertEqual(Path(copied["path"]).lstat().st_nlink, 1)
             self.assertEqual(gate.graph_read(copied), src.read_bytes())
+            # The actual pinned semwrightd derives its sandbox helper from
+            # current_exe().parent()/semwright-sandbox. Logical producer role
+            # semwright_sandbox must retain that executable filename, or the
+            # restricted daemon cannot launch any hosted application driver.
+            original_sandbox = target / "debug/semwright-sandbox"
+            original_sandbox.write_bytes(b"SDK sandbox helper original bytes\n" * 3)
+            gate.os.chmod(original_sandbox, 0o755)
+            captured_sandbox = gate.graph_capture_cargo_executable(
+                original_sandbox, target, "semwright_sandbox")
+            self.assertEqual(Path(captured_sandbox["path"]),
+                             target / "mw-r74-captured/semwright-sandbox")
+            self.assertEqual(Path(captured_sandbox["path"]).lstat().st_nlink, 1)
+            self.assertEqual(gate.graph_read(captured_sandbox), original_sandbox.read_bytes())
+            self.assertFalse((target / "mw-r74-captured/semwright_sandbox").exists())
             producer = root / "graph-producer"
             producer.mkdir()
             compressed = gate.graph_retain_compacted_cargo_executable(

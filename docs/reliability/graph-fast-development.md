@@ -9,7 +9,7 @@ python -B tooling/ci_graph_dev_fast.py --repo . --base HEAD^ --mode fast
 
 The first check compares the Cargo producer with the exact captured
 `semwright`, `semwrightd` and `semwright_sandbox` executable roster under
-`target/mw-r74-captured`. One inert positive and eight tampering negatives
+`target/mw-r74-captured`. One inert positive and nine tampering negatives
 run before the small Python and Node source tests.
 
 Use `--mode plan` to inspect affected paths without running any checks.

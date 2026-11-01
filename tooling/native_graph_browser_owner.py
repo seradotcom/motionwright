@@ -577,7 +577,8 @@ def verify_graph_sdk_capture_roster(spec, producer_index):
                 and expected == retained and type(expected["path"]) is str
                 and DIGEST.fullmatch(expected["sha256"]) is not None
                 and type(expected["size_bytes"]) is int and expected["size_bytes"] > 0
-                and Path(expected["path"]) == capture / role,
+                and Path(expected["path"]) == capture / (
+                    "semwright-sandbox" if role == "semwright_sandbox" else role),
                 "graph-sdk-capture-role-mismatch:" + role)
     return True
 

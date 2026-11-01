@@ -19,7 +19,7 @@ from tooling import ci_graph_dev_fast as gate
 
 PRODUCER = b"""def graph_capture_cargo_executable(source, target_root, role):
     directory = target_root / "mw-r74-captured"
-    captured = directory / role
+    captured = directory / ("semwright-sandbox" if role == "semwright_sandbox" else role)
     return captured
 """
 
@@ -44,7 +44,8 @@ OWNER = ('''def verify_graph_sdk_capture_roster(spec, producer_index):
                 and expected == retained and type(expected["path"]) is str
                 and DIGEST.fullmatch(expected["sha256"]) is not None
                 and type(expected["size_bytes"]) is int and expected["size_bytes"] > 0
-                and Path(expected["path"]) == capture / role,
+                and Path(expected["path"]) == capture / (
+                    "semwright-sandbox" if role == "semwright_sandbox" else role),
                 "graph-sdk-capture-role-mismatch:" + role)
     return True
 
@@ -68,11 +69,12 @@ def create_git_fixture(root: Path):
 
 
 class CaptureRosterContractTests(unittest.TestCase):
-    def test_real_inert_contract_and_all_eight_negative_controls(self):
+    def test_real_inert_contract_and_all_nine_negative_controls(self):
         result = gate.probe_capture_roster_source(OWNER, PRODUCER)
         self.assertEqual((result["status"], result["positive"], result["negative"]),
-                         ("PASS_INERT_ONLY", 1, 8))
+                         ("PASS_INERT_ONLY", 1, 9))
         self.assertIn("mutable_debug_alias", result["negative_names"])
+        self.assertIn("obsolete_underscore_capture", result["negative_names"])
         self.assertIn("wrong_captured_root", result["negative_names"])
         self.assertEqual(result["R74_technical_admissions"], 0)
         self.assertEqual(result["actual_native_processes"], 0)
