@@ -4641,8 +4641,8 @@
     },
     {
       "path": ".github/workflows/native-manim-e2e.yml",
-      "sha256": "8f03c99559d85be60228487ea981084642a3b8330ccbe23705ce442a378bb98b",
-      "preamble_sha256": "4e25b08c43218051dea699dec294fba27a327aac5e79b6a13d91e989e19e66b3",
+      "sha256": "5e29bed99af1befe50d0f1f89f2fcb1f8bf2204b888ac0d1029548a7da60fea6",
+      "preamble_sha256": "08961c01237d00bffb8c6441f2ee0874d79282e9fcb18eb6b42bfeab2b559461",
       "evidence_class": "native_media_reopen",
       "purpose": "Distinct current source contracts, static scene, 120-frame camera, saved-camera-source cycle and editable-source cycle, each with its own guarded native steps and sealed originals. Preserve the existing editable outer deadline/custody and explicitly disposition the partial affected-Rust alternative.",
       "inputs": {
@@ -4746,7 +4746,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "b1edd092192bf8a3e81f48e7045c1fe3ee48f4b025f5f02f27222feb905170e8",
+          "source_sha256": "341ed2c21156cb6b3ca635ccf4f2eaacdab36449610e2dff6da7cc7ca8449067",
           "instance_sets": {
             "source-contracts": [
               {}
@@ -4781,7 +4781,7 @@
               "name": "Quick source and conformance policies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "cfc22fd63f2acc5fa94e0616431b3e397622d76dad1a317cac6df3d27e905259",
+              "source_block_sha256": "8244bebf63579fd88e090f8932dd3b26bb6378661ab2d21622151592572dc73e",
               "api_binding": "EXPLICIT_NAME"
             },
             {

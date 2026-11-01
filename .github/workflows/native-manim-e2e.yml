@@ -47,6 +47,7 @@ on:
       - 'tooling/test_native_manim_editable_outer_custody.py'
       - 'tooling/test_native_manim_outer_publication.py'
       - 'tooling/tests/test_native_manim_editable_workflow.py'
+      - 'tooling/tests/test_ci_manim_source_selection.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
@@ -131,6 +132,7 @@ jobs:
           if (len(acceptance["cases"]) != 60 or len(acceptance["expansion_cases"]) != 64
                   or any(row["status"] != "NOT_RUN" or row["independent"] is not False
                          for row in rows)
+                  or len(creative["requirements"]) != 64
                   or creative["v05_release_ready"] is not False
                   or any(row["complete_requirement_acceptance"] != "NOT_COMPLETED"
                          for row in creative["requirements"])):
@@ -143,6 +145,7 @@ jobs:
               python3 -B tooling/creative_status_policy.py
               ;;
           esac
+          python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_source_selection.py' -v
 
       - name: Install pinned private-custody test dependencies outside the checkout
         run: |
