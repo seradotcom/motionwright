@@ -8176,6 +8176,42 @@ class GraphR74JoinTests(unittest.TestCase):
         reference.assert_called_once_with(Path("original.json"), gate.GRAPH_BUDGET["store_file_bytes"])
         read.assert_called_once_with({"path": "private-original"}, gate.GRAPH_BUDGET["store_file_bytes"])
 
+    def test_graph_owner_phase_literal_from_nested_playwright_aggregate_only(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        result["error"] = {"message": "AggregateError: Service creation and its cleanup failed",
+                           "stack": "AggregateError: outer only"}
+        result["errors"] = [
+            {"message": "AggregateError: Service creation and its cleanup failed"},
+            {"message": "Error: OWNER_ERROR:RUNTIME_INVALID CANARY_PRIVATE_OWNER_ERROR",
+             "stack": "Error: OWNER_ERROR:RUNTIME_INVALID\\n at /private/CANARY_PRIVATE_PATH:77:9"},
+            {"message": "Error: Secondary cleanup failed at /private/CANARY_CLEANUP"},
+        ]
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(observed["report"], "OBSERVED_FAILURE_DIAGNOSTIC_ONLY")
+        self.assertEqual(observed["error_codes"], ["OWNER_ERROR:RUNTIME_INVALID"])
+        self.assertEqual(observed["cases"][0]["statuses"], ["failed"])
+        self.assertNotIn("CANARY", gate.json.dumps(observed))
+        self.assertNotIn("/private/", gate.json.dumps(observed))
+
+    def test_graph_owner_phase_diagnostic_denies_unknown_and_suffix_codes(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        result["error"] = {"message": "AggregateError: Service creation and its cleanup failed"}
+        result["errors"] = [
+            {"message": "OWNER_ERROR:RUNTIME_INVALID_TAINTED CANARY_UNKNOWN"},
+            {"message": "OWNER_ERROR:SECRET_CREDENTIAL CANARY_SECRET"},
+            {"message": "OWNER_ERROR:CLIENT_LIMIT CANARY_VALID_NESTED"},
+        ]
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(observed["error_codes"], ["OWNER_ERROR:CLIENT_LIMIT"])
+        self.assertNotIn("CANARY", gate.json.dumps(observed))
+        self.assertNotIn("SECRET", gate.json.dumps(observed))
+
     def test_graph_failed_case_diagnostic_global_bootstrap_error_never_invents_a_case(self):
         value = {"suites": [], "errors": [{"message": "browserType.launch: Executable doesn't exist at /private/SECRET_BROWSER_PATH"}]}
         with mock.patch.object(gate, "graph_ref", return_value={}), \
