@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusive,
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
-  ERROR_CODES, same, BoundedJsonLines } from './contracts.mjs';
+  ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines } from './contracts.mjs';
 import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyMetadataCredential, GRAPH_BUDGET } from './producer_guard.mjs';
 import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.mjs';
 
@@ -511,7 +511,12 @@ export class GraphCaseFactoryCore {
   receive(message) {
     need(message && ['READY','CLIENT','ERROR','FINAL_RECEIPT'].includes(message.event), 'OWNER_EVENT');
     if (message.event === 'ERROR') {
-      need(ERROR_CODES.has(message.code), 'OWNER_ERROR_CODE'); this.protocolFail(new Error('OWNER_ERROR:' + message.code)); return;
+      need(ERROR_CODES.has(message.code), 'OWNER_ERROR_CODE');
+      const stage = message.runtime_stage;
+      need(stage === undefined || (message.code === 'RUNTIME_INVALID' &&
+        GRAPH_RUNTIME_STAGES.has(stage)), 'OWNER_RUNTIME_STAGE_CODE');
+      const hint = stage && stage !== 'UNCLASSIFIED' ? ' OWNER_STAGE:' + stage : '';
+      this.protocolFail(new Error('OWNER_ERROR:' + message.code + hint)); return;
     }
     const key = message.event + ':' + (message.id ?? '');
     need(!this.received.has(key), 'OWNER_EVENT_REPLAY'); this.received.add(key);

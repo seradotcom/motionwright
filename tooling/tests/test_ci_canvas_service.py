@@ -8197,6 +8197,56 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertNotIn("CANARY", gate.json.dumps(observed))
         self.assertNotIn("/private/", gate.json.dumps(observed))
 
+    def test_graph_owner_runtime_stage_is_closed_source_only_and_never_leaks_private_details(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        result["error"] = {"message": "AggregateError: source owned failure", "errors": [
+            {"message": "OWNER_ERROR:RUNTIME_INVALID OWNER_STAGE:BOOTSTRAP_SOCKET "
+                        "CANARY_PRIVATE_PATH /private/NEVER_PUBLISH"}]}
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(observed["error_codes"],
+                         ["OWNER_ERROR:RUNTIME_INVALID", "OWNER_STAGE:BOOTSTRAP_SOCKET"])
+        self.assertNotIn("CANARY", gate.json.dumps(observed))
+        self.assertNotIn("/private/", gate.json.dumps(observed))
+        for invalid in ("OWNER_STAGE:BOOTSTRAP_SOCKET_TAINTED",
+                        "OWNER_STAGE:BOOTSTRAP_SOCKET-PRIVATE",
+                        "OWNER_STAGE:BOOTSTRAP_SOCKETlower",
+                        "OWNER_STAGE:SECRET"):
+            result["error"] = {"message": "OWNER_ERROR:RUNTIME_INVALID " + invalid}
+            with mock.patch.object(gate, "graph_ref", return_value={}), \
+                 mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+                bad = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+            self.assertEqual(bad["error_codes"], ["OWNER_ERROR:RUNTIME_INVALID"])
+
+    def test_graph_runtime_stage_labels_match_owner_contract_and_exact_source_markers(self):
+        import ast
+        owner_raw = (PATH.parent / "native_graph_browser_owner.py").read_bytes()
+        owner = ast.parse(owner_raw)
+        source_tuple = next(node.value.args[0] for node in owner.body
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "GRAPH_RUNTIME_STAGES")
+        owner_stages = set(ast.literal_eval(source_tuple))
+        self.assertEqual(len(owner_stages), 13)
+        self.assertIn("UNCLASSIFIED", owner_stages)
+        cls = next(node for node in owner.body if isinstance(node, ast.ClassDef)
+                   and node.name == "GraphBrowserOwner")
+        constructor = next(node for node in cls.body if isinstance(node, ast.FunctionDef)
+                           and node.name == "__init__")
+        marked = [ast.literal_eval(call.args[0]) for call in ast.walk(constructor)
+                  if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                  and call.func.id == "runtime_stage"]
+        self.assertEqual(set(marked), owner_stages - {"UNCLASSIFIED"})
+        self.assertEqual(len(marked), 12)
+        js = (PATH.parents[1] / "apps/studio/tests/support/graph-owner/contracts.mjs").read_text(encoding="utf-8")
+        block = js.split("export const GRAPH_RUNTIME_STAGES = new Set([", 1)[1].split("]);", 1)[0]
+        self.assertEqual(set(re.findall(r"'([A-Z_]+)'", block)), owner_stages)
+        self.assertEqual(set(code.removeprefix("OWNER_STAGE:") for code in gate.GRAPH_CASE_DIAGNOSTIC_CODES
+                             if code.startswith("OWNER_STAGE:")), owner_stages - {"UNCLASSIFIED"})
+        self.assertIn('**({"runtime_stage": _RUNTIME_STAGE} if phase == "RUNTIME_INVALID" else {})',
+                      owner_raw.decode("utf-8"))
+
     def test_graph_owner_phase_nested_malformed_or_excess_depth_fails_closed(self):
         repo, value = self.graph_diagnostic_fixture_report()
         result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]

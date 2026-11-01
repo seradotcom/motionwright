@@ -9392,6 +9392,13 @@ GRAPH_CASE_DIAGNOSTIC_CODES = (
     "OWNER_ERROR:OWNER_CLOSE_FAILED", "OWNER_ERROR:CUSTODY_FAILED",
     "OWNER_ERROR:DEADLINE_EXCEEDED", "OWNER_ERROR:CANCELLED",
     "OWNER_ERROR:INTERNAL_ERROR",
+    # Only immutable first-party stage labels, never runtime error details.
+    "OWNER_STAGE:STORE_BIND", "OWNER_STAGE:SOURCE_INTAKE",
+    "OWNER_STAGE:RUNTIME_INTAKE", "OWNER_STAGE:STORE_READBACK",
+    "OWNER_STAGE:PRIVATE_PROFILE", "OWNER_STAGE:CONFIG_PATHS",
+    "OWNER_STAGE:PROVIDER_MANIFEST", "OWNER_STAGE:BOOTSTRAP_SOCKET",
+    "OWNER_STAGE:BOOTSTRAP_PROJECT", "OWNER_STAGE:BOOTSTRAP_CLOSE",
+    "OWNER_STAGE:RESTRICTED_SOCKET", "OWNER_STAGE:OWNER_RECEIPT",
 )
 
 
@@ -9461,7 +9468,7 @@ def graph_observed_playwright_failure(repo, report_path, command):
                 location(direct.get("file"), direct.get("line"), direct.get("column"))
             text = "\n".join(error[key][:65536] for key in ("message", "stack") if type(error.get(key)) is str).replace("\\", "/")
             for code in GRAPH_CASE_DIAGNOSTIC_CODES:
-                if re.search(r"(?<![A-Z0-9_])" + re.escape(code) + r"(?![A-Z0-9_])", text) and code not in codes:
+                if re.search(r"(?<![A-Za-z0-9_-])" + re.escape(code) + r"(?![A-Za-z0-9_-])", text) and code not in codes:
                     codes.append(code)
             for phrase, code in (("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
                                  ("browserType.launch: Executable doesn't exist", "PLAYWRIGHT_BROWSER_EXECUTABLE_MISSING"),

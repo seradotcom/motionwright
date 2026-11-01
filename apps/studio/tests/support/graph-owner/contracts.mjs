@@ -12,6 +12,14 @@ export const REQUEST_ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 export const ERROR_CODES = new Set(['SPEC_INVALID','SOURCE_MISMATCH','RUNTIME_INVALID','STORE_INVALID','BINARY_MISMATCH',
   'OWNER_START_FAILED','CLIENT_LIMIT','REQUEST_INVALID','CLIENT_START_FAILED','SERVICE_BARRIER_INVALID','OWNER_CLOSE_FAILED',
   'CUSTODY_FAILED','DEADLINE_EXCEEDED','CANCELLED','INTERNAL_ERROR']);
+// Closed source-only diagnostic labels. No private cause, child data or path
+// may be projected through the public Graph failure reporter.
+export const GRAPH_RUNTIME_STAGES = new Set([
+  'UNCLASSIFIED', 'STORE_BIND', 'SOURCE_INTAKE', 'RUNTIME_INTAKE',
+  'STORE_READBACK', 'PRIVATE_PROFILE', 'CONFIG_PATHS',
+  'PROVIDER_MANIFEST', 'BOOTSTRAP_SOCKET', 'BOOTSTRAP_PROJECT',
+  'BOOTSTRAP_CLOSE', 'RESTRICTED_SOCKET', 'OWNER_RECEIPT',
+]);
 export function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 export function exact(value, fields, reason) {
   need(object(value) && Object.keys(value).sort().join('\0') === [...fields].sort().join('\0'), reason);

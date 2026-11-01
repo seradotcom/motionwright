@@ -47,6 +47,15 @@ _OBSERVED_SIGNALS = []
 GRAPH_HELPERS = frozenset(("manim_bundled_font_intake", "manim_graph_font_probe",
                          "manim_graph_vector_text", "manim_graph_svg_import",
                          "manim_graph_text_layout", "manim_graph_runtime"))
+# Only these fixed startup stage labels may cross the private-owner boundary.
+# They disclose no original errors, paths, subprocess streams or credentials.
+GRAPH_RUNTIME_STAGES = frozenset((
+    "UNCLASSIFIED", "STORE_BIND", "SOURCE_INTAKE", "RUNTIME_INTAKE",
+    "STORE_READBACK", "PRIVATE_PROFILE", "CONFIG_PATHS",
+    "PROVIDER_MANIFEST", "BOOTSTRAP_SOCKET", "BOOTSTRAP_PROJECT",
+    "BOOTSTRAP_CLOSE", "RESTRICTED_SOCKET", "OWNER_RECEIPT",
+))
+_RUNTIME_STAGE = "UNCLASSIFIED"
 
 
 class GraphOwnerFailure(ValueError):
@@ -78,6 +87,12 @@ def raise_deferred_cancellation():
 def require(condition, code):
     if not condition:
         raise GraphOwnerFailure(code)
+
+
+def runtime_stage(value):
+    global _RUNTIME_STAGE
+    require(value in GRAPH_RUNTIME_STAGES, "unreviewed-runtime-stage")
+    _RUNTIME_STAGE = value
 
 
 def strict_json(raw):
@@ -908,6 +923,7 @@ class ClientReservationLedger:
 class GraphBrowserOwner:
     """One Host/Store owner; every wrapper receives its own genuine session."""
     def __init__(self, repo, expected_source, database, resource, lifecycle):
+        runtime_stage("STORE_BIND")
         self.lifecycle = lifecycle
         self.repo = repo
         self.database = Path(database)
@@ -921,16 +937,20 @@ class GraphBrowserOwner:
                 "owner-custody-and-data-mount-roots-must-be-disjoint")
         require(RESOURCE.fullmatch(resource) is not None, "actual-project-resource-required")
         self.resource = resource
+        runtime_stage("SOURCE_INTAKE")
         self.shared, self.source_inputs = load_shared(repo, expected_source, lifecycle)
         validate_bound_source(self.source_inputs)
         require(Path(self.shared.SEMWRIGHT).resolve() == Path(_OWNER_SPEC["source"]["sdk_root"]), "spec-sdk-root-mismatch")
+        runtime_stage("RUNTIME_INTAKE")
         self.runtime = runtime_inputs(repo)
         self.runtime_custody = load_graph_runtime_custody(repo, self.source_inputs, self.runtime, lifecycle)
         self.verified_native_service_binary = _GRAPH_J1["index"]["binaries"]["native_graph_session"]["path"]
+        runtime_stage("STORE_READBACK")
         self.initial_store_show = observe_existing_store(self)
         self.clients = []
         self.client_ledger = ClientReservationLedger(max_clients=_OWNER_SPEC["limits"]["max_clients"])
         self.closed = False
+        runtime_stage("PRIVATE_PROFILE")
         self.paths = {name: private_directory(lifecycle.evidence / name)
                       for name in ("home", "state", "config", "clients", "work", "native-output")}
         # UNIX socket names have a strict small byte limit. The short socket
@@ -950,13 +970,16 @@ class GraphBrowserOwner:
             "database": self.database_initial, "resource": resource, "automatic_cleanup": False})
         # Config paths is a plain configuration JSON document, not a native
         # operation envelope. Preserve the exact streams before parsing it.
+        runtime_stage("CONFIG_PATHS")
         raw_paths = captured_text(lifecycle, "owner-config-paths", [self.cli, "--json", "config", "paths"], self.env)
         effective_paths = json.loads(raw_paths)
         self.owner_state = Path(effective_paths["state"]).resolve()
         require(self.owner_state.is_relative_to(self.paths["state"]), "owner-state-escaped-private-profile")
         new_json(lifecycle.evidence / "owner-paths.parsed.json", effective_paths)
+        runtime_stage("PROVIDER_MANIFEST")
         manifest_path = self.paths["config"] / "motionwright-driver.json"
         new_json(manifest_path, graph_manifest(repo, self.source_inputs, self.runtime, self.paths["work"]))
+        runtime_stage("BOOTSTRAP_SOCKET")
         bootstrap_config = self.paths["config"] / "owner-bootstrap.toml"
         new_bytes(bootstrap_config, self.shared.owner_config(self.database.parent).encode("utf-8"))
         bootstrap_socket = self.socket_directory / "bootstrap.sock"
@@ -964,17 +987,20 @@ class GraphBrowserOwner:
         self.bootstrap = lifecycle.start("owner-bootstrap", [self.daemon_executable, "--config",
                                           str(bootstrap_config), "--socket", str(bootstrap_socket)], self.env)
         lifecycle.wait_socket(self.bootstrap, bootstrap_socket, deadline=time.monotonic() + 20)
+        runtime_stage("BOOTSTRAP_PROJECT")
         bootstrap_session = self.paths["clients"] / "owner-bootstrap.session"
         created = self.invoke("owner-project-create", bootstrap_socket, bootstrap_session,
                               "project.create", {"root": "motionwright-data"})
         project = created.get("data", {}).get("project")
         require(isinstance(project, str) and CORE_PROJECT.fullmatch(project) is not None,
                 "owner-project-create-did-not-issue-real-core-identity")
+        runtime_stage("BOOTSTRAP_CLOSE")
         terminal = self.bootstrap.finish(timeout=10, stop=True, reason="bootstrap-complete")
         require(terminal["status"] in ("SUCCESS", "STOPPED")
                 and terminal["writers_closed_within_owned_group"], "bootstrap-owner-closure-unproved")
         # Reuse precisely the same private Core owner state, then narrow its
         # resource selection. No prj_ identity, grant or Store is fabricated.
+        runtime_stage("RESTRICTED_SOCKET")
         config = self.paths["config"] / "owner-restricted.toml"
         new_bytes(config, graph_owner_config(self.shared, self.database, manifest_path, resource, project,
                     self.runtime, self.source_inputs, self.paths["work"]).encode("utf-8"))
@@ -982,6 +1008,7 @@ class GraphBrowserOwner:
         self.daemon = lifecycle.start("owner-restricted", [self.daemon_executable, "--config", str(config),
                                       "--socket", str(self.socket)], self.env)
         lifecycle.wait_socket(self.daemon, self.socket, deadline=time.monotonic() + 20)
+        runtime_stage("OWNER_RECEIPT")
         self.descriptor_path = lifecycle.evidence / "owner-descriptor.json"
         new_json(self.descriptor_path, {"schema": SCHEMA, "status": "OWNER_READY_NOT_ACCEPTANCE",
             "source": expected_source, "tree": self.source_inputs["tree"],
@@ -2372,7 +2399,9 @@ def protocol_main():
                     private = str(private)
                 except BaseException:
                     private = None
-            emit({"event": "ERROR", **({"id": request_id} if request_id is not None else {}), "code": phase, "private_receipt": private})
+            emit({"event": "ERROR", **({"id": request_id} if request_id is not None else {}),
+                  "code": phase, "private_receipt": private,
+                  **({"runtime_stage": _RUNTIME_STAGE} if phase == "RUNTIME_INVALID" else {})})
             return 1
         finally:
             leave_cancellation_boundary(propagate=False)

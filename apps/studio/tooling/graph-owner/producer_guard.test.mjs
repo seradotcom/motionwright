@@ -39,6 +39,31 @@ test("reviewed source shape never grants a Native callback", () => {
   assert.throws(() => requireNativeGraphParentAdmission(candidate(), { approved: true }),
     /GRAPH_NATIVE_PARENT_ORIGINALS_AND_INDEPENDENT_APPROVAL_MISSING/);
 });
+test("bounded Owner runtime stage preserves a closed diagnostic without private data", () => {
+  const owner = Object.create(GraphCaseFactoryCore.prototype);
+  owner.waiters = new Map();
+  owner.failures = [];
+  owner.ownerProtocolFailure = null;
+  owner.taint = function(error) { this.failures.push(String(error)); };
+  owner.receive({event:'ERROR', code:'RUNTIME_INVALID', runtime_stage:'BOOTSTRAP_SOCKET',
+    private_receipt:'/private/CANARY_TOKEN_PATH'});
+  assert.match(String(owner.ownerProtocolFailure),
+    /OWNER_ERROR:RUNTIME_INVALID OWNER_STAGE:BOOTSTRAP_SOCKET/);
+  assert.doesNotMatch(String(owner.ownerProtocolFailure), /CANARY|private/);
+  for (const [code, runtime_stage] of [
+    ['RUNTIME_INVALID','BOOTSTRAP_SOCKET_PRIVATE'],
+    ['STORE_INVALID','BOOTSTRAP_SOCKET'],
+  ]) {
+    const invalid = Object.create(GraphCaseFactoryCore.prototype);
+    invalid.waiters = new Map();
+    invalid.failures = [];
+    invalid.ownerProtocolFailure = null;
+    invalid.taint = function(error) { this.failures.push(String(error)); };
+    assert.throws(() => invalid.receive({event:'ERROR', code, runtime_stage}),
+      /OWNER_RUNTIME_STAGE_CODE/);
+    assert.equal(invalid.ownerProtocolFailure, null);
+  }
+});
 test("caller approval, cap override or replay cannot amend a source plan", () => {
   for (const change of [
     { callback_cap: 100 }, { native_authoring_approved: true },
