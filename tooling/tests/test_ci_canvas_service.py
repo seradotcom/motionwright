@@ -8181,7 +8181,8 @@ class GraphR74JoinTests(unittest.TestCase):
         result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
         result["error"] = {"message": "AggregateError: Service creation and its cleanup failed",
                            "stack": "AggregateError: outer only"}
-        result["errors"] = [
+        # The nested AggregateError carrier is distinct from result.errors.
+        result["error"]["errors"] = [
             {"message": "AggregateError: Service creation and its cleanup failed"},
             {"message": "Error: OWNER_ERROR:RUNTIME_INVALID CANARY_PRIVATE_OWNER_ERROR",
              "stack": "Error: OWNER_ERROR:RUNTIME_INVALID\\n at /private/CANARY_PRIVATE_PATH:77:9"},
@@ -8195,6 +8196,33 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertEqual(observed["cases"][0]["statuses"], ["failed"])
         self.assertNotIn("CANARY", gate.json.dumps(observed))
         self.assertNotIn("/private/", gate.json.dumps(observed))
+
+    def test_graph_owner_phase_nested_malformed_or_excess_depth_fails_closed(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        for nested in ("CANARY_MALFORMED", [None], [{"message": "safe",
+                        "errors": [{"message": "safe", "errors": [{"message": "safe",
+                        "errors": [{"message": "OWNER_ERROR:CLIENT_LIMIT CANARY_TOO_DEEP"}]}]}]}]):
+            with self.subTest(nested=nested):
+                result["error"] = {"message": "AggregateError: nested", "errors": nested}
+                with mock.patch.object(gate, "graph_ref", return_value={}), \
+                     mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+                    observed = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+                self.assertEqual(observed, {"report": "INVALID_OR_UNAVAILABLE"})
+                self.assertNotIn("CANARY", gate.json.dumps(observed))
+
+    def test_graph_owner_phase_nested_global_error_quota_fails_closed(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        # 1 outer + 8 children + 8*4 children exceed the shared 32-error
+        # limit without any unbounded traversal or public partial results.
+        result["error"] = {"message": "AggregateError: nested", "errors": [
+            {"message": "nested", "errors": [{"message": "OWNER_ERROR:CLIENT_LIMIT CANARY_QUOTA"} for _ in range(4)]}
+            for _ in range(8)]}
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(observed, {"report": "INVALID_OR_UNAVAILABLE"})
 
     def test_graph_owner_phase_diagnostic_denies_unknown_and_suffix_codes(self):
         repo, value = self.graph_diagnostic_fixture_report()

@@ -9450,11 +9450,12 @@ def graph_observed_playwright_failure(repo, report_path, command):
                 if item not in locations and len(locations) < 8:
                     locations.append(item)
 
-        def error_hint(error):
+        def error_hint(error, depth=0):
             if error is None:
                 return
             limits["errors"] += 1
-            require(type(error) is dict and limits["errors"] <= 32, "Graph diagnostic error bound")
+            require(type(error) is dict and depth <= 3 and limits["errors"] <= 32,
+                    "Graph diagnostic error bound")
             direct = error.get("location", {})
             if type(direct) is dict:
                 location(direct.get("file"), direct.get("line"), direct.get("column"))
@@ -9471,6 +9472,14 @@ def graph_observed_playwright_failure(repo, report_path, command):
             for pattern, source in patterns:
                 for match in pattern.finditer(text):
                     location(source, int(match[1]), int(match[2]))
+            # Playwright also serializes AggregateError children inside
+            # result.error.errors, not just its sibling result.errors array.
+            # Never publish raw errors. All nested nodes share the same quota.
+            nested = error.get("errors", [])
+            require(type(nested) is list and len(nested) <= 8, "Graph diagnostic nested errors bound")
+            for child in nested:
+                require(type(child) is dict and depth < 3, "Graph diagnostic nested depth bound")
+                error_hint(child, depth + 1)
 
         def sequence(parent, name, maximum):
             items = parent.get(name, [])
