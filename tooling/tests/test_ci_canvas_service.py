@@ -923,7 +923,10 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         per_case_ms = int(declared[0].replace("_", ""))
         self.assertEqual(per_case_ms, 180_000)
         self.assertGreater(gate.SELECTION_TIMEOUTS[label], len(titles) * per_case_ms / 1000 + 120)
-        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
+        # Validate the complete GN1 delta before comparing the prior selection contract.
+        workflow = gn1_previous_workflow(raw).decode("utf-8")
         declared_options = re.findall(r"options: \[([^\]]+)\]", workflow)
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
@@ -1678,7 +1681,10 @@ class BrowserContractSelectionTests(unittest.TestCase):
                 self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
 
     def test_browser_workflow_is_manual_closed_and_within_declared_deadlines(self):
-        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
+        # Validate the complete GN1 delta before comparing the prior selection contract.
+        workflow = gn1_previous_workflow(raw).decode("utf-8")
         choices = [item.strip() for item in re.findall(r"options: \[([^\]]+)\]", workflow)[0].split(",")]
         self.assertEqual(choices.count("browser-contracts"), 1)
         self.assertIn("default: authoring-drafts", workflow)
@@ -6126,11 +6132,13 @@ class CameraEightSourceTests(unittest.TestCase):
     def test_workflow_only_adds_camera_choice_ninety_minutes_source_depth_and_closed_preflight(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
         raw = path.read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
         previous = camera_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), WINDOW_REVIEWED_WORKFLOW_SHA256)
         self.assertEqual(gate.hashlib.sha256(window_previous_workflow(previous)).hexdigest(),
                          "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b")
-        value = raw.decode()
+        # Keep current bytes for history/drift checks; compare the pre-GN1 job roster.
+        value = gn1_previous_workflow(raw).decode("utf-8")
         self.assertEqual(re.findall(r"^  ([a-z][a-z0-9_-]*):$", value, re.M),
                          ["push", "workflow_dispatch", "run", "g0", "creative-unit-build", "real-service", "studio-service-68"])
         self.assertIn("default: authoring-drafts", value)
@@ -6685,8 +6693,74 @@ A6_DEV_G0_PRE_SHA256 = 'ab66c8ef0961cc789450de0c7dd26a0c68ec133ccf63af14e9c7b976
 A6_DEV_G0_OLD_STEP_BYTES = b'      - name: Always verify source, contracts and formatting\n        run: |\n          set -euo pipefail\n          python -B tooling/source_policy.py\n          python -B tooling/acceptance_policy.py\n          python -B tooling/creative_status_policy.py\n          python -B tooling/public_surface_policy.py\n          cargo fmt --all -- --check\n      - name: Require source-bound complete selection controls\n        if: ${{ !cancelled() }}\n        run: |\n          set -euo pipefail\n          python -B tooling/ci_test_runner.py --repo . --mode both \\\n            --pattern test_ci_canvas_service.py --expected-source "$GITHUB_SHA" \\\n            --report ../v/g0/receipt.json --require-complete --timeout 600\n'
 A6_DEV_G0_NEW_STEP_SHA256 = '2dd991fa7a2eaf5c1f2c4911a31f3432b3b25efec527f3e0b2bb9434a023e325'
 
+# GN1 followed the reviewed developer G0 delta. Reverse only its five exact
+# source changes before evaluating the unchanged G0 and older workflow pins.
+GN1_DEV_WORKFLOW_POST_SHA256 = 'b13658bd0837bd84dd0015abe2e8c4648d8680cc15024a1dd6c184cba0745592'
+GN1_DEV_WORKFLOW_REVERT_PAIRS = ((b'        options: [studio-service-68, phase1-service47, phase1-native-graph, phase1-native-gn'
+  b'1, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-produc'
+  b'tion-browser, project-authoring, project-authoring-core, production-design, creative-workben'
+  b'ch, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief'
+  b'-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-r'
+  b'ecipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-author'
+  b'ity, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branc'
+  b'h-authoring, claim-source, branch-combination]\n',
+  b'        options: [studio-service-68, phase1-service47, phase1-native-graph, criterion-partia'
+  b'ls, window-frontend, camera-with-v2, creative-production, creative-production-browser, proje'
+  b'ct-authoring, project-authoring-core, production-design, creative-workbench, complete-author'
+  b'ing, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-un'
+  b'certain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-autho'
+  b'rity, review, review-browser, inspector, profile-metadata, profile-authority, projection-nav'
+  b'igation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-'
+  b'source, branch-combination]\n'),
+ (b'          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/'
+  b'integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-servi'
+  b'ce47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != '
+  b'"phase1-native-gn1" ) ]]; then\n',
+  b'          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/'
+  b'integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-servi'
+  b'ce47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" ) ]]; then\n'),
+ (b'            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-'
+  b'native-gn1)\n              # Source/inert GN1 G0 only: Native effects require the separate\n  '
+  b'            # explicit, source-bound one-original-owner reusable job below.\n              py'
+  b'thon -B -m unittest                 tooling.tests.test_ci_graph_dev_native_startup.SourceIde'
+  b'ntityTests                 tooling.tests.test_ci_graph_dev_native_startup.WorkflowBoundaryTe'
+  b'sts                 tooling.tests.test_ci_graph_dev_native_startup.PrivateOriginalTests.test'
+  b'_owner_stage_marker_is_not_evidence_of_launched_daemon -q\n              ;;\n',
+  b''),
+ (b"    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' "
+  b"&& inputs.selection != 'window-frontend' && inputs.selection != 'phase1-native-gn1'\n",
+  b"    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' "
+  b"&& inputs.selection != 'window-frontend'\n"),
+ (b'  # Reuse this registered manual-dispatch workflow to select the branch-local\n  # first-part'
+  b'y Native startup. No push, repeated R74, or release acceptance.\n  phase1-native-gn1:\n    nam'
+  b'e: GN1 one real disposable Native owner (development only, not G2)\n    if: github.event_name'
+  b" == 'workflow_dispatch' && inputs.selection == 'phase1-native-gn1' && github.ref == 'refs/he"
+  b"ads/integrate/phase1-final-composition-20261027'\n    needs: g0\n    permissions:\n      conten"
+  b'ts: read\n    uses: ./.github/workflows/graph-native-startup-dev.yml\n    with:\n      expected'
+  b'_source_sha: ${{ github.sha }}\n      recipient_json: ${{ format(\'{{"spki_der_base64":"{0}","'
+  b'sha256":"{1}"}}\', inputs.graph_review_spki_der_base64, inputs.graph_review_spki_sha256) }}\n '
+  b'     one_original_owner: allow-one-original\n',
+  b''))
+
+
+def gn1_previous_workflow(raw):
+    """Reverse the exact development GN1 addition, not a native admission."""
+    if gate.hashlib.sha256(raw).hexdigest() != GN1_DEV_WORKFLOW_POST_SHA256:
+        if b"phase1-native-gn1" in raw:
+            raise ValueError("GN1 developer source differs from reviewed postimage")
+        return raw
+    for added, previous in GN1_DEV_WORKFLOW_REVERT_PAIRS:
+        if raw.count(added) != 1:
+            raise ValueError("GN1 developer workflow delta is missing or duplicated")
+        raw = raw.replace(added, previous, 1)
+    if gate.hashlib.sha256(raw).hexdigest() != A6_DEV_G0_POST_SHA256:
+        raise ValueError("GN1 modified an unreviewed developer G0 workflow byte")
+    return raw
+
+
 def dev_g0_previous_workflow(raw):
     """Reverse only reviewed developer G0 changes before historical source pins."""
+    raw = gn1_previous_workflow(raw)
     if gate.hashlib.sha256(raw).hexdigest() != A6_DEV_G0_POST_SHA256:
         if b"REQUESTED_G0_SELECTION: " in raw:
             raise ValueError("developer G0 source differs from reviewed postimage")
@@ -7740,6 +7814,24 @@ class Phase1Service47Tests(unittest.TestCase):
 
     def test_explicit_workflow_delta_retains_all_historical_pins_and_rejects_drift(self):
         raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        developer = gn1_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(developer).hexdigest(), A6_DEV_G0_POST_SHA256)
+        self.assertEqual(gn1_previous_workflow(developer), developer)
+        self.assertEqual(dev_g0_previous_workflow(raw), dev_g0_previous_workflow(developer))
+        # Removing only part of GN1 or duplicating any of its five changes must
+        # not normalize into an approved historical workflow.
+        for added, previous_bytes in GN1_DEV_WORKFLOW_REVERT_PAIRS:
+            for changed in (raw.replace(added, previous_bytes, 1),
+                            raw.replace(added, added + added, 1)):
+                self.assertNotEqual(raw, changed)
+                with self.assertRaises(ValueError): gn1_previous_workflow(changed)
+        for changed in (raw + b" ",
+                        raw.replace(b"expected_source_sha: ${{ github.sha }}",
+                                    b"expected_source_sha: refs/heads/main", 1),
+                        raw.replace(b"one_original_owner: allow-one-original",
+                                    b"one_original_owner: allow-many", 1)):
+            self.assertNotEqual(raw, changed)
+            with self.assertRaises(ValueError): gn1_previous_workflow(changed)
         raw = graph_previous_workflow(dev_g0_previous_workflow(raw))
         previous = phase1_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), PHASE1_WORKFLOW_BASE_SHA256)
