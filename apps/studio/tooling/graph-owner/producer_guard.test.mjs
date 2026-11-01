@@ -373,6 +373,19 @@ test('captured Cargo files and strict compressed originals join all eight inert 
   assert.throws(() => assertOriginalProducerAdmission(observed), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
 });
 
+test('old underscore-named SDK sandbox cannot satisfy the original J1 reader', () => {
+  // The producer role is semwright_sandbox but the pinned daemon resolves
+  // the genuine Host helper as the adjacent semwright-sandbox executable.
+  // Even physically present, an obsolete role-named copy is not admitted.
+  const f = fixture('old-sandbox-basename');
+  const binary = f.index.binaries.semwright_sandbox;
+  const oldName = path.join(f.root, 'sdk-target', 'mw-r74-captured', 'semwright_sandbox');
+  fs.copyFileSync(binary.path, oldName);
+  binary.path = oldName;
+  f.seal();
+  assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'),
+    /J1_CARGO_CAPTURE_PATH/);
+});
 test('emitted Cargo target and independent captured executable cannot be interchanged', () => {
   for (const mutation of ['artifact-is-capture', 'capture-is-artifact', 'different-target']) {
     const f = fixture(mutation), role = 'native_graph_session';
