@@ -100,46 +100,6 @@ test("Graph confirmed removal permits a new identity without reviving the remove
   await expect(field(page, "Graph source")).toHaveValue(third.change.graph.id);
   expect(await requestCount(page)).toBe(5);
 });
-test("Graph confirmed removal with failed successor retention blocks reuse and a second write", async ({ page }) => {
-  await open(page); await saveFirst(page);
-  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
-  const removedId = saved.production_design!.semantic_graphs![0].id;
-  await button(page, "Inspect current Graph support and sources").click();
-  await page.evaluate(() => {
-    const set = Storage.prototype.setItem;
-    Storage.prototype.setItem = function (key: string, value: string) {
-      if (this === sessionStorage && key.startsWith("motionwright.semantic-graph-next-id.v1:"))
-        throw new Error("Synthetic denied durable successor write");
-      set.call(this, key, value);
-    };
-    window.__GRAPH_RESTORE_STORAGE__ = () => { Storage.prototype.setItem = set; };
-  });
-  await button(page, "Remove saved Graph").click();
-  await expect.poll(() => requestCount(page)).toBe(2);
-  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
-  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
-  await expect(page.getByRole("region", { name: "Graph identity needs attention" })).toBeVisible();
-  await expect(button(page, "Save semantic Graph")).toBeDisabled();
-  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs).toHaveLength(0);
-  expect(await requestCount(page)).toBe(2);
-  await page.evaluate(() => window.__GRAPH_RESTORE_STORAGE__?.());
-  // Simulate an app reload before the user retries. Durable retirement proof
-  // must block reuse even when the earlier React map no longer exists.
-  await page.reload();
-  await expect(page.getByRole("region", { name: "Graph identity needs attention" })).toBeVisible();
-  await expect(button(page, "Save semantic Graph")).toBeDisabled();
-  await button(page, "Verify Graph identity again").click();
-  await expect(page.getByRole("region", { name: "Graph identity needs attention" })).toHaveCount(0);
-  await field(page, "Graph author label").fill("Rebound distinct successor");
-  await field(page, "Graph rationale").fill("The confirmed removal can only permit a fresh retained identity.");
-  await button(page, "Inspect current Graph support and sources").click();
-  await expect(button(page, "Save semantic Graph")).toBeEnabled();
-  await button(page, "Save semantic Graph").click();
-  await expect.poll(() => requestCount(page)).toBe(3);
-  const next = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[2]);
-  if (next.change.type !== "upsert_semantic_graph") throw new Error("Missing new Graph request.");
-  expect(next.change.graph.id).not.toBe(removedId);
-});
 test("Graph UNKNOWN removal retains its original identity without issuing a successor", async ({ page }) => {
   await open(page); await saveFirst(page);
   const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
