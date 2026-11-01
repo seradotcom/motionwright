@@ -737,6 +737,21 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         import re
         text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
         self.assert_source_and_installed_routes(text)
+        # Windows source originals must hash exact Git bytes, not checkout CRLF
+        # transformations of Cargo.lock, SOURCE_LOCK.json or package-lock.json.
+        source_job = re.search(
+            r"(?ms)^  nsis-source-windows:\n(?P<body>.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", text)
+        self.assertIsNotNone(source_job)
+        source_text = source_job.group("body")
+        source_lf_guard = ("    env:\n      PYTHONDONTWRITEBYTECODE: '1'\n"
+                           "      GIT_CONFIG_COUNT: '1'\n"
+                           "      GIT_CONFIG_KEY_0: core.autocrlf\n"
+                           "      GIT_CONFIG_VALUE_0: 'false'\n"
+                           "    steps:\n")
+        self.assertIn(source_lf_guard, source_text)
+        self.assertEqual(source_text.count("GIT_CONFIG_KEY_0: core.autocrlf"), 1)
+        self.assertNotIn(source_lf_guard, source_text.replace(
+            "GIT_CONFIG_VALUE_0: 'false'", "GIT_CONFIG_VALUE_0: 'true'"))
         receipt = text.split("      - name: Quick source and conformance policies for every verification scope", 1)[1].split(
             "      - name: Candidate receipt and installed-package smoke policy tests", 1)[0]
         start = "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:"
