@@ -8,6 +8,8 @@ retries, or substitutes a renderer. Only a closed public projection is emitted.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import io
 import json
 import os
@@ -48,6 +50,10 @@ REPAIR_GENERATOR = "tooling/mlt-audio-diagnostic/repair_planar_source.py"
 REPAIR_GENERATOR_SHA256 = "76c4c00139483c44f47c56c297392f20764568fbbed9f15be7e34235c4858084"
 MAX_UPSTREAM_ARCHIVE = 16 * 1024 * 1024
 MAX_UPSTREAM_TAR = 64 * 1024 * 1024
+REFERENCE_ZIP_BYTES = 23366
+REFERENCE_BASE64_CHARS = ((REFERENCE_ZIP_BYTES + 2) // 3) * 4
+REFERENCE_INPUT = "retained_reference_zip_base64"
+REFERENCE_TRANSPORT_SCHEMA = "motionwright.native.mlt-reference-transport/1"
 PUBLIC_SCHEMA = "motionwright.native.mlt-g2-public/1"
 REPO = "seradotcom/motionwright"
 ARTIFACT_KEYS = {"artifact_id", "run_id", "run_attempt", "source_sha", "zip_sha256"}
@@ -378,11 +384,69 @@ def runtime_preparation_dispatch(raw, current, *, scenario):
         scenario=FILM_SCOPE if scenario == "fixedtxt-v4-one-fixture" else scenario)
 
 
+def retained_reference_input(env):
+    """Read one explicit dispatch field without exporting its bytes to children."""
+    event_path = env.get("GITHUB_EVENT_PATH", "")
+    require(type(event_path) is str and bool(event_path), "reference_dispatch_event_path")
+    event = strict(regular(Path(event_path), MAX_JSON)[0])
+    inputs = event.get("inputs")
+    require(type(inputs) is dict, "reference_dispatch_inputs")
+    encoded = inputs.get(REFERENCE_INPUT, "")
+    require(type(encoded) is str, "reference_dispatch_input_type")
+    if encoded:
+        require(env.get("MW_MLT_SCOPE") == "repaired-g2"
+                and inputs.get("verification_scope") == "repaired-g2"
+                and inputs.get("fixedtxt_mode", "prepare") == "prepare",
+                "retained_reference_repaired_g2_only")
+        require(len(json_bytes(inputs)) <= 65535, "reference_dispatch_inputs_bound")
+    return encoded
+
+
+def decode_retained_reference(encoded):
+    """Admit the byte-identical retained ZIP; never repackage or synthesize it."""
+    require(type(encoded) is str and len(encoded) == REFERENCE_BASE64_CHARS,
+            "retained_reference_base64_size")
+    try:
+        archive = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise CustodyRejected("retained_reference_base64_invalid") from None
+    require(base64.b64encode(archive).decode("ascii") == encoded,
+            "retained_reference_base64_noncanonical")
+    require(len(archive) == REFERENCE_ZIP_BYTES, "retained_reference_zip_size")
+    require(sha(archive) == g2.REFERENCE_ZIP_SHA256, "retained_reference_zip_sha256")
+    g2.reference_source(archive)
+    return archive
+
+
+def reference_archive(directory, encoded, current):
+    """Choose one transport before intake; an error never selects another one."""
+    require(type(encoded) is str, "reference_dispatch_input_type")
+    original = {"artifact_id": 12109323512, "run_id": 39054798740, "run_attempt": 1,
+                "source_sha": g2.REFERENCE_PR_HEAD, "zip_sha256": g2.REFERENCE_ZIP_SHA256}
+    if encoded:
+        archive = decode_retained_reference(encoded)
+        transport = "retained_original_zip"
+    else:
+        archive = download_artifact(original, "reference", directory)
+        g2.reference_source(archive)
+        require(len(archive) == REFERENCE_ZIP_BYTES, "reference_original_zip_size")
+        transport = "github_artifact_api"
+    receipt = {
+        "schema": REFERENCE_TRANSPORT_SCHEMA, "context": current,
+        "transport": transport, "original_artifact": original,
+        "original_zip_bytes": len(archive), "original_zip_hash_verified": True,
+        "original_api_revalidated": not bool(encoded), "archive_reconstructed": False,
+        "native_effect_started": False, "automatic_retry": False,
+    }
+    return archive, receipt
+
+
 def prepare(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "prepare_requires_normal_Linux_runner")
     current = context(env)
     dispatch = runtime_preparation_dispatch(env.get("MW_MLT_G2_ADMISSION", "").encode(), current,
                                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
+    encoded_reference = retained_reference_input(env)
     control, installed, session = names(env)
     require(not installed.exists() and not session.exists(), "original_effect_directory_preexists")
     control.mkdir(mode=0o700, exist_ok=False)
@@ -393,11 +457,9 @@ def prepare(env):
     new_json(control / "records/source-before.json", source_guard(Path(env["GITHUB_WORKSPACE"]), current,
                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2")))
     if env.get("MW_MLT_SCOPE", "repaired-g2") not in {FILM_SCOPE, "fixedtxt-v4-one-fixture"}:
-        original = {"artifact_id": 12109323512, "run_id": 39054798740, "run_attempt": 1,
-                    "source_sha": g2.REFERENCE_PR_HEAD, "zip_sha256": g2.REFERENCE_ZIP_SHA256}
-        archive = download_artifact(original, "reference", control / "intake")
-        g2.reference_source(archive)
+        archive, transport = reference_archive(control / "intake", encoded_reference, current)
         new_bytes(control / "intake/original-artifact.zip", archive)
+        new_json(control / "records/reference-transport.json", transport)
     elif env.get("MW_MLT_SCOPE") == "fixedtxt-v4-one-fixture":
         new_json(control / "records/fixedtxt-source-intent.json", {
             "schema": "motionwright.native.fixedtxt-source-intent/1",

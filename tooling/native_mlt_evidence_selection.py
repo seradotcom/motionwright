@@ -49,6 +49,15 @@ def optional(rule):
 
 
 FOUR_CONTEXT = O(source_sha=SHA40, semwright_sha=Literal(SEM), run_id=String(32, pattern=r"[1-9][0-9]*"), run_attempt=Literal("1"))
+REFERENCE_TRANSPORT = O(
+    schema=Literal("motionwright.native.mlt-reference-transport/1"), context=FOUR_CONTEXT,
+    transport=String(values=("retained_original_zip", "github_artifact_api")),
+    original_artifact=O(artifact_id=Literal(12109323512), run_id=Literal(39054798740),
+        run_attempt=Literal(1), source_sha=Literal("30f02fd0b744cda36035a4473c98e066f89d3d00"),
+        zip_sha256=Literal("35ed8f9d2c840dd0d8702eaaf23454da87e49bdee2dd12f190b7be634806b27a")),
+    original_zip_bytes=Literal(23366), original_zip_hash_verified=TRUE,
+    original_api_revalidated=bool, archive_reconstructed=FALSE,
+    native_effect_started=FALSE, automatic_retry=FALSE)
 IDENTITY = dict(project_resource=RESOURCE, generation=UUID, revision=POS, deliverable_id=UUID)
 FILE_IDENTITY = Array(N, 5, 5)
 COMPILER_CLOSURE = O(original_MLT_source_sha256=SHA, repaired_MLT_source_sha256=SHA,
@@ -767,7 +776,7 @@ def policies(scenario):
     import native_aac_clock_custody as clock_custody
     paths = FILM_SOURCE_PATHS if scenario == "film180-g2" else SOURCE_PATHS
     source = O(context=FOUR_CONTEXT, tree=SHA40, files=Object({p:Field(SHA) for p in paths}))
-    return dict(mlt_timeline=TIMELINE, mlt_master=MLT_MASTER, mlt_input=MLT_INPUT,
+    result = dict(mlt_timeline=TIMELINE, mlt_master=MLT_MASTER, mlt_input=MLT_INPUT,
         mlt_terminal=MLT_TERMINAL, mlt_final=MLT_FINAL, mlt_content=MLT_CONTENT,
         decoded_stereo=MIDSTREAM, mlt_result=RESULT, live_mlt=LIVE, consumer_snapshot=CONSUMER_SNAPSHOT,
         compiled_mlt=COMPILED, installation=INSTALLATION, official_runtime=OFFICIAL, packets=PACKETS,
@@ -784,6 +793,9 @@ def policies(scenario):
         source_binding=source, producer_exit=O(context=FOUR_CONTEXT, exit_code=Number(0,255,integer=True),native_operation_retried=FALSE),
         producer_started=O(context=FOUR_CONTEXT, automatic_retry=FALSE, producer_uid=POS,
             command=String(values=("tooling/native_mlt_sequence_e2e.py --g2-inputs","tooling/native_film180_original_g2.py --g2-inputs"))))
+    if scenario == "repaired-g2":
+        result["reference_transport"] = REFERENCE_TRANSPORT
+    return result
 
 
 def checked_context(current, scenario):
@@ -820,6 +832,8 @@ def common_contract():
 def mlt_contract(*, seed_diagnostics=False):
     require(type(seed_diagnostics) is bool,"ffv1-seed-role-contract-mode")
     result = common_contract()
+    # Older sealed attempts predate explicit reference transport receipts.
+    result[("original", "attempt-custody", "reference-transport")] = (0,1)
     if seed_diagnostics:
         for role in ("ffv1-seed-stdout","ffv1-seed-stderr","ffv1-seed-terminal"):
             result[("original","attempt-custody",role)]=(0,1)
@@ -1045,6 +1059,8 @@ class Selection:
 
     def collect_mlt(self, handles):
         self.common(handles)
+        self.optional_ffv1_original(handles, "control", "records/reference-transport.json",
+            "reference-transport", policy="reference_transport", maximum=4096)
         self.collect_ffv1_diagnostics(handles)
         fixed = (
             ("producer/native-multisegment-timeline-evidence.json","timeline-receipt","mlt_timeline"),
@@ -1142,6 +1158,15 @@ class Intake:
                     if row["kind"] == "json-projection": value = value["value"]
                     self.data.setdefault((row["phase"],row["layer"],row["role"]),[]).append((row,value,payload))
         self.contract = contract
+        for row, value, _ in self.all("reference-transport", "original", "attempt-custody"):
+            require(scenario == "repaired-g2"
+                    and (row["root"], row["relative_path"], row["kind"], row["policy"])
+                    == ("control", "records/reference-transport.json", "json-original", "reference_transport")
+                    and row["original_bytes"] is True,
+                    "reference-transport-original-layout")
+            require(value["context"] == current, "reference-transport-current-context")
+            require(value["original_api_revalidated"] is (value["transport"] == "github_artifact_api"),
+                    "reference-transport-api-claim")
         if self.admission is not None:
             self.verify_ffv1_admission()
 

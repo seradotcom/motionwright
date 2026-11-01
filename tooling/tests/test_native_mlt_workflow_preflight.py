@@ -115,6 +115,54 @@ class SyntheticCustody:
         return b"SYNTHETIC_ENCRYPTION_BOUNDARY:" + self.sha(raw).encode()
 
 
+class OriginalIntakeOrderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/native-mlt-sequence-e2e.yml"
+        cls.workflow = path.read_text(encoding="utf-8")
+
+    def job(self, name):
+        text = self.workflow.split("\n  " + name + ":\n", 1)[1]
+        lines = text.splitlines()
+        end = next((index for index, line in enumerate(lines)
+                    if line.startswith("  ") and not line.startswith("   ")
+                    and line.endswith(":")), len(lines))
+        return "\n".join(lines[:end])
+
+    def test_original_intake_precedes_runtime_bootstrap_and_preserves_failure_seals(self):
+        job = self.job("native-mlt-sequence")
+        ordered = ("id: custody_python", "id: g2_preflight_initialize",
+                   "id: g2_workflow_contracts", "id: g2_common_contracts",
+                   "id: g2_film_contracts", "id: g2_publication_contracts",
+                   "id: g2_prepare", "- name: Resolve exact Semwright source pin",
+                   "repository: seradotcom/semwright", "- uses: dtolnay/rust-toolchain",
+                   "- name: Install admitted distribution versions for original G2",
+                   "- name: Build exact Semwright Broker and native providers",
+                   "id: g2_admission", "id: g2_production")
+        positions = [job.index(marker) for marker in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(job.count("id: g2_prepare"), 1)
+        prepare = job.split("id: g2_prepare", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("if: env.MW_MLT_SCOPE != 'normal'", prepare)
+        self.assertIn("tooling/native_mlt_g2_custody.py prepare", prepare)
+        for step in ("g2_preflight_finish", "g2_native_seal"):
+            block = job.split("id: " + step, 1)[1].split("\n      - ", 1)[0]
+            self.assertIn("always()", block)
+        self.assertIn("P1_PREPARE_OUTCOME: ${{ steps.g2_prepare.outcome }}", job)
+
+    def test_retained_input_is_explicit_scope_guarded_and_never_expanded_into_environment(self):
+        self.assertIn("      retained_reference_zip_base64:\n", self.workflow)
+        empty = "test '${{ inputs.retained_reference_zip_base64 == '' }}' = 'true'"
+        selected = ("test '${{ inputs.retained_reference_zip_base64 == '' || "
+                    "inputs.verification_scope == 'repaired-g2' }}' = 'true'")
+        for name in ("source-contracts", "fixedtxt-original-owner", "fixedtxt-r28-original-delivery"):
+            self.assertEqual(self.job(name).count(empty), 1)
+        self.assertEqual(self.job("native-mlt-sequence").count(selected), 1)
+        references = [line.strip() for line in self.workflow.splitlines()
+                      if "inputs.retained_reference_zip_base64" in line]
+        self.assertEqual(sorted(references), sorted([empty, empty, empty, selected]))
+
+
 class PreflightCustodyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

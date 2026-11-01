@@ -13,6 +13,84 @@ import native_mlt_evidence_selection as mlt
 from native_selection_test_fixtures import World,CURRENT,PCM33,WAV33,rewrite_selected,selected_value_change,sample
 
 
+class ReferenceTransportSelectionTests(unittest.TestCase):
+    """Closed receipt retention only; this synthetic graph proves no media PASS."""
+
+    def receipt(self, transport="retained_original_zip"):
+        value = sample(mlt.REFERENCE_TRANSPORT)
+        value.update(context=dict(CURRENT), transport=transport,
+                     original_api_revalidated=transport == "github_artifact_api")
+        return value
+
+    def test_both_transport_receipts_are_retained_exactly_without_neighbor_reads(self):
+        key = ("control", "records/reference-transport.json")
+        neighbor = ("control", "records/reference-private-neighbor.json")
+        for transport in ("retained_original_zip", "github_artifact_api"):
+            with self.subTest(transport=transport):
+                world = World("repaired-g2")
+                original = core.canonical(self.receipt(transport)) + b"\r\n"
+                world.files[key] = original
+                world.files[neighbor] = b"UNSELECTED-PRIVATE"
+                with world.patched():
+                    raw, manifest = world.capture()
+                    world.verify(raw)
+                row = next(row for row in manifest["members"] if row["role"] == "reference-transport")
+                self.assertEqual(row["kind"], "json-original")
+                self.assertEqual(row["retained_sha256"], core.sha(original))
+                self.assertIn(original, raw)
+                self.assertNotIn(neighbor, world.reads)
+                self.assertNotIn(neighbor, world.stats)
+                self.assertFalse(manifest["physical_acceptance"])
+
+    def test_older_evidence_without_receipt_remains_accepted_with_no_new_claim(self):
+        world = World("repaired-g2")
+        with world.patched():
+            raw, manifest = world.capture()
+            world.verify(raw)
+        self.assertFalse(any(row["role"] == "reference-transport" for row in manifest["members"]))
+        self.assertFalse(manifest["physical_acceptance"])
+        self.assertFalse(manifest["human_acceptance"])
+
+    def test_wrong_context_or_retained_transport_api_claim_cannot_pass_intake(self):
+        for change in (lambda value: value["context"].update(run_id="999"),
+                       lambda value: value.update(original_api_revalidated=True)):
+            world = World("repaired-g2")
+            receipt = self.receipt()
+            change(receipt)
+            world.files[("control", "records/reference-transport.json")] = core.canonical(receipt)
+            with world.patched():
+                raw, _ = world.capture()
+                with self.assertRaisesRegex(core.SelectionError, "reference-transport-"):
+                    world.verify(raw)
+
+    def test_changed_pin_size_or_extra_payload_is_not_selected_as_closed_receipt(self):
+        for change in (lambda value: value["original_artifact"].update(zip_sha256="f" * 64),
+                       lambda value: value.update(original_zip_bytes=23367),
+                       lambda value: value.update(original_zip_hash_verified=False),
+                       lambda value: value.update(encoded_zip="PRIVATE-UNREGISTERED-BYTES")):
+            world = World("repaired-g2")
+            receipt = self.receipt()
+            change(receipt)
+            world.files[("control", "records/reference-transport.json")] = core.canonical(receipt)
+            with world.patched():
+                raw, manifest = world.capture()
+            row = next(row for row in manifest["members"] if row["role"] == "reference-transport")
+            self.assertEqual(row["state"], "CAPTURE_FAILED")
+            self.assertNotIn(b"PRIVATE-UNREGISTERED-BYTES", raw)
+
+    def test_film_does_not_select_reference_transport_or_grant_its_role(self):
+        world = World("film180-g2")
+        key = ("control", "records/reference-transport.json")
+        world.files[key] = core.canonical(self.receipt())
+        with world.patched():
+            raw, manifest = world.capture()
+            world.verify(raw)
+        self.assertNotIn("reference_transport", mlt.policies("film180-g2"))
+        self.assertNotIn(key, world.reads)
+        self.assertNotIn(key, world.stats)
+        self.assertFalse(any(row["role"] == "reference-transport" for row in manifest["members"]))
+
+
 class MltSelectionTests(unittest.TestCase):
     def world(self):return World("repaired-g2")
 
@@ -191,9 +269,10 @@ class MltSelectionTests(unittest.TestCase):
     def test_absent_wal_and_shm_have_two_sided_guards_without_reads(self):
         world=self.world()
         with world.patched():raw,manifest=world.capture();world.verify(raw)
-        self.assertEqual(len(manifest["absence_guards"]),3)
+        self.assertEqual(len(manifest["absence_guards"]),4)
         self.assertEqual({(row["role"],row["relative_path"]) for row in manifest["absence_guards"]},
-                         {("ffv1-stage-plan",mlt.FFV1_PLAN_PATH),
+                         {("reference-transport","records/reference-transport.json"),
+                          ("ffv1-stage-plan",mlt.FFV1_PLAN_PATH),
                           ("database-wal","motionwright-data/motionwright.sqlite3-wal"),
                           ("database-shm","motionwright-data/motionwright.sqlite3-shm")})
         for row in manifest["absence_guards"]:
@@ -205,12 +284,14 @@ class MltSelectionTests(unittest.TestCase):
         world=self.world()
         for suffix in ("-wal","-shm"):world.put("owner","motionwright-data/motionwright.sqlite3"+suffix,("original"+suffix).encode())
         with world.patched():raw,manifest=world.capture();world.verify(raw)
-        self.assertEqual(len(manifest["absence_guards"]),1)
-        guard=manifest["absence_guards"][0]
-        self.assertEqual((guard["root"],guard["relative_path"],guard["role"]),
-                         ("observation",mlt.FFV1_PLAN_PATH,"ffv1-stage-plan"))
-        self.assertTrue(guard["absent_before"] and guard["absent_after"])
-        self.assertFalse(guard["opened"] or guard["hashed"])
+        self.assertEqual(len(manifest["absence_guards"]),2)
+        self.assertEqual({(guard["root"],guard["relative_path"],guard["role"])
+                          for guard in manifest["absence_guards"]},
+                         {("observation",mlt.FFV1_PLAN_PATH,"ffv1-stage-plan"),
+                          ("control","records/reference-transport.json","reference-transport")})
+        for guard in manifest["absence_guards"]:
+            self.assertTrue(guard["absent_before"] and guard["absent_after"])
+            self.assertFalse(guard["opened"] or guard["hashed"])
         rows=[r for r in manifest["members"] if r["role"] in ("database-wal","database-shm")]
         self.assertEqual(len(rows),2);self.assertTrue(all(r["original_bytes"] for r in rows))
         self.assertFalse(manifest["atomic_sqlite_snapshot_claimed"])
