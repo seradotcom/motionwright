@@ -118,6 +118,33 @@ class PrivateOriginalTests(unittest.TestCase):
                 "ci_graph_dev_native_startup.py").read_text(encoding="utf-8")
         self.assertIn("max_bytes=MAX_PRIVATE_BYTES + 2 * 1024 * 1024 + 8192", code)
 
+    def test_owner_stage_marker_is_not_evidence_of_launched_daemon(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-owner-original-") as tmp:
+            private = gn1.mkdir(Path(tmp), "private")
+            empty = gn1.original_owner_start_observation(private, [])
+            self.assertEqual(empty["physical_owner_startup"], "NOT_EXECUTED")
+            self.assertEqual(empty["original_start_receipts"], 0)
+            stages = [{"stage": "BOOTSTRAP_SOCKET"}]
+            missing = gn1.original_owner_start_observation(private, stages)
+            self.assertEqual(missing["physical_owner_startup"], "UNKNOWN")
+            self.assertTrue(missing["unobserved_launch_possible"])
+            self.assertEqual(missing["original_start_receipts"], 0)
+            gn1.new_json(private / "bootstrap.start.original.json",
+                         {"pid": 1001, "automatic_retry": False})
+            first = gn1.original_owner_start_observation(private, stages)
+            self.assertEqual(first["physical_owner_startup"], "RECORDED_REAL_START_NOT_G2")
+            self.assertEqual(first["original_start_receipts"], 1)
+            stages.append({"stage": "RESTRICTED_SOCKET"})
+            incomplete = gn1.original_owner_start_observation(private, stages)
+            self.assertEqual(incomplete["physical_owner_startup"], "UNKNOWN")
+            self.assertEqual(incomplete["original_start_receipts"], 1)
+            gn1.new_json(private / "restricted.start.original.json",
+                         {"pid": 1002, "automatic_retry": False})
+            complete = gn1.original_owner_start_observation(private, stages)
+            self.assertEqual(complete["original_start_receipts"], 2)
+            self.assertFalse(complete["unobserved_launch_possible"])
+            self.assertEqual(complete["physical_owner_startup"], "RECORDED_REAL_START_NOT_G2")
+
     def test_private_encryption_is_independently_authenticated(self):
         # The private reviewer key is generated in memory for this synthetic
         # fixture only; no Native process and no files leave the temp root.
