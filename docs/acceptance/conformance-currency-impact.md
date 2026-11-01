@@ -29,8 +29,9 @@ comparison and require the owner's attention.
 
 The report lists direct source/oracle associations and unmapped changes.
 `dependency_or_environment_paths_changed` also identifies nested manifests,
-locks, toolchains, Cargo configuration and CI definitions: even a mapped
-change there can affect other consumers or the execution environment.
+locks, toolchains, Cargo configuration, Python requirements and constraints,
+and CI definitions: even a mapped dependency file (such as the pinned Native
+custody requirements) can affect other consumers or the execution environment.
 Select the affected G1 and physical G2 cases from that scope. A review flag
 does not require a new independent review for every trivial edit or a full
 test run; the owner can record a bounded no-impact conclusion where justified.

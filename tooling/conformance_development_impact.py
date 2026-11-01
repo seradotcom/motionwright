@@ -196,6 +196,9 @@ def dependency_or_environment_paths(changed: set[str]) -> set[str]:
     for name in changed:
         parts = source_path(name).split("/")
         if (parts[-1] in names
+                or parts[-1] in {"requirements.txt", "constraints.txt"}
+                or (len(parts) > 1 and parts[-2] == "requirements"
+                    and parts[-1].endswith((".txt", ".in")))
                 or (len(parts) > 1 and parts[-2] == ".cargo"
                     and parts[-1] in {"config", "config.toml"})
                 or name.startswith((".github/workflows/", ".github/actions/"))):

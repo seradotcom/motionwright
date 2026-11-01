@@ -372,6 +372,32 @@ class DevelopmentSourceImpactPureTests(unittest.TestCase):
         self.assertEqual(r["automatic_reruns"], 0)
         self.assertFalse(r["release_authorized"])
 
+    def test_mapped_python_custody_requirements_require_transitive_G1(self):
+        # Real pinned Python dependencies can change Native custody/runtime even
+        # when historical records reference the requirements file directly.
+        name = "tooling/requirements/mlt-g2-custody.txt"
+        with development_history(name) as (root, baseline, target):
+            report = dev.inspect_development(root, target, baseline=baseline)
+        self.assertEqual(report["impact"]["unmapped_changed_path_count"], 0)
+        self.assertEqual(report["impact"]["counts"]["source_path_affected_records"], 1)
+        self.assertEqual(report["dependency_or_environment_paths_changed"], [name])
+        self.assertTrue(report["transitive_impact_unknown_requires_owner_review"])
+        self.assertEqual(report["impact"]["automatically_current_evidence_records"], 0)
+        self.assertFalse(report["release_authorized"])
+
+    def test_python_requirements_detection_stays_bounded_to_dependency_files(self):
+        clean = {"can_use_as_complete_current_checkout_impact": True}
+        for name in ("requirements.txt", "tooling/requirements/mlt-g2-custody.txt",
+                     "tooling/requirements/constraints.in"):
+            with self.subTest(path=name):
+                self.assertTrue(dev.requires_transitive_owner_review(
+                    {name}, dev.GLOBAL_SOURCE_PINS, 0, clean))
+        for name in ("docs/requirements-policy.md", "docs/requirements/README.md",
+                     "tooling/requirements/readme.md"):
+            with self.subTest(path=name):
+                self.assertFalse(dev.requires_transitive_owner_review(
+                    {name}, dev.GLOBAL_SOURCE_PINS, 0, clean))
+
     def test_mapped_dependency_and_environment_paths_keep_G1_review(self):
         clean = {"can_use_as_complete_current_checkout_impact": True}
         for name in (
