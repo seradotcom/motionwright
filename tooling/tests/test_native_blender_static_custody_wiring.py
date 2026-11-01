@@ -385,5 +385,354 @@ class StaticCustodyWiringTests(unittest.TestCase):
             self.assertFalse(stage.exists())
 
 
+def workflow_lit_wiring():
+    source = (ROOT / ".github/workflows/native-blender-e2e.yml").read_text()
+    marker = '        cat > "$RUNNER_TEMP/blender-lit-wiring.py" <<\'PY\'\n'
+    if source.count(marker) != 1:
+        raise AssertionError("exact lit workflow wiring is required")
+    body = source.split(marker, 1)[1].split("        PY\n", 1)[0]
+    module = types.ModuleType("_lit_diagnostic_custody_workflow_unit")
+    exec(compile(textwrap.dedent(body), "native-blender-e2e.yml:lit-custody", "exec"),
+         module.__dict__)
+    return module
+
+
+@unittest.skipUnless(sys.platform == "linux", "Linux descriptor custody controls")
+class LitPhaseDiagnosticCustodyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.wiring = workflow_lit_wiring()
+        cls.context = {"source_sha": "1" * 40, "semwright_sha": "2" * 40,
+                       "run_id": "123", "run_attempt": "1"}
+
+    def fixture(self, root, phases=("create",)):
+        owner, control = root / "owner", root / "control"
+        owner.mkdir()
+        control.mkdir()
+        originals = {}
+        for phase in phases:
+            evidence = owner / phase / "evidence"
+            evidence.mkdir(parents=True)
+            for name in self.wiring.PHASE_DIAGNOSTIC_FILES:
+                raw = b"" if name == "native-phase.stderr" else (phase + ":" + name).encode() + b"\x00\xff\n"
+                relative = phase + "/evidence/" + name
+                (owner / relative).write_bytes(raw)
+                originals[relative] = raw
+        producer = {"schema": "motionwright.blender.lit-still-producer/1", "context": self.context,
+                    "state": "INCOMPLETE",
+                    "phases": [{"phase": phase, "state": "ATTEMPTED", "command": {
+                        "terminal": {"status": "PROCESS_TIMEOUT", "outcome_known": False}}} for phase in phases]}
+        return owner, control, producer, originals
+
+    def capture(self, owner, control, producer):
+        return self.wiring.capture_phase_diagnostics(
+            owner, control, self.context, self.wiring.canonical(producer))
+
+    def test_only_three_closed_logs_of_observed_phases_are_retained_exactly(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-logs-") as directory:
+            owner, control, producer, originals = self.fixture(Path(directory))
+            (owner / "create/evidence/session.ticket").write_bytes(b"unselected synthetic ticket")
+            (owner / "edit/evidence").mkdir(parents=True)
+            (owner / "edit/evidence/semwrightd.log").write_bytes(b"unobserved phase")
+            result = self.capture(owner, control, producer)
+            self.assertTrue(result["all_observed_logs_captured"])
+            self.assertEqual(result["observed_phases"], ["create"])
+            self.assertEqual(len(result["files"]), 3)
+            for row in result["files"]:
+                raw = originals[row["source_relative_path"]]
+                self.assertEqual(row["state"], "CAPTURED")
+                self.assertEqual(row["bytes"], len(raw))
+                self.assertEqual(row["sha256"], hashlib.sha256(raw).hexdigest())
+                self.assertEqual((control / row["retained_relative_path"]).read_bytes(), raw)
+                self.assertEqual((owner / row["source_relative_path"]).read_bytes(), raw)
+                self.assertEqual((control / row["retained_relative_path"]).stat().st_nlink, 1)
+            self.assertEqual({p.name for p in (control / "phase-diagnostics").iterdir()},
+                             {"observation.json", "create.native-phase.stdout",
+                              "create.native-phase.stderr", "create.semwrightd.log"})
+            self.assertFalse(result["native_terminal_inferred_from_logs"])
+            self.assertFalse(result["automatic_retry"])
+
+    def test_all_four_phases_have_finite_file_and_receipt_budgets(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-bounds-") as directory:
+            owner, control, producer, _ = self.fixture(
+                Path(directory), self.wiring.PHASE_DIAGNOSTIC_PHASES)
+            boundary = owner / "create/evidence/native-phase.stdout"
+            with boundary.open("r+b") as stream:
+                stream.truncate(self.wiring.PHASE_DIAGNOSTIC_FILE_BYTES)
+            result = self.capture(owner, control, producer)
+            self.assertTrue(result["all_observed_logs_captured"])
+            self.assertEqual(len(result["files"]), 12)
+            self.assertEqual(result["limits"], {"phases": 4, "files": 12,
+                "file_bytes": 4 * 1024 * 1024, "total_file_bytes": 48 * 1024 * 1024,
+                "receipt_bytes": 64 * 1024})
+            self.assertEqual((control / "phase-diagnostics/create.native-phase.stdout").read_bytes(),
+                             boundary.read_bytes())
+            receipt = (control / "phase-diagnostics/observation.json").read_bytes()
+            self.assertLessEqual(len(receipt), 64 * 1024)
+            self.assertEqual(json.loads(receipt), result)
+
+    def test_unbound_or_noncanonical_phase_rosters_do_not_open_diagnostics(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-rosters-") as directory:
+            root = Path(directory)
+            cases = [None, b"{", b"[]"]
+            base = {"schema": "motionwright.blender.lit-still-producer/1",
+                    "context": self.context, "phases": [{"phase": "create", "state": "ATTEMPTED"}]}
+            for change in ({"schema": "foreign"}, {"context": {**self.context, "run_id": "124"}},
+                           {"phases": None}, {"phases": [{"phase": "../escape", "state": "ATTEMPTED"}]},
+                           {"phases": [{"phase": "edit", "state": "ATTEMPTED"}]},
+                           {"phases": [{"phase": "create", "state": "UNKNOWN"}]},
+                           {"phases": [{"phase": "create", "state": "ATTEMPTED"}] * 2},
+                           {"phases": [{"phase": "create", "state": "ATTEMPTED"}] * 5}):
+                cases.append(self.wiring.canonical({**base, **change}))
+            for index, raw in enumerate(cases):
+                with self.subTest(index=index):
+                    control = root / str(index)
+                    control.mkdir()
+                    with patch.object(self.wiring, "read_phase_diagnostic",
+                                      side_effect=AssertionError("unbound logs must not be opened")):
+                        result = self.wiring.capture_phase_diagnostics(root / "absent-owner",
+                                                                      control, self.context, raw)
+                    self.assertEqual(result["selection"]["state"], "UNAVAILABLE")
+                    self.assertEqual(result["files"], [])
+                    self.assertFalse(result["all_observed_logs_captured"])
+            control = root / "empty"
+            control.mkdir()
+            result = self.capture(root / "absent-owner", control, {**base, "phases": []})
+            self.assertEqual(result["selection"]["state"], "NO_OBSERVED_PHASES")
+            self.assertFalse(result["all_observed_logs_captured"])
+
+    def test_missing_linked_nonregular_and_oversize_logs_are_real_negatives(self):
+        for kind in ("missing", "symlink", "hardlink", "directory", "fifo", "oversize", "parent-link"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="lit-phase-negative-") as directory:
+                root = Path(directory)
+                owner, control, producer, _ = self.fixture(root)
+                target = owner / "create/evidence/native-phase.stdout"
+                outside = root / "outside"
+                outside.write_bytes(b"unselected synthetic outside bytes")
+                if kind == "missing":
+                    target.unlink()
+                elif kind == "symlink":
+                    target.unlink()
+                    target.symlink_to(outside)
+                elif kind == "hardlink":
+                    os.link(target, root / "second-link")
+                elif kind == "directory":
+                    target.unlink()
+                    target.mkdir()
+                elif kind == "fifo":
+                    target.unlink()
+                    os.mkfifo(target)
+                elif kind == "oversize":
+                    with target.open("r+b") as stream:
+                        stream.truncate(self.wiring.PHASE_DIAGNOSTIC_FILE_BYTES + 1)
+                else:
+                    evidence = target.parent
+                    moved = owner / "moved-evidence"
+                    evidence.rename(moved)
+                    evidence.symlink_to(moved, target_is_directory=True)
+                result = self.capture(owner, control, producer)
+                self.assertFalse(result["all_observed_logs_captured"])
+                first = result["files"][0]
+                self.assertEqual(first["state"], "UNAVAILABLE")
+                self.assertNotIn("sha256", first)
+                self.assertFalse((control / first["retained_relative_path"]).exists())
+                self.assertEqual(outside.read_bytes(), b"unselected synthetic outside bytes")
+                if kind != "parent-link":
+                    self.assertTrue(all(row["state"] == "CAPTURED" for row in result["files"][1:]))
+
+    def test_file_change_during_read_never_becomes_captured(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-change-") as directory:
+            owner, control, producer, _ = self.fixture(Path(directory))
+            target = owner / "create/evidence/native-phase.stdout"
+            real_fstat = os.fstat
+            expected = target.stat()
+            calls = 0
+            def changed(descriptor):
+                nonlocal calls
+                observed = real_fstat(descriptor)
+                if (observed.st_dev, observed.st_ino) == (expected.st_dev, expected.st_ino):
+                    calls += 1
+                    if calls == 2:
+                        with target.open("ab") as stream:
+                            stream.write(b"changed during read")
+                        return real_fstat(descriptor)
+                return observed
+            with patch.object(self.wiring.os, "fstat", side_effect=changed):
+                result = self.capture(owner, control, producer)
+            self.assertFalse(result["all_observed_logs_captured"])
+            self.assertEqual(result["files"][0]["state"], "UNAVAILABLE")
+            self.assertFalse((control / result["files"][0]["retained_relative_path"]).exists())
+
+    def test_file_replaced_before_open_cannot_follow_a_link_or_block_on_fifo(self):
+        for kind in ("symlink", "fifo"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="lit-phase-open-race-") as directory:
+                root = Path(directory)
+                owner, control, producer, _ = self.fixture(root)
+                target = owner / "create/evidence/native-phase.stdout"
+                outside = root / "outside"
+                outside.write_bytes(b"must not be read")
+                real_open = os.open
+                changed = False
+                def replaced(path, flags, *args, **kwargs):
+                    nonlocal changed
+                    if path == target.name and kwargs.get("dir_fd") is not None and not changed:
+                        changed = True
+                        target.unlink()
+                        if kind == "symlink":
+                            target.symlink_to(outside)
+                        else:
+                            os.mkfifo(target)
+                    return real_open(path, flags, *args, **kwargs)
+                with patch.object(self.wiring.os, "open", side_effect=replaced):
+                    result = self.capture(owner, control, producer)
+                self.assertTrue(changed)
+                self.assertFalse(result["all_observed_logs_captured"])
+                self.assertEqual(result["files"][0]["state"], "UNAVAILABLE")
+                self.assertFalse((control / result["files"][0]["retained_relative_path"]).exists())
+
+    def test_parent_aba_cannot_redirect_the_held_directory_descriptor(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-parent-aba-") as directory:
+            root = Path(directory)
+            owner, control, producer, originals = self.fixture(root)
+            evidence = owner / "create/evidence"
+            moved = owner / "create/original-evidence"
+            foreign = root / "foreign-evidence"
+            foreign.mkdir()
+            name = "native-phase.stdout"
+            (foreign / name).write_bytes(b"foreign bytes must never be captured")
+            real_stat, real_open = os.stat, os.open
+            changed = restored = False
+            file_stats = 0
+            opened_bytes = []
+            def swapped_stat(path, *args, **kwargs):
+                nonlocal changed, restored, file_stats
+                if path == name and kwargs.get("dir_fd") is not None:
+                    file_stats += 1
+                    if file_stats == 1:
+                        evidence.rename(moved)
+                        evidence.symlink_to(foreign, target_is_directory=True)
+                        changed = True
+                    observed = real_stat(path, *args, **kwargs)
+                    if file_stats == 2:
+                        evidence.unlink()
+                        moved.rename(evidence)
+                        restored = True
+                    return observed
+                return real_stat(path, *args, **kwargs)
+            def observe_open(path, flags, *args, **kwargs):
+                descriptor = real_open(path, flags, *args, **kwargs)
+                if path == name and kwargs.get("dir_fd") is not None:
+                    opened_bytes.append(os.pread(descriptor, 256, 0))
+                return descriptor
+            with patch.object(self.wiring.os, "stat", side_effect=swapped_stat), \
+                 patch.object(self.wiring.os, "open", side_effect=observe_open):
+                result = self.capture(owner, control, producer)
+            self.assertTrue(changed and restored)
+            self.assertFalse(evidence.is_symlink())
+            self.assertEqual(opened_bytes, [originals["create/evidence/" + name]])
+            self.assertEqual((foreign / name).read_bytes(), b"foreign bytes must never be captured")
+            self.assertFalse(result["all_observed_logs_captured"])
+            self.assertEqual(result["files"][0]["state"], "UNAVAILABLE")
+            self.assertFalse((control / result["files"][0]["retained_relative_path"]).exists())
+            self.assertTrue(all(row["state"] == "CAPTURED" for row in result["files"][1:]))
+
+    def test_copy_readback_failure_is_kept_as_unavailable(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-readback-") as directory:
+            owner, control, producer, originals = self.fixture(Path(directory))
+            real_write = self.wiring.write_new
+            def corrupt(path, raw):
+                if path.name == "create.native-phase.stdout":
+                    raw += b"copy corruption"
+                return real_write(path, raw)
+            with patch.object(self.wiring, "write_new", side_effect=corrupt):
+                result = self.capture(owner, control, producer)
+            self.assertFalse(result["all_observed_logs_captured"])
+            self.assertEqual(result["files"][0]["state"], "UNAVAILABLE")
+            self.assertNotIn("sha256", result["files"][0])
+            self.assertEqual((owner / "create/evidence/native-phase.stdout").read_bytes(),
+                             originals["create/evidence/native-phase.stdout"])
+            self.assertTrue(all(row["state"] == "CAPTURED" for row in result["files"][1:]))
+
+    def test_existing_capture_directory_is_never_replaced(self):
+        with tempfile.TemporaryDirectory(prefix="lit-phase-exclusive-") as directory:
+            owner, control, producer, _ = self.fixture(Path(directory))
+            destination = control / "phase-diagnostics"
+            destination.mkdir()
+            original = b"existing custody must not be replaced"
+            (destination / "observation.json").write_bytes(original)
+            with patch.object(self.wiring, "read_phase_diagnostic",
+                              side_effect=AssertionError("no recapture")):
+                with self.assertRaises(FileExistsError):
+                    self.capture(owner, control, producer)
+            self.assertEqual((destination / "observation.json").read_bytes(), original)
+
+    def test_seal_keeps_phase_logs_private_and_preserves_unknown_native_outcome(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        der = key.public_key().public_bytes(serialization.Encoding.DER,
+                                            serialization.PublicFormat.SubjectPublicKeyInfo)
+        recipient = {"spki_der_base64": base64.b64encode(der).decode(),
+                     "sha256": hashlib.sha256(der).hexdigest()}
+        crypto_raw = (ROOT / "tooling/ci_private_evidence.py").read_bytes()
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory(prefix="lit-phase-seal-") as directory:
+                root = Path(directory)
+                temp, workspace = root / "runner", root / "workspace"
+                temp.mkdir()
+                (workspace / "tooling").mkdir(parents=True)
+                (workspace / "tooling/ci_private_evidence.py").write_bytes(crypto_raw)
+                owner, control, producer, originals = self.fixture(temp)
+                owner = owner.rename(temp / "mw-lit-123")
+                control = control.rename(temp / "blender-lit-control")
+                if missing:
+                    (owner / "create/evidence/native-phase.stdout").unlink()
+                producer_raw = self.wiring.canonical(producer)
+                (owner / "producer-record.json").write_bytes(producer_raw)
+                source = {"synthetic": "source-bound unit fixture"}
+                crypto.new_json(control / "preflight.json", {"context": self.context, "source": source,
+                                "recipient_spki_sha256": recipient["sha256"]})
+                crypto.new_json(control / "attempt-intent.json", {"context": self.context, "source": source,
+                                "binary": {}, "automatic_retry": False})
+                crypto.new_json(control / "execution.json", {"context": self.context,
+                                "state": "FAILED_NO_RETRY", "exit_code": 1})
+                (temp / "blender-lit-g0").mkdir()
+                (temp / "blender-lit-g1").mkdir()
+                output = root / "github-output"
+                with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temp),
+                                "GITHUB_OUTPUT": str(output), "NATIVE_STEP_OUTCOME": "failure"}), \
+                     patch.object(self.wiring, "requested_context", return_value=self.context), \
+                     patch.object(self.wiring, "source_state", return_value=source), \
+                     patch.object(self.wiring, "recipient_from", return_value=recipient), \
+                     patch.object(self.wiring.subprocess, "check_output", return_value=crypto_raw), \
+                     patch.object(self.wiring.subprocess, "run", side_effect=AssertionError("no Native")):
+                    self.assertEqual(self.wiring.main("seal"), 1)
+                stage = workspace / "verification/native-blender-lit-still-staged"
+                self.assertEqual({p.name for p in stage.iterdir()}, {"private-evidence.mwseal", "public-evidence.json"})
+                public_raw = (stage / "public-evidence.json").read_bytes()
+                public = json.loads(public_raw)
+                self.assertEqual(public["status"], "UNKNOWN_NO_RETRY")
+                self.assertFalse(public["formal_acceptance"])
+                self.assertFalse(public["original_native_terminal_replaced"])
+                self.assertEqual(public["private_plaintext_format"], "motionwright.ci.private-snapshot/1")
+                self.assertNotIn(b"phase-diagnostics", public_raw)
+                plaintext, actual_context = crypto.decrypt_snapshot((stage / "private-evidence.mwseal").read_bytes(), key)
+                self.assertEqual(actual_context, self.context)
+                with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as archive:
+                    recovered = {row.name: archive.extractfile(row).read() for row in archive.getmembers()}
+                manifest = json.loads(recovered["snapshot-manifest.json"])
+                self.assertEqual(set(manifest["roots"]), {"a-selected", "control", "g-zero", "g-one"})
+                report = json.loads(recovered["control/phase-diagnostics/observation.json"])
+                self.assertEqual(report["all_observed_logs_captured"], not missing)
+                self.assertFalse(report["native_terminal_inferred_from_logs"])
+                for relative, raw in originals.items():
+                    name = "control/phase-diagnostics/create." + Path(relative).name
+                    if missing and Path(relative).name == "native-phase.stdout":
+                        self.assertNotIn(name, recovered)
+                    else:
+                        self.assertEqual(recovered[name], raw)
+                self.assertEqual(recovered["a-selected/producer-record.json"], producer_raw)
+                self.assertEqual((owner / "producer-record.json").read_bytes(), producer_raw)
+                self.assertEqual(output.read_text(), "sealed=true\n")
+
+
 if __name__ == "__main__":
     unittest.main()

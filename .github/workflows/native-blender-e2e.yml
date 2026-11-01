@@ -1008,7 +1008,7 @@ jobs:
         counts = {"test_native_blender_glb_content": 27,
                   "test_native_blender_glb_framing": 12,
                   "test_native_blender_glb_source_gate": 14,
-                  "test_native_blender_static_custody_wiring": 17,
+                  "test_native_blender_static_custody_wiring": 27,
                   "test_native_blender_static_writer_budget": 5,
                   "test_native_blender_static_deadline": 20}
         expected = {label: count for name, count in counts.items()
@@ -2108,6 +2108,10 @@ jobs:
 
         MAX_TAR = 256 * 1024 * 1024
         MAX_JSON = 4 * 1024 * 1024
+        PHASE_DIAGNOSTIC_PHASES = ("create", "edit", "reopen", "light_control")
+        PHASE_DIAGNOSTIC_FILES = ("native-phase.stdout", "native-phase.stderr", "semwrightd.log")
+        PHASE_DIAGNOSTIC_FILE_BYTES = 4 * 1024 * 1024
+        PHASE_DIAGNOSTIC_RECEIPT_BYTES = 64 * 1024
         SOURCE_PATHS = (
             "SOURCE_LOCK.json", "Cargo.toml", "Cargo.lock", "crates/native/Cargo.toml",
             "crates/native/examples/native-blender-lit-still-e2e.rs",
@@ -2218,6 +2222,122 @@ jobs:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(raw)
+
+
+        def read_phase_diagnostic(path):
+            # Hold every directory descriptor; no path lookup may redirect the
+            # read through a swapped ancestor. Stability does not prove Native EOF.
+            path = Path(path)
+            require(path.is_absolute() and path.anchor == "/" and ".." not in path.parts
+                    and 2 <= len(path.parts) <= 32, "diagnostic-path-budget")
+            directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+            descriptors, directories, bindings = [], [], []
+            try:
+                parent = os.open("/", directory_flags)
+                descriptors.append(parent)
+                directories.append((parent, os.fstat(parent)))
+                for component in path.parts[1:-1]:
+                    before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+                    require(stat.S_ISDIR(before.st_mode), "diagnostic-parent-kind")
+                    opened = os.open(component, directory_flags, dir_fd=parent)
+                    descriptors.append(opened)
+                    require(identity(before) == identity(os.fstat(opened)), "diagnostic-parent-open-changed")
+                    bindings.append((parent, component, before))
+                    directories.append((opened, before))
+                    parent = opened
+                before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                        and 0 <= before.st_size <= PHASE_DIAGNOSTIC_FILE_BYTES,
+                        "diagnostic-regular-file-budget")
+                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                descriptors.append(fd)
+                with os.fdopen(fd, "rb", closefd=False) as handle:
+                    opened = os.fstat(fd)
+                    require(identity(before) == identity(opened), "diagnostic-open-changed")
+                    raw = handle.read(PHASE_DIAGNOSTIC_FILE_BYTES + 1)
+                    require(identity(opened) == identity(os.fstat(fd)), "diagnostic-read-changed")
+                require(identity(before) == identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
+                        and len(raw) == before.st_size and len(raw) <= PHASE_DIAGNOSTIC_FILE_BYTES,
+                        "diagnostic-path-changed")
+                for descriptor, previous in directories:
+                    require(identity(previous) == identity(os.fstat(descriptor)), "diagnostic-parent-changed")
+                for descriptor, component, previous in bindings:
+                    require(identity(previous) == identity(os.stat(component, dir_fd=descriptor,
+                                                                  follow_symlinks=False)),
+                            "diagnostic-parent-binding-changed")
+                return raw
+            finally:
+                failure = None
+                for descriptor in reversed(descriptors):
+                    try:
+                        os.close(descriptor)
+                    except OSError as error:
+                        failure = error
+                if failure is not None:
+                    raise failure
+
+
+        def capture_phase_diagnostics(owner, control, context, producer_raw):
+            # Fixed diagnostic names from already-observed producer phases only.
+            # This does not expand the selected media TAR or read owner/session files.
+            destination = control / "phase-diagnostics"
+            destination.mkdir(mode=0o700, exist_ok=False)
+            phases, files = [], []
+            selection = {"state": "UNAVAILABLE"}
+            try:
+                require(type(producer_raw) is bytes and 0 < len(producer_raw) <= MAX_JSON,
+                        "diagnostic-producer-unavailable")
+                producer = strict(producer_raw)
+                require(type(producer) is dict and producer.get("schema") ==
+                        "motionwright.blender.lit-still-producer/1", "diagnostic-producer-schema")
+                same_context(producer.get("context"), context)
+                rows = producer.get("phases")
+                require(type(rows) is list and len(rows) <= len(PHASE_DIAGNOSTIC_PHASES),
+                        "diagnostic-phase-roster")
+                require(all(type(row) is dict and row.get("phase") == PHASE_DIAGNOSTIC_PHASES[index]
+                            and row.get("state") in {"ATTEMPTED", "VERIFIED"}
+                            for index, row in enumerate(rows)), "diagnostic-phase-order")
+                phases = [row["phase"] for row in rows]
+                selection = {"state": "BOUND" if phases else "NO_OBSERVED_PHASES",
+                             "producer_record": {"bytes": len(producer_raw), "sha256": sha(producer_raw)}}
+            except (ValueError, TypeError, AttributeError) as error:
+                selection["error_type"] = type(error).__name__
+            for phase in phases:
+                for name in PHASE_DIAGNOSTIC_FILES:
+                    relative = phase + "/evidence/" + name
+                    target = destination / (phase + "." + name)
+                    row = {"source_relative_path": relative,
+                           "retained_relative_path": "phase-diagnostics/" + target.name,
+                           "state": "UNAVAILABLE"}
+                    try:
+                        raw = read_phase_diagnostic(owner / relative)
+                        write_new(target, raw)
+                        require(read_phase_diagnostic(target) == raw, "diagnostic-copy-readback")
+                        row.update(state="CAPTURED", bytes=len(raw), sha256=sha(raw))
+                    except (OSError, ValueError) as error:
+                        row["error_type"] = type(error).__name__
+                    files.append(row)
+            observation = {
+                "schema": "motionwright.blender.lit-still-private-phase-diagnostics/1",
+                "context": context, "selection": selection, "observed_phases": phases, "files": files,
+                "all_observed_logs_captured": bool(phases) and all(row["state"] == "CAPTURED" for row in files),
+                "limits": {"phases": len(PHASE_DIAGNOSTIC_PHASES),
+                           "files": len(PHASE_DIAGNOSTIC_PHASES) * len(PHASE_DIAGNOSTIC_FILES),
+                           "file_bytes": PHASE_DIAGNOSTIC_FILE_BYTES,
+                           "total_file_bytes": len(PHASE_DIAGNOSTIC_PHASES) * len(PHASE_DIAGNOSTIC_FILES)
+                                               * PHASE_DIAGNOSTIC_FILE_BYTES,
+                           "receipt_bytes": PHASE_DIAGNOSTIC_RECEIPT_BYTES},
+                "diagnostic_only": True, "native_recapture": False, "automatic_retry": False,
+                "native_terminal_inferred_from_logs": False, "original_native_terminal_replaced": False,
+                "complete_owner_state_claimed": False,
+            }
+            raw = canonical(observation)
+            require(len(raw) <= PHASE_DIAGNOSTIC_RECEIPT_BYTES, "diagnostic-receipt-budget")
+            receipt = destination / "observation.json"
+            write_new(receipt, raw)
+            require(read_regular(receipt, PHASE_DIAGNOSTIC_RECEIPT_BYTES) == raw,
+                    "diagnostic-observation-readback")
+            return observation
 
 
         def file_binding(path, cap=MAX_TAR):
@@ -2695,6 +2815,7 @@ jobs:
                                          producer, complete, stable,
                                          "NOT_RUN" if no_native_start else "UNKNOWN_NO_RETRY" if attempt_intent is None else
                                          execution.get("state") if type(execution) is dict else "UNKNOWN_NO_RETRY")
+                capture_phase_diagnostics(owner, control, context, captured.get("producer-record.json"))
                 # Existing bounded private-snapshot collector retains source/build and
                 # control originals plus the immutable selected bytes above.  Prioritize
                 # selected custody under the existing total budget.  Partial never PASSes.
