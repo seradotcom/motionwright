@@ -4641,7 +4641,7 @@
     },
     {
       "path": ".github/workflows/native-manim-e2e.yml",
-      "sha256": "b9657c41be088729edb913e32899154831df9513b4640c9a70f9ec2f6c746b22",
+      "sha256": "8f03c99559d85be60228487ea981084642a3b8330ccbe23705ce442a378bb98b",
       "preamble_sha256": "4e25b08c43218051dea699dec294fba27a327aac5e79b6a13d91e989e19e66b3",
       "evidence_class": "native_media_reopen",
       "purpose": "Distinct current source contracts, static scene, 120-frame camera, saved-camera-source cycle and editable-source cycle, each with its own guarded native steps and sealed originals. Preserve the existing editable outer deadline/custody and explicitly disposition the partial affected-Rust alternative.",
@@ -4746,7 +4746,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "9dad8716874b5d9bf0e7d4a6d451d6df21f9dc4dcf16b8f1b86e94278ff03c03",
+          "source_sha256": "b1edd092192bf8a3e81f48e7045c1fe3ee48f4b025f5f02f27222feb905170e8",
           "instance_sets": {
             "source-contracts": [
               {}
@@ -4781,7 +4781,7 @@
               "name": "Quick source and conformance policies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "d615caa135c78fb3c828f8bcd813e4941ed2053be8ddc430ff345cc14d319188",
+              "source_block_sha256": "cfc22fd63f2acc5fa94e0616431b3e397622d76dad1a317cac6df3d27e905259",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -5606,6 +5606,7 @@
         "This definition describes existing dispatch selections; it schedules no jobs, admits no original evidence and does not make every alternative a mandatory rerun. Candidate applicability remains a separate reviewed requirement mapping.",
         "The current source job declares284 unique Python contracts in14 discovery suites; the prior97/239 summaries are historical and are not current executed counts.",
         "The affected-Rust flag defaults false. True plus source-contracts needs a real closed binding and a separately reserved original; all four gate-approved flags and release_authorized remain false in that diagnostic recorder.",
+        "Manual source-contracts on the development integration branch can defer stale final assessments only while every acceptance claim remains incomplete. This scope never grants final G0 or G3, including when its source is later selected as F; the existing final gate must execute all six required controls.",
         "The editable native wrapper is routed through the existing exact-source outer launcher with exclusive original intent/streams and no automatic retry. The four native phases and source-cycle-public/2 outer binding require their own originals."
       ]
     },
