@@ -17,6 +17,19 @@ on:
         options: [deny, allow-one-original]
         default: deny
         required: true
+  # The existing registered Studio workflow can call this branch-local job.
+  # No push event or automatic native effect is introduced.
+  workflow_call:
+    inputs:
+      expected_source_sha:
+        type: string
+        required: true
+      recipient_json:
+        type: string
+        required: true
+      one_original_owner:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -60,7 +73,6 @@ jobs:
           test "$GITHUB_SHA" = "$GN1_EXPECTED_SOURCE"
           test "$(git rev-parse HEAD)" = "$GN1_EXPECTED_SOURCE"
           python3 -B tooling/ci_graph_dev_native_startup.py --mode plan \
-            --require-public-recipient \
             --repo . --sdk _semwright --expected-source "$GITHUB_SHA" \
             --root "$RUNNER_TEMP/gn1-$GITHUB_RUN_ID"
       - name: Resolve exact first-party Semwright pin
@@ -76,13 +88,33 @@ jobs:
           ref: ${{ steps.pin.outputs.sha }}
           path: _semwright
           persist-credentials: false
+      - name: Prepare hash-pinned private-original encryption before expensive builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/gn1-custody-venv"
+          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+      - name: Verify selected GN1 staging, custody and safety tests before Cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -B -m unittest \
+            tooling.tests.test_ci_graph_dev_native_startup \
+            tooling.tests.test_ci_graph_dev_native_budget -q
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/public_surface_policy.py
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: '1.98.1'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: motionwright-gn1-first-owner-1.98.1
-          cache-on-failure: false
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cache-on-failure: true
       - name: Prepare genuine bounded Ubuntu sandbox and dependencies
         shell: bash
         run: |
@@ -110,14 +142,6 @@ jobs:
             --bin motionwright-native-provider --example shared-state-actor
           cargo build --locked -p motionwright-manim-community-driver \
             --bin motionwright-manim-runner
-      - name: Prepare hash-pinned private-original encryption
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/gn1-custody-venv"
-          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -m pip install \
-            --disable-pip-version-check --require-hashes --only-binary=:all: \
-            -r tooling/requirements/mlt-g2-custody.txt
       - name: Execute exactly one real isolated Native owner startup
         shell: bash
         run: |
