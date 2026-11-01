@@ -23,6 +23,11 @@ on:
         type: string
         default: ''
         required: false
+      retained_fixedtxt_source_zip_base85:
+        description: Exact five-role retained source ZIP for source-only retained-source-kit transport; no Native authority
+        type: string
+        default: ''
+        required: false
       fixedtxt_mode:
         description: FixedTxt preparation or external original R28 delivery
         type: choice
@@ -58,6 +63,7 @@ on:
       - 'tooling/fixedtxt_source_kit.py'
       - 'tooling/fixedtxt/prepare_fixedtxt_managed_project.rs'
       - 'tooling/tests/test_native_fixedtxt_workflow.py'
+      - 'tooling/tests/test_fixedtxt_retained_source_kit.py'
       - 'tooling/native_film180_media_readback.py'
       - 'tooling/native_mp4_aac_presentation.py'
       - 'tooling/tests/test_native_mp4_aac_presentation.py'
@@ -117,8 +123,8 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source' && inputs.fixedtxt_mode == 'prepare' && inputs.fixedtxt_request == 'managed-project-source-kit') && 'native-fixedtxt-source-kit-exclusive' || inputs.fixedtxt_mode == 'deliver' && format('native-fixedtxt-delivery-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'fixedtxt-v4-one-fixture') && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source' && inputs.fixedtxt_mode == 'prepare' && inputs.fixedtxt_request == 'managed-project-source-kit') && inputs.fixedtxt_mode != 'deliver' && !(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'fixedtxt-v4-one-fixture')) }}
+  group: ${{ (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source' && inputs.fixedtxt_mode == 'prepare' && (inputs.fixedtxt_request == 'managed-project-source-kit' || inputs.fixedtxt_request == 'retained-source-kit')) && 'native-fixedtxt-source-kit-exclusive' || inputs.fixedtxt_mode == 'deliver' && format('native-fixedtxt-delivery-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'fixedtxt-v4-one-fixture') && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source' && inputs.fixedtxt_mode == 'prepare' && (inputs.fixedtxt_request == 'managed-project-source-kit' || inputs.fixedtxt_request == 'retained-source-kit')) && inputs.fixedtxt_mode != 'deliver' && !(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2' || inputs.verification_scope == 'fixedtxt-v4-one-fixture')) }}
 
 defaults:
   run:
@@ -132,8 +138,58 @@ env:
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
 
 jobs:
+  fixedtxt-retained-source:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.fixedtxt_request == 'retained-source-kit' || inputs.retained_fixedtxt_source_zip_base85 != '') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify source and retained input controls without Native effects
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/public_surface_policy.py
+          python3 -B -m unittest discover -s tooling/tests -p 'test_fixedtxt_retained_source_kit.py' -v
+      - name: Retain exactly the five original FixedTxt source files
+        id: fixedtxt_retained
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B -E -s tooling/fixedtxt_source_kit.py --retain-original-bundle
+      - name: Upload the five original source roles as one actual artifact
+        id: fixedtxt_retained_upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-fixedtxt-retained-source-${{ github.sha }}-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/mw-fixedtxt-retained-source-kit-${{ github.run_id }}-1/payload/
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
+      - name: Bind actual upload outputs without claiming API readback or Native execution
+        if: steps.fixedtxt_retained_upload.outcome == 'success'
+        env:
+          MW_FIXEDTXT_RETAINED_ARTIFACT_ID: ${{ steps.fixedtxt_retained_upload.outputs.artifact-id }}
+          MW_FIXEDTXT_RETAINED_ARTIFACT_DIGEST: ${{ steps.fixedtxt_retained_upload.outputs.artifact-digest }}
+        run: python3 -B -E -s tooling/fixedtxt_source_kit.py --record-retained-upload
+      - name: Retain the original ZIP and distinct source and transport provenance
+        if: always() && steps.fixedtxt_retained.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-fixedtxt-retained-custody-${{ github.sha }}-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/mw-fixedtxt-retained-source-kit-${{ github.run_id }}-1/custody/
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
+
   source-contracts:
-    if: ${{ inputs.fixedtxt_mode != 'deliver' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source')) }}
+    if: ${{ inputs.fixedtxt_mode != 'deliver' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source' && !(inputs.fixedtxt_mode == 'prepare' && inputs.fixedtxt_request == 'retained-source-kit'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -154,6 +210,7 @@ jobs:
       run: |
         set -euo pipefail
         test '${{ inputs.retained_reference_zip_base64 == '' }}' = 'true'
+        test '${{ inputs.retained_fixedtxt_source_zip_base85 == '' && inputs.fixedtxt_request != 'retained-source-kit' }}' = 'true'
         case "$GITHUB_EVENT_NAME" in
           workflow_dispatch)
             test "$GITHUB_RUN_ATTEMPT" = 1
@@ -242,7 +299,7 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 18, 'cfba2fc6a54df1591d0199e14546fe73d5880f0be979c8b8da20935e4ecb06c0')]
+        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 18, '53675a5d33ad8f749e7cf60f3fde69d3bba1da30bad4cffa5ed0aae09ecd1648')]
         MODE = 'dotted'
         GROUP = 'workflow'
         TOTAL = 18
@@ -504,8 +561,8 @@ jobs:
         import sys
         GROUP = sys.argv[3]
         SUITES = {
-            'fixedtxt-owner-admission': [('tooling/tests/test_fixedtxt_owner_admission.py', 23, '4ae4c084c7662d5f25514921bc8ed81d52144bb7a6920e813fd030ae9ee0b424')],
-            'fixedtxt-owner-close': [('tooling/test_fixed_text_native_owner_close.py', 16, 'dfed89699d12b78531b7e65be5b1e5a4e641ed73d92229c0efa5dffa1619276b')],
+            'fixedtxt-owner-admission': [('tooling/tests/test_fixedtxt_owner_admission.py', 23, 'ca343e849b2b2ba4175bb1d1db094816327e6c36e94977835bc7254612112045')],
+            'fixedtxt-owner-close': [('tooling/test_fixed_text_native_owner_close.py', 16, '219cbd906d2b155e6d88ab1541a9dd61c584ef64fcbf9cb8c175cdbcde847123')],
         }[GROUP]
         MODE = 'dotted'
         TOTAL = sum(row[1] for row in SUITES)
@@ -770,7 +827,7 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, '9bf89bbf94ba8d0bb896b4b4d0bbeb6720a04772ac598438cbb6bfe1e161f101'), ('tooling/tests/test_native_mlt_g2_custody.py', 69, '0fc93d7613058a95b6e356e761e0aa86938ed652b42cfa4aa1901b0788329bf4'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, 'c7105b5df84a9b91549d822b9ab786a281865814a60b1ef0c404c986407e99b4'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '3b620a67ec6950058705326b4aacba43b94ba7553ebbdc79ad765ca40955a69e'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '76f54b020958c13ea3b093bccf897094f2ea7e36cc87332a0a114f64547ac949'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'f8d717d0cf057092d9d5f111532551dd3318f169c870efe9a6d974638d6e1e9b'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'c19a5b7f196dac19af5220d675c1b97f0bc31db4bce1ce2966825e06132ba8fb'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, 'b43c58cb8b7a833baee55bb61fced6d453824216f2028b293ebef8046677125f'), ('tooling/tests/test_native_evidence_projection.py', 101, '3d016a8dc795f49c2e9f438af0f298d5fda07ca5a18d98452fd359a2d33d231c'), ('tooling/tests/test_native_mlt_evidence_selection.py', 84, 'bd24aea271e3b06acd0c8e418c1caf0d5e9a62539499bfc6638493c930406465'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'eddead254ea259b33ae7f42e25548e55d6d7fee4a2ceb85c0e2baa8ad9765a47'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '2cef4b35bcde4c19f6636c7eb89668c9333a8fcab63b9135927106c2c5164bed')]
+        SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 69, 'd8a7ef69972990fd3e8e2cb546a471c5ea345fac10c74a41d9d90b78be340624'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 84, 'babd543d3a2eabff9752e5df7520538da085c50352ac2f4575eb5f990743baa6'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f')]
         DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
         MODE = 'dotted'
         GROUP = 'common'
@@ -1044,7 +1101,7 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '0bacb726977723dd871f954303325954503dcb0c8c3e2f8ba0afad31074779f0'), ('tooling/tests/test_native_film180_media_readback.py', 31, '8df7f61b732e073fcb504d4944d183daed9c5968cc4dae5d1e2372c35850f118'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '60ff650706e392f6f5918bfc5de14cceae7240aa66925e41204cd9c9d7922bcc'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '5b466a6480b40d2a86ef8b39d039930cc9e284d834c749ce285c289e7f805961'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, 'b452f9cb4b0b691fac2273923241db962927acd93918d8a6687e634fed915440')]
+        SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '45a60d0f945600d1a49a16e1c09686f9e37d5f58fed6aa03ac2fdb142ec8d02b'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '9e18794cbf9371bae720c3ee741e1b26e4d0eeb8a6b3785a5cdfa8abf87bf466'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, '18baee72fdf66efe79c8ce6157ac300d78632cb04beae7d667a776fcd78a3353')]
         MODE = 'dotted'
         GROUP = 'film'
         TOTAL = 250
@@ -1297,7 +1354,7 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'eddead254ea259b33ae7f42e25548e55d6d7fee4a2ceb85c0e2baa8ad9765a47')]
+        SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41')]
         MODE = 'discovery'
         GROUP = 'discovery'
         TOTAL = 35
@@ -1566,7 +1623,7 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 18, 'cfba2fc6a54df1591d0199e14546fe73d5880f0be979c8b8da20935e4ecb06c0'), ('tooling/tests/test_native_mlt_owner_workspace.py', 8, '9bf89bbf94ba8d0bb896b4b4d0bbeb6720a04772ac598438cbb6bfe1e161f101'), ('tooling/tests/test_native_mlt_g2_custody.py', 69, '0fc93d7613058a95b6e356e761e0aa86938ed652b42cfa4aa1901b0788329bf4'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, 'c7105b5df84a9b91549d822b9ab786a281865814a60b1ef0c404c986407e99b4'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '3b620a67ec6950058705326b4aacba43b94ba7553ebbdc79ad765ca40955a69e'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '76f54b020958c13ea3b093bccf897094f2ea7e36cc87332a0a114f64547ac949'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'f8d717d0cf057092d9d5f111532551dd3318f169c870efe9a6d974638d6e1e9b'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'c19a5b7f196dac19af5220d675c1b97f0bc31db4bce1ce2966825e06132ba8fb'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, 'b43c58cb8b7a833baee55bb61fced6d453824216f2028b293ebef8046677125f'), ('tooling/tests/test_native_evidence_projection.py', 101, '3d016a8dc795f49c2e9f438af0f298d5fda07ca5a18d98452fd359a2d33d231c'), ('tooling/tests/test_native_mlt_evidence_selection.py', 84, 'bd24aea271e3b06acd0c8e418c1caf0d5e9a62539499bfc6638493c930406465'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '2cef4b35bcde4c19f6636c7eb89668c9333a8fcab63b9135927106c2c5164bed'), ('tooling/tests/test_native_film180_original_g2.py', 96, '0bacb726977723dd871f954303325954503dcb0c8c3e2f8ba0afad31074779f0'), ('tooling/tests/test_native_film180_media_readback.py', 31, '8df7f61b732e073fcb504d4944d183daed9c5968cc4dae5d1e2372c35850f118'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '60ff650706e392f6f5918bfc5de14cceae7240aa66925e41204cd9c9d7922bcc'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '5b466a6480b40d2a86ef8b39d039930cc9e284d834c749ce285c289e7f805961'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, 'b452f9cb4b0b691fac2273923241db962927acd93918d8a6687e634fed915440')]
+        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 18, '53675a5d33ad8f749e7cf60f3fde69d3bba1da30bad4cffa5ed0aae09ecd1648'), ('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 69, 'd8a7ef69972990fd3e8e2cb546a471c5ea345fac10c74a41d9d90b78be340624'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 84, 'babd543d3a2eabff9752e5df7520538da085c50352ac2f4575eb5f990743baa6'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '45a60d0f945600d1a49a16e1c09686f9e37d5f58fed6aa03ac2fdb142ec8d02b'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '9e18794cbf9371bae720c3ee741e1b26e4d0eeb8a6b3785a5cdfa8abf87bf466'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, '18baee72fdf66efe79c8ce6157ac300d78632cb04beae7d667a776fcd78a3353')]
         DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
         MODE = 'discovery'
         GROUP = 'discovery_remaining'
@@ -2019,6 +2076,7 @@ jobs:
         run: |
           set -euo pipefail
           test '${{ inputs.retained_reference_zip_base64 == '' || inputs.verification_scope == 'repaired-g2' }}' = 'true'
+          test '${{ inputs.retained_fixedtxt_source_zip_base85 == '' && inputs.fixedtxt_request != 'retained-source-kit' }}' = 'true'
           case "$REQUESTED_MLT_SCOPE" in normal|repaired-g2|film180-g2) ;; *) exit 2 ;; esac
           if [[ "$MW_MLT_SCOPE" != 'normal' ]]; then
             test "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
@@ -2342,7 +2400,7 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 18, 'cfba2fc6a54df1591d0199e14546fe73d5880f0be979c8b8da20935e4ecb06c0')]
+          SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 18, '53675a5d33ad8f749e7cf60f3fde69d3bba1da30bad4cffa5ed0aae09ecd1648')]
           MODE = 'dotted'
           GROUP = 'workflow'
           TOTAL = 18
@@ -2607,7 +2665,7 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, '9bf89bbf94ba8d0bb896b4b4d0bbeb6720a04772ac598438cbb6bfe1e161f101'), ('tooling/tests/test_native_mlt_g2_custody.py', 69, '0fc93d7613058a95b6e356e761e0aa86938ed652b42cfa4aa1901b0788329bf4'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, 'c7105b5df84a9b91549d822b9ab786a281865814a60b1ef0c404c986407e99b4'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '3b620a67ec6950058705326b4aacba43b94ba7553ebbdc79ad765ca40955a69e'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '76f54b020958c13ea3b093bccf897094f2ea7e36cc87332a0a114f64547ac949'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'f8d717d0cf057092d9d5f111532551dd3318f169c870efe9a6d974638d6e1e9b'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'c19a5b7f196dac19af5220d675c1b97f0bc31db4bce1ce2966825e06132ba8fb'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, 'b43c58cb8b7a833baee55bb61fced6d453824216f2028b293ebef8046677125f'), ('tooling/tests/test_native_evidence_projection.py', 101, '3d016a8dc795f49c2e9f438af0f298d5fda07ca5a18d98452fd359a2d33d231c'), ('tooling/tests/test_native_mlt_evidence_selection.py', 84, 'bd24aea271e3b06acd0c8e418c1caf0d5e9a62539499bfc6638493c930406465'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'eddead254ea259b33ae7f42e25548e55d6d7fee4a2ceb85c0e2baa8ad9765a47'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '2cef4b35bcde4c19f6636c7eb89668c9333a8fcab63b9135927106c2c5164bed')]
+          SUITES = [('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 69, 'd8a7ef69972990fd3e8e2cb546a471c5ea345fac10c74a41d9d90b78be340624'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 84, 'babd543d3a2eabff9752e5df7520538da085c50352ac2f4575eb5f990743baa6'), ('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f')]
           DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
           MODE = 'dotted'
           GROUP = 'common'
@@ -2882,7 +2940,7 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '0bacb726977723dd871f954303325954503dcb0c8c3e2f8ba0afad31074779f0'), ('tooling/tests/test_native_film180_media_readback.py', 31, '8df7f61b732e073fcb504d4944d183daed9c5968cc4dae5d1e2372c35850f118'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '60ff650706e392f6f5918bfc5de14cceae7240aa66925e41204cd9c9d7922bcc'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '5b466a6480b40d2a86ef8b39d039930cc9e284d834c749ce285c289e7f805961'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, 'b452f9cb4b0b691fac2273923241db962927acd93918d8a6687e634fed915440')]
+          SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '45a60d0f945600d1a49a16e1c09686f9e37d5f58fed6aa03ac2fdb142ec8d02b'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '9e18794cbf9371bae720c3ee741e1b26e4d0eeb8a6b3785a5cdfa8abf87bf466'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, '18baee72fdf66efe79c8ce6157ac300d78632cb04beae7d667a776fcd78a3353')]
           MODE = 'dotted'
           GROUP = 'film'
           TOTAL = 250
@@ -3935,6 +3993,7 @@ jobs:
         run: |
           set -euo pipefail
           test '${{ inputs.retained_reference_zip_base64 == '' }}' = 'true'
+          test '${{ inputs.retained_fixedtxt_source_zip_base85 == '' && inputs.fixedtxt_request != 'retained-source-kit' }}' = 'true'
           umask 077
           python3 -B - <<'PY_CLOCK'
           import hashlib, json, math, os, re, time
@@ -4242,6 +4301,7 @@ jobs:
         run: |
           set -euo pipefail
           test '${{ inputs.retained_reference_zip_base64 == '' }}' = 'true'
+          test '${{ inputs.retained_fixedtxt_source_zip_base85 == '' && inputs.fixedtxt_request != 'retained-source-kit' }}' = 'true'
           umask 077
           python3 -B - <<'PY_DELIVERY'
           import hashlib, json, os, re, subprocess, time

@@ -7,15 +7,19 @@ The existing command-custody helper owns child observation and no-retry rules.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import time
 import tomllib
+import zipfile
 
 import ci_storage_apply_recovery as custody
 
@@ -364,19 +368,296 @@ def record_upload():
         "formal_acceptance": False, "automatic_retry": False})
 
 
+RETAINED_MARKER = "retained-source-kit"
+RETAINED_INPUT = "retained_fixedtxt_source_zip_base85"
+RETAINED_BRANCHES = (
+    "integrate/phase1-final-composition-20261027",
+    "fix/native-production-a1-211feef-20261101-a4",
+)
+RETAINED_ZIP_BYTES = 49077
+RETAINED_ZIP_SHA = "fe035303a8a8aaecdc70163d6ad9f953d6912920b65acf41672bfdf3f2bbf347"
+RETAINED_BASE85_CHARS = 61347
+RETAINED_EVENT_MAX = 256 * 1024
+RETAINED_PAYLOAD_MAX = 65535
+RETAINED_MEMBERS = {
+    "template_film.original.json": (9584, "5b1f9e7befb11c3ef6354a9b3b292d105647f444cac4a13d6eb8d27bf7c10b97"),
+    "managed_project.original.json": (6675, "03a3f03e0d34b3acd764a946b7af85a2e2b28043deb50c2b2792dc70d4495bc7"),
+    "caption_source.txt": (35, "8d0254370cfa2cb7ebe8cc4b3b40cfec8e0f149253ffbf6008767b47f99ffa9e"),
+    "red_native.ts": (33809, "dfe6c0fc226d7e9017eb718c7e745d942c4067a54f968d4483b80bbdd51b4fa8"),
+    "measurement_protocol.zip": (35228, "ff20aaeba671616cbf3025ad62a20663edfa1c8e2b37e3ceffb8bdd3d8c2fe6f"),
+}
+RETAINED_ORIGIN = {
+    "kind": "RETAINED_A1_COMPOSITION_NOT_A_NEW_FACTORY_RESULT",
+    "archive_sha256": RETAINED_ZIP_SHA,
+    "factory_roles": ["template_film.original.json", "managed_project.original.json"],
+    "factory_origin": {
+        "run_id": 41258472167, "run_attempt": 1, "artifact_id": 13064212124,
+        "source_sha": "ffc307393be5adc3d2028bc79b30602eff43f24e",
+        "semwright_sha": "5c2ac3107afbb083afb00d67a28edd0f104f8e15",
+        "zip_sha256": "5e872f92a7affade9bc424c033b0b4e3c9bfb6ee1f27fe164665e151b9e87396",
+    },
+    "independent_roles": {
+        "caption_source.txt": {"origin": "original 35-byte caption required by the FixedTxt contract"},
+        "red_native.ts": {
+            "origin": "A4 R56 retained explicit RED counterfactual overlay; not a physical result",
+            "source_sdk": "e64a2d28d1d866c539a2c40824cbb57f86a13c10",
+            "package_sha256": "b7c027565a512f483990bb53dfc8cfcdb8becdb090b0805b9dc367edc6bf59f3",
+            "member": "arms/RED_NEW_COUNTERFACTUAL/integrations/composition/motion/native.ts",
+        },
+        "measurement_protocol.zip": {
+            "origin": "A5 independent R39 preregistered numeric oracle; physical font baseline uncalibrated",
+            "package_sha256": "ff20aaeba671616cbf3025ad62a20663edfa1c8e2b37e3ceffb8bdd3d8c2fe6f",
+        },
+    },
+}
+
+
+def retained_canonical(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                       allow_nan=False) + "\n").encode("ascii")
+
+
+def retained_regular(path, maximum):
+    """Bound the actual descriptor read; reject links and changes before use."""
+    path = Path(path)
+    need(path.is_absolute() and all(not p.is_symlink() for p in (path, *path.parents)),
+         "retained original path must be absolute and have no symbolic links")
+    before = path.lstat()
+    def identity(value):
+        return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_size,
+                value.st_mtime_ns, value.st_ctime_ns)
+    need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+         and 0 < before.st_size <= maximum, "retained original must be one bounded regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        need(identity(opened) == identity(before), "retained original changed at open")
+        chunks, count = [], 0
+        while count <= maximum:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - count))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            count += len(chunk)
+        need(count == before.st_size and count <= maximum
+             and identity(os.fstat(descriptor)) == identity(before)
+             and identity(path.lstat()) == identity(before)
+             and all(not p.is_symlink() for p in (path, *path.parents)),
+             "retained original changed during bounded read")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def retained_context(event, environment):
+    """This source-only route has no runtime, factory or Native authority."""
+    expected = {"GITHUB_ACTIONS": "true", "CI": "true",
+                "GITHUB_REPOSITORY": "seradotcom/motionwright",
+                "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_JOB": "fixedtxt-retained-source", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}
+    need(all(environment.get(key) == value for key, value in expected.items()),
+         "retained source requires the exact manual source-only job")
+    ref = environment.get("GITHUB_REF", "")
+    branches = {"refs/heads/" + branch: branch for branch in RETAINED_BRANCHES}
+    need(ref in branches, "retained source branch is not explicitly admitted")
+    branch = branches[ref]
+    need(environment.get("GITHUB_REF_NAME") == branch
+         and environment.get("GITHUB_WORKFLOW_REF") ==
+             "seradotcom/motionwright/" + WORKFLOW + "@" + ref,
+         "retained source workflow ref differs")
+    need(type(event) is dict and event.get("ref") in (branch, ref)
+         and type(event.get("repository")) is dict
+         and event["repository"].get("full_name") == "seradotcom/motionwright",
+         "retained source event origin differs")
+    inputs = event.get("inputs")
+    keys = {"verification_scope", "expected_source_sha", "g2_admission",
+            "retained_reference_zip_base64", "fixedtxt_mode", "fixedtxt_request",
+            "fixedtxt_delivery", RETAINED_INPUT}
+    need(type(inputs) is dict and set(inputs) == keys and len(keys) <= 10
+         and all(type(value) is str for value in inputs.values()), "retained source input roster differs")
+    need(len(retained_canonical({"ref": branch, "inputs": inputs})) <= RETAINED_PAYLOAD_MAX,
+         "retained source dispatch exceeds the complete payload bound")
+    need(inputs["verification_scope"] == "source" and inputs["fixedtxt_mode"] == "prepare"
+         and inputs["fixedtxt_request"] == RETAINED_MARKER
+         and all(inputs[key] == "" for key in ("g2_admission", "fixedtxt_delivery",
+                                               "retained_reference_zip_base64")),
+         "retained source cannot carry runtime or delivery authority")
+    head = environment.get("GITHUB_SHA", "")
+    need(re.fullmatch(r"[0-9a-f]{40}", head)
+         and head == environment.get("GITHUB_WORKFLOW_SHA") == inputs["expected_source_sha"],
+         "retained source and workflow SHA differ")
+    run = environment.get("GITHUB_RUN_ID", "")
+    need(re.fullmatch(r"[1-9][0-9]*", run), "retained source needs a real run ID")
+    return {"source_sha": head, "semwright_sha": SDK, "run_id": run, "run_attempt": "1"}
+
+
+def retained_members(archive):
+    """The closed five original roles are validated before any output exists."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            entries = bundle.infolist()
+            need(len(entries) == len(RETAINED_MEMBERS)
+                 and {entry.filename for entry in entries} == set(RETAINED_MEMBERS),
+                 "retained source ZIP must contain exactly the five declared members")
+            result = {}
+            for entry in entries:
+                size, digest = RETAINED_MEMBERS[entry.filename]
+                need(not entry.is_dir() and stat.S_IFMT(entry.external_attr >> 16) in (0, stat.S_IFREG)
+                     and not (entry.flag_bits & 1) and entry.compress_type == zipfile.ZIP_DEFLATED
+                     and entry.file_size == size and 0 < entry.compress_size <= RETAINED_ZIP_BYTES,
+                     "retained source member type or size differs")
+                with bundle.open(entry) as stream:
+                    raw = stream.read(size + 1)
+                    need(len(raw) == size and stream.read(1) == b"" and sha(raw) == digest,
+                         "retained source original member differs")
+                result[entry.filename] = raw
+            return result
+    except (zipfile.BadZipFile, NotImplementedError, RuntimeError):
+        raise ValueError("retained source ZIP structure or CRC is invalid") from None
+
+
+def decode_retained_source(encoded):
+    need(type(encoded) is str and len(encoded) == RETAINED_BASE85_CHARS,
+         "retained source Base85 length differs")
+    try:
+        archive = base64.b85decode(encoded.encode("ascii"))
+    except (ValueError, UnicodeError):
+        raise ValueError("retained source Base85 is invalid") from None
+    need(base64.b85encode(archive).decode("ascii") == encoded,
+         "retained source Base85 is not canonical")
+    need(len(archive) == RETAINED_ZIP_BYTES and sha(archive) == RETAINED_ZIP_SHA,
+         "retained source ZIP is not the byte-identical admitted original")
+    return archive, retained_members(archive)
+
+
+def read_retained_event(environment=None):
+    environment = os.environ if environment is None else environment
+    raw = retained_regular(environment.get("GITHUB_EVENT_PATH", ""), RETAINED_EVENT_MAX)
+    event = strict(raw)
+    current = retained_context(event, environment)
+    archive, members = decode_retained_source(event["inputs"][RETAINED_INPUT])
+    return current, archive, members, {
+        "event_sha256": sha(raw), "event_bytes": len(raw),
+        "dispatch_payload_bytes": len(retained_canonical({
+            "ref": environment["GITHUB_REF_NAME"], "inputs": event["inputs"]})),
+    }
+
+
+def retained_layout(current):
+    temp = Path(os.environ["RUNNER_TEMP"])
+    need(temp.is_absolute() and temp.is_dir() and temp.resolve(strict=True) == temp
+         and str(temp).startswith("/home/runner/work/_temp")
+         and all(not p.is_symlink() for p in (temp, *temp.parents)), "canonical retained runner temp required")
+    owner = temp / ("mw-fixedtxt-retained-source-kit-" + current["run_id"] + "-1")
+    return owner, owner / "payload", owner / "custody"
+
+
+def retained_payload_manifest():
+    return {name: {"bytes": size, "sha256": digest}
+            for name, (size, digest) in RETAINED_MEMBERS.items()}
+
+
+def retained_receipt(current, snapshot, event_identity):
+    return {
+        "schema": "motionwright.fixedtxt-retained-source-transport/1",
+        "state": "FIVE_RETAINED_SOURCE_ROLES_ONLY",
+        "transport_context": current, "original_source_origin": RETAINED_ORIGIN,
+        "retained_archive": {"bytes": RETAINED_ZIP_BYTES, "sha256": RETAINED_ZIP_SHA},
+        "payload": retained_payload_manifest(), "source": snapshot, "event": event_identity,
+        "source_roles_complete": True, "g2_source_bundle_complete": False,
+        "factory_invocations": 0, "SDK_builds": 0, "Native_calls": 0, "R28_issued": False,
+        "native_helper_binary_custody": "NOT_RUN", "physical_font_color_baselines": "NOT_RUN",
+        "physical_edit_save_reopen": "NOT_RUN", "original_API_revalidated": False,
+        "F_selected": False, "formal_G2": "NOT_GRANTED", "G3": "NOT_GRANTED",
+        "formal_acceptance": False, "release_authorized": False, "automatic_retry": False,
+    }
+
+
+def retain_original_bundle():
+    need(sys.platform == "linux", "retained source requires the real Linux source job")
+    current, archive, members, event_identity = read_retained_event()
+    evidence = selected_pins()
+    snapshot = custody.source_snapshot(ROOT, current["source_sha"], (
+        *SOURCE_PATHS, evidence, "tooling/public_surface_policy.py",
+        "tooling/tests/test_fixedtxt_retained_source_kit.py"))
+    source_matches(snapshot)
+    owner, payload, retained = retained_layout(current)
+    need(not owner.exists() and not owner.is_symlink(), "retained source owner already exists; no retry")
+    # All source, context, archive and closed-member checks precede this first write.
+    owner.mkdir(mode=0o700, exist_ok=False)
+    payload.mkdir(mode=0o700)
+    retained.mkdir(mode=0o700)
+    write_new(retained / "source-inputs.original.zip", archive)
+    for name, raw in members.items():
+        write_new(payload / name, raw)
+    json_new(retained / "SOURCE_TRANSPORT.original.json", retained_receipt(current, snapshot, event_identity))
+    source_matches(snapshot)
+
+
+def record_retained_upload():
+    need(sys.platform == "linux", "retained upload requires the real Linux source job")
+    current, archive, members, _ = read_retained_event()
+    selected_pins()
+    _, payload, retained = retained_layout(current)
+    need(payload.is_dir() and retained.is_dir()
+         and all(not p.is_symlink() for p in (payload, retained, *payload.parents)),
+         "retained upload directories changed")
+    receipt = strict(retained_regular(retained / "SOURCE_TRANSPORT.original.json", 1024 * 1024))
+    need(receipt["transport_context"] == current and receipt["original_source_origin"] == RETAINED_ORIGIN
+         and receipt["payload"] == retained_payload_manifest()
+         and receipt["factory_invocations"] == receipt["SDK_builds"] == receipt["Native_calls"] == 0
+         and receipt["R28_issued"] is False and receipt["formal_acceptance"] is False,
+         "retained upload provenance changed")
+    source_matches(receipt["source"])
+    need(retained_regular(retained / "source-inputs.original.zip", RETAINED_ZIP_BYTES) == archive,
+         "retained input ZIP changed before upload binding")
+    need({path.name for path in payload.iterdir()} == set(RETAINED_MEMBERS),
+         "retained upload payload is not exactly five files")
+    for name, raw in members.items():
+        need(retained_regular(payload / name, RETAINED_MEMBERS[name][0]) == raw,
+             "retained payload original changed before upload binding")
+    artifact_id = os.environ.get("MW_FIXEDTXT_RETAINED_ARTIFACT_ID", "")
+    digest = os.environ.get("MW_FIXEDTXT_RETAINED_ARTIFACT_DIGEST", "")
+    need(re.fullmatch(r"[1-9][0-9]*", artifact_id) and re.fullmatch(r"[0-9a-f]{64}", digest),
+         "retained upload requires actual artifact action outputs")
+    json_new(retained / "UPLOAD_BINDING.original.json", {
+        "schema": "motionwright.fixedtxt-retained-upload-binding/1",
+        "kind": "ACTUAL_REUPLOAD_ACTION_OUTPUTS_NOT_A_NEW_FACTORY",
+        "transport_context": current,
+        "artifact": {"artifact_id": int(artifact_id), "run_id": int(current["run_id"]),
+                     "run_attempt": 1, "source_sha": current["source_sha"], "zip_sha256": digest},
+        "artifact_name": "motionwright-fixedtxt-retained-source-" + current["source_sha"] + "-" + current["run_id"] + "-1",
+        "input_archive_sha256": RETAINED_ZIP_SHA, "payload": retained_payload_manifest(),
+        "original_source_origin": RETAINED_ORIGIN,
+        "remote_API_and_downloaded_ZIP_verified_here": False,
+        "required_next_readback": "Completed run and actual artifact API metadata plus downloaded ZIP digest before existing intake",
+        "factory_invocations": 0, "SDK_builds": 0, "Native_calls": 0, "R28_issued": False,
+        "g2_source_bundle_complete": False, "formal_acceptance": False,
+        "F_selected": False, "formal_G2": "NOT_GRANTED", "G3": "NOT_GRANTED",
+        "release_authorized": False, "automatic_retry": False,
+    })
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--start", action="store_true")
     group.add_argument("--prepare", action="store_true")
     group.add_argument("--record-upload", action="store_true")
+    group.add_argument("--retain-original-bundle", action="store_true")
+    group.add_argument("--record-retained-upload", action="store_true")
     args = parser.parse_args()
     if args.start:
         start()
     elif args.prepare:
         prepare()
-    else:
+    elif args.record_upload:
         record_upload()
+    elif args.retain_original_bundle:
+        retain_original_bundle()
+    else:
+        record_retained_upload()
 
 
 if __name__ == "__main__":
