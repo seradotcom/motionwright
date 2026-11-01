@@ -63,6 +63,81 @@ export function graphCaseLayout(casesRoot, caseId) {
   return Object.freeze({ privateRoot, databasePath, ownerSocket });
 }
 
+export const GRAPH_CAS_ALLOWANCE = Object.freeze({ bytes: 4 * MiB, files: 24 });
+const GRAPH_CAS_ANCHOR = '.motionwright-cas-root-v1.json';
+
+/** A real Store::open creates a managed CAS root beside SQLite. Keep the four
+ * kernel-bounded SQLite files distinct from the separately prepaid CAS slice.
+ * Input comes only from the physical, pinned, no-follow inventoryTree. */
+export function verifyGraphManagedStoreEntries(entries, sqliteName, casId, allowance = GRAPH_CAS_ALLOWANCE) {
+  need(sqliteName === 'motionwright.sqlite3'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(casId),
+  'CASE_CAS_ROOT_ID');
+  need(allowance && allowance.bytes === GRAPH_CAS_ALLOWANCE.bytes
+    && allowance.files === GRAPH_CAS_ALLOWANCE.files, 'CASE_CAS_ALLOWANCE_CHANGED');
+  need(Array.isArray(entries)
+    && entries.length <= 2 * (GRAPH_BUDGET.store_files + allowance.files) + 1,
+  'CASE_STORE_TREE_BOUND');
+  const control = '.motionwright-cas-' + casId;
+  const sqliteNames = new Set([sqliteName, sqliteName + '-wal', sqliteName + '-shm', sqliteName + '-journal']);
+  const casRequired = new Set(['blobs', 'blobs/' + GRAPH_CAS_ANCHOR, control,
+    control + '/locks', control + '/root.lock', control + '/catalog.json']);
+  const observed = new Set();
+  let sqliteFiles = 0, casFiles = 0, casBytes = 0;
+  for (const row of entries) {
+    need(row && typeof row.path === 'string' && !observed.has(row.path)
+      && !row.path.includes('\\') && !row.path.includes(String.fromCharCode(0))
+      && !row.path.split('/').some(part => part === '..' || part === '.'),
+    'CASE_STORE_DUPLICATE_OR_TRAVERSAL');
+    observed.add(row.path);
+    if (row.path === '') {
+      need(row.kind === 'directory', 'CASE_STORE_ROOT_KIND'); continue;
+    }
+    if (sqliteNames.has(row.path)) {
+      need(row.kind === 'file' && Number.isSafeInteger(row.sizeBytes)
+        && row.sizeBytes >= 0 && row.sizeBytes <= GRAPH_BUDGET.store_file_bytes
+        && /^[0-9a-f]{64}$/.test(row.sha256), 'CASE_SQLITE_FILE_KIND_OR_BOUND');
+      sqliteFiles++; continue;
+    }
+    const directory = row.path === 'blobs' || row.path === control || row.path === control + '/locks'
+      || row.path === 'blobs/sha256' || row.path === 'blobs/.staging'
+      || /^blobs\/sha256\/[0-9a-f]{2}$/.test(row.path);
+    const file = row.path === 'blobs/' + GRAPH_CAS_ANCHOR
+      || row.path === control + '/root.lock' || row.path === control + '/catalog.json'
+      || row.path.startsWith(control + '/locks/') && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.lock$/.test(row.path.slice((control + '/locks/').length))
+      || /^blobs\/sha256\/([0-9a-f]{2})\/([0-9a-f]{64})$/.test(row.path)
+        && row.path.split('/')[3].startsWith(row.path.split('/')[2]);
+    need(directory || file, 'CASE_CAS_PATH_UNDECLARED');
+    if (directory) need(row.kind === 'directory', 'CASE_CAS_DIRECTORY_KIND');
+    else {
+      need(row.kind === 'file' && Number.isSafeInteger(row.sizeBytes)
+        && row.sizeBytes >= 0 && /^[0-9a-f]{64}$/.test(row.sha256),
+      'CASE_CAS_FILE_KIND');
+      casFiles++; casBytes += row.sizeBytes;
+      need(casFiles <= allowance.files && casBytes <= allowance.bytes, 'CASE_CAS_FOOTPRINT_BOUND');
+    }
+  }
+  need(observed.has(sqliteName) && sqliteFiles <= GRAPH_BUDGET.store_files, 'CASE_SQLITE_FILE_ROSTER');
+  need([...casRequired].every(entry => observed.has(entry)), 'CASE_CAS_MANAGED_ROOT_INCOMPLETE');
+  return Object.freeze({ sqlite_files: sqliteFiles, cas_files: casFiles, cas_bytes: casBytes });
+}
+
+/** Eligibility only: original physical Store validation is performed separately
+ * by verifyStoreAllocation before any archived bytes or directory is created. */
+export function verifyGraphManagedCopyBounds(entries, original, source, databasePath, sequence) {
+  need(original && Array.isArray(original.entries), 'CASE_STORE_INVENTORY_MISSING');
+  same(entries, original.entries, 'CASE_STORE_CHANGED_BEFORE_COPY');
+  const files = entries.filter(entry => entry.kind === 'file');
+  const bytes = files.reduce((total, entry) => total + entry.sizeBytes, 0);
+  need(files.every(entry => Number.isSafeInteger(entry.sizeBytes) && entry.sizeBytes >= 0)
+    && Number.isSafeInteger(bytes) && bytes > 0, 'CASE_STORE_COPY_BYTES_INVALID');
+  need(sequence === 0 && source === path.dirname(databasePath)
+    && bytes <= GRAPH_BUDGET.store_file_bytes * GRAPH_BUDGET.store_files + GRAPH_CAS_ALLOWANCE.bytes
+    && files.length <= GRAPH_BUDGET.store_files + GRAPH_CAS_ALLOWANCE.files,
+    'CASE_SINGLE_ORIGINAL_STORE_COPY');
+  return Object.freeze({ bytes, files: files.length });
+}
+
 export class GraphCaseFactoryCore {
   static async create(options, adapters) {
     const admission = await adapters.admitSource(options);
@@ -129,6 +204,11 @@ export class GraphCaseFactoryCore {
       this.pool.reserve('directory-members', 'archive-directory-capacity', 1, 256);
       this.pool.reserve('original-sqlite-files', 'kernel-bounded-original-store',
         GRAPH_BUDGET.store_file_bytes * GRAPH_BUDGET.store_files, GRAPH_BUDGET.store_files);
+      // Store::open itself writes a managed CAS anchor and sibling control next
+      // to SQLite. Charge these external files before the initializer starts.
+      this.casAllowance = this.pool.reserve('original-managed-cas-files', 'store-cas',
+        GRAPH_CAS_ALLOWANCE.bytes, GRAPH_CAS_ALLOWANCE.files);
+      this.casRestriction = this.pool.external(this.casAllowance);
     }
     this.sdkTickets = new SdkTicketPrewrite(this.pool, ticketPlan);
     this.declaredNativeLaunches = ticketPlan.plan.clients.length;
@@ -213,11 +293,35 @@ export class GraphCaseFactoryCore {
   verifyStoreAllocation() {
     if (!this.originalProduction) return;
     const folder = path.dirname(this.options.databasePath), base = path.basename(this.options.databasePath);
-    const entries = inventoryTree(folder, { bytes: GRAPH_BUDGET.store_file_bytes * GRAPH_BUDGET.store_files,
-      files: GRAPH_BUDGET.store_files });
-    need(entries.every(row => row.path === '' && row.kind === 'directory'
-      || row.kind === 'file' && [base, base + '-wal', base + '-shm', base + '-journal']
-        .includes(row.path) && row.sizeBytes <= GRAPH_BUDGET.store_file_bytes), 'CASE_STORE_ALLOCATION_EXCEEDED');
+    need(this.casAllowance && this.casRestriction &&
+      this.casAllowance.bytes === this.casRestriction.bytes &&
+      this.casAllowance.files === this.casRestriction.files, 'CASE_CAS_PRECHARGE_MISSING');
+    // The complete SQLite/CAS parent remains in this same original inventory.
+    // Its CAS files have an independent prepaid quota; SQLite retains exactly
+    // its four kernel-size-bounded file slots and original path.
+    const entries = inventoryTree(folder, {
+      bytes: GRAPH_BUDGET.store_file_bytes * GRAPH_BUDGET.store_files + this.casAllowance.bytes,
+      files: GRAPH_BUDGET.store_files + this.casAllowance.files,
+    });
+    const anchorPath = path.join(folder, 'blobs', GRAPH_CAS_ANCHOR);
+    const anchorOriginal = stableRead(anchorPath, 65536);
+    const anchorEntry = entries.find(row => row.path === 'blobs/' + GRAPH_CAS_ANCHOR);
+    need(anchorEntry && anchorEntry.kind === 'file'
+      && anchorEntry.sha256 === anchorOriginal.ref.sha256
+      && anchorEntry.sizeBytes === anchorOriginal.ref.size_bytes, 'CASE_CAS_ANCHOR_CHANGED');
+    const anchor = strictJSON(anchorOriginal.data, 65536);
+    exact(anchor, ['format_version', 'root_id', 'control', 'canonical_root',
+      'directory_id', 'control_id', 'lock_id'], 'CASE_CAS_ANCHOR_FIELDS');
+    need(anchor.format_version === 1
+      && anchor.canonical_root === path.join(folder, 'blobs')
+      && anchor.control === path.join(folder, '.motionwright-cas-' + anchor.root_id)
+      && [anchor.directory_id, anchor.control_id, anchor.lock_id]
+        .every(value => typeof value === 'string' && value.length > 0 && value.length <= 256),
+      'CASE_CAS_ANCHOR_IDENTITY');
+    const summary = verifyGraphManagedStoreEntries(entries, base, anchor.root_id, this.casAllowance);
+    // Bind the exact original inventory to the later archive copy. Rechecking
+    // the size alone would admit changed CAS siblings between observations.
+    return Object.freeze({ entries, cas_root_id: anchor.root_id, ...summary });
   }
   reserveLaunch(context) {
     try {
@@ -550,9 +654,11 @@ export class GraphCaseFactoryCore {
       const bytes=files.reduce((total,entry)=>total+entry.sizeBytes,0);
       need(files.length>0 && bytes>0,'EMPTY_STORE_COPY');
       if (this.originalProduction) {
-        this.verifyStoreAllocation();
-        need(this.copySequence === 0 && source === path.dirname(this.options.databasePath)
-          && bytes <= 16 * MiB && files.length <= 4, 'CASE_SINGLE_ORIGINAL_STORE_COPY');
+        const original = this.verifyStoreAllocation();
+        // The original SQLite and managed CAS are copied together, with their
+        // distinct prepaid limits and identical physical source manifest.
+        same({ bytes, files: files.length }, verifyGraphManagedCopyBounds(entries, original,
+          source, this.options.databasePath, this.copySequence), 'CASE_COPY_BOUNDS_MISMATCH');
       }
       const allocation=this.pool.reserve('copy/'+this.copySequence++,'archive-copy',bytes,files.length);
       this.closureWriter.json(path.join(this.root,'copy-'+allocation.sequence+'.intent.original.json'),

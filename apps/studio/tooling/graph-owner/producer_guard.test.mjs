@@ -7,7 +7,8 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { stripTypeScriptTypes } from "node:module";
 import { SharedPool } from "../../tests/support/graph-owner/custody.mjs";
-import { graphCaseLayout } from "../../tests/support/graph-owner/factory.mjs";
+import { graphCaseLayout, verifyGraphManagedStoreEntries, verifyGraphManagedCopyBounds,
+  GRAPH_CAS_ALLOWANCE } from "../../tests/support/graph-owner/factory.mjs";
 import { inspectSourceBoundCandidate, requireNativeGraphParentAdmission,
   admitOriginalProducers, runIndependentSameStoreReopen, inspectR74StatusCore,
   assertOriginalProducerAdmission, inspectProducerOriginalsCore, AUTHORITY_SOURCE_PATHS,
@@ -536,4 +537,122 @@ test('actual wrapper function routes Service and owner to factory paths using an
     assert.equal(spec.paths.owner_socket, layout.ownerSocket);
     assert.equal(factories.get(service), factory);
   }
+});
+
+const GRAPH_CAS_FIXTURE_ID = "018fd898-9b54-7a88-bd36-7f10e792d109";
+const GRAPH_CONTROL = ".motionwright-cas-" + GRAPH_CAS_FIXTURE_ID;
+const fixtureFile = (file, bytes = 120) => ({ path: file, kind: "file",
+  sizeBytes: bytes, sha256: "a".repeat(64) });
+const fixtureDir = file => ({ path: file, kind: "directory" });
+function managedStoreFixture() {
+  return [
+    fixtureDir(""), fixtureFile("motionwright.sqlite3", 151552),
+    fixtureFile("motionwright.sqlite3-wal", 1024),
+    fixtureDir("blobs"), fixtureFile("blobs/.motionwright-cas-root-v1.json", 360),
+    fixtureDir("blobs/sha256"), fixtureDir("blobs/sha256/aa"),
+    fixtureFile("blobs/sha256/aa/" + "a".repeat(64), 480),
+    fixtureDir(GRAPH_CONTROL), fixtureDir(GRAPH_CONTROL + "/locks"),
+    fixtureFile(GRAPH_CONTROL + "/root.lock", 0),
+    fixtureFile(GRAPH_CONTROL + "/catalog.json", 850),
+  ];
+}
+test("managed Graph Store validates physical CAS next to SQLite without borrowing its four-file quota", () => {
+  const rows = managedStoreFixture();
+  assert.ok(rows.length > GRAPH_BUDGET.store_files * 2 + 1);
+  const result = verifyGraphManagedStoreEntries(rows, "motionwright.sqlite3", GRAPH_CAS_FIXTURE_ID,
+    GRAPH_CAS_ALLOWANCE);
+  assert.equal(result.sqlite_files, 2);
+  assert.equal(result.cas_files, 4);
+  assert.equal(result.cas_bytes, 360 + 480 + 850);
+  assert.deepEqual(Object.keys(result).sort(), ["cas_bytes", "cas_files", "sqlite_files"]);
+  assert.equal(GRAPH_BUDGET.store_files, 4);
+  assert.equal(GRAPH_CAS_ALLOWANCE.files, 24);
+  assert.equal(GRAPH_CAS_ALLOWANCE.bytes, 4 * 1024 * 1024);
+});
+test("managed Graph Store rejects alien entries, renamed control and disallowed CAS files", () => {
+  for (const additional of [
+    fixtureFile("foreign.txt", 1), fixtureDir(".motionwright-cas-foreign"),
+    fixtureFile("blobs/foreign.txt"), fixtureFile(GRAPH_CONTROL + "/private-key"),
+    fixtureFile("blobs/sha256/aa/" + "b".repeat(64)),
+    fixtureFile(GRAPH_CONTROL + "/locks/foreign.lock"),
+  ]) {
+    assert.throws(() => verifyGraphManagedStoreEntries([...managedStoreFixture(), additional],
+      "motionwright.sqlite3", GRAPH_CAS_FIXTURE_ID, GRAPH_CAS_ALLOWANCE), /CASE_/);
+  }
+  assert.throws(() => verifyGraphManagedStoreEntries(managedStoreFixture(),
+    "motionwright.sqlite3", "ffffffff-ffff-7fff-bfff-ffffffffffff", GRAPH_CAS_ALLOWANCE), /CASE_/);
+  assert.throws(() => verifyGraphManagedStoreEntries(managedStoreFixture().filter(row =>
+    row.path !== "blobs/.motionwright-cas-root-v1.json"), "motionwright.sqlite3",
+    GRAPH_CAS_FIXTURE_ID, GRAPH_CAS_ALLOWANCE), /CASE_/);
+});
+test("managed Graph Store rejects oversized, malformed and over-quota CAS/SQLite, not failed as accepted", () => {
+  const cases = [
+    managedStoreFixture().map(row => row.path === "motionwright.sqlite3"
+      ? { ...row, sizeBytes: GRAPH_BUDGET.store_file_bytes + 1 } : row),
+    managedStoreFixture().map(row => row.path === GRAPH_CONTROL + "/catalog.json"
+      ? { ...row, sizeBytes: GRAPH_CAS_ALLOWANCE.bytes + 1 } : row),
+    managedStoreFixture().map(row => row.path === "blobs"
+      ? { ...row, kind: "symlink" } : row),
+    [...managedStoreFixture(), fixtureFile("blobs/.staging/" + "1".repeat(32) + ".part", 100)],
+    [...managedStoreFixture(), fixtureFile("motionwright.sqlite3-wal", 1)],
+  ];
+  for (const rows of cases) {
+    assert.throws(() => verifyGraphManagedStoreEntries(rows, "motionwright.sqlite3",
+      GRAPH_CAS_FIXTURE_ID, GRAPH_CAS_ALLOWANCE), /CASE_/);
+  }
+  const extra = Array.from({ length: GRAPH_CAS_ALLOWANCE.files }, (_, i) =>
+    fixtureFile(GRAPH_CONTROL + "/locks/" + String(i).padStart(8, "0") + "-aaaa-7aaa-aaaa-aaaaaaaaaaaa.lock", 1));
+  assert.throws(() => verifyGraphManagedStoreEntries([...managedStoreFixture(), ...extra],
+    "motionwright.sqlite3", GRAPH_CAS_FIXTURE_ID, GRAPH_CAS_ALLOWANCE), /CASE_/);
+});
+test("managed Graph CAS precharge is a distinct one-shot slice of the original pool", () => {
+  const pool = new SharedPool();
+  const allocation = pool.reserve("original-managed-cas-files", "store-cas",
+    GRAPH_CAS_ALLOWANCE.bytes, GRAPH_CAS_ALLOWANCE.files);
+  assert.deepEqual(pool.external(allocation),
+    { bytes: GRAPH_CAS_ALLOWANCE.bytes, files: GRAPH_CAS_ALLOWANCE.files });
+  assert.throws(() => pool.external(allocation), /EXTERNAL_RESERVATION_REUSE/);
+});
+
+test("managed Graph archive includes the original SQLite and prepaid CAS without rewriting the source", () => {
+  const source = path.resolve("/original/graph-store");
+  const databasePath = path.join(source, "motionwright.sqlite3");
+  const original = { entries: managedStoreFixture() };
+  const allowed = verifyGraphManagedCopyBounds(original.entries, original, source, databasePath, 0);
+  assert.deepEqual(allowed, { files: 6, bytes: 154266 });
+  assert.equal(allowed.files, 2 + 4);
+  assert.equal(allowed.bytes, 151552 + 1024 + 360 + 480 + 850);
+});
+
+test("managed Graph archive rejects a changed original manifest before allocating a copy", () => {
+  const source = path.resolve("/original/graph-store");
+  const databasePath = path.join(source, "motionwright.sqlite3");
+  const original = { entries: managedStoreFixture() };
+  for (const changed of [
+    original.entries.filter(row => row.path !== "blobs/.motionwright-cas-root-v1.json"),
+    original.entries.map(row => row.path === "motionwright.sqlite3" ? { ...row, sha256: "b".repeat(64) } : row),
+    [...original.entries, fixtureFile("foreign.txt", 1)],
+  ]) {
+    assert.throws(() => verifyGraphManagedCopyBounds(changed, original,
+      source, databasePath, 0), /CASE_STORE_CHANGED_BEFORE_COPY/);
+  }
+  assert.deepEqual(original.entries, managedStoreFixture());
+});
+
+test("managed Graph archive rejects second copies, foreign roots and changed prepaid limits", () => {
+  const source = path.resolve("/original/graph-store");
+  const databasePath = path.join(source, "motionwright.sqlite3");
+  const original = { entries: managedStoreFixture() };
+  for (const [root, sequence] of [[source, 1], [path.resolve("/foreign/graph-store"), 0]]) {
+    assert.throws(() => verifyGraphManagedCopyBounds(original.entries, original,
+      root, databasePath, sequence), /CASE_SINGLE_ORIGINAL_STORE_COPY/);
+  }
+  const tooLarge = original.entries.map(row => row.path === "motionwright.sqlite3"
+    ? { ...row, sizeBytes: 21 * 1024 * 1024 } : row);
+  assert.throws(() => verifyGraphManagedCopyBounds(tooLarge, { entries: tooLarge },
+    source, databasePath, 0), /CASE_SINGLE_ORIGINAL_STORE_COPY/);
+  const wrongMetadata = original.entries.map(row => row.path === "motionwright.sqlite3"
+    ? { ...row, sizeBytes: "151552" } : row);
+  assert.throws(() => verifyGraphManagedCopyBounds(wrongMetadata, { entries: wrongMetadata },
+    source, databasePath, 0), /CASE_STORE_COPY_BYTES_INVALID/);
 });
