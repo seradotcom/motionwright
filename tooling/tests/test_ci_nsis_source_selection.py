@@ -752,6 +752,14 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(source_text.count("GIT_CONFIG_KEY_0: core.autocrlf"), 1)
         self.assertNotIn(source_lf_guard, source_text.replace(
             "GIT_CONFIG_VALUE_0: 'false'", "GIT_CONFIG_VALUE_0: 'true'"))
+        update_job = re.search(
+            r"(?ms)^  windows-update:\n(?P<body>.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", text)
+        self.assertIsNotNone(update_job)
+        update_source = update_job.group("body")
+        self.assertIn(source_lf_guard, update_source)
+        self.assertEqual(update_source.count("GIT_CONFIG_KEY_0: core.autocrlf"), 1)
+        self.assertNotIn(source_lf_guard, update_source.replace(
+            "GIT_CONFIG_VALUE_0: 'false'", "GIT_CONFIG_VALUE_0: 'true'"))
         receipt = text.split("      - name: Quick source and conformance policies for every verification scope", 1)[1].split(
             "      - name: Candidate receipt and installed-package smoke policy tests", 1)[0]
         start = "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:"

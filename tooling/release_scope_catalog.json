@@ -21127,7 +21127,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "c55b3ac6a77173f647f8bcdd8a13fe447cb9d6a71e68d194ca55a21b1524203b",
+      "sha256": "2031fcbf114c42c0922ee3f6a74e7870f88f9c74b12838eb1438000795e5885a",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21822,7 +21822,7 @@
             "nsis-source-windows"
           ],
           "strategy": null,
-          "source_sha256": "6657dad317e92c44283dabaf02eefcab8a5c522b92fa0f27336ad25033849fd5",
+          "source_sha256": "6f750ce83def93e14936e0188b43414bd4a89d5d5453bc05ddba2065d5cf4246",
           "instance_sets": {
             "nsis-compile": [
               {}
@@ -22599,7 +22599,8 @@
         "Original PowerShell exit-guard retention runs when the producer finished successfully, failed or was cancelled; when it was skipped due an earlier failure, the upload is also skipped, avoiding false missing-originals errors. Observed producer failures still require original upload and error-on-missing; this never converts failure/UNKNOWN into acceptance.",
         "The exact first-attempt development-only acceptance deferral requires all 208 unique requirements to retain current_contract_verdict=open and technical_assessment.contract_acceptance.status=open, in addition to 60+64 NOT_RUN acceptance rows and incomplete creative-status requirements. Mutating any single contract verdict causes both pre-final source guards to deny; full final G0 and independent G3 remain unchanged.",
         "Only GitHub first-attempt workflow_dispatch on the exact canonical integration branch may use source-only nonpromotion guards for nsis_lifecycle, windows_contracts or windows_installed development. For installed Windows, this unblocks actual physical installer/SQLite cold-reopen observation but does not establish independent G2/F/G3 acceptance. Both Linux receipt-policy and Windows contracts require all 208 unique open contract rows, 60+64 NOT_RUN independent=false cases, exactly 64 incomplete creative rows and v05_release_ready=false. All, other refs/attempts and F retain full strict acceptance policies.",
-        "The nsis-source-windows checkout must retain canonical LF Git bytes for Cargo.lock, SOURCE_LOCK.json, and apps/studio/package-lock.json: GIT_CONFIG_COUNT=1 core.autocrlf=false before actions/checkout. Historical run41270091876 original Windows source receipts were SHA-bound to 8b1 but recorded CRLF-converted checkout bytes; their exact CRLF values are explained by deterministic conversion, not current F lock-byte identity. No physical installer/G2 or G3 outcome is implied."
+        "The nsis-source-windows checkout must retain canonical LF Git bytes for Cargo.lock, SOURCE_LOCK.json, and apps/studio/package-lock.json: GIT_CONFIG_COUNT=1 core.autocrlf=false before actions/checkout. Historical run41270091876 original Windows source receipts were SHA-bound to 8b1 but recorded CRLF-converted checkout bytes; their exact CRLF values are explained by deterministic conversion, not current F lock-byte identity. No physical installer/G2 or G3 outcome is implied.",
+        "The windows-update source-bound NSIS compile/lifecycle job also keeps canonical LF bytes on Windows via core.autocrlf=false before pinned checkout, matching windows-contracts, windows installed and nsis-source-windows. This is a checkout identity/source-lock correction, not a change in the fixture executable, installer, physical lifecycle or acceptance. Historical original Windows CRLF lock digests remain historical and are not promoted to F."
       ]
     }
   ],
