@@ -8140,6 +8140,149 @@ class GraphR74JoinTests(unittest.TestCase):
                          ["graph-apt-update", "graph-apt-media-preprovision"])
 
 
+    def graph_failed_case_command(self):
+        return {"exit_code": 1, "process_observation_schema": gate.PROCESS_OBSERVATION_SCHEMA,
+                "process_boundary": "OWNED_POSIX_SESSION_GROUP", "pid": 123,
+                "owned_group_after_wait": "ABSENT", "escaped_descendants": "NOT_OBSERVED",
+                "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+
+    def graph_diagnostic_fixture_report(self):
+        repo = Path("/source-owned-repo")
+        source = "apps/studio/tests/support/graph-owner/producer_guard.mjs"
+        specs = []
+        for ordinal, (_, title, _) in enumerate(gate.GRAPH_CASES):
+            result = {"status": "failed" if ordinal == 0 else "skipped"}
+            if ordinal == 0:
+                result["error"] = {"message": "Error: J1_R74_READ_ONLY_TOKEN_REQUIRED PRIVATE_TOKEN_VALUE",
+                                   "stack": "Error: PRIVATE_TOKEN_VALUE\n    at need (" + str(repo / source) + ":201:5)"}
+            specs.append({"title": title, "file": "semantic-graph-service.spec.ts", "line": 91 + ordinal,
+                          "column": 3, "tests": [{"results": [result]}]})
+        return repo, {"stats": {"expected": 0, "unexpected": 1, "skipped": 5, "flaky": 0},
+                      "suites": [{"suites": [{"specs": specs}]}]}
+
+    def test_graph_failed_case_diagnostic_retains_only_closed_case_counts_locations_and_codes(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        with mock.patch.object(gate, "graph_ref", return_value={"path": "private-original"}) as reference, \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()) as read:
+            result = gate.graph_observed_playwright_failure(repo, Path("original.json"), self.graph_failed_case_command())
+        self.assertEqual(result["report"], "OBSERVED_FAILURE_DIAGNOSTIC_ONLY")
+        self.assertEqual(result["counts"], {"expected": 0, "unexpected": 1, "skipped": 5, "flaky": 0})
+        self.assertEqual(result["cases"], [{"case_id": case, "statuses": ["failed" if n == 0 else "skipped"]}
+                                         for n, (case, _, _) in enumerate(gate.GRAPH_CASES)])
+        self.assertIn({"file": "apps/studio/tests/support/graph-owner/producer_guard.mjs", "line": 201, "column": 5}, result["locations"])
+        self.assertIn({"file": "apps/studio/tests/semantic-graph-service.spec.ts", "line": 91, "column": 3}, result["locations"])
+        self.assertIn("J1_R74_READ_ONLY_TOKEN_REQUIRED", result["error_codes"])
+        self.assertNotIn("PRIVATE_TOKEN_VALUE", gate.json.dumps(result))
+        reference.assert_called_once_with(Path("original.json"), gate.GRAPH_BUDGET["store_file_bytes"])
+        read.assert_called_once_with({"path": "private-original"}, gate.GRAPH_BUDGET["store_file_bytes"])
+
+    def test_graph_failed_case_diagnostic_global_bootstrap_error_never_invents_a_case(self):
+        value = {"suites": [], "errors": [{"message": "browserType.launch: Executable doesn't exist at /private/SECRET_BROWSER_PATH"}]}
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            result = gate.graph_observed_playwright_failure(Path("repo"), Path("report"), self.graph_failed_case_command())
+        self.assertEqual(result["error_codes"], ["PLAYWRIGHT_BROWSER_EXECUTABLE_MISSING"])
+        self.assertEqual(result["counts"], {})
+        self.assertEqual(result["cases"], [{"case_id": case, "statuses": []} for case, _, _ in gate.GRAPH_CASES])
+        self.assertNotIn("SECRET_BROWSER_PATH", gate.json.dumps(result))
+
+    def test_graph_failed_case_diagnostic_scrubs_foreign_titles_paths_streams_and_error_codes(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        spec = value["suites"][0]["suites"][0]["specs"][0]
+        spec.update(title="SECRET_TITLE", file="/private/SECRET_SOURCE.ts")
+        spec["tests"][0]["results"][0].update(
+            error={"message": "J1_SECRET_ACCESS_TOKEN SECRET_MESSAGE", "stack": "at /private/SECRET_STACK.ts:1:2",
+                   "location": {"file": "/private/SECRET_LOCATION.ts", "line": 7, "column": 8}},
+            stdout=[{"text": "SECRET_STDOUT"}], stderr=[{"text": "SECRET_STDERR"}],
+            attachments=[{"path": "SECRET_ATTACHMENT"}])
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            result = gate.graph_observed_playwright_failure(repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(result["cases"][0]["statuses"], [])
+        self.assertEqual(result["error_codes"], [])
+        self.assertEqual(result["locations"], [])
+        self.assertNotIn("SECRET", gate.json.dumps(result))
+
+    def test_graph_failed_case_diagnostic_unavailable_or_malformed_reports_are_closed(self):
+        for failure in (FileNotFoundError("SECRET_PATH"), ValueError("SECRET_OVERSIZE")):
+            with self.subTest(failure=type(failure).__name__), \
+                 mock.patch.object(gate, "graph_ref", side_effect=failure), mock.patch.object(gate, "graph_read") as read:
+                result = gate.graph_observed_playwright_failure(Path("repo"), Path("report"), self.graph_failed_case_command())
+            read.assert_not_called()
+            self.assertIn(result["report"], ("UNAVAILABLE", "INVALID_OR_UNAVAILABLE"))
+            self.assertNotIn("SECRET", gate.json.dumps(result))
+        for raw in (b"{", b'[]', b'{"stats":{"unexpected":"SECRET_COUNT"}}',
+                    b'{"suites":[{"specs":[{"tests":[{"results":[{"status":"SECRET_STATE"}]}]}]}]}'):
+            with self.subTest(raw=raw), mock.patch.object(gate, "graph_ref", return_value={}), \
+                 mock.patch.object(gate, "graph_read", return_value=raw):
+                result = gate.graph_observed_playwright_failure(Path("repo"), Path("report"), self.graph_failed_case_command())
+            self.assertEqual(result, {"report": "INVALID_OR_UNAVAILABLE"})
+
+    def test_graph_failed_case_diagnostic_unknown_has_no_readback_or_conversion(self):
+        error = gate.UnknownObservation("SECRET_UNCERTAIN_COMMAND", {"observation": "UNKNOWN_TIMEOUT_NO_RETRY"})
+        with mock.patch.object(gate, "require_observed_command", side_effect=error), \
+             mock.patch.object(gate, "graph_ref") as reference, mock.patch.object(gate, "graph_read") as read, \
+             self.assertRaises(gate.UnknownObservation) as raised:
+            gate.graph_observed_playwright_failure(Path("repo"), Path("report"), self.graph_failed_case_command())
+        self.assertIs(raised.exception, error); reference.assert_not_called(); read.assert_not_called()
+        with mock.patch.object(gate, "graph_ref", side_effect=error), mock.patch.object(gate, "graph_read") as read, \
+             self.assertRaises(gate.UnknownObservation) as raised:
+            gate.graph_observed_playwright_failure(Path("repo"), Path("report"), self.graph_failed_case_command())
+        self.assertIs(raised.exception, error); read.assert_not_called()
+
+    def graph_case_diagnostic_run(self, failure):
+        import contextlib
+        repo, root = Path("/diagnostic-repo"), Path("/diagnostic-root")
+        index = {"source": {"run_id": "123", "sdk_root": "/sdk"}, "source_original": {},
+                 "runtime": {"root": "/runtime"},
+                 "binaries": {role: {"path": "/inert/" + role} for role in ("ordinary_service", "python3", "ffmpeg")}}
+        clock = mock.Mock(unknown=False); clock.phase.return_value = contextlib.nullcontext()
+        commands = [{**self.graph_failed_case_command(), "exit_code": 0}, self.graph_failed_case_command()]
+        if failure == "unknown":
+            commands[1] = gate.UnknownObservation("SECRET_UNKNOWN", {"observation": "UNKNOWN_TIMEOUT_NO_RETRY"})
+        with contextlib.ExitStack() as stack:
+            def patch(name, **kwargs):
+                return stack.enter_context(mock.patch.object(gate, name, **kwargs))
+            patch("graph_layout", return_value=(repo, root)); patch("GraphOriginalClock", return_value=clock)
+            patch("graph_ref", return_value={"path": "original"})
+            read = patch("graph_read", side_effect=[gate.json.dumps(index).encode(), b'{"source_before":{}}'])
+            patch("graph_verify_producer_index", return_value={}); patch("graph_source_view", return_value={})
+            patch("graph_report", return_value={"listed": 6})
+            runtime = patch("graph_runtime_unchanged", return_value={})
+            if failure == "runtime":
+                runtime.side_effect = ValueError("Graph complete shared runtime changed")
+            execute = patch("execute", side_effect=commands)
+            details = patch("graph_observed_playwright_failure", return_value={"report": "OBSERVED_FAILURE_DIAGNOSTIC_ONLY"})
+            receipt = patch("graph_put_json")
+            stack.enter_context(mock.patch.object(gate.Path, "is_file", return_value=True))
+            stack.enter_context(mock.patch.object(gate.Path, "exists", return_value=False))
+            file_read = stack.enter_context(mock.patch.object(gate.Path, "read_bytes", return_value=b'{}'))
+            stack.enter_context(mock.patch.object(gate.shutil, "which", return_value="/inert/node"))
+            stack.enter_context(mock.patch.dict(gate.os.environ, {gate.GRAPH_TOKEN_ENV: "SECRET_ENV_TOKEN"}))
+            output = stack.enter_context(mock.patch("builtins.print"))
+            status = gate.graph_run_cases(repo)
+        return status, gate.json.loads(output.call_args.args[0]), receipt.call_args.args[1], execute, details, read, file_read
+
+    def test_graph_failed_case_diagnostic_observed_exit_reports_actual_stage(self):
+        status, public, private, execute, details, read, file_read = self.graph_case_diagnostic_run("exit")
+        self.assertEqual(status, 1); self.assertEqual(public["status"], "DENY")
+        self.assertEqual(public["failure_diagnostic"], {"stage": "CASES_COMMAND", "cause": "CASES_EXIT_NONZERO", "exit_code": 1,
+                         "playwright": {"report": "OBSERVED_FAILURE_DIAGNOSTIC_ONLY"}})
+        self.assertEqual(execute.call_count, 2); details.assert_called_once()
+        self.assertFalse(public["formal_acceptance"])
+        self.assertNotIn("SECRET", gate.json.dumps(public))
+
+    def test_graph_failed_case_diagnostic_unknown_and_precommand_failure_never_reuse_discovery_exit(self):
+        for failure, status, stage, cause, commands in (("unknown", "UNKNOWN", "CASES_COMMAND", "UNKNOWN_OBSERVATION", 2),
+                                                       ("runtime", "DENY", "RUNTIME_BEFORE", "SHARED_RUNTIME_CHANGED", 1)):
+            with self.subTest(failure=failure):
+                result, public, private, execute, details, read, file_read = self.graph_case_diagnostic_run(failure)
+                self.assertEqual(result, 1); self.assertEqual(public["status"], status)
+                self.assertEqual(public["failure_diagnostic"], {"stage": stage, "cause": cause, "exit_code": None})
+                self.assertEqual(execute.call_count, commands); details.assert_not_called()
+                self.assertEqual(read.call_count, 2); self.assertEqual(file_read.call_count, 1)
+                self.assertNotIn("SECRET", gate.json.dumps(public))
+
     def test_graph_unknown_from_execute_keeps_original_exception_and_stops_readback(self):
         command = {"observation": "UNKNOWN_CUSTODY_NO_RETRY",
                    "uncertainty_reason": "COMMAND_RECEIPT_PERSISTENCE_FAILED",

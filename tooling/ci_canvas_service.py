@@ -9371,6 +9371,137 @@ def graph_archive_bindings(root, inventory, source):
             "producer": producer_state, "shared": {"members": shared_members, "bytes": shared_bytes}, "formal_acceptance": False}
 
 
+GRAPH_CASE_DIAGNOSTIC_CODES = (
+    "J1_R74_ACTUAL_ACTIONS_CONTEXT", "J1_R74_READ_ONLY_TOKEN_REQUIRED",
+    "J1_R74_STATUS_NOT_PRESENT", "J1_R74_NEWEST_STATUS_NOT_AUTHORIZED",
+    "J1_CASE_ADMISSION_ALREADY_CONSUMED", "J1_CASE_AND_FINAL_CUSTODY_BUDGET",
+    "J1_CARGO_EXECUTABLE_BIJECTION", "J1_RETAINED_BINARY_DIFFERS",
+    "J1_SOURCE_FILE_DIGEST", "J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION",
+    "CASE_OWNER_SOCKET_PATH_EXCEEDS_100_BYTES", "CASE_CANONICAL_ROOT_ALREADY_EXISTS",
+    "CASE_STORE_KERNEL_FILE_BOUND", "CASE_DEADLINE", "SYNTHETIC_ADMISSION_FORBIDDEN",
+    "PRESEAL_NOT_ORIGINAL_PHYSICAL_STORE", "REOPEN_NOT_ORIGINAL_PHYSICAL_STORE",
+    "REOPEN_FULL_PROJECT_MISMATCH",
+)
+
+
+def graph_case_failure_cause(error):
+    literals = {
+        "Graph actual discovery failed": "DISCOVERY_EXIT_NONZERO",
+        "Graph actual six-case process failed": "CASES_EXIT_NONZERO",
+        "Graph complete shared runtime changed": "SHARED_RUNTIME_CHANGED",
+        "Graph final exact source changed": "SOURCE_CHANGED",
+        "Graph final SDK tree changed": "SDK_TREE_CHANGED",
+    }
+    classes = {ValueError: "VALUE_ERROR", TypeError: "TYPE_ERROR", KeyError: "KEY_ERROR",
+               OSError: "OS_ERROR", FileNotFoundError: "FILE_NOT_FOUND",
+               PermissionError: "PERMISSION_ERROR", AssertionError: "ASSERTION_ERROR",
+               RuntimeError: "RUNTIME_ERROR", json.JSONDecodeError: "JSON_INVALID"}
+    return literals.get(str(error), classes.get(type(error), "UNCLASSIFIED_FAILURE"))
+
+
+def graph_observed_playwright_failure(repo, report_path, command):
+    """Read one observed failed command's report; publish only source-owned hints."""
+    require_observed_command(command)
+    require(type(command.get("exit_code")) is int and command["exit_code"] != 0,
+            "Graph diagnostics require an observed nonzero command")
+    try:
+        maximum = GRAPH_BUDGET["store_file_bytes"]
+        raw = graph_read(graph_ref(report_path, maximum), maximum)
+        require(type(raw) is bytes and 0 < len(raw) <= maximum, "Graph diagnostic report bound")
+        value = graph_json(raw)
+        require(type(value) is dict, "Graph diagnostic report object")
+        titles = {title: case for case, title, _ in GRAPH_CASES}
+        outcomes = {case: [] for case, _, _ in GRAPH_CASES}
+        counts, locations, codes = {}, [], []
+        stats = value.get("stats", {})
+        require(type(stats) is dict, "Graph diagnostic stats object")
+        for name in ("expected", "unexpected", "skipped", "flaky"):
+            if name in stats:
+                require(type(stats[name]) is int and 0 <= stats[name] <= 4096, "Graph diagnostic count bound")
+                counts[name] = stats[name]
+        aliases = {}
+        for source in sorted(set((*GRAPH_CALLGRAPH, *GRAPH_AUTHORITY))):
+            absolute = str(Path(repo) / source).replace("\\", "/")
+            for spelling in (source, absolute, "file://" + absolute):
+                aliases[spelling] = source
+            if source.startswith("apps/studio/"):
+                aliases[source[len("apps/studio/"):]] = source
+            if source.startswith("apps/studio/tests/"):
+                aliases[source[len("apps/studio/tests/"):]] = source
+        patterns = [(re.compile(r"(?:^|[\s(])" + re.escape(spelling) + r":([0-9]{1,7}):([0-9]{1,6})(?![0-9])"), source)
+                    for spelling, source in aliases.items()]
+        limits = {"suites": 0, "specs": 0, "results": 0, "errors": 0}
+
+        def location(file, line, column):
+            source = aliases.get(file.replace("\\", "/")) if type(file) is str else None
+            if source and type(line) is int and 1 <= line <= 1000000 and type(column) is int and 1 <= column <= 100000:
+                item = {"file": source, "line": line, "column": column}
+                if item not in locations and len(locations) < 8:
+                    locations.append(item)
+
+        def error_hint(error):
+            if error is None:
+                return
+            limits["errors"] += 1
+            require(type(error) is dict and limits["errors"] <= 32, "Graph diagnostic error bound")
+            direct = error.get("location", {})
+            if type(direct) is dict:
+                location(direct.get("file"), direct.get("line"), direct.get("column"))
+            text = "\n".join(error[key][:65536] for key in ("message", "stack") if type(error.get(key)) is str).replace("\\", "/")
+            for code in GRAPH_CASE_DIAGNOSTIC_CODES:
+                if re.search(r"(?<![A-Z0-9_])" + re.escape(code) + r"(?![A-Z0-9_])", text) and code not in codes:
+                    codes.append(code)
+            for phrase, code in (("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
+                                 ("browserType.launch: Executable doesn't exist", "PLAYWRIGHT_BROWSER_EXECUTABLE_MISSING"),
+                                 ("Error: No tests found", "PLAYWRIGHT_NO_TESTS_FOUND"),
+                                 ("Cannot find module", "MODULE_NOT_FOUND")):
+                if phrase in text and code not in codes:
+                    codes.append(code)
+            for pattern, source in patterns:
+                for match in pattern.finditer(text):
+                    location(source, int(match[1]), int(match[2]))
+
+        def sequence(parent, name, maximum):
+            items = parent.get(name, [])
+            require(type(items) is list and len(items) <= maximum, "Graph diagnostic list bound")
+            return items
+
+        for error in sequence(value, "errors", 16):
+            error_hint(error)
+        pending = list(sequence(value, "suites", 128))
+        while pending:
+            suite = pending.pop(0); limits["suites"] += 1
+            require(type(suite) is dict and limits["suites"] <= 128, "Graph diagnostic suite bound")
+            pending.extend(sequence(suite, "suites", 128))
+            for spec in sequence(suite, "specs", 128):
+                limits["specs"] += 1
+                require(type(spec) is dict and limits["specs"] <= 128, "Graph diagnostic spec bound")
+                case = titles.get(spec.get("title")) if type(spec.get("title")) is str else None
+                for test in sequence(spec, "tests", 8):
+                    require(type(test) is dict, "Graph diagnostic test object")
+                    for result in sequence(test, "results", 8):
+                        limits["results"] += 1
+                        require(type(result) is dict and limits["results"] <= 64, "Graph diagnostic result bound")
+                        status = result.get("status")
+                        require(status in ("passed", "failed", "timedOut", "skipped", "interrupted"), "Graph diagnostic result status")
+                        if case:
+                            outcomes[case].append(status)
+                        if status in ("failed", "timedOut", "interrupted"):
+                            error_hint(result.get("error"))
+                            for error in sequence(result, "errors", 16):
+                                error_hint(error)
+                            location(spec.get("file", suite.get("file")), spec.get("line"), spec.get("column"))
+        return {"report": "OBSERVED_FAILURE_DIAGNOSTIC_ONLY", "counts": counts,
+                "cases": [{"case_id": case, "statuses": outcomes[case]} for case, _, _ in GRAPH_CASES],
+                "locations": locations, "error_codes": codes}
+    except UnknownObservation:
+        raise
+    except OSError:
+        return {"report": "UNAVAILABLE"}
+    except Exception:
+        return {"report": "INVALID_OR_UNAVAILABLE"}
+
+
 def graph_run_cases(repo):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     output, producer = root / "e", root / "e/graph-producer"
@@ -9392,35 +9523,52 @@ def graph_run_cases(repo):
               "run_id": index["source"]["run_id"], "run_attempt": "1", "job": "real-service", "producer_index": index_ref,
               "source_before": graph_source_view(graph_json(graph_read(index["source_original"], 8 * GRAPH_BYTES))["source_before"]),
               "native_render": "PER_CASE_ORIGINALS_REQUIRE_A5_ASSESSMENT", "installed_tauri": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    diagnostic = {"stage": "DISCOVERY_COMMAND", "cause": None, "exit_code": None}
     try:
         with clock.phase("discovery"):
             discovery_env = dict(env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(output / "graph-discovery.json")); discovery_env.pop(GRAPH_TOKEN_ENV, None)
             command = execute([*argv, "--list"], repo / "apps/studio", discovery_env, output, "graph-discovery", 45,
                               deadline=clock, maximum_stream_bytes=GRAPH_BYTES)
-            require_observed_command(command); require(command["exit_code"] == 0, "Graph actual discovery failed")
+            require_observed_command(command)
+            diagnostic["exit_code"] = command["exit_code"] if type(command["exit_code"]) is int and -255 <= command["exit_code"] <= 255 else None
+            if command["exit_code"] != 0:
+                diagnostic["playwright"] = graph_observed_playwright_failure(repo, output / "graph-discovery.json", command)
+            require(command["exit_code"] == 0, "Graph actual discovery failed")
+            diagnostic["stage"] = "DISCOVERY_REPORT"
             discovery = graph_report(graph_json((output / "graph-discovery.json").read_bytes()), listing=True)
             report["discovery"] = {"process": {name: graph_ref(output / ("graph-discovery." + suffix)) for name, suffix in (
                 ("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))},
                 "report": graph_ref(output / "graph-discovery.json"), "verified": discovery}
+        diagnostic.update(stage="RUNTIME_BEFORE", exit_code=None)
         with clock.phase("cases"):
             report["runtime_before"] = graph_runtime_unchanged(index, producer)
             case_env = dict(env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(output / "graph-execution.json"))
             # Kernel file-size limits are installed before Playwright and inherited
             # by its actual Service/owner/Native children. No launcher substitute.
+            diagnostic.update(stage="CASES_COMMAND", exit_code=None)
             command = execute(argv, repo / "apps/studio", case_env, output, "graph-cases", 750, deadline=clock,
                               maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES)
-            require_observed_command(command); require(command["exit_code"] == 0, "Graph actual six-case process failed")
+            require_observed_command(command)
+            diagnostic["exit_code"] = command["exit_code"] if type(command["exit_code"]) is int and -255 <= command["exit_code"] <= 255 else None
+            if command["exit_code"] != 0:
+                diagnostic["playwright"] = graph_observed_playwright_failure(repo, output / "graph-execution.json", command)
+            require(command["exit_code"] == 0, "Graph actual six-case process failed")
+            diagnostic["stage"] = "CASES_REPORT"
             execution = graph_report(graph_json((output / "graph-execution.json").read_bytes()), listing=False, expected=discovery)
             report["execution"] = {"process": {name: graph_ref(output / ("graph-cases." + suffix)) for name, suffix in (
                 ("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))},
                 "report": graph_ref(output / "graph-execution.json"), "verified": execution}
+        diagnostic.update(stage="FINAL_PRODUCERS", exit_code=None)
         with clock.phase("closure"):
             for case, _, _ in GRAPH_CASES:
                 graph_verify_producer_index(index_ref, case)
+            diagnostic["stage"] = "RUNTIME_AFTER"
             report["runtime_after"] = graph_runtime_unchanged(index, producer)
+            diagnostic["stage"] = "SOURCE_AFTER"
             source_original = graph_json(graph_read(index["source_original"], 8 * GRAPH_BYTES))
             report["source_after"] = graph_source_view(graph_source_observe(repo, index["source"]["sha"], tuple(index["contract"]["source_files"])))
             require(report["source_after"] == report["source_before"], "Graph final exact source changed")
+            diagnostic["stage"] = "SDK_AFTER"
             sdk_after = graph_source_observe(Path(index["source"]["sdk_root"]), index["source"]["sdk_sha"], tuple(index["contract"]["sdk_files"]))
             require(graph_source_view(sdk_after)["tree"] == index["contract"]["sdk_tree"], "Graph final SDK tree changed")
             report["status"] = "CLOSED_GRAPH_OBSERVATIONS"
@@ -9428,10 +9576,15 @@ def graph_run_cases(repo):
                 "deadline_mono_ns": clock.deadline_ns, "unknown": False, "retry": "FORBIDDEN"}
     except UnknownObservation as error:
         report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command)
+        diagnostic["cause"] = "UNKNOWN_OBSERVATION"
     except BaseException as error:
         report.update(status="UNKNOWN" if clock.unknown else "DENY", error=type(error).__name__ + ": " + str(error))
+        diagnostic["cause"] = "UNKNOWN_OBSERVATION" if clock.unknown else graph_case_failure_cause(error)
+    if report["status"] != "CLOSED_GRAPH_OBSERVATIONS":
+        report["failure_diagnostic"] = diagnostic
     graph_put_json(output / "receipt.json", report)
-    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json"), "formal_acceptance": False}))
+    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json"), "formal_acceptance": False,
+                      **({"failure_diagnostic": diagnostic} if report["status"] != "CLOSED_GRAPH_OBSERVATIONS" else {})}))
     return 0 if report["status"] == "CLOSED_GRAPH_OBSERVATIONS" else 1
 
 
