@@ -1,6 +1,22 @@
 name: Graph fast development source checks
 
 on:
+  # A source-only push lane works on the integration branch before this
+  # workflow is registered on default for optional workflow_dispatch.
+  push:
+    branches: ['integrate/phase1-final-composition-20261027']
+    paths:
+      - '.github/workflows/graph-development-fast.yml'
+      - 'tooling/ci_graph_dev_fast.py'
+      - 'tooling/tests/test_ci_graph_dev_fast.py'
+      - 'tooling/native_graph_browser_owner.py'
+      - 'tooling/ci_canvas_service.py'
+      - 'tooling/tests/test_ci_canvas_service.py'
+      - 'tooling/native_host_shared_state.py'
+      - 'apps/studio/tests/support/graph-owner/**'
+      - 'apps/studio/tooling/graph-owner/**'
+      - 'SOURCE_LOCK.json'
+      - 'Cargo.lock'
   workflow_dispatch:
     inputs:
       expected_source_sha:
@@ -29,12 +45,12 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONNOUSERSITE: '1'
-      EXPECTED_GRAPH_SOURCE: ${{ inputs.expected_source_sha }}
-      GRAPH_FAST_BASE: ${{ inputs.base_sha }}
+      EXPECTED_GRAPH_SOURCE: ${{ github.event_name == 'push' && github.sha || inputs.expected_source_sha }}
+      GRAPH_FAST_BASE: ${{ github.event_name == 'push' && github.event.before || inputs.base_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 8
+          fetch-depth: 32
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -46,7 +62,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
+          else
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          fi
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_REPOSITORY" = seradotcom/motionwright
           test "$GITHUB_SHA" = "$EXPECTED_GRAPH_SOURCE"

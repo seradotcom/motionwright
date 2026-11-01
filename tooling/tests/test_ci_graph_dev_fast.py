@@ -259,11 +259,16 @@ class ImpactRoutingTests(unittest.TestCase):
 
 
 class ManualWorkflowBoundaryTests(unittest.TestCase):
-    def test_manual_source_job_cannot_be_confused_with_r74_native_acceptance(self):
+    def test_source_only_push_and_manual_job_cannot_be_confused_with_r74_acceptance(self):
         root = Path(__file__).resolve().parents[2]
         p = root / ".github/workflows/graph-development-fast.yml"
         text = p.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", text)
+        self.assertIn("push:", text)
+        self.assertIn("branches: ['integrate/phase1-final-composition-20261027']", text)
+        self.assertIn("github.event.before || inputs.base_sha", text)
+        self.assertIn("github.event_name == 'push' && github.sha", text)
+        self.assertIn("test \"$GITHUB_REF\" = refs/heads/integrate/phase1-final-composition-20261027", text)
         self.assertIn("permissions:\n  contents: read", text)
         self.assertIn("cancel-in-progress: true", text)
         self.assertIn("persist-credentials: false", text)
