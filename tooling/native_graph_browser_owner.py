@@ -145,6 +145,35 @@ def private_directory(path):
     return path
 
 
+def graph_child_environment(paths, socket_directory):
+    """Closed native-child environment: never inherit CI or user credentials.
+
+    The caller has already created all six directories with private_directory.
+    Executables/tools are source-pinned absolute paths; PATH is only for the
+    normal system loader and first-party sandbox utilities on Ubuntu.
+    """
+    names = frozenset(("home", "state", "config", "clients", "work", "native-output"))
+    require(type(paths) is dict and set(paths) == names
+            and all(isinstance(value, Path) and value.is_absolute()
+                    for value in paths.values())
+            and isinstance(socket_directory, Path) and socket_directory.is_absolute(),
+            "graph-child-private-roots-required")
+    return {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+        "PYTHONNOUSERSITE": "1",
+        "HOME": str(paths["home"]),
+        "XDG_RUNTIME_DIR": str(socket_directory),
+        "XDG_STATE_HOME": str(paths["state"]),
+        "XDG_CONFIG_HOME": str(paths["config"]),
+        "XDG_CACHE_HOME": str(paths["work"]),
+        "TMPDIR": str(paths["work"]),
+        "RUST_BACKTRACE": "1",
+    }
+
+
 def file_identity(path):
     path = Path(path)
     info = path.lstat()
@@ -987,10 +1016,7 @@ class GraphBrowserOwner:
         # sessions, owner state, configuration and originals remain in evidence.
         self.socket_directory = private_directory(Path(_OWNER_SPEC["paths"]["owner_runtime"]))
         require(stat.S_IMODE(self.socket_directory.stat().st_mode) == 0o700, "owner-socket-directory-mode")
-        self.env = {key: value for key, value in os.environ.items()
-                    if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}}
-        self.env.update(HOME=str(self.paths["home"]), XDG_RUNTIME_DIR=str(self.socket_directory),
-                        XDG_STATE_HOME=str(self.paths["state"]), RUST_BACKTRACE="1")
+        self.env = graph_child_environment(self.paths, self.socket_directory)
         self.cli = self.source_inputs["binaries"]["semwright"]["path"]
         self.daemon_executable = self.source_inputs["binaries"]["semwrightd"]["path"]
         new_json(lifecycle.evidence / "owner-locations.json", {

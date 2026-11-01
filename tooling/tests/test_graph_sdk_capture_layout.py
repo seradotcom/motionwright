@@ -4,11 +4,15 @@ These fixtures never start a daemon, approve R74, or claim Native/SQLite PASS.
 """
 from __future__ import annotations
 import copy
+import inspect
+import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import native_graph_browser_owner as graph
 from native_graph_browser_owner import GraphOwnerFailure, verify_graph_sdk_capture_roster
 
 ROLES = ("semwright", "semwrightd", "semwright_sandbox")
@@ -93,6 +97,59 @@ class GraphSdkCapturedRosterTests(unittest.TestCase):
         index.pop("binaries")
         with self.assertRaisesRegex(GraphOwnerFailure, "graph-sdk-capture-roster-shape"):
             verify_graph_sdk_capture_roster(spec, index)
+
+class GraphNativeChildEnvironmentTests(unittest.TestCase):
+    """Inert test: native Graph children must not inherit runner credentials."""
+
+    def private_roots(self):
+        base = Path.cwd() / "graph-inert-environment-only"
+        return {name: base / name for name in
+                ("home", "state", "config", "clients", "work", "native-output")}, base / "runtime"
+
+    def test_actual_owner_selects_only_private_child_environment(self):
+        source = inspect.getsource(graph.GraphBrowserOwner.__init__)
+        self.assertIn("self.env = graph_child_environment(self.paths, self.socket_directory)", source)
+        self.assertNotIn("os.environ.items()", source)
+
+    def test_arbitrary_runner_environment_never_enters_native_children(self):
+        roots, socket = self.private_roots()
+        canaries = {"GN1_UNREVIEWED_CHILD_CANARY": "synthetic-only",
+                    "GH_TOKEN": "synthetic-not-a-credential",
+                    "GITHUB_TOKEN": "synthetic-not-a-credential",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-not-a-credential",
+                    "LD_PRELOAD": "/synthetic/unreviewed.so",
+                    "PYTHONPATH": "/synthetic/unreviewed",
+                    "SEMWRIGHT_TEST_DRIVER_SANDBOX": "synthetic-unreviewed",
+                    "PATH": "/synthetic/bypass"}
+        with mock.patch.dict(os.environ, canaries, clear=False):
+            result = graph.graph_child_environment(roots, socket)
+        self.assertEqual(set(result), {"PATH", "LANG", "LC_ALL", "TZ",
+            "PYTHONNOUSERSITE", "HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME",
+            "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "RUST_BACKTRACE"})
+        self.assertFalse((set(canaries) - {"PATH"}).intersection(result))
+        self.assertNotEqual(result["PATH"], canaries["PATH"])
+        self.assertEqual(result["PATH"],
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        self.assertEqual(result["HOME"], str(roots["home"]))
+        self.assertEqual(result["XDG_RUNTIME_DIR"], str(socket))
+        self.assertEqual(result["XDG_STATE_HOME"], str(roots["state"]))
+        self.assertEqual(result["XDG_CONFIG_HOME"], str(roots["config"]))
+        self.assertEqual(result["XDG_CACHE_HOME"], str(roots["work"]))
+        self.assertEqual(result["TMPDIR"], str(roots["work"]))
+        self.assertEqual(result["PYTHONNOUSERSITE"], "1")
+        self.assertEqual(result["LC_ALL"], "C.UTF-8")
+
+    def test_missing_foreign_or_relative_private_roots_denied(self):
+        roots, socket = self.private_roots()
+        for malformed in ({k: v for k, v in roots.items() if k != "work"},
+                          {**roots, "foreign": Path.cwd() / "foreign"},
+                          {**roots, "home": Path("relative-home")},
+                          {**roots, "state": "not-a-Path"}):
+            with self.subTest(malformed=str(malformed)), self.assertRaises(graph.GraphOwnerFailure):
+                graph.graph_child_environment(malformed, socket)
+        with self.assertRaises(graph.GraphOwnerFailure):
+            graph.graph_child_environment(roots, Path("relative-runtime"))
+
 
 if __name__ == "__main__":
     unittest.main()
