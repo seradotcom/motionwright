@@ -106,8 +106,9 @@ def mkdir(parent: Path, name: str):
     return path
 
 
-def new_bytes(path: Path, data: bytes):
-    need(len(data) <= MAX_PRIVATE_SINGLE and not path.exists(),
+def new_bytes(path: Path, data: bytes, *, max_bytes=MAX_PRIVATE_SINGLE):
+    need(type(data) is bytes and type(max_bytes) is int
+         and 0 < len(data) <= max_bytes and not path.exists(),
          "GN1_PRIVATE_ORIGINAL_SIZE_OR_REPLAY")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -502,7 +503,8 @@ def run_once(args):
                "semwright_sha": first["sdk_sha"],
                "run_id": run_id, "run_attempt": "1"}
     sealed = custody.encrypt_snapshot(archive, recipient, context)
-    new_bytes(transport / "gn1-private.mwseal", sealed)
+    new_bytes(transport / "gn1-private.mwseal", sealed,
+              max_bytes=MAX_PRIVATE_BYTES + 2 * 1024 * 1024 + 8192)
     public["private_sealed"] = True
     public["sealed_original_count"] = original_count
     public["sealed_ciphertext_sha256"] = hashlib.sha256(sealed).hexdigest()

@@ -104,6 +104,20 @@ class PrivateOriginalTests(unittest.TestCase):
             with self.assertRaises(gn1.GN1Failure):
                 gn1.new_bytes(private / "startup.original.log", b"replayed")
 
+    def test_aggregate_ciphertext_has_separate_bounded_write_limit(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-capacity-") as tmp:
+            root = Path(tmp)
+            payload = b"abcdefghi"
+            with self.assertRaises(gn1.GN1Failure):
+                gn1.new_bytes(root / "single-original", payload, max_bytes=8)
+            gn1.new_bytes(root / "sealed-envelope", payload, max_bytes=9)
+            self.assertEqual((root / "sealed-envelope").read_bytes(), payload)
+            with self.assertRaises(gn1.GN1Failure):
+                gn1.new_bytes(root / "sealed-envelope", payload, max_bytes=9)
+        code = (Path(__file__).resolve().parents[1] /
+                "ci_graph_dev_native_startup.py").read_text(encoding="utf-8")
+        self.assertIn("max_bytes=MAX_PRIVATE_BYTES + 2 * 1024 * 1024 + 8192", code)
+
     def test_private_encryption_is_independently_authenticated(self):
         # The private reviewer key is generated in memory for this synthetic
         # fixture only; no Native process and no files leave the temp root.
