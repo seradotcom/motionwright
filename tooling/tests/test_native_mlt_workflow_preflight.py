@@ -311,11 +311,22 @@ class PreflightCustodyTests(unittest.TestCase):
         self.initialize()
         self.reports()
         self.native_dispatch()
+        film = self.base / "mw-film180-contracts-41-1"
+        film_streams = {}
+        for index in (1, 2, 3, 4):
+            for stream in ("stdout", "stderr"):
+                name = f"contracts-{index:02d}-{stream}.log"
+                raw = f"original Film module {index} {stream}\r\n".encode() + b"\x00\xff"
+                self.custody.new_bytes(film / name, raw)
+                film_streams["film/" + name] = raw
         self.env.update(P1_COMMON_OUTCOME="success", P1_FILM_OUTCOME="success",
                         P1_ADMISSION_OUTCOME="success", P1_PRODUCER_OUTCOME="success")
         public, code = self.finish()
         self.assertEqual(code, 0)
         self.assertTrue(public["native_dispatch_valid"])
+        self.assertTrue(public["captured_source_originals_complete"])
+        for name, raw in film_streams.items():
+            self.assertEqual(self.custody.captured[name], raw)
         self.assertEqual(public["native_terminal"], "ERROR_OR_UNKNOWN")
         self.assertFalse(public["physical_AV_master_acceptance"])
 
@@ -386,11 +397,15 @@ class PreflightCustodyTests(unittest.TestCase):
         self.reports()
         neighbor = self.base / "mw-mlt-g2-contracts-41-1/not-source-original.txt"
         self.custody.new_bytes(neighbor, b"unselected private neighbor")
+        beyond_film = self.base / "mw-film180-contracts-41-1/contracts-05-stderr.log"
+        self.custody.new_bytes(beyond_film, b"outside the five-module Film selection")
         public, code = self.finish()
         self.assertEqual(code, 2)
         self.assertFalse(public["captured_source_originals_complete"])
         self.assertNotIn("common/not-source-original.txt", self.custody.captured)
+        self.assertNotIn("film/contracts-05-stderr.log", self.custody.captured)
         self.assertEqual(neighbor.read_bytes(), b"unselected private neighbor")
+        self.assertEqual(beyond_film.read_bytes(), b"outside the five-module Film selection")
 
     def test_changed_recipient_or_source_rejected_before_any_private_namespace(self):
         self.env["MW_MLT_G2_ADMISSION"] = '{"source_sha":"foreign","recipient":{}}'

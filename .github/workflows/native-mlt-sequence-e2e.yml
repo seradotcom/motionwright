@@ -2172,7 +2172,7 @@ jobs:
 
 
           def p1_report_names(label):
-              count = {"common": 12, "film": 3, "workflow": 1}[label]
+              count = {"common": 12, "film": 5, "workflow": 1}[label]
               names = {"contracts.json", "contracts-admission.json", "runner.stdout", "runner.stderr", "runner-exit.json"}
               names |= {f"contracts-{index:02d}-{stream}.log" for index in range(count) for stream in ("stdout", "stderr")}
               if label == "common":
@@ -3714,7 +3714,7 @@ jobs:
 
 
           def p1_report_names(label):
-              count = {"common": 12, "film": 3, "workflow": 1}[label]
+              count = {"common": 12, "film": 5, "workflow": 1}[label]
               names = {"contracts.json", "contracts-admission.json", "runner.stdout", "runner.stderr", "runner-exit.json"}
               names |= {f"contracts-{index:02d}-{stream}.log" for index in range(count) for stream in ("stdout", "stderr")}
               if label == "common":

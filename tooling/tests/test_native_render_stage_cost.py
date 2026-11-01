@@ -1,14 +1,18 @@
 """Native stage cost receipt: only measured facts, never replay or retry."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
+from itertools import count
 import json
 import sys
 from pathlib import Path
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_render_stage_cost as stages  # noqa: E402
+import native_render_e2e as native  # noqa: E402
 
 SOURCE = "a" * 40
 SEMWRIGHT = "b" * 40
@@ -198,6 +202,125 @@ class NativeStageCostTests(unittest.TestCase):
         values["frame_comparison"]["frame_count"]=True
         with self.assertRaisesRegex(stages.NativeStageError,"frame_parity_unverified"):
             stages.assemble_native_stage_report(**values)
+
+
+
+class NativeRenderPollingTests(unittest.TestCase):
+    """G0 response and clock fixtures; no Native operation or media acceptance."""
+
+    JOB = "g0-render-job"
+
+    @contextmanager
+    def polling_fixture(self, statuses, ticks, result=None):
+        statuses = iter(statuses)
+        context = {"jobs": []}
+        calls = []
+        clock = mock.Mock()
+        clock.monotonic.side_effect = ticks
+        clock.perf_counter_ns.side_effect = count(0, 1000)
+
+        def execute(command, arguments, **options):
+            calls.append((command, deepcopy(arguments)))
+            if command == "render.start":
+                return {"job_ref": self.JOB, "state": "queued"}
+            if command == "render.status":
+                value = next(statuses)
+                if isinstance(value, dict):
+                    return deepcopy(value)
+                return {"job_ref": self.JOB, "state": value,
+                        "artifact": {"frame_count": 60}}
+            if command == "render.result":
+                return deepcopy(result) if result is not None else {
+                    "job_ref": self.JOB, "state": "succeeded",
+                    "artifact": {"frame_count": 60}}
+            self.fail("unexpected command: " + command)
+
+        with mock.patch.object(native, "time", clock), \
+                mock.patch.object(native, "CYCLE_CONTEXT", context), \
+                mock.patch.object(native, "cycle_execute", side_effect=execute):
+            yield context, calls, clock
+
+    def render(self):
+        return native.cycle_native_render(
+            "f" * 64, socket="g0-only.socket", session="g0-only.session", env={})
+
+    def assert_one_registered_start(self, context, calls):
+        self.assertEqual(context["jobs"], [self.JOB])
+        self.assertEqual(sum(command == "render.start" for command, _ in calls), 1)
+        for command, arguments in calls[1:]:
+            self.assertIn(command, {"render.status", "render.result"})
+            self.assertEqual(arguments, {"job_ref": self.JOB})
+
+    def test_rendering_progress_reaches_succeeded_without_resubmit(self):
+        with self.polling_fixture(["rendering", "succeeded"], [0, 1, 2]) as fixture:
+            context, calls, clock = fixture
+            result, timings, reads = self.render()
+            self.assertEqual(result["state"], "succeeded")
+            self.assertEqual(result["artifact"]["frame_count"], 60)
+            self.assertEqual(reads, 2)
+            self.assertEqual(set(timings), {"start", "terminal_wait", "result"})
+            self.assertEqual([command for command, _ in calls],
+                             ["render.start", "render.status", "render.status",
+                              "render.result"])
+            clock.sleep.assert_called_once_with(1)
+            self.assert_one_registered_start(context, calls)
+
+    def test_persistent_rendering_expires_original_deadline_without_retry(self):
+        with self.polling_fixture(["rendering", "rendering"],
+                                  [0, 1, 329, 330]) as fixture:
+            context, calls, clock = fixture
+            with self.assertRaisesRegex(
+                    native.N83RunnerFailure, "EDITABLE_SOURCE_CYCLE_NATIVE_OUTCOME_UNKNOWN"):
+                self.render()
+            self.assertEqual([command for command, _ in calls],
+                             ["render.start", "render.status", "render.status"])
+            self.assertEqual(clock.monotonic.call_count, 4)
+            self.assertEqual(clock.sleep.call_args_list, [mock.call(1), mock.call(1)])
+            self.assert_one_registered_start(context, calls)
+
+    def test_terminal_negative_and_unknown_states_still_fail_closed(self):
+        for state in ["failed", "cancelled", "unknown", "UNKNOWN", "unexpected", None, ""]:
+            with self.subTest(state=state), self.polling_fixture([state], [0, 1]) as fixture:
+                context, calls, clock = fixture
+                with self.assertRaisesRegex(
+                        native.N83RunnerFailure, "EDITABLE_SOURCE_CYCLE_NATIVE_NOT_SUCCEEDED"):
+                    self.render()
+                self.assertEqual([command for command, _ in calls],
+                                 ["render.start", "render.status"])
+                clock.sleep.assert_not_called()
+                self.assert_one_registered_start(context, calls)
+
+    def test_rendering_preserves_job_identity_and_complete_artifact_guards(self):
+        wrong_job = {"job_ref": "g0-other-job", "state": "rendering"}
+        with self.polling_fixture([wrong_job], [0, 1]) as fixture:
+            context, calls, clock = fixture
+            with self.assertRaisesRegex(
+                    native.N83RunnerFailure, "EDITABLE_SOURCE_CYCLE_JOB_IDENTITY_CHANGED"):
+                self.render()
+            self.assertEqual([command for command, _ in calls],
+                             ["render.start", "render.status"])
+            clock.sleep.assert_not_called()
+            self.assert_one_registered_start(context, calls)
+
+        complete = {"job_ref": self.JOB, "state": "succeeded",
+                    "artifact": {"frame_count": 60}}
+        cases = [
+            (complete, {**complete, "job_ref": "g0-other-job"}),
+            (complete, {**complete, "state": "failed"}),
+            (complete, {**complete, "artifact": {"frame_count": 59}}),
+            ({**complete, "artifact": {"frame_count": 59}}, complete),
+        ]
+        for terminal, result in cases:
+            with self.subTest(terminal=terminal, result=result), self.polling_fixture(
+                    ["rendering", terminal], [0, 1, 2], result) as fixture:
+                context, calls, clock = fixture
+                with self.assertRaisesRegex(
+                        native.N83RunnerFailure, "EDITABLE_SOURCE_CYCLE_INCOMPLETE_ARTIFACT"):
+                    self.render()
+                self.assertEqual([command for command, _ in calls],
+                                 ["render.start", "render.status", "render.status",
+                                  "render.result"])
+                self.assert_one_registered_start(context, calls)
 
 
 if __name__=="__main__":
