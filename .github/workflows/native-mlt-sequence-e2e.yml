@@ -1035,7 +1035,7 @@ jobs:
         SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_film180_evidence_selection.py', 65, 'c825d5c2652b82c3616d06ac75e666d3ac9f9e15cfd5a883c885bc62f5e57077')]
         MODE = 'dotted'
         GROUP = 'film'
-        TOTAL = 188
+        TOTAL = 192
 
         import ast
         from datetime import datetime
@@ -1556,7 +1556,7 @@ jobs:
         DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
         MODE = 'discovery'
         GROUP = 'discovery_remaining'
-        TOTAL = 645
+        TOTAL = 649
 
         import ast
         from datetime import datetime
@@ -2868,7 +2868,7 @@ jobs:
           SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_film180_evidence_selection.py', 65, 'c825d5c2652b82c3616d06ac75e666d3ac9f9e15cfd5a883c885bc62f5e57077')]
           MODE = 'dotted'
           GROUP = 'film'
-          TOTAL = 188
+          TOTAL = 192
 
           import ast
           from datetime import datetime
