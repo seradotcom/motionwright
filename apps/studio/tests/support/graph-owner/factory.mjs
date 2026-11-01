@@ -30,21 +30,26 @@ export function graphOwnedClientEnvironment(capability, paths) {
     'GRAPH_CLIENT_ENV_BODY');
   need(Object.keys(capability).sort().join('|') === [...GRAPH_CLIENT_FIELDS].sort().join('|'),
     'GRAPH_CLIENT_ENV_FIELDS');
-  need(paths && ['private_root','owner_home','owner_runtime','owner_state']
-    .every(name => typeof paths[name] === 'string' && path.isAbsolute(paths[name])),
+  need(paths && typeof paths.private_root === 'string' && path.isAbsolute(paths.private_root)
+    && paths.owner_home === path.join(paths.private_root, 'home')
+    && paths.owner_runtime === path.join(paths.private_root, 'runtime')
+    && paths.owner_state === path.join(paths.private_root, 'state'),
     'GRAPH_CLIENT_PRIVATE_PATHS');
+  // The Python owner creates its clients directly under the sealed
+  // <case>/owner/clients directory. A second /owner component was a
+  // synthetic-fixture assumption that denied every genuine connection.
   const connection = capability.MOTIONWRIGHT_GRAPH_CONNECTION;
   need(typeof connection === 'string' && path.isAbsolute(connection)
-    && !path.isAbsolute(path.relative(paths.private_root, connection))
-    && path.relative(paths.private_root, connection).split(path.sep)[0] === 'owner'
-    && connection !== paths.private_root, 'GRAPH_CLIENT_CONNECTION_UNBOUND');
+    && path.dirname(connection) === path.join(paths.private_root, 'clients')
+    && /^[^\\/]+\.connection\.json$/.test(path.basename(connection)),
+    'GRAPH_CLIENT_CONNECTION_UNBOUND');
   for (const name of GRAPH_CLIENT_FIELDS.slice(1)) {
     const value = capability[name];
     need(typeof value === 'string' && /^(0|[1-9][0-9]{0,17})$/.test(value),
       'GRAPH_CLIENT_QUOTA_UNBOUNDED');
   }
-  const ownerConfig = path.join(paths.private_root,'owner','config');
-  const ownerWork = path.join(paths.private_root,'owner','work');
+  const ownerConfig = path.join(paths.private_root, 'config');
+  const ownerWork = path.join(paths.private_root, 'work');
   return Object.freeze({ ...GRAPH_BASE_CHILD_ENV,
     HOME: paths.owner_home, XDG_RUNTIME_DIR: paths.owner_runtime,
     XDG_STATE_HOME: paths.owner_state, XDG_CONFIG_HOME: ownerConfig,
@@ -60,9 +65,15 @@ export function graphOwnerSpawnEnvironment(spec, root, restriction, initializer,
     && source.run_attempt === 1
     && typeof source.sdk_root === 'string' && path.isAbsolute(source.sdk_root),
     'GRAPH_OWNER_SOURCE_IDENTITY');
-  need(paths && typeof paths.private_root === 'string' && paths.private_root === root
-    && ['owner_home', 'owner_runtime', 'owner_state']
-      .every(name => typeof paths[name] === 'string' && path.isAbsolute(paths[name]))
+  // Source-authored makeSpec creates a fresh child "owner" below the case
+  // custody root. That owner root must NOT already exist before Python starts.
+  need(paths && typeof root === 'string' && path.isAbsolute(root)
+    && paths.private_root === path.join(root, 'owner')
+    && paths.owner_home === path.join(paths.private_root, 'home')
+    && paths.owner_runtime === path.join(paths.private_root, 'runtime')
+    && paths.owner_state === path.join(paths.private_root, 'state')
+    && paths.owner_socket === path.join(paths.private_root, 'runtime', 'broker.sock')
+    && paths.manim_work === path.join(paths.private_root, 'work')
     && runtime && typeof runtime.root === 'string' && path.isAbsolute(runtime.root)
     && binaries && typeof binaries.python3?.path === 'string' && path.isAbsolute(binaries.python3.path)
     && typeof binaries.ffmpeg?.path === 'string' && path.isAbsolute(binaries.ffmpeg.path),
@@ -81,9 +92,11 @@ export function graphOwnerSpawnEnvironment(spec, root, restriction, initializer,
   const result = { ...GRAPH_BASE_CHILD_ENV,
     HOME: paths.owner_home, XDG_RUNTIME_DIR: paths.owner_runtime,
     XDG_STATE_HOME: paths.owner_state,
-    XDG_CONFIG_HOME: path.join(paths.private_root, 'owner','config'),
-    XDG_CACHE_HOME: path.join(paths.private_root, 'owner','work'),
-    TMPDIR: paths.private_root,
+    XDG_CONFIG_HOME: path.join(paths.private_root, 'config'),
+    XDG_CACHE_HOME: path.join(paths.private_root, 'work'),
+    // Python starts before the fresh owner child exists. Its temporary files
+    // must remain in the already admitted 0700 parent, never fall back to /tmp.
+    TMPDIR: root,
     SEMWRIGHT_CHECKOUT: source.sdk_root,
     SEMWRIGHT_TEST_MANIM_RUNTIME: runtime.root,
     // The sealed producer stores these actual captured tools under binaries;

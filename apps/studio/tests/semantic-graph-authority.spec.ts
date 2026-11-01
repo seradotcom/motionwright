@@ -31,6 +31,140 @@ test("Graph blocks a second source for an occupied scene and Deliverable before 
   expect(await requestCount(page)).toBe(1);
   expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs![0]).toEqual(savedGraph);
 });
+test("Graph confirmed removal permits a new identity without reviving the removed source", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const original = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const oldGraphId = original.production_design!.semantic_graphs![0].id;
+  await button(page, "Inspect current Graph support and sources").click();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
+  const removed = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  expect(removed.production_design!.semantic_graphs).toHaveLength(0);
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await field(page, "Graph author label").fill("Fresh authored source after explicit removal");
+  await field(page, "Graph rationale").fill("A new resource must not inherit the removed Graph UUID or review anchors.");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save semantic Graph")).toBeEnabled();
+  await button(page, "Save semantic Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(3);
+  const result = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[2]);
+  if (result.change.type !== "upsert_semantic_graph") throw new Error("Expected a distinct new source.");
+  expect(result.change.graph.id).not.toBe(oldGraphId);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(3));
+  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs![0].id)
+    .toBe(result.change.graph.id);
+  const retained = await page.evaluate(oldId => {
+    const project = window.__GRAPH_AUTHORITY__.saved();
+    const key = "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([
+      project.id, project.generation, project.active_branch, project.scenes[0].id,
+      project.deliverables[0].id, "causal_diagram",
+    ]);
+    const nextKey = "motionwright.semantic-graph-next-id.v1:" + JSON.stringify([key, oldId]);
+    return { source: sessionStorage.getItem(key), successor: sessionStorage.getItem(nextKey),
+      oldCopies: Object.keys(localStorage).filter(item => item.includes(oldId) && item.startsWith("motionwright.semantic-graph-recovery.v1:")).length };
+  }, oldGraphId);
+  expect(retained.source).toBe(oldGraphId);
+  expect(retained.successor).toBe(result.change.graph.id);
+  expect(retained.oldCopies).toBeGreaterThan(0);
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue(result.change.graph.id);
+  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs![0].id)
+    .toBe(result.change.graph.id);
+  expect(await requestCount(page)).toBe(3);
+  await button(page, "Inspect current Graph support and sources").click();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(4);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(4));
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await field(page, "Graph author label").fill("Third independent Graph source");
+  await field(page, "Graph rationale").fill("Second confirmed removal must extend, not reset, original identity custody.");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save semantic Graph")).toBeEnabled();
+  await button(page, "Save semantic Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(5);
+  const third = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[4]);
+  if (third.change.type !== "upsert_semantic_graph") throw new Error("Third Graph authoring did not produce a typed source.");
+  expect([oldGraphId, result.change.graph.id]).not.toContain(third.change.graph.id);
+  const successor = await page.evaluate(previousId => {
+    const project = window.__GRAPH_AUTHORITY__.saved();
+    const key = "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([
+      project.id, project.generation, project.active_branch, project.scenes[0].id,
+      project.deliverables[0].id, "causal_diagram",
+    ]);
+    return sessionStorage.getItem("motionwright.semantic-graph-next-id.v1:" + JSON.stringify([key, previousId]));
+  }, result.change.graph.id);
+  expect(successor).toBe(third.change.graph.id);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(5));
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue(third.change.graph.id);
+  expect(await requestCount(page)).toBe(5);
+});
+test("Graph UNKNOWN removal retains its original identity without issuing a successor", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const removedId = saved.production_design!.semantic_graphs![0].id;
+  await button(page, "Inspect current Graph support and sources").click();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.reject(2, "Synthetic lost reply after saved removal", true));
+  await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
+  const next = await page.evaluate(oldId => {
+    const project = window.__GRAPH_AUTHORITY__.project();
+    const identityKey = "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([
+      project.id, project.generation, project.active_branch, project.scenes[0].id,
+      project.deliverables[0].id, "causal_diagram",
+    ]);
+    return { original: sessionStorage.getItem(identityKey),
+      successor: sessionStorage.getItem("motionwright.semantic-graph-next-id.v1:" + JSON.stringify([identityKey, oldId])) };
+  }, removedId);
+  expect(next.original).toBe(removedId);
+  expect(next.successor).toBeNull();
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
+  expect(await requestCount(page)).toBe(2);
+  await expect(button(page, "Save Graph changes")).toBeDisabled();
+});
+test("Graph recorded removal after lost reply retires its UUID only after exact recovery review", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const removedId = saved.production_design!.semantic_graphs![0].id;
+  await button(page, "Inspect current Graph support and sources").click();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.reject(2, "Synthetic lost removal receipt", true));
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
+  expect(await requestCount(page)).toBe(2);
+  const key = await page.evaluate(() => {
+    const p = window.__GRAPH_AUTHORITY__.project();
+    return "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([
+      p.id, p.generation, p.active_branch, p.scenes[0].id, p.deliverables[0].id, "causal_diagram",
+    ]);
+  });
+  const nextKey = "motionwright.semantic-graph-next-id.v1:" + JSON.stringify([key, removedId]);
+  expect(await page.evaluate(nextKey => sessionStorage.getItem(nextKey), nextKey)).toBeNull();
+  await button(page, "Refresh saved Project").click();
+  await button(page, "Inspect saved Graph outcome").click();
+  await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toContainText("recorded saved result");
+  await button(page, "Continue Graph as a new reviewed intention").click();
+  await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toHaveCount(0);
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await field(page, "Graph author label").fill("Recovered deletion with truly new source");
+  await field(page, "Graph rationale").fill("Observed exact historical original, not a synthetic successful callback.");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save semantic Graph")).toBeEnabled();
+  await button(page, "Save semantic Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(3);
+  const next = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[2]);
+  if (next.change.type !== "upsert_semantic_graph") throw new Error("Expected new Graph write after reviewed removal.");
+  expect(next.change.graph.id).not.toBe(removedId);
+  expect(await page.evaluate(nextKey => sessionStorage.getItem(nextKey), nextKey)).toBe(next.change.graph.id);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(3));
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue(next.change.graph.id);
+  expect(await requestCount(page)).toBe(3);
+});
 test("Graph new source retains distinct profile identities through selection and reload", async ({ page }) => {
   // Synthetic component fixture only: profile selection is the real Workbench
   // prop; these replies do not claim StudioService, Native, SQLite or Graph6.

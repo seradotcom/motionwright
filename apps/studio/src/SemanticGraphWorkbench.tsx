@@ -68,6 +68,44 @@ function getSession(project: Project, initial: SemanticGraph): GraphSession {
   if (!recoveryProblem) backup(session); else session.backupError = recoveryProblem;
   copies(session); return session;
 }
+// Retired Graph identities form an append-only, source-scoped chain. Keeping
+// the original v2 key and every immutable successor prevents a delete/new
+// cycle from resurrecting old Graph/review identities after an app reload.
+const graphNewKey = (project: Project, sceneId: string, profileId: string, kind: GraphContent["kind"]) =>
+  "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([project.id, project.generation, project.active_branch, sceneId, profileId, kind]);
+const graphNextKey = (key: string, id: string) => "motionwright.semantic-graph-next-id.v1:" + JSON.stringify([key, id]);
+function currentGraphIdentity(key: string, first: string): string {
+  if (!graphUuid(first)) throw new Error("The new Graph identity is unreadable; its raw bytes were retained.");
+  let id = first;
+  const visited = new Set<string>();
+  for (let index = 0; index < 512; index++) {
+    if (visited.has(id)) throw new Error("Graph identity successors contain a cycle. Original pointers were retained.");
+    visited.add(id);
+    const next = window.sessionStorage.getItem(graphNextKey(key, id));
+    if (next === null) return id;
+    if (!graphUuid(next) || visited.has(next)) throw new Error("Graph identity successor is unreadable or reused. Original pointers were retained.");
+    id = next;
+  }
+  throw new Error("Graph identity successor history exceeded its bounded limit. No save was authorized.");
+}
+function retireGraphIdentity(project: Project, sceneId: string, profileId: string, kind: GraphContent["kind"], removedId: string) {
+  const key = graphNewKey(project, sceneId, profileId, kind);
+  const original = window.sessionStorage.getItem(key);
+  // Imported Graphs need no rotation unless their identity is actually the
+  // same as the new-source key. A missing pointer is not permission to replace.
+  if (original === null) return;
+  const active = currentGraphIdentity(key, original);
+  if (active !== removedId) return;
+  const nextKey = graphNextKey(key, active);
+  if (window.sessionStorage.getItem(nextKey) !== null) throw new Error("Graph identity successor changed during retirement.");
+  const successor = crypto.randomUUID();
+  if (successor === active || semanticGraphs(project).some(graph => graph.id === successor))
+    throw new Error("Fresh Graph identity collided with a retained source.");
+  window.sessionStorage.setItem(nextKey, successor);
+  if (window.sessionStorage.getItem(nextKey) !== successor)
+    throw new Error("Fresh Graph identity was not durably retained; saving remains blocked.");
+  newIds.set(key, { id: successor, problem: null });
+}
 function createIdentity(project: Project, sceneId: string, profileId: string, kind: GraphContent["kind"], retry = false): { id: string; problem: string | null } {
   const source = [project.id, project.generation, project.active_branch, sceneId];
   const prefix = "motionwright.semantic-graph-new-id.v2:";
@@ -82,7 +120,7 @@ function createIdentity(project: Project, sceneId: string, profileId: string, ki
   };
   try {
     const stored = window.sessionStorage.getItem(key);
-    if (stored !== null) retain(stored);
+    if (stored !== null) retain(currentGraphIdentity(key, stored));
     else {
       // Earlier versions shared one new identity across Deliverables. Adopt
       // it only for its original saved source or recoverable draft, and keep
@@ -155,11 +193,14 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
         createIdentity(props.project, initial.scene_id, props.displayProfile!.id, kind, true); redrawIdentity(value => value + 1);
       }}>Verify Graph identity again</button>
     </section>}
-    <GraphEditor {...props} initial={initial} identityProblem={identity.problem} key={graphDraftScope(props.project, initial.scene_id, initial.id)} />
+    <GraphEditor {...props} initial={initial} identityProblem={identity.problem}
+      onConfirmedRemoval={removedKind => { setSelection("new:" + removedKind); redrawIdentity(value => value + 1); }}
+      key={graphDraftScope(props.project, initial.scene_id, initial.id)} />
   </section>;
 }
 
-function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGraph; identityProblem: string | null }) {
+function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGraph; identityProblem: string | null;
+  onConfirmedRemoval: (kind: GraphContent["kind"]) => void }) {
   const [session] = useState(() => getSession(props.project, props.initial));
   const [, redraw] = useState(0), [context, setContext] = useState<GraphAuthoringContext | null>(null), [inspecting, setInspecting] = useState(false);
   const [review, setReview] = useState<GraphOutcomeReview | null>(null), [reviewing, setReviewing] = useState(false), [choices, setChoices] = useState<Record<string, "current" | "input">>({});
@@ -246,7 +287,19 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
         session.observedAck = { id, receipt: clone(receipt) };
         const custody = forkGraphCopy(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
         session.custody = custody; session.draft = next; session.observedAck = null; session.backupError = null;
-        session.notice = "Saved Graph at r" + receipt.revision + "." + (Object.keys(next.edited).length ? " Later author input remains pending." : ""); copies(session);
+        session.notice = "Saved Graph at r" + receipt.revision + "." + (Object.keys(next.edited).length ? " Later author input remains pending." : "");
+        if (operation === "remove") {
+          // Only the exact, already-confirmed Service ACK may retire an ID.
+          // An UNKNOWN/lost reply never creates a successor or another write.
+          try {
+            retireGraphIdentity(project, source.sceneId, source.input.variant_profile_ref, source.input.content.kind, source.graphId);
+            current.current.onConfirmedRemoval(source.input.content.kind);
+          } catch (reason) {
+            session.error = message(reason);
+            session.backupError = "The saved removal was confirmed, but the next Graph identity could not be retained. No new save is permitted; keep the original recovery copies.";
+          }
+        }
+        copies(session);
       });
       if (!result.ok) retainFailure(result.failure);
     } catch {
@@ -267,10 +320,28 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   }
   function continueEditing() {
     if (busy || !review) return;
-    try { fork(releaseGraphOutcome(session.draft, current.current.project, review), review.recovery?.record.state === "recorded"
-      ? "Recovered the original saved Graph result. Its earlier copy and later input were retained. Review the current source before saving another intention."
-      : "The earlier known failure remains in a separate copy. Review conflicts and save a new intention explicitly."); }
-    catch (reason) { session.error = message(reason); notify(session); }
+    try {
+      const recordedRemoval = session.draft.pending?.outcome === "UNKNOWN"
+        && session.draft.pending.submitted.type === "remove_semantic_graph"
+        && review.recovery?.record.state === "recorded";
+      const next = releaseGraphOutcome(session.draft, current.current.project, review);
+      fork(next, review.recovery?.record.state === "recorded"
+        ? "Recovered the original saved Graph result. Its earlier copy and later input were retained. Review the current source before saving another intention."
+        : "The earlier known failure remains in a separate copy. Review conflicts and save a new intention explicitly.");
+      if (recordedRemoval && session.draft === next) {
+        // A durable independent recovery receipt is an observed original,
+        // unlike a matching Project snapshot or an unconfirmed reply. Retire
+        // only after its exact historical result and local copy-on-fork.
+        try {
+          retireGraphIdentity(current.current.project, next.sceneId, next.input.variant_profile_ref,
+            next.input.content.kind, next.graphId);
+          current.current.onConfirmedRemoval(next.input.content.kind);
+        } catch (reason) {
+          session.error = message(reason);
+          session.backupError = "The original removal was recovered, but its next Graph identity was not retained. No new save is permitted; preserve the original copies.";
+        }
+      }
+    } catch (reason) { session.error = message(reason); notify(session); }
   }
   function reconcile() {
     if (busy || pending) return; try { fork(reviewGraphDraft(session.draft, current.current.project, choices), "Reviewed the current Graph source. Other authors' unrelated edits were preserved; save the new intention explicitly."); }

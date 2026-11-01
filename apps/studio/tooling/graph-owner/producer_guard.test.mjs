@@ -15,14 +15,16 @@ import { inspectSourceBoundCandidate, requireNativeGraphParentAdmission,
   BINARY_ROLES, PRODUCER_INDEX_SCHEMA, GRAPH_BUDGET } from "../../tests/support/graph-owner/producer_guard.mjs";
 
 test('Graph owner Python environment refuses runner secrets and retains reviewed source identity', () => {
-  const root = '/private/case';
-  // The real R74 source index stores Python/FFmpeg under binaries, NOT
-  // under runtime. A synthetic runtime.python would hide a production failure.
+  const root = path.join(path.sep, 'private', 'case');
+  const owner = path.join(root, 'owner');
+  // The actual spec creates a fresh owner child under the case custody root.
+  // Python/FFmpeg are captured binaries, not fictitious runtime attributes.
   const spec = { source: { sha: 'a'.repeat(40), run_id: '987654', run_attempt: 1, sdk_root: '/source/semwright' },
     runtime: { root: '/source/manim' },
     binaries: { python3: { path: '/usr/bin/python3' }, ffmpeg: { path: '/usr/bin/ffmpeg' } },
-    paths: { private_root: root, owner_home: root + '/owner/home', owner_state: root + '/owner/state',
-      owner_runtime: root + '/owner/runtime' } };
+    paths: { private_root: owner, owner_home: path.join(owner, 'home'), owner_state: path.join(owner, 'state'),
+      owner_runtime: path.join(owner, 'runtime'), owner_socket: path.join(owner, 'runtime', 'broker.sock'),
+      manim_work: path.join(owner, 'work') } };
   const env = graphOwnerSpawnEnvironment(spec, root, { bytes: 4096, files: 15 },
     { path: root + '/initializer.original.json', sha256: 'f'.repeat(64) }, 'synthetic-metadata-only',
     { GITHUB_WORKFLOW_REF: 'seradotcom/motionwright/.github/workflows/studio-service-verification.yml@refs/heads/main',
@@ -48,11 +50,11 @@ test('Graph owner Python environment refuses runner secrets and retains reviewed
 });
 
 test('Native Graph service child env is closed, exact and never mixes process.env', () => {
-  const root = '/private/case';
-  const paths = { private_root: root, owner_home: root + '/owner/home',
-    owner_state: root + '/owner/state', owner_runtime: root + '/owner/runtime' };
+  const root = path.join(path.sep, 'private', 'case', 'owner');
+  const paths = { private_root: root, owner_home: path.join(root, 'home'),
+    owner_state: path.join(root, 'state'), owner_runtime: path.join(root, 'runtime') };
   const admitted = {
-    MOTIONWRIGHT_GRAPH_CONNECTION: root + '/owner/clients/client-0001.connection.json',
+    MOTIONWRIGHT_GRAPH_CONNECTION: path.join(root, 'clients', 'client-0001.connection.json'),
     MOTIONWRIGHT_GRAPH_CALLBACK_CAP: '12',
     MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES: '4096',
     MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES: '2',
@@ -251,8 +253,7 @@ function fixture(name) {
   const cargoTargets = { sdk: path.join(root, 'sdk-target'), product: path.join(root, 'product-target') };
   const targetFor = role => cargoTargets[['semwright', 'semwrightd', 'semwright_sandbox'].includes(role) ? 'sdk' : 'product'];
   const binaries = Object.fromEntries(BINARY_ROLES.map(role => [role,
-    put(Object.hasOwn(targetSources, role) ? path.join(targetFor(role), 'mw-r74-captured',
-      role === 'semwright_sandbox' ? 'semwright-sandbox' : role) : 'bin/' + role,
+    put(Object.hasOwn(targetSources, role) ? path.join(targetFor(role), 'mw-r74-captured', role === 'semwright_sandbox' ? 'semwright-sandbox' : role) : 'bin/' + role,
       'INERT_NOT_EXECUTABLE:' + role + '\n')]));
   function processRecord(label, argv, cwd, stdout, extra = {}) {
     const out = put('originals/' + label + '.stdout.log', stdout), err = put('originals/' + label + '.stderr.log', '');
@@ -391,6 +392,17 @@ test('R74 binds raw index digest, original actor, exact source, run and attempt 
   assert.equal(diagnostic.meaning, 'OWNER_ADMISSION_ONLY_NEVER_PRODUCT_OR_A5_ACCEPTANCE');
   assert.throws(() => assertOriginalProducerAdmission(diagnostic), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
 });
+test('R74 SDK sandbox capture has the exact sibling filename expected by pinned semwrightd', () => {
+  const f = fixture('acyclic-contract');
+  const daemon = f.index.binaries.semwrightd;
+  const helper = f.index.binaries.semwright_sandbox;
+  assert.equal(helper.path, path.join(path.dirname(daemon.path), 'semwright-sandbox'));
+  assert.equal(hash(fs.readFileSync(helper.path)), helper.sha256);
+  assert.equal(fs.statSync(helper.path).size, helper.size_bytes);
+  assert.equal(fs.lstatSync(helper.path).nlink, 1);
+  assert.equal(fs.existsSync(path.join(path.dirname(daemon.path), 'semwright_sandbox')), false);
+});
+
 test('all independently reviewed fields are in the raw private index, not a mutable out-of-band review', () => {
   const f = fixture('acyclic-contract');
   const baseline = inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review');
