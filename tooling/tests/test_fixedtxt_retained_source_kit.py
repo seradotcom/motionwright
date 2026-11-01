@@ -5,6 +5,7 @@ import base64
 import copy
 from contextlib import ExitStack
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -158,10 +159,75 @@ class RetainedSourceTransportTests(unittest.TestCase):
             if change == "extra":
                 event["inputs"]["unexpected"] = ""
             elif change == "missing":
-                del event["inputs"]["g2_admission"]
+                del event["inputs"]["expected_source_sha"]
             else:
                 event["inputs"][kit.RETAINED_INPUT] = "x" * 65535
             with self.subTest(change=change), self.assertRaises(ValueError):
+                kit.retained_context(event, self.environment)
+
+    def test_optional_empty_event_shapes_preserve_original_identity(self):
+        optional = ("g2_admission", "fixedtxt_delivery", "retained_reference_zip_base64")
+        for forms in itertools.product(("absent", "null", "empty"), repeat=len(optional)):
+            with self.subTest(forms=forms):
+                event = copy.deepcopy(self.event)
+                for key, form in zip(optional, forms):
+                    if form == "absent":
+                        del event["inputs"][key]
+                    else:
+                        event["inputs"][key] = None if form == "null" else ""
+                original = copy.deepcopy(event)
+                current = kit.retained_context(event, self.environment)
+                self.assertEqual(current["source_sha"], "1" * 40)
+                self.assertTrue(event == original, "context must preserve the original event")
+                if self.archive is not None:
+                    raw = kit.retained_canonical(event)
+                    self.event_path.write_bytes(raw)
+                    result, archive, members, observed = kit.read_retained_event(self.environment)
+                    self.assertEqual(result, current)
+                    self.assertEqual(kit.sha(archive), kit.RETAINED_ZIP_SHA)
+                    self.assertEqual(set(members), set(kit.RETAINED_MEMBERS))
+                    self.assertEqual(observed["event_sha256"], kit.sha(raw))
+                    self.assertEqual(observed["event_bytes"], len(raw))
+                    self.assertEqual(observed["dispatch_payload_bytes"], len(kit.retained_canonical({
+                        "ref": self.environment["GITHUB_REF_NAME"], "inputs": original["inputs"]})))
+                    self.assertEqual(kit.sha(self.event_path.read_bytes()), kit.sha(raw))
+
+    def test_required_inputs_cannot_be_missing_null_or_coerced(self):
+        required = ("verification_scope", "expected_source_sha", "fixedtxt_mode",
+                    "fixedtxt_request", kit.RETAINED_INPUT)
+        for key in required:
+            event = copy.deepcopy(self.event)
+            del event["inputs"][key]
+            with self.subTest(key=key, form="missing"), self.assertRaisesRegex(
+                    ValueError, "^retained source input roster: missing-required$"):
+                kit.retained_context(event, self.environment)
+            for number, value in enumerate((None, False, True, 0, 1, [], {})):
+                event = copy.deepcopy(self.event)
+                event["inputs"][key] = value
+                with self.subTest(key=key, case=number), self.assertRaisesRegex(
+                        ValueError, "^retained source input roster: required-type$"):
+                    kit.retained_context(event, self.environment)
+
+    def test_optional_authority_and_unknown_keys_are_never_coerced(self):
+        optional = ("g2_admission", "fixedtxt_delivery", "retained_reference_zip_base64")
+        for key in optional:
+            for number, value in enumerate((False, True, 0, 1, [], {}, "null", "false", " ", "{}")):
+                event = copy.deepcopy(self.event)
+                event["inputs"][key] = value
+                with self.subTest(key=key, case=number), self.assertRaisesRegex(
+                        ValueError, "^retained source input roster: optional-authority-nonempty$"):
+                    kit.retained_context(event, self.environment)
+        for number, value in enumerate((None, "", False, 0, [], {})):
+            event = copy.deepcopy(self.event)
+            event["inputs"]["unexpected"] = value
+            with self.subTest(unknown_case=number), self.assertRaisesRegex(
+                    ValueError, "^retained source input roster: unknown-key$"):
+                kit.retained_context(event, self.environment)
+        for number, value in enumerate((None, "", False, 0, [], ["inputs"])):
+            event = copy.deepcopy(self.event)
+            event["inputs"] = value
+            with self.subTest(nonobject_case=number), self.assertRaisesRegex(
+                    ValueError, "^retained source input roster: not-object$"):
                 kit.retained_context(event, self.environment)
 
     def test_encoding_and_original_archive_identity_cannot_be_substituted(self):

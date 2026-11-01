@@ -53,6 +53,7 @@ on:
       - 'tooling/test_native_manim_outer_publication.py'
       - 'tooling/tests/test_native_manim_editable_workflow.py'
       - 'tooling/tests/test_ci_manim_source_selection.py'
+      - 'tooling/tests/test_ci_manim_rustup_root.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
@@ -177,6 +178,9 @@ jobs:
 
       - name: Verify explicit development Native admission and non-acceptance projection
         run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_native_development_selection.py' -v
+
+      - name: Verify private Rust toolchain preparation without installation
+        run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_rustup_root.py' -v
 
       - name: Require 13 writer and 32 native-observer source contracts
         run: |
@@ -1007,6 +1011,16 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
           python3 tooling/source_policy.py
+
+      - name: Prepare isolated Rust toolchain root
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test -n "$RUNNER_TEMP"
+          RUSTUP_HOME="$RUNNER_TEMP/manim-native-rustup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$RUSTUP_HOME"
+          mkdir -m 700 "$RUSTUP_HOME"
+          printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
 
       - name: Admit toolchain within the original editable deadline
         id: editable_toolchain_budget
