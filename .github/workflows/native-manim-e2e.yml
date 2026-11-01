@@ -8,6 +8,11 @@ on:
         type: choice
         options: [source-contracts, static-scene, camera120, camera120-source-cycle, editable-source-cycle]
         default: source-contracts
+      development_native_diagnostics:
+        description: Explicit editable Native diagnosis; defers historical acceptance only, never grants F/G2/G3 or release
+        type: boolean
+        required: false
+        default: false
       affected_rust_diagnostics:
         description: Explicit partial Rust diagnostics; existing G0 and native gates remain unchanged
         type: boolean
@@ -81,6 +86,7 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  MW_MANIM_DEVELOPMENT_NATIVE: ${{ inputs.development_native_diagnostics && 'true' || 'false' }}
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
   SEMWRIGHT_TEST_MANIM_RUNTIME: /tmp/motionwright-manim-runtime
 
@@ -118,12 +124,18 @@ jobs:
           set -euo pipefail
           python3 -B tooling/source_policy.py
           python3 -B tooling/public_surface_policy.py
-          # Development source checks do not promote historical acceptance.
-          # Native scenarios and all other refs keep the complete policies.
-          case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_MANIM_SCENARIO}:${GITHUB_RUN_ATTEMPT}" in
-            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:source-contracts:1)
+          selection="${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_MANIM_SCENARIO}:${GITHUB_RUN_ATTEMPT}:${MW_MANIM_DEVELOPMENT_NATIVE-false}"
+          if [[ "${MW_MANIM_DEVELOPMENT_NATIVE-false}" != "false" && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true" ]]; then
+            printf '%s\n' 'Development Native diagnosis requires one explicit canonical editable-source-cycle attempt' >&2
+            exit 2
+          fi
+          # Development preserves historical acceptance without renewing it.
+          # Every causal source/runtime/Host/custody/pixel gate below still runs.
+          case "$selection" in
+            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true)
               python3 -B - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           acceptance = json.loads(Path("docs/acceptance/acceptance-status.json").read_bytes())
@@ -136,8 +148,11 @@ jobs:
                   or creative["v05_release_ready"] is not False
                   or any(row["complete_requirement_acceptance"] != "NOT_COMPLETED"
                          for row in creative["requirements"])):
-              raise SystemExit("Development Manim source checks cannot defer claimed acceptance or release")
-          print("dev-manim-source=PASS historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP")
+              raise SystemExit("Development Manim diagnosis cannot defer claimed acceptance or release")
+          if os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE", "false") == "true":
+              print("dev-manim-native=SOURCE_ADMITTED historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN formal-G2=NOT_GRANTED G3=STOP release=false")
+          else:
+              print("dev-manim-source=PASS historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP")
           PY
               ;;
             *)
@@ -145,7 +160,7 @@ jobs:
               python3 -B tooling/creative_status_policy.py
               ;;
           esac
-          python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_source_selection.py' -v
+          MW_MANIM_DEVELOPMENT_NATIVE=false python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_source_selection.py' -v
 
       - name: Install pinned private-custody test dependencies outside the checkout
         run: |
@@ -157,6 +172,9 @@ jobs:
             --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -c \
             'import PIL; assert PIL.__version__ == "10.2.0"'
+
+      - name: Verify explicit development Native admission and non-acceptance projection
+        run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_native_development_selection.py' -v
 
       - name: Require 13 writer and 32 native-observer source contracts
         run: |
@@ -1704,6 +1722,16 @@ jobs:
                   "human_acceptance": False, "automatic_retry": False,
               }
 
+          def development_native_projection(summary):
+              if os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE", "false") != "true":
+                  return summary
+              if summary.get("status") != "VERIFIED_SCOPED_EDITABLE_SOURCE_CYCLE":
+                  raise ValueError("Development projection requires completed physical verification")
+              return {**summary, "status": "VERIFIED_DEVELOPMENT_EDITABLE_SOURCE_CYCLE",
+                      "verification_scope": "development-native-diagnostic",
+                      "F_selected": False, "formal_G2": "NOT_GRANTED", "G3": "NOT_GRANTED",
+                      "formal_acceptance": False, "release_authorized": False}
+
           source = os.environ["GITHUB_SHA"]
           pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
           current = {"source_sha": source, "semwright_sha": pin,
@@ -1713,6 +1741,7 @@ jobs:
               temporary / ("manim-editable-private-" + source),
               temporary / ("manim-editable-sealed-" + source), current,
               os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"])
+          summary = development_native_projection(summary)
           destination = Path("verification/native-manim-editable-public")
           destination.mkdir(parents=True, exist_ok=False)
           with (destination / "public-evidence.json").open("x", encoding="utf-8") as stream:

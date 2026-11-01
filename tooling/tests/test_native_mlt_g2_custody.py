@@ -44,6 +44,141 @@ def final_receipt():
             "native_result": {"private_owner_path": "/owner/private", "receipt": "SECRET-CANARY"}}
 
 
+class RetainedReferenceTests(unittest.TestCase):
+    """Transport contracts only; synthetic bytes never establish a native PASS."""
+
+    archive = b"x" * custody.REFERENCE_ZIP_BYTES
+    encoded = base64.b64encode(archive).decode("ascii")
+
+    def test_explicit_retained_zip_keeps_original_verifier_and_never_calls_api(self):
+        with mock.patch.object(custody.g2, "REFERENCE_ZIP_SHA256", custody.sha(self.archive)), \
+                mock.patch.object(custody.g2, "reference_source") as verifier, \
+                mock.patch.object(custody, "download_artifact") as download:
+            archive, receipt = custody.reference_archive(Path("/unused"), self.encoded, CURRENT)
+        self.assertEqual(archive, self.archive)
+        verifier.assert_called_once_with(self.archive)
+        download.assert_not_called()
+        self.assertEqual(receipt["transport"], "retained_original_zip")
+        self.assertEqual(receipt["context"], CURRENT)
+        self.assertTrue(receipt["original_zip_hash_verified"])
+        self.assertFalse(receipt["original_api_revalidated"])
+        self.assertFalse(receipt["archive_reconstructed"])
+        self.assertFalse(receipt["native_effect_started"])
+        self.assertNotIn(self.encoded, json.dumps(receipt))
+
+    def test_invalid_alphabet_whitespace_unicode_and_padding_are_rejected_without_api(self):
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        changed_pad = self.encoded[:-2] + alphabet[alphabet.index(self.encoded[-2]) + 1] + "="
+        values = ("!" + self.encoded[1:], "é" + self.encoded[1:],
+                  self.encoded[:-1] + "\n", self.encoded + "\n", changed_pad)
+        with mock.patch.object(custody, "download_artifact") as download:
+            for encoded in values:
+                with self.subTest(kind=encoded[:1], size=len(encoded)), \
+                        self.assertRaises(custody.CustodyRejected):
+                    custody.reference_archive(Path("/unused"), encoded, CURRENT)
+        download.assert_not_called()
+
+    def test_truncation_and_decoded_size_changes_are_rejected_without_api(self):
+        values = (self.encoded[:-4],
+                  base64.b64encode(self.archive[:-1]).decode(),
+                  base64.b64encode(self.archive + b"x").decode(),
+                  base64.b64encode(self.archive + b"xx").decode())
+        with mock.patch.object(custody, "download_artifact") as download:
+            for encoded in values:
+                with self.subTest(size=len(encoded)), self.assertRaises(custody.CustodyRejected):
+                    custody.reference_archive(Path("/unused"), encoded, CURRENT)
+        download.assert_not_called()
+
+    def test_same_size_changed_zip_cannot_borrow_original_hash(self):
+        changed = base64.b64encode(self.archive[:-1] + b"y").decode()
+        with mock.patch.object(custody.g2, "REFERENCE_ZIP_SHA256", custody.sha(self.archive)), \
+                mock.patch.object(custody.g2, "reference_source") as verifier, \
+                mock.patch.object(custody, "download_artifact") as download, \
+                self.assertRaisesRegex(custody.CustodyRejected, "zip_sha256"):
+            custody.reference_archive(Path("/unused"), changed, CURRENT)
+        verifier.assert_not_called()
+        download.assert_not_called()
+
+    def test_original_member_verification_failure_never_falls_back(self):
+        with mock.patch.object(custody.g2, "REFERENCE_ZIP_SHA256", custody.sha(self.archive)), \
+                mock.patch.object(custody.g2, "reference_source",
+                    side_effect=ValueError("original members differ")) as verifier, \
+                mock.patch.object(custody, "download_artifact") as download, \
+                self.assertRaisesRegex(ValueError, "original members differ"):
+            custody.reference_archive(Path("/unused"), self.encoded, CURRENT)
+        verifier.assert_called_once_with(self.archive)
+        download.assert_not_called()
+
+    def test_empty_input_keeps_authenticated_api_route_and_truthful_receipt(self):
+        with mock.patch.object(custody, "download_artifact", return_value=self.archive) as download, \
+                mock.patch.object(custody.g2, "reference_source") as verifier, \
+                mock.patch.object(custody, "decode_retained_reference") as retained:
+            archive, receipt = custody.reference_archive(Path("/unused"), "", CURRENT)
+        self.assertEqual(archive, self.archive)
+        download.assert_called_once_with(receipt["original_artifact"], "reference", Path("/unused"))
+        verifier.assert_called_once_with(self.archive)
+        retained.assert_not_called()
+        self.assertEqual(receipt["transport"], "github_artifact_api")
+        self.assertTrue(receipt["original_api_revalidated"])
+
+    def test_api_failure_is_primary_and_never_attempts_retained_recovery(self):
+        with mock.patch.object(custody, "download_artifact", side_effect=RuntimeError("HTTP 404")) as download, \
+                mock.patch.object(custody, "decode_retained_reference") as retained, \
+                self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+            custody.reference_archive(Path("/unused"), "", CURRENT)
+        download.assert_called_once()
+        retained.assert_not_called()
+
+    def event_input(self, inputs, *, scope="repaired-g2"):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "event.json"
+            path.write_bytes(sealed.json_bytes({"inputs": inputs}))
+            return custody.retained_reference_input(
+                {"GITHUB_EVENT_PATH": str(path), "MW_MLT_SCOPE": scope})
+
+    def test_dispatch_input_is_read_from_regular_event_without_exporting_or_processes(self):
+        inputs = {"verification_scope": "repaired-g2", "fixedtxt_mode": "prepare",
+                  custody.REFERENCE_INPUT: self.encoded}
+        before = dict(os.environ)
+        with mock.patch.object(custody.subprocess, "run") as process:
+            self.assertEqual(self.event_input(inputs), self.encoded)
+        process.assert_not_called()
+        self.assertEqual(dict(os.environ), before)
+        for value in ({}, {custody.REFERENCE_INPUT: ""}):
+            self.assertEqual(self.event_input(value), "")
+
+    def test_other_scopes_delivery_and_nonstring_inputs_are_rejected(self):
+        for scope in ("film180-g2", "fixedtxt-v4-one-fixture", "source", "normal"):
+            with self.subTest(scope=scope), self.assertRaisesRegex(
+                    custody.CustodyRejected, "repaired_g2_only"):
+                self.event_input({"verification_scope": scope, custody.REFERENCE_INPUT: self.encoded},
+                                 scope=scope)
+        with self.assertRaisesRegex(custody.CustodyRejected, "repaired_g2_only"):
+            self.event_input({"verification_scope": "repaired-g2", "fixedtxt_mode": "deliver",
+                              custody.REFERENCE_INPUT: self.encoded})
+        for value in (None, False, 1, []):
+            with self.subTest(value=value), self.assertRaises(custody.CustodyRejected):
+                self.event_input({custody.REFERENCE_INPUT: value})
+
+    def test_dispatch_reader_rejects_oversize_duplicate_keys_and_symlink(self):
+        with self.assertRaisesRegex(custody.CustodyRejected, "inputs_bound"):
+            self.event_input({"verification_scope": "repaired-g2",
+                              custody.REFERENCE_INPUT: self.encoded, "extra": "x" * 65535})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "event.json"
+            env = {"GITHUB_EVENT_PATH": str(path), "MW_MLT_SCOPE": "repaired-g2"}
+            path.write_bytes(b'{"inputs":{},"inputs":{}}')
+            with self.assertRaisesRegex(custody.CustodyRejected, "duplicate_json_key"):
+                custody.retained_reference_input(env)
+            path.write_bytes(b"x" * (custody.MAX_JSON + 1))
+            with self.assertRaisesRegex(RuntimeError, "bounded regular file"):
+                custody.retained_reference_input(env)
+            alias = path.with_name("event-link.json")
+            alias.symlink_to(path)
+            with self.assertRaises(custody.CustodyRejected):
+                custody.retained_reference_input({**env, "GITHUB_EVENT_PATH": str(alias)})
+
+
 class G2CustodyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
