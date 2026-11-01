@@ -151,6 +151,28 @@ class DevelopmentNativeSelectionTests(unittest.TestCase):
         self.assertIn("formal-G2=NOT_GRANTED G3=STOP release=false", result.stdout)
         self.assertNotIn("dev-manim-source=PASS", result.stdout)
 
+    def test_exact_a4_donor_requires_explicit_native_mode_and_keeps_attempt_boundary(self):
+        donor = {"GITHUB_REF": "refs/heads/fix/native-production-a1-211feef-20261101-a4"}
+        result, calls = self.execute(environment={**donor, "MW_MANIM_DEVELOPMENT_NATIVE": "true"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["source_policy", "public_surface_policy"])
+        self.assertIn("formal-G2=NOT_GRANTED G3=STOP release=false", result.stdout)
+        result, calls = self.execute(environment=donor)
+        self.assertEqual(result.returncode, 97, result.stderr)
+        self.assertEqual(calls[-1], "acceptance_policy")
+        for override in (
+            {"GITHUB_RUN_ATTEMPT": "2"},
+            {"GITHUB_EVENT_NAME": "pull_request"},
+            {"GITHUB_REPOSITORY": "other/motionwright"},
+            {"MW_MANIM_SCENARIO": "source-contracts"},
+            {"GITHUB_REF": donor["GITHUB_REF"] + "-extra"},
+            {"GITHUB_REF": donor["GITHUB_REF"].replace("/heads/", "/tags/")},
+        ):
+            with self.subTest(override=override):
+                result, _ = self.execute(environment={
+                    **donor, "MW_MANIM_DEVELOPMENT_NATIVE": "true", **override})
+                self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_existing_development_source_exception_remains_source_only(self):
         result, calls = self.execute(environment={"MW_MANIM_SCENARIO": "source-contracts"})
         self.assertEqual(result.returncode, 0, result.stderr)

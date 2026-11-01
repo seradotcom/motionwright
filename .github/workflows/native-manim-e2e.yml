@@ -125,14 +125,16 @@ jobs:
           python3 -B tooling/source_policy.py
           python3 -B tooling/public_surface_policy.py
           selection="${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_MANIM_SCENARIO}:${GITHUB_RUN_ATTEMPT}:${MW_MANIM_DEVELOPMENT_NATIVE-false}"
-          if [[ "${MW_MANIM_DEVELOPMENT_NATIVE-false}" != "false" && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true" ]]; then
-            printf '%s\n' 'Development Native diagnosis requires one explicit canonical editable-source-cycle attempt' >&2
+          if [[ "${MW_MANIM_DEVELOPMENT_NATIVE-false}" != "false"
+                && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true"
+                && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-a1-211feef-20261101-a4:editable-source-cycle:1:true" ]]; then
+            printf '%s\n' 'Development Native diagnosis requires one explicit admitted editable-source-cycle attempt' >&2
             exit 2
           fi
           # Development preserves historical acceptance without renewing it.
           # Every causal source/runtime/Host/custody/pixel gate below still runs.
           case "$selection" in
-            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true)
+            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-a1-211feef-20261101-a4:editable-source-cycle:1:true)
               python3 -B - <<'PY'
           import json
           import os
