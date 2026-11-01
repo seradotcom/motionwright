@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -158,7 +159,11 @@ function fixture(name) {
   const source = { repository_root: repo, sha: 'a'.repeat(40), tree: 'b'.repeat(40), sdk_root: sdk, sdk_sha: sdkSha,
     locks: Object.fromEntries(['Cargo.lock', 'SOURCE_LOCK.json', 'apps/studio/package-lock.json', 'rust-toolchain.toml'].map(name => [name, sourceFiles[name].sha256])),
     run_id: '12345', run_attempt: 1 };
-  const binaries = Object.fromEntries(BINARY_ROLES.map(role => [role, put('bin/' + role, 'INERT_NOT_EXECUTABLE:' + role + '\n')]));
+  const cargoTargets = { sdk: path.join(root, 'sdk-target'), product: path.join(root, 'product-target') };
+  const targetFor = role => cargoTargets[['semwright', 'semwrightd', 'semwright_sandbox'].includes(role) ? 'sdk' : 'product'];
+  const binaries = Object.fromEntries(BINARY_ROLES.map(role => [role,
+    put(Object.hasOwn(targetSources, role) ? path.join(targetFor(role), 'mw-r74-captured', role) : 'bin/' + role,
+      'INERT_NOT_EXECUTABLE:' + role + '\n')]));
   function processRecord(label, argv, cwd, stdout, extra = {}) {
     const out = put('originals/' + label + '.stdout.log', stdout), err = put('originals/' + label + '.stderr.log', '');
     const command = { argv, cwd, started_utc: '2026-10-29T00:00:00+00:00', finished_utc: '2026-10-29T00:00:01+00:00',
@@ -167,19 +172,22 @@ function fixture(name) {
       diagnostic_custody: 'DIRECT_PROCESS_EXIT_OBSERVED', selected_environment: {}, cleanup_errors: [],
       stdout: oldDigest(out), stderr: oldDigest(err), ...extra };
     return { record: { command: json('originals/' + label + '.command.json', command), stdout: out, stderr: err },
-      expected: { argv, cwd, selected_environment: {} } };
+      expected: { argv, cwd, selected_environment: command.selected_environment } };
   }
   const builds = {}, reviewedBuilds = {};
   for (const role of Object.keys(targetSources)) {
     const isSdk = ['semwright', 'semwrightd', 'semwright_sandbox'].includes(role), cwd = isSdk ? sdk : repo;
     const target = { package_id: 'private-fixture#' + role + '@0.0.0', name: role, kind: ['example'], src_path: path.join(cwd, targetSources[role]) };
+    const emitted = put(path.join(targetFor(role), 'debug', 'examples', role), fs.readFileSync(binaries[role].path));
     const artifact = { reason: 'compiler-artifact', package_id: target.package_id,
-      target: { name: target.name, kind: target.kind, src_path: target.src_path }, executable: binaries[role].path,
+      target: { name: target.name, kind: target.kind, src_path: target.src_path }, executable: emitted.path,
       fresh: false, profile: { test: false } };
     const process = processRecord(role, ['/fixture/cargo', 'build', '--locked', '--example', role, '--jobs', '1', '--message-format=json'], cwd,
-      Buffer.concat([rawJson(artifact), rawJson({ reason: 'build-finished', success: true })]));
-    builds[role] = { process: process.record, retained_binary: put('originals/' + role + '.binary.original', fs.readFileSync(binaries[role].path)) };
-    reviewedBuilds[role] = { command: process.expected, target };
+      Buffer.concat([rawJson(artifact), rawJson({ reason: 'build-finished', success: true })]),
+      { selected_environment: { CARGO_TARGET_DIR: targetFor(role) } });
+    builds[role] = { process: process.record, retained_binary: put('originals/' + role + '.binary.original.zlib',
+      deflateSync(fs.readFileSync(binaries[role].path), { level: 6 })) };
+    reviewedBuilds[role] = { command: process.expected, target, cargo_executable: emitted.path, retention_encoding: 'zlib-level6' };
   }
   const stdin = json('originals/phase1-service-preflight.stdin.original', { id: 'phase1-service-preflight', command: 'bootstrap', args: { request: { project_id: null } } });
   const preflight = processRecord('phase1-service-preflight', [binaries.ordinary_service.path, '--database', path.join(root, 'unused-preflight.sqlite3')], repo,
@@ -319,6 +327,103 @@ test('source, retained original, fresh build, and complete runtime roles cannot 
     assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), /J1_|SCHEMA_/);
   }
 });
+
+// Exercise the real diagnostic reader with inert, distinct captured files and
+// compressed retained originals. None of these bytes can run a Native child.
+test('captured Cargo files and strict compressed originals join all eight inert build roles', () => {
+  const f = fixture('compressed-cargo-originals');
+  const emitted = f.reviewed.builds.native_graph_session.cargo_executable;
+  fs.linkSync(emitted, emitted + '.cargo-partner');
+  assert.equal(fs.statSync(emitted).nlink, 2);
+  const observed = inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review');
+  assert.equal(observed.production_admission, false);
+  assert.equal(observed.synthetic_adapter_only, true);
+  assert.equal(observed.verified.producer_originals.builds.length, 8);
+  for (const row of observed.verified.producer_originals.builds) {
+    assert.notEqual(row.executable.path, f.reviewed.builds[row.role].cargo_executable);
+    assert.notEqual(row.retained_binary.sha256, row.executable.sha256);
+  }
+  assert.throws(() => assertOriginalProducerAdmission(observed), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
+});
+
+test('emitted Cargo target and independent captured executable cannot be interchanged', () => {
+  for (const mutation of ['artifact-is-capture', 'capture-is-artifact', 'different-target']) {
+    const f = fixture(mutation), role = 'native_graph_session';
+    const build = f.index.builds[role], expected = f.reviewed.builds[role];
+    let error;
+    if (mutation === 'artifact-is-capture') {
+      const rows = fs.readFileSync(build.process.stdout.path, 'utf8').trim().split('\n').map(JSON.parse);
+      rows[0].executable = f.index.binaries[role].path;
+      f.updateStream(build.process, rows.map(row => JSON.stringify(row) + '\n').join(''));
+      error = /J1_CARGO_EXECUTABLE_BIJECTION/;
+    } else if (mutation === 'capture-is-artifact') {
+      f.index.binaries[role].path = expected.cargo_executable;
+      error = /J1_CARGO_CAPTURE_PATH/;
+    } else {
+      const command = f.load(build.process.command);
+      command.selected_environment.CARGO_TARGET_DIR = path.join(f.root, 'different-target');
+      f.replace(build.process.command, command);
+      expected.command.selected_environment = structuredClone(command.selected_environment);
+      f.index.contract.builds[role].command.selected_environment = structuredClone(command.selected_environment);
+    }
+    f.seal();
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), error);
+  }
+});
+
+test('compressed originals reject corruption, truncation, trailing bytes and concatenated streams', () => {
+  for (const mutation of ['checksum', 'truncated', 'trailing', 'concatenated']) {
+    const f = fixture('compressed-' + mutation), ref = f.index.builds.native_graph_session.retained_binary;
+    const original = fs.readFileSync(ref.path);
+    let bytes, error;
+    if (mutation === 'checksum') {
+      bytes = Buffer.from(original); bytes[bytes.length - 1] ^= 1;
+      error = /J1_RETAINED_BINARY_ENCODING/;
+    } else if (mutation === 'truncated') {
+      bytes = original.subarray(0, original.length - 1);
+      error = /J1_RETAINED_BINARY_ENCODING/;
+    } else {
+      bytes = Buffer.concat([original, mutation === 'trailing' ? Buffer.from('unowned tail') : original]);
+      error = /J1_RETAINED_BINARY_TRAILING_DATA/;
+    }
+    Object.assign(ref, f.put(ref.path, bytes)); f.seal();
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), error);
+  }
+});
+
+test('decompressed originals must match the captured executable size and hash within the declared bound', () => {
+  for (const mutation of ['changed-bytes', 'short-output', 'oversize-output', 'oversize-declaration']) {
+    const f = fixture(mutation), role = 'native_graph_session', binary = f.index.binaries[role];
+    const ref = f.index.builds[role].retained_binary, original = fs.readFileSync(binary.path);
+    let bytes = Buffer.from(original), error = /J1_RETAINED_BINARY_DIFFERS/;
+    if (mutation === 'changed-bytes') bytes[0] ^= 1;
+    else if (mutation === 'short-output') bytes = bytes.subarray(0, bytes.length - 1);
+    else if (mutation === 'oversize-output') {
+      bytes = Buffer.concat([bytes, Buffer.from('x')]); error = /J1_RETAINED_BINARY_ENCODING/;
+    } else { binary.size_bytes = 256 * 1024 * 1024 + 1; error = /J1_RETAINED_BINARY_ORIGINAL_BOUND/; }
+    if (mutation !== 'oversize-declaration') Object.assign(ref, f.put(ref.path, deflateSync(bytes, { level: 6 })));
+    f.seal();
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), error);
+  }
+});
+
+test('compressed retention preserves single-link custody for captured and retained files', () => {
+  for (const role of ['captured', 'retained']) {
+    const f = fixture('linked-' + role);
+    const ref = role === 'captured' ? f.index.binaries.native_graph_session : f.index.builds.native_graph_session.retained_binary;
+    fs.linkSync(ref.path, ref.path + '.unowned-alias');
+    assert.equal(fs.statSync(ref.path).nlink, 2);
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'));
+  }
+});
+
+test('undeclared compressed encodings fail before decoding or admitting an inert case', () => {
+  const f = fixture('unreviewed-retention');
+  f.reviewed.builds.native_graph_session.retention_encoding = 'gzip';
+  f.index.contract.builds.native_graph_session.retention_encoding = 'gzip'; f.seal();
+  assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), /J1_RETAINED_BINARY_ENCODING/);
+});
+
 test('complete synthetic originals and caller review flags never authenticate a production case', async () => {
   const f = fixture('no-fake-admission');
   await assert.rejects(admitOriginalProducers({ producerOriginalPath: f.indexPath, caseId: 'graph-source-review',

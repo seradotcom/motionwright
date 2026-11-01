@@ -6,6 +6,7 @@
  * Never use this parser or a caller string as that approval.
  */
 import { createHash } from "node:crypto";
+import { inflateSync } from "node:zlib";
 
 const OPERATIONS = new Set(["authoring_context", "upsert", "remove", "operation_recovery"]);
 const EXPECTED_CASES = new Set([
@@ -234,6 +235,8 @@ function processOriginal(record, expected, originals) {
 
 function cargoBuild(role, record, expected, index, reviewed, originals) {
   ownMap(record, ['process', 'retained_binary'], 'J1_BUILD_FIELDS');
+  ownMap(expected, ['command', 'target', 'cargo_executable', 'retention_encoding'], 'J1_REVIEWED_BUILD_FIELDS');
+  need(expected.retention_encoding === 'zlib-level6', 'J1_RETAINED_BINARY_ENCODING');
   const { command, stdout } = processOriginal(record.process, expected.command, originals);
   const root = SDK_ROLES.has(role) ? index.source.sdk_root : index.source.repository_root;
   need(command.cwd === root && command.argv.includes('build') && command.argv.includes('--locked')
@@ -241,7 +244,14 @@ function cargoBuild(role, record, expected, index, reviewed, originals) {
   const records = new TextDecoder('utf-8', { fatal: true }).decode(stdout).split(/\r?\n/).filter(Boolean).map(line => strictJSON(Buffer.from(line), 4 * LIMIT));
   const finished = records.filter(row => row.reason === 'build-finished');
   need(finished.length === 1 && finished[0].success === true && records.at(-1) === finished[0], 'J1_CARGO_TERMINAL');
-  const artifacts = records.filter(row => row.reason === 'compiler-artifact' && row.executable === index.binaries[role].path);
+  // Cargo's emitted file may have its normal hardlink partner. The producer
+  // captures independent bytes in the same fresh target before retaining them.
+  const targetRoot = command.selected_environment.CARGO_TARGET_DIR;
+  canonical(targetRoot);
+  inside(targetRoot, expected.cargo_executable);
+  need(index.binaries[role].path === path.join(targetRoot, 'mw-r74-captured', role), 'J1_CARGO_CAPTURE_PATH');
+  need(index.binaries[role].path !== expected.cargo_executable, 'J1_CARGO_CAPTURE_NOT_INDEPENDENT');
+  const artifacts = records.filter(row => row.reason === 'compiler-artifact' && row.executable === expected.cargo_executable);
   need(artifacts.length === 1, 'J1_CARGO_EXECUTABLE_BIJECTION');
   const artifact = artifacts[0];
   same({ package_id: artifact.package_id, name: artifact.target?.name, kind: artifact.target?.kind,
@@ -251,10 +261,20 @@ function cargoBuild(role, record, expected, index, reviewed, originals) {
   need(Object.hasOwn(sourceFiles, path.relative(root, expected.target.src_path).split(path.sep).join('/')),
     'J1_CARGO_TARGET_SOURCE_NOT_BOUND');
   need(artifact.fresh === false && artifact.profile?.test === false, 'J1_CARGO_CACHE_OR_TEST_HARNESS');
-  originals.read(index.binaries[role], GLOBAL_BYTES);
-  originals.read(record.retained_binary, GLOBAL_BYTES);
-  same(oldDigest(record.retained_binary), oldDigest(index.binaries[role]), 'J1_RETAINED_BINARY_DIFFERS');
-  need(record.retained_binary.path !== index.binaries[role].path, 'J1_RETAINED_BINARY_NOT_AN_ORIGINAL');
+  const binary = index.binaries[role];
+  need(integer(binary.size_bytes, 1, 256 * LIMIT), 'J1_RETAINED_BINARY_ORIGINAL_BOUND');
+  originals.read(binary, 256 * LIMIT);
+  const retained = originals.read(record.retained_binary, 256 * LIMIT);
+  need(record.retained_binary.path !== binary.path, 'J1_RETAINED_BINARY_NOT_AN_ORIGINAL');
+  let decoded;
+  try {
+    decoded = inflateSync(retained, { info: true, maxOutputLength: binary.size_bytes });
+  } catch { throw new Error('J1_RETAINED_BINARY_ENCODING'); }
+  // Inflate accepts unused bytes after a stream. They are not part of this
+  // original, so reject both trailing data and concatenated zlib streams.
+  need(decoded.engine.bytesWritten === retained.length, 'J1_RETAINED_BINARY_TRAILING_DATA');
+  need(decoded.buffer.length === binary.size_bytes && hash(decoded.buffer) === binary.sha256,
+    'J1_RETAINED_BINARY_DIFFERS');
   return { role, command: record.process.command, cargo_stdout: record.process.stdout,
     retained_binary: record.retained_binary, executable: index.binaries[role] };
 }
