@@ -471,17 +471,23 @@ def retained_context(event, environment):
          and event["repository"].get("full_name") == "seradotcom/motionwright",
          "retained source event origin differs")
     inputs = event.get("inputs")
-    keys = {"verification_scope", "expected_source_sha", "g2_admission",
-            "retained_reference_zip_base64", "fixedtxt_mode", "fixedtxt_request",
-            "fixedtxt_delivery", RETAINED_INPUT}
-    need(type(inputs) is dict and set(inputs) == keys and len(keys) <= 10
-         and all(type(value) is str for value in inputs.values()), "retained source input roster differs")
+    required = {"verification_scope", "expected_source_sha", "fixedtxt_mode",
+                "fixedtxt_request", RETAINED_INPUT}
+    optional_empty = {"g2_admission", "fixedtxt_delivery", "retained_reference_zip_base64"}
+    need(type(inputs) is dict, "retained source input roster: not-object")
+    need(required <= set(inputs), "retained source input roster: missing-required")
+    need(set(inputs) <= required | optional_empty, "retained source input roster: unknown-key")
+    need(all(type(inputs[key]) is str for key in required),
+         "retained source input roster: required-type")
     need(len(retained_canonical({"ref": branch, "inputs": inputs})) <= RETAINED_PAYLOAD_MAX,
          "retained source dispatch exceeds the complete payload bound")
+    # Optional disabled transports may be absent/null in the event. Preserve the
+    # original event and bound; never coerce an authority-bearing value to empty.
+    need(all(inputs.get(key) is None or (type(inputs.get(key)) is str and inputs[key] == "")
+             for key in optional_empty),
+         "retained source input roster: optional-authority-nonempty")
     need(inputs["verification_scope"] == "source" and inputs["fixedtxt_mode"] == "prepare"
-         and inputs["fixedtxt_request"] == RETAINED_MARKER
-         and all(inputs[key] == "" for key in ("g2_admission", "fixedtxt_delivery",
-                                               "retained_reference_zip_base64")),
+         and inputs["fixedtxt_request"] == RETAINED_MARKER,
          "retained source cannot carry runtime or delivery authority")
     head = environment.get("GITHUB_SHA", "")
     need(re.fullmatch(r"[0-9a-f]{40}", head)
