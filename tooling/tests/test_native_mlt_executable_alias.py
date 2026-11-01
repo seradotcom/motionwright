@@ -241,6 +241,10 @@ class AliasCompletionTests(unittest.TestCase):
 class CustodyAliasContractTests(unittest.TestCase):
     def prepare(self, root, receipt):
         control = root / "control"
+        event_path = root / "github-event.json"
+        custody.new_json(event_path, {"inputs": {
+            "verification_scope": "repaired-g2", "fixedtxt_mode": "prepare",
+            "retained_reference_zip_base64": ""}})
         dispatch = {
             "official_runtime": {"artifact": {}, "receipt_sha256": "3" * 64,
                                  "known_original_module_sha256": MODULE_SHA,
@@ -249,7 +253,12 @@ class CustodyAliasContractTests(unittest.TestCase):
                 "original_c_source", "repaired_c_source", "compiled_module", "compiler_receipt_path")}},
         }
         raw = json.dumps(receipt).encode()
-        download = mock.Mock(return_value=b"opaque authenticated-artifact test double")
+        def archive(_descriptor, label, _directory):
+            # Opaque G0 bytes; reference_source remains the existing test double.
+            if label == "reference":
+                return b"\0" * custody.REFERENCE_ZIP_BYTES
+            return b"opaque authenticated-artifact test double"
+        download = mock.Mock(side_effect=archive)
         def member(_archive, name, *_args):
             return raw if name == "distribution/official-runtime-receipt.json" else b"compiler fixture"
         self.download, self.closure = download, mock.Mock()
@@ -263,7 +272,8 @@ class CustodyAliasContractTests(unittest.TestCase):
              mock.patch.object(custody, "zip_member", side_effect=member), \
              mock.patch.object(g2, "reference_source", return_value=(b"", {})), \
              mock.patch.object(admission, "source_compiler_closure", self.closure):
-            return custody.prepare({"GITHUB_WORKSPACE": str(root)})
+            return custody.prepare({"GITHUB_WORKSPACE": str(root),
+                                    "GITHUB_EVENT_PATH": str(event_path)})
 
     def test_artifact_intake_reuses_the_same_canonical_receipt_contract(self):
         with tempfile.TemporaryDirectory() as temporary:

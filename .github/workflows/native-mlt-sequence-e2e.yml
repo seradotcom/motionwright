@@ -4170,7 +4170,7 @@ jobs:
           import hashlib
           from pathlib import Path
           source = Path('tooling/native_film180_evidence_selection.py').read_bytes()
-          assert hashlib.sha256(source).hexdigest() == '4b81a292ac2b54579708715d1cfe84aef953274cafffa99a92bd9284b2fbaeee'
+          assert hashlib.sha256(source).hexdigest() == '20e136395c13a3bd13f7dd1ed0dafed20dfd44ad0cfc74fcd671ef040952b926'
           PY_CAPACITY_SOURCE
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
