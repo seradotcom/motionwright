@@ -8100,6 +8100,98 @@ class Phase1Service47DeadlineTests(unittest.TestCase):
 class GraphR74JoinTests(unittest.TestCase):
     """Local synthetic metadata/parser controls plus inert real process bounds; no G2."""
 
+    def test_graph_unknown_from_execute_keeps_original_exception_and_stops_readback(self):
+        command = {"observation": "UNKNOWN_CUSTODY_NO_RETRY",
+                   "uncertainty_reason": "COMMAND_RECEIPT_PERSISTENCE_FAILED",
+                   "receipt_error": "PRIVATE-RECEIPT-ERROR"}
+        original = gate.UnknownObservation("original command receipt failed; no retry", command)
+        with mock.patch.object(gate, "graph_producer_room"), \
+             mock.patch.object(gate, "execute", side_effect=original) as execute, \
+             mock.patch.object(gate, "require_observed_command") as observed, \
+             mock.patch.object(gate, "graph_tree_allocation") as allocation, \
+             mock.patch.object(gate, "graph_ref") as readback:
+            with self.assertRaises(gate.UnknownObservation) as caught:
+                gate.graph_command({}, ["INERT-NO-COMMAND"], Path("inert"), Path("inert"), "graph-chromium", 300, None)
+            self.assertIs(caught.exception, original)
+            self.assertIs(caught.exception.command, command)
+            execute.assert_called_once(); observed.assert_not_called()
+            allocation.assert_not_called(); readback.assert_not_called()
+        self.assertEqual(str(original), "original command receipt failed; no retry")
+        self.assertIn("COMMAND_RECEIPT_PERSISTENCE_FAILED", original.__notes__[0])
+        self.assertNotIn("PRIVATE-RECEIPT-ERROR", original.__notes__[0])
+
+    def test_graph_unknown_return_reports_observed_control_without_retry_or_readback(self):
+        for observation, reason in (("UNKNOWN_TIMEOUT_NO_RETRY", "DIRECT_WAIT_TIMEOUT"),
+                ("UNKNOWN_PROCESS_NO_RETRY", "OWNED_GROUP_PRESENT_AFTER_DIRECT_EXIT"),
+                ("UNKNOWN_CUSTODY_NO_RETRY", "BOUNDED_ORIGINAL_STREAM_INCOMPLETE")):
+            command = {"observation": observation, "uncertainty_reason": reason, "exit_code": None,
+                       "timeout_seconds": 300, "owned_group_after_wait": "PRESENT",
+                       "bounded_original_streams": {"stdout": {"eof": True}, "stderr": {"eof": False}}}
+            with self.subTest(observation=observation), mock.patch.object(gate, "graph_producer_room"), \
+                 mock.patch.object(gate, "execute", return_value=command) as execute, \
+                 mock.patch.object(gate, "graph_tree_allocation") as allocation, \
+                 mock.patch.object(gate, "graph_ref") as readback:
+                with self.assertRaises(gate.UnknownObservation) as caught:
+                    gate.graph_command({}, ["INERT-NO-COMMAND"], Path("inert"), Path("inert"), "graph-chromium", 300, None)
+                self.assertIs(caught.exception.command, command)
+                note = json.loads(caught.exception.__notes__[0].split(": ", 1)[1])
+                self.assertEqual(note["observation"], observation)
+                self.assertEqual(note["uncertainty_reason"], reason)
+                self.assertEqual(note["timeout_seconds"], 300)
+                self.assertTrue(note["stdout_eof"]); self.assertFalse(note["stderr_eof"])
+                self.assertFalse(note["automatic_retry"])
+                execute.assert_called_once(); allocation.assert_not_called(); readback.assert_not_called()
+
+    def test_graph_unknown_note_masks_private_and_unobserved_values(self):
+        secret = "PRIVATE-CANARY-NEVER-PUBLISH"
+        command = {"observation": secret, "uncertainty_reason": [secret],
+            "owned_group_after_wait": secret, "exit_code": True, "timeout_seconds": 300.0,
+            "pid": secret, "argv": [secret], "cwd": secret, "selected_environment": {"TOKEN": secret},
+            "stdout": secret, "stderr": secret, "error": secret, "cleanup_errors": [secret],
+            "receipt_error": secret, "bounded_original_streams": {"stdout": secret, "stderr": {"eof": 1}}}
+        before = copy.deepcopy(command)
+        raw = gate.graph_unknown_control_note(command)
+        self.assertNotIn(secret, raw); self.assertEqual(command, before)
+        note = json.loads(raw.split(": ", 1)[1])
+        for field in ("observation", "uncertainty_reason", "owned_group_after_wait"):
+            self.assertEqual(note[field], "UNOBSERVED")
+        for field in ("exit_code", "timeout_seconds", "stdout_eof", "stderr_eof"):
+            self.assertIsNone(note[field])
+        self.assertTrue(note["cleanup_errors_reported"]); self.assertTrue(note["receipt_error_reported"])
+        for malformed in ({}, [], object()):
+            note = json.loads(gate.graph_unknown_control_note(malformed).split(": ", 1)[1])
+            self.assertEqual(note["owned_group_after_wait"], "UNOBSERVED")
+            self.assertIsNone(note["exit_code"]); self.assertIsNone(note["stdout_eof"])
+            self.assertIsNone(note["cleanup_errors_reported"])
+        for malformed in (True, 10801, -1, "300"):
+            note = json.loads(gate.graph_unknown_control_note({"timeout_seconds": malformed}).split(": ", 1)[1])
+            self.assertIsNone(note["timeout_seconds"])
+
+    def test_graph_known_command_behavior_and_token_removal_are_unchanged(self):
+        for code in (0, 7):
+            command = {"process_observation_schema": gate.PROCESS_OBSERVATION_SCHEMA,
+                "process_boundary": "OWNED_POSIX_SESSION_GROUP", "pid": 1,
+                "owned_group_after_wait": "ABSENT", "escaped_descendants": "NOT_OBSERVED",
+                "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED", "exit_code": code}
+            env = {gate.GRAPH_TOKEN_ENV: "PRIVATE-TOKEN"}
+            with self.subTest(code=code), mock.patch.object(gate, "graph_producer_room"), \
+                 mock.patch.object(gate, "execute", return_value=command) as execute, \
+                 mock.patch.object(gate, "graph_tree_allocation") as allocation, \
+                 mock.patch.object(gate, "graph_ref", return_value={"inert": True}) as readback:
+                if code == 0:
+                    refs, actual = gate.graph_command(env, ["INERT-NO-COMMAND"], Path("inert"), Path("inert"), "graph-inert", 300, None)
+                    self.assertIs(actual, command); self.assertEqual(set(refs), {"command", "stdout", "stderr"})
+                    allocation.assert_called_once(); self.assertEqual(readback.call_count, 3)
+                else:
+                    with self.assertRaisesRegex(ValueError, "Graph real producer command failed") as caught:
+                        gate.graph_command(env, ["INERT-NO-COMMAND"], Path("inert"), Path("inert"), "graph-inert", 300, None)
+                    self.assertNotIsInstance(caught.exception, gate.UnknownObservation)
+                    allocation.assert_not_called(); readback.assert_not_called()
+                execute.assert_called_once()
+                self.assertNotIn(gate.GRAPH_TOKEN_ENV, execute.call_args.args[2])
+                self.assertEqual(execute.call_args.kwargs["maximum_stream_bytes"], 8 * gate.GRAPH_BYTES)
+                self.assertEqual(env[gate.GRAPH_TOKEN_ENV], "PRIVATE-TOKEN")
+
     def test_case_layouts_fit_the_real_actions_workspace_and_reject_oversize_before_effect(self):
         root = Path("/home/runner/work/motionwright/motionwright/v/e/graph-cases")
         ids = sorted(row[0] for row in gate.GRAPH_CASES)

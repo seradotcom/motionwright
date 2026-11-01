@@ -8581,12 +8581,47 @@ def graph_retain_compacted_cargo_executable(original, destination, producer, rol
     return kept
 
 
+def graph_unknown_control_note(command):
+    """Publish only closed control fields already observed in memory, never raw originals."""
+    command = command if type(command) is dict else {}
+    note = {"meaning": "UNKNOWN_DIAGNOSTIC_ONLY_NO_CLOSED_EXECUTION_CREDIT", "automatic_retry": False}
+    enums = {
+        "observation": ("UNKNOWN_TIMEOUT_NO_RETRY", "UNKNOWN_PROCESS_NO_RETRY",
+                        "UNKNOWN_CUSTODY_NO_RETRY", "TIMED_OUT_NO_RETRY"),
+        "uncertainty_reason": ("SPAWN_HANDLE_NOT_OBSERVED", "OWNED_GROUP_PRESENT_AFTER_DIRECT_EXIT",
+            "DIRECT_WAIT_TIMEOUT", "POST_LAUNCH_OBSERVATION_ERROR", "BOUNDED_ORIGINAL_STREAM_INCOMPLETE",
+            "OBSERVATION_OR_STREAM_FINALIZATION_ERROR", "DEADLINE_GROUP_RECHECK_FAILED",
+            "STDIN_ORIGINAL_CHANGED", "STREAM_FINGERPRINT_FAILED", "COMMAND_RECEIPT_PERSISTENCE_FAILED"),
+        "owned_group_after_wait": ("ABSENT", "PRESENT", "NOT_OBSERVED"),
+    }
+    for field, allowed in enums.items():
+        value = command.get(field)
+        note[field] = value if type(value) is str and value in allowed else "UNOBSERVED"
+    for field, lower, upper in (("exit_code", -65536, 65535), ("timeout_seconds", 1, 10800)):
+        value = command.get(field)
+        note[field] = value if type(value) is int and lower <= value <= upper else None
+    streams = command.get("bounded_original_streams")
+    for name in ("stdout", "stderr"):
+        row = streams.get(name) if type(streams) is dict else None
+        eof = row.get("eof") if type(row) is dict else None
+        note[name + "_eof"] = eof if type(eof) is bool else None
+    cleanup = command.get("cleanup_errors")
+    note["cleanup_errors_reported"] = bool(cleanup) if type(cleanup) is list else None
+    note["receipt_error_reported"] = "receipt_error" in command
+    return "Graph observed control fields: " + json.dumps(note, sort_keys=True, separators=(",", ":"))
+
+
 def graph_command(env, argv, cwd, producer, label, seconds, clock, *, maximum_file_bytes=None):
     env = dict(env); env.pop(GRAPH_TOKEN_ENV, None)
     graph_producer_room(producer, 16 * GRAPH_BYTES + 65536, 3)
-    result = execute(argv, cwd, env, producer, label, seconds, deadline=clock, maximum_stream_bytes=8 * GRAPH_BYTES,
-                     maximum_file_bytes=maximum_file_bytes)
-    require_observed_command(result); require(result.get("exit_code") == 0, "Graph real producer command failed: " + label)
+    try:
+        result = execute(argv, cwd, env, producer, label, seconds, deadline=clock, maximum_stream_bytes=8 * GRAPH_BYTES,
+                         maximum_file_bytes=maximum_file_bytes)
+        require_observed_command(result)
+    except UnknownObservation as error:
+        error.add_note(graph_unknown_control_note(error.command))
+        raise
+    require(result.get("exit_code") == 0, "Graph real producer command failed: " + label)
     graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
     return {"command": graph_ref(producer / (label + ".command.json")),
             "stdout": graph_ref(producer / (label + ".stdout.log")), "stderr": graph_ref(producer / (label + ".stderr.log"))}, result
