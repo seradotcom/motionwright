@@ -985,7 +985,8 @@ mod persisted {
             "audio_sample_frames": 96128, "decoded_audio_sample_frames": 96128,
             "media": {
                 "video": true, "audio": true, "width": profile.width, "height": profile.height,
-                "frames": 60, "codecs": ["h264", "aac"],
+                "frames": 60, "duration_num": 2000, "duration_den": 1000,
+                "codecs": ["h264", "aac"],
             },
             "decoded_audio_media": {"video": false, "audio": true, "codecs": ["pcm_s16le"]},
             "artifact": {

@@ -95,6 +95,33 @@ pub(super) fn verify_exact_native_mux(
     if expected.fps_num == 0 || expected.fps_den == 0 || expected.frames == 0 {
         return Err(backend("Native mux frame clock is invalid"));
     }
+    // Source-bound frame count and AAC packet tolerance alone do not prove
+    // the measured duration agrees with the authored frame clock. The probe
+    // reports the first timed stream, falling back to container duration;
+    // allow at most 1 ms for that fallback's millisecond rounding.
+    // Other streams, AAC packet presentation and channel content still need
+    // independent checks on original MP4 bytes before physical acceptance.
+    let duration_num = media
+        .get("duration_num")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+        .ok_or_else(|| backend("Native mux lacks a positive measured media duration"))?;
+    let duration_den = media
+        .get("duration_den")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+        .ok_or_else(|| backend("Native mux lacks a positive media duration timebase"))?;
+    let measured_ticks = u128::from(duration_num) * u128::from(expected.fps_num);
+    let source_ticks = u128::from(expected.frames)
+        .checked_mul(u128::from(expected.fps_den))
+        .and_then(|n| n.checked_mul(u128::from(duration_den)))
+        .ok_or_else(|| backend("Native mux measured frame clock overflow"))?;
+    let one_millisecond_ticks = (u128::from(expected.fps_num) * u128::from(duration_den)) / 1_000;
+    if measured_ticks.abs_diff(source_ticks) > one_millisecond_ticks {
+        return Err(backend(
+            "Native mux measured duration differs from the authored source frame clock",
+        ));
+    }
     let expected_samples = u128::from(expected.frames)
         .checked_mul(48_000)
         .and_then(|n| n.checked_mul(u128::from(expected.fps_den)))
@@ -550,7 +577,8 @@ mod tests {
             "sample_rate":48000,"channels":2,
             "audio_sample_frames":52800,"decoded_audio_sample_frames":52800,
             "media":{"width":1280,"height":720,"video":true,
-                     "audio":true,"frames":33,"codecs":["h264","aac"]},
+                     "audio":true,"frames":33,"duration_num":1100,
+                     "duration_den":1000,"codecs":["h264","aac"]},
             "decoded_audio_media":{"video":false,"audio":true,"codecs":["pcm_s16le"]},
             "artifact":{"root":"output","path":"owner-master.mp4",
                         "sha256":"a".repeat(64),"bytes":10240},
@@ -604,6 +632,26 @@ mod tests {
         r["decoded_audio_media"]["codecs"] = json!(["aac"]);
         assert!(check(&r).is_err());
         r["decoded_audio_media"]["codecs"] = json!(["pcm_s16le"]);
+        assert!(check(&r).is_ok());
+        // Reject a measured 1.109-second duration for a 1.100-second cut
+        // even when 53,248 decoded frames fit the AAC packet tolerance.
+        // A first-stream duration alone does not verify other streams.
+        r["decoded_audio_sample_frames"] = json!(53248);
+        r["media"]["duration_num"] = json!(1109);
+        assert!(check(&r).is_err());
+        r["media"]["duration_num"] = json!(1101);
+        assert!(check(&r).is_ok()); // one millisecond of probe rounding
+        r["media"]["duration_num"] = json!(1098);
+        assert!(check(&r).is_err());
+        r["media"]["duration_num"] = json!(1100);
+        r["media"]["duration_den"] = json!(0);
+        assert!(check(&r).is_err());
+        r["media"]["duration_den"] = json!(1000);
+        r["media"].as_object_mut().unwrap().remove("duration_num");
+        assert!(check(&r).is_err());
+        r["media"]["duration_num"] = json!(1100);
+        r["audio_sample_frames"] = json!(52800);
+        r["decoded_audio_sample_frames"] = json!(52800);
         assert!(check(&r).is_ok());
         r.as_object_mut().unwrap().remove("video_sha256");
         assert!(check(&r).is_err());
