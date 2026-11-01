@@ -8,6 +8,12 @@ on:
     paths:
       - '.github/workflows/graph-development-fast.yml'
       - 'tooling/ci_graph_dev_fast.py'
+      - '.github/workflows/graph-native-startup-dev.yml'
+      - 'tooling/ci_graph_dev_native_startup.py'
+      - 'tooling/tests/test_ci_graph_dev_native_startup.py'
+      - 'tooling/tests/test_ci_graph_dev_native_budget.py'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
       - 'tooling/tests/test_ci_graph_dev_fast.py'
       - 'tooling/native_graph_browser_owner.py'
       - 'tooling/ci_canvas_service.py'
@@ -75,6 +81,18 @@ jobs:
             --base "$GRAPH_FAST_BASE" --expected-source "$GITHUB_SHA" \
             --mode fast --timeout-seconds 60 \
             --report knowledge/runtime/graph-fast-source-result.json
+      - name: Verify GN1 startup and custody source contracts without Native effects
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/graph-fast-custody-venv"
+          "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
+            tooling.tests.test_ci_graph_dev_native_startup \
+            tooling.tests.test_ci_graph_dev_native_budget -v \
+            2>&1 | tee knowledge/runtime/graph-fast-gn1-unittest.original.log
       - name: Verify original J1 Cargo reader and obsolete sandbox rejection on Linux
         shell: bash
         run: |
@@ -86,6 +104,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: graph-fast-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: knowledge/runtime/graph-fast-source-result.json
+          path: |
+            knowledge/runtime/graph-fast-source-result.json
+            knowledge/runtime/graph-fast-gn1-unittest.original.log
           if-no-files-found: warn
           retention-days: 7

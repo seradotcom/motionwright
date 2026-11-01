@@ -111,7 +111,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: motionwright-gn1-first-owner-1.98.1
-          cache-on-failure: false
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cache-on-failure: true
       - name: Prepare genuine bounded Ubuntu sandbox and dependencies
         shell: bash
         run: |
