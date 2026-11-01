@@ -62,6 +62,24 @@ CONTENT33=inspect_source_pcm16_stereo_content(WAV33,PCM33,original_wav_sha256=co
 CONTENT180=inspect_source_pcm16_stereo_content(WAV180,PCM180,original_wav_sha256=core.sha(WAV180),decoded_pcm_sha256=core.sha(PCM180))
 
 
+def film_clock_fixture(phase):
+    """Construct clock tables only: no playable media or native evidence."""
+    from test_native_mp4_video_presentation import video_track_fixture
+    def box(kind,body):return struct.pack(">I4s",8+len(body),kind)+body
+    def full(kind,body):return box(kind,bytes(4)+body)
+    def clock(kind,scale,duration):return full(kind,struct.pack(">IIIII",0,0,scale,duration,0))
+    sample=bytes(6)+struct.pack(">H",1)+bytes(8)+struct.pack(">HHHHI",2,16,0,0,48000<<16)
+    table=full(b"stsd",struct.pack(">I",1)+box(b"mp4a",sample))
+    table+=full(b"stts",struct.pack(">IIIII",2,282,1024,1,256))
+    table+=full(b"stsz",struct.pack(">II",8,283))
+    media=clock(b"mdhd",48000,289024)+full(b"hdlr",bytes(4)+b"soun"+bytes(12))
+    media+=box(b"minf",box(b"stbl",table))
+    edit=full(b"elst",struct.pack(">IIiI",1,6000,1024,0x10000))
+    track=box(b"trak",box(b"edts",edit)+box(b"mdia",media))
+    return box(b"ftyp",b"isom"+bytes(4)+b"isom")+box(b"moov",clock(b"mvhd",1000,6000)+video_track_fixture()+track)+box(
+        b"free",("SYNTHETIC_"+phase+"_CLOCK_TABLES_DO_NOT_PROVE_NATIVE_RENDER").encode())
+
+
 def film_shared_records(phase, project, render_sha, master_sha):
     """Synthetic source-control receipts, never a Native observation."""
     import native_film180_command_custody as commands
@@ -388,7 +406,7 @@ class World:
             segment["artifact"].update(directory=directory,first_png=directory+"/frames/000000.png",last_png=directory+"/frames/000179.png",
                 manifest=directory+"/artifact-manifest.json",manifest_bytes=len(self.files[("owner",manifest_path)]),manifest_sha256=manifest_sha)
             self.put("observation",phase+"-native-Film180-evidence.json",motion)
-            master_blob=("SYNTHETIC_"+phase+"_MP4_DOES_NOT_PROVE_NATIVE_RENDER").encode()
+            master_blob=film_clock_fixture(phase)
             master=sample(film.MASTER);master.update(identity);master["source_audio"]["sha256"]=core.sha(WAV180)
             master["mezzanine"]["artifact"]=self.artifact(phase+"-mezzanine.mkv",("synthetic FFV1 "+phase).encode())
             master["mezzanine"].update(frame_count=180,source_manifest_sha256=manifest_sha)
@@ -414,6 +432,8 @@ class World:
                 all_original_frame_sha256=[core.sha((phase+"decoded"+str(i)).encode()) for i in range(180)],unique_decoded_RGB_frames=180)
             all_rgb_sha=self.put("observation",phase+"-all180-decoded-original-RGB24.json",all_rgb)
             decoded=sample(film.DECODED);decoded.update(source_bound_PCM=copy.deepcopy(CONTENT180),decoded_PCM_sha256=core.sha(PCM180),master_sha256=core.sha(master_blob),source_WAV_sha256=core.sha(WAV180))
+            decoded["source_bound_audio_presentation"]=film.verify_original_audio_presentation(master_blob,PCM180,decoded)
+            decoded["source_bound_video_presentation"]=film.verify_original_video_presentation(master_blob,decoded)
             decoded["identity"].update(project_id=project["id"],generation=project["generation"],revision=project["revision"],deliverable_id=project["deliverables"][0]["id"],
                 scene_ids=[s["id"] for s in project["scenes"]],node_ids=[n["id"] for s in project["scenes"] for n in s["nodes"]])
             decoded["physical_video"].update(pixel_size=[1920,1080],last_pts=179/30)

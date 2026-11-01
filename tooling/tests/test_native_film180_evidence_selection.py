@@ -174,6 +174,26 @@ class FilmSelectionTests(unittest.TestCase):
             raw,_=world.capture()
             with self.assertRaisesRegex(core.SelectionError,"decoded-source-identity"):world.verify(raw)
 
+    def test_selected_presentation_clock_is_recomputed_from_actual_master_bytes(self):
+        world=self.world()
+        world.edit("observation","edited-independent-AV-content.json",
+            lambda v:v["source_bound_audio_presentation"].update(initial_edit_skip_samples=1023))
+        with world.patched():
+            raw,manifest=world.capture()
+            self.assertTrue(manifest["required_layers_complete"])
+            with self.assertRaisesRegex(core.SelectionError,"presentation-witness-differs"):
+                world.verify(raw)
+
+    def test_selected_video_clock_is_recomputed_from_actual_master_bytes(self):
+        world=self.world()
+        world.edit("observation","edited-independent-AV-content.json",
+            lambda v:v["source_bound_video_presentation"].update(initial_edit_media_time=1023))
+        with world.patched():
+            raw,manifest=world.capture()
+            self.assertTrue(manifest["required_layers_complete"])
+            with self.assertRaisesRegex(core.SelectionError,"video-presentation-witness-differs"):
+                world.verify(raw)
+
     def test_failed_edited_terminal_keeps_original_success_without_full_success(self):
         world=self.world()
         def change(v):v["native_command_terminals"]["edited.master"]="ERROR_OR_UNKNOWN";v["native_terminal"]="ERROR_OR_UNKNOWN"

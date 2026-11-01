@@ -230,6 +230,8 @@ SOURCE_PATHS = (
 )
 FILM_SOURCE_PATHS = SOURCE_PATHS + (
     "tooling/native_film180_original_g2.py", "tooling/native_film180_media_readback.py",
+    "tooling/native_mp4_aac_presentation.py",
+    "tooling/native_mp4_video_presentation.py",
     "crates/native/examples/native-film180-e2e.rs",
     "tooling/native_film180_evidence_selection.py",
     "tooling/native_film180_command_custody.py",
@@ -250,6 +252,8 @@ SOURCE_CONTRACT_TESTS = (
 FILM_CONTRACT_TESTS = (
     "test_native_film180_original_g2", "test_native_film180_media_readback",
     "test_native_film180_evidence_selection",
+    "test_native_mp4_aac_presentation",
+    "test_native_mp4_video_presentation",
 )
 
 

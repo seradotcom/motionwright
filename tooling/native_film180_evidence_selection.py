@@ -430,6 +430,27 @@ WRAPPED_LIVE=O(original_MLT_command_basename=String(160,pattern=r"mw-[0-9a-f]{32
     actual_mapped_original_MLT_module_sha256=SHA,original_live_pid_observer_receipt=LIVE,
     observer_diagnostic_sha256=SHA,native_melt_effect_started_by_witness=FALSE)
 SELECTED_FRAMES=(0,5,6,26,27,32,33,71,72,89,90,179)
+AUDIO_PRESENTATION=O(schema=Literal("motionwright.native.mp4-aac-presentation/1"),
+    master_sha256=SHA,source_sample_frames=Literal(288000),
+    decoded_sample_frames=Number(288000,289023,integer=True),presented_sample_frames=Literal(288000),
+    sample_rate=Literal(48000),channels=Literal(2),aac_packet_count=Number(1,1000000,integer=True),
+    aac_media_ticks=Number(288000,290048,integer=True),initial_edit_skip_samples=Number(0,2048,integer=True),
+    final_packet_duration_samples=Number(1,1024,integer=True),
+    unpresented_final_access_unit_samples=Number(0,1023,integer=True),
+    observed_decoded_samples_after_presentation=Number(0,1023,integer=True),
+    presentation_start_sample=Literal(0),presentation_end_sample=Literal(288000),source_interval_exact=TRUE,
+    samples_trimmed_or_reencoded=FALSE,sample_content_proven_by_this_clock_check=FALSE,
+    native_host_or_provider_attested_here=FALSE)
+VIDEO_PRESENTATION=O(schema=Literal("motionwright.native.mp4-video-presentation/1"),
+    master_sha256=SHA,source_video_frames=Literal(180),frame_rate=O(num=Literal(30),den=Literal(1)),
+    video_track_id=Number(1,4294967295,integer=True),video_timescale=Number(1,4294967295,integer=True),
+    video_media_ticks=Number(1,9223372036854775807,integer=True),video_sample_count=Literal(180),
+    composition_time_version=Nullable(Number(0,1,integer=True)),
+    initial_edit_media_time=Number(0,9223372036854775807,integer=True),
+    presentation_start=O(num=Literal(0),den=Literal(1)),presentation_end=O(num=Literal(6),den=Literal(1)),
+    all_source_frame_intervals_exact=TRUE,decode_order_rearranged=bool,
+    samples_decoded_or_reencoded=FALSE,sample_content_proven_by_this_clock_check=FALSE,
+    native_host_or_provider_attested_here=FALSE)
 DECODED=O(schema=Literal("motionwright.native.film180.decoded-media/1"),
     identity=O(project_id=UUID,generation=UUID,revision=POS,deliverable_id=UUID,scene_ids=Array(UUID,2,2),
         node_ids=Array(UUID,4,4),native_motion_segment_id=Literal("segment-0")),
@@ -438,7 +459,9 @@ DECODED=O(schema=Literal("motionwright.native.film180.decoded-media/1"),
     native_pixel_boundaries=O(observed_caption_transition_changed_pixels=O(**{key:POS for key in ("5_to_6","26_to_27","32_to_33","71_to_72")}),
         scene_cut_89_to_90_changed_pixels=POS,selected_native_frame_rgbs_sha256=O(**{str(k):SHA for k in SELECTED_FRAMES}),
         actual_selected_frame_count=Literal(12),native_rgbs_selected_only=TRUE,all_180_frame_pixels_compared=FALSE),
-    source_bound_PCM=PCM_CONTENT,decoded_PCM_sha256=SHA,master_sha256=SHA,source_WAV_sha256=SHA,
+    source_bound_PCM=PCM_CONTENT,source_bound_audio_presentation=optional(AUDIO_PRESENTATION),
+    source_bound_video_presentation=optional(VIDEO_PRESENTATION),
+    decoded_PCM_sha256=SHA,master_sha256=SHA,source_WAV_sha256=SHA,
     native_original_right_channel_tail_observed=TRUE,lossy_audio_quality_human_approved=FALSE,
     saved_source_rights_human_accepted=FALSE,original_source_reopened_in_external_NLE=FALSE,privileged_Broker_grant_verified_here=FALSE)
 ALL_RGB=O(schema=Literal("motionwright.native.film180.decoded-all180-RGB24/1"),source_frame_count=Literal(180),
@@ -640,6 +663,33 @@ def png_header(blob):
     return color
 
 
+def verify_original_audio_presentation(master,pcm,decoded):
+    """Authenticate the clock again; a retained JSON witness is not authority."""
+    from native_mp4_aac_presentation import inspect_mp4_aac_presentation,PresentationClockError
+    try:
+        actual=inspect_mp4_aac_presentation(master,source_frames=288000,decoded_frames=len(pcm)//4)
+    except PresentationClockError as error:
+        raise core.SelectionError("film-audio-presentation-"+str(error)) from error
+    require(actual["master_sha256"]==decoded["master_sha256"],"film-presentation-master-link")
+    if "source_bound_audio_presentation" in decoded:
+        require(decoded["source_bound_audio_presentation"]==actual,"film-presentation-witness-differs")
+    return actual
+
+
+def verify_original_video_presentation(master,decoded):
+    """Recheck every video interval, including the last frame, from original bytes."""
+    from native_mp4_video_presentation import inspect_mp4_video_presentation
+    from native_mp4_aac_presentation import PresentationClockError
+    try:
+        actual=inspect_mp4_video_presentation(master)
+    except PresentationClockError as error:
+        raise core.SelectionError("film-video-presentation-"+str(error)) from error
+    require(actual["master_sha256"]==decoded["master_sha256"],"film-video-presentation-master-link")
+    if "source_bound_video_presentation" in decoded:
+        require(decoded["source_bound_video_presentation"]==actual,"film-video-presentation-witness-differs")
+    return actual
+
+
 def verify_film_command_intake(raw, *, current):
     """Partial original custody only; never reopens, reruns or accepts a Film."""
     from native_film180_command_custody import contract as command_contract
@@ -743,6 +793,10 @@ def verify_film_intake(raw,*,current):
                 and decoded["physical_video"]["pixel_size"]==[1920,1080],"film-decoded-source-identity")
         require(decoded["master_sha256"]==master_identity[0] and decoded["decoded_PCM_sha256"]==sha(pcm)
                 and decoded["source_WAV_sha256"]==sha(wav),"film-decoded-original-links")
+        # Recompute from retained original bytes even for historical receipts
+        # without this field. Omitting a witness never bypasses the clock check.
+        verify_original_audio_presentation(intake.original("native-master",phase),pcm,decoded)
+        verify_original_video_presentation(intake.original("native-master",phase),decoded)
         audio=decoded["source_bound_PCM"]
         require((audio["original_wav_sha256"],audio["decoded_pcm_sha256"],audio["source_stereo_frames"],audio["decoded_stereo_frames"],audio["raw_decoded_frames_after_source"])
                 ==(sha(wav),sha(pcm),288000,len(pcm)//4,delta),"film-whole-decoded-pcm-observation")

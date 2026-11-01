@@ -54,6 +54,10 @@ on:
       - 'tooling/fixedtxt/prepare_fixedtxt_managed_project.rs'
       - 'tooling/tests/test_native_fixedtxt_workflow.py'
       - 'tooling/native_film180_media_readback.py'
+      - 'tooling/native_mp4_aac_presentation.py'
+      - 'tooling/tests/test_native_mp4_aac_presentation.py'
+      - 'tooling/native_mp4_video_presentation.py'
+      - 'tooling/tests/test_native_mp4_video_presentation.py'
       - 'tooling/tests/test_native_film180_original_g2.py'
       - 'tooling/tests/test_fixedtxt_owner_admission.py'
       - 'tooling/test_fixed_text_native_owner_close.py'
@@ -1018,6 +1022,8 @@ jobs:
           --expected-source "$GITHUB_SHA" --report "$report" \
           --pattern test_native_film180_original_g2.py \
           --pattern test_native_film180_media_readback.py \
+          --pattern test_native_mp4_aac_presentation.py \
+          --pattern test_native_mp4_video_presentation.py \
           --pattern test_native_film180_evidence_selection.py \
           > "$root/runner.stdout" 2> "$root/runner.stderr"
         runner_exit=$?
@@ -1032,10 +1038,10 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_film180_evidence_selection.py', 65, 'c825d5c2652b82c3616d06ac75e666d3ac9f9e15cfd5a883c885bc62f5e57077')]
+        SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '0bacb726977723dd871f954303325954503dcb0c8c3e2f8ba0afad31074779f0'), ('tooling/tests/test_native_film180_media_readback.py', 31, '8df7f61b732e073fcb504d4944d183daed9c5968cc4dae5d1e2372c35850f118'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '60ff650706e392f6f5918bfc5de14cceae7240aa66925e41204cd9c9d7922bcc'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '5b466a6480b40d2a86ef8b39d039930cc9e284d834c749ce285c289e7f805961'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, 'b452f9cb4b0b691fac2273923241db962927acd93918d8a6687e634fed915440')]
         MODE = 'dotted'
         GROUP = 'film'
-        TOTAL = 192
+        TOTAL = 250
 
         import ast
         from datetime import datetime
@@ -1538,6 +1544,8 @@ jobs:
           --pattern test_native_aac_clock_custody.py \
           --pattern test_native_film180_original_g2.py \
           --pattern test_native_film180_media_readback.py \
+          --pattern test_native_mp4_aac_presentation.py \
+          --pattern test_native_mp4_video_presentation.py \
           --pattern test_native_film180_evidence_selection.py \
           > "$root/runner.stdout" 2> "$root/runner.stderr"
         runner_exit=$?
@@ -1552,11 +1560,11 @@ jobs:
         PY
         if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
         "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 16, '1d9c5cfe023fbc7dbb0dad8aac422ba90d06a792cb7bf2a606f50d93e5525cfc'), ('tooling/tests/test_native_mlt_owner_workspace.py', 8, 'fcffed842908701ad3bdd5e43546f1ea643584eae07ff155af5b7e9ab4b6a238'), ('tooling/tests/test_native_mlt_g2_custody.py', 59, 'a1e9cc09b379151b583b3e0a6649053b76fe20c18ff95e7f3d0df615c79e06ed'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, '35ed7655450f16ec094ebb8135c2688a2c143d4c8a160f35460d5f0d94466f88'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '294598c7ddfadae7157411f256b7c48f042bd9ba497377813e5c45a2c915110f'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '86648b626ac54c03b57b29237b911a53556555bfee207b0a67b945ae177690c0'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'be1bcfaefa1ac0fa0d0a332a8ba4cd5aa54ac7e2f371471b72d26336f6192ca6'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'abf5745df4b93c9877656cd8ae649afa860ae0d23b7ed560043d057f61be44e0'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, '3954bddb07f0c721bc63678e2bc7c1b228dbce9d06971b671e97d8d52f59885a'), ('tooling/tests/test_native_evidence_projection.py', 101, '1ed9eeffde1fe7c864ca09e5f227fa0d4cd2286e25f58052a1e6a86278d07125'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'b60a83e640457de6543460fa096ac91670f1ed46aec95f6842ba9dc1bdbf3092'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_film180_evidence_selection.py', 65, 'c825d5c2652b82c3616d06ac75e666d3ac9f9e15cfd5a883c885bc62f5e57077')]
+        SUITES = [('tooling/tests/test_native_mlt_workflow_preflight.py', 16, '425d27f80089a431c07ab2eec1019acd04a6aaf422d648c03e0a5eb297fd698b'), ('tooling/tests/test_native_mlt_owner_workspace.py', 8, '9bf89bbf94ba8d0bb896b4b4d0bbeb6720a04772ac598438cbb6bfe1e161f101'), ('tooling/tests/test_native_mlt_g2_custody.py', 59, '38f5d9679f0ff0860e760c028b4dbd9b162980034bb7d085a8ad476fb321dd81'), ('tooling/tests/test_native_mlt_g2_observation.py', 32, 'c7105b5df84a9b91549d822b9ab786a281865814a60b1ef0c404c986407e99b4'), ('tooling/tests/test_native_mlt_live_observer_diagnostics.py', 30, '3b620a67ec6950058705326b4aacba43b94ba7553ebbdc79ad765ca40955a69e'), ('tooling/tests/test_native_mlt_host_tool_observation.py', 44, '76f54b020958c13ea3b093bccf897094f2ea7e36cc87332a0a114f64547ac949'), ('tooling/tests/test_native_mlt_loaded_module.py', 18, 'f8d717d0cf057092d9d5f111532551dd3318f169c870efe9a6d974638d6e1e9b'), ('tooling/tests/test_native_mlt_executable_alias.py', 24, 'c19a5b7f196dac19af5220d675c1b97f0bc31db4bce1ce2966825e06132ba8fb'), ('tooling/tests/test_native_mlt_compiler_intake.py', 24, 'b43c58cb8b7a833baee55bb61fced6d453824216f2028b293ebef8046677125f'), ('tooling/tests/test_native_evidence_projection.py', 101, '3d016a8dc795f49c2e9f438af0f298d5fda07ca5a18d98452fd359a2d33d231c'), ('tooling/tests/test_native_mlt_evidence_selection.py', 79, 'a03f10187b1cec77b2ea3a4b9dba4b754476ade9faec816d34eb953126254bab'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '2cef4b35bcde4c19f6636c7eb89668c9333a8fcab63b9135927106c2c5164bed'), ('tooling/tests/test_native_film180_original_g2.py', 96, '0bacb726977723dd871f954303325954503dcb0c8c3e2f8ba0afad31074779f0'), ('tooling/tests/test_native_film180_media_readback.py', 31, '8df7f61b732e073fcb504d4944d183daed9c5968cc4dae5d1e2372c35850f118'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '60ff650706e392f6f5918bfc5de14cceae7240aa66925e41204cd9c9d7922bcc'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '5b466a6480b40d2a86ef8b39d039930cc9e284d834c749ce285c289e7f805961'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, 'b452f9cb4b0b691fac2273923241db962927acd93918d8a6687e634fed915440')]
         DESCRIPTIONS = {'tooling/tests/test_native_evidence_projection.py': {'LinuxFilesystemTests.test_regular_to_fifo_race_is_nonblocking_with_closed_original_child': 'Real FIFO plus a declared fault injection; no historical SHA credit.'}}
         MODE = 'discovery'
         GROUP = 'discovery_remaining'
-        TOTAL = 649
+        TOTAL = 707
 
         import ast
         from datetime import datetime
@@ -2851,6 +2859,8 @@ jobs:
             --expected-source "$GITHUB_SHA" --report "$report" \
             --pattern test_native_film180_original_g2.py \
             --pattern test_native_film180_media_readback.py \
+            --pattern test_native_mp4_aac_presentation.py \
+            --pattern test_native_mp4_video_presentation.py \
             --pattern test_native_film180_evidence_selection.py \
             > "$root/runner.stdout" 2> "$root/runner.stderr"
           runner_exit=$?
@@ -2865,10 +2875,10 @@ jobs:
           PY
           if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
           "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
-          SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '2e3cf6294670e39f6aafe673857104d13b1186e91b9747b50cde2f0dcb33c6ef'), ('tooling/tests/test_native_film180_media_readback.py', 31, 'e0f0cddad2ccc3d58e35fa5bfaf90e420d8fa4b7dee8917779da0f64ba1ce934'), ('tooling/tests/test_native_film180_evidence_selection.py', 65, 'c825d5c2652b82c3616d06ac75e666d3ac9f9e15cfd5a883c885bc62f5e57077')]
+          SUITES = [('tooling/tests/test_native_film180_original_g2.py', 96, '0bacb726977723dd871f954303325954503dcb0c8c3e2f8ba0afad31074779f0'), ('tooling/tests/test_native_film180_media_readback.py', 31, '8df7f61b732e073fcb504d4944d183daed9c5968cc4dae5d1e2372c35850f118'), ('tooling/tests/test_native_mp4_aac_presentation.py', 29, '60ff650706e392f6f5918bfc5de14cceae7240aa66925e41204cd9c9d7922bcc'), ('tooling/tests/test_native_mp4_video_presentation.py', 27, '5b466a6480b40d2a86ef8b39d039930cc9e284d834c749ce285c289e7f805961'), ('tooling/tests/test_native_film180_evidence_selection.py', 67, 'b452f9cb4b0b691fac2273923241db962927acd93918d8a6687e634fed915440')]
           MODE = 'dotted'
           GROUP = 'film'
-          TOTAL = 192
+          TOTAL = 250
 
           import ast
           from datetime import datetime

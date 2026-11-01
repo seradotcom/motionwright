@@ -18,6 +18,9 @@ import re
 import subprocess
 
 from native_pcm_source_fidelity import inspect_source_pcm16_stereo_content
+from native_mp4_aac_presentation import (
+    PresentationClockError, inspect_mp4_aac_presentation,
+)
 
 FRAME_COUNT = 180
 FRAME_RATE = 30
@@ -346,6 +349,25 @@ def decode_original_audio(media: Path, executable: str, *, capture=None) -> byte
     return proc.stdout
 
 
+def inspect_original_audio_presentation(master_path: Path, master_hash: str,
+                                        decoded_frames: int) -> dict:
+    """Bind the decoded geometry to the unchanged original MP4 edit clock."""
+    digest(master_path, MAX_MP4_BYTES, master_hash)
+    size = master_path.stat().st_size
+    require(0 < size <= MAX_MP4_BYTES, "original_media_byte_budget")
+    with master_path.open("rb") as stream:
+        raw = stream.read(size + 1)
+    require(len(raw) == size and hashlib.sha256(raw).hexdigest() == master_hash,
+            "original_media_changed_during_clock_read")
+    try:
+        return inspect_mp4_aac_presentation(
+            raw, source_frames=PCM_FRAMES, decoded_frames=decoded_frames,
+            sample_rate=PCM_RATE,
+        )
+    except PresentationClockError as error:
+        raise OriginalMediaMismatch(str(error)) from error
+
+
 def verified_source_readback(project_path: Path, project_hash: str,
                              wav_path: Path, wav_hash: str,
                              motion_path: Path, motion_hash: str,
@@ -363,6 +385,14 @@ def verified_source_readback(project_path: Path, project_hash: str,
     pixels = inspect_selected_pixels(decode_selected_video(master_path, ffmpeg))
     pcm = (decode_original_audio(master_path, ffmpeg) if pcm_capture is None else
            decode_original_audio(master_path, ffmpeg, capture=pcm_capture))
+    presentation = inspect_original_audio_presentation(
+        master_path, master_hash, len(pcm) // 4,
+    )
+    from native_mp4_video_presentation import inspect_original_mp4_video_presentation
+    try:
+        video_presentation = inspect_original_mp4_video_presentation(master_path, master_hash)
+    except PresentationClockError as error:
+        raise OriginalMediaMismatch(str(error)) from error
     audio_content = inspect_source_pcm16_stereo_content(
         wav_path.read_bytes(), pcm,
         original_wav_sha256=wav_hash,
@@ -377,6 +407,8 @@ def verified_source_readback(project_path: Path, project_hash: str,
         "physical_video": probe,
         "native_pixel_boundaries": pixels,
         "source_bound_PCM": audio_content,
+        "source_bound_audio_presentation": presentation,
+        "source_bound_video_presentation": video_presentation,
         "decoded_PCM_sha256": hashlib.sha256(pcm).hexdigest(),
         "master_sha256": master_hash,
         "source_WAV_sha256": wav_hash,
