@@ -434,6 +434,36 @@ def private_snapshot(root: Path):
     return raw, len(entries)
 
 
+def original_owner_start_observation(private: Path, marks: list[dict]):
+    """A stage marker precedes Popen and cannot prove that a daemon ran.
+
+    Only a closed, original post-Popen receipt proves an observed launch.
+    Absence after the stage was reached remains UNKNOWN, never NOT_EXECUTED.
+    """
+    recorded = 0
+    unobserved = False
+    for label, stage in (("bootstrap", "BOOTSTRAP_SOCKET"),
+                         ("restricted", "RESTRICTED_SOCKET")):
+        reached = any(row.get("stage") == stage for row in marks)
+        path = private / (label + ".start.original.json")
+        need(not path.is_symlink(), "GN1_START_RECEIPT_SYMLINK")
+        if path.exists():
+            need(reached and path.is_file() and 0 < path.stat().st_size <= 8192,
+                 "GN1_START_RECEIPT_INVALID")
+            receipt = json.loads(path.read_bytes())
+            need(type(receipt) is dict and type(receipt.get("pid")) is int
+                 and receipt["pid"] > 0 and receipt.get("automatic_retry") is False,
+                 "GN1_START_RECEIPT_INVALID")
+            recorded += 1
+        elif reached:
+            unobserved = True
+    state = ("UNKNOWN" if unobserved else
+             "RECORDED_REAL_START_NOT_G2" if recorded else "NOT_EXECUTED")
+    return {"physical_owner_startup": state,
+            "original_start_receipts": recorded,
+            "unobserved_launch_possible": unobserved}
+
+
 def run_once(args):
     """Single selected real Native startup. One new Store, never replay."""
     run_id = require_runner()
@@ -480,15 +510,15 @@ def run_once(args):
                  {"code": code, "exception_type": type(e).__name__,
                   "raw_error": str(e), "automatic_retry": False})
 
+    launch = original_owner_start_observation(private, marks)
+    if status == "PASS_DEV_NATIVE_STARTUP_ONLY" and (
+            launch["original_start_receipts"] != 2
+            or launch["unobserved_launch_possible"]):
+        status, code = "UNKNOWN", "GN1_OWNER_START_ORIGINAL_INCOMPLETE"
     public["stage"] = marks[-1]["stage"]
     public["status"] = status
     public["code"] = code
-    public["physical_owner_startup"] = (
-        "REAL_OWNER_LAUNCHED_NOT_G2" if any(row["stage"] == "BOOTSTRAP_SOCKET"
-                                           for row in marks)
-        else "NOT_EXECUTED")
-    public["actual_original_process_attempts"] = sum(
-        row["stage"] in ("BOOTSTRAP_SOCKET", "RESTRICTED_SOCKET") for row in marks)
+    public.update(launch)
     public["private_originals_published"] = False
     public["Graph6_cases_accepted"] = 0
 
