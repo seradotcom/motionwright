@@ -5611,7 +5611,7 @@
     },
     {
       "path": ".github/workflows/native-mlt-sequence-e2e.yml",
-      "sha256": "9519144d5513c48aa91047eebf09bde91c988d13ee545079c7544fee64e28275",
+      "sha256": "6837ae48ce39884630629516d1648cf2ff547712f42ee8e17484eca4098db595",
       "preamble_sha256": "0f7e3954423ade58188763c39977fd35ef580582c5567df564cb6473c8f0cac8",
       "evidence_class": "native_media_custody",
       "purpose": "Four ordinary MLT media modes plus separate admitted repaired-module and Film180 original G2 branches. The admitted R3 source declares a separate one-fixture FixedTxt prepare/owner route and independent R28 transport.",
@@ -5728,7 +5728,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "a0d65afc1c95a10401acc806725abedc52890af60d2662ce914c868942a03d97",
+          "source_sha256": "ebed894279650ea4255d9a11729e40cdab2aebb1067173a2776237c2ee8a39ff",
           "instance_sets": {
             "source": [
               {}
@@ -5799,7 +5799,7 @@
               "name": "Verify complete Film source and original-custody contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "1559c3c4b1beb209a8a9366afdf7aa8e81d575ebb437017d09002cd6a7fe7daf",
+              "source_block_sha256": "aaed2319453a947a2a576e81b921e44ec28a580569938e8201dea9ba281b6794",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -5815,7 +5815,7 @@
               "name": "Verify remaining source import contracts (discovery611)",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "626d84c16c6cfb73edecbc5f0648a73b06b54c8b439295f2da18341b3072ff18",
+              "source_block_sha256": "56f11a910e23d9c38b09c98b096470ab504a518e8118da7e6d588a09196f94ed",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -5903,7 +5903,7 @@
               "mode": "${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2') && '[\"final-mp4\"]' || '[\"pcm\",\"video-only\",\"final-mp4\",\"captioned-mp4\"]') }}"
             }
           },
-          "source_sha256": "059f59bdb863e0157d6608fd1711034630a8fbfe2094d9c43632a67289854cb1",
+          "source_sha256": "e94686ede147b86be708389a7b59cda50898b89f457c38d420a4646c41d8ca1b",
           "instance_sets": {
             "normal": [
               {
@@ -5976,7 +5976,7 @@
               "name": "Verify complete Film source and original-custody contracts",
               "guard": "matrix.mode != 'pcm' && matrix.mode != 'video-only'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "4b4dab7e079bbe5b93aff3a2efc7841d5155c75a0fadc739b13c67e4c787a812",
+              "source_block_sha256": "e8228cb9284318e669264e66aa392af357c9959cd52d998d54766ee666086871",
               "api_binding": "EXPLICIT_NAME"
             },
             {
