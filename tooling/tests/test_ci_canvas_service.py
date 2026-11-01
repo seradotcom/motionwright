@@ -923,7 +923,10 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         per_case_ms = int(declared[0].replace("_", ""))
         self.assertEqual(per_case_ms, 180_000)
         self.assertGreater(gate.SELECTION_TIMEOUTS[label], len(titles) * per_case_ms / 1000 + 120)
-        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
+        # Validate the complete GN1 delta before comparing the prior selection contract.
+        workflow = gn1_previous_workflow(raw).decode("utf-8")
         declared_options = re.findall(r"options: \[([^\]]+)\]", workflow)
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
@@ -1678,7 +1681,10 @@ class BrowserContractSelectionTests(unittest.TestCase):
                 self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
 
     def test_browser_workflow_is_manual_closed_and_within_declared_deadlines(self):
-        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        raw = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
+        # Validate the complete GN1 delta before comparing the prior selection contract.
+        workflow = gn1_previous_workflow(raw).decode("utf-8")
         choices = [item.strip() for item in re.findall(r"options: \[([^\]]+)\]", workflow)[0].split(",")]
         self.assertEqual(choices.count("browser-contracts"), 1)
         self.assertIn("default: authoring-drafts", workflow)
@@ -6126,11 +6132,13 @@ class CameraEightSourceTests(unittest.TestCase):
     def test_workflow_only_adds_camera_choice_ninety_minutes_source_depth_and_closed_preflight(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
         raw = path.read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
         previous = camera_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(previous).hexdigest(), WINDOW_REVIEWED_WORKFLOW_SHA256)
         self.assertEqual(gate.hashlib.sha256(window_previous_workflow(previous)).hexdigest(),
                          "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b")
-        value = raw.decode()
+        # Keep current bytes for history/drift checks; compare the pre-GN1 job roster.
+        value = gn1_previous_workflow(raw).decode("utf-8")
         self.assertEqual(re.findall(r"^  ([a-z][a-z0-9_-]*):$", value, re.M),
                          ["push", "workflow_dispatch", "run", "g0", "creative-unit-build", "real-service", "studio-service-68"])
         self.assertIn("default: authoring-drafts", value)
