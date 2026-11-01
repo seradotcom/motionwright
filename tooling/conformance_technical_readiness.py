@@ -39,6 +39,10 @@ INDEX = "docs/acceptance/technical-evidence.json"
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 REQUIRED_ROWS = 367
 REQUIRED_FIELDS = 1532
+PHASE1_REQUIRED_ROWS = 247
+PHASE1_REQUIRED_FIELDS = 872
+PHASE1_HUMAN_FIELDS = 14
+PHASE1_ORIGINAL_EDGES = 442
 CONTRACT_ROWS = 396
 ATOMIC_FIELDS = 1652
 NORMATIVE_EDGES = 506
@@ -488,7 +492,68 @@ def derive_eligibility(index: dict, rows: list[dict], checkout: dict) -> dict:
     }
 
 
-def inspect(root: Path, source_sha: str) -> dict:
+def derive_phase1_milestone(index: dict, rows: list[dict], checkout: dict) -> dict:
+    """Read-only Phase1 technical profile; preserves the full 367-row gate."""
+    full = derive_eligibility(index, rows, checkout)
+    selected = {r["id"]: r for r in rows if r["id"].startswith(("CR-", "ACC-"))}
+    _need(len(selected) == 268 and len(rows) - len(selected) == 128,
+          "phase1 family count changed")
+    tally = Counter()
+    passed = 0
+    human = set()
+    for rid, row in selected.items():
+        contract = index["contracts"][rid]
+        scope = contract["scope"]
+        assessment = row["technical_assessment"]
+        tally[(scope, "rows")] += 1
+        tally[(scope, "fields")] += len(assessment["criteria"])
+        if scope != "required":
+            continue
+        human.update(contract["human_criterion_ids"])
+        if (all(x["status"] == "pass" for x in assessment["criteria"])
+                and assessment["implementation"]["status"] == "implemented"
+                and assessment["integration"]["status"] == "main"
+                and assessment["technical_verification"]["status"] == "pass"
+                and assessment["source"] == index["source"]
+                and not assessment["contract_acceptance"]["pending_criteria"]):
+            passed += 1
+    edges = 0
+    for link in index["normative_edges"]:
+        left, right = link["requirement_id"] in selected, link["case_id"] in selected
+        _need(left == right, "phase1 normative cross-family edge")
+        edges += int(left)
+    _need((tally[("required", "rows")], tally[("required", "fields")],
+           tally[("conditional", "rows")], tally[("conditional", "fields")],
+           tally[("optional", "rows")], tally[("optional", "fields")],
+           len(human), edges) ==
+          (PHASE1_REQUIRED_ROWS, PHASE1_REQUIRED_FIELDS, 11, 42,
+           10, 34, PHASE1_HUMAN_FIELDS, PHASE1_ORIGINAL_EDGES),
+          "phase1 original mandatory denominator changed")
+    current = full["source_identity_current"]
+    ready = current and passed == PHASE1_REQUIRED_ROWS
+    return {
+        "schema": "motionwright.phase1-milestone-technical-readiness/1",
+        "profile": "phase1-v01",
+        "status": ("PHASE1_TECHNICAL_COMPLETE_AWAITING_INDEPENDENT_ATTESTATION"
+                   if ready else "BLOCKED_PHASE1_INCOMPLETE_OR_STALE"),
+        "source": full["source"], "assessed_source": full["assessed_source"],
+        "source_identity_current": current,
+        "scope": {"required": {"rows": PHASE1_REQUIRED_ROWS,
+                               "atomic_fields": PHASE1_REQUIRED_FIELDS,
+                               "full_technical_rows": passed},
+                  "conditional": {"rows": 11, "atomic_fields": 42},
+                  "optional": {"rows": 10, "atomic_fields": 34}},
+        "normative_edges": edges, "human_required_criterion_fields": len(human),
+        "technical_source_claims_complete": ready,
+        "canonical_full_catalog_retained": full["canonical_counts"],
+        "full_product_technical_complete": full["technical_source_claims_complete"],
+        "human_identity_authentication": "NOT_ASSESSED",
+        "independent_G3": "NOT_GRANTED", "product_acceptance_READY": False,
+        "release_authorized": False, "automatic_publish": False,
+    }
+
+
+def inspect(root: Path, source_sha: str, *, profile: str = "full") -> dict:
     root = Path(root).resolve(strict=True)
     frozen = _frozen_checkout(root, source_sha)
     limits = frozen.get("packaged_artifact_sizes", {})
@@ -501,6 +566,10 @@ def inspect(root: Path, source_sha: str) -> dict:
     # record artifact/member and human-record byte check, regardless of PASS.
     _validated_package_additions(index, frozen["packaged_artifact_sha256"])
     result = derive_eligibility(index, rows, frozen)
+    if profile == "phase1-v01":
+        result = derive_phase1_milestone(index, rows, frozen)
+    else:
+        _need(profile == "full", "unsupported conformance technical profile")
     _need(_frozen_checkout(root, source_sha) == frozen,
           "source changed during evidence assessment")
     _need(all(_read_tracked_bytes(
@@ -516,12 +585,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="Exact 40-byte lowercase committed product source")
     parser.add_argument("--output", type=Path,
                         help="Emit one fresh immutable JSON receipt")
+    parser.add_argument("--profile", choices=("full", "phase1-v01"), default="full",
+                        help="Separate Phase1 milestone or unchanged full-product gate")
     parser.add_argument("--require-technical-completeness", action="store_true",
                         help="Exit 2 when evidence still incomplete or stale")
     opts = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     try:
-        result = inspect(root, opts.source_sha)
+        result = inspect(root, opts.source_sha, profile=opts.profile)
         if opts.output is not None:
             with opts.output.open("x", encoding="utf8") as stream:
                 json.dump(result, stream, indent=2, sort_keys=True, ensure_ascii=False)
@@ -529,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         print("conformance-technical-status=" + result["status"] +
               " required_technical_rows=" +
               str(result["scope"]["required"]["full_technical_rows"]) +
-              "/" + str(REQUIRED_ROWS))
+              "/" + str(PHASE1_REQUIRED_ROWS if opts.profile == "phase1-v01" else REQUIRED_ROWS))
         if opts.require_technical_completeness and not result["technical_source_claims_complete"]:
             return 2
         return 0

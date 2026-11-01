@@ -202,6 +202,78 @@ class DynamicTechnicalReadinessTests(unittest.TestCase):
         self.assertEqual(result["external_release_authorization"], "NOT_ISSUED")
 
 
+    def test_phase1_profile_preserves_full_denominators_and_links(self):
+        report = gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+        self.assertEqual(report["scope"]["required"],
+                         {"rows": 247, "atomic_fields": 872, "full_technical_rows": 0})
+        self.assertEqual(report["scope"]["conditional"], {"rows": 11, "atomic_fields": 42})
+        self.assertEqual(report["scope"]["optional"], {"rows": 10, "atomic_fields": 34})
+        self.assertEqual(report["normative_edges"], 442)
+        self.assertEqual(report["human_required_criterion_fields"], 14)
+        self.assertEqual(report["canonical_full_catalog_retained"]["rows"], 396)
+        self.assertEqual(report["canonical_full_catalog_retained"]["criteria"], 1652)
+        self.assertFalse(report["technical_source_claims_complete"])
+        self.assertFalse(report["release_authorized"])
+
+    def test_phase1_technical_complete_never_unlocks_full_v05_or_G3(self):
+        self.fake_all_required_complete_in_memory()
+        v05 = next(x for x in self.rows
+                   if x["id"].startswith("MW05-")
+                   and self.index["contracts"][x["id"]]["scope"] == "required")
+        v05["technical_assessment"]["criteria"][0]["status"] = "stale"
+        report = gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+        self.assertTrue(report["technical_source_claims_complete"])
+        self.assertFalse(report["full_product_technical_complete"])
+        self.assertEqual(report["independent_G3"], "NOT_GRANTED")
+        self.assertFalse(report["product_acceptance_READY"])
+        self.assertFalse(report["release_authorized"])
+
+    def test_phase1_stale_criterion_or_checkout_still_blocks(self):
+        self.fake_all_required_complete_in_memory()
+        row = next(x for x in self.rows if x["id"].startswith("CR-")
+                   and self.index["contracts"][x["id"]]["scope"] == "required")
+        row["technical_assessment"]["criteria"][0]["status"] = "stale"
+        report = gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+        self.assertEqual(report["scope"]["required"]["full_technical_rows"], 246)
+        self.assertFalse(report["technical_source_claims_complete"])
+        row["technical_assessment"]["criteria"][0]["status"] = "pass"
+        self.checkout["remote_main_sha"] = "b" * 40
+        report = gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+        self.assertFalse(report["technical_source_claims_complete"])
+
+    def test_phase1_rejects_cross_family_normative_edge(self):
+        self.index = copy.deepcopy(self.index)
+        edge = next(e for e in self.index["normative_edges"]
+                    if e["requirement_id"].startswith("CR-")
+                    and e["case_id"].startswith("ACC-"))
+        edge["case_id"] = "A05-E00-01"
+        with self.assertRaisesRegex(gate.TechnicalReadinessError,
+                                    "cross-family"):
+            gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+
+    def test_phase1_rejects_missing_rows_and_waived_required_contract(self):
+        self.rows.pop()
+        with self.assertRaises(gate.TechnicalReadinessError):
+            gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+        self.rows = copy.deepcopy(self.original_rows)
+        row = next(x for x in self.rows if x["id"].startswith("CR-")
+                   and self.index["contracts"][x["id"]]["scope"] == "required")
+        row["technical_assessment"]["contract_acceptance"]["status"] = "not_applicable"
+        with self.assertRaisesRegex(gate.TechnicalReadinessError,
+                                    "cannot be waived"):
+            gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+
+    def test_phase1_human_review_claims_never_authorize_release(self):
+        self.fake_all_required_complete_in_memory()
+        for row in self.rows:
+            if row["id"].startswith(("CR-", "ACC-")) and (
+                    self.index["contracts"][row["id"]]["scope"] == "required"):
+                row["technical_assessment"]["contract_acceptance"]["status"] = "accepted"
+        report = gate.derive_phase1_milestone(self.index, self.rows, self.checkout)
+        self.assertTrue(report["technical_source_claims_complete"])
+        self.assertEqual(report["human_identity_authentication"], "NOT_ASSESSED")
+        self.assertFalse(report["release_authorized"])
+
 
 class LedgerPackageChainSyntheticTests(unittest.TestCase):
     """Pure negative Git-boundary controls; no product evidence implied."""
