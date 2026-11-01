@@ -18,9 +18,13 @@ requires `--cargo-target-dir` pointing to an **existing** hot target and
 always stays offline and locked. Missing hot dependencies produce HOLD,
 not a silent PASS; targets and worktrees are never created automatically.
 
-The optional manual `.github/workflows/graph-development-fast.yml`
-uses exact published source and reachable ancestor SHA. It can cancel
-superseded source-only runs and retains a small redacted JSON result.
+The source-only `.github/workflows/graph-development-fast.yml` runs on
+Graph-related pushes to the existing integration branch, using the exact
+push SHA and the previous commit as its comparison ancestor. It never
+issues R74 statuses or runs the Native owner. On the default branch,
+the same workflow also supports manual dispatch with explicit SHA and
+ancestor inputs. Superseded source-only runs may be cancelled; a missing
+ancestor fails closed and does not trigger a full Graph acceptance job.
 
 `PASS_SOURCE_ONLY` is not Native acceptance; `PASS_DEV_WIP_SOURCE_ONLY`
 is not a committed source attestation. The authentic `graph-source-review`

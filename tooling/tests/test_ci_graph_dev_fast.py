@@ -23,13 +23,19 @@ PRODUCER = b"""def graph_capture_cargo_executable(source, target_root, role):
     return captured
 """
 
-OWNER = b"""def verify_graph_sdk_capture_roster(spec, producer_index):
+OWNER = ('''def verify_graph_sdk_capture_roster(spec, producer_index):
+    """Inert equality of the exact R74 source-captured SDK executable roster.
+
+    The producer already authenticated Cargo paths, retained bytes and roles.
+    Never substitute mutable target/debug aliases for its exclusive snapshots.
+    """
     require(type(spec) is dict and type(producer_index) is dict
             and spec.get("source") == producer_index.get("source"),
             "graph-sdk-capture-source-mismatch")
     source, declared, original = spec.get("source"), spec.get("binaries"), producer_index.get("binaries")
     require(type(source) is dict and type(declared) is dict and type(original) is dict
-            and type(source.get("sdk_root")) is str, "graph-sdk-capture-roster-shape")
+            and type(source.get("sdk_root")) is str,
+            "graph-sdk-capture-roster-shape")
     capture = Path(source["sdk_root"]) / "target" / "mw-r74-captured"
     for role in ("semwright", "semwrightd", "semwright_sandbox"):
         expected, retained = declared.get(role), original.get(role)
@@ -44,7 +50,7 @@ OWNER = b"""def verify_graph_sdk_capture_roster(spec, producer_index):
 
 def load_shared():
     verify_graph_sdk_capture_roster(_OWNER_SPEC, _GRAPH_J1["index"])
-"""
+''').encode("utf-8")
 
 
 def create_git_fixture(root: Path):
@@ -70,6 +76,22 @@ class CaptureRosterContractTests(unittest.TestCase):
         self.assertIn("wrong_captured_root", result["negative_names"])
         self.assertEqual(result["R74_technical_admissions"], 0)
         self.assertEqual(result["actual_native_processes"], 0)
+
+    def test_unreviewed_predicate_rejected_before_any_execution(self):
+        # A changed AST can contain unbounded effects; never execute it even
+        # if its calls look like an allowed subset of the original predicate.
+        malicious = OWNER.replace(
+            b"    return True\n\ndef load_shared():",
+            b"    while True: pass\n    return True\n\ndef load_shared():")
+        self.assertNotEqual(malicious, OWNER)
+        with self.assertRaisesRegex(
+                gate.GraphFastError, "GRAPH_DEV_UNREVIEWED_CAPTURE_PREDICATE"):
+            gate.probe_capture_roster_source(malicious, PRODUCER)
+        other = OWNER.replace(b"    return True", b"    return True # harmless change")
+        # Comment-only changes do not alter semantics/AST and remain allowed.
+        self.assertEqual(
+            gate.probe_capture_roster_source(other, PRODUCER)["status"],
+            "PASS_INERT_ONLY")
 
     def test_fail_closed_if_owner_join_or_capture_root_is_missing(self):
         variants = (
@@ -103,6 +125,8 @@ class ImpactRoutingTests(unittest.TestCase):
                           "motionwright-service", "motionwright-native"])
         self.assertTrue(gate.impacted_ui(["apps/studio/src/semanticGraph.ts"]))
         self.assertFalse(gate.impacted_ui(["tooling/ci_graph_dev_fast.py"]))
+        self.assertEqual(gate.impacted_packages(["Cargo.toml-backup"]), [])
+        self.assertEqual(gate.impacted_packages(["SOURCE_LOCK.json~"]), [])
 
     def test_base_and_dirty_worktree_are_reported_without_retagging_head(self):
         with tempfile.TemporaryDirectory(prefix="mw-fast-graph-") as tmp:
@@ -116,6 +140,16 @@ class ImpactRoutingTests(unittest.TestCase):
             snap = gate.current_source(root, first, expected=head)
             self.assertEqual(snap["source_kind"], "EXACT_HEAD")
             self.assertIn("Cargo.lock", gate.changed_files(root, first))
+            (root / "tooling").mkdir()
+            (root / "tooling/untracked_shadow.py").write_text("def shadow(): pass\n", encoding="utf-8")
+            wip = gate.current_source(root, first)
+            self.assertTrue(wip["tracked_clean"])
+            self.assertFalse(wip["worktree_clean"])
+            self.assertIn("tooling/untracked_shadow.py", wip["untracked_source_paths"])
+            self.assertEqual(wip["source_kind"], "WORKTREE_WIP_NOT_HEAD_ATTESTATION")
+            (root / "tooling/untracked_shadow.py").unlink()
+            (root / "tooling").rmdir()
+            self.assertTrue(gate.current_source(root, first)["worktree_clean"])
             (root / "SOURCE_LOCK.json").write_text("changed locally\n", encoding="utf-8")
             self.assertEqual(gate.current_source(root, first)["source_kind"],
                              "WORKTREE_WIP_NOT_HEAD_ATTESTATION")
@@ -123,11 +157,33 @@ class ImpactRoutingTests(unittest.TestCase):
             with self.assertRaises(gate.GraphFastError):
                 gate.current_source(root, first, expected="f" * 40)
 
+    def test_exact_binary_git_paths_and_deleted_source_are_not_erased(self):
+        simulated = mock.Mock(returncode=0, stdout=b"tooling/trailing-space.py  \0")
+        with mock.patch.object(gate.subprocess, "run", return_value=simulated):
+            raw = gate.git(Path("."), "ls-files", "--others", "-z")
+        self.assertEqual(raw, b"tooling/trailing-space.py  \0")
+        self.assertEqual(gate._paths(raw), {"tooling/trailing-space.py  "})
+        with tempfile.TemporaryDirectory(prefix="mw-fast-delete-") as tmp:
+            root = Path(tmp)
+            git = create_git_fixture(root)
+            (root / "crates/native/src").mkdir(parents=True)
+            (root / "crates/native/src/retired.rs").write_text("pub fn old() {}\n", encoding="utf-8")
+            git("add", "crates/native/src/retired.rs")
+            git("commit", "-qm", "fixture native source")
+            before = git("rev-parse", "HEAD")
+            git("rm", "crates/native/src/retired.rs")
+            git("commit", "-qm", "fixture deletion")
+            changed = gate.changed_files(root, before)
+            self.assertIn("crates/native/src/retired.rs", changed)
+            self.assertEqual(gate.impacted_packages(changed), ["motionwright-native"])
+
     def test_unsafe_path_and_unreachable_comparison_do_not_succeed(self):
         with self.assertRaises(gate.GraphFastError):
             gate._paths(b"../foreign\0")
         with self.assertRaises(gate.GraphFastError):
             gate._paths(b"/root/absolute\0")
+        with self.assertRaises(gate.GraphFastError):
+            gate._paths(b"tooling/./fake.py\0")
         with tempfile.TemporaryDirectory(prefix="mw-fast-source-") as tmp:
             root = Path(tmp)
             create_git_fixture(root)
@@ -203,11 +259,16 @@ class ImpactRoutingTests(unittest.TestCase):
 
 
 class ManualWorkflowBoundaryTests(unittest.TestCase):
-    def test_manual_source_job_cannot_be_confused_with_r74_native_acceptance(self):
+    def test_source_only_push_and_manual_job_cannot_be_confused_with_r74_acceptance(self):
         root = Path(__file__).resolve().parents[2]
         p = root / ".github/workflows/graph-development-fast.yml"
         text = p.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", text)
+        self.assertIn("push:", text)
+        self.assertIn("branches: ['integrate/phase1-final-composition-20261027']", text)
+        self.assertIn("github.event.before || inputs.base_sha", text)
+        self.assertIn("github.event_name == 'push' && github.sha", text)
+        self.assertIn("test \"$GITHUB_REF\" = refs/heads/integrate/phase1-final-composition-20261027", text)
         self.assertIn("permissions:\n  contents: read", text)
         self.assertIn("cancel-in-progress: true", text)
         self.assertIn("persist-credentials: false", text)
