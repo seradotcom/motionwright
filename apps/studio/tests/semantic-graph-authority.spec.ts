@@ -110,6 +110,81 @@ test("Review callback names the saved Graph identity, profile and exact source r
 });
 
 
+/** Identity faults are limited to this synthetic component fixture, never a Native result. */
+for (const phase of ["get", "set", "readback"] as const) test("Graph identity retries a transient " + phase + " fault without replacing the draft or sending", async ({ page }) => {
+  await page.addInitScript(phase => {
+    const get = Storage.prototype.getItem, set = Storage.prototype.setItem;
+    const marker = "TEST-ONLY.graph-identity-transient-" + phase;
+    let wroteIdentity = false;
+    Storage.prototype.getItem = function (key: string) {
+      if (this === sessionStorage && key.startsWith("motionwright.semantic-graph-new-id.v1:") && get.call(sessionStorage, marker) !== "failed"
+        && (phase === "get" || (phase === "readback" && wroteIdentity))) {
+        set.call(sessionStorage, marker, "failed");
+        if (phase === "readback") return null;
+        throw new Error("Synthetic transient Graph identity read failure");
+      }
+      return get.call(this, key);
+    };
+    Storage.prototype.setItem = function (key: string, value: string) {
+      const targeted = this === sessionStorage && key.startsWith("motionwright.semantic-graph-new-id.v1:");
+      if (targeted && phase === "set" && get.call(sessionStorage, marker) !== "failed") {
+        set.call(sessionStorage, marker, "failed"); throw new Error("Synthetic transient Graph identity write failure");
+      }
+      set.call(this, key, value); if (targeted) wroteIdentity = true;
+    };
+  }, phase);
+  await open(page);
+  const attention = page.getByRole("region", { name: "Graph identity needs attention" });
+  await expect(attention).toBeVisible();
+  const fontSize = await field(page, "Graph font_size").inputValue();
+  await field(page, "Graph author label").fill("Retained identity author");
+  await field(page, "Graph rationale").fill("Keep the same Graph after a temporary identity fault");
+  await field(page, "Graph font_size").fill("1e");
+  const original = await currentGraphCopy(page), originalDraft = JSON.parse(original.raw).draft;
+  const identity = await page.evaluate(() => {
+    const project = window.__GRAPH_AUTHORITY__.project();
+    const key = "motionwright.semantic-graph-new-id.v1:" + JSON.stringify([project.id, project.generation, project.active_branch, project.scenes[0].id, "causal_diagram"]);
+    return { key, raw: sessionStorage.getItem(key) };
+  });
+  expect(identity.raw).toBe(phase === "readback" ? originalDraft.graphId : null);
+  await expect(page.getByRole("region", { name: "Graph recovery needs attention" })).toHaveCount(0);
+  await expect(button(page, "Save semantic Graph")).toBeDisabled(); expect(await requestCount(page)).toBe(0);
+  if (phase !== "readback") {
+    const competing = await page.evaluate(({ key, phase }) => {
+      const value = phase === "get" ? "unreadable Graph identity bytes" : crypto.randomUUID();
+      sessionStorage.setItem(key, value); return value;
+    }, { key: identity.key, phase });
+    await button(page, "Verify Graph identity again").click();
+    await expect(attention).toContainText(phase === "get" ? "identity is unreadable" : "identity changed");
+    expect(await page.evaluate(key => sessionStorage.getItem(key), identity.key)).toBe(competing);
+    await expect(field(page, "Graph font_size")).toHaveValue("1e");
+    await expect(field(page, "Graph author label")).toHaveValue("Retained identity author");
+    expect(JSON.parse((await currentGraphCopy(page)).raw).draft).toEqual(originalDraft);
+    await expect(button(page, "Save semantic Graph")).toBeDisabled(); expect(await requestCount(page)).toBe(0);
+    // End the injected conflicting-storage condition; the UI must never overwrite it itself.
+    await page.evaluate(({ key, raw }) => { if (raw === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, raw); }, identity);
+  }
+  await button(page, "Verify Graph identity again").click(); await expect(attention).toHaveCount(0);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), identity.key)).toBe(originalDraft.graphId);
+  expect(JSON.parse((await currentGraphCopy(page)).raw).draft).toEqual(originalDraft);
+  await expect(field(page, "Graph font_size")).toHaveValue("1e"); expect(await requestCount(page)).toBe(0);
+  await page.reload();
+  await expect(field(page, "Graph font_size")).toHaveValue("1e");
+  await expect(field(page, "Graph author label")).toHaveValue("Retained identity author");
+  await expect(field(page, "Graph rationale")).toHaveValue("Keep the same Graph after a temporary identity fault");
+  expect(JSON.parse((await currentGraphCopy(page)).raw).draft.graphId).toBe(originalDraft.graphId);
+  expect(await requestCount(page)).toBe(0);
+  await field(page, "Graph font_size").fill(fontSize);
+  await button(page, "Inspect current Graph support and sources").click(); await expect(button(page, "Save semantic Graph")).toBeEnabled();
+  await button(page, "Save semantic Graph").click(); await expect.poll(() => requestCount(page)).toBe(1);
+  const request = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[0]); expect(request.change.type).toBe("upsert_semantic_graph");
+  if (request.change.type === "upsert_semantic_graph") {
+    expect(request.change.graph.id).toBe(originalDraft.graphId);
+    expect(request.change.graph.authorship.author_label).toBe("Retained identity author");
+    expect(request.change.graph.authorship.rationale).toBe("Keep the same Graph after a temporary identity fault");
+  }
+});
+
 /** Faults affect only recovery reads in this explicitly synthetic component fixture. */
 async function failFirstRecoveryRead(page: Page, area: "pointer" | "data", marker: string) {
   await page.addInitScript(({ area, marker }) => {

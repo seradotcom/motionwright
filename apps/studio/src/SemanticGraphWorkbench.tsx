@@ -68,12 +68,14 @@ function getSession(project: Project, initial: SemanticGraph): GraphSession {
   if (!recoveryProblem) backup(session); else session.backupError = recoveryProblem;
   copies(session); return session;
 }
-function createIdentity(project: Project, sceneId: string, kind: GraphContent["kind"]): { id: string; problem: string | null } {
+function createIdentity(project: Project, sceneId: string, kind: GraphContent["kind"], retry = false): { id: string; problem: string | null } {
   const key = "motionwright.semantic-graph-new-id.v1:" + JSON.stringify([project.id, project.generation, project.active_branch, sceneId, kind]);
-  const found = newIds.get(key); if (found) return found;
-  let result: { id: string; problem: string | null } = { id: crypto.randomUUID(), problem: null };
+  const found = newIds.get(key); if (found && !retry) return found;
+  let result: { id: string; problem: string | null } = { id: found?.id ?? crypto.randomUUID(), problem: null };
   try { const stored = window.sessionStorage.getItem(key); if (stored !== null) {
-    if (!graphUuid(stored)) throw new Error("The new Graph identity is unreadable; its raw bytes were retained."); result.id = stored;
+    if (!graphUuid(stored)) throw new Error("The new Graph identity is unreadable; its raw bytes were retained.");
+    if (found && stored !== found.id) throw new Error("The retained Graph identity changed. The current input and stored identity were preserved.");
+    result.id = stored;
   } else { window.sessionStorage.setItem(key, result.id); if (window.sessionStorage.getItem(key) !== result.id) throw new Error("The new Graph identity could not be retained across reload. Saving is blocked."); } }
   catch (reason) { result = { ...result, problem: message(reason) }; }
   newIds.set(key, result); return result;
@@ -96,6 +98,7 @@ function BoxFields({ label, value, onChange }: { label: string; value: { x: stri
 export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProps) {
   const available = semanticGraphs(props.project).filter(graph => graph.scene_id === props.scene?.id);
   const [selection, setSelection] = useState(available.find(graph => graph.variant_profile_ref === props.displayProfile?.id)?.id ?? "new:causal_diagram");
+  const [, redrawIdentity] = useState(0);
   const sourceScope = JSON.stringify([props.project.id, props.project.generation, props.project.active_branch, props.scene?.id]);
   const previousScope = useRef(sourceScope);
   useEffect(() => { if (previousScope.current !== sourceScope) { previousScope.current = sourceScope; setSelection(available.find(graph => graph.variant_profile_ref === props.displayProfile?.id)?.id ?? "new:causal_diagram"); } }, [sourceScope, available, props.displayProfile?.id]);
@@ -109,7 +112,11 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
       {available.map(graph => <option key={graph.id} value={graph.id}>{graph.content.kind === "causal_diagram" ? "Causal diagram" : "System flow"} · {graph.id.slice(0, 8)}</option>)}
       <option value="new:causal_diagram">New causal diagram</option><option value="new:system_flow">New synthetic system flow</option>
     </select></label>
-    {identity.problem && <p role="alert">{identity.problem}</p>}
+    {identity.problem && <section aria-label="Graph identity needs attention"><p role="alert">{identity.problem}</p>
+      <button className="secondary-button" disabled={props.busy} onClick={() => {
+        createIdentity(props.project, initial.scene_id, kind, true); redrawIdentity(value => value + 1);
+      }}>Verify Graph identity again</button>
+    </section>}
     <GraphEditor {...props} initial={initial} identityProblem={identity.problem} key={graphDraftScope(props.project, initial.scene_id, initial.id)} />
   </section>;
 }
