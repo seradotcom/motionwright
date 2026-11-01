@@ -21127,7 +21127,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "70b3ce09ec1aaa60bca54b1eb1b00272c4e03c82510cf200d2cda75eb8e527a1",
+      "sha256": "fb20a63400ead54b61ad82560c1dc0673e5baf41ad30f69f32b5b41fedac8528",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21228,7 +21228,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "fba76f3aadc0296b40fa46c02d2aa9ff0111e3ca659d4162fd5280143c1fbc90",
+          "source_sha256": "09075abec05b25ee0b2bd450c2a06f7aff4b29bd86c968ea59d9a5e219cea1bb",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21264,7 +21264,7 @@
               "name": "Quick source and conformance policies for every verification scope",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "dc47f7e41ec060fd0be3da2b1b5407cfab9d05cfc0c2da21ad4ab515ecd112b5",
+              "source_block_sha256": "7910aa3a654b5478ff883f81921fca8e9b9539cf39c49ab9aa8953425bbdcc2e",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21647,7 +21647,7 @@
           "runs_on": "windows-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "cc4c82f74a088990628997ef836ba2a5625ac66c142a45eb519b02d3a83c7d18",
+          "source_sha256": "ab15bf5411eca3a9aff3363b092df48302dde8126d67a8d67e9cb13e27a86b85",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21673,7 +21673,7 @@
               "name": "Source and acceptance policy before Windows contract execution",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2aa3241a6add62f140ee2c341e6883c0296f9c7c9102991faca2c88e94948ec7",
+              "source_block_sha256": "0d93afd9755aaf0afc64812bd4ec7358f368ab95311679693610ae4f92ad22e4",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -22597,7 +22597,8 @@
         "The installed harness requires exact final source/tree/SDK/locks, original attempt1, same boot/job and retained pristine-checkout control bindings. UNKNOWN remains nonreplayable; a ciphertext upload or source review cannot substitute for original physical behavior and independent acceptance.",
         "Exact-branch, first-attempt development windows_contracts may defer the stale assessed-source acceptance policies only after independent receipt-policy source/public and all 60+64 unasserted acceptance rows plus unfinished creative-status guard. Windows source/public checks remain mandatory. This does not satisfy all or windows_installed, full G0 on F, physical installation, G2 or G3.",
         "Original PowerShell exit-guard retention runs when the producer finished successfully, failed or was cancelled; when it was skipped due an earlier failure, the upload is also skipped, avoiding false missing-originals errors. Observed producer failures still require original upload and error-on-missing; this never converts failure/UNKNOWN into acceptance.",
-        "The exact first-attempt development-only acceptance deferral requires all 208 unique requirements to retain current_contract_verdict=open and technical_assessment.contract_acceptance.status=open, in addition to 60+64 NOT_RUN acceptance rows and incomplete creative-status requirements. Mutating any single contract verdict causes both pre-final source guards to deny; full final G0 and independent G3 remain unchanged."
+        "The exact first-attempt development-only acceptance deferral requires all 208 unique requirements to retain current_contract_verdict=open and technical_assessment.contract_acceptance.status=open, in addition to 60+64 NOT_RUN acceptance rows and incomplete creative-status requirements. Mutating any single contract verdict causes both pre-final source guards to deny; full final G0 and independent G3 remain unchanged.",
+        "Only GitHub first-attempt workflow_dispatch on the exact canonical integration branch may use source-only nonpromotion guards for nsis_lifecycle, windows_contracts or windows_installed development. For installed Windows, this unblocks actual physical installer/SQLite cold-reopen observation but does not establish independent G2/F/G3 acceptance. Both Linux receipt-policy and Windows contracts require all 208 unique open contract rows, 60+64 NOT_RUN independent=false cases, exactly 64 incomplete creative rows and v05_release_ready=false. All, other refs/attempts and F retain full strict acceptance policies."
       ]
     }
   ],
