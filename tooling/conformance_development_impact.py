@@ -180,12 +180,36 @@ def checkout_source_boundary(root: Path, target: str) -> dict:
     }
 
 
+def dependency_or_environment_paths(changed: set[str]) -> set[str]:
+    """Expose build and execution changes even when historical records map them.
+
+    These paths need a bounded consumer/environment review, not an automatic
+    whole-product rerun. Direct source/oracle matches cannot prove that a
+    dependency, feature, toolchain or CI environment change is local.
+    """
+    names = {
+        "SOURCE_LOCK.json", "Cargo.toml", "Cargo.lock",
+        "package.json", "package-lock.json", "rust-toolchain",
+        "rust-toolchain.toml",
+    }
+    result = set()
+    for name in changed:
+        parts = source_path(name).split("/")
+        if (parts[-1] in names
+                or (len(parts) > 1 and parts[-2] == ".cargo"
+                    and parts[-1] in {"config", "config.toml"})
+                or name.startswith((".github/workflows/", ".github/actions/"))):
+            result.add(name)
+    return result
+
+
 def requires_transitive_owner_review(changed: set[str], risk_paths: frozenset[str],
                                      unmapped_count: int, checkout: dict) -> bool:
     """Hold G1 if immutable source impact cannot cover new or dirty inputs."""
     need(type(unmapped_count) is int and unmapped_count >= 0,
          "invalid untracked source-reference impact count")
     return (bool(changed & risk_paths)
+            or bool(dependency_or_environment_paths(changed))
             or unmapped_count > 0
             or not checkout["can_use_as_complete_current_checkout_impact"])
 
@@ -302,6 +326,8 @@ def inspect_development(root: Path, spec: str = "HEAD", *, baseline: str | None 
         "source_changed_path_count": len(changed),
         "changed_source_paths": sorted(changed)[:100],
         "global_lock_or_dependency_paths_changed": sorted(changed & risk_paths),
+        "dependency_or_environment_paths_changed":
+            sorted(dependency_or_environment_paths(changed)),
         "transitive_impact_unknown_requires_owner_review":
             requires_transitive_owner_review(
                 changed, risk_paths,

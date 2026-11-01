@@ -1,12 +1,15 @@
 """Development-only conformance impact, preserving strict final acceptance."""
 from __future__ import annotations
 
-import copy
+import hashlib
 import json
 import subprocess
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -24,6 +27,78 @@ def case(identity="record-1", source="product.py", oracle="oracle.py"):
         "source_inputs": [{"path": source, "sha256": DIGEST}],
         "definitions": [{"path": oracle, "sha256": DIGEST}],
     }
+
+
+@contextmanager
+def development_history(source_name):
+    """A tiny synthetic catalog and real Git history, independent of product HEAD."""
+    with TemporaryDirectory(prefix="motionwright-impact-") as folder:
+        root = Path(folder).resolve()
+        dev.git(root, "-c", "init.templateDir=", "init",
+                "--object-format=sha1", "--initial-branch=fixture")
+
+        def commit(message):
+            dev.git(root, "add", "--all")
+            dev.git(root, "-c", "user.name=Conformance fixture",
+                    "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=",
+                    "commit", "--quiet", "-m", message)
+            return dev.commit_sha(root, "HEAD")
+
+        def write(name, content):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content.encode("utf-8"))
+
+        write("SOURCE_LOCK.json", "{}\n")
+        write(source_name, "value = 1\n")
+        write("oracle.py", "assert value == 1\n")
+        original = commit("fixture source")
+        source = {
+            "motionwright_sha": original,
+            "digest_kind": "git-text-lf",
+            "source_lock_sha256": hashlib.sha256(b"{}\n").hexdigest(),
+        }
+        rid, fid = "CR-TEST-01", "CR-TEST-01#/statement"
+        record = case(source=source_name)
+        record["complete_criterion_ids"] = [fid]
+        for ref in record["source_inputs"] + record["definitions"]:
+            ref["sha256"] = hashlib.sha256(
+                (root / ref["path"]).read_bytes()).hexdigest()
+        index = {
+            "schema": "motionwright.technical-evidence/1",
+            "source": source, "criteria": {fid: DIGEST},
+            "contracts": {rid: DIGEST}, "normative_edges": [],
+            "records": [record],
+        }
+        index_text = json.dumps(index, sort_keys=True) + "\n"
+        index_path = "docs/acceptance/technical-evidence.json"
+        write(index_path, index_text)
+        descriptor = {
+            "path": index_path, "digest_kind": "git-text-lf",
+            "sha256": hashlib.sha256(index_text.encode("utf-8")).hexdigest(),
+        }
+        row = {
+            "id": rid,
+            "technical_assessment": {
+                "criteria": [{"id": fid, "source_clause_sha256": DIGEST}],
+            },
+        }
+        for position, (name, groups) in enumerate(dev.LEDGERS):
+            ledger = {
+                "technical_evidence_index": descriptor,
+                "current_assessment_source": source,
+                **{group: [] for group in groups},
+            }
+            if position == 0:
+                ledger[groups[0]] = [row]
+            write(name, json.dumps(ledger, sort_keys=True) + "\n")
+        baseline = commit("fixture historical catalog")
+        write(source_name, "value = 2\n")
+        target = commit("fixture mapped source change")
+        with patch.multiple(dev, EXPECTED_ROWS=1, EXPECTED_FIELDS=1,
+                            EXPECTED_EDGES=0):
+            yield root, baseline, target
 
 
 class DevelopmentSourceImpactPureTests(unittest.TestCase):
@@ -284,6 +359,33 @@ class DevelopmentSourceImpactPureTests(unittest.TestCase):
         self.assertTrue(r["transitive_impact_unknown_requires_owner_review"])
         self.assertFalse(r["release_authorized"])
         self.assertEqual(r["Graph6_Native_G2_accepted"], 0)
+
+    def test_mapped_nested_manifest_requires_transitive_review(self):
+        name = "crates/native/Cargo.toml"
+        with development_history(name) as (root, baseline, target):
+            r = dev.inspect_development(root, target, baseline=baseline)
+        self.assertEqual(r["changed_source_paths"], [name])
+        self.assertEqual(r["impact"]["unmapped_changed_path_count"], 0)
+        self.assertEqual(r["impact"]["counts"]["source_path_affected_records"], 1)
+        self.assertTrue(r["transitive_impact_unknown_requires_owner_review"])
+        self.assertEqual(r["dependency_or_environment_paths_changed"], [name])
+        self.assertEqual(r["automatic_reruns"], 0)
+        self.assertFalse(r["release_authorized"])
+
+    def test_mapped_dependency_and_environment_paths_keep_G1_review(self):
+        clean = {"can_use_as_complete_current_checkout_impact": True}
+        for name in (
+                "crates/storage/Cargo.toml", "vendor/runtime/Cargo.lock",
+                "apps/studio/package.json", "tooling/render/package-lock.json",
+                "tooling/probe/rust-toolchain", "tooling/probe/rust-toolchain.toml",
+                ".cargo/config", "crates/native/.cargo/config.toml",
+                ".github/workflows/studio-service-verification.yml",
+                ".github/actions/native/action.yml"):
+            with self.subTest(path=name):
+                self.assertTrue(dev.requires_transitive_owner_review(
+                    {name}, dev.GLOBAL_SOURCE_PINS, 0, clean))
+        self.assertFalse(dev.requires_transitive_owner_review(
+            {"docs/build-notes.md"}, dev.GLOBAL_SOURCE_PINS, 0, clean))
 
     def test_cli_cannot_turn_dev_mode_into_strict_acceptance(self):
         p = subprocess.run([sys.executable, "-B",

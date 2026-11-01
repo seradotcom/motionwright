@@ -11,7 +11,36 @@ are compared with committed Git source/test text under the recorded
 `git-text-lf` digest convention and with the recorded source lock. A matching
 historical result is not proof of a new execution on a later checkout.
 
-## Commands
+## Development changes
+
+For an incremental review during development, use the read-only source planner:
+
+```sh
+python -B tooling/conformance_development_impact.py --repo . --target HEAD
+python -B tooling/conformance_development_impact.py --repo . --baseline <full-ancestor-sha> --target <full-target-sha>
+```
+
+Without `--baseline`, the comparison starts at the historical assessment.
+An explicit baseline must identify an authenticated ancestor of the target.
+The planner reads the existing catalog and compares committed Git objects;
+it does not reopen historical media, regenerate ledgers, renew evidence, or
+run tests. Dirty or untracked working-tree changes remain outside that
+comparison and require the owner's attention.
+
+The report lists direct source/oracle associations and unmapped changes.
+`dependency_or_environment_paths_changed` also identifies nested manifests,
+locks, toolchains, Cargo configuration and CI definitions: even a mapped
+change there can affect other consumers or the execution environment.
+Select the affected G1 and physical G2 cases from that scope. A review flag
+does not require a new independent review for every trivial edit or a full
+test run; the owner can record a bounded no-impact conclusion where justified.
+
+Retain the original identity of reusable evidence. Unchanged inputs may
+support a justified equivalence but never establish a new execution on the
+target. Final acceptance still requires the strict checks below on the
+nominated frozen source, including original artifacts and required reviews.
+
+## Strict source and acceptance checks
 
 From the repository root:
 
