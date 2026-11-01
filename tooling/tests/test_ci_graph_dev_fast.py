@@ -125,6 +125,8 @@ class ImpactRoutingTests(unittest.TestCase):
                           "motionwright-service", "motionwright-native"])
         self.assertTrue(gate.impacted_ui(["apps/studio/src/semanticGraph.ts"]))
         self.assertFalse(gate.impacted_ui(["tooling/ci_graph_dev_fast.py"]))
+        self.assertEqual(gate.impacted_packages(["Cargo.toml-backup"]), [])
+        self.assertEqual(gate.impacted_packages(["SOURCE_LOCK.json~"]), [])
 
     def test_base_and_dirty_worktree_are_reported_without_retagging_head(self):
         with tempfile.TemporaryDirectory(prefix="mw-fast-graph-") as tmp:
@@ -138,6 +140,16 @@ class ImpactRoutingTests(unittest.TestCase):
             snap = gate.current_source(root, first, expected=head)
             self.assertEqual(snap["source_kind"], "EXACT_HEAD")
             self.assertIn("Cargo.lock", gate.changed_files(root, first))
+            (root / "tooling").mkdir()
+            (root / "tooling/untracked_shadow.py").write_text("def shadow(): pass\n", encoding="utf-8")
+            wip = gate.current_source(root, first)
+            self.assertTrue(wip["tracked_clean"])
+            self.assertFalse(wip["worktree_clean"])
+            self.assertIn("tooling/untracked_shadow.py", wip["untracked_source_paths"])
+            self.assertEqual(wip["source_kind"], "WORKTREE_WIP_NOT_HEAD_ATTESTATION")
+            (root / "tooling/untracked_shadow.py").unlink()
+            (root / "tooling").rmdir()
+            self.assertTrue(gate.current_source(root, first)["worktree_clean"])
             (root / "SOURCE_LOCK.json").write_text("changed locally\n", encoding="utf-8")
             self.assertEqual(gate.current_source(root, first)["source_kind"],
                              "WORKTREE_WIP_NOT_HEAD_ATTESTATION")
@@ -145,11 +157,33 @@ class ImpactRoutingTests(unittest.TestCase):
             with self.assertRaises(gate.GraphFastError):
                 gate.current_source(root, first, expected="f" * 40)
 
+    def test_exact_binary_git_paths_and_deleted_source_are_not_erased(self):
+        simulated = mock.Mock(returncode=0, stdout=b"tooling/trailing-space.py  \0")
+        with mock.patch.object(gate.subprocess, "run", return_value=simulated):
+            raw = gate.git(Path("."), "ls-files", "--others", "-z")
+        self.assertEqual(raw, b"tooling/trailing-space.py  \0")
+        self.assertEqual(gate._paths(raw), {"tooling/trailing-space.py  "})
+        with tempfile.TemporaryDirectory(prefix="mw-fast-delete-") as tmp:
+            root = Path(tmp)
+            git = create_git_fixture(root)
+            (root / "crates/native/src").mkdir(parents=True)
+            (root / "crates/native/src/retired.rs").write_text("pub fn old() {}\n", encoding="utf-8")
+            git("add", "crates/native/src/retired.rs")
+            git("commit", "-qm", "fixture native source")
+            before = git("rev-parse", "HEAD")
+            git("rm", "crates/native/src/retired.rs")
+            git("commit", "-qm", "fixture deletion")
+            changed = gate.changed_files(root, before)
+            self.assertIn("crates/native/src/retired.rs", changed)
+            self.assertEqual(gate.impacted_packages(changed), ["motionwright-native"])
+
     def test_unsafe_path_and_unreachable_comparison_do_not_succeed(self):
         with self.assertRaises(gate.GraphFastError):
             gate._paths(b"../foreign\0")
         with self.assertRaises(gate.GraphFastError):
             gate._paths(b"/root/absolute\0")
+        with self.assertRaises(gate.GraphFastError):
+            gate._paths(b"tooling/./fake.py\0")
         with tempfile.TemporaryDirectory(prefix="mw-fast-source-") as tmp:
             root = Path(tmp)
             create_git_fixture(root)
