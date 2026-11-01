@@ -257,7 +257,9 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             now = time.monotonic()
             clock = {'schema':'motionwright.native.fixedtxt-original-clock/1','context':self.current,
                 'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-                'started_monotonic':now-10,'deadline_monotonic':now-10+600,'request_sha256':route.sha(raw)}
+                'started_monotonic':now-10,
+                'deadline_monotonic':now-10+request['limits']['attempt_seconds'],
+                'request_sha256':route.sha(raw)}
             altered_clock = route.canonical({**clock, 'started_monotonic':now})
             originals = {'clock.original.json':route.canonical(clock),'request.original.json':raw}
             for filename,data in originals.items():
