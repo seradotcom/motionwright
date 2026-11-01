@@ -621,8 +621,10 @@ class Ffv1OriginalSelectionTests(unittest.TestCase):
             return dict(root="output",path=f"{output}.ffv1-{stage}.{name}.original.bin",
                 sha256=core.sha(body),bytes=len(body),returned_buffer_bytes=len(body),
                 returned_buffer_sha256=core.sha(body),diagnostic_prefix_truncated=False,
-                retained=True,upstream_stream_eof_attested=False)
+                retention_limit=16384,retained=True,upstream_stream_eof_attested=False)
         process=dict(schema="semwright.ffv1-process-original/1",stage="encode",
+            role="ffv1",member_prefix="ffv1",source_kind="motion-frame-manifest-bytes",
+            source_sha256=args["expected_manifest_sha256"],
             output_path=output,source_manifest_sha256=args["expected_manifest_sha256"],
             source_capture_retained_limit=16384,source_capture_total_limit=262144,
             diagnostic_prefix_limit=16384,
@@ -636,8 +638,12 @@ class Ffv1OriginalSelectionTests(unittest.TestCase):
                 stderr=stream("encode","stderr",b"\xffsynthetic-ffv1-error"),
                 original_error=None),
             native_execution_retried=False,stream_eof_attested=False,
-            capture_scope="existing-ProcessResult-before-checked-or-parse",physical_acceptance=False)
+            same_spawn_observation=None,file_size_limit_bytes=512*1024*1024,
+            capture_scope="same-spawn-retained-buffers-before-checked-or-parse",physical_acceptance=False)
         custody=dict(schema="semwright.ffv1-process-custody/1",output_path=output,
+            role="ffv1",member_prefix="ffv1",source_kind="motion-frame-manifest-bytes",
+            source_sha256=args["expected_manifest_sha256"],retention_errors=[],
+            observation_boundary="before-this-summary-retention",
             source_manifest_sha256=args["expected_manifest_sha256"],
             observed_stages=["zscale-help","encode"],secondary_failures=["stream-retention"],
             original_operation_succeeded=False,original_error=simple_error,
@@ -832,7 +838,7 @@ class Ffv1ExternalAdmissionTests(unittest.TestCase):
         entries=admission["diagnostic_contract"]["entries"]
         self.assertEqual(len(entries),54)
         self.assertEqual(len({(row["root"],row["relative_path"]) for row in entries}),54)
-        self.assertEqual(sum(row["maximum"] for row in entries)+65536,3997696)
+        self.assertEqual(sum(row["maximum"] for row in entries)+65536,38469632)
         self.assertEqual(sum(row["type"]=="typed-terminal" for row in entries),18)
         self.assertEqual(admission["selected_optional_members"],55)
         self.assertEqual(admission["fixture_identity"]["project_resource"],world.plan["project_resource"])
@@ -1230,8 +1236,8 @@ class Ffv1SeedCustodyTests(unittest.TestCase):
         self.assertEqual(len(combined["entries"]),57)
         self.assertEqual((admitted["selected_optional_members"],admitted["capture_selected_members"]),(55,58))
         self.assertEqual((admitted["selected_maximum"],admitted["seed_diagnostic_maximum"],
-                          admitted["capture_selected_maximum"]),(3997696,393216,4390912))
-        self.assertEqual(sum(row["maximum"] for row in combined["entries"])+65536,4390912)
+                          admitted["capture_selected_maximum"]),(38469632,393216,38862848))
+        self.assertEqual(sum(row["maximum"] for row in combined["entries"])+65536,38862848)
         self.assertEqual([row["type"] for row in seed["entries"]],["stdout","stderr","typed-terminal"])
         with world.patched():
             raw,manifest=world.capture()

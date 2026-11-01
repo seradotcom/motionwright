@@ -428,3 +428,111 @@ def inspect_originals(*, binding, original_wav, master, packets, decoded_pcm,
         "physical_AV_master_acceptance": False,
         "human_acceptance": False, "release_authorized": False,
     }
+
+
+def inspect_presentation_originals(*, binding, original_wav, master, packets, decoded_pcm,
+                                  default_frames=None, manual_frames=None):
+    """Reconcile MP4 presentation independently of the unchanged raw-PCM report.
+
+    Only the existing zero-origin, unit-rate R3 MP4/AAC profile is supported.
+    Raw decoded samples are never cut. Container presentation, packet timing,
+    both observed frame modes and the complete source-content screen must all
+    agree. Capture authentication and Native authority remain external.
+    """
+    from native_mp4_aac_presentation import (
+        AAC_FRAME_SAMPLES, PresentationClockError, inspect_mp4_aac_presentation,
+    )
+    inputs = dict(original_wav=original_wav, master=master, packets=packets,
+                  decoded_pcm=decoded_pcm, default_frames=default_frames,
+                  manual_frames=manual_frames)
+    historical = inspect_originals(binding=binding, **inputs)
+    start, identities = read_bindings(binding, inputs)
+    require(start == 0, "presentation-nonzero-origin-unsupported")
+    require(default_frames is not None and manual_frames is not None,
+            "presentation-both-original-frame-modes-required")
+    source_frames = historical["source_sample_frames"]
+    pcm_frames = historical["retained_decoded_sample_frames"]
+    require(historical["sections"]["source_pcm_content"]["status"] == "PASS",
+            "presentation-source-content-not-verified")
+    try:
+        presentation = inspect_mp4_aac_presentation(
+            master, source_frames=source_frames, decoded_frames=pcm_frames, sample_rate=RATE)
+    except PresentationClockError as error:
+        raise AacClockRejected("presentation-container-" + str(error)) from error
+
+    packet_section, packet_rows, stream, tb = packet_clock(
+        packets, len(master), start, source_frames)
+    default_section, default_rows = frame_documents(
+        default_frames, stream, tb, "default", start, source_frames, pcm_frames)
+    manual_section, manual_rows = frame_documents(
+        manual_frames, stream, tb, "manual", start, source_frames, pcm_frames)
+    require(packet_section["status"] == manual_section["status"] == "PASS",
+            "presentation-original-packet-or-manual-clock-failed")
+    # Preserve the historical equality failure. It is explained here only when
+    # every other default-frame observation and the original MP4 clocks agree.
+    expected_findings = ([] if pcm_frames == source_frames
+                         else ["decoded-sample-interval-differs-from-source"])
+    require(default_section["findings"] == expected_findings
+            and default_rows and default_rows[0]["pts"] == 0
+            and default_rows[-1]["end"] == Fraction(pcm_frames, RATE)
+            and sum(row["samples"] for row in default_rows) == pcm_frames,
+            "presentation-default-frame-geometry-not-explained")
+
+    packet_count = presentation["aac_packet_count"]
+    priming = presentation["initial_edit_skip_samples"]
+    final_delta = presentation["final_packet_duration_samples"]
+    require(len(packet_rows) == len(manual_rows) == packet_count,
+            "presentation-container-packet-frame-count-disagrees")
+    for index, (packet, frame) in enumerate(zip(packet_rows, manual_rows)):
+        count = final_delta if index == packet_count - 1 else AAC_FRAME_SAMPLES
+        require(packet["pts"] == Fraction(index * AAC_FRAME_SAMPLES - priming, RATE)
+                and packet["duration"] == Fraction(count, RATE),
+                "presentation-packet-timing-disagrees-with-container")
+        require(frame["samples"] == AAC_FRAME_SAMPLES,
+                "presentation-observed-access-unit-size-unsupported")
+    require(sum(row["duration"] for row in packet_rows)
+            == Fraction(presentation["aac_media_ticks"], RATE),
+            "presentation-packet-media-clock-disagrees")
+    trimming = reconcile_trimming(packet_rows, manual_rows, default_rows)
+    require(trimming["status"] == "PASS",
+            "presentation-observed-decode-trimming-not-reconciled")
+    removed_start = (trimming["observed_removed_start_samples"]
+                     + trimming["observed_discard_flag_samples"])
+    complete_decode = packet_count * AAC_FRAME_SAMPLES - priming
+    require(removed_start == priming
+            and trimming["observed_removed_end_samples"] == complete_decode - pcm_frames,
+            "presentation-observed-trimming-disagrees-with-container")
+
+    return {
+        "schema": "motionwright.native.aac-presentation-reconciliation/1",
+        "status": "CONSISTENT_WITHIN_SCOPE",
+        "scope": "BOUND_MP4_PRESENTATION_PACKET_FRAME_AND_SOURCE_PCM_DIAGNOSTIC",
+        "originals": identities,
+        "historical_clock_report_status": historical["status"],
+        "historical_default_frame_findings":
+            historical["sections"]["default_decoder_frame_clock"]["findings"],
+        "historical_clock_report_replaced": False,
+        "source_sample_frames": source_frames,
+        "retained_decoded_sample_frames": pcm_frames,
+        "mp4_presentation": presentation,
+        "packet_and_declared_stream_clock": packet_section,
+        "manual_decoder_frame_clock": manual_section,
+        "observed_decoder_trimming": trimming,
+        "source_pcm_content": historical["sections"]["source_pcm_content"],
+        "packet_frame_container_counts_agree": True,
+        "default_frame_interval_matches_retained_pcm": True,
+        "observed_manual_access_unit_samples": AAC_FRAME_SAMPLES,
+        "unpresented_access_unit_tail_samples":
+            presentation["unpresented_final_access_unit_samples"],
+        "retained_pcm_samples_outside_presentation": pcm_frames - source_frames,
+        "input_bytes_changed": False,
+        "media_reencoded_or_trimmed": False,
+        "original_capture_authentication": "EXTERNAL_CUSTODY_REQUIRED",
+        "master_bytes_decoded_by_this_inspector": False,
+        "native_execution_attested": False,
+        "native_operation_started": False,
+        "native_operation_retried": False,
+        "physical_AV_master_acceptance": False,
+        "human_acceptance": False,
+        "release_authorized": False,
+    }

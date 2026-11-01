@@ -312,3 +312,40 @@ def verify_selected_carrier(value, *, phase, scenario, source_document, source_i
     require(observed_raw == packed(expected) and value["report_status"] == expected["status"],
             "clock-inspection-does-not-match-originals")
     return expected
+
+
+def verify_selected_presentation_carrier(carrier_raw, *, phase, scenario, source_document,
+                                        source_identity, original_wav, master,
+                                        decoded_pcm, packet_identity):
+    """Add a bound presentation readback without altering the retained carrier.
+
+    The old report, including FAIL/INSUFFICIENT_EVIDENCE, is first recomputed
+    exactly. No observation is recaptured and no new evidence role is needed.
+    """
+    require(type(carrier_raw) is bytes and 0 < len(carrier_raw) <= MAX_CARRIER,
+            "presentation-original-carrier-budget")
+    value = core.strict(carrier_raw)
+    historical = verify_selected_carrier(
+        value, phase=phase, scenario=scenario, source_document=source_document,
+        source_identity=source_identity, original_wav=original_wav, master=master,
+        decoded_pcm=decoded_pcm, packet_identity=packet_identity)
+    inputs = dict(original_wav=original_wav, master=master, decoded_pcm=decoded_pcm,
+                  packets=decoded(value["packets"], MAX_PROBE))
+    for row in value["captures"]:
+        inputs[row["mode"] + "_frames"] = decoded(row["original_stdout"], MAX_PROBE)
+    binding = {name: desc(raw) for name, raw in inputs.items()}
+    binding.update(schema=clock.BINDING_SCHEMA,
+                   presentation_start=value["anchor"]["presentation_start"])
+    result = clock.inspect_presentation_originals(binding=binding, **inputs)
+    require(result["historical_clock_report_status"] == historical["status"],
+            "presentation-historical-status-changed")
+    result.update(
+        original_carrier=desc(carrier_raw),
+        original_historical_report=desc(decoded(value["report"], MAX_REPORT)),
+        selected_packet_original=packet_identity,
+        selected_source_anchor=value["anchor"],
+        original_carrier_replaced=False,
+        retained_report_recomputed_exactly=True,
+    )
+    require(len(packed(result)) <= MAX_REPORT, "presentation-readback-budget")
+    return result

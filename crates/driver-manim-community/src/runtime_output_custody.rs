@@ -23,7 +23,9 @@ fn within_bounds(output: &ToolExecutionOutput) -> bool {
 /// Existing bounded diagnostic DATA only. It never carries plaintext or a path.
 #[cfg(target_os = "linux")]
 pub(super) fn diagnostic(output: &ToolExecutionOutput) -> Option<NativeDiagnostic> {
-    if !within_bounds(output) {
+    // An empty Host-returned buffer is not evidence of an observed empty pipe.
+    // In particular, SDK5c2 discarded runtime stderr and returned an empty Vec.
+    if !within_bounds(output) || output.stderr.is_empty() {
         return None;
     }
     let tail = &output.stderr[output
@@ -333,6 +335,9 @@ mod linux {
         work.verify()?;
         let mut receipt = serde_json::to_vec(&json!({
             "schema": "motionwright.manim.runtime-output/1",
+            "output_scope": "host_returned_buffers_only",
+            "stderr_capture_attested": false,
+            "native_renderer_execution_attested": false,
             "runtime_tool": "manim-runner",
             "configured_manim_version": super::super::MANIM_VERSION,
             "job_ref": job_ref,
@@ -414,6 +419,9 @@ mod linux {
             assert_eq!(receipt["job_ref"], JOB);
             assert_eq!(receipt["source_file"], SOURCE);
             assert_eq!(receipt["process_exit_code"], 2);
+            assert_eq!(receipt["output_scope"], "host_returned_buffers_only");
+            assert_eq!(receipt["stderr_capture_attested"], false);
+            assert_eq!(receipt["native_renderer_execution_attested"], false);
             assert_eq!(
                 receipt["stderr"]["sha256"],
                 hex::encode(Sha256::digest(&original.stderr))
@@ -588,6 +596,12 @@ mod diagnostic_tests {
         assert!(public.get("stderr").is_none());
         assert!(public.get("path").is_none());
         assert!(!public.to_string().contains("private stdout sentinel"));
+        let empty = ToolExecutionOutput {
+            exit_code: 2,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(super::diagnostic(&empty).is_none());
     }
 }
 

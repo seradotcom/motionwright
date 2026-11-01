@@ -582,8 +582,13 @@ def _checked_diagnostic_contract(contract, expected_context, *, policies=None,
         require(type(entry["type"]) is str and entry["type"] in DIAGNOSTIC_MAXIMUM,
                 "diagnostic-entry-type")
         require(entry["type"] != "film-command-original" or film, "film-command-scenario")
-        require(type(entry["maximum"]) is int
-                and 0 < entry["maximum"] <= DIAGNOSTIC_MAXIMUM[entry["type"]],
+        maximum = DIAGNOSTIC_MAXIMUM[entry["type"]]
+        if type(entry["maximum"]) is int and entry["maximum"] > maximum:
+            # Four SDK5c2 complete-probe originals, bound by the exact new
+            # source-owned roster. Generic stream and global caps do not change.
+            from native_mlt_evidence_selection import ffv1_extended_stream_limit
+            maximum = ffv1_extended_stream_limit(entry, frozen)
+        require(type(entry["maximum"]) is int and 0 < entry["maximum"] <= maximum,
                 "diagnostic-entry-maximum")
         if entry["type"] == "typed-terminal":
             require(type(entry["policy"]) is str and LABEL.fullmatch(entry["policy"]),

@@ -115,6 +115,15 @@ def film_shared_records(phase, project, render_sha, master_sha):
 
 from functools import lru_cache
 
+
+@lru_cache(maxsize=1)
+def _synthetic_mlt_presentation_originals():
+    """Immutable MP4 tables/probe geometry only; no codec or native execution."""
+    from test_native_aac_clock_inspection import presentation_fixture
+    value = presentation_fixture(end_discard=True, source_count=52800)
+    return tuple(value[name] for name in ("master", "packets", "default_frames", "manual_frames"))
+
+
 @lru_cache(maxsize=8, typed=True)
 def _synthetic_clock_report_bytes(source_raw, packet_raw, wav, master, pcm, phase, scenario):
     """Cache immutable synthetic construction only, keyed by every original byte.
@@ -128,14 +137,17 @@ def _synthetic_clock_report_bytes(source_raw, packet_raw, wav, master, pcm, phas
                  and type(phase) is str and type(scenario) is str, "synthetic-clock-cache-inputs")
     anchor = clocks.derive_anchor(core.strict(source_raw), clocks.desc(source_raw),
                                   scenario=scenario, phase=phase)
-    packets = core.strict(packet_raw)
-    frames = [dict(media_type="audio", stream_index=1, pts=p["pts"],
-        best_effort_timestamp=p["pts"], nb_samples=p["duration"], channels=2,
-        pkt_pos=p["pos"], pkt_size=p["size"], sample_fmt="fltp", duration=p["duration"])
-        for p in packets["packets"]]
-    frame_raw = core.canonical(dict(frames=frames, streams=packets["streams"]))
+    if scenario == "repaired-g2":
+        _, _, default_raw, manual_raw = _synthetic_mlt_presentation_originals()
+    else:
+        packets = core.strict(packet_raw)
+        frames = [dict(media_type="audio", stream_index=1, pts=p["pts"],
+            best_effort_timestamp=p["pts"], nb_samples=p["duration"], channels=2,
+            pkt_pos=p["pos"], pkt_size=p["size"], sample_fmt="fltp", duration=p["duration"])
+            for p in packets["packets"]]
+        default_raw = manual_raw = core.canonical(dict(frames=frames, streams=packets["streams"]))
     inputs = dict(original_wav=wav, master=master, packets=packet_raw, decoded_pcm=pcm,
-                  default_frames=frame_raw, manual_frames=frame_raw)
+                  default_frames=default_raw, manual_frames=manual_raw)
     binding = {name:clocks.desc(raw) for name,raw in inputs.items()}
     binding.update(schema=inspector.BINDING_SCHEMA, presentation_start=anchor["presentation_start"])
     return clocks.packed(inspector.inspect_originals(binding=binding, **inputs))
@@ -253,6 +265,8 @@ class World:
         return dict(root="output",path=path,sha256=core.sha(blob),bytes=len(blob))
 
     def packets(self):
+        if self.scenario == "repaired-g2":
+            return core.strict(_synthetic_mlt_presentation_originals()[1])
         # Artificial arithmetic geometry, not encoded AAC or a codec frame size.
         total=288000 if self.scenario=="film180-g2" else 52800
         count=total//5
@@ -278,12 +292,15 @@ class World:
         anchor=clocks.derive_anchor(core.strict(source_raw),clocks.desc(source_raw),
             scenario=self.scenario,phase=phase)
         packet_raw=self.files[("observation",packet_path)]
-        packets=core.strict(packet_raw)
-        frames=[dict(media_type="audio",stream_index=1,pts=p["pts"],
-            best_effort_timestamp=p["pts"],nb_samples=p["duration"],channels=2,
-            pkt_pos=p["pos"],pkt_size=p["size"],sample_fmt="fltp",duration=p["duration"])
-            for p in packets["packets"]]
-        frame_raw=core.canonical(dict(frames=frames,streams=packets["streams"]))
+        if self.scenario == "repaired-g2":
+            _, _, default_raw, manual_raw = _synthetic_mlt_presentation_originals()
+        else:
+            packets=core.strict(packet_raw)
+            frames=[dict(media_type="audio",stream_index=1,pts=p["pts"],
+                best_effort_timestamp=p["pts"],nb_samples=p["duration"],channels=2,
+                pkt_pos=p["pos"],pkt_size=p["size"],sample_fmt="fltp",duration=p["duration"])
+                for p in packets["packets"]]
+            default_raw=manual_raw=core.canonical(dict(frames=frames,streams=packets["streams"]))
         report_raw=_synthetic_clock_report_bytes(source_raw,packet_raw,wav,master,pcm,phase,self.scenario)
         report=core.strict(report_raw)
         executable=b"SYNTHETIC_NON_EXECUTABLE_TOOL_IDENTITY"
@@ -291,6 +308,7 @@ class World:
         master_path="/synthetic-private-owner/output/"+phase+".mp4"
         captures=[]
         for mode in clocks.MODES:
+            frame_raw = default_raw if mode == "default" else manual_raw
             terminal=dict(argv=clocks.frame_argv(tool_path,master_path,mode),timeout_seconds=60,
                 exit_code=0,deadline_exceeded=False,error_class=None,automatic_retry=False,
                 stdout=clocks.desc(frame_raw),stderr=clocks.desc(b""),stdout_original_included=True,
@@ -324,7 +342,7 @@ class World:
         timeline.update(artifact_path=video_art["path"],artifact_sha256=video_art["sha256"],artifact_bytes=len(video))
         self.put("observation","producer/native-multisegment-timeline-evidence.json",timeline)
         self.put("observation","producer/native-two-segment-video-only.mkv",video)
-        master_bytes=b"synthetic mp4, not physical media evidence"
+        master_bytes=_synthetic_mlt_presentation_originals()[0]
         master=sample(mlt.MLT_MASTER);master["video"]=copy.deepcopy(timeline)
         master["measured_voice"]["audio_sha256"]=core.sha(WAV33);master["measured_voice"]["audio_size_bytes"]=len(WAV33)
         master["staged_audio"]["sha256"]=core.sha(WAV33)

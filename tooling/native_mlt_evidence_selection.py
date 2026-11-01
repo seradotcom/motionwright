@@ -15,7 +15,10 @@ import tarfile
 import wave
 
 import native_evidence_projection as core
-from native_mlt_g2_observation import SEMWRIGHT_PIN as SEM
+from native_mlt_g2_observation import (
+    SEMWRIGHT_PIN as SEM, LIVE_WITNESS_CODES, LIVE_WITNESS_STAGES, LIVE_WITNESS_TYPES,
+    LIVE_WITNESS_REASON_PATH, LIVE_WITNESS_REASON_MAXIMUM,
+)
 from native_evidence_projection import Field, Object, Array, String, Number, Nullable, Literal
 
 require = core.require
@@ -148,7 +151,18 @@ LIVE = O(pid=POS, process_start_ticks=POS, daemon_pid=POS, daemon_start_ticks=PO
     owner_contract=O(manifest_sha256=SHA, runner_sha256=SHA, output_identity=FILE_IDENTITY, owner_identity=FILE_IDENTITY),
     publication_binding=Literal("SAME_ORIGINAL_OPEN_DESCRIPTOR_BYTES"),
     published_output_sha256=SHA, published_output_bytes=POS, source_descriptor_readback=SNAPSHOT,
-    publication_source_pin=Literal(SEM), physical_AV_master_acceptance=FALSE, human_acceptance=FALSE)
+    publication_source_pin=Literal(SEM), physical_AV_master_acceptance=FALSE, human_acceptance=FALSE,
+    original_work_kind=optional(String(values=("legacy-private-tmp","owned-output-original"))),
+    original_work_output=optional(Nullable(RELATIVE)))
+LIVE_WITNESS_FAILURE = O(stage=String(values=LIVE_WITNESS_STAGES),
+    exception_type=String(values=LIVE_WITNESS_TYPES),code=String(values=LIVE_WITNESS_CODES))
+LIVE_WITNESS_REASON = O(schema=Literal("motionwright.native.mlt-live-witness-reason/1"),
+    master_sha256=SHA,master_bytes=Number(1,256_000_000,integer=True),
+    failure=LIVE_WITNESS_FAILURE,first_observer_failures=Array(LIVE_WITNESS_FAILURE,16),
+    observer_present=bool,raw_exception_text_included=FALSE,raw_proc_included=FALSE,
+    raw_environment_included=FALSE,diagnostic_history_complete_claimed=FALSE,
+    native_terminal_inferred=FALSE,module_attestation_inferred=FALSE,
+    native_operation_retried=FALSE,physical_acceptance=FALSE)
 ALIAS = O(canonical_installed_path=Literal("/usr/bin/melt-7"), installed_alias_path=Literal("/usr/bin/melt"),
           linkname=Literal("melt-7"), sha256=SHA, alias_identity=Array(N, 8, 8))
 MLT_INPUT = O(schema=Literal("motionwright.native.mlt-g2-input-custody/1"), current_motionwright_sha=SHA40,
@@ -227,6 +241,7 @@ SOURCE_PATHS = (
     "tooling/native_mlt_loaded_module.py", "tooling/mlt_official_runtime_intake.py",
     "tooling/native_mlt_ci_pcm_envelope.py", "tooling/native_pcm_source_fidelity.py",
     "tooling/native_aac_clock_inspection.py", "tooling/native_aac_clock_custody.py",
+    "tooling/native_mp4_aac_presentation.py",
     "crates/native/examples/native-mlt-sequence-e2e.rs", "tooling/mlt-audio-diagnostic/repair_planar_source.py",
     "tooling/native_evidence_projection.py", "tooling/native_mlt_evidence_selection.py",
     "tooling/native_av_failure_guard.py", "tooling/native_mlt_public_artifact.py",
@@ -239,7 +254,6 @@ SOURCE_PATHS = (
 )
 FILM_SOURCE_PATHS = SOURCE_PATHS + (
     "tooling/native_film180_original_g2.py", "tooling/native_film180_media_readback.py",
-    "tooling/native_mp4_aac_presentation.py",
     "tooling/native_mp4_video_presentation.py",
     "crates/native/examples/native-film180-e2e.rs",
     "tooling/native_film180_evidence_selection.py",
@@ -257,6 +271,7 @@ SOURCE_CONTRACT_TESTS = (
     "test_native_mlt_executable_alias", "test_native_mlt_compiler_intake",
     "test_native_evidence_projection", "test_native_mlt_evidence_selection",
     "test_native_aac_clock_inspection", "test_native_aac_clock_custody",
+    "test_native_mlt_sdk5c2_contracts",
 )
 FILM_CONTRACT_TESTS = (
     "test_native_film180_original_g2", "test_native_film180_media_readback",
@@ -319,9 +334,25 @@ FFV1_HOST_STREAM = O(
     retained=bool,stream_eof_attested=FALSE)
 FFV1_PROCESS_STREAM = O(
     root=Literal("output"),path=FFV1_PROCESS_STREAM_PATH,sha256=SHA,
-    bytes=Number(0,16384,integer=True),returned_buffer_bytes=Number(0,8*1024*1024,integer=True),
-    returned_buffer_sha256=SHA,diagnostic_prefix_truncated=bool,
+    bytes=Number(0,8*1024*1024,integer=True),returned_buffer_bytes=Number(0,8*1024*1024,integer=True),
+    returned_buffer_sha256=SHA,diagnostic_prefix_truncated=FALSE,
+    retention_limit=Number(1,8*1024*1024,integer=True),
     retained=bool,upstream_stream_eof_attested=FALSE)
+FFV1_PIPE = O(
+    observed_bytes=FFV1_U64,retained_bytes=Number(0,8*1024*1024,integer=True),
+    retained_sha256=SHA,eof_observed=bool,
+    read_error=Nullable(O(kind=String(128,pattern=r"[A-Za-z][A-Za-z0-9_]*"),
+        raw_os_error=Nullable(FFV1_I32),message=String(1024))),
+    reader_panicked=bool,drain_stopped=bool,truncated=bool,complete=bool)
+FFV1_PROCESS_OBSERVATION = O(
+    spawn_attempted=bool,pid=Nullable(Number(1,2**32-1,integer=True)),
+    terminal_observed=bool,exit_code=Nullable(FFV1_I32),term_signal=Nullable(FFV1_I32),
+    cancelled=Nullable(bool),timed_out=Nullable(bool),output_exceeded=Nullable(bool),
+    drain_stop_reason=Nullable(String(values=("supervisor_error","deadline","cancelled",
+                                             "output_exceeded","reader_start_failed"))),
+    stdout=Nullable(FFV1_PIPE),stderr=Nullable(FFV1_PIPE),
+    supervisor_error=Nullable(FFV1_PROCESS_ERROR),capture_complete=bool,
+    native_execution_retried=FALSE)
 FFV1_HOST_TERMINAL = O(
     schema=Literal("semwright.ffv1-host-original/1"),
     host_stage=String(values=("host","catalog")),
@@ -347,23 +378,34 @@ FFV1_PROCESS_SPEC = O(
     environment_included=FALSE,native_execution_retried=FALSE)
 FFV1_PROCESS_TERMINAL = O(
     schema=Literal("semwright.ffv1-process-original/1"),
-    stage=String(values=FFV1_STAGES),output_path=FFV1_OUTPUT,source_manifest_sha256=SHA,
+    stage=String(values=FFV1_STAGES),role=Literal("ffv1"),member_prefix=Literal("ffv1"),
+    output_path=FFV1_OUTPUT,source_manifest_sha256=SHA,source_sha256=SHA,
+    source_kind=Literal("motion-frame-manifest-bytes"),
     source_capture_retained_limit=Number(1,8*1024*1024,integer=True),
     source_capture_total_limit=Number(1,8*1024*1024,integer=True),
-    diagnostic_prefix_limit=Literal(16384),spec=Nullable(FFV1_PROCESS_SPEC),
+    diagnostic_prefix_limit=Number(1,8*1024*1024,integer=True),spec=Nullable(FFV1_PROCESS_SPEC),
     terminal=O(process_result_received=bool,exit_code=Nullable(FFV1_I32),
         term_signal=Nullable(FFV1_I32),cancelled=Nullable(bool),timed_out=Nullable(bool),
         output_exceeded=Nullable(bool),stdout=Nullable(FFV1_PROCESS_STREAM),
         stderr=Nullable(FFV1_PROCESS_STREAM),original_error=Nullable(FFV1_PROCESS_ERROR)),
+    same_spawn_observation=Nullable(FFV1_PROCESS_OBSERVATION),
+    file_size_limit_bytes=Nullable(FFV1_U64),
     native_execution_retried=FALSE,stream_eof_attested=FALSE,
-    capture_scope=Literal("existing-ProcessResult-before-checked-or-parse"),
+    capture_scope=Literal("same-spawn-retained-buffers-before-checked-or-parse"),
     physical_acceptance=FALSE)
+FFV1_RETENTION_PHASES = ("stream-retention","stage-order","spec-retention",
+    "terminal-serialization","terminal-retention","stage-coverage","summary-retention",
+    "owned-work-backup","observed-stream-capture-incomplete")
 FFV1_PROCESS_CUSTODY = O(
     schema=Literal("semwright.ffv1-process-custody/1"),
-    output_path=FFV1_OUTPUT,source_manifest_sha256=SHA,
+    output_path=FFV1_OUTPUT,role=Literal("ffv1"),member_prefix=Literal("ffv1"),
+    source_manifest_sha256=SHA,source_sha256=SHA,
+    source_kind=Literal("motion-frame-manifest-bytes"),
     observed_stages=Array(String(values=FFV1_STAGES),6),
-    secondary_failures=Array(String(values=("stream-retention","stage-order","spec-retention",
-        "terminal-serialization","terminal-retention","stage-coverage","summary-retention")),32),
+    secondary_failures=Array(String(values=FFV1_RETENTION_PHASES),32),
+    retention_errors=Array(O(phase=String(values=FFV1_RETENTION_PHASES),
+        **FFV1_PROCESS_ERROR.fields),64),
+    observation_boundary=Literal("before-this-summary-retention"),
     original_operation_succeeded=bool,original_error=Nullable(FFV1_PROCESS_ERROR),
     stream_eof_attested=FALSE,native_execution_retried=FALSE,physical_acceptance=FALSE)
 FFV1_SIDECAR_POLICY_BY_ROLE = {
@@ -372,6 +414,96 @@ FFV1_SIDECAR_POLICY_BY_ROLE = {
     "ffv1-process-terminal":"ffv1_process_terminal",
     "ffv1-process-custody":"ffv1_process_custody",
 }
+
+
+def ffv1_stream_limit(stage):
+    require(stage in FFV1_STAGES, "ffv1-original-stage")
+    return {"zscale-help":262144,"complete-probe":8*1024*1024}.get(stage,16384)
+
+
+def checked_ffv1_process_original(value, plan):
+    """Check SDK5c2 bytes as observations, including real incomplete outcomes."""
+    schema=value.get("schema") if type(value) is dict else None
+    terminal=schema=="semwright.ffv1-process-original/1"
+    require(terminal or schema=="semwright.ffv1-process-custody/1","ffv1-original-schema")
+    core.project(value,FFV1_PROCESS_TERMINAL if terminal else FFV1_PROCESS_CUSTODY,exact=True)
+    core.project(plan,FFV1_PLAN,exact=True)
+    slots=[slot for slot in plan["slots"] if slot["args"]["output_path"]==value["output_path"]]
+    require(len(slots)==1,"ffv1-original-output-binding")
+    expected=slots[0]["args"]["expected_manifest_sha256"]
+    require(value["source_manifest_sha256"]==value["source_sha256"]==expected,
+            "ffv1-original-source-binding")
+    if not terminal:
+        stages=value["observed_stages"]
+        require(stages==list(FFV1_STAGES[:len(stages)]),"ffv1-original-stage-order")
+        return value
+    stage=value["stage"];limit=ffv1_stream_limit(stage)
+    require(value["diagnostic_prefix_limit"]==limit
+            and value["source_capture_retained_limit"]<=limit
+            and value["source_capture_retained_limit"]<=value["source_capture_total_limit"],
+            "ffv1-original-stage-budget")
+    result=value["terminal"];observation=value["same_spawn_observation"]
+    for channel in ("stdout","stderr"):
+        stream=result[channel]
+        if stream is not None:
+            require(stream["path"]==f'{value["output_path"]}.ffv1-{stage}.{channel}.original.bin'
+                    and stream["retention_limit"]==limit and stream["bytes"]<=limit
+                    and stream["bytes"]==stream["returned_buffer_bytes"]
+                    and stream["sha256"]==stream["returned_buffer_sha256"],
+                    "ffv1-original-stream-binding")
+        if observation is not None and observation[channel] is not None:
+            pipe=observation[channel]
+            require(pipe["retained_bytes"]<=value["source_capture_retained_limit"]
+                    and pipe["observed_bytes"]>=pipe["retained_bytes"]
+                    and pipe["truncated"] is (pipe["observed_bytes"]!=pipe["retained_bytes"]),
+                    "ffv1-original-pipe-byte-binding")
+            complete=(pipe["eof_observed"] and pipe["read_error"] is None
+                      and not pipe["reader_panicked"] and not pipe["drain_stopped"]
+                      and not pipe["truncated"])
+            require(pipe["complete"] is complete,"ffv1-original-pipe-completeness")
+            if stream is not None:
+                require((stream["sha256"],stream["bytes"])
+                        ==(pipe["retained_sha256"],pipe["retained_bytes"]),
+                        "ffv1-original-observed-buffer-binding")
+    if observation is not None:
+        complete=(observation["terminal_observed"] and observation["supervisor_error"] is None
+                  and observation["drain_stop_reason"] is None
+                  and all(observation[key] is False for key in ("cancelled","timed_out","output_exceeded"))
+                  and all(observation[key] is not None and observation[key]["complete"]
+                          for key in ("stdout","stderr")))
+        require(observation["capture_complete"] is complete,"ffv1-original-capture-completeness")
+        if result["process_result_received"]:
+            require(all(result[key]==observation[key] for key in
+                        ("exit_code","term_signal","cancelled","timed_out","output_exceeded")),
+                    "ffv1-original-terminal-observation-binding")
+    return value
+
+
+def ffv1_extended_stream_limit(entry, contract):
+    """Only four source-owned complete-probe streams exceed the generic cap."""
+    current=contract.get("context",{})
+    require(current.get("scenario")=="repaired-g2"
+            and current.get("semwright_sha")=="5c2ac3107afbb083afb00d67a28edd0f104f8e15",
+            "ffv1-probe-budget-source")
+    match=re.fullmatch(r"output/(mw-mlt-[0-9a-f]{20})-s0[01]-ffv1\.mkv\.ffv1-complete-probe\.(stdout|stderr)\.original\.bin",
+                       entry.get("relative_path",""))
+    require(match is not None,"ffv1-probe-budget-path")
+    outputs=[f"{match[1]}-s{slot:02}-ffv1.mkv" for slot in (0,1)]
+    expected=[]
+    for role,path,maximum in _ffv1_diagnostic_paths_for_outputs(outputs):
+        policy=FFV1_SIDECAR_POLICY_BY_ROLE.get(role)
+        expected.append(dict(root="owner",relative_path=path,phase="original",
+            layer="attempt-custody",role=role,type="typed-terminal" if policy else role.rsplit("-",1)[1],
+            maximum=maximum,policy=policy))
+    seed=ffv1_seed_contract({key:current[key] for key in
+        ("source_sha","semwright_sha","run_id","run_attempt")})["entries"]
+    require(contract.get("entries") in (expected,expected+seed),
+            "ffv1-probe-budget-closed-contract")
+    require(entry in expected and entry["root"]=="owner"
+            and entry["role"]=="ffv1-process-"+match[2]
+            and entry["type"]==match[2] and entry["policy"] is None
+            and entry["maximum"]==8*1024*1024,"ffv1-probe-budget-member")
+    return 8*1024*1024
 
 
 def _ffv1_diagnostic_paths_for_outputs(outputs):
@@ -385,7 +517,7 @@ def _ffv1_diagnostic_paths_for_outputs(outputs):
             paths.append(("ffv1-"+family+"-terminal",owner_output(f"{output}.ffv1-{family}.terminal.original.json"),65536))
         for stage in FFV1_STAGES:
             for stream in ("stdout","stderr"):
-                paths.append(("ffv1-process-"+stream,owner_output(f"{output}.ffv1-{stage}.{stream}.original.bin"),16384))
+                paths.append(("ffv1-process-"+stream,owner_output(f"{output}.ffv1-{stage}.{stream}.original.bin"),ffv1_stream_limit(stage)))
             paths.append(("ffv1-process-terminal",owner_output(f"{output}.ffv1-{stage}.terminal.original.json"),65536))
         paths.append(("ffv1-process-custody",owner_output(f"{output}.ffv1-process-custody.original.json"),65536))
     require(len(paths)==54 and len({p for _,p,_ in paths})==54,"ffv1-closed-diagnostic-roster")
@@ -425,12 +557,14 @@ FFV1_SEED_CAPTURE_SCHEMA = "motionwright.native.ffv1-seed-capture/1"
 FFV1_SEED_STDOUT_PATH = "producer/native-source-seed.stdout.original.bin"
 FFV1_SEED_STDERR_PATH = "producer/native-source-seed.stderr.original.bin"
 FFV1_SEED_TERMINAL_PATH = "producer/native-source-seed.terminal.original.json"
-FFV1_SELECTED_MAXIMUM = 3_997_696
+# SDK5c2: two slots, each with 2x256KiB help and 2x8MiB complete-probe.
+# The ordinary per-file/total selection limits remain unchanged.
+FFV1_SELECTED_MAXIMUM = 38_469_632
 FFV1_DIAGNOSTIC_MAXIMUM = FFV1_SELECTED_MAXIMUM - 65_536
 # The existing FFV1 subgroup remains 54 diagnostics + one ordinary plan.
 # Seed carriers are an explicit additional subgroup, never relabelled as FFV1.
 FFV1_SEED_MAXIMUM = 393_216
-FFV1_CAPTURE_SELECTED_MAXIMUM = 4_390_912
+FFV1_CAPTURE_SELECTED_MAXIMUM = 38_862_848
 FFV1_CONTEXT = O(source_sha=SHA40, semwright_sha=Literal(SEM),
     run_id=String(32,pattern=r"[1-9][0-9]*"),run_attempt=Literal("1"),
     scenario=Literal("repaired-g2"))
@@ -464,7 +598,7 @@ FFV1_SEED_CAPTURE = O(schema=Literal(FFV1_SEED_CAPTURE_SCHEMA),
 FFV1_DIAGNOSTIC_ENTRY = O(root=Literal("owner"),relative_path=RELATIVE,
     phase=Literal("original"),layer=Literal("attempt-custody"),role=LABEL,
     type=String(values=("stdout","stderr","stdin","typed-terminal")),
-    maximum=Number(1,262144,integer=True),policy=Nullable(LABEL))
+    maximum=Number(1,8*1024*1024,integer=True),policy=Nullable(LABEL))
 FFV1_DIAGNOSTIC_CONTRACT = O(schema=Literal(core.DIAGNOSTIC_CONTRACT_SCHEMA),
     context=FFV1_CONTEXT,entries=Array(FFV1_DIAGNOSTIC_ENTRY,54,54))
 FFV1_SEED_DIAGNOSTIC_ENTRY = O(root=Literal("observation"),relative_path=RELATIVE,
@@ -476,7 +610,7 @@ FFV1_SEED_DIAGNOSTIC_CONTRACT = O(schema=Literal(core.DIAGNOSTIC_CONTRACT_SCHEMA
 FFV1_CAPTURE_DIAGNOSTIC_ENTRY = O(root=String(values=("owner","observation")),
     relative_path=RELATIVE,phase=Literal("original"),layer=Literal("attempt-custody"),
     role=LABEL,type=String(values=("stdout","stderr","stdin","typed-terminal")),
-    maximum=Number(1,262144,integer=True),policy=Nullable(LABEL))
+    maximum=Number(1,8*1024*1024,integer=True),policy=Nullable(LABEL))
 FFV1_CAPTURE_DIAGNOSTIC_CONTRACT = O(schema=Literal(core.DIAGNOSTIC_CONTRACT_SCHEMA),
     context=FFV1_CONTEXT,entries=Array(FFV1_CAPTURE_DIAGNOSTIC_ENTRY,57,57))
 FFV1_PLAN_IDENTITY = O(**IDENTITY,input_sha256=SHA,
@@ -779,6 +913,7 @@ def policies(scenario):
     result = dict(mlt_timeline=TIMELINE, mlt_master=MLT_MASTER, mlt_input=MLT_INPUT,
         mlt_terminal=MLT_TERMINAL, mlt_final=MLT_FINAL, mlt_content=MLT_CONTENT,
         decoded_stereo=MIDSTREAM, mlt_result=RESULT, live_mlt=LIVE, consumer_snapshot=CONSUMER_SNAPSHOT,
+        live_witness_reason=LIVE_WITNESS_REASON,
         compiled_mlt=COMPILED, installation=INSTALLATION, official_runtime=OFFICIAL, packets=PACKETS,
         aac_clock_carrier=clock_custody.carrier_policy(),
         ffv1_stage_plan=FFV1_PLAN,
@@ -844,6 +979,7 @@ def mlt_contract(*, seed_diagnostics=False):
     for member in ("stdout","stderr","terminal"):
         result[("original","attempt-custody","ffv1-process-"+member)]=(0,12)
     result[("original","attempt-custody","ffv1-process-custody")]=(0,2)
+    result[("original","attempt-custody","live-module-reason")]=(0,1)
     for role in ("timeline-receipt", "native-master-receipt", "native-timeline", "video-only-copy", "native-master",
                  "producer-master-copy", "original-master-copy", "source-wav", "producer-source-copy",
                  "native-decoded-wav", "decoded-pcm", "source-content", "decoded-stereo", "packets", "result", "audio-clock-carrier"):
@@ -918,6 +1054,10 @@ class Selection:
                     require(sha(raw) == identity[0] and (identity[1] is None or len(raw) == identity[1]), "native-linked-original-changed")
                 if policy:
                     value = core.project(core.strict(raw), self.policies[policy], exact=kind in ("json-original","diagnostic-json-original"))
+                    if policy in ("ffv1_process_terminal","ffv1_process_custody"):
+                        plan=self.cache.get(("observation",FFV1_PLAN_PATH),(None,))[0]
+                        require(plan is not None,"ffv1-original-plan-required")
+                        value=checked_ffv1_process_original(value,plan)
                 row.update(expected_sha256=sha(raw), bytes=len(raw))
             except (FileNotFoundError, OSError, ValueError, TypeError, core.SelectionError):
                 raw, value = None, None
@@ -1062,6 +1202,8 @@ class Selection:
         self.optional_ffv1_original(handles, "control", "records/reference-transport.json",
             "reference-transport", policy="reference_transport", maximum=4096)
         self.collect_ffv1_diagnostics(handles)
+        self.optional_ffv1_original(handles,"observation",LIVE_WITNESS_REASON_PATH,
+            "live-module-reason",policy="live_witness_reason",maximum=LIVE_WITNESS_REASON_MAXIMUM)
         fixed = (
             ("producer/native-multisegment-timeline-evidence.json","timeline-receipt","mlt_timeline"),
             ("producer/native-multisegment-av-master-evidence.json","native-master-receipt","mlt_master"),
@@ -1167,6 +1309,17 @@ class Intake:
             require(value["context"] == current, "reference-transport-current-context")
             require(value["original_api_revalidated"] is (value["transport"] == "github_artifact_api"),
                     "reference-transport-api-claim")
+        for row,value,_raw in self.all("live-module-reason","original","attempt-custody"):
+            require(scenario=="repaired-g2" and row["kind"]=="json-original"
+                    and row["policy"]=="live_witness_reason" and row["root"]=="observation"
+                    and row["relative_path"]==LIVE_WITNESS_REASON_PATH
+                    and row["retained_bytes"]<=LIVE_WITNESS_REASON_MAXIMUM,
+                    "native-witness-reason-layout")
+            terminal=self.value("native-terminal","original","attempt-custody")
+            native=terminal.get("native_result") or {}
+            require((value["master_sha256"],value["master_bytes"])
+                    ==(native.get("master_artifact_sha256"),native.get("master_artifact_bytes")),
+                    "native-witness-reason-master-binding")
         if self.admission is not None:
             self.verify_ffv1_admission()
 
@@ -1228,6 +1381,12 @@ class Intake:
                 ==tuple(self.context[key] for key in ("source_sha","semwright_sha","run_id","run_attempt"))
                 and inputs["original_source"]["original_wav_sha256"]==REFERENCE_WAV,
                 "ffv1-intake-input-fixture-context")
+        for role in ("ffv1-process-terminal","ffv1-process-custody"):
+            for row,value,_raw in self.all(role,"original","attempt-custody"):
+                checked_ffv1_process_original(value,plan)
+                suffix=(value["stage"]+".terminal" if role=="ffv1-process-terminal" else "process-custody")
+                require(row["relative_path"]=="output/"+value["output_path"]+".ffv1-"+suffix+".original.json",
+                        "ffv1-original-terminal-layout")
 
     def all(self,role,phase="original",layer="readback"):
         return self.data.get((phase,layer,role),[])
@@ -1353,6 +1512,12 @@ class Intake:
         observed_owner=proof["owner_contract"]["owner_identity"]
         require((observed_owner[0],observed_owner[1],observed_owner[3],observed_owner[4])
                 ==tuple(self.owner[k] for k in ("device","inode","uid","gid")),"native-live-owner-root-identity")
+        if proof.get("original_work_kind")=="owned-output-original":
+            master_row=self.one("native-master",phase,"readback")[0]
+            require(proof.get("original_work_output") is not None
+                    and master_row["root"]=="owner"
+                    and master_row["relative_path"]=="output/"+proof["original_work_output"],
+                    "native-live-owned-work-publication")
         loaded=proof["live_module"]
         require(loaded["actual_live_melt_pid"]==proof["pid"] and loaded["original_repaired_avformat_module_sha256"]==REPAIRED_ELF
                 and loaded["original_melt_sha256"]==official["runtime_bindings"]["melt"]["sha256"],"native-live-module-closure")
@@ -1491,13 +1656,15 @@ def verify_mlt_intake(raw, *, current, expected_diagnostic_admission=None):
             and result["g2_original_wav_sha256"]==REFERENCE_WAV and result["g2_whole_decoded_pcm_sha256"]==sha(pcm)
             and result["g2_packet_observation_sha256"]==intake.one("packets")[0]["expected_sha256"]
             and (result["final_master_sha256"],result["final_master_bytes"])==identity,"native-producer-observation-link")
-    from native_aac_clock_custody import verify_selected_carrier
+    from native_aac_clock_custody import verify_selected_presentation_carrier
     intake.layout("audio-clock-carrier","observation","original-aac-clock-capture.json")
-    clock_row=intake.one("audio-clock-carrier")[0]
-    require(clock_row["policy"]=="aac_clock_carrier" and clock_row["kind"]=="json-original",
+    clock_row,_clock_value,clock_raw=intake.one("audio-clock-carrier")
+    require(clock_row["policy"]=="aac_clock_carrier" and clock_row["kind"]=="json-original"
+            and clock_row["original_bytes"] is True,
             "native-clock-carrier-policy")
     timeline_row=intake.one("timeline-receipt")[0];packet_row=intake.one("packets")[0]
-    verify_selected_carrier(intake.value("audio-clock-carrier"),phase="original",scenario="repaired-g2",
+    clock_readback=verify_selected_presentation_carrier(clock_raw,
+        phase="original",scenario="repaired-g2",
         source_document=timeline,
         source_identity={"sha256":timeline_row["expected_sha256"],"bytes":timeline_row["bytes"]},
         original_wav=wave_bytes,master=intake.original("native-master"),decoded_pcm=pcm,
@@ -1506,6 +1673,7 @@ def verify_mlt_intake(raw, *, current, expected_diagnostic_admission=None):
                 else "motionwright.native.mlt-selected-intake/2",context=intake.context,
         selected_layers_complete=True,original_native_media_bytes_retained=True,
         full_decoded_minus_source_samples=delta,source_bound_reported_native_success=True,
+        aac_presentation_readback=clock_readback,
         native_reopen_performed=False,source_content_oracle_recomputed=True,
         packet_PTS_and_AAC_priming_verified=False,privileged_Broker_grant_verified=False,
         native_operation_retried=False,physical_acceptance=False,human_acceptance=False,release_authorized=False)

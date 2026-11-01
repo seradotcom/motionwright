@@ -148,8 +148,30 @@ def parse_maps(text: str, expected_path: str, device: tuple[int, int],
     }
 
 
+def owned_output_work_cwd(output_path: str) -> str:
+    """Closed SDK5c2 workspace name; actual authority requires the held Root FD."""
+    require(type(output_path) is str and 0 < len(output_path) <= 160
+            and output_path.endswith(".mp4") and output_path[0].isascii()
+            and output_path[0].isalnum()
+            and all(ch.isascii() and (ch.isalnum() or ch in "._-") for ch in output_path),
+            "owned_melt_output_name_not_admitted")
+    return "/workspace/output/"+output_path+".raw-original-work"
+
+
+def _owned_work_identity(fd: int, cwd_identity, namespace_cwd: Path):
+    require(type(fd) is int and fd >= 0,"owned_melt_work_descriptor_required")
+    held=os.fstat(fd)
+    fields=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid)
+    require(stat.S_ISDIR(held.st_mode) and stat.S_IMODE(held.st_mode)==0o700
+            and held.st_uid==os.getuid() and not namespace_cwd.is_symlink()
+            and fields(held)==fields(cwd_identity)==fields(namespace_cwd.stat()),
+            "owned_melt_work_descriptor_namespace_changed")
+    return fields(held)
+
+
 def verified_melt_cmdline(payload: bytes, expected_output: str, *,
-                          relative_cwd: str | None = None) -> dict:
+                          relative_cwd: str | None = None,
+                          owned_output_path: str | None = None) -> dict:
     require(0 < len(payload) <= MAX_CMDLINE and payload.endswith(b"\0"),
             "melt_original_process_argv_missing_or_unbounded")
     require(6 < len(expected_output) <= 4096
@@ -171,9 +193,12 @@ def verified_melt_cmdline(payload: bytes, expected_output: str, *,
         if item == "-consumer"
     ]
     selected_argument = expected_output
+    require(owned_output_path is None or relative_cwd is not None,
+            "owned_melt_work_arguments_invalid")
     if relative_cwd is not None:
-        require(re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}", relative_cwd) is not None
-                and expected_output == relative_cwd + "/partial.mp4",
+        valid_cwd=(re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}",relative_cwd) is not None
+                   if owned_output_path is None else relative_cwd==owned_output_work_cwd(owned_output_path))
+        require(valid_cwd and expected_output == relative_cwd + "/partial.mp4",
                 "relative_melt_consumer_requires_exact_private_cwd")
         if consumers == ["avformat:partial.mp4"]:
             selected_argument = "partial.mp4"
@@ -255,7 +280,9 @@ def _verified_host_sealed_melt(proc: Path, expected: str):
 def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
                           module_path: Path, module_sha: str,
                           expected_output_path: str, *,
-                          host_sealed_melt: bool = False) -> dict:
+                          host_sealed_melt: bool = False,
+                          owned_output_path: str | None = None,
+                          owned_work_fd: int | None = None) -> dict:
     require(sys.platform == "linux", "live_native_module_attestation_linux_only")
     require(type(pid) is int and 1 < pid < 2**30,
             "native_melt_pid_invalid")
@@ -268,13 +295,18 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
     process_start = parse_process_starttime((proc / "stat").read_bytes())
     actual_melt = os.readlink(proc / "exe")
     require(type(host_sealed_melt) is bool, "host_sealed_melt_mode_invalid")
+    owned=owned_output_path is not None or owned_work_fd is not None
+    require(not owned or (host_sealed_melt and type(owned_output_path) is str
+            and type(owned_work_fd) is int and owned_work_fd >= 0),
+            "owned_melt_work_arguments_invalid")
     if host_sealed_melt:
         require(melt_path == Path("/usr/bin/melt-7"),
                 "host_sealed_melt_requires_admitted_official_executable")
         cwd_link = os.readlink(proc / "cwd")
         cwd = expected_output_path.rpartition("/")[0]
-        require(re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}", cwd) is not None
-                and expected_output_path == cwd + "/partial.mp4",
+        valid_cwd=(re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}",cwd) is not None
+                   if not owned else cwd==owned_output_work_cwd(owned_output_path))
+        require(valid_cwd and expected_output_path == cwd + "/partial.mp4",
                 "host_sealed_melt_private_output_changed")
         cwd_identity = (proc / "cwd").stat()
         namespace_cwd = proc / "root" / cwd.lstrip("/")
@@ -282,6 +314,9 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
                 and (namespace_cwd.stat().st_dev, namespace_cwd.stat().st_ino)
                     == (cwd_identity.st_dev, cwd_identity.st_ino),
                 "host_sealed_melt_cwd_namespace_changed")
+        if owned:
+            owned_identity=_owned_work_identity(owned_work_fd,cwd_identity,namespace_cwd)
+            owned_namespace={name:os.readlink(proc/"ns"/name) for name in ("mnt","user","pid")}
         executable_context = _verified_host_sealed_melt(proc, melt_sha)
     else:
         require(actual_melt == str(melt_path.resolve(strict=True)),
@@ -302,6 +337,7 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
         cmdline = verified_melt_cmdline(
             (proc / "cmdline").read_bytes(), expected_output_path,
             **({"relative_cwd": cwd} if host_sealed_melt else {}),
+            **({"owned_output_path":owned_output_path} if owned else {}),
         )
         env = verified_restricted_environment((proc / "environ").read_bytes())
         second_start = parse_process_starttime((proc / "stat").read_bytes())
@@ -315,6 +351,11 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
                     and (after_cwd.st_dev, after_cwd.st_ino)
                         == (cwd_identity.st_dev, cwd_identity.st_ino),
                     "host_sealed_melt_cwd_changed_during_observation")
+            if owned:
+                require(_owned_work_identity(owned_work_fd,after_cwd,namespace_cwd)==owned_identity
+                        and all(os.readlink(proc/"ns"/name)==value
+                                for name,value in owned_namespace.items()),
+                        "owned_melt_work_namespace_changed")
         # Both descriptors remain open until the final generation checks on
         # context exit. A changed file prevents this receipt from returning.
         return {
