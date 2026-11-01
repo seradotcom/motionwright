@@ -1,0 +1,137 @@
+name: Graph GN1 real Native owner development startup
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: Exact published Motionwright development SHA
+        type: string
+        required: true
+      recipient_json:
+        description: RSA3072 public SPKI and SHA256 JSON for encrypted private originals
+        type: string
+        required: true
+      one_original_owner:
+        description: Explicitly authorize one disposable real Native owner startup
+        type: choice
+        options: [deny, allow-one-original]
+        default: deny
+        required: true
+
+permissions:
+  contents: read
+
+# This is a real one-shot effect. Never cancel an uncertain process remotely,
+# rerun an unknown owner, or reuse a Store from Graph R74 acceptance.
+concurrency:
+  group: graph-gn1-one-owner-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-owner-first-start:
+    if: github.event_name == 'workflow_dispatch' && inputs.one_original_owner == 'allow-one-original'
+    name: GN1 real isolated owner (not Graph G2 or R74)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+      SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+      SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+      GN1_RECIPIENT_JSON: ${{ inputs.recipient_json }}
+      GN1_EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Verify single-attempt source identity before building
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          test "$GITHUB_SHA" = "$GN1_EXPECTED_SOURCE"
+          test "$(git rev-parse HEAD)" = "$GN1_EXPECTED_SOURCE"
+          python3 -B tooling/ci_graph_dev_native_startup.py --mode plan \
+            --repo . --sdk _semwright --expected-source "$GITHUB_SHA" \
+            --root "$RUNNER_TEMP/gn1-$GITHUB_RUN_ID"
+      - name: Resolve exact first-party Semwright pin
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-gn1-first-owner-1.98.1
+          cache-on-failure: false
+      - name: Prepare genuine bounded Ubuntu sandbox and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libpipewire-0.3-dev pkg-config clang ffmpeg bubblewrap
+          mkdir -p verification/graph-gn1
+          bash "$SEMWRIGHT_CHECKOUT/scripts/dev/ci-driver-bwrap-profile.sh" \
+            "$GITHUB_WORKSPACE/verification/graph-gn1/sandbox-profile.txt"
+      - name: Build exact source-bound CLI, daemon, and sandbox
+        working-directory: _semwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins \
+            --features semwright-daemon/private-driver-startup-stderr
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
+      - name: Build genuine Motionwright provider, Store actor, and Manim runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native \
+            --bin motionwright-native-provider --example shared-state-actor
+          cargo build --locked -p motionwright-manim-community-driver \
+            --bin motionwright-manim-runner
+      - name: Prepare hash-pinned private-original encryption
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/gn1-custody-venv"
+          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+      - name: Execute exactly one real isolated Native owner startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          "$RUNNER_TEMP/gn1-custody-venv/bin/python" -B \
+            tooling/ci_graph_dev_native_startup.py --mode run \
+            --repo "$GITHUB_WORKSPACE" --sdk "$SEMWRIGHT_CHECKOUT" \
+            --expected-source "$GITHUB_SHA" \
+            --root "$RUNNER_TEMP/gn1-$GITHUB_RUN_ID"
+      - name: Retain only encrypted GN1 originals and finite public status
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: graph-gn1-dev-${{ github.sha }}-${{ github.run_id }}-attempt1
+          path: ${{ runner.temp }}/gn1-${{ github.run_id }}/transport
+          if-no-files-found: warn
+          retention-days: 14
