@@ -713,7 +713,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", scoped)
         self.assertIn("python3 tooling/source_policy.py", scoped)
         self.assertIn("python3 tooling/public_surface_policy.py", scoped)
-        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1)", scoped)
+        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1)", scoped)
         self.assertIn('case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in', scoped)
         self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', scoped)
         self.assertIn('F-G0=NOT_RUN G3=STOP', scoped)
@@ -743,14 +743,19 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         match = re.search(r"(?m)^\s+((?:seradotcom/motionwright:workflow_dispatch:[^()]+))\)\s*$", receipt)
         self.assertIsNotNone(match)
         patterns = match.group(1).split("|")
-        self.assertEqual(patterns, [start + "nsis_lifecycle:1", start + "windows_contracts:1"])
+        self.assertEqual(patterns, [start + "nsis_lifecycle:1", start + "windows_contracts:1",
+                                    start + "windows_installed:1"])
         for scope, attempt, expected in (
             ("windows_contracts", "1", True), ("nsis_lifecycle", "1", True),
-            ("windows_installed", "1", False), ("all", "1", False),
-            ("windows_contracts", "2", False), ("windows_contracts", "0", False)):
+            ("windows_installed", "1", True), ("all", "1", False),
+            ("windows_contracts", "2", False), ("windows_contracts", "0", False),
+            ("windows_installed", "2", False), ("windows_installed", "0", False)):
             self.assertEqual(any(fnmatch.fnmatchcase(start + scope + ":" + attempt, pat) for pat in patterns),
                              expected, (scope, attempt))
         self.assertIn("F-G0=NOT_RUN G3=STOP", receipt)
+        self.assertIn('len(creative["requirements"]) != 64', receipt)
+        self.assertIn('"windows_installed": "dev-windows-installed-source"', receipt)
+        self.assertIn('if scope not in labels:', receipt)
         for clause in ('docs/acceptance/requirements-status.json',
                        'len(required) != 208', 'len({row["id"] for row in required}) != 208',
                        'row["current_contract_verdict"] != "open"',
@@ -762,13 +767,17 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         for key, val in (("GITHUB_REPOSITORY", "seradotcom/motionwright"),
                          ("GITHUB_EVENT_NAME", "workflow_dispatch"),
                          ("GITHUB_REF", "refs/heads/integrate/phase1-final-composition-20261027"),
-                         ("MW_SELECTED_SCOPE", "windows_contracts"), ("GITHUB_RUN_ATTEMPT", "1")):
+                         ("GITHUB_RUN_ATTEMPT", "1")):
             self.assertIn("$env:" + key + " -ceq '" + val + "'", windows)
+        self.assertIn("($env:MW_SELECTED_SCOPE -ceq 'windows_contracts' -or", windows)
+        self.assertIn("$env:MW_SELECTED_SCOPE -ceq 'windows_installed') -and", windows)
         self.assertIn("if ($development)", windows)
         self.assertIn("python -B -E -s tooling/source_policy.py", windows)
         self.assertIn("python -B -E -s tooling/public_surface_policy.py", windows)
         self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', windows)
         self.assertIn("F-G0=NOT_RUN G3=STOP", windows)
+        self.assertIn('len(creative["requirements"]) != 64', windows)
+        self.assertIn("$developmentLabel = if ($env:MW_SELECTED_SCOPE -ceq 'windows_installed')", windows)
         for clause in ('docs/acceptance/requirements-status.json',
                        'len(required) != 208', 'len({row["id"] for row in required}) != 208',
                        'row["current_contract_verdict"] != "open"',
@@ -790,6 +799,107 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         for outcome, should_upload in (("skipped", False), ("success", True), ("failure", True),
                                        ("cancelled", True)):
             self.assertEqual(outcome != "skipped", should_upload)
+
+    def test_development_windows_installed_inline_nonpromotion_denies_claimed_criteria(self):
+        import copy
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import textwrap
+
+        text = (gate.ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        linux_step = text.split(
+            "      - name: Quick source and conformance policies for every verification scope", 1)[1].split(
+            "      - name: Candidate receipt and installed-package smoke policy tests", 1)[0]
+        windows_step = text.split(
+            "      - name: Source and acceptance policy before Windows contract execution", 1)[1].split(
+            "      - name: Windows cold-start unit contracts before package build", 1)[0]
+        linux = textwrap.dedent(linux_step.split("          python3 -B - <<'PY'\n", 1)[1].split(
+            "\n          PY", 1)[0])
+        windows = textwrap.dedent(windows_step.split("            @'\n", 1)[1].split(
+            "\n          '@ | python -B -E -s -", 1)[0])
+        compile(linux, ".github/workflows/package-candidate.yml:dev-linux", "exec")
+        compile(windows, ".github/workflows/package-candidate.yml:dev-windows", "exec")
+        acceptance = {"cases": [{"status": "NOT_RUN", "independent": False} for _ in range(60)],
+                      "expansion_cases": [{"status": "NOT_RUN", "independent": False} for _ in range(64)]}
+        creative = {"v05_release_ready": False,
+                    "requirements": [{"complete_requirement_acceptance": "NOT_COMPLETED"} for _ in range(64)]}
+        requirements = {"requirements": [
+            {"id": f"CR-SYNTHETIC-{number:03d}", "current_contract_verdict": "open",
+             "technical_assessment": {"contract_acceptance": {"status": "open"}}}
+            for number in range(208)]}
+
+        def mutations():
+            yield "baseline", lambda a, c, r: None, True
+            yield "requirements_count", lambda a, c, r: r["requirements"].pop(), False
+            yield "requirements_duplicate", lambda a, c, r: r["requirements"][0].update(
+                id=r["requirements"][1]["id"]), False
+            yield "requirement_accepted", lambda a, c, r: r["requirements"][0].update(
+                current_contract_verdict="accepted"), False
+            yield "technical_accepted", lambda a, c, r: r["requirements"][0]["technical_assessment"][
+                "contract_acceptance"].update(status="accepted"), False
+            yield "acceptance_count", lambda a, c, r: a["cases"].pop(), False
+            yield "acceptance_claimed", lambda a, c, r: a["cases"][0].update(status="PASS"), False
+            yield "independent_claimed", lambda a, c, r: a["cases"][0].update(independent=True), False
+            yield "creative_count", lambda a, c, r: c["requirements"].pop(), False
+            yield "creative_ready", lambda a, c, r: c.update(v05_release_ready=True), False
+            yield "creative_claimed", lambda a, c, r: c["requirements"][0].update(
+                complete_requirement_acceptance="COMPLETED"), False
+
+        with tempfile.TemporaryDirectory(prefix="mw-dev-windows-installed-g0-") as temporary:
+            folder = Path(temporary)
+            (folder / "docs/acceptance").mkdir(parents=True)
+            (folder / "docs/creative-production").mkdir(parents=True)
+            for label, modify, accepted in mutations():
+                a, c, r = copy.deepcopy(acceptance), copy.deepcopy(creative), copy.deepcopy(requirements)
+                modify(a, c, r)
+                for name, value in (
+                    ("docs/acceptance/acceptance-status.json", a),
+                    ("docs/creative-production/requirements-status.json", c),
+                    ("docs/acceptance/requirements-status.json", r),
+                ):
+                    (folder / name).write_text(json.dumps(value), encoding="utf-8")
+                for name, code, scope in (
+                    ("linux", linux, "windows_installed"),
+                    ("windows", windows, "windows_installed"),
+                ):
+                    with self.subTest(row=label, guard=name):
+                        environment = {**os.environ, "MW_SELECTED_SCOPE": scope, "PYTHONDONTWRITEBYTECODE": "1"}
+                        process = subprocess.run([sys.executable, "-B", "-I", "-c", code],
+                                                 cwd=folder, env=environment, capture_output=True,
+                                                 text=True, timeout=10, check=False)
+                        self.assertEqual(process.returncode == 0, accepted,
+                                         (label, name, process.stdout[-300:], process.stderr[-300:]))
+                        self.assertNotIn("SECRET", process.stdout)
+                        if accepted and name == "linux":
+                            self.assertIn("dev-windows-installed-source=PASS", process.stdout)
+                            self.assertIn("F-G0=NOT_RUN G3=STOP", process.stdout)
+                        if not accepted:
+                            self.assertNotIn("=PASS", process.stdout)
+            # Previous development selections keep their original labels and
+            # may not be confused with installed Windows or release acceptance.
+            for scope, prefix in (("nsis_lifecycle", "dev-nsis-source"),
+                                  ("windows_contracts", "dev-windows-contracts-source")):
+                environment = {**os.environ, "MW_SELECTED_SCOPE": scope, "PYTHONDONTWRITEBYTECODE": "1"}
+                process = subprocess.run([sys.executable, "-B", "-I", "-c", linux],
+                                         cwd=folder, env=environment, capture_output=True,
+                                         text=True, timeout=10, check=False)
+                # The most recent synthetic row was deliberately rejected; reset
+                # the files before checking the unchanged previous selections.
+                if process.returncode != 0:
+                    (folder / "docs/acceptance/acceptance-status.json").write_text(
+                        json.dumps(acceptance), encoding="utf-8")
+                    (folder / "docs/creative-production/requirements-status.json").write_text(
+                        json.dumps(creative), encoding="utf-8")
+                    (folder / "docs/acceptance/requirements-status.json").write_text(
+                        json.dumps(requirements), encoding="utf-8")
+                    process = subprocess.run([sys.executable, "-B", "-I", "-c", linux],
+                                             cwd=folder, env=environment, capture_output=True,
+                                             text=True, timeout=10, check=False)
+                self.assertEqual(process.returncode, 0, (scope, process.stderr[-300:]))
+                self.assertIn(prefix + "=PASS", process.stdout)
 
     def test_nsis_update_render_preserves_all_product_license_resources(self):
         import json
