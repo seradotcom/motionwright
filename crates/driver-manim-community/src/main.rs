@@ -15,7 +15,8 @@ use motionwright_manim_profile::{
 };
 use semwright_driver_sdk::{
     Capability, Driver, DriverExecutionContext, DriverInterfaces, RuntimeToolArg, RuntimeToolCwd,
-    RuntimeToolJob, RuntimeToolJobStatus, descriptor_digest, serve, workspace_mount,
+    RuntimeToolJob, RuntimeToolJobStatus, ToolExecutionOutput, descriptor_digest, serve,
+    workspace_mount,
 };
 use semwright_types::{CommandDescriptor, Error, ErrorCode, Idempotency, Result, Risk};
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,7 @@ mod editable_source;
 mod graph_profile_probe;
 mod graph_source;
 mod native_video_observation;
+mod runtime_output_custody;
 mod static_source;
 
 const DRIVER_ID: &str = "manim-community";
@@ -456,6 +458,37 @@ fn invalid(message: impl Into<String>) -> Error {
 
 fn backend(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::BackendFailed, message)
+}
+
+fn retain_runtime_tool_failure(
+    work_root: &Path,
+    job_ref: &str,
+    job: &mut RenderJob,
+    output: &ToolExecutionOutput,
+) {
+    let stderr_observation = if cfg!(target_os = "linux") {
+        format!("{} returned stderr bytes", output.stderr.len())
+    } else {
+        "stderr capture unavailable on this platform".to_owned()
+    };
+    let diagnostic = format!(
+        "Host runtime tool {MANIM_TOOL} for configured Manim {} exited with code {} ({stderr_observation})",
+        MANIM_VERSION, output.exit_code
+    );
+    let mut original = backend(diagnostic.clone());
+    original.native_diagnostic = runtime_output_custody::diagnostic(output).map(Box::new);
+    // Retain the original failure before any fallible secondary filesystem work.
+    job.retain_failure(original);
+    job.diagnostic = Some(diagnostic.clone());
+    if let Err(code) = runtime_output_custody::retain(
+        work_root,
+        job_ref,
+        &job.source_file,
+        &job.plan_sha256,
+        output,
+    ) {
+        job.diagnostic = Some(format!("{diagnostic}; custody_secondary={code}"));
+    }
 }
 
 fn map_profile_error(error: motionwright_manim_profile::ManimProfileError) -> Error {
@@ -1263,14 +1296,7 @@ impl ManimCommunityDriver {
             }
             RuntimeToolJobStatus::Succeeded { output } => {
                 if output.exit_code != 0 {
-                    let diagnostic = format!(
-                        "Manim {} exited with code {} ({} stderr bytes)",
-                        MANIM_VERSION,
-                        output.exit_code,
-                        output.stderr.len()
-                    );
-                    job.retain_failure(backend(diagnostic.clone()));
-                    job.diagnostic = Some(diagnostic);
+                    retain_runtime_tool_failure(&self.work_root, job_ref, job, &output);
                 } else {
                     let camera_getters_sha256 = if let Some(plan) = job.source_plan.camera() {
                         match verified_camera_getters_from_work_root(
@@ -1970,6 +1996,52 @@ mod tests {
             graph_source: None,
             source_custody_error: Some("retained source custody diagnostic".into()),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_output_custody_failure_does_not_replace_the_original_error_or_leak_bytes() {
+        let work = tempfile::tempdir().unwrap();
+        let token = "0123456789abcdef0123456789abcdef";
+        let job_ref = format!("manim-{token}");
+        let mut job = original_failure_job();
+        job.source_file = format!("mw_{token}.py");
+        let occupied = work.path().join(format!("mw_{token}.runtime-custody"));
+        fs::create_dir(&occupied).unwrap();
+        fs::write(occupied.join("keep.bin"), b"original custody").unwrap();
+        let output = ToolExecutionOutput {
+            exit_code: 2,
+            stdout: b"private stdout sentinel".to_vec(),
+            stderr: b"private stderr sentinel".to_vec(),
+        };
+        retain_runtime_tool_failure(work.path(), &job_ref, &mut job, &output);
+        assert_eq!(job.phase, JobPhase::Failed);
+        let original = job.original_error.as_ref().unwrap();
+        assert_eq!(original.code, ErrorCode::BackendFailed);
+        assert!(original.outcome_known);
+        assert!(original.message.contains("manim-runner"));
+        assert!(original.message.contains("exited with code 2"));
+        assert!(!original.message.contains("custody_secondary"));
+        assert!(original.native_diagnostic.as_ref().unwrap().is_valid());
+        assert!(
+            job.diagnostic
+                .as_ref()
+                .unwrap()
+                .contains("runtime_output_reservation")
+        );
+        assert_eq!(
+            job.source_custody_error.as_deref(),
+            Some("retained source custody diagnostic")
+        );
+        assert!(job.artifact.is_none());
+        let public = serde_json::to_string(&job_view(&job_ref, &job)).unwrap();
+        assert!(!public.contains("private stdout sentinel"));
+        assert!(!public.contains("private stderr sentinel"));
+        assert!(!public.contains(work.path().to_str().unwrap()));
+        assert_eq!(
+            fs::read(occupied.join("keep.bin")).unwrap(),
+            b"original custody"
+        );
     }
 
     #[test]
