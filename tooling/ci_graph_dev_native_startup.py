@@ -249,12 +249,25 @@ def real_daemon(label: str, executable: str, config: Path, socket: Path,
 
 
 def _env(root: Path, runtime: Path, state: Path, home: Path, sdk: Path):
-    clean = {key: value for key, value in os.environ.items()
-             if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}}
-    clean.update(HOME=str(home), XDG_RUNTIME_DIR=str(runtime),
-                 XDG_STATE_HOME=str(state), SEMWRIGHT_CHECKOUT=str(sdk),
-                 RUST_BACKTRACE="1", PYTHONNOUSERSITE="1")
-    return clean
+    # First-party Linux toolchain locations and locale are deterministic;
+    # no arbitrary runner variables, executable search path, or credential
+    # can cross into semwrightd, CLI, or DriverProvider subprocesses.
+    return {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+        "HOME": str(home),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "XDG_STATE_HOME": str(state),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_CACHE_HOME": str(root / "manim-work"),
+        "TMPDIR": str(root / "manim-work"),
+        "SEMWRIGHT_CHECKOUT": str(sdk),
+        "RUST_BACKTRACE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
 
 
 def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,

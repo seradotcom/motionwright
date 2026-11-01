@@ -61,6 +61,46 @@ class SourceIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(gn1.GN1Failure, "GN1_SDK_HEAD_MISMATCH"):
                 gn1.source_identity(repo, sdk, sha)
 
+    def test_native_child_environment_has_closed_values_not_only_closed_names(self):
+        # Inert source regression. No Native child, credential or Store accessed.
+        with tempfile.TemporaryDirectory(prefix="gn1-env-") as temp:
+            root = Path(temp).resolve()
+            sdk = root / "pinned-sdk"
+            sdk.mkdir()
+            canaries = {
+                "PATH": "/synthetic/foreign-executable",
+                "LANG": "SYNTHETIC_FOREIGN_LOCALE",
+                "LC_ALL": "SYNTHETIC_FOREIGN_LOCALE",
+                "SSL_CERT_FILE": "/synthetic/foreign-cert.pem",
+                "SSL_CERT_DIR": "/synthetic/foreign-certs",
+                "XDG_DATA_DIRS": "/synthetic/foreign-data",
+                "GITHUB_TOKEN": "SYNTHETIC_NOT_A_CREDENTIAL",
+                "GN1_RECIPIENT_JSON": "SYNTHETIC_PRIVATE_RECIPIENT",
+                "LD_PRELOAD": "/synthetic/unreviewed.so",
+                "PYTHONPATH": "/synthetic/unreviewed",
+                "GN1_UNREVIEWED_CHILD_CANARY": "SYNTHETIC_UNREVIEWED",
+            }
+            with mock.patch.dict(os.environ, canaries, clear=True):
+                result = gn1._env(root, root / "runtime", root / "state",
+                                  root / "home", sdk)
+            self.assertEqual(result, {
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
+                "HOME": str(root / "home"),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+                "XDG_STATE_HOME": str(root / "state"),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_CACHE_HOME": str(root / "manim-work"),
+                "TMPDIR": str(root / "manim-work"),
+                "SEMWRIGHT_CHECKOUT": str(sdk),
+                "RUST_BACKTRACE": "1",
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            })
+            self.assertNotIn("SYNTHETIC_", json.dumps(result))
+            self.assertFalse(set(canaries) & set(result) -
+                             {"PATH", "LANG", "LC_ALL"})
+
     def test_default_disallows_nonrunner_and_wrong_attempt(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(gn1.GN1Failure):
