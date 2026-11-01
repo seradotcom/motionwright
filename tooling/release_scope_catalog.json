@@ -21127,7 +21127,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "fb20a63400ead54b61ad82560c1dc0673e5baf41ad30f69f32b5b41fedac8528",
+      "sha256": "c55b3ac6a77173f647f8bcdd8a13fe447cb9d6a71e68d194ca55a21b1524203b",
       "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21323,7 +21323,7 @@
           "runs_on": "windows-latest",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "e02de2bd4f5f4edf3f8bb00e3f98c87a3632a986b871aae991f31b61ef87139b",
+          "source_sha256": "e3063698fd4f6aa9c8e8ee6ea289d1ed1f96dbbccc463bf6abefbf1fffd0ccd2",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -22598,7 +22598,8 @@
         "Exact-branch, first-attempt development windows_contracts may defer the stale assessed-source acceptance policies only after independent receipt-policy source/public and all 60+64 unasserted acceptance rows plus unfinished creative-status guard. Windows source/public checks remain mandatory. This does not satisfy all or windows_installed, full G0 on F, physical installation, G2 or G3.",
         "Original PowerShell exit-guard retention runs when the producer finished successfully, failed or was cancelled; when it was skipped due an earlier failure, the upload is also skipped, avoiding false missing-originals errors. Observed producer failures still require original upload and error-on-missing; this never converts failure/UNKNOWN into acceptance.",
         "The exact first-attempt development-only acceptance deferral requires all 208 unique requirements to retain current_contract_verdict=open and technical_assessment.contract_acceptance.status=open, in addition to 60+64 NOT_RUN acceptance rows and incomplete creative-status requirements. Mutating any single contract verdict causes both pre-final source guards to deny; full final G0 and independent G3 remain unchanged.",
-        "Only GitHub first-attempt workflow_dispatch on the exact canonical integration branch may use source-only nonpromotion guards for nsis_lifecycle, windows_contracts or windows_installed development. For installed Windows, this unblocks actual physical installer/SQLite cold-reopen observation but does not establish independent G2/F/G3 acceptance. Both Linux receipt-policy and Windows contracts require all 208 unique open contract rows, 60+64 NOT_RUN independent=false cases, exactly 64 incomplete creative rows and v05_release_ready=false. All, other refs/attempts and F retain full strict acceptance policies."
+        "Only GitHub first-attempt workflow_dispatch on the exact canonical integration branch may use source-only nonpromotion guards for nsis_lifecycle, windows_contracts or windows_installed development. For installed Windows, this unblocks actual physical installer/SQLite cold-reopen observation but does not establish independent G2/F/G3 acceptance. Both Linux receipt-policy and Windows contracts require all 208 unique open contract rows, 60+64 NOT_RUN independent=false cases, exactly 64 incomplete creative rows and v05_release_ready=false. All, other refs/attempts and F retain full strict acceptance policies.",
+        "The nsis-source-windows checkout must retain canonical LF Git bytes for Cargo.lock, SOURCE_LOCK.json, and apps/studio/package-lock.json: GIT_CONFIG_COUNT=1 core.autocrlf=false before actions/checkout. Historical run41270091876 original Windows source receipts were SHA-bound to 8b1 but recorded CRLF-converted checkout bytes; their exact CRLF values are explained by deterministic conversion, not current F lock-byte identity. No physical installer/G2 or G3 outcome is implied."
       ]
     }
   ],
