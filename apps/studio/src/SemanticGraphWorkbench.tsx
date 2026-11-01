@@ -185,7 +185,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       if (session.draft.pending?.id !== id) return;
       // An already-observed ACK cannot be turned into a rejected operation by
       // a later local validation/custody exception.
-      if (session.observedAck) {
+      if (session.observedAck?.id === id) {
         session.error = unknownGraphMutationFailure().diagnostic;
         session.backupError = "The original reply was observed, but its local custody transfer was not confirmed. Saving remains blocked; retain both copies and inspect the saved source.";
       } else {

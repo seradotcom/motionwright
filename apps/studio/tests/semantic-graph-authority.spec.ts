@@ -70,6 +70,50 @@ test("Silent local storage failure blocks Graph callback and keeps current input
   await expect(page.getByRole("region", { name: "Graph recovery needs attention" })).toBeVisible(); await expect(field(page, "Vertex 1 label")).toHaveValue("Retained without confirmed disk copy");
   await page.evaluate(() => window.__GRAPH_RESTORE_STORAGE__?.()); await button(page, "Verify Graph recovery again").click(); await expect(button(page, "Save semantic Graph")).toBeEnabled(); expect(await requestCount(page)).toBe(0);
 });
+test("A recovered Graph ACK cannot make a later original rejection UNKNOWN", async ({ page }) => {
+  // Synthetic UI fixture only: keep this runtime alive so id1's retained ACK
+  // is still present when the original Promise for id2 rejects.
+  await open(page); await valid(page); await button(page, "Save semantic Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(1);
+  await page.evaluate(() => {
+    const set = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === localStorage && key.startsWith("motionwright.semantic-graph-recovery.v1:")) return;
+      set.call(this, key, value);
+    };
+    window.__GRAPH_RESTORE_STORAGE__ = () => { Storage.prototype.setItem = set; };
+  });
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(1));
+  const pending = page.getByRole("region", { name: "Unconfirmed Graph submission" });
+  await expect(pending).toBeVisible(); await expect(button(page, "Save Graph changes")).toBeDisabled();
+  const savedFirst = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  await page.evaluate(() => window.__GRAPH_RESTORE_STORAGE__?.());
+  await button(page, "Verify Graph recovery again").click();
+  await button(page, "Inspect saved Graph outcome").click();
+  await expect(pending).toContainText("The original operation has a recorded saved result");
+  await button(page, "Continue Graph as a new reviewed intention").click();
+  await expect(pending).toHaveCount(0); expect(await requestCount(page)).toBe(1);
+  await field(page, "Graph rationale").fill("Second intention awaiting rejection");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save Graph changes")).toBeEnabled();
+  await button(page, "Save Graph changes").click(); await expect.poll(() => requestCount(page)).toBe(2);
+  const requests = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests());
+  expect(requests[1].requestId).not.toBe(requests[0].requestId);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.rejectKnown(2));
+  await expect(pending).toContainText("Graph change was rejected");
+  await expect(page.getByRole("region", { name: "Graph recovery needs attention" })).toHaveCount(0);
+  const retained = JSON.parse((await currentGraphCopy(page)).raw).draft;
+  expect(retained.pending).toMatchObject({ id: requests[1].requestId, outcome: "REJECTED" });
+  await expect(field(page, "Graph rationale")).toHaveValue("Second intention awaiting rejection");
+  expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(savedFirst);
+  await button(page, "Inspect saved Graph outcome").click();
+  await button(page, "Continue Graph as a new reviewed intention").click();
+  await expect(pending).toHaveCount(0);
+  await expect(field(page, "Graph rationale")).toHaveValue("Second intention awaiting rejection");
+  expect(await requestCount(page)).toBe(2);
+  expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(savedFirst);
+});
+
 test("An observed original ACK with failed custody never enables another save", async ({ page }) => {
   await open(page); await valid(page); await button(page, "Save semantic Graph").click(); await expect.poll(() => requestCount(page)).toBe(1);
   await page.evaluate(() => { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (key, value) { if (this === localStorage && key.startsWith("motionwright.semantic-graph-recovery.v1:")) return; set.call(this, key, value); }; window.__GRAPH_RESTORE_STORAGE__ = () => { Storage.prototype.setItem = set; }; });
