@@ -556,6 +556,32 @@ def declared_executable_identity(role):
     return observed
 
 
+def verify_graph_sdk_capture_roster(spec, producer_index):
+    """Inert equality of the exact R74 source-captured SDK executable roster.
+
+    The producer already authenticated Cargo paths, retained bytes and roles.
+    Never substitute mutable target/debug aliases for its exclusive snapshots.
+    """
+    require(type(spec) is dict and type(producer_index) is dict
+            and spec.get("source") == producer_index.get("source"),
+            "graph-sdk-capture-source-mismatch")
+    source, declared, original = spec.get("source"), spec.get("binaries"), producer_index.get("binaries")
+    require(type(source) is dict and type(declared) is dict and type(original) is dict
+            and type(source.get("sdk_root")) is str,
+            "graph-sdk-capture-roster-shape")
+    capture = Path(source["sdk_root"]) / "target" / "mw-r74-captured"
+    for role in ("semwright", "semwrightd", "semwright_sandbox"):
+        expected, retained = declared.get(role), original.get(role)
+        require(type(expected) is dict and type(retained) is dict
+                and set(expected) == {"path", "sha256", "size_bytes"}
+                and expected == retained and type(expected["path"]) is str
+                and DIGEST.fullmatch(expected["sha256"]) is not None
+                and type(expected["size_bytes"]) is int and expected["size_bytes"] > 0
+                and Path(expected["path"]) == capture / role,
+                "graph-sdk-capture-role-mismatch:" + role)
+    return True
+
+
 def load_shared(repo, expected_source, lifecycle):
     require(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true",
             "real-owner-requires-linux-actions")
@@ -599,9 +625,11 @@ def load_shared(repo, expected_source, lifecycle):
         ("native_graph_session", "native-graph-review-session"),
     )
     binaries = {label: declared_executable_identity(role) for role, label in binary_roles}
-    # Reuse the existing SDK launch path only when it is the declared sandbox.
-    require(Path(_OWNER_SPEC["binaries"]["semwright_sandbox"]["path"])
-            == shared.SW_BINS / "semwright-sandbox", "declared-shared-sandbox-path-mismatch")
+    # R74 executes exclusive, captured original build bytes; a mutable
+    # target/debug alias is NOT the admitted sandbox source or authority.
+    # Match the independently authenticated producer roster exactly before
+    # using the captured Semwright CLI, daemon and sandbox paths.
+    verify_graph_sdk_capture_roster(_OWNER_SPEC, _GRAPH_J1["index"])
     source_names = (
         "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json",
         "tooling/native_host_shared_state.py", "tooling/native_graph_browser_owner.py",
