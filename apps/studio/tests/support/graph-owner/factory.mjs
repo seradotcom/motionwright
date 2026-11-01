@@ -63,7 +63,10 @@ export function graphCaseLayout(casesRoot, caseId) {
   return Object.freeze({ privateRoot, databasePath, ownerSocket });
 }
 
-export const GRAPH_CAS_ALLOWANCE = Object.freeze({ bytes: 4 * MiB, files: 24 });
+// The six typed-Graph scenarios do not import media blobs. Bound the small
+// managed CAS sidecar alongside SQLite without exhausting the original 3,000
+// member pool when its full archive copy is independently pre-reserved.
+export const GRAPH_CAS_ALLOWANCE = Object.freeze({ bytes: 4 * MiB, files: 16 });
 const GRAPH_CAS_ANCHOR = '.motionwright-cas-root-v1.json';
 
 /** A real Store::open creates a managed CAS root beside SQLite. Keep the four
@@ -285,8 +288,12 @@ export class GraphCaseFactoryCore {
     const bytes = remaining * (GRAPH_BUDGET.journal_bytes + 2 * MiB)
       + (initializer ? 0 : 2 * MiB) + (this.owner ? 0 : 2 * MiB)
       + 16 * MiB + 20 * MiB + 768 * 1024;
+    // Pre-reserve the full original SQLite+CAS archive copy BEFORE any
+    // initializer or Native launch. A four-file-only estimate would accept
+    // callbacks that cannot later be closed within the 3,000-member pool.
+    const snapshotFiles = GRAPH_BUDGET.store_files + (this.originalProduction ? this.casAllowance.files : 0);
     const files = remaining * (GRAPH_BUDGET.journal_files + 2)
-      + (initializer ? 0 : 2) + (this.owner ? 0 : 2) + 4 + 268;
+      + (initializer ? 0 : 2) + (this.owner ? 0 : 2) + snapshotFiles + 268;
     need(this.pool.reservedBytes + bytes <= this.pool.maximumBytes
       && this.pool.reservedFiles + files <= this.pool.maximumFiles, 'CASE_FULL_REMAINING_CUSTODY_NOT_RESERVED');
   }

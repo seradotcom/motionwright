@@ -6,8 +6,8 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { stripTypeScriptTypes } from "node:module";
-import { SharedPool } from "../../tests/support/graph-owner/custody.mjs";
-import { graphCaseLayout, verifyGraphManagedStoreEntries, verifyGraphManagedCopyBounds,
+import { SharedPool, GLOBAL_BYTES, GLOBAL_FILES } from "../../tests/support/graph-owner/custody.mjs";
+import { GraphCaseFactoryCore, graphCaseLayout, verifyGraphManagedStoreEntries, verifyGraphManagedCopyBounds,
   GRAPH_CAS_ALLOWANCE } from "../../tests/support/graph-owner/factory.mjs";
 import { inspectSourceBoundCandidate, requireNativeGraphParentAdmission,
   admitOriginalProducers, runIndependentSameStoreReopen, inspectR74StatusCore,
@@ -566,7 +566,7 @@ test("managed Graph Store validates physical CAS next to SQLite without borrowin
   assert.equal(result.cas_bytes, 360 + 480 + 850);
   assert.deepEqual(Object.keys(result).sort(), ["cas_bytes", "cas_files", "sqlite_files"]);
   assert.equal(GRAPH_BUDGET.store_files, 4);
-  assert.equal(GRAPH_CAS_ALLOWANCE.files, 24);
+  assert.equal(GRAPH_CAS_ALLOWANCE.files, 16);
   assert.equal(GRAPH_CAS_ALLOWANCE.bytes, 4 * 1024 * 1024);
 });
 test("managed Graph Store rejects alien entries, renamed control and disallowed CAS files", () => {
@@ -655,4 +655,54 @@ test("managed Graph archive rejects second copies, foreign roots and changed pre
     ? { ...row, sizeBytes: "151552" } : row);
   assert.throws(() => verifyGraphManagedCopyBounds(wrongMetadata, { entries: wrongMetadata },
     source, databasePath, 0), /CASE_STORE_COPY_BYTES_INVALID/);
+});
+
+/** Source-authored worst-case label variant: 3 Native launches with 5+2+0
+ * callbacks, 180 SDK ticket file slots, and no imported media assets. This
+ * checks the real future-reservation method against the immutable 3,000 cap. */
+function sourceGraphLabelPool(casFiles) {
+  const MiB = 1024 * 1024;
+  const pool = new SharedPool();
+  const rows = [
+    ["aggregate-unavailable", "aggregate-holdback", GLOBAL_BYTES - GRAPH_BUDGET.case_bytes,
+      GLOBAL_FILES - GRAPH_BUDGET.case_members],
+    ["directory-members", "archive-directory-capacity", 1, 256],
+    ["original-sqlite-files", "kernel-bounded-original-store",
+      GRAPH_BUDGET.store_file_bytes * GRAPH_BUDGET.store_files, GRAPH_BUDGET.store_files],
+    ["original-managed-cas-files", "store-cas", GRAPH_CAS_ALLOWANCE.bytes, casFiles],
+    ["sdk-ticket-roster", "sdk-tickets", 180 * 256, 180],
+    ["parent-metadata", "metadata", 4 * MiB, 128],
+    ["parent-close-and-errors", "close", 4 * MiB, 64],
+    ["service-evidence-metadata", "evidence", 16 * MiB, 128],
+    ["python-owner", "external-owner", GRAPH_BUDGET.owner_bytes, GRAPH_BUDGET.owner_files],
+    ["case-consumption", "immutable-case-consumption", 8192, 1],
+  ];
+  for (const [name, role, bytes, files] of rows) pool.reserve(name, role, bytes, files);
+  return pool;
+}
+function checkGraphLabelFuture(pool, casFiles) {
+  return GraphCaseFactoryCore.prototype.requireFutureCapacity.call({
+    pool, originalProduction: true, casAllowance: { files: casFiles },
+    launches: new Map(), declaredNativeLaunches: 3, owner: null,
+  });
+}
+test("managed CAS plus full archive copy fits original Graph label 3000-member admission", () => {
+  const pool = sourceGraphLabelPool(GRAPH_CAS_ALLOWANCE.files);
+  const caseUsed = pool.reservedFiles - (GLOBAL_FILES - GRAPH_BUDGET.case_members);
+  assert.equal(caseUsed, 1545);
+  assert.equal(GRAPH_BUDGET.case_members, 3000);
+  assert.doesNotThrow(() => checkGraphLabelFuture(pool, GRAPH_CAS_ALLOWANCE.files));
+  const future = 3 * (GRAPH_BUDGET.journal_files + 2) + 2 + 2
+    + GRAPH_BUDGET.store_files + GRAPH_CAS_ALLOWANCE.files + 268;
+  assert.equal(future, 1450);
+  assert.equal(caseUsed + future, 2995);
+});
+test("Graph label admission fails before effects when managed CAS archive exceeds fixed pool", () => {
+  const unadmittedCasFiles = 19;
+  const pool = sourceGraphLabelPool(unadmittedCasFiles);
+  assert.throws(() => checkGraphLabelFuture(pool, unadmittedCasFiles),
+    /CASE_FULL_REMAINING_CUSTODY_NOT_RESERVED/);
+  assert.equal(pool.reservedFiles - (GLOBAL_FILES - GRAPH_BUDGET.case_members)
+    + 3 * (GRAPH_BUDGET.journal_files + 2) + 2 + 2
+    + GRAPH_BUDGET.store_files + unadmittedCasFiles + 268, 3001);
 });
