@@ -8636,14 +8636,19 @@ def graph_prepare_system_packages(env, repo, producer, clock):
     the 1200 s prepare-phase/deadline unchanged. No cached package claim can
     substitute for the final real apt observation.
     """
-    apt_env = dict(env, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l",
+    # GitHub's sudo may reset the parent environment; pass the unattended
+    # frontend through sudo explicitly. Do not assert that Ubuntu Noble's
+    # needrestart APT hook honors NEEDRESTART_MODE or suppress service effects.
+    apt_env = dict(env, DEBIAN_FRONTEND="noninteractive",
                    APT_LISTCHANGES_FRONTEND="none")
-    graph_command(apt_env, ["sudo", "apt-get", "update"],
+    apt = ["sudo", "env", "DEBIAN_FRONTEND=noninteractive",
+           "APT_LISTCHANGES_FRONTEND=none", "apt-get"]
+    graph_command(apt_env, [*apt, "update"],
                   repo, producer, "graph-apt-update", 60, clock)
-    graph_command(apt_env, ["sudo", "apt-get", "install", "--no-install-recommends", "-y",
+    graph_command(apt_env, [*apt, "install", "--no-install-recommends", "-y",
                             "bubblewrap", "ffmpeg", "fontconfig"],
                   repo, producer, "graph-apt-media-preprovision", 180, clock)
-    graph_command(apt_env, ["sudo", "apt-get", "install", "--no-install-recommends", "-y",
+    graph_command(apt_env, [*apt, "install", "--no-install-recommends", "-y",
                             "bubblewrap", "ffmpeg", "fontconfig", "libcairo2-dev",
                             "libpango1.0-dev", "pkg-config", "python3-pip", "python3-dev",
                             "libpipewire-0.3-dev", "clang"],

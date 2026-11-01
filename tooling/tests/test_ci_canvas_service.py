@@ -8110,15 +8110,15 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertEqual([row[4] for row in calls],
                          ["graph-apt-update", "graph-apt-media-preprovision", "graph-apt-install"])
         self.assertEqual([row[5] for row in calls], [60, 180, 180])
-        self.assertEqual(calls[0][1], ["sudo", "apt-get", "update"])
-        prefix = ["sudo", "apt-get", "install", "--no-install-recommends", "-y"]
+        apt = ["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "APT_LISTCHANGES_FRONTEND=none", "apt-get"]
+        self.assertEqual(calls[0][1], apt + ["update"])
+        prefix = apt + ["install", "--no-install-recommends", "-y"]
         self.assertEqual(calls[1][1], prefix + ["bubblewrap", "ffmpeg", "fontconfig"])
         complete = ["bubblewrap", "ffmpeg", "fontconfig", "libcairo2-dev", "libpango1.0-dev",
                     "pkg-config", "python3-pip", "python3-dev", "libpipewire-0.3-dev", "clang"]
         self.assertEqual(calls[2][1], prefix + complete)
         self.assertEqual(len(complete), len(set(complete)))
         self.assertTrue(all(row[0] == {"DEBIAN_FRONTEND": "noninteractive",
-                                           "NEEDRESTART_MODE": "l",
                                            "APT_LISTCHANGES_FRONTEND": "none"} and row[2] == repo and row[3] == producer
                             and row[6] is deadline for row in calls))
         # Both provisioning intents remain within the existing source-owned prepare phase.
