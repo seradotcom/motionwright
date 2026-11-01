@@ -644,6 +644,11 @@ class FilmRuntimeEnvelopeTests(unittest.TestCase):
             root = Path(temporary).resolve()
             env = film_env(root)
             env["MW_MLT_G2_ADMISSION"] = json.dumps(film_dispatch())
+            event_path = root / "github-event.json"
+            custody.new_json(event_path, {"inputs": {
+                "verification_scope": custody.FILM_SCOPE, "fixedtxt_mode": "prepare",
+                "retained_reference_zip_base64": ""}})
+            env["GITHUB_EVENT_PATH"] = str(event_path)
             control, installed, session = (root / name for name in ("control", "installed", "session"))
             with mock.patch.object(custody.sys, "platform", "linux"), \
                  mock.patch.object(custody.os, "geteuid", return_value=1001, create=True), \

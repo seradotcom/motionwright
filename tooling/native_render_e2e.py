@@ -1003,7 +1003,7 @@ def cycle_native_render(fingerprint, *, socket, session, env):
         state = status.get("state")
         if state == "succeeded":
             break
-        if state not in {"queued", "running", "pending", "starting"}:
+        if state not in {"queued", "running", "pending", "starting", "rendering"}:
             raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NATIVE_NOT_SUCCEEDED")
         time.sleep(1)
     else:
