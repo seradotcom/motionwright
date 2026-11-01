@@ -15,11 +15,13 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import stat
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 
 SCHEMA = "motionwright.graph-native-dev-startup/1"
@@ -33,6 +35,8 @@ PROJECT = re.compile(r"prj_[0-9a-f]{32}\Z")
 MAX_PRIVATE_BYTES = 32 * 1024 * 1024
 MAX_PRIVATE_FILES = 256
 MAX_PRIVATE_SINGLE = 8 * 1024 * 1024
+MAX_DAEMON_LOG_BYTES = 2 * 1024 * 1024
+MAX_NATIVE_STAGING_BYTES = 64 * 1024 * 1024
 
 
 class GN1Failure(Exception):
@@ -167,15 +171,118 @@ def simple_public(source, run_id):
             "formal_acceptance": False, "automatic_retry": False}
 
 
-def _limits():
+def daemon_staging_plan(binaries: dict):
+    """Admit the four actual staged inputs before creating any owner state.
+
+    The trusted daemon copies these executables before the driver sandbox is
+    started. Its file budget is distinct from the unchanged driver 4 MiB
+    limit and the original-evidence 8 MiB/32 MiB capture limits.
+    """
+    inputs = {
+        "native_provider": binaries["native_provider"],
+        "manim_runner": binaries["manim_runner"],
+        "python": file_identity(Path(sys.executable).resolve(strict=True)),
+        "ffmpeg": file_identity(Path("/usr/bin/ffmpeg").resolve(strict=True)),
+    }
+    need(all(type(row.get("bytes")) is int
+             and 0 < row["bytes"] <= MAX_NATIVE_STAGING_BYTES
+             and type(row.get("sha256")) is str
+             and SHA256.fullmatch(row["sha256"]) is not None
+             for row in inputs.values()), "GN1_STAGING_INPUT_BUDGET")
+    budget = max(MAX_DAEMON_LOG_BYTES, *(row["bytes"] for row in inputs.values()))
     import resource
-    for key, bound in (("RLIMIT_CPU", 120), ("RLIMIT_FSIZE", 2 * 1024 * 1024),
+    hard = resource.getrlimit(resource.RLIMIT_FSIZE)[1]
+    need(hard == resource.RLIM_INFINITY or hard >= budget,
+         "GN1_STAGING_HARD_LIMIT_INSUFFICIENT")
+    return {"inputs": inputs, "file_size_limit_bytes": budget,
+            "daemon_log_limit_bytes": MAX_DAEMON_LOG_BYTES,
+            "driver_file_size_limit_unchanged": True}
+
+
+def _limits(file_size_limit=MAX_DAEMON_LOG_BYTES):
+    import resource
+    need(type(file_size_limit) is int
+         and MAX_DAEMON_LOG_BYTES <= file_size_limit <= MAX_NATIVE_STAGING_BYTES,
+         "GN1_DAEMON_FILE_LIMIT_INVALID")
+    for key, bound in (("RLIMIT_CPU", 120), ("RLIMIT_FSIZE", file_size_limit),
                        ("RLIMIT_AS", 8 * 1024 * 1024 * 1024),
                        ("RLIMIT_NOFILE", 1024)):
         hard = getattr(resource, key)
         current, maximum = resource.getrlimit(hard)
         restricted = min(bound, maximum) if maximum != resource.RLIM_INFINITY else bound
         resource.setrlimit(hard, (restricted, maximum))
+
+
+class DaemonLogCapture:
+    """Bound the log independently of executable staging; retain an honest prefix."""
+    def __init__(self, process, fd):
+        self.process, self.fd = process, fd
+        self.observed = self.written = 0
+        self.eof = self.overflow = False
+        self.error = None
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _stop_original(self):
+        if self.process.poll() is not None:
+            return
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            self.error = type(error).__name__
+
+    def _read(self):
+        try:
+            pipe = self.process.stdout.fileno()
+            os.set_blocking(pipe, False)
+            while not self.stop.is_set():
+                if not select.select([pipe], [], [], 0.05)[0]:
+                    continue
+                chunk = os.read(pipe, 65536)
+                if not chunk:
+                    self.eof = True
+                    break
+                self.observed += len(chunk)
+                room = MAX_DAEMON_LOG_BYTES - self.written
+                retained = memoryview(chunk)[:room]
+                while retained:
+                    count = os.write(self.fd, retained)
+                    self.written += count
+                    retained = retained[count:]
+                if len(chunk) > room:
+                    self.overflow = True
+                    # Stop only the original owned group, never retry an effect.
+                    self._stop_original()
+                    break
+        except BaseException as error:
+            self.error = type(error).__name__
+            self._stop_original()
+        finally:
+            try:
+                os.fsync(self.fd)
+            except OSError as error:
+                self.error = type(error).__name__
+            try:
+                os.close(self.fd)
+                self.process.stdout.close()
+            except OSError as error:
+                self.error = type(error).__name__
+
+    def finish(self):
+        self.thread.join(timeout=2)
+        if self.thread.is_alive():
+            self.stop.set()
+            self.thread.join(timeout=0.2)
+        return {"limit_bytes": MAX_DAEMON_LOG_BYTES,
+                "observed_stream_bytes": self.observed,
+                "retained_prefix_bytes": self.written,
+                "complete": (self.eof and not self.overflow and not self.error
+                             and not self.thread.is_alive()),
+                "overflow": self.overflow, "capture_error_type": self.error,
+                "automatic_retry": False}
 
 
 def _stop_group(child: subprocess.Popen, label: str, private: Path):
@@ -209,27 +316,32 @@ def _stop_group(child: subprocess.Popen, label: str, private: Path):
 
 @contextlib.contextmanager
 def real_daemon(label: str, executable: str, config: Path, socket: Path,
-                env: dict, private: Path, extra_args=()):
+                env: dict, private: Path, extra_args=(),
+                file_size_limit=MAX_DAEMON_LOG_BYTES):
     need(label in ("bootstrap", "restricted") and socket.is_absolute()
          and not socket.exists(), "GN1_DAEMON_SOCKET_SOURCE_OR_REPLAY")
     log = private / (label + ".daemon.original.log")
     fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     proc = None
+    capture = None
     terminal = None
     try:
-        with os.fdopen(fd, "wb") as out:
-            proc = subprocess.Popen(
-                [executable, "--config", str(config), "--socket", str(socket),
-                 *extra_args],
-                env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                start_new_session=True, preexec_fn=_limits,
-            )
+        proc = subprocess.Popen(
+            [executable, "--config", str(config), "--socket", str(socket),
+             *extra_args],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=True,
+            preexec_fn=lambda: _limits(file_size_limit),
+        )
+        capture = DaemonLogCapture(proc, fd)
         new_json(private / (label + ".start.original.json"),
                  {"pid": proc.pid, "config_sha256":
                   hashlib.sha256(config.read_bytes()).hexdigest(),
                   "automatic_retry": False, "source_built": True})
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
+            if capture.overflow or capture.error:
+                raise GN1Failure("GN1_DAEMON_LOG_CAPTURE_INCOMPLETE", unknown=True)
             terminal = proc.poll()
             if terminal is not None:
                 raise GN1Failure("GN1_" + label.upper() + "_EARLY_EXIT")
@@ -240,12 +352,25 @@ def real_daemon(label: str, executable: str, config: Path, socket: Path,
             time.sleep(0.02)
         raise GN1Failure("GN1_" + label.upper() + "_SOCKET_UNKNOWN", unknown=True)
     finally:
+        if capture is None:
+            os.close(fd)
         if proc is not None:
-            observed = _stop_group(proc, label, private)
+            close_error = None
+            try:
+                observed = _stop_group(proc, label, private)
+            except BaseException as error:
+                close_error, observed = error, proc.poll()
+            log_capture = capture.finish() if capture is not None else {
+                "complete": False, "capture_error_type": "CAPTURE_NOT_STARTED"}
+            new_json(private / (label + ".log-capture.original.json"), log_capture)
             new_json(private / (label + ".terminal.original.json"),
                      {"pid": proc.pid, "exit_code": observed,
-                      "process_group_closed": True, "automatic_retry": False,
+                      "process_group_closed": close_error is None, "automatic_retry": False,
                       "socket_was_ready": socket.is_socket()})
+            if close_error is not None:
+                raise close_error
+            if not log_capture["complete"]:
+                raise GN1Failure("GN1_DAEMON_LOG_CAPTURE_INCOMPLETE", unknown=True)
 
 
 def _env(root: Path, runtime: Path, state: Path, home: Path, sdk: Path):
@@ -271,13 +396,16 @@ def _env(root: Path, runtime: Path, state: Path, home: Path, sdk: Path):
 
 
 def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
-                   private: Path, marks: list[dict]):
+                   private: Path, marks: list[dict], staging: dict):
     # Graph's original source owns the manifest/config rules. GN1 does not
     # invent a new broker policy, grant or fake project identity.
     sys.path.insert(0, str(repo / "tooling"))
     import native_graph_browser_owner as graph
     import native_host_shared_state as shared
     binaries = signed_binaries(repo, sdk)
+    need(all(binaries[name] == staging["inputs"][name]
+             for name in ("native_provider", "manim_runner")),
+         "GN1_STAGING_SOURCE_CHANGED")
     new_json(private / "source-built-binaries.original.json", binaries)
 
     def mark(stage):
@@ -341,14 +469,11 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
         "motionwright-native-provider": dict(provider),
         "motionwright-manim-runner": dict(manim_runner),
     }}
-    python_bin = Path(sys.executable).resolve(strict=True)
-    ffmpeg = Path("/usr/bin/ffmpeg").resolve(strict=True)
-    need(ffmpeg.is_file(), "GN1_FFMPEG_RUNTIME_UNAVAILABLE")
     runtime = {
         "runtime": locations["manim-runtime"],
         "fontconfig": Path("/etc/fonts").resolve(strict=True),
-        "python": file_identity(python_bin),
-        "ffmpeg": file_identity(ffmpeg),
+        "python": staging["inputs"]["python"],
+        "ffmpeg": staging["inputs"]["ffmpeg"],
     }
 
     mark("RESTRICTED_MANIFEST")
@@ -377,7 +502,8 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
     mark("RESTRICTED_SOCKET")
     with real_daemon("restricted", binaries["semwrightd"]["path"],
                      restricted_file, restricted_socket, owner_env, private,
-                     extra_args=capture_args):
+                     extra_args=capture_args,
+                     file_size_limit=staging["file_size_limit_bytes"]):
         mark("PROVIDER_HANDSHAKE")
         mounted = shared.invoke_cli(
             owner_env, restricted_socket,
@@ -404,8 +530,10 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
     return {"real_store_original": original, "private_call_count": len(calls)}
 
 
-def private_snapshot(root: Path):
+def private_snapshot(root: Path, *, preserve_partial=False):
     """Only owned originals, never sockets/symlinks, public unsealed bytes."""
+    if preserve_partial:
+        return partial_private_snapshot(root)
     entries = []
     total = 0
     for name in ("private", "config", "motionwright-data", "state",
@@ -445,6 +573,106 @@ def private_snapshot(root: Path):
     need(len(raw) <= MAX_PRIVATE_BYTES + 2 * 1024 * 1024,
          "GN1_SNAPSHOT_ARCHIVE_OVERSIZE")
     return raw, len(entries)
+
+
+def partial_private_snapshot(root: Path):
+    """Seal bounded diagnostics after failure without hiding a missing original.
+
+    An oversized staged executable remains untouched. Its observed metadata
+    and the explicit omission are encrypted alongside readable originals;
+    this is incomplete custody and cannot produce a passing public outcome.
+    The strict snapshot API and all original byte/count limits stay intact.
+    """
+    entries, omitted, total, inspected = [], [], 0, 0
+
+    def metadata(info):
+        return {"device": info.st_dev, "inode": info.st_ino, "mode": info.st_mode,
+                "bytes": info.st_size, "links": info.st_nlink,
+                "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+    def missing(path, code, info=None):
+        row = {"path": path.relative_to(root).as_posix(), "code": code,
+               "original_not_deleted": True, "full_bytes_captured": False}
+        if info is not None:
+            row["observed_metadata"] = metadata(info)
+        omitted.append(row)
+
+    for name in ("private", "config", "motionwright-data", "state", "startup-stderr"):
+        directory = root / name
+        if not directory.exists() and not directory.is_symlink():
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            missing(directory, "GN1_PRIVATE_DIRECTORY_NOT_CAPTURED")
+            continue
+        for path in directory.rglob("*"):
+            inspected += 1
+            if inspected > MAX_PRIVATE_FILES * 4:
+                missing(directory, "GN1_PRIVATE_NAMESPACE_LIMIT")
+                break
+            info = None
+            try:
+                info = path.lstat()
+                need(not stat.S_ISLNK(info.st_mode), "GN1_PRIVATE_SYMLINK_NOT_SEALED")
+                if stat.S_ISDIR(info.st_mode):
+                    continue
+                need(stat.S_ISREG(info.st_mode), "GN1_PRIVATE_SPECIAL_FILE")
+                need(info.st_nlink == 1 and path.resolve(strict=True) == path,
+                     "GN1_PRIVATE_FILE_ALIAS")
+                need(0 <= info.st_size <= MAX_PRIVATE_SINGLE, "GN1_ORIGINAL_OVERSIZE")
+                need(total + info.st_size <= MAX_PRIVATE_BYTES
+                     and len(entries) < MAX_PRIVATE_FILES - 1,
+                     "GN1_PRIVATE_SNAPSHOT_LIMIT")  # Reserve one slot for coverage metadata.
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_NONBLOCK", 0))
+                with os.fdopen(fd, "rb") as file:
+                    opened = os.fstat(file.fileno())
+                    need(stat.S_ISREG(opened.st_mode), "GN1_PRIVATE_SPECIAL_FILE")
+                    need(metadata(opened) == metadata(info),
+                         "GN1_ORIGINAL_CHANGED")
+                    raw = file.read(info.st_size + 1)
+                    need(len(raw) == info.st_size
+                         and metadata(os.fstat(file.fileno())) == metadata(info)
+                         and metadata(path.lstat()) == metadata(info),
+                         "GN1_ORIGINAL_CHANGED")
+                entries.append((path.relative_to(root).as_posix(), raw))
+                total += len(raw)
+            except Exception as error:
+                missing(path, error.code if isinstance(error, GN1Failure)
+                        else "GN1_PRIVATE_READ_FAILED", info)
+        if inspected > MAX_PRIVATE_FILES * 4:
+            break
+
+    # Account for the coverage record and tar framing without enlarging the
+    # 32 MiB original/2 MiB framing allowance. Removing an archive entry here
+    # records an omission; it never deletes or modifies the original file.
+    while True:
+        coverage = {"schema": "motionwright.gn1-private-capture/1",
+                    "complete": not omitted, "captured_originals": len(entries),
+                    "captured_original_bytes": total, "omitted_originals": omitted,
+                    "automatic_retry": False, "original_files_deleted": 0}
+        description = (json.dumps(coverage, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        rows = [*sorted(entries), ("gn1-private-capture.json", description)]
+        required = 10240
+        for name, data in rows:
+            item = tarfile.TarInfo(name)
+            item.size = len(data)
+            required += len(item.tobuf(format=tarfile.PAX_FORMAT)) + ((len(data) + 511) // 512) * 512
+        if required <= MAX_PRIVATE_BYTES + 2 * 1024 * 1024:
+            break
+        need(bool(entries), "GN1_CAPTURE_METADATA_LIMIT")
+        name, data = entries.pop()
+        total -= len(data)
+        missing(root / name, "GN1_SNAPSHOT_ARCHIVE_OVERSIZE")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, raw in rows:
+            item = tarfile.TarInfo(name)
+            item.size, item.mode, item.mtime = len(raw), 0o600, 0
+            archive.addfile(item, io.BytesIO(raw))
+    raw = buffer.getvalue()
+    need(len(raw) <= MAX_PRIVATE_BYTES + 2 * 1024 * 1024,
+         "GN1_SNAPSHOT_ARCHIVE_OVERSIZE")
+    return raw, len(entries), coverage
 
 
 def original_owner_start_observation(private: Path, marks: list[dict]):
@@ -495,7 +723,8 @@ def run_once(args):
     need(0 < len(raw_recipient) <= 4096, "GN1_RECIPIENT_REQUIRED")
     recipient = json.loads(raw_recipient)
     custody.public_key(recipient)
-    assert signed_binaries(repo, sdk)  # All original-build binaries must exist.
+    binaries = signed_binaries(repo, sdk)
+    staging = daemon_staging_plan(binaries)  # Before Store/daemon/owner effects.
 
     root.mkdir(mode=0o700)
     need(stat.S_IMODE(root.stat().st_mode) == 0o700, "GN1_OWNER_ROOT_MODE")
@@ -509,7 +738,8 @@ def run_once(args):
     try:
         marks.append({"stage": "SOURCE_BIND", "source": first["source_sha"]})
         new_json(private / "source-binding.original.json", first)
-        actual_startup(repo, sdk, root, first, private, marks)
+        new_json(private / "daemon-staging-budget.original.json", staging)
+        actual_startup(repo, sdk, root, first, private, marks, staging)
         status, code = "PASS_DEV_NATIVE_STARTUP_ONLY", "GN1_REAL_OWNER_READY_CLOSED"
     except GN1Failure as e:
         status, code = ("UNKNOWN" if e.unknown else "FAIL"), e.code
@@ -540,8 +770,14 @@ def run_once(args):
     new_json(private / "result.original.json",
              {"source": first, "status": status, "code": code,
               "marks": marks, "automatic_retry": False,
-              "formal_acceptance": False, "Graph6_cases_accepted": 0})
-    archive, original_count = private_snapshot(root)
+              "formal_acceptance": False, "Graph6_cases_accepted": 0,
+              "private_capture_evaluated": False})
+    archive, original_count, coverage = private_snapshot(root, preserve_partial=True)
+    public["private_capture_complete"] = coverage["complete"]
+    public["private_capture_issue_count"] = len(coverage["omitted_originals"])
+    if not coverage["complete"]:
+        status, code = "UNKNOWN", "GN1_PRIVATE_CAPTURE_INCOMPLETE"
+        public["status"], public["code"] = status, code
     context = {"source_sha": first["source_sha"],
                "semwright_sha": first["sdk_sha"],
                "run_id": run_id, "run_attempt": "1"}
