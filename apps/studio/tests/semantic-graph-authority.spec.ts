@@ -18,6 +18,244 @@ test("Graph retains every incomplete geometry and rational byte across navigatio
   await expect(field(page, "Vertex 1 label")).toHaveValue("Preserve my authored concept"); await expect(field(page, "Vertex 1 box x")).toHaveValue("1e");
   await page.reload(); await expect(field(page, "Vertex 1 box x")).toHaveValue("1e"); await expect(field(page, "Graph duration denominator")).toHaveValue(""); expect(await requestCount(page)).toBe(0);
 });
+test("Graph blocks a second source for an occupied scene and Deliverable before service submission", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const original = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const savedGraph = original.production_design!.semantic_graphs![0];
+  await field(page, "Graph source").selectOption("new:system_flow");
+  await field(page, "Graph author label").fill("Different typed source, same occupied Deliverable");
+  await field(page, "Graph rationale").fill("This must not replace an existing Graph implicitly.");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(page.getByRole("status").filter({ hasText: "already owns" })).toBeVisible();
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  expect(await requestCount(page)).toBe(1);
+  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs![0]).toEqual(savedGraph);
+});
+test("Graph new source retains distinct profile identities through selection and reload", async ({ page }) => {
+  // Synthetic component fixture only: profile selection is the real Workbench
+  // prop; these replies do not claim StudioService, Native, SQLite or Graph6.
+  await open(page); await saveFirst(page);
+  const firstProject = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const firstGraph = firstProject.production_design!.semantic_graphs![0];
+  const secondProfileId = await page.evaluate(async () => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const second = { ...structuredClone(next.deliverables[0]), id: crypto.randomUUID() };
+    // The fixture's displayProfile is deliverables[0], matching a global
+    // Deliverable selection rather than retargeting the current Graph.
+    next.deliverables = [second, ...next.deliverables]; next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next); return second.id;
+  });
+  await field(page, "Graph source").selectOption(firstGraph.id);
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await expect(field(page, "Graph Deliverable")).toHaveValue(secondProfileId);
+  await expect(button(page, "Save semantic Graph")).toBeVisible();
+  await field(page, "Graph author label").fill("Second profile author");
+  await field(page, "Graph rationale").fill("Independent editable Graph for the selected second profile.");
+  await field(page, "Vertex 1 label").fill("Second profile concept");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save semantic Graph")).toBeEnabled();
+  await button(page, "Save semantic Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  const request = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[1]);
+  expect(request.change.type).toBe("upsert_semantic_graph");
+  if (request.change.type !== "upsert_semantic_graph") throw new Error("Expected the second authored Graph.");
+  expect(request.change.graph.id).not.toBe(firstGraph.id);
+  expect(request.change.graph.variant_profile_ref).toBe(secondProfileId);
+  const secondGraphId = request.change.graph.id;
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
+  const secondProject = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  expect(secondProject.production_design!.semantic_graphs).toHaveLength(2);
+  expect(secondProject.production_design!.semantic_graphs!.find(graph => graph.id === firstGraph.id)).toEqual(firstGraph);
+  const secondGraph = secondProject.production_design!.semantic_graphs!.find(graph => graph.id === secondGraphId)!;
+  expect(secondGraph.content.vertices[0].label).toBe("Second profile concept");
+  await field(page, "Graph source").selectOption(firstGraph.id);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(firstGraph.variant_profile_ref);
+  await expect(field(page, "Vertex 1 label")).toHaveValue(firstGraph.content.vertices[0].label);
+  await field(page, "Graph source").selectOption(secondGraph.id);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(secondProfileId);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Second profile concept");
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue(secondGraph.id);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(secondProfileId);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Second profile concept");
+  expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(secondProject);
+  expect(await requestCount(page)).toBe(2);
+});
+
+/** Convert only this fixture's identity pointer; retained recovery bytes are untouched. */
+async function exposeLegacyGraphIdentity(page: Page) {
+  return page.evaluate(() => {
+    const project = window.__GRAPH_AUTHORITY__.project(), sceneId = project.scenes[0].id;
+    const profileId = project.deliverables[0].id, owner = [project.id, project.generation, project.active_branch, sceneId];
+    const legacyKey = "motionwright.semantic-graph-new-id.v1:" + JSON.stringify([...owner, "causal_diagram"]);
+    const profileKey = "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([...owner, profileId, "causal_diagram"]);
+    const graphId = sessionStorage.getItem(profileKey);
+    if (!graphId) throw new Error("Fixture has no authored profile identity to migrate.");
+    sessionStorage.setItem(legacyKey, graphId); sessionStorage.removeItem(profileKey);
+    return { legacyKey, profileKey, graphId, profileId };
+  });
+}
+test("Graph legacy draft migration preserves raw input and never lends its identity to another profile", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph author label").fill("Legacy draft author");
+  await field(page, "Graph rationale").fill("Preserve the incomplete original input during identity migration.");
+  await field(page, "Vertex 1 label").fill("Legacy unsaved concept");
+  await field(page, "Vertex 1 box x").fill("1e");
+  const original = await currentGraphCopy(page), originalDraft = JSON.parse(original.raw).draft;
+  const legacy = await exposeLegacyGraphIdentity(page);
+  expect(legacy.graphId).toBe(originalDraft.graphId);
+  await page.reload();
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Legacy unsaved concept");
+  await expect(field(page, "Vertex 1 box x")).toHaveValue("1e");
+  await expect(field(page, "Graph Deliverable")).toHaveValue(legacy.profileId);
+  expect(JSON.parse((await currentGraphCopy(page)).raw).draft).toEqual(originalDraft);
+  expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.legacyKey)).toBe(legacy.graphId);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.profileKey)).toBe(legacy.graphId);
+  const other = await page.evaluate(async () => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const second = { ...structuredClone(next.deliverables[0]), id: crypto.randomUUID() };
+    next.deliverables = [second, ...next.deliverables]; next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+    return { profileId: second.id, key: "motionwright.semantic-graph-new-id.v2:" +
+      JSON.stringify([next.id, next.generation, next.active_branch, next.scenes[0].id, second.id, "causal_diagram"]) };
+  });
+  await expect(field(page, "Graph Deliverable")).toHaveValue(other.profileId);
+  await expect(field(page, "Vertex 1 label")).not.toHaveValue("Legacy unsaved concept");
+  const secondId = await page.evaluate(key => sessionStorage.getItem(key), other.key);
+  expect(secondId).toMatch(/^[0-9a-f-]{36}$/i); expect(secondId).not.toBe(legacy.graphId);
+  await page.reload();
+  await expect(field(page, "Graph Deliverable")).toHaveValue(other.profileId);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), other.key)).toBe(secondId);
+  expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
+  await page.evaluate(async profileId => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const first = next.deliverables.find(profile => profile.id === profileId);
+    if (!first) throw new Error("Original profile missing.");
+    next.deliverables = [first, ...next.deliverables.filter(profile => profile.id !== profileId)]; next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+  }, legacy.profileId);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(legacy.profileId);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Legacy unsaved concept");
+  await expect(field(page, "Vertex 1 box x")).toHaveValue("1e");
+  await page.reload();
+  await expect(field(page, "Vertex 1 box x")).toHaveValue("1e");
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  expect(await requestCount(page)).toBe(0);
+  expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.legacyKey)).toBe(legacy.graphId);
+});
+test("Graph legacy saved identity survives new-source selection without replacing another profile", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const firstProject = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const firstGraph = firstProject.production_design!.semantic_graphs![0];
+  const legacy = await exposeLegacyGraphIdentity(page);
+  expect(legacy.graphId).toBe(firstGraph.id);
+  await page.reload();
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await expect(button(page, "Save Graph changes")).toBeVisible();
+  await expect(field(page, "Graph Deliverable")).toHaveValue(legacy.profileId);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.profileKey)).toBe(firstGraph.id);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.legacyKey)).toBe(firstGraph.id);
+  const other = await page.evaluate(async () => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const second = { ...structuredClone(next.deliverables[0]), id: crypto.randomUUID() };
+    next.deliverables = [second, ...next.deliverables]; next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+    return { profileId: second.id, key: "motionwright.semantic-graph-new-id.v2:" +
+      JSON.stringify([next.id, next.generation, next.active_branch, next.scenes[0].id, second.id, "causal_diagram"]) };
+  });
+  await field(page, "Graph source").selectOption(firstGraph.id);
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await expect(field(page, "Graph Deliverable")).toHaveValue(other.profileId);
+  await expect(button(page, "Save semantic Graph")).toBeVisible();
+  expect(await page.evaluate(key => sessionStorage.getItem(key), other.key)).not.toBe(firstGraph.id);
+  await field(page, "Graph author label").fill("Independent migrated profile");
+  await field(page, "Graph rationale").fill("The old profile retains its original saved source.");
+  await field(page, "Vertex 1 label").fill("Second Graph beside the migrated original");
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save semantic Graph")).toBeEnabled();
+  await button(page, "Save semantic Graph").click(); await expect.poll(() => requestCount(page)).toBe(2);
+  const request = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[1]);
+  if (request.change.type !== "upsert_semantic_graph") throw new Error("Expected the second Graph mutation.");
+  const secondGraphId = request.change.graph.id;
+  expect(secondGraphId).not.toBe(firstGraph.id);
+  expect(request.change.graph.variant_profile_ref).toBe(other.profileId);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
+  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  expect(saved.production_design!.semantic_graphs).toHaveLength(2);
+  expect(saved.production_design!.semantic_graphs!.find(graph => graph.id === firstGraph.id)).toEqual(firstGraph);
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue(secondGraphId);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Second Graph beside the migrated original");
+  await field(page, "Graph source").selectOption(firstGraph.id);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(firstGraph.variant_profile_ref);
+  await expect(field(page, "Vertex 1 label")).toHaveValue(firstGraph.content.vertices[0].label);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.legacyKey)).toBe(firstGraph.id);
+  expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(saved);
+  expect(await requestCount(page)).toBe(2);
+});
+
+test("Graph migrated draft retarget keeps its identity without aliasing another profile", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph author label").fill("Original migration author");
+  await field(page, "Graph rationale").fill("An explicit profile retarget preserves this draft identity.");
+  await field(page, "Vertex 1 label").fill("Explicitly retargeted legacy concept");
+  const legacy = await exposeLegacyGraphIdentity(page);
+  await page.reload();
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.profileKey)).toBe(legacy.graphId);
+  const other = await page.evaluate(async () => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const second = { ...structuredClone(next.deliverables[0]), id: crypto.randomUUID() };
+    next.deliverables.push(second); next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+    return { profileId: second.id, key: "motionwright.semantic-graph-new-id.v2:" +
+      JSON.stringify([next.id, next.generation, next.active_branch, next.scenes[0].id, second.id, "causal_diagram"]) };
+  });
+  // This is an explicit author edit of the existing draft, unlike selecting
+  // another displayProfile and requesting a separate New Graph source.
+  await field(page, "Graph Deliverable").selectOption(other.profileId);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(other.profileId);
+  const retargeted = await currentGraphCopy(page), retargetedDraft = JSON.parse(retargeted.raw).draft;
+  expect(retargetedDraft.graphId).toBe(legacy.graphId);
+  expect(retargetedDraft.input.variant_profile_ref).toBe(other.profileId);
+  await page.evaluate(async profileId => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const selected = next.deliverables.find(profile => profile.id === profileId)!;
+    next.deliverables = [selected, ...next.deliverables.filter(profile => profile.id !== profileId)]; next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+  }, other.profileId);
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await expect(field(page, "Graph Deliverable")).toHaveValue(other.profileId);
+  const secondId = await page.evaluate(key => sessionStorage.getItem(key), other.key);
+  expect(secondId).toMatch(/^[0-9a-f-]{36}$/i); expect(secondId).not.toBe(legacy.graphId);
+  await expect(field(page, "Vertex 1 label")).not.toHaveValue("Explicitly retargeted legacy concept");
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.profileKey)).toBe(legacy.graphId);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.legacyKey)).toBe(legacy.graphId);
+  expect(await page.evaluate(key => localStorage.getItem(key), retargeted.copyKey)).toBe(retargeted.raw);
+  await page.reload();
+  expect(await page.evaluate(key => sessionStorage.getItem(key), other.key)).toBe(secondId);
+  await page.evaluate(async profileId => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const selected = next.deliverables.find(profile => profile.id === profileId)!;
+    next.deliverables = [selected, ...next.deliverables.filter(profile => profile.id !== profileId)]; next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+  }, legacy.profileId);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Explicitly retargeted legacy concept");
+  await expect(field(page, "Graph Deliverable")).toHaveValue(other.profileId);
+  const retainedGraphId = await page.evaluate(pointerKey => {
+    const writer = sessionStorage.getItem(pointerKey);
+    if (!writer) throw new Error("The original draft recovery pointer is missing.");
+    const key = "motionwright.semantic-graph-recovery.v1:" + pointerKey.slice("motionwright.semantic-graph-writer.v1:".length) + ":" + writer;
+    const raw = localStorage.getItem(key);
+    if (!raw) throw new Error("The original scoped draft recovery copy is missing.");
+    return JSON.parse(raw).draft.graphId;
+  }, retargeted.pointerKey);
+  expect(retainedGraphId).toBe(legacy.graphId);
+  expect(await page.evaluate(key => localStorage.getItem(key), retargeted.copyKey)).toBe(retargeted.raw);
+  expect(await requestCount(page)).toBe(0);
+});
+
 test("Graph original ACK retains later typing and return-to-base intent", async ({ page }) => {
   await open(page); await valid(page); const base = await field(page, "Vertex 1 label").inputValue(); await field(page, "Vertex 1 label").fill("Sent concept");
   await button(page, "Save semantic Graph").click(); await expect.poll(() => requestCount(page)).toBe(1);
@@ -161,7 +399,7 @@ for (const phase of ["get", "set", "readback"] as const) test("Graph identity re
     const marker = "TEST-ONLY.graph-identity-transient-" + phase;
     let wroteIdentity = false;
     Storage.prototype.getItem = function (key: string) {
-      if (this === sessionStorage && key.startsWith("motionwright.semantic-graph-new-id.v1:") && get.call(sessionStorage, marker) !== "failed"
+      if (this === sessionStorage && key.startsWith("motionwright.semantic-graph-new-id.v2:") && get.call(sessionStorage, marker) !== "failed"
         && (phase === "get" || (phase === "readback" && wroteIdentity))) {
         set.call(sessionStorage, marker, "failed");
         if (phase === "readback") return null;
@@ -170,7 +408,7 @@ for (const phase of ["get", "set", "readback"] as const) test("Graph identity re
       return get.call(this, key);
     };
     Storage.prototype.setItem = function (key: string, value: string) {
-      const targeted = this === sessionStorage && key.startsWith("motionwright.semantic-graph-new-id.v1:");
+      const targeted = this === sessionStorage && key.startsWith("motionwright.semantic-graph-new-id.v2:");
       if (targeted && phase === "set" && get.call(sessionStorage, marker) !== "failed") {
         set.call(sessionStorage, marker, "failed"); throw new Error("Synthetic transient Graph identity write failure");
       }
@@ -187,7 +425,7 @@ for (const phase of ["get", "set", "readback"] as const) test("Graph identity re
   const original = await currentGraphCopy(page), originalDraft = JSON.parse(original.raw).draft;
   const identity = await page.evaluate(() => {
     const project = window.__GRAPH_AUTHORITY__.project();
-    const key = "motionwright.semantic-graph-new-id.v1:" + JSON.stringify([project.id, project.generation, project.active_branch, project.scenes[0].id, "causal_diagram"]);
+    const key = "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([project.id, project.generation, project.active_branch, project.scenes[0].id, project.deliverables[0].id, "causal_diagram"]);
     return { key, raw: sessionStorage.getItem(key) };
   });
   expect(identity.raw).toBe(phase === "readback" ? originalDraft.graphId : null);
