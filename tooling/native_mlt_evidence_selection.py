@@ -483,7 +483,7 @@ def ffv1_extended_stream_limit(entry, contract):
     """Only four source-owned complete-probe streams exceed the generic cap."""
     current=contract.get("context",{})
     require(current.get("scenario")=="repaired-g2"
-            and current.get("semwright_sha")=="5c2ac3107afbb083afb00d67a28edd0f104f8e15",
+            and current.get("semwright_sha")==SEM,
             "ffv1-probe-budget-source")
     match=re.fullmatch(r"output/(mw-mlt-[0-9a-f]{20})-s0[01]-ffv1\.mkv\.ffv1-complete-probe\.(stdout|stderr)\.original\.bin",
                        entry.get("relative_path",""))
