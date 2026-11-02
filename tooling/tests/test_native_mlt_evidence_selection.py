@@ -269,10 +269,11 @@ class MltSelectionTests(unittest.TestCase):
     def test_absent_wal_and_shm_have_two_sided_guards_without_reads(self):
         world=self.world()
         with world.patched():raw,manifest=world.capture();world.verify(raw)
-        self.assertEqual(len(manifest["absence_guards"]),4)
+        self.assertEqual(len(manifest["absence_guards"]),5)
         self.assertEqual({(row["role"],row["relative_path"]) for row in manifest["absence_guards"]},
                          {("reference-transport","records/reference-transport.json"),
                           ("ffv1-stage-plan",mlt.FFV1_PLAN_PATH),
+                          ("live-module-reason",mlt.LIVE_WITNESS_REASON_PATH),
                           ("database-wal","motionwright-data/motionwright.sqlite3-wal"),
                           ("database-shm","motionwright-data/motionwright.sqlite3-shm")})
         for row in manifest["absence_guards"]:
@@ -284,10 +285,11 @@ class MltSelectionTests(unittest.TestCase):
         world=self.world()
         for suffix in ("-wal","-shm"):world.put("owner","motionwright-data/motionwright.sqlite3"+suffix,("original"+suffix).encode())
         with world.patched():raw,manifest=world.capture();world.verify(raw)
-        self.assertEqual(len(manifest["absence_guards"]),2)
+        self.assertEqual(len(manifest["absence_guards"]),3)
         self.assertEqual({(guard["root"],guard["relative_path"],guard["role"])
                           for guard in manifest["absence_guards"]},
                          {("observation",mlt.FFV1_PLAN_PATH,"ffv1-stage-plan"),
+                          ("observation",mlt.LIVE_WITNESS_REASON_PATH,"live-module-reason"),
                           ("control","records/reference-transport.json","reference-transport")})
         for guard in manifest["absence_guards"]:
             self.assertTrue(guard["absent_before"] and guard["absent_after"])

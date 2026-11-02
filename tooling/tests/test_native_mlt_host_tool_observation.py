@@ -208,15 +208,16 @@ class NamespaceObservationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
+        self.owner_uid = os.getuid() if hasattr(os, "getuid") else 0
         self.output = self.root/"output"
         self.output.mkdir()
-        self.partial = self.root/"partial"
+        self.partial = self.root/"partial.mp4"
         self.partial.write_bytes(b"not-a-real-native-video")
         self.raw,self.stats,self.links,self.symlinks = {},{},{},set()
-        self.directory = metadata(st_mode=stat.S_IFDIR|0o700)
-        self.work = metadata(st_ino=70,st_mode=stat.S_IFDIR|0o700)
-        self.root_metadata = metadata(st_ino=80,st_mode=stat.S_IFDIR|0o755)
-        self.runner_metadata = metadata(st_ino=90)
+        self.directory = metadata(st_mode=stat.S_IFDIR|0o700,st_uid=self.owner_uid)
+        self.work = metadata(st_ino=70,st_mode=stat.S_IFDIR|0o700,st_uid=self.owner_uid)
+        self.root_metadata = metadata(st_ino=80,st_mode=stat.S_IFDIR|0o755,st_uid=self.owner_uid)
+        self.runner_metadata = metadata(st_ino=90,st_uid=self.owner_uid)
         for pid,parent,start in [(10,1,100),(20,10,200),(41,20,300)]:
             self.raw[str(pid)+"/stat"] = proc_stat(pid,parent,start)
             self.stats[str(pid)] = self.directory
@@ -236,8 +237,12 @@ class NamespaceObservationTests(unittest.TestCase):
         self.original_fstat = os.fstat
         def open_namespace(proc,name,**kwargs):
             self.assertEqual(str(proc),"/proc/41")
-            self.assertEqual(name,OUTPUT)
-            fd = os.open(self.partial,os.O_RDONLY|getattr(os,"O_BINARY",0))
+            self.assertEqual(name,CWD)
+            self.assertIs(kwargs.get("directory"),True)
+            # The real Host now opens partial.mp4 relative to a held private
+            # namespace directory; a direct file FD would bypass that oracle.
+            fd = os.open(self.root,os.O_RDONLY|getattr(os,"O_DIRECTORY",0)
+                         |getattr(os,"O_NOFOLLOW",0))
             self.opened_fds.append(fd)
             return fd
         def observed_fstat(fd):
@@ -245,8 +250,14 @@ class NamespaceObservationTests(unittest.TestCase):
             fields = {name:getattr(value,name) for name in
                       ("st_dev","st_ino","st_mode","st_uid","st_gid","st_size",
                        "st_mtime_ns","st_ctime_ns","st_nlink")}
-            fields["st_mode"] &= ~0o022
-            fields["st_uid"] = 0
+            if stat.S_ISDIR(value.st_mode):
+                # The held namespace directory must share the actual /proc
+                # cwd inode identity. A file descriptor must not masquerade
+                # as the directory in this independent process fixture.
+                fields.update({name:getattr(self.work,name) for name in fields})
+            else:
+                fields["st_mode"] &= ~0o022
+                fields["st_uid"] = self.owner_uid
             return SimpleNamespace(**fields)
         @contextmanager
         def binary(path,digest,budget):
@@ -256,7 +267,7 @@ class NamespaceObservationTests(unittest.TestCase):
             yield {"sha256":digest,"stat":self.runner_metadata}
         self.patches = [
             mock.patch.object(g2,"PROC_ROOT",ProcNode(self)),
-            mock.patch.object(g2.os,"getuid",return_value=0,create=True),
+            mock.patch.object(g2.os,"getuid",return_value=self.owner_uid,create=True),
             mock.patch.object(g2.os,"readlink",side_effect=lambda node:self.links[node.key]),
             mock.patch.object(g2,"host_tool_contract",return_value=self.contract),
             mock.patch.object(g2,"namespace_directory",
@@ -268,10 +279,12 @@ class NamespaceObservationTests(unittest.TestCase):
             mock.patch.object(loaded,"inspect_live_original",return_value={"test_double":True}),
         ]
         self.active = [patch.start() for patch in self.patches]
+        # Remove global os.fstat/readlink patches before tempfile cleanup:
+        # the patched /proc metadata is not the real temporary directory.
+        self.addCleanup(self.cleanup)
         for patch in self.patches:
             self.addCleanup(patch.stop)
         self.attest = self.active[-1]
-        self.addCleanup(self.cleanup)
     def cleanup(self):
         for fd in self.opened_fds:
             try:

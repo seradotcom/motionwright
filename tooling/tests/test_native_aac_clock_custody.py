@@ -294,7 +294,15 @@ class ClockCustodyTests(unittest.TestCase):
                         with world.patched():
                             raw, manifest = world.capture()
                             value = world.verify(raw)
-                    self.assertEqual(recomputed.call_count, len(phases))
+                    # Repaired G2 recomputes one historical carrier and its
+                    # presentation. Film180 separately checks original and
+                    # edited sources; neither phase may be silently omitted.
+                    self.assertEqual(recomputed.call_count, 2)
+                    bindings = [call.kwargs["binding"] for call in recomputed.call_args_list]
+                    if scenario == "film180-g2":
+                        self.assertNotEqual(bindings[0], bindings[1])
+                    else:
+                        self.assertEqual(bindings[0], bindings[1])
                     self.assertEqual(_synthetic_clock_report_bytes.cache_info(), before_verify)
                     rows = [row for row in manifest["members"] if row["role"] == "audio-clock-carrier"]
                     self.assertEqual(len(rows), len(phases))
