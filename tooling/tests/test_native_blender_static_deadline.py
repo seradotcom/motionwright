@@ -469,11 +469,23 @@ class StaticOriginalDeadlineTests(unittest.TestCase):
         self.assertIn("      timeout-minutes: 5\n", steps[native + 2])
         self.assertIn("always() && steps.static_seal.outputs.sealed == 'true'", steps[native + 2])
         self.assertNotIn("steps.static_native.outcome == 'success'", steps[native + 1] + steps[native + 2])
+        # A step that cannot execute in static-glb is not a static-native
+        # budget exposure. Match its direct workflow guard, not its display
+        # name (or the count of source-only Rust cases).
+        excluded_scope_guards = (
+            "      if: github.event_name == 'pull_request' || inputs.verification_scope == 'source'\n",
+            "      if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'\n",
+            "      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')\n",
+        )
         unbounded = []
         for step in steps[1:native]:
-            if "      run: |\n" not in step:
+            marker = "      run: |\n"
+            if marker not in step:
                 continue
-            if any(name in step for name in ("Verify affected lit producer contracts", "Require 30 exact lit Rust", "Bind the explicit original Scene")):
+            # Ignore only the step header. A string in a script body must
+            # never impersonate a workflow-level guard.
+            header = step.split(marker, 1)[0]
+            if any(guard in header for guard in excluded_scope_guards):
                 continue
             if "prepare-script" not in step:
                 unbounded.append(step.splitlines()[0])
