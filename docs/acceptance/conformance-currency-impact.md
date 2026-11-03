@@ -34,7 +34,11 @@ criteria**, without reconstructing the 396-row/1,652-field full contract.
 It distinguishes historical record associations from affected Phase 1 rows
 and fields. Changes to global SDK/dependency pins may affect many historical
 records, including later-phase families; those counts never prescribe a
-whole-product rerun or automatically grant a new PASS.
+whole-product rerun or automatically grant a new PASS. If an original mapped
+source/oracle file is now missing or linked, the planner explicitly requires
+a targeted owner G1 decision even when its path is already mapped, the checkout
+is clean, and no unrelated source or dependency changed. This is a hold on
+reusing the missing original, not a mandate to rerun the whole suite.
 
 `dependency_or_environment_paths_changed` also identifies nested manifests,
 locks, toolchains, Cargo configuration, Python requirements and constraints,

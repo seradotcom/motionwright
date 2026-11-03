@@ -228,13 +228,17 @@ def dependency_or_environment_paths(changed: set[str]) -> set[str]:
 
 
 def requires_transitive_owner_review(changed: set[str], risk_paths: frozenset[str],
-                                     unmapped_count: int, checkout: dict) -> bool:
-    """Hold G1 if immutable source impact cannot cover new or dirty inputs."""
+                                     unmapped_count: int, checkout: dict, *,
+                                     missing_reference_count: int = 0) -> bool:
+    """Hold G1 on missing/linked originals as well as new or dirty inputs."""
     need(type(unmapped_count) is int and unmapped_count >= 0,
          "invalid untracked source-reference impact count")
+    need(type(missing_reference_count) is int and missing_reference_count >= 0,
+         "invalid missing original source-reference count")
     return (bool(changed & risk_paths)
             or bool(dependency_or_environment_paths(changed))
             or unmapped_count > 0
+            or missing_reference_count > 0
             or not checkout["can_use_as_complete_current_checkout_impact"])
 
 
@@ -372,7 +376,10 @@ def inspect_development(root: Path, spec: str = "HEAD", *, baseline: str | None 
         "transitive_impact_unknown_requires_owner_review":
             requires_transitive_owner_review(
                 changed, risk_paths,
-                refs["unmapped_changed_path_count"], checkout),
+                refs["unmapped_changed_path_count"], checkout,
+                missing_reference_count=refs["missing_original_referenced_git_path_count"]),
+        "missing_or_linked_original_references_require_owner_review":
+            bool(refs["missing_original_referenced_git_path_count"]),
         "unmapped_changed_files_cannot_clear_G1":
             bool(refs["unmapped_changed_path_count"]),
         "catalog_preserved": {

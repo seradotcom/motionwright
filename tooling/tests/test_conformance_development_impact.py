@@ -400,6 +400,37 @@ class DevelopmentSourceImpactPureTests(unittest.TestCase):
             with self.subTest(bad_count=bad_count):
                 with self.assertRaises(ValueError):
                     dev.requires_transitive_owner_review(set(), pins, bad_count, clean)
+        self.assertTrue(dev.requires_transitive_owner_review(
+            set(), pins, 0, clean, missing_reference_count=1))
+        for bad_count in (-1, 1.5, True):
+            with self.subTest(missing_count=bad_count):
+                with self.assertRaises(ValueError):
+                    dev.requires_transitive_owner_review(
+                        set(), pins, 0, clean, missing_reference_count=bad_count)
+
+    def test_deleted_mapped_original_is_not_misclassified_as_no_G1_review(self):
+        # The deleted file is *mapped* by its historical source record.
+        # Unmapped and dependency counts therefore both remain zero.
+        # A clean commit with missing original bytes still requires a
+        # transitive source owner decision, never automatic evidence reuse.
+        with development_history("product.py") as (root, baseline, target):
+            (root / "product.py").unlink()
+            dev.git(root, "add", "--all")
+            dev.git(root, "-c", "user.name=Conformance fixture",
+                    "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=",
+                    "commit", "--quiet", "-m", "fixture deletes original source")
+            report = dev.inspect_development(root, "HEAD", baseline=target)
+        impact = report["impact"]
+        self.assertEqual(impact["unmapped_changed_path_count"], 0)
+        self.assertEqual(impact["missing_original_referenced_git_paths"],
+                         ["product.py"])
+        self.assertEqual(impact["missing_original_referenced_git_path_count"], 1)
+        self.assertTrue(report["missing_or_linked_original_references_require_owner_review"])
+        self.assertTrue(report["transitive_impact_unknown_requires_owner_review"])
+        self.assertEqual(report["dependency_or_environment_paths_changed"], [])
+        self.assertEqual(report["recorded_or_new_current_PASS"], 0)
+        self.assertEqual(report["G3"], "NOT_GRANTED")
 
     def test_unmapped_diff_requires_transitive_G1_review(self):
         from unittest.mock import patch
