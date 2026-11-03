@@ -836,3 +836,42 @@ for (const recovered of [false, true]) {
     expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
   });
 }
+
+// A saved Graph UUID must never be mounted in the newly selected Project even
+// for one React render; otherwise getSession can create a foreign recovery copy.
+test("Graph selected saved UUID never creates a recovery copy in a different Project on scope switch", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const before = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const oldId = before.production_design!.semantic_graphs![0].id;
+  await field(page, "Graph source").selectOption(oldId);
+  await expect(field(page, "Graph source")).toHaveValue(oldId);
+  await field(page, "Vertex 1 label").fill("Unsubmitted old-project Graph text");
+  const original = await currentGraphCopy(page);
+  const changed = await page.evaluate(async () => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    next.id = crypto.randomUUID(); next.generation = crypto.randomUUID();
+    next.production_design!.semantic_graphs = []; next.revision = 0;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+    return { id: next.id, generation: next.generation,
+      branch: next.active_branch, scene: next.scenes[0].id };
+  });
+  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
+  const foreignCopies = () => page.evaluate(({ changed, oldId }) => {
+    const foreign = encodeURIComponent(JSON.stringify([
+      changed.id, changed.generation, changed.branch, changed.scene, oldId,
+    ]));
+    const scope = "motionwright.semantic-graph-recovery.v1:" + foreign + ":";
+    return {
+      keys: Object.keys(localStorage).filter(key => key.startsWith(scope)),
+      pointer: sessionStorage.getItem("motionwright.semantic-graph-writer.v1:" + foreign),
+    };
+  }, { changed, oldId });
+  expect(await foreignCopies()).toEqual({ keys: [], pointer: null });
+  expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
+  expect(await requestCount(page)).toBe(1);
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
+  expect(await foreignCopies()).toEqual({ keys: [], pointer: null });
+  expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
+  expect(await requestCount(page)).toBe(1);
+});

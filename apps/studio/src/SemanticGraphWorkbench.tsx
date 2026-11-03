@@ -177,8 +177,20 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
   const [, redrawIdentity] = useState(0);
   const sourceScope = JSON.stringify([props.project.id, props.project.generation, props.project.active_branch, props.scene?.id, props.displayProfile?.id]);
   const previousScope = useRef(sourceScope);
-  useEffect(() => { if (previousScope.current !== sourceScope) { previousScope.current = sourceScope; setSelection(available.find(graph => graph.variant_profile_ref === props.displayProfile?.id)?.id ?? "new:causal_diagram"); } }, [sourceScope, available, props.displayProfile?.id]);
+  useEffect(() => {
+    if (previousScope.current !== sourceScope) {
+      previousScope.current = sourceScope;
+      setSelection(available.find(graph => graph.variant_profile_ref === props.displayProfile?.id)?.id ?? "new:causal_diagram");
+      // State selection may already be "New". Force an identity redraw even then.
+      redrawIdentity(value => value + 1);
+    }
+  }, [sourceScope, available, props.displayProfile?.id]);
   if (!props.scene || !props.displayProfile) return <section aria-label="Semantic Graph"><h2>Semantic Graph</h2><p>Select a scene and a Deliverable to author its typed Graph.</p></section>;
+  // A Project/scene/profile switch cannot mount the GraphEditor with
+  // a previous source UUID before the selection reset effect has run.
+  if (previousScope.current !== sourceScope) return <section aria-label="Semantic Graph workbench">
+    <h2>Semantic Graph</h2><p role="status">Synchronizing the selected Graph source with this Project.</p>
+  </section>;
   const stored = available.find(graph => graph.id === selection), kind: GraphContent["kind"] = selection === "new:system_flow" ? "system_flow" : "causal_diagram";
   const identity = stored ? { id: stored.id, problem: null } : createIdentity(props.project, props.scene.id, props.displayProfile.id, kind);
   const existingNew = available.find(graph => graph.id === identity.id);
