@@ -1090,7 +1090,7 @@ jobs:
                   sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
                   "--no-cache-dir", "--no-compile", "--target", str(root / "site-packages"),
                   "--report", str(private / "pip-install.json"),
-                  "manim==0.21.0", str(wheel),
+                  "manim==0.21.0", "manimpango==0.6.1", str(wheel),
               ], stdout=stdout, stderr=stderr, check=True, timeout=900)
           if original["sha256"] != hashlib.sha256(wheel.read_bytes()).hexdigest():
               raise SystemExit("PyAV wheel changed during installation")
@@ -1115,13 +1115,15 @@ jobs:
           import av.filter
           import av.logging
           import manim
+          import manimpango
           root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"]).resolve(strict=True)
           packages = (root / "site-packages").resolve(strict=True)
           private = Path(os.environ["RUNNER_TEMP"]) / "manim-runtime-provision"
-          if manim.__version__ != "0.21.0" or av.__version__ != "15.0.0":
-              raise SystemExit("Installed Manim/PyAV versions differ from runtime schema 2")
+          if (manim.__version__ != "0.21.0" or manimpango.__version__ != "0.6.1"
+                  or av.__version__ != "15.0.0"):
+              raise SystemExit("Installed Manim/ManimPango/PyAV versions differ from runtime schema 2")
           if not all(Path(module.__file__).resolve(strict=True).is_relative_to(packages)
-                     for module in (manim, av, av._core)):
+                     for module in (manim, manimpango, av, av._core)):
               raise SystemExit("Runtime imports escaped the installed bundle")
           if not {"buffer", "showinfo", "buffersink"} <= set(av.filter.filters_available):
               raise SystemExit("PyAV native metadata filters are unavailable")
