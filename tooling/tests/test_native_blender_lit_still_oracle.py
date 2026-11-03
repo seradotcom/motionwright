@@ -720,6 +720,14 @@ class SelectedEvidenceContractTests(unittest.TestCase):
                     producer.validate_lit_manifest(value, {})
 
     def test_family_manifest_refuses_omitted_or_substituted_sqlite_absence_guard(self):
+        _, _, _, entries = self.policies()
+        private_stages = [row for row in entries
+                          if row[0].endswith("/evidence/native-call-progress.jsonl")]
+        self.assertEqual(len(private_stages), 4)
+        self.assertEqual({row[1] for row in private_stages},
+                         {"original", "edited", "comparison"})
+        self.assertTrue(all(row[2] == "attempt-custody" and
+                            row[4:] == ("original", None) for row in private_stages))
         from unittest.mock import patch
         with patch("native_evidence_projection.validate_selected_manifest", return_value=None):
             for change in ("remove", "path", "opened", "hashed"):

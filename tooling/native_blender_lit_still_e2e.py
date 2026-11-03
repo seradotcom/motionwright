@@ -572,6 +572,7 @@ def selection_contract():
         entries.extend((
             (f"{phase}/context/workspace/{NAMES[phase]}", selected_phase, "readback", role + "-png", "original", None),
             (f"{phase}/evidence/phase-evidence.json", selected_phase, "attempt-custody", role + "-terminal", "json-projection", "lit-phase-v1"),
+            (f"{phase}/evidence/native-call-progress.jsonl", selected_phase, "attempt-custody", role + "-call-progress", "original", None),
             (f"{phase}/evidence/verified-phase.json", selected_phase, "readback", role + "-verification", "json-original", "lit-verification-v1"),
             (f"decoded/{ROLES[phase]}.rgba", selected_phase, "readback", role + "-rgba", "original", None),
             (f"decoded/{ROLES[phase]}.decode-receipt.json", selected_phase, "readback", role + "-decode", "json-projection", "lit-decode-v1"),
@@ -583,7 +584,7 @@ def selection_contract():
     roles = {(phase, layer, role): (1, 1) for _, phase, layer, role, _, _ in entries}
     for suffix in ("wal", "shm", "journal"):
         roles[("single", "persistence", "absent-sqlite-" + suffix)] = (0, 0)
-    require(len(entries) == 33 and len({row[0] for row in entries}) == 33,
+    require(len(entries) == 37 and len({row[0] for row in entries}) == 37,
             "lit-selection-fixed-roster")
     return policies, roles, entries
 
@@ -610,8 +611,10 @@ def build_selection_spec(owner: Path, source_root: Path, record: dict,
         media = path.endswith((".blend", ".png", ".rgba"))
         if expected is None and not media:
             try:
-                body, _ = capture_regular(owner / path, min(selection.MAX_FILE,
-                                          selection.MAX_JSON if kind != "original" else selection.MAX_FILE))
+                maximum = (4 * 1024 * 1024
+                           if path.endswith("/native-call-progress.jsonl") else
+                           selection.MAX_JSON if kind != "original" else selection.MAX_FILE)
+                body, _ = capture_regular(owner / path, min(selection.MAX_FILE, maximum))
                 expected = binding(body)
             except (OSError, ValueError, AssertionError):
                 expected = None

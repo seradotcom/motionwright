@@ -382,6 +382,8 @@ async fn phase(
     let connection = ProductionConnection::load(connection_path)?;
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let mut journal = BlenderLitStillJournal::default();
+    journal
+        .enable_private_call_ledger(&evidence_path.with_file_name("native-call-progress.jsonl"))?;
     let terminal = coordinator
         .realize_blender_lit_still(&request, &mut journal)
         .await;
