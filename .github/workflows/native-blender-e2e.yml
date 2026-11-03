@@ -941,9 +941,9 @@ jobs:
         receipt = json.loads(report.read_bytes())
         expected = {
             "discovery:test_blender_original_scene_contract.py": 35,
-            "discovery:test_native_blender_original_evidence.py": 55,
+            "discovery:test_native_blender_original_evidence.py": 63,
             "dotted:tooling.tests.test_blender_original_scene_contract": 35,
-            "dotted:tooling.tests.test_native_blender_original_evidence": 55,
+            "dotted:tooling.tests.test_native_blender_original_evidence": 63,
         }
         compact = {
             "test_default_runtime_path_is_unchanged",
@@ -969,7 +969,7 @@ jobs:
                     or counts.get("tests_run") != count or counts.get("passed") != count
                     or any(counts.get(k) != 0 for k in
                            ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                raise SystemExit("Incomplete Blender 35+55 source roster")
+                raise SystemExit("Incomplete Blender 35+63 source roster")
             if "test_native_blender_original_evidence" in step["entry_point"]:
                 original = report.with_name(step["stderr"]["file"]).read_bytes()
                 if hashlib.sha256(original).hexdigest() != step["stderr"]["sha256"]:
