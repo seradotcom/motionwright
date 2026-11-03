@@ -1,8 +1,11 @@
 """Schema regression; synthetic values, real Rust seed/request JSON shape."""
 import copy
+import os
 from pathlib import Path
 import sys
+import textwrap
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_blender_lit_still_e2e as producer
@@ -75,5 +78,30 @@ class RustSeedSelectionContractTests(unittest.TestCase):
         projected = selection.project(request, rule, exact=False)
         self.assertEqual(projected, request)
         self.assertEqual(projected["expected"]["resource"], seed["resource"])
+
+
+class LitStillDispatchPreflightTests(unittest.TestCase):
+    def test_absent_recipient_fails_before_expensive_native_setup(self):
+        # Execute the workflow's real first Python preflight, not an invented
+        # substitute. This tests only early denial, never native admission.
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/native-blender-e2e.yml").read_text()
+        lit = workflow.split("  native-blender-lit-still:\n", 1)[1]
+        first = "    - name: Reject implicit source, unsupported scope and native retries\n"
+        next_step = "    - name: Resolve exact Semwright source pin\n"
+        self.assertLess(lit.index(first), lit.index("    - name: Prepare isolated Rust toolchain root\n"))
+        self.assertLess(lit.index(first), lit.index("    - name: Bind composed source and validate encryption recipient before native effects\n"))
+        step = lit.split(first, 1)[1].split(next_step, 1)[0]
+        original = textwrap.dedent(step.split("        python3 - <<'PY'\n", 1)[1].split("        PY\n", 1)[0])
+        base = {"GITHUB_EVENT_NAME": "workflow_dispatch", "VERIFICATION_SCOPE": "lit-still",
+                "GITHUB_RUN_ATTEMPT": "1", "EXPECTED_SOURCE": "a" * 40, "GITHUB_SHA": "a" * 40}
+        for invalid in ("", "x" * 4097):
+            with self.subTest(recipient_bytes=len(invalid)), patch.dict(os.environ, {
+                **base, "RECOVERY_RECIPIENT": invalid,
+            }, clear=True):
+                with self.assertRaisesRegex(SystemExit, "public recovery_recipient required for lit-still"):
+                    exec(compile(original, "blender-lit-workflow-first-preflight", "exec"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

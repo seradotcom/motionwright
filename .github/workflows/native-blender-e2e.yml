@@ -2056,6 +2056,10 @@ jobs:
             or re.fullmatch(r'[0-9a-f]{40}', os.environ['EXPECTED_SOURCE']) is None
             or os.environ['EXPECTED_SOURCE'] != os.environ['GITHUB_SHA']):
             raise SystemExit('Explicit first attempt on the exact composed source required')
+        recipient = os.environ.get('RECOVERY_RECIPIENT', '')
+        if not 0 < len(recipient.encode('utf-8')) <= 4096:
+            raise SystemExit('Nonempty public recovery_recipient required for lit-still before native setup')
+        # The canonical RSA-3072 key is still verified by lit_preflight.
         PY
     - name: Resolve exact Semwright source pin
       id: lit_pin
