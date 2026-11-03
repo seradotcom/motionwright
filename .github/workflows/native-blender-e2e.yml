@@ -982,7 +982,7 @@ jobs:
                 product_observed = re.findall(r"^(test_\w+) \([^\n]*\.ProductProfileTests\.\1\) \.\.\. ok$", view, re.M)
                 if len(product_observed) != 4 or set(product_observed) != set(product_expected):
                     raise SystemExit("Every product custody profile case must actually pass")
-        print(json.dumps({"distinct_Blender_source_cases":90, "case_executions":180,
+        print(json.dumps({"distinct_Blender_source_cases":98, "case_executions":196,
                           "compact_runtime_cases":9, "skipped":0,
                           "native_effects":False}, sort_keys=True))
         PY
