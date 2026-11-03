@@ -473,7 +473,7 @@ class StaticOriginalDeadlineTests(unittest.TestCase):
         for step in steps[1:native]:
             if "      run: |\n" not in step:
                 continue
-            if any(name in step for name in ("Verify affected lit producer contracts", "Require 29 exact lit Rust", "Bind the explicit original Scene")):
+            if any(name in step for name in ("Verify affected lit producer contracts", "Require 30 exact lit Rust", "Bind the explicit original Scene")):
                 continue
             if "prepare-script" not in step:
                 unbounded.append(step.splitlines()[0])
