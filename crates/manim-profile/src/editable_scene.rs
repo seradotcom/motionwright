@@ -794,18 +794,30 @@ pub fn inspect_native_readback(plan: &Plan, bytes: &[u8]) -> Result<NativeReadba
             NodeKind::Circle => "Circle",
             _ => "Rectangle",
         };
-        if node.name != format!("mw_{}", expected.node_id.simple())
+        // A mismatch must remain fail-closed, but its bounded reason should
+        // identify the failing contract field without leaking the original
+        // position, text, font, color, path, or project identity.
+        let property_error = if node.name != format!("mw_{}", expected.node_id.simple())
             || node.primitive != expected_primitive
-            || !vector(&node.center, &center)
-            || !vector(&node.x_axis, &x)
-            || !vector(&node.y_axis, &y)
-            || !near(node.z_index, f64::from(expected.z_index))
-            || !node.fill_hex.eq_ignore_ascii_case(&expected.fill_hex)
-            || !near(node.fill_opacity, expected.opacity)
-            || !near(node.stroke_width, 0.0)
-            || !near(node.stroke_opacity, 0.0)
         {
-            return Err(profile_invalid("editable_native_object_property_mismatch"));
+            Some("editable_native_object_identity_mismatch")
+        } else if !vector(&node.center, &center) {
+            Some("editable_native_object_center_mismatch")
+        } else if !vector(&node.x_axis, &x) || !vector(&node.y_axis, &y) {
+            Some("editable_native_object_axis_mismatch")
+        } else if !near(node.z_index, f64::from(expected.z_index)) {
+            Some("editable_native_object_z_index_mismatch")
+        } else if !node.fill_hex.eq_ignore_ascii_case(&expected.fill_hex)
+            || !near(node.fill_opacity, expected.opacity)
+        {
+            Some("editable_native_object_fill_mismatch")
+        } else if !near(node.stroke_width, 0.0) || !near(node.stroke_opacity, 0.0) {
+            Some("editable_native_object_stroke_mismatch")
+        } else {
+            None
+        };
+        if let Some(reason) = property_error {
+            return Err(profile_invalid(reason));
         }
         let mut seen = BTreeSet::new();
         for corner in &node.layout_corners {
@@ -1063,29 +1075,65 @@ mod tests {
         node.rotation_deg = 0.0;
         let bytes = shape_readback(&plan);
         assert!(inspect_native_readback(&plan, &bytes).is_ok());
-        for case in ["source", "camera", "opacity", "rotation", "corner", "extra"] {
+        for case in [
+            "source", "camera", "identity", "center", "opacity", "rotation", "z_index", "color",
+            "stroke", "corner", "extra",
+        ] {
             let mut observed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            match case {
-                "source" => observed["source_file_sha256"] = serde_json::json!("0".repeat(64)),
-                "camera" => observed["camera"]["frame_height"] = serde_json::json!(9.0),
-                "opacity" => observed["objects"][0]["fill_opacity"] = serde_json::json!(1.0),
+            let expected_error = match case {
+                "source" => {
+                    observed["source_file_sha256"] = serde_json::json!("0".repeat(64));
+                    None
+                }
+                "camera" => {
+                    observed["camera"]["frame_height"] = serde_json::json!(9.0);
+                    None
+                }
+                "identity" => {
+                    observed["objects"][0]["name"] = serde_json::json!("mw_another");
+                    Some("editable_native_object_identity_mismatch")
+                }
+                "center" => {
+                    observed["objects"][0]["center"] = serde_json::json!([1.0, 0.0, 0.0]);
+                    Some("editable_native_object_center_mismatch")
+                }
+                "opacity" => {
+                    observed["objects"][0]["fill_opacity"] = serde_json::json!(1.0);
+                    Some("editable_native_object_fill_mismatch")
+                }
                 "rotation" => {
-                    observed["objects"][0]["x_axis"] = serde_json::json!([-1.0, 0.0, 0.0])
+                    observed["objects"][0]["x_axis"] = serde_json::json!([-1.0, 0.0, 0.0]);
+                    Some("editable_native_object_axis_mismatch")
+                }
+                "z_index" => {
+                    observed["objects"][0]["z_index"] = serde_json::json!(4.0);
+                    Some("editable_native_object_z_index_mismatch")
+                }
+                "color" => {
+                    observed["objects"][0]["fill_hex"] = serde_json::json!("#000000");
+                    Some("editable_native_object_fill_mismatch")
+                }
+                "stroke" => {
+                    observed["objects"][0]["stroke_width"] = serde_json::json!(1.0);
+                    Some("editable_native_object_stroke_mismatch")
                 }
                 "corner" => {
                     observed["objects"][0]["layout_corners"][3] =
-                        serde_json::json!([2.0, -1.0, 0.0])
+                        serde_json::json!([2.0, -1.0, 0.0]);
+                    None
                 }
                 "extra" => {
                     let obj = observed["objects"][0].clone();
                     observed["objects"].as_array_mut().unwrap().push(obj);
+                    None
                 }
                 _ => unreachable!(),
+            };
+            let error = inspect_native_readback(&plan, &serde_json::to_vec(&observed).unwrap())
+                .unwrap_err();
+            if let Some(expected) = expected_error {
+                assert_eq!(error.to_string(), expected, "{case}");
             }
-            assert!(
-                inspect_native_readback(&plan, &serde_json::to_vec(&observed).unwrap()).is_err(),
-                "{case}"
-            );
         }
     }
     #[test]

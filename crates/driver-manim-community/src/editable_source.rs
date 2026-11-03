@@ -559,6 +559,138 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complete_original_editable_source_and_native_getters_reopen_without_replacement() {
+        // Synthetic acceptance of the complete retained source and original
+        // native sidecar. This does not start Manim or attest a real render.
+        let temporary = tempfile::tempdir().unwrap();
+        let work = temporary.path().join("work");
+        let output = temporary.path().join("output");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&output).unwrap();
+        let work = fs::canonicalize(work).unwrap();
+        let output = fs::canonicalize(output).unwrap();
+
+        let mut args = args();
+        args.plan.fonts.clear();
+        let node = &mut args.plan.nodes[0];
+        node.kind = profile::NodeKind::Rectangle;
+        node.typography = None;
+        node.width_px = 540.0;
+        node.height_px = 270.0;
+        node.x_px = 690.0;
+        node.y_px = 405.0;
+        profile::validate_plan(&args.plan).unwrap();
+
+        let prepared = prepare(&args, None).unwrap();
+        stage_assets(&work, &output, SOURCE, &args.plan, None).unwrap();
+        fs::write(work.join(SOURCE), prepared.source.as_bytes()).unwrap();
+        let retained = retain(
+            &work,
+            &output,
+            SOURCE,
+            &args.plan,
+            &prepared.plan_sha256,
+            None,
+        )
+        .unwrap();
+
+        // The sidecar represents a fixed rectangle projected to the center
+        // of a 960x540 Cairo camera. No values come from a Native process.
+        let getter_name = relative(SOURCE, "objects.json").unwrap();
+        let observed = serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "profile_id": "mw-manim-editable-text-v3",
+            "scene_class": "MotionwrightScene",
+            "source_file_sha256": hex::encode(Sha256::digest(prepared.source.as_bytes())),
+            "fontconfig_sha256": hex::encode(Sha256::digest(profile::FONTCONFIG.as_bytes())),
+            "camera": {
+                "pixel_width": 960,
+                "pixel_height": 540,
+                "frame_rate": 30.0,
+                "frame_width": 128.0 / 9.0,
+                "frame_height": 8.0,
+                "frame_center": [0.0, 0.0, 0.0],
+                "background_hex": "#000000",
+                "background_opacity": 1.0
+            },
+            "fonts": [],
+            "objects": [{
+                "name": format!("mw_{}", args.plan.nodes[0].node_id.simple()),
+                "primitive": "Rectangle",
+                "center": [0.0, 0.0, 0.0],
+                "layout_corners": [
+                    [-2.0, -1.0, 0.0],
+                    [-2.0, 1.0, 0.0],
+                    [2.0, -1.0, 0.0],
+                    [2.0, 1.0, 0.0]
+                ],
+                "x_axis": [1.0, 0.0, 0.0],
+                "y_axis": [0.0, 1.0, 0.0],
+                "z_index": 0.0,
+                "fill_hex": "#FFFFFF",
+                "fill_opacity": 1.0,
+                "stroke_width": 0.0,
+                "stroke_opacity": 0.0,
+                "lines": []
+            }]
+        }))
+        .unwrap();
+        profile::inspect_native_readback(&args.plan, &observed).unwrap();
+        fs::write(work.join(&getter_name), &observed).unwrap();
+
+        // Missing authority never becomes a verified descriptor, even when
+        // the retained bytes and the synthetic sidecar are individually valid.
+        assert!(
+            verify_completed(
+                &work,
+                &output,
+                SOURCE,
+                &args.plan,
+                &prepared.plan_sha256,
+                None
+            )
+            .is_err()
+        );
+
+        let (source, getter) = verify_completed(
+            &work,
+            &output,
+            SOURCE,
+            &args.plan,
+            &prepared.plan_sha256,
+            Some(&retained),
+        )
+        .unwrap();
+        assert_eq!(source, retained);
+        assert_eq!(getter.relative_path, getter_name);
+        assert_eq!(getter.bytes, observed.len() as u64);
+        assert_eq!(getter.sha256, hex::encode(Sha256::digest(&observed)));
+        assert_eq!(
+            fs::read(output.join(&getter.relative_path)).unwrap(),
+            observed
+        );
+
+        // An incomplete or changed original native readback cannot be
+        // repaired by falling back to the already-retained output sidecar.
+        fs::remove_file(work.join(&getter_name)).unwrap();
+        assert!(
+            verify_completed(
+                &work,
+                &output,
+                SOURCE,
+                &args.plan,
+                &prepared.plan_sha256,
+                Some(&retained)
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(output.join(&getter.relative_path)).unwrap(),
+            observed
+        );
+    }
+
     fn canonical_input(output: &Path, name: &str) -> (StartArgs, Vec<u8>) {
         let mut value = args();
         let fonts = BTreeMap::from([(value.plan.fonts[0].archive_path(), FONT.to_vec())]);
