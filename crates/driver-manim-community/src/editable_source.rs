@@ -366,15 +366,21 @@ pub(super) fn verify_completed(
     recorded: Option<&EditableSourceArtifact>,
 ) -> Result<(EditableSourceArtifact, static_source::NativeGetterArtifact)> {
     let (artifact, bundle, program) = expected(work_root, source_file, plan, plan_sha256)?;
-    if recorded != Some(&artifact)
-        || bounded_source_file(work_root, source_file, MAX_SOURCE_BYTES)? != program
-        || bounded_source_file(
-            output_root,
-            &artifact.relative_path,
-            profile::MAX_BUNDLE_BYTES,
-        )? != bundle
+    // Preserve the original short-circuit order, but return a fixed code for
+    // the first mismatched custody layer. Never include source bytes or paths.
+    if recorded != Some(&artifact) {
+        return Err(invalid("editable_recorded_source_descriptor_mismatch"));
+    }
+    if bounded_source_file(work_root, source_file, MAX_SOURCE_BYTES)? != program {
+        return Err(invalid("editable_original_program_mismatch"));
+    }
+    if bounded_source_file(
+        output_root,
+        &artifact.relative_path,
+        profile::MAX_BUNDLE_BYTES,
+    )? != bundle
     {
-        return Err(invalid("Editable job source custody changed"));
+        return Err(invalid("editable_original_bundle_mismatch"));
     }
     let name = relative(source_file, "objects.json")?;
     let bytes = bounded_source_file(work_root, &name, profile::MAX_NATIVE_READBACK_BYTES)?;
@@ -641,17 +647,37 @@ mod tests {
 
         // Missing authority never becomes a verified descriptor, even when
         // the retained bytes and the synthetic sidecar are individually valid.
-        assert!(
-            verify_completed(
-                &work,
-                &output,
-                SOURCE,
-                &args.plan,
-                &prepared.plan_sha256,
-                None
-            )
-            .is_err()
+        let missing_descriptor = verify_completed(
+            &work,
+            &output,
+            SOURCE,
+            &args.plan,
+            &prepared.plan_sha256,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            missing_descriptor.message,
+            "editable_recorded_source_descriptor_mismatch"
         );
+
+        // A changed original work program must not be rescued by a valid
+        // output bundle or a complete synthetic native sidecar.
+        fs::write(work.join(SOURCE), b"print('changed after retain')").unwrap();
+        let changed_program = verify_completed(
+            &work,
+            &output,
+            SOURCE,
+            &args.plan,
+            &prepared.plan_sha256,
+            Some(&retained),
+        )
+        .unwrap_err();
+        assert_eq!(
+            changed_program.message,
+            "editable_original_program_mismatch"
+        );
+        fs::write(work.join(SOURCE), prepared.source.as_bytes()).unwrap();
 
         let (source, getter) = verify_completed(
             &work,
