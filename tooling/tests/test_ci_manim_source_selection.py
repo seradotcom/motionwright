@@ -152,6 +152,18 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
         result, _ = self.execute()
         self.assertNotEqual(result.returncode, 0)
 
+    def test_editable_runtime_manimpango_is_pinned_to_compiler_contract(self):
+        """Reject an unpinned or mismatched native font engine before render."""
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        generated = (ROOT / "crates/manim-profile/src/editable_scene.py").read_text(encoding="utf-8")
+        pin = '"manimpango==0.6.1"'
+        self.assertEqual(workflow.count(pin), 1)
+        self.assertIn('or manimpango.__version__ != "0.6.1"', workflow)
+        self.assertIn('for module in (manim, manimpango, av, av._core)', workflow)
+        self.assertIn('manimpango.__version__ != "0.6.1"', generated)
+        self.assertIn('editable_runtime_identity_unsupported', generated)
+        self.assertLess(workflow.index(pin), workflow.index('      - name: Realize application-owned scene through real Broker and Manim Driver Host'))
+
 
 if __name__ == "__main__":
     unittest.main()
