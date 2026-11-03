@@ -1598,7 +1598,7 @@ jobs:
         finally:
             retain()
         PY
-    - name: Require 29 exact lit Rust source cases and compiled example
+    - name: Require 30 exact lit Rust source cases and compiled example
       if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'
       run: |
         python3 - <<'PY'
@@ -1719,6 +1719,10 @@ jobs:
           },
           {
             "target": "--lib",
+            "name": "production::blender_render::tests::private_call_progress_is_original_durable_and_never_serializes_private_payloads"
+          },
+          {
+            "target": "--lib",
             "name": "production::blender_render::tests::malformed_or_status_only_reports_cannot_replace_canonical_verification"
           },
           {
@@ -1752,7 +1756,7 @@ jobs:
             (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         retain()
         try:
-            if len(ROSTER) != 29 or len({r["name"] for r in ROSTER}) != 29:
+            if len(ROSTER) != 30 or len({r["name"] for r in ROSTER}) != 30:
                 raise ValueError("required Rust roster differs")
             build_argv = ["cargo", "build", "--locked", "-p", "motionwright-native",
                           "--example", "native-blender-lit-still-e2e"]
@@ -2158,6 +2162,7 @@ jobs:
             "native_roster_rejects_foreign_identity_membership_and_untracked_edit",
             "light_control_requires_declared_drift_and_actual_zero_energy_readback",
             "full_scene_tags_bind_complete_project_revision_and_origin_context",
+            "private_call_progress_is_original_durable_and_never_serializes_private_payloads",
             "malformed_or_status_only_reports_cannot_replace_canonical_verification",
         )
         ROSTER = [("--lib", "production::blender_render::tests::" + x) for x in ADAPTER_CASES]
@@ -2651,7 +2656,7 @@ jobs:
                 retain()
                 commands = [list(x) for x in BUILD_COMMANDS] + [case_command(t, n) for t, n in ROSTER]
                 try:
-                    require(len(ROSTER) == 29 and len({x[1] for x in ROSTER}) == 29, "g1-roster-changed")
+                    require(len(ROSTER) == 30 and len({x[1] for x in ROSTER}) == 30, "g1-roster-changed")
                     receipt["rustc"] = subprocess.check_output(["rustc", "--version"], text=True).strip()
                     require(receipt["rustc"].startswith("rustc 1.98.1 "), "unexpected-rust-toolchain")
                     for index, argv in enumerate(commands):
@@ -2877,7 +2882,7 @@ jobs:
       with:
         key: motionwright-native-blender-lit-1.98.1
         cache-on-failure: true
-    - name: G1 compile exact composed caller and require all 29 real Rust cases
+    - name: G1 compile exact composed caller and require all 30 real Rust cases
       id: lit_g1
       env:
         EXACT_SEMWRIGHT_SHA: ${{ steps.lit_pin.outputs.sha }}
