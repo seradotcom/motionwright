@@ -28,6 +28,14 @@ run tests. Dirty or untracked working-tree changes remain outside that
 comparison and require the owner's attention.
 
 The report lists direct source/oracle associations and unmapped changes.
+Its `impact.phase1_required_impact` subsection narrows the existing
+catalog to the original **247 required Phase 1 CR-/ACC- rows and 872 atomic
+criteria**, without reconstructing the 396-row/1,652-field full contract.
+It distinguishes historical record associations from affected Phase 1 rows
+and fields. Changes to global SDK/dependency pins may affect many historical
+records, including later-phase families; those counts never prescribe a
+whole-product rerun or automatically grant a new PASS.
+
 `dependency_or_environment_paths_changed` also identifies nested manifests,
 locks, toolchains, Cargo configuration, Python requirements and constraints,
 and CI definitions: even a mapped dependency file (such as the pinned Native

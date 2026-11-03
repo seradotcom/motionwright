@@ -68,7 +68,7 @@ def development_history(source_name):
         index = {
             "schema": "motionwright.technical-evidence/1",
             "source": source, "criteria": {fid: DIGEST},
-            "contracts": {rid: DIGEST}, "normative_edges": [],
+            "contracts": {rid: {"scope": "required"}}, "normative_edges": [],
             "records": [record],
         }
         index_text = json.dumps(index, sort_keys=True) + "\n"
@@ -99,12 +99,42 @@ def development_history(source_name):
         # This tiny synthetic one-row history tests path impact only. The
         # actual full 396-row normative catalog is validated independently.
         with patch.multiple(dev, EXPECTED_ROWS=1, EXPECTED_FIELDS=1,
-                            EXPECTED_EDGES=0), patch.object(
+                            EXPECTED_EDGES=0, PHASE1_ALL_ROWS=1,
+                            PHASE1_REQUIRED_ROWS=1, PHASE1_REQUIRED_FIELDS=1), patch.object(
                                 dev, "validate_catalog_links", return_value=None):
             yield root, baseline, target
 
 
 class DevelopmentSourceImpactPureTests(unittest.TestCase):
+    def test_phase1_impact_does_not_turn_future_required_rows_into_phase1(self):
+        current = case(identity="required-source", source="SOURCE_LOCK.json")
+        future = case(identity="future-source", source="SOURCE_LOCK.json")
+        future["criterion_ids"] = ["A05-E00-01#/statement"]
+        original = {"SOURCE_LOCK.json": BLOB_A, "oracle.py": BLOB_A}
+        modified = {**original, "SOURCE_LOCK.json": BLOB_B}
+        result = dev.summarize_references(
+            [current, future], original, modified, {"SOURCE_LOCK.json"},
+            phase1_required_fields=frozenset({"CR-TEST-01#/statement"}))
+        self.assertEqual(result["counts"]["source_path_affected_records"], 2)
+        p1 = result["phase1_required_impact"]
+        self.assertEqual(p1["historical_record_associations"], 1)
+        self.assertEqual(p1["affected_atomic_criteria"], 1)
+        self.assertEqual(p1["affected_rows"], ["CR-TEST-01"])
+        self.assertEqual(p1["affected_row_count"], 1)
+        self.assertTrue(p1["not_a_test_rerun_or_new_acceptance"])
+        self.assertEqual(result["automatically_admitted_criteria"], 0)
+
+    def test_phase1_required_scope_is_exact_canonical_247_872_without_reloading_evidence(self):
+        result = dev.inspect_development(ROOT, "HEAD", baseline="HEAD")
+        scope = result["impact"]["phase1_required_impact"]
+        self.assertEqual(scope["canonical_required_rows"], 247)
+        self.assertEqual(scope["canonical_required_atomic_criteria"], 872)
+        self.assertEqual(scope["historical_record_associations"], 0)
+        self.assertEqual(scope["affected_atomic_criteria"], 0)
+        self.assertEqual(scope["affected_rows"], [])
+        self.assertEqual(result["recorded_or_new_current_PASS"], 0)
+        self.assertFalse(result["strict_full_F_index_and_artifact_review_performed"])
+
     def test_original_normative_links_are_validated_on_development_impact(self):
         # Cardinality alone would accept a rewritten 506-edge traceability
         # graph. Reuse the canonical existing validator, not a new matrix.

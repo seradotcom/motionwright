@@ -32,6 +32,9 @@ LEDGERS = (
 EXPECTED_ROWS = 396
 EXPECTED_FIELDS = 1652
 EXPECTED_EDGES = 506
+PHASE1_ALL_ROWS = 268
+PHASE1_REQUIRED_ROWS = 247
+PHASE1_REQUIRED_FIELDS = 872
 GLOBAL_SOURCE_PINS = frozenset({
     "SOURCE_LOCK.json", "Cargo.lock", "Cargo.toml",
     "rust-toolchain.toml", "apps/studio/package-lock.json",
@@ -85,12 +88,14 @@ def original_git_tree(root: Path, sha: str) -> dict[str, tuple[str, str]]:
 def summarize_references(records: list[dict],
                          prior: dict[str, tuple[str, str]],
                          current: dict[str, tuple[str, str]],
-                         changed: set[str]) -> dict:
+                         changed: set[str], *,
+                         phase1_required_fields: frozenset[str] | None = None) -> dict:
     """Conservative source-reference impact only; no execution or PASS inference."""
     mapped: dict[str, set[str]] = collections.defaultdict(set)
     affected: set[str] = set()
     affected_fields: set[str] = set()
     missing: set[str] = set()
+    phase1_affected_record_associations = 0
     seen_records: set[str] = set()
     counts = collections.Counter()
     for record in records:
@@ -119,6 +124,9 @@ def summarize_references(records: list[dict],
         if changed_references or missing_reference:
             affected.add(identity)
             affected_fields.update(criteria)
+            if (phase1_required_fields is not None
+                and any(fid in phase1_required_fields for fid in criteria)):
+                phase1_affected_record_associations += 1
             if missing_reference:
                 counts["records_with_missing_or_linked_references"] += 1
             if changed_references:
@@ -134,7 +142,10 @@ def summarize_references(records: list[dict],
     counts["source_path_affected_criteria"] = len(affected_fields)
     counts["original_evidence_records"] = len(records)
     counts["distinct_referenced_paths"] = len(mapped)
-    return {
+    phase1_fields = (affected_fields & phase1_required_fields
+                     if phase1_required_fields is not None else frozenset())
+    phase1_rows = sorted({fid.split("#/", 1)[0] for fid in phase1_fields})
+    result = {
         "counts": dict(sorted(counts.items())),
         "impact_counts_are_record_associations_not_test_rerun_instructions": True,
         "global_dependency_pin_only_cannot_prove_behavioral_change": True,
@@ -153,6 +164,15 @@ def summarize_references(records: list[dict],
         "automatically_current_evidence_records": 0,
         "automatically_admitted_criteria": 0,
     }
+    if phase1_required_fields is not None:
+        result["phase1_required_impact"] = {
+            "historical_record_associations": phase1_affected_record_associations,
+            "affected_atomic_criteria": len(phase1_fields),
+            "affected_row_count": len(phase1_rows),
+            "affected_rows": phase1_rows,
+            "not_a_test_rerun_or_new_acceptance": True,
+        }
+    return result
 
 
 def checkout_source_boundary(root: Path, target: str) -> dict:
@@ -313,7 +333,20 @@ def inspect_development(root: Path, spec: str = "HEAD", *, baseline: str | None 
         need(set(record["criterion_ids"]).issubset(catalog)
              and set(record["complete_criterion_ids"]).issubset(record["criterion_ids"]),
              "historic record cites an absent or incomplete original criterion")
-    refs = summarize_references(index["records"], prior, current, changed)
+    # Phase1 is the existing CR-/ACC- slice, NOT every required v0.5 row.
+    # Derive its exact 247/872 denominator from the already-validated catalog.
+    phase1_rows = {rid for rid in contracts if rid.startswith(("CR-", "ACC-"))}
+    phase1_required_rows = {rid for rid in phase1_rows
+                            if contracts[rid]["scope"] == "required"}
+    phase1_required_fields = frozenset(
+        fid for fid in catalog if fid.split("#/", 1)[0] in phase1_required_rows)
+    need((len(phase1_rows), len(phase1_required_rows), len(phase1_required_fields))
+         == (PHASE1_ALL_ROWS, PHASE1_REQUIRED_ROWS, PHASE1_REQUIRED_FIELDS),
+         "original Phase1 source-impact denominator differs")
+    refs = summarize_references(index["records"], prior, current, changed,
+                                phase1_required_fields=phase1_required_fields)
+    refs["phase1_required_impact"]["canonical_required_rows"] = PHASE1_REQUIRED_ROWS
+    refs["phase1_required_impact"]["canonical_required_atomic_criteria"] = PHASE1_REQUIRED_FIELDS
     checkout = checkout_source_boundary(root, target)
     risk_paths = GLOBAL_SOURCE_PINS
     return {
