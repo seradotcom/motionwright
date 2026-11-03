@@ -16,6 +16,14 @@ use crate::multi_renderer::{
 };
 use semwright_semantic_composition::{Verdict, VerificationReport};
 use std::collections::{BTreeMap, BTreeSet};
+const LIT_PHASE_NATIVE_DEADLINE_SECS: u64 = 300;
+const LIT_PRIVATE_CALL_LEDGER_LIMIT: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug)]
+struct LitPrivateCallLedger {
+    file: std::fs::File,
+    bytes: u64,
+}
 
 const LIT_SCHEMA: &str = "motionwright.blender.lit-still/1";
 const LIT_PROFILE: &str = "planar-project-cycles-lit-still-v1";
@@ -137,6 +145,91 @@ pub struct BlenderLitStillJournal {
     pub phase: String,
     pub plan: Option<Value>,
     pub calls: Vec<Value>,
+    /// An opt-in original private file descriptor, never part of public JSON.
+    #[serde(skip)]
+    private_call_ledger: Option<std::sync::Arc<std::sync::Mutex<LitPrivateCallLedger>>>,
+}
+
+impl BlenderLitStillJournal {
+    /// The original E2E owner exclusively creates the ledger before any effect.
+    /// Existing paths cannot be replaced; this never grants Broker authority.
+    pub fn enable_private_call_ledger(&mut self, path: &std::path::Path) -> NativeResult<()> {
+        if self.private_call_ledger.is_some()
+            || !self.schema.is_empty()
+            || !self.calls.is_empty()
+            || path.file_name().and_then(|name| name.to_str()) != Some("native-call-progress.jsonl")
+        {
+            return Err(invalid("Lit-still private call ledger admission rejected"));
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(path)
+            .map_err(|_| backend("Lit-still private call ledger could not be created"))?;
+        self.private_call_ledger = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            LitPrivateCallLedger { file, bytes: 0 },
+        )));
+        Ok(())
+    }
+
+    fn write_private_call_stage(
+        &self,
+        sequence: u32,
+        command: &str,
+        mutation: bool,
+        state: &'static str,
+    ) -> NativeResult<()> {
+        let Some(ledger) = &self.private_call_ledger else {
+            return Ok(());
+        };
+        let safe_command = if command.starts_with("driver.blender.")
+            && command.len() <= 128
+            && command.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+            }) {
+            command
+        } else {
+            "unclassified"
+        };
+        let mut bytes = serde_json::to_vec(&json!({
+            "schema": "motionwright.blender.lit-private-call-stage/1",
+            "sequence": sequence,
+            "command": safe_command,
+            "mutation": mutation,
+            "state": state,
+        }))
+        .map_err(|_| backend("Lit-still private call stage could not be encoded"))?;
+        bytes.push(b'\n');
+        let mut writer = ledger
+            .lock()
+            .map_err(|_| backend("Lit-still private call ledger lock unavailable"))?;
+        let size = writer
+            .bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| backend("Lit-still private call ledger length overflow"))?;
+        if size > LIT_PRIVATE_CALL_LEDGER_LIMIT {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "Lit-still private call ledger exceeded its bounded budget",
+            ));
+        }
+        use std::io::Write as _;
+        writer
+            .file
+            .write_all(&bytes)
+            .map_err(|_| backend("Lit-still private call stage could not be retained"))?;
+        writer
+            .file
+            .sync_data()
+            .map_err(|_| backend("Lit-still private call stage could not be synced"))?;
+        writer.bytes = size;
+        Ok(())
+    }
 }
 
 fn unsupported(message: impl Into<String>) -> Error {
@@ -907,6 +1000,7 @@ struct LitSession<'a> {
     plan: &'a BlenderLitStillPlan,
     journal: &'a mut BlenderLitStillJournal,
     sequence: u32,
+    phase_deadline: tokio::time::Instant,
 }
 
 impl LitSession<'_> {
@@ -929,27 +1023,74 @@ impl LitSession<'_> {
             "sequence":self.sequence,"request_id":request_id,"command":command,
             "args":args.clone(),"mutation":mutation,"native_result":null,"native_error":null
         }));
-        match self
-            .coordinator
-            .execute(
+        if tokio::time::Instant::now() >= self.phase_deadline {
+            self.journal.write_private_call_stage(
+                self.sequence,
+                command,
+                mutation,
+                "NOT_DISPATCHED_DEADLINE",
+            )?;
+            return Err(Error::new(
+                ErrorCode::Timeout,
+                "Lit-still phase deadline elapsed before Broker dispatch",
+            ));
+        }
+        // fsync the finite operation identity before polling the real Broker.
+        // A wrapper timeout must not erase which original call was in flight.
+        self.journal.write_private_call_stage(
+            self.sequence,
+            command,
+            mutation,
+            "DISPATCHING_NO_TERMINAL",
+        )?;
+        let broker = tokio::time::timeout_at(
+            self.phase_deadline,
+            self.coordinator.execute(
                 self.request.project_id,
                 &self.request.expected,
                 &request_id,
                 command,
                 args,
                 mutation,
-            )
-            .await
-        {
-            Ok(value) => {
+            ),
+        )
+        .await;
+        match broker {
+            Ok(Ok(value)) => {
                 self.journal.calls[index]["native_result"] = value.clone();
+                self.journal
+                    .write_private_call_stage(self.sequence, command, mutation, "BROKER_RETURNED")
+                    .map_err(|error| if mutation { error.uncertain() } else { error })?;
                 response_data(&value)
                     .cloned()
                     .map_err(|error| if mutation { error.uncertain() } else { error })
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 self.journal.calls[index]["native_error"] = serde_json::to_value(&error)
                     .unwrap_or_else(|_| json!({"diagnostic_serialization_failed":true}));
+                if self
+                    .journal
+                    .write_private_call_stage(self.sequence, command, mutation, "BROKER_ERROR")
+                    .is_err()
+                {
+                    return Err(error.uncertain());
+                }
+                Err(error)
+            }
+            Err(_) => {
+                let error = Error::new(
+                    ErrorCode::Timeout,
+                    "Lit-still phase deadline elapsed during the original Broker command",
+                )
+                .uncertain();
+                self.journal.calls[index]["native_error"] = serde_json::to_value(&error)
+                    .unwrap_or_else(|_| json!({"diagnostic_serialization_failed":true}));
+                let _ = self.journal.write_private_call_stage(
+                    self.sequence,
+                    command,
+                    mutation,
+                    "DEADLINE_OUTCOME_UNKNOWN",
+                );
                 Err(error)
             }
         }
@@ -1719,6 +1860,8 @@ impl ProductionCoordinator {
             plan: &plan,
             journal,
             sequence: 0,
+            phase_deadline: tokio::time::Instant::now()
+                + std::time::Duration::from_secs(LIT_PHASE_NATIVE_DEADLINE_SECS),
         };
         let fresh = session.composition_snapshot(None).await?;
         factory_snapshot(&fresh)?;
@@ -2507,6 +2650,61 @@ mod tests {
             Some(project.scenes[0].nodes[0].id),
         );
         assert_ne!(tags, changed);
+    }
+
+    #[test]
+    fn private_call_progress_is_original_durable_and_never_serializes_private_payloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("native-call-progress.jsonl");
+        let mut journal = BlenderLitStillJournal::default();
+        journal.enable_private_call_ledger(&path).unwrap();
+        assert!(journal.enable_private_call_ledger(&path).is_err());
+        journal
+            .write_private_call_stage(
+                1,
+                "driver.blender.composition.inspect",
+                false,
+                "DISPATCHING_NO_TERMINAL",
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(before.ends_with(b"\n"));
+        journal
+            .write_private_call_stage(
+                1,
+                "driver.blender.composition.inspect",
+                false,
+                "BROKER_RETURNED",
+            )
+            .unwrap();
+        journal
+            .write_private_call_stage(
+                2,
+                "driver.blender.secret/value",
+                true,
+                "DEADLINE_OUTCOME_UNKNOWN",
+            )
+            .unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        let rows = after
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["sequence"], json!(1));
+        assert_eq!(rows[0]["state"], json!("DISPATCHING_NO_TERMINAL"));
+        assert_eq!(rows[1]["state"], json!("BROKER_RETURNED"));
+        assert_eq!(rows[2]["command"], json!("unclassified"));
+        assert_eq!(rows[2]["state"], json!("DEADLINE_OUTCOME_UNKNOWN"));
+        assert!(after.as_bytes().starts_with(&before));
+        assert!(!after.contains("secret/value"));
+        let wire = serde_json::to_value(&journal).unwrap();
+        assert!(wire.get("private_call_ledger").is_none());
+        assert_eq!(wire["calls"], json!([]));
+        // A second owner cannot truncate or replace the original ledger.
+        let mut second = BlenderLitStillJournal::default();
+        assert!(second.enable_private_call_ledger(&path).is_err());
+        assert_eq!(after, std::fs::read_to_string(&path).unwrap());
     }
 
     #[test]
