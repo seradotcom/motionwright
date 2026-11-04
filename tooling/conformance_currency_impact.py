@@ -24,8 +24,8 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-from conformance_policy import (DIGEST, SHA, load_evidence_index, load_json,
-                                validate_catalog_links)
+from conformance_policy import (DIGEST, SHA, canonical_digest, load_evidence_index,
+                                load_json, validate_catalog_links)
 
 LEDGERS = (
     "docs/acceptance/requirements-status.json",
@@ -174,14 +174,28 @@ def classify_criterion(field: dict, assessment: dict, target: str, lock: str | N
     citations = field["evidence_ids"]
     current = [key for key in citations if key in evidence and
                evidence[key]["current_source_relation"] == "current_execution_candidate"]
+    current_ids = set(current)
+
+    def review_binds_exact_originals(review: dict) -> bool:
+        # A current ID alone cannot renew a sufficiency review if the
+        # independently reviewed record bytes have since been substituted.
+        # The full index loader enforces this too; keep direct callers closed.
+        bindings = review["evidence_record_sha256"]
+        return (isinstance(bindings, dict) and bool(bindings)
+                and set(bindings).issubset(current_ids)
+                and all(record_id in records
+                        and isinstance(digest, str)
+                        and DIGEST.fullmatch(digest) is not None
+                        and digest == canonical_digest(records[record_id])
+                        for record_id, digest in bindings.items()))
+
     valid_reviews = [review["id"] for review in reviews
                      if review["decision"] == "sufficient"
                      and review["criterion_id"] == identity
                      and review["source"]["motionwright_sha"] == target
                      and review["source"]["source_lock_sha256"] == lock
                      and review["id"] not in stale_review_ids
-                     and bool(review["evidence_record_sha256"])
-                     and set(review["evidence_record_sha256"]).issubset(set(current))]
+                     and review_binds_exact_originals(review)]
     complete = (field["status"] == "pass" and
                 assessment["source"]["motionwright_sha"] == target and
                 assessment["source"]["source_lock_sha256"] == lock and

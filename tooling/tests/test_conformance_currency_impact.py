@@ -15,6 +15,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
 import conformance_currency_impact as impact
+from conformance_policy import canonical_digest
 
 
 def digest(data: bytes) -> str:
@@ -54,7 +55,7 @@ class CurrencyImpactTests(unittest.TestCase):
         self.observed = {"id": "replay-1", "current_source_relation": "current_execution_candidate"}
         self.review = {"id": "review-1", "criterion_id": self.field["id"], "decision": "sufficient",
                        "source": self.record["source"],
-                       "evidence_record_sha256": {"replay-1": "a" * 64}}
+                       "evidence_record_sha256": {"replay-1": canonical_digest(self.record)}}
 
     def run_git(self, *args):
         result = subprocess.run(["git", "-C", str(self.root), *args],
@@ -298,6 +299,21 @@ class CurrencyImpactTests(unittest.TestCase):
                 record["execution"]["status"] = status
                 self.assertEqual(impact.record_currency(record, self.first, self.lock, self.snapshot)
                                  ["current_source_relation"], "current_nonpassing_execution")
+
+    def test_review_must_bind_exact_original_record_digest_not_just_record_id(self):
+        # The same original execution ID/source is insufficient when the
+        # independently reviewed record bytes were replaced after approval.
+        self.assertEqual(self.current(), ("sufficient_current_source", ["review-1"]))
+        wrong_hash = copy.deepcopy(self.review)
+        wrong_hash["evidence_record_sha256"]["replay-1"] = "b" * 64
+        self.assertEqual(self.current(reviews=[wrong_hash]),
+                         ("pass_requires_reassessment", []))
+        modified = copy.deepcopy(self.record)
+        modified["limitations"] = ["Post-review substitution of the original"]
+        self.assertEqual(impact.classify_criterion(
+            self.field, self.assessment, self.first, self.lock,
+            {"replay-1": self.observed}, {"replay-1": modified},
+            [self.review], set()), ("pass_requires_reassessment", []))
 
     def test_exact_case_requires_criterion_coverage_and_sufficiency_review(self):
         self.assertEqual(self.current(), ("sufficient_current_source", ["review-1"]))
