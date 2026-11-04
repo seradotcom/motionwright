@@ -920,3 +920,70 @@ test("Graph late removal ACK cannot steal a peer Graph selection after the origi
   expect(await page.evaluate(key => localStorage.getItem(key), originalCopy.copyKey)).toBe(originalCopy.raw);
   expect(await requestCount(page)).toBe(2);
 });
+
+test("Graph disappearing from saved Project preserves selected editor draft and never silently creates a new source", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const original = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const removedId = original.production_design!.semantic_graphs![0].id;
+  // A newly created Graph retains the explicit New-source selection after
+  // Save. Select the real saved UUID before testing peer deletion; otherwise
+  // the fixture would expect an identity that was never selected.
+  await field(page, "Graph source").selectOption(removedId);
+  await expect(field(page, "Graph source")).toHaveValue(removedId);
+  await field(page, "Vertex 1 label").fill("Unsubmitted concept retained after a peer deletion");
+  const copy = await currentGraphCopy(page);
+  await page.evaluate(async id => {
+    const project = window.__GRAPH_AUTHORITY__.project();
+    project.production_design!.semantic_graphs = project.production_design!.semantic_graphs!.filter(graph => graph.id !== id);
+    project.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(project);
+  }, removedId);
+  await expect(field(page, "Graph source")).toHaveValue(removedId);
+  await expect(page.getByRole("region", { name: "Graph source needs attention" })).toBeVisible();
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Unsubmitted concept retained after a peer deletion");
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  expect(await requestCount(page)).toBe(1);
+  expect(await page.evaluate(key => localStorage.getItem(key), copy.copyKey)).toBe(copy.raw);
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
+  await expect(page.getByRole("region", { name: "New Graph identity blocked" })).toBeVisible();
+  await expect(field(page, "Vertex 1 label")).toHaveValue("");
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  // The blocked New selection may display a separate empty readonly preview,
+  // but must neither mount nor rewrite the removed saved Graph's raw custody.
+  expect(await page.evaluate(key => localStorage.getItem(key), copy.copyKey)).toBe(copy.raw);
+  expect(await requestCount(page)).toBe(1);
+  // A reload cannot turn the externally removed saved UUID into a new source.
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
+  await expect(page.getByRole("region", { name: "Graph identity needs attention" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "New Graph identity blocked" })).toBeVisible();
+  await expect(field(page, "Vertex 1 label")).toHaveValue("");
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  expect(await page.evaluate(key => localStorage.getItem(key), copy.copyKey)).toBe(copy.raw);
+  expect(await requestCount(page)).toBe(1);
+});
+
+test("Graph new source refuses a UUID reassigned to another Deliverable by a peer", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const before = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const rootId = before.production_design!.semantic_graphs![0].id;
+  await page.evaluate(async () => {
+    const project = window.__GRAPH_AUTHORITY__.project();
+    const moved = { ...structuredClone(project.deliverables[0]), id: crypto.randomUUID() };
+    project.deliverables.push(moved);
+    project.production_design!.semantic_graphs![0].variant_profile_ref = moved.id;
+    project.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(project);
+  });
+  await field(page, "Graph source").selectOption("new:causal_diagram");
+  await expect(page.getByRole("region", { name: "Graph identity needs attention" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Save (semantic Graph|Graph changes)$/ })).toBeDisabled();
+  expect(await requestCount(page)).toBe(1);
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
+  await expect(page.getByRole("region", { name: "Graph identity needs attention" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Save (semantic Graph|Graph changes)$/ })).toBeDisabled();
+  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs![0].id).toBe(rootId);
+  expect(await requestCount(page)).toBe(1);
+});

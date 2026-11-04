@@ -73,6 +73,15 @@ function getSession(project: Project, initial: SemanticGraph): GraphSession {
 // cycle from resurrecting old Graph/review identities after an app reload.
 const graphNewKey = (project: Project, sceneId: string, profileId: string, kind: GraphContent["kind"]) =>
   "motionwright.semantic-graph-new-id.v2:" + JSON.stringify([project.id, project.generation, project.active_branch, sceneId, profileId, kind]);
+/** Read-only owner check. A peer's save/delete is never our removal ACK. */
+function unavailableSavedGraphIdentity(project: Project, sceneId: string, profileId: string, kind: GraphContent["kind"], id: string): boolean {
+  const saved = semanticGraphs(project).find(graph => graph.id === id);
+  if (saved) return saved.scene_id !== sceneId || saved.variant_profile_ref !== profileId || saved.content.kind !== kind;
+  const scope = graphDraftScope(project, sceneId, id);
+  const draft = sessions.get(scope)?.draft ?? readGraphRecoverySource(window.localStorage, window.sessionStorage,
+    scope, { pointerObserved: false, pointer: null, rawObserved: false, raw: null });
+  return draft?.base?.id === id;
+}
 const graphNextKey = (key: string, id: string) => "motionwright.semantic-graph-next-id.v1:" + JSON.stringify([key, id]);
 function currentGraphIdentity(key: string, first: string): string {
   if (!graphUuid(first)) throw new Error("The new Graph identity is unreadable; its raw bytes were retained.");
@@ -177,6 +186,14 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
   const [, redrawIdentity] = useState(0);
   const sourceScope = JSON.stringify([props.project.id, props.project.generation, props.project.active_branch, props.scene?.id, props.displayProfile?.id]);
   const previousScope = useRef(sourceScope);
+  // Retain a saved snapshot within this one physical source scope. Peer
+  // deletion cannot turn its already selected UUID into a new source.
+  const observedSavedSources = useRef({ scope: sourceScope, graphs: new Map<string, SemanticGraph>() });
+  useEffect(() => {
+    if (observedSavedSources.current.scope !== sourceScope)
+      observedSavedSources.current = { scope: sourceScope, graphs: new Map() };
+    for (const graph of available) observedSavedSources.current.graphs.set(graph.id, clone(graph));
+  }, [available, sourceScope]);
   useEffect(() => {
     if (previousScope.current !== sourceScope) {
       previousScope.current = sourceScope;
@@ -191,23 +208,49 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
   if (previousScope.current !== sourceScope) return <section aria-label="Semantic Graph workbench">
     <h2>Semantic Graph</h2><p role="status">Synchronizing the selected Graph source with this Project.</p>
   </section>;
-  const stored = available.find(graph => graph.id === selection), kind: GraphContent["kind"] = selection === "new:system_flow" ? "system_flow" : "causal_diagram";
-  const identity = stored ? { id: stored.id, problem: null } : createIdentity(props.project, props.scene.id, props.displayProfile.id, kind);
+  const stored = available.find(graph => graph.id === selection);
+  const missingSaved = selection !== "new:causal_diagram" && selection !== "new:system_flow" && !stored;
+  const lastSaved = missingSaved && observedSavedSources.current.scope === sourceScope
+    ? observedSavedSources.current.graphs.get(selection) : undefined;
+  const kind: GraphContent["kind"] = selection === "new:system_flow" || (missingSaved && lastSaved?.content.kind === "system_flow")
+    ? "system_flow" : "causal_diagram";
+  const missingProblem = missingSaved
+    ? "The selected saved Graph disappeared or changed owners without a local removal receipt. Its earlier input is retained under its original source."
+    : null;
+  const identity: { id: string; problem: string | null } = stored ? { id: stored.id, problem: null }
+    : missingSaved ? { id: selection, problem: missingProblem }
+      : createIdentity(props.project, props.scene.id, props.displayProfile.id, kind);
+  let blockedNewIdentity = missingSaved && !lastSaved;
+  if (!stored && !missingSaved) {
+    try { blockedNewIdentity = unavailableSavedGraphIdentity(props.project, props.scene.id, props.displayProfile.id, kind, identity.id); }
+    catch (reason) { blockedNewIdentity = true; identity.problem = message(reason); }
+    if (blockedNewIdentity && !identity.problem)
+      identity.problem = "A previously saved Graph UUID disappeared or was reassigned. Preserve its earlier source; no new save was authorized.";
+  }
   const existingNew = available.find(graph => graph.id === identity.id);
-  const initial = stored ?? existingNew ?? newSemanticGraph(props.project, props.scene, props.displayProfile, kind, identity.id);
+  const initial = stored ?? lastSaved ?? existingNew ?? newSemanticGraph(props.project, props.scene, props.displayProfile, kind, identity.id);
   return <section aria-label="Semantic Graph workbench" style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
     <label className="production-field" style={{ padding: "12px 24px", flexShrink: 0 }}><span>Graph source</span><select aria-label="Graph source" value={selection} onChange={e => setSelection(e.target.value)}>
+      {missingSaved && <option value={selection}>Unavailable saved Graph · {selection.slice(0, 8)}</option>}
       {available.map(graph => <option key={graph.id} value={graph.id}>{graph.content.kind === "causal_diagram" ? "Causal diagram" : "System flow"} · {graph.id.slice(0, 8)}</option>)}
       <option value="new:causal_diagram">New causal diagram</option><option value="new:system_flow">New synthetic system flow</option>
     </select></label>
+    {missingSaved && <section aria-label="Graph source needs attention"><p role="alert">{missingProblem}</p></section>}
     {identity.problem && <section aria-label="Graph identity needs attention"><p role="alert">{identity.problem}</p>
       <button className="secondary-button" disabled={props.busy} onClick={() => {
         createIdentity(props.project, initial.scene_id, props.displayProfile!.id, kind, true); redrawIdentity(value => value + 1);
       }}>Verify Graph identity again</button>
     </section>}
-    <GraphEditor {...props} initial={initial} identityProblem={identity.problem}
-      onConfirmedRemoval={removedKind => { setSelection("new:" + removedKind); redrawIdentity(value => value + 1); }}
-      key={graphDraftScope(props.project, initial.scene_id, initial.id)} />
+    {blockedNewIdentity
+      ? <section aria-label="New Graph identity blocked" className="production-inspector">
+          <h2>Semantic Graph</h2>
+          <p>This UUID belonged to a saved Graph or its custody could not be read. Inspect its original source before authoring again.</p>
+          <label className="production-field"><span>Vertex 1 label</span><textarea aria-label="Vertex 1 label" value="" readOnly rows={2} /></label>
+          <button className="primary-button" disabled>Save semantic Graph</button>
+        </section>
+      : <GraphEditor {...props} initial={initial} identityProblem={identity.problem}
+          onConfirmedRemoval={removedKind => { setSelection("new:" + removedKind); redrawIdentity(value => value + 1); }}
+          key={graphDraftScope(props.project, initial.scene_id, initial.id)} />}
   </section>;
 }
 
