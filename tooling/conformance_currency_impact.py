@@ -187,7 +187,9 @@ def classify_criterion(field: dict, assessment: dict, target: str, lock: str | N
                         and isinstance(digest, str)
                         and DIGEST.fullmatch(digest) is not None
                         and digest == canonical_digest(records[record_id])
-                        for record_id, digest in bindings.items()))
+                        for record_id, digest in bindings.items())
+                and any(identity in records[record_id]["complete_criterion_ids"]
+                        for record_id in bindings))
 
     valid_reviews = [review["id"] for review in reviews
                      if review["decision"] == "sufficient"

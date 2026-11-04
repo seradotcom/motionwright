@@ -315,6 +315,35 @@ class CurrencyImpactTests(unittest.TestCase):
             {"replay-1": self.observed}, {"replay-1": modified},
             [self.review], set()), ("pass_requires_reassessment", []))
 
+    def test_unreviewed_complete_record_cannot_close_partially_reviewed_criterion(self):
+        # A complete execution must itself be one of the originals reviewed
+        # for this criterion; an unreviewed second execution cannot lend
+        # completeness to an otherwise valid partial review.
+        reviewed = copy.deepcopy(self.record)
+        reviewed["complete_criterion_ids"] = []
+        other = copy.deepcopy(self.record)
+        other["id"] = "unreviewed-2"
+        field = copy.deepcopy(self.field)
+        field["evidence_ids"] = ["replay-1", "unreviewed-2"]
+        current_evidence = {
+            "replay-1": copy.deepcopy(self.observed),
+            "unreviewed-2": {
+                "id": "unreviewed-2",
+                "current_source_relation": "current_execution_candidate",
+            },
+        }
+        records = {"replay-1": reviewed, "unreviewed-2": other}
+        review = copy.deepcopy(self.review)
+        review["evidence_record_sha256"] = {
+            "replay-1": canonical_digest(reviewed),
+        }
+        decide = lambda: impact.classify_criterion(
+            field, self.assessment, self.first, self.lock,
+            current_evidence, records, [review], set())
+        self.assertEqual(decide(), ("pass_requires_reassessment", []))
+        review["evidence_record_sha256"]["unreviewed-2"] = canonical_digest(other)
+        self.assertEqual(decide(), ("sufficient_current_source", ["review-1"]))
+
     def test_exact_case_requires_criterion_coverage_and_sufficiency_review(self):
         self.assertEqual(self.current(), ("sufficient_current_source", ["review-1"]))
         incomplete = copy.deepcopy(self.record)
