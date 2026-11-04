@@ -305,7 +305,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           // An UNKNOWN/lost reply never creates a successor or another write.
           try {
             retireGraphIdentity(project, source.sceneId, source.input.variant_profile_ref, source.input.content.kind, source.graphId);
-            current.current.onConfirmedRemoval(source.input.content.kind);
+            if (mounted.current) current.current.onConfirmedRemoval(source.input.content.kind);
           } catch (reason) {
             session.error = message(reason);
             session.backupError = "The saved removal was confirmed, but the next Graph identity could not be retained. No new save is permitted; keep the original recovery copies.";

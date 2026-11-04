@@ -875,3 +875,48 @@ test("Graph selected saved UUID never creates a recovery copy in a different Pro
   expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
   expect(await requestCount(page)).toBe(1);
 });
+
+// A delayed confirmation belongs to its original editor; it may not
+// change the current saved Graph selection after that editor unmounted.
+test("Graph late removal ACK cannot steal a peer Graph selection after the original editor unmounts", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const identity = await page.evaluate(async () => {
+    const p = window.__GRAPH_AUTHORITY__.project();
+    const saved = p.production_design!.semantic_graphs![0];
+    const profile = structuredClone(p.deliverables[0]); profile.id = crypto.randomUUID();
+    const other = structuredClone(saved); other.id = crypto.randomUUID();
+    other.variant_profile_ref = profile.id;
+    other.authorship.source_snapshot = { project_id: p.id, generation: p.generation,
+      branch_id: p.active_branch, revision: p.revision };
+    p.deliverables.push(profile); p.production_design!.semantic_graphs!.push(other); p.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(p);
+    return { removed: saved.id, peer: other.id };
+  });
+  await field(page, "Graph source").selectOption(identity.removed);
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Remove saved Graph")).toBeEnabled();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  const originalRequest = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[1]);
+  expect(originalRequest.change).toMatchObject({ type: "remove_semantic_graph", graph_id: identity.removed });
+  const originalCopy = await currentGraphCopy(page);
+  expect(JSON.parse(originalCopy.raw).draft.pending).toMatchObject({
+    id: originalRequest.requestId, submitted: originalRequest.change, outcome: "UNKNOWN",
+  });
+  await field(page, "Graph source").selectOption(identity.peer);
+  await expect(field(page, "Graph source")).toHaveValue(identity.peer);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
+  await expect(field(page, "Graph source")).toHaveValue(identity.peer);
+  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  expect(saved.production_design!.semantic_graphs!.map(graph => graph.id)).toEqual([identity.peer]);
+  expect(await page.evaluate(key => localStorage.getItem(key), originalCopy.copyKey)).toBe(originalCopy.raw);
+  expect(await requestCount(page)).toBe(2);
+  await page.reload();
+  await expect(field(page, "Graph source")).toHaveValue("new:causal_diagram");
+  await field(page, "Graph source").selectOption(identity.peer);
+  await expect(field(page, "Graph source")).toHaveValue(identity.peer);
+  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved()))
+    .production_design!.semantic_graphs!.map(graph => graph.id)).toEqual([identity.peer]);
+  expect(await page.evaluate(key => localStorage.getItem(key), originalCopy.copyKey)).toBe(originalCopy.raw);
+  expect(await requestCount(page)).toBe(2);
+});
