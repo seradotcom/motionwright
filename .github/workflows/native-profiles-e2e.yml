@@ -1,6 +1,10 @@
 name: Native Hero profiles with retained editable Stores
 
 on:
+  # One inert run registers this explicit route without changing the default branch.
+  push:
+    branches:
+      - a4-register-native-hero-profiles-20261107
   workflow_dispatch:
     inputs:
       mode:
@@ -48,6 +52,21 @@ env:
   PLAYWRIGHT_BROWSERS_PATH: '0'
 
 jobs:
+  register-manual-route:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/a4-register-native-hero-profiles-20261107' && github.actor_id == '69337222'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Register the explicit manual route without starting preparation or Native
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_ACTOR_ID" = 69337222
+          printf '%s\n' 'HERO_ROUTE_REGISTERED preparation_calls=0 Native_calls=0 owner_permissions=0'
+
   hero-profiles:
     if: inputs.mode == 'prepare'
     name: hero-profiles
