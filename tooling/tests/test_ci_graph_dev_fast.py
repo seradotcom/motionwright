@@ -293,6 +293,26 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         for blocked in ("graph produce", "graph wait", "graph run"):
             self.assertNotIn(blocked, workflow)
 
+    def test_source_g0_exercises_graph_owner_quiescence_and_r74_selection(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_native_quiescence.py'", trigger
+        )
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1
+        )[0]
+        # These are source-only negative oracles, not a physical Graph6 trial.
+        # Both source modules can change while the Native G2 gate remains blocked.
+        for module in (
+            "tooling.tests.test_ci_graph_r74_singlecase",
+            "tooling.tests.test_graph_owner_native_quiescence",
+        ):
+            with self.subTest(module=module):
+                self.assertIn(module, gn1)
+        self.assertIn("2>&1 | tee knowledge/runtime/graph-fast-gn1-unittest.original.log", gn1)
+
     def test_source_only_push_and_manual_job_cannot_be_confused_with_r74_acceptance(self):
         root = Path(__file__).resolve().parents[2]
         p = root / ".github/workflows/graph-development-fast.yml"
