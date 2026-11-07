@@ -465,8 +465,9 @@ test('R74 single graph-flow review is pinned in the original index and cannot au
   foreign.reviewed.execution.selected_case = 'graph-removal';
   foreign.index.contract.execution.selected_case = 'graph-removal';
   foreign.seal();
+  // A forbidden case is denied even earlier by the immutable execution/callback join.
   assert.throws(() => inspectProducerOriginalsCore(foreign.indexPath, foreign.reviewed, 'graph-removal'),
-    /J1_ONE_CASE_SELECTION_UNREVIEWED/);
+    /J1_REVIEWED_ONE_CASE_EXECUTION_MISMATCH/);
 });
 
 test('R74 rejects prepared executable permissions, inode alias, bytes and source substitution', () => {
