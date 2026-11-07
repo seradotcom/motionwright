@@ -271,7 +271,7 @@ jobs:
         import json, os, sys
         from pathlib import Path
         report=json.loads(Path(sys.argv[1]).read_bytes())
-        expected={'dotted:tooling.tests.test_native_fixedtxt_external_g2':21,
+        expected={'dotted:tooling.tests.test_native_fixedtxt_external_g2':22,
                   'dotted:tooling.tests.test_native_fixedtxt_workflow':26,
                   'dotted:tooling.tests.test_native_fixedtxt_pre_owner':6,
                   'dotted:tooling.tests.test_native_owner_release':4}
