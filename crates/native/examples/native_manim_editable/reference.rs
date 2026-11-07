@@ -32,7 +32,10 @@ pub(super) fn classify_added_receipts(
     use std::collections::BTreeSet;
     let old = prior.as_array().ok_or("original receipt array absent")?;
     let new = current.as_array().ok_or("current receipt array absent")?;
-    if old.len() >= 256 || new.len() >= 256 || !new.starts_with(old)
+    // Store::production_receipts returns descending committed order. Added
+    // records precede the exact historical suffix; UUIDs and wall time are not
+    // ordering keys and must never be used to rearrange the original rows.
+    if old.len() >= 256 || new.len() >= 256 || !new.ends_with(old)
         || old.iter().any(|row| new.iter().filter(|value| *value == row).count() != 1)
     {
         return Err("Native receipt history changed or exceeded its original read budget".into());
@@ -322,7 +325,7 @@ pub(crate) fn rehydrate_reference(
     let reference_rows = reference_receipts.as_array().ok_or("retained reference receipts absent")?;
     if reference.project(project.id)? != project || events(&reference, project.id)? != original_events
         || package.plan.binding.generation != project.generation || package.plan.binding.revision != project.revision
-        || !reference_rows.starts_with(baseline_rows)
+        || !reference_rows.ends_with(baseline_rows)
         || baseline_rows.iter().any(|row| reference_rows.iter().filter(|value| *value == row).count() != 1)
     {
         return Err("retained reference Project, events or historical receipts changed before rehydration".into());
@@ -462,6 +465,9 @@ mod tests {
         assert_eq!(value["scope"], "STRUCTURAL_REGRESSION_FIXTURE_NOT_NATIVE_OR_G2_EVIDENCE");
         assert_eq!(value["original_private_observation_sha256"],
             "8298e90e38f2aa1f38a16e32ff266d10a7f6dc00f5739233c470ecaf98961bfb");
+        assert_eq!(value["receipt_order"]["query"], "production_receipt_order.sequence DESC");
+        assert_eq!(value["receipt_order"]["predicate_observation_sha256"],
+            "8256b508b12a59e4cec5afb610538e0a4f6a354fa3ffe1f6e43e9c1e0edcdf97");
         value
     }
 
@@ -482,6 +488,10 @@ mod tests {
         let observed = classify_fixture(&value).unwrap();
         assert_eq!(value["prior"].as_array().unwrap().len(), 20);
         assert_eq!(value["current"].as_array().unwrap().len(), 30);
+        let prior = value["prior"].as_array().unwrap();
+        let current = value["current"].as_array().unwrap();
+        assert!(current.ends_with(prior));
+        assert!(!current.starts_with(prior));
         assert_eq!(observed["additional_native_receipts"], 2);
         assert_eq!(observed["additional_production_receipts"], 10);
         assert_eq!(observed["operational_native_receipts"].as_array().unwrap().len(), 8);
@@ -516,7 +526,8 @@ mod tests {
                 row["stage"] == "completed" && row["request_id"].as_str().unwrap().ends_with(suffix)).unwrap().clone();
         }
         two["current_connection"] = json!(new_connection);
-        two["current"].as_array_mut().unwrap().extend(additional);
+        additional.extend(two["current"].as_array().unwrap().iter().cloned());
+        two["current"] = json!(additional);
         let second = classify_fixture(&two).unwrap();
         assert_eq!(second["additional_native_receipts"], 4);
         assert_eq!(second["additional_production_receipts"], 20);
@@ -532,12 +543,12 @@ mod tests {
         }
         reject(|value| {
             let row = value["current"][original_operation(value, "result", "completed")].clone();
-            value["current"].as_array_mut().unwrap().push(row);
+            value["current"].as_array_mut().unwrap().insert(0, row);
         });
         reject(|value| {
             let mut row = value["current"][original_operation(value, "result", "completed")].clone();
             row["id"] = json!("00000000-0000-4000-8000-999999999999");
-            value["current"].as_array_mut().unwrap().push(row);
+            value["current"].as_array_mut().unwrap().insert(0, row);
         });
         reject(|value| {
             let index = original_operation(value, "status:1", "dispatching");
@@ -568,10 +579,32 @@ mod tests {
                 value["current"][index]["request_id"] = json!(format!("{}:status:9", value["native_link"]["request_id"].as_str().unwrap()));
             }
         });
-        reject(|value| value["current"][0]["payload"] = json!({"changed":true}));
-        reject(|value| value["current"].as_array_mut().unwrap().swap(0, 1));
+        reject(|value| value["current"][10]["payload"] = json!({"changed":true}));
+        reject(|value| value["current"].as_array_mut().unwrap().swap(10, 11));
+        reject(|value| value["current"].as_array_mut().unwrap().swap(0, 10));
+        reject(|value| {
+            value["prior"].as_array_mut().unwrap().reverse();
+            value["current"].as_array_mut().unwrap().reverse();
+        });
         reject(|value| value["native_link"]["original_start_receipt"]["id"] = json!("00000000-0000-4000-8000-999999999999"));
         reject(|value| value["current_connection"] = json!("0".repeat(64)));
+    }
+
+    fn append_order_fixture(service: &StudioService, project: &Project, request_id: &str) {
+        // Real Store writes exercise its public descending-order query. These
+        // inert unit records are never evidence of a Native execution.
+        for stage in ["dispatching", "completed"] {
+            service.append_production_receipt(motionwright_storage::ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: request_id.into(),
+                request_sha256: hash(request_id.as_bytes()),
+                command: "driver.manim-community.render.status".into(),
+                stage: stage.into(),
+                payload: json!({"fixture_only":true,"mutation":false}),
+            }).unwrap();
+        }
     }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
@@ -594,6 +627,7 @@ mod tests {
         )
         .unwrap();
         let source = profile::source_bundle(&package.plan, &fonts(&package)).unwrap();
+        append_order_fixture(&service, &project, "unit-reference-historical-order");
         drop(service);
         fs::copy(&baseline, &current).unwrap();
         let service = StudioService::open(&current).unwrap();
@@ -629,7 +663,16 @@ mod tests {
         let reopened = source_state(&baseline, &current, &bundle).unwrap();
         assert_eq!(reopened.prior_receipts, reopened.current_receipts);
         let original_project = reopened.project.clone();
-        let original_receipts = reopened.current_receipts.clone();
+        append_order_fixture(&reopened.current, &reopened.project, "unit-reference-added-order");
+        let original_receipts = receipts(&reopened.current, reopened.project.id).unwrap();
+        let prior = reopened.prior_receipts.as_array().unwrap();
+        let added = original_receipts.as_array().unwrap();
+        assert_eq!((prior.len(), added.len()), (2, 4));
+        assert!(added.ends_with(prior));
+        assert!(!added.starts_with(prior));
+        assert_eq!(added[0]["request_id"], "unit-reference-added-order");
+        assert_eq!(added[0]["stage"], "completed");
+        assert_eq!(added[1]["stage"], "dispatching");
         drop(reopened);
         let restored_parent = root.path().join("rehydrated-reference");
         fs::create_dir(&restored_parent).unwrap();
@@ -640,6 +683,8 @@ mod tests {
         assert_eq!(retained["status"], "REFERENCE_CAS_REHYDRATED_SOURCE_ONLY");
         assert_eq!(retained["project_events_and_all_production_receipts_unchanged"], true);
         assert_eq!(retained["new_cas_capture_count"], 1);
+        assert_eq!(retained["baseline_production_receipt_count"], 2);
+        assert_eq!(retained["retained_production_receipt_count"], 4);
         assert_eq!(retained["project_changes_applied"], 0);
         assert_eq!(retained["native_execution_performed"], false);
         let rehydrated = source_state(&baseline, &restored, &bundle).unwrap();

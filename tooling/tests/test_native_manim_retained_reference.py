@@ -98,8 +98,10 @@ class RetainedReferenceContractTests(unittest.TestCase):
         # A public structural projection; this is no proof of Native provenance.
         fixture = json.loads((ROOT / "crates/native/tests/fixtures/manim-n1-receipt-lifecycle-42369864661.json").read_bytes())
         self.assertEqual(fixture["scope"], "STRUCTURAL_REGRESSION_FIXTURE_NOT_NATIVE_OR_G2_EVIDENCE")
-        self.assertEqual(fixture["prior"], fixture["current"][:20])
-        records = fixture["current"][20:]
+        self.assertEqual(fixture["receipt_order"]["query"], "production_receipt_order.sequence DESC")
+        self.assertEqual(fixture["prior"], fixture["current"][-20:])
+        self.assertNotEqual(fixture["prior"], fixture["current"][:20])
+        records = fixture["current"][:-20]
         endpoints = [row for row in records if row["stage"] == "completed" and row["request_id"].endswith((":start", ":result"))]
         endpoint_ids = {row["id"] for row in endpoints}
         operational = [row for row in records if row["id"] not in endpoint_ids]
