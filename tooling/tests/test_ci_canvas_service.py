@@ -8327,8 +8327,9 @@ class GraphR74JoinTests(unittest.TestCase):
             if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
             and node.targets[0].id == "GRAPH_RUNTIME_STAGES")
         owner_stages = set(ast.literal_eval(source_tuple))
-        self.assertEqual(len(owner_stages), 13)
+        self.assertEqual(len(owner_stages), 14)
         self.assertIn("UNCLASSIFIED", owner_stages)
+        self.assertIn("STAGING_LIMITS", owner_stages)
         cls = next(node for node in owner.body if isinstance(node, ast.ClassDef)
                    and node.name == "GraphBrowserOwner")
         constructor = next(node for node in cls.body if isinstance(node, ast.FunctionDef)
@@ -8337,14 +8338,20 @@ class GraphR74JoinTests(unittest.TestCase):
                   if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
                   and call.func.id == "runtime_stage"]
         self.assertEqual(set(marked), owner_stages - {"UNCLASSIFIED"})
-        self.assertEqual(len(marked), 12)
+        self.assertEqual(len(marked), 13)
         js = (PATH.parents[1] / "apps/studio/tests/support/graph-owner/contracts.mjs").read_text(encoding="utf-8")
         block = js.split("export const GRAPH_RUNTIME_STAGES = new Set([", 1)[1].split("]);", 1)[0]
         self.assertEqual(set(re.findall(r"'([A-Z_]+)'", block)), owner_stages)
         self.assertEqual(set(code.removeprefix("OWNER_STAGE:") for code in gate.GRAPH_CASE_DIAGNOSTIC_CODES
                              if code.startswith("OWNER_STAGE:")), owner_stages - {"UNCLASSIFIED"})
-        self.assertIn('**({"runtime_stage": _RUNTIME_STAGE} if phase == "RUNTIME_INVALID" else {})',
-                      owner_raw.decode("utf-8"))
+        runtime_fields = [node for node in ast.walk(owner)
+            if isinstance(node, ast.IfExp) and isinstance(node.body, ast.Dict)
+            and any(isinstance(key, ast.Constant) and key.value == "runtime_stage"
+                    for key in node.body.keys)]
+        self.assertEqual(len(runtime_fields), 1)
+        self.assertEqual(ast.dump(runtime_fields[0]), ast.dump(ast.parse(
+            '{"runtime_stage": _RUNTIME_STAGE, "runtime_diagnostic": closed_runtime_diagnostic()} '
+            'if phase == "RUNTIME_INVALID" else {}', mode="eval").body))
 
     def test_graph_owner_phase_nested_malformed_or_excess_depth_fails_closed(self):
         repo, value = self.graph_diagnostic_fixture_report()
@@ -8448,6 +8455,8 @@ class GraphR74JoinTests(unittest.TestCase):
         repo, root = Path("/diagnostic-repo"), Path("/diagnostic-root")
         index = {"source": {"run_id": "123", "sdk_root": "/sdk"}, "source_original": {},
                  "runtime": {"root": "/runtime"},
+                 "contract": {"native_executable_inputs": {
+                     "daemon_staging": {"case_hard_file_bytes": 7 * 1024 * 1024}}},
                  "binaries": {role: {"path": "/inert/" + role} for role in ("ordinary_service", "python3", "ffmpeg")}}
         clock = mock.Mock(unknown=False); clock.phase.return_value = contextlib.nullcontext()
         commands = [{**self.graph_failed_case_command(), "exit_code": 0}, self.graph_failed_case_command()]
@@ -8482,6 +8491,8 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertEqual(public["failure_diagnostic"], {"stage": "CASES_COMMAND", "cause": "CASES_EXIT_NONZERO", "exit_code": 1,
                          "playwright": {"report": "OBSERVED_FAILURE_DIAGNOSTIC_ONLY"}})
         self.assertEqual(execute.call_count, 2); details.assert_called_once()
+        self.assertEqual(execute.call_args.kwargs["maximum_file_bytes"], 4 * 1024 * 1024)
+        self.assertEqual(execute.call_args.kwargs["maximum_hard_file_bytes"], 7 * 1024 * 1024)
         self.assertFalse(public["formal_acceptance"])
         self.assertNotIn("SECRET", gate.json.dumps(public))
 
