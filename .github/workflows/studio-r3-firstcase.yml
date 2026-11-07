@@ -60,7 +60,10 @@ jobs:
           test "$GITHUB_REPOSITORY" = seradotcom/motionwright
           root="$RUNNER_TEMP/motionwright-r3-firstcase-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$root"
-          python3 -I -B -X utf8 tooling/ci_service_r3_firstcase.py \
+          # setup-python injects a toolcache linker search path. R3 rejects
+          # dynamic loader overrides; select Ubuntu's native Python without
+          # carrying that unrelated runner-added path into the producer.
+          env -u LD_LIBRARY_PATH /usr/bin/python3 -I -B -X utf8 tooling/ci_service_r3_firstcase.py \
             --repo "$GITHUB_WORKSPACE" \
             --root "$root" \
             --expected-source "$GITHUB_SHA"

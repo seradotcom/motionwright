@@ -72,6 +72,34 @@ class FirstCaseSourceOnly(unittest.TestCase):
         self.assertNotIn("phase1-service47", workflow)
         self.assertNotIn("studio-service-68", workflow)
 
+    def test_r3_clears_only_hosted_python_toolcache_loader_path_before_the_isolated_producer(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / firstcase.WORKFLOW).read_text(encoding="utf-8")
+        launch = workflow.split("- name: Compile once and run exactly one source-built physical Store readback", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("env -u LD_LIBRARY_PATH /usr/bin/python3 -I -B -X utf8 tooling/ci_service_r3_firstcase.py", launch)
+        self.assertEqual(workflow.count("env -u LD_LIBRARY_PATH"), 1)
+        self.assertNotIn("env -u LD_PRELOAD", workflow)
+        self.assertIn('--expected-source "$GITHUB_SHA"', launch)
+        self.assertIn('test "$GITHUB_REPOSITORY" = seradotcom/motionwright', launch)
+
+    @unittest.skipUnless(firstcase.sys.platform == "linux", "Ubuntu system Python execution required")
+    def test_hosted_toolcache_injection_is_removed_at_the_isolated_python_process(self):
+        # Run the actual command boundary, not a shell-quoted mock, without
+        # entering the hosted R3 main function or creating a Store.
+        env = dict(firstcase.os.environ, LD_LIBRARY_PATH="/tmp/unapproved-library-root")
+        script = (
+            "import os, sys; "
+            "assert 'LD_LIBRARY_PATH' not in os.environ; "
+            "assert sys.flags.isolated == 1; "
+            "assert os.path.samefile(sys.executable, '/usr/bin/python3')"
+        )
+        result = firstcase.subprocess.run(
+            ["/usr/bin/env", "-u", "LD_LIBRARY_PATH", "/usr/bin/python3",
+             "-I", "-B", "-c", script],
+            env=env, capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_exact_real_source_case_and_reader_inputs(self):
         root = Path(__file__).resolve().parents[2]
         spec = (root / "apps/studio/tests/production-design-service.spec.ts").read_text(encoding="utf-8")
@@ -141,7 +169,8 @@ class FirstCaseSourceOnly(unittest.TestCase):
                                  ("GITHUB_RUN_ATTEMPT", "2"), ("R3_EVENT_BEFORE", "1" * 40),
                                  ("GITHUB_SHA", "f" * 40), ("GITHUB_WORKFLOW_SHA", "e" * 40),
                                  ("GITHUB_EVENT_NAME", "workflow_dispatch"),
-                                 ("LD_PRELOAD", "/tmp/interpose.so")):
+                                 ("LD_PRELOAD", "/tmp/interpose.so"),
+                                 ("LD_LIBRARY_PATH", "/opt/hostedtoolcache/Python/3.13.18/x64/lib")):
                 with self.subTest(key=key, invalid=invalid), self.assertRaises(ValueError):
                     firstcase.context({**env, key: invalid}, sha)
 
