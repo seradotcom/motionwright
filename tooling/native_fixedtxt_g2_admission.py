@@ -24,9 +24,13 @@ SELECTOR = "original-fixedtxt-host-joined-artifact-directory/1"
 # This is an ARCHIVE SLOT, never a physical output path or reserved job name.
 NATIVE_SLOT = "output/__original_host_artifact__"
 HELPER_PATHS = (
+    "tooling/native_owner_resources.py",
+    "tooling/source_policy.py",
     "tooling/native_fixedtxt_g2_admission.py",
     "tooling/native_fixedtxt_g2_supervisor.py",
     "tooling/native_fixedtxt_workflow.py",
+    "tooling/native_fixedtxt_session.py",
+    ".github/actions/fixedtxt-session-case/action.yml",
 )
 PLAN_MEMBER = "fixedtxt-plan.original.json"
 RUNTIME_MEMBER = "source-input.original.json"
@@ -333,6 +337,23 @@ def acquire_wrapper_inputs(environment, *, runtime_input_path, cycle_input_path,
     return acquire_inputs(raw, environment=environment, source_root=source_root)
 
 
+def verify_text_pixel_host_samples(plan, config, manifest):
+    """The new observer requires the original closed fixture sample roster."""
+    from native_film180_evidence_selection import fixedtxt_frames
+    from native_fixedtxt_observer_overlay import OBSERVED
+    source = plan["arm_sources"][plan["arm"]]["native_source_sha256"]
+    if source == OBSERVED[plan["arm"]]:
+        requested = config.get("textPixelObservationFrames")
+        need(type(requested) is list and requested == list(fixedtxt_frames(plan["fixture"]))
+             and all(type(frame) is int for frame in requested)
+             and manifest.get("plan", {}).get("text_pixel_observation_frames") == requested,
+             "fixedtxt-v2-original-text-pixel-Host-plan-samples")
+    else:
+        need("textPixelObservationFrames" not in config
+             and "text_pixel_observation_frames" not in manifest.get("plan", {}),
+             "fixedtxt-v2-text-pixel-profile-foreign-observer")
+
+
 def resolve_native_directory(plan, originals, *, cycle_raw):
     """Resolve one physical suffix from held, mutually joined ORIGINAL bytes.
 
@@ -459,6 +480,7 @@ def resolve_native_directory(plan, originals, *, cycle_raw):
          and descriptor(helper) == {key: runtime.get("render_helper", {}).get(key)
                                     for key in ("bytes", "sha256")},
          "fixedtxt-v2-original-host-program-and-helper")
+    verify_text_pixel_host_samples(plan, config, manifest)
     native_observations = manifest.get("native_observations", {})
     need(native_observations.get("render_input_digest") == config.get("renderInputDigest")
          and type(config.get("renderInputDigest")) is str and SHA.fullmatch(config["renderInputDigest"])
@@ -543,6 +565,70 @@ def _read_admitted_original(handles, row, physical, *, plan):
         handles.close_parents(parents)
 
 
+def verify_owner_resource_prefix(originals, *, plan, current, runner_temp):
+    """Validate observed preparation entry and caps without a future terminal."""
+    import native_fixedtxt_session as serial
+    import native_fixedtxt_workflow as route
+    import native_owner_resources as resources
+    request_raw = originals["control/request.original.json"]
+    clock_raw = originals["control/clock.original.json"]
+    request = route.checked_request(request_raw, current=current)
+    clock = strict(clock_raw, 65536)
+    rows = {row["root"] + "/" + row["relative_path"]: row for row in plan["members"]}
+    raw_clock = {name: originals["control/" + name] for name in serial.SESSION_MEMBERS
+                 if "control/" + name in rows}
+    session = serial.validate_clock_bundle(raw_clock, request_raw, clock_raw,
+                                          current=current, runner_temp=runner_temp)
+    need(session is not None or not PurePosixPath(runner_temp).name.startswith("fx"),
+         "fixedtxt-resource-prefix-session-required")
+    index = None if session is None else session["binding"]["index"]
+    label = resources.action_label("prepare", index)
+    names = {"origin.original.json", *("commands/" + label + "/" + name for name in resources.PREFIX_FILES)}
+    prefix = "control/owner-resources/"
+    selected = {name.removeprefix(prefix): row for name, row in rows.items() if name.startswith(prefix)}
+    need(set(selected) == names, "fixedtxt-resource-prefix-exact-original-plan")
+    values = {}
+    for name, row in selected.items():
+        raw = originals[prefix + name]
+        need(row["role"] == "input-original" and type(raw) is bytes and 0 < len(raw) <= row["maximum"] <= 65536
+             and row["expected_sha256"] == sha(raw), "fixedtxt-resource-prefix-plan-digest")
+        values[name] = raw
+    source = {row["path"]: row["sha256"] for row in plan["source_bindings"]}
+    need("tooling/native_owner_resources.py" in source, "fixedtxt-resource-helper-source-absent")
+    verified = resources.validate_resource_originals(values, scope="fixedtxt", current=current,
+        action="prepare", case=index, completed=False, helper_sha256=source["tooling/native_owner_resources.py"])
+    origin = resources.strict(values["origin.original.json"])
+    need(origin["job"] == ("fixedtxt-original-owner" if session is None else "fixedtxt-session-owner"),
+         "fixedtxt-resource-original-owner-mode")
+    need(all(name in source and row.get("sha256") == source[name]
+             for name, row in origin["source_closure"].items()), "fixedtxt-resource-original-source-closure")
+    intent = resources.strict(values["commands/" + label + "/intent.original.json"])
+    binding = intent["deadline"]
+    selected_clock = binding["selected"]
+    need(selected_clock["clock"] == descriptor(clock_raw)
+         and selected_clock["request"] == descriptor(request_raw)
+         and selected_clock["folder"] == str(PurePosixPath(runner_temp) / ("mw-fixedtxt-g2-control-" + current["run_id"] + "-1"))
+         and selected_clock["started_monotonic"] == clock["started_monotonic"]
+         and selected_clock["deadline_monotonic"] == clock["deadline_monotonic"]
+         and selected_clock["boot_id"] == clock["boot_id"]
+         and binding["effective_deadline_monotonic"] == serial.preparation_deadline(clock, request, session)
+         and binding["initial"] == origin["clock"], "fixedtxt-resource-original-preparation-clock")
+    initial = binding["initial"]
+    if session is None:
+        need(initial == selected_clock, "fixedtxt-resource-single-clock-differs")
+    else:
+        first_clock = (clock_raw if index == 0 else originals["control/reused-preparation/control/clock.original.json"])
+        need(initial["clock"] == descriptor(first_clock)
+             and initial["request"] == session["session"]["template"]
+             and initial["started_monotonic"] == session["session"]["started_monotonic"]
+             and initial["deadline_monotonic"] == session["session"]["deadline_monotonic"]
+             and initial["boot_id"] == session["session"]["boot_id"], "fixedtxt-resource-original-session-clock")
+    expected_argv = [str(PurePosixPath(origin["base_temp"]) / ("mw-fixedtxt-custody-python-" + current["run_id"] + "-1") / "bin/python"),
+        "-B", "-E", "-s", str(PurePosixPath(origin["source_root"]) / "tooling/native_fixedtxt_workflow.py"), "--prepare-originals"]
+    need(intent["argv"] == expected_argv, "fixedtxt-resource-closed-preparation-command")
+    return verified
+
+
 def verify_supervisor_originals(originals, *, plan, current, runner_temp):
     """Verify the original work-stage mechanics, without inferring a render."""
     import math
@@ -582,8 +668,31 @@ def verify_supervisor_originals(originals, *, plan, current, runner_temp):
     need(all(type(value) in (int, float) and math.isfinite(value) for value in times),
          "fixedtxt-v2-work-original-clock")
     start, execution, stage, total, finished = times
+    import native_fixedtxt_session as serial
+    members = {row["relative_path"]: row for row in plan["members"] if row["root"] == "control"}
+    session_raws = {}
+    for name, maximum in serial.SESSION_MEMBERS.items():
+        if name in members:
+            row = members[name]
+            raw = originals.get("control/" + name)
+            need(row["role"] == "input-original" and type(raw) is bytes and len(raw) <= maximum
+                 and row["expected_sha256"] == sha(raw), "fixedtxt-session-supervisor-plan-pin")
+            session_raws[name] = raw
+    session = serial.validate_clock_bundle(session_raws,
+        originals.get("control/request.original.json", b""), originals.get("control/clock.original.json", b""),
+        current=current, runner_temp=runner_temp)
+    need(session is not None or not PurePosixPath(runner_temp).name.startswith("fx"),
+         "fixedtxt-session-supervisor-clock-required")
+    expected_total = start + plan["limits"]["attempt_seconds"]
+    if session is not None:
+        case_clock = strict(originals["control/clock.original.json"], 65536)
+        case_request = strict(originals["control/request.original.json"], 49152)
+        need(start == case_clock["started_monotonic"] and case_request["limits"] == plan["limits"]
+             and (case_request["arm"], case_request["fixture"]) == (plan["arm"], plan["fixture"]),
+             "fixedtxt-session-supervisor-original-case-clock")
+        expected_total = session["effective_deadline_monotonic"]
     need(0 <= start <= execution < stage < total and start <= finished <= stage
-         and abs(total - start - plan["limits"]["attempt_seconds"]) < 0.000001
+         and abs(total - expected_total) < 0.000001
          and abs(total - stage - plan["limits"]["custody_seconds"]) < 0.000001,
          "fixedtxt-v2-work-original-budget")
     streams = terminal["streams"]
@@ -595,6 +704,7 @@ def verify_supervisor_originals(originals, *, plan, current, runner_temp):
              and type(observed["retained_bytes"]) is int
              and observed["observed_bytes"] == observed["retained_bytes"] == len(raw) <= 1024 * 1024
              and observed["observed_sha256"] == sha(raw), "fixedtxt-v2-work-original-stream-binding")
+    verify_owner_resource_prefix(originals, plan=plan, current=current, runner_temp=runner_temp)
     return {"original_work_stage_verified": True, "native_success_verified": False}
 
 

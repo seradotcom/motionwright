@@ -21,6 +21,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_render_profiles/mod.rs"]
+mod native_render_profiles;
+
 fn usage() -> ! {
     eprintln!(
         "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
@@ -1469,6 +1472,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             seed_hero(&database, &aspect, &project_json)
         }
+        "seed-hero-retained" => {
+            let database = path_arg(&mut args);
+            let aspect = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            let imported_database = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_render_profiles::require_selection(&aspect)?;
+            native_render_profiles::validate_paths(
+                &database,
+                &aspect,
+                &project_json,
+                &imported_database,
+                true,
+            )?;
+            seed_hero_with_import(&database, &aspect, &project_json, Some(&imported_database))
+        }
+        "reopen-hero-retained" => {
+            let database = path_arg(&mut args);
+            let aspect = text_arg(&mut args);
+            let project_json = path_arg(&mut args);
+            let imported_database = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_render_profiles::require_selection(&aspect)?;
+            native_render_profiles::reopen(
+                &database,
+                &aspect,
+                &project_json,
+                &imported_database,
+                &evidence,
+            )
+        }
         "seed" => {
             let database = path_arg(&mut args);
             if args.next().is_some() {
@@ -1529,6 +1568,15 @@ fn seed_hero(
     database: &Path,
     aspect: &str,
     project_json: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    seed_hero_with_import(database, aspect, project_json, None)
+}
+
+fn seed_hero_with_import(
+    database: &Path,
+    aspect: &str,
+    project_json: &Path,
+    imported_database: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let split = aspect.starts_with("split-");
     let metric = aspect.starts_with("metric-");
@@ -1680,8 +1728,19 @@ fn seed_hero(
     layout_output.sync_all()?;
     let bundle_path = project_json.with_file_name("hero.motionwright");
     service.export_project_bundle(project.id, &bundle_path)?;
-    let validation_root = tempfile::tempdir()?;
-    let destination = StudioService::open(validation_root.path().join("import.sqlite3"))?;
+    let validation_root = if imported_database.is_none() {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let import_path = imported_database.map(Path::to_path_buf).unwrap_or_else(|| {
+        validation_root
+            .as_ref()
+            .expect("legacy validation root")
+            .path()
+            .join("import.sqlite3")
+    });
+    let destination = StudioService::open(&import_path)?;
     let inspected = destination.inspect_project_bundle(&bundle_path)?;
     let imported = destination.import_project_bundle(&bundle_path)?;
     if !inspected.project.rotates_generation
@@ -1707,6 +1766,20 @@ fn seed_hero(
         .is_ok()
     {
         return Err("portable hero accepted a stale source generation".into());
+    }
+    if imported_database.is_some() {
+        cycle_new_json(
+            &project_json.with_file_name("imported-project.original.json"),
+            &imported,
+        )?;
+        cycle_new_json(
+            &project_json.with_file_name("source-backup.original.json"),
+            &service.export_project(project.id)?,
+        )?;
+        cycle_new_json(
+            &project_json.with_file_name("imported-backup.original.json"),
+            &destination.export_project(imported.id)?,
+        )?;
     }
     let mut bundle_check = OpenOptions::new()
         .write(true)

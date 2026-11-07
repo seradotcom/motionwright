@@ -1,0 +1,419 @@
+name: Native Hero profiles with retained editable Stores
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Prepare three profiles, or deliver their reviewed owner permissions
+        required: true
+        type: choice
+        options:
+          - prepare
+          - deliver
+      expected_source:
+        description: Exact reviewed Motionwright commit
+        required: true
+        type: string
+      request:
+        description: Closed Hero request, including the public recipient and resource policy
+        required: false
+        type: string
+      runtime_bootstrap:
+        description: Existing runtime-only MLT intake with exact artifact and compiler pins
+        required: false
+        type: string
+      owner_permissions:
+        description: Three independently reviewed permissions for the waiting preparation index
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# A permission courier must be able to finish while its original owner waits.
+# Neither a new run nor a rerun inherits any previous owner or permission.
+concurrency:
+  group: native-hero-original-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+env:
+  CI: 'true'
+  MOTIONWRIGHT_NATIVE_SCOPE: hero-profiles-three
+  CARGO_BUILD_JOBS: '1'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PLAYWRIGHT_BROWSERS_PATH: '0'
+
+jobs:
+  hero-profiles:
+    if: inputs.mode == 'prepare'
+    name: hero-profiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+      MW_MLT_SCOPE: film180-g2
+      MOTIONWRIGHT_APPROVED_MLT_G2: '1'
+    steps:
+      - name: Bind the original clock and three-profile request before checkout
+        id: origin
+        timeout-minutes: 1
+        env:
+          MW_PROFILE_EXPECTED_SOURCE: ${{ inputs.expected_source }}
+          MW_PROFILE_REQUEST: ${{ inputs.request }}
+          MW_PROFILE_RUNTIME_BOOTSTRAP: ${{ inputs.runtime_bootstrap }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          /usr/bin/python3.12 -B -E -s - <<'PY'
+          import hashlib, json, os, pathlib, re, stat, time
+          def need(value):
+              if not value:
+                  raise SystemExit('hero-original-request-or-clock-rejected-before-checkout')
+          def pairs(rows):
+              result = {}
+              for key, value in rows:
+                  need(key not in result)
+                  result[key] = value
+              return result
+          def parse(raw):
+              need(0 < len(raw) <= 16384)
+              return json.loads(raw, object_pairs_hook=pairs,
+                  parse_constant=lambda _: (_ for _ in ()).throw(ValueError('JSON constant')))
+          def canonical(value):
+              return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n').encode()
+          def new(path, raw):
+              fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+              try:
+                  with os.fdopen(fd, 'wb', closefd=False) as stream:
+                      stream.write(raw)
+                      stream.flush()
+                      os.fsync(stream.fileno())
+              finally:
+                  os.close(fd)
+          POLICY = {'schema': 'motionwright.native.owner-resource-policy/1',
+              'memory_physical_limit_bytes': 1610612736, 'memory_max_bytes': 1543503872,
+              'memory_high_bytes': 1476395008, 'physical_reserve_bytes': 536870912,
+              'swap_max_bytes': 0, 'pids_max': 512,
+              'leaves': ['controller', 'coordinator', 'preparation', 'work', 'custody']}
+          LIMITS = {'attempt_seconds': 3900, 'preparation_seconds': 1200, 'review_seconds': 480,
+              'native_seconds_each': 540, 'custody_seconds_each': 120, 'upload_seconds_each': 60, 'final_seconds': 180,
+              'stream_bytes': 8388608, 'capsule_bytes': 536870912, 'files': 4096,
+              'memory_bytes': 1610612736, 'memory_high_bytes': 1476395008,
+              'memory_max_bytes': 1543503872, 'processes': 512, 'disk_reserve_bytes': 10737418240}
+          OPERATIONS = {'motionwright_render': 1, 'motionwright_master': 1,
+              'motion_canvas_render_start': 1, 'mlt_frames_encode': 1, 'mlt_av_mux': 1,
+              'mlt_sync_probe': 0, 'seed_hero': 1, 'bundle_import': 1,
+              'reopen_before_native': 1, 'reopen_after_native': 1,
+              'automatic_retry': 0, 'simultaneous_owner_limit': 1}
+          env = os.environ
+          need(all(env.get(key) == value for key, value in (
+              ('GITHUB_ACTIONS', 'true'), ('CI', 'true'), ('RUNNER_OS', 'Linux'),
+              ('GITHUB_REPOSITORY', 'seradotcom/motionwright'), ('GITHUB_EVENT_NAME', 'workflow_dispatch'),
+              ('GITHUB_RUN_ATTEMPT', '1'), ('GITHUB_ACTOR_ID', '69337222'))))
+          need(re.fullmatch('[0-9a-f]{40}', env['MW_PROFILE_EXPECTED_SOURCE'])
+              and env['MW_PROFILE_EXPECTED_SOURCE'] == env['GITHUB_SHA']
+              and re.fullmatch('[1-9][0-9]*', env['GITHUB_RUN_ID']))
+          raw = env['MW_PROFILE_REQUEST'].encode()
+          bootstrap_raw = env['MW_PROFILE_RUNTIME_BOOTSTRAP'].encode()
+          request, bootstrap = parse(raw), parse(bootstrap_raw)
+          need(set(request) == {'schema', 'source_sha', 'source_tree', 'semwright_sha', 'semwright_tree',
+              'roster', 'limits', 'operations_per_profile', 'runtime_bootstrap_sha256', 'recipient', 'owner_resources'}
+              and request['schema'] == 'motionwright.native.hero-profiles-request/1'
+              and request['source_sha'] == env['GITHUB_SHA']
+              and all(type(request[key]) is str and re.fullmatch('[0-9a-f]{40}', request[key])
+                  for key in ('source_sha', 'source_tree', 'semwright_sha', 'semwright_tree'))
+              and request['roster'] == ['landscape', 'portrait', 'square']
+              and canonical(request['owner_resources']) == canonical(POLICY)
+              and canonical(request['limits']) == canonical(LIMITS)
+              and canonical(request['operations_per_profile']) == canonical(OPERATIONS)
+              and request['runtime_bootstrap_sha256'] == hashlib.sha256(bootstrap_raw).hexdigest())
+          need(bootstrap.get('motionwright_sha') == request['source_sha']
+              and bootstrap.get('semwright_sha') == request['semwright_sha']
+              and bootstrap.get('recipient') == request['recipient'])
+          base = pathlib.Path(env['RUNNER_TEMP'])
+          need(base.resolve(strict=True) == base
+              and re.fullmatch(r'/home/runner/work/_temp(?:/[A-Za-z0-9_-]+)?', str(base)))
+          root = base / ('hp' + env['GITHUB_RUN_ID'] + '-1')
+          root.mkdir(mode=0o700, exist_ok=False)
+          need(root.lstat().st_uid == os.getuid() and stat.S_IMODE(root.stat().st_mode) == 0o700)
+          current = {'source_sha': request['source_sha'], 'semwright_sha': request['semwright_sha'],
+              'run_id': env['GITHUB_RUN_ID'], 'run_attempt': '1'}
+          start = time.monotonic()
+          clock = {'schema': 'motionwright.native.hero-profiles-clock/1', 'context': current,
+              'request': {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()},
+              'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+              'started_monotonic': start, 'deadline_monotonic': start + 3900}
+          new(root / 'request.original.json', raw)
+          new(root / 'runtime-bootstrap.original.json', bootstrap_raw)
+          new(root / 'clock.original.json', canonical(clock))
+          with pathlib.Path(env['GITHUB_OUTPUT']).open('a') as output:
+              output.write('sdk=' + request['semwright_sha'] + '\n')
+          print('HERO_ORIGINAL_CLOCK_RECORDED profiles=3 Native_calls=0 owner_authority=false')
+          PY
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 3
+        with:
+          ref: ${{ inputs.expected_source }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 3
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.origin.outputs.sdk }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Initialize only the explicit aggregate owner resource tree
+        id: resource_origin
+        timeout-minutes: 1
+        run: sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py initialize --scope hero
+
+      - name: Check the source policy inside the aggregate owner tree
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action source-policy --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action source-policy || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      # The setup/cache Actions have their own finite timeouts. They are not
+      # represented as members of the Python controller's aggregate cgroup.
+      - name: Select the same isolated toolchain root used by the warm cache
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUSTUP_HOME="$RUNNER_TEMP/manim-native-rustup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$RUSTUP_HOME"
+          mkdir -m 700 "$RUSTUP_HOME"
+          printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        timeout-minutes: 5
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        timeout-minutes: 5
+        env:
+          RUSTUP_HOME: ''
+        with:
+          key: motionwright-native-manim-1.98.1
+          shared-key: source-contracts-manim-sdk-${{ steps.origin.outputs.sdk }}
+          workspaces: |
+            . -> target
+            _semwright -> target
+          cmd-format: 'env RUSTUP_HOME=${{ runner.temp }}/manim-native-rustup-${{ github.run_id }}-${{ github.run_attempt }} {0}'
+          cache-workspace-crates: true
+          save-if: false
+          cache-on-failure: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        timeout-minutes: 3
+        with:
+          node-version: 22.22.0
+
+      - name: Prepare the bounded custody interpreter
+        id: custody_python
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action bootstrap --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action bootstrap || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      - name: Prepare the shared MC and repaired MLT runtime plus the Hero executable once
+        id: prepared
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action prepare --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action prepare || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      - name: Retain the private preparation for independent owner review
+        id: preparation_upload
+        if: steps.prepared.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: 2
+        with:
+          name: ${{ steps.prepared.outputs.artifact_name }}
+          path: |
+            ${{ steps.prepared.outputs.directory }}/public.json
+            ${{ steps.prepared.outputs.directory }}/sealed-originals.bin
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Consume three independent permissions and run each profile once in order
+        id: profiles
+        if: steps.preparation_upload.outcome == 'success'
+        timeout-minutes: 42
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MW_PROFILE_PREPARATION_ARTIFACT_ID: ${{ steps.preparation_upload.outputs.artifact-id }}
+          MW_PROFILE_PREPARATION_ARTIFACT_SHA256: ${{ steps.preparation_upload.outputs.artifact-digest }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action receive-and-run --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action receive-and-run || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      - name: Retain the original landscape result, including a sealed negative
+        id: landscape_upload
+        if: always() && steps.profiles.outputs.landscape_directory != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: 1
+        with:
+          name: motionwright-hero-originals-${{ github.run_id }}-1-landscape
+          path: |
+            ${{ steps.profiles.outputs.landscape_directory }}/public.json
+            ${{ steps.profiles.outputs.landscape_directory }}/sealed-originals.bin
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retain the original portrait result, including a sealed negative
+        id: portrait_upload
+        if: always() && steps.profiles.outputs.portrait_directory != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: 1
+        with:
+          name: motionwright-hero-originals-${{ github.run_id }}-1-portrait
+          path: |
+            ${{ steps.profiles.outputs.portrait_directory }}/public.json
+            ${{ steps.profiles.outputs.portrait_directory }}/sealed-originals.bin
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retain the original square result, including a sealed negative
+        id: square_upload
+        if: always() && steps.profiles.outputs.square_directory != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: 1
+        with:
+          name: motionwright-hero-originals-${{ github.run_id }}-1-square
+          path: |
+            ${{ steps.profiles.outputs.square_directory }}/public.json
+            ${{ steps.profiles.outputs.square_directory }}/sealed-originals.bin
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Observe the actual uploaded profile artifacts without inferring Native success
+        if: always() && steps.custody_python.outcome == 'success'
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MW_PROFILE_LANDSCAPE_ARTIFACT_ID: ${{ steps.landscape_upload.outputs.artifact-id }}
+          MW_PROFILE_LANDSCAPE_ARTIFACT_SHA256: ${{ steps.landscape_upload.outputs.artifact-digest }}
+          MW_PROFILE_PORTRAIT_ARTIFACT_ID: ${{ steps.portrait_upload.outputs.artifact-id }}
+          MW_PROFILE_PORTRAIT_ARTIFACT_SHA256: ${{ steps.portrait_upload.outputs.artifact-digest }}
+          MW_PROFILE_SQUARE_ARTIFACT_ID: ${{ steps.square_upload.outputs.artifact-id }}
+          MW_PROFILE_SQUARE_ARTIFACT_SHA256: ${{ steps.square_upload.outputs.artifact-digest }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action record-uploads --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action record-uploads || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      - name: Release only the observed shared mounts after the owned cohorts close
+        if: always() && steps.custody_python.outcome == 'success'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action release-shared --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action release-shared || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      - name: Seal actual session originals and the earlier guard terminals
+        id: session_custody
+        if: always() && steps.custody_python.outcome == 'success'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -uo pipefail
+          code=0
+          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action seal-session --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action seal-session || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          exit "$code"
+
+      - name: Retain the sealed session, including truthful missing or unknown cases
+        if: always() && steps.session_custody.outputs.directory != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: 1
+        with:
+          name: motionwright-hero-session-${{ github.run_id }}-1
+          path: |
+            ${{ steps.session_custody.outputs.directory }}/public.json
+            ${{ steps.session_custody.outputs.directory }}/sealed-originals.bin
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  hero-permission-delivery:
+    if: inputs.mode == 'deliver'
+    name: hero-permission-delivery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the reviewed source and original owner actor
+        timeout-minutes: 1
+        env:
+          EXPECTED_SOURCE: ${{ inputs.expected_source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3.12 -B -E -s - <<'PY'
+          import os, re
+          e = os.environ
+          if (not re.fullmatch('[0-9a-f]{40}', e['EXPECTED_SOURCE'])
+                  or e['EXPECTED_SOURCE'] != e['GITHUB_SHA']
+                  or e['GITHUB_RUN_ATTEMPT'] != '1' or e['GITHUB_ACTOR_ID'] != '69337222'):
+              raise SystemExit('hero-permission-delivery-context-rejected')
+          PY
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: ${{ inputs.expected_source }}
+          persist-credentials: false
+
+      - name: Preserve the explicit three-profile permission payload
+        id: courier
+        timeout-minutes: 1
+        env:
+          MW_PROFILE_PERMISSIONS: ${{ inputs.owner_permissions }}
+        run: /usr/bin/python3.12 -B -E -s tooling/native_profiles_workflow.py deliver
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: 1
+        with:
+          name: ${{ steps.courier.outputs.artifact_name }}
+          path: ${{ steps.courier.outputs.directory }}/owner-permissions.original.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1

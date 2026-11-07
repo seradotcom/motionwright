@@ -13,10 +13,12 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
 import tomllib
+from contextlib import nullcontext
 from pathlib import Path
 
 from native_av_media_probe import probe_native_mp4, write_two_channel_tone_wav
@@ -72,6 +74,7 @@ EVIDENCE = ROOT / "verification" / (
 ) / GITHUB_SHA
 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA or IS_COMPOSITION:
     EVIDENCE = EVIDENCE / FIXTURE
+DEFAULT_EVIDENCE = EVIDENCE
 
 
 def digest(path: Path) -> str:
@@ -136,11 +139,50 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
     raise AssertionError("semwrightd did not expose the owner socket")
 
 
-def main() -> None:
-    exact_inputs()
-    EVIDENCE.mkdir(parents=True, exist_ok=False)
+def profile_output_paths(evidence: Path, owner: Path) -> tuple[Path, Path]:
+    """Validate a case-owned profile namespace without granting Native authority.
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-av-") as raw:
+    The session caller supplies its already admitted paths.  The legacy CLI
+    never enters this route.  Both roots stay available after the producer
+    returns so the caller can close descendants and seal the real originals.
+    """
+    if not IS_HERO or FIXTURE not in {"landscape", "portrait", "square"}:
+        raise ValueError("persistent profile output requires a closed hero profile")
+    if not isinstance(evidence, Path) or not isinstance(owner, Path):
+        raise TypeError("profile output paths must be explicit Path values")
+    if (not evidence.is_absolute() or not owner.is_absolute()
+            or evidence.name != "evidence" or owner.name != "owner"
+            or evidence.parent != owner.parent):
+        raise ValueError("profile outputs must share one exact private case namespace")
+    parent = evidence.parent
+    if (parent.resolve(strict=True) != parent
+            or any(path.is_symlink() for path in (parent, *parent.parents))):
+        raise ValueError("profile case namespace must be canonical")
+    identity = parent.stat()
+    if (not stat.S_ISDIR(identity.st_mode) or identity.st_uid != os.getuid()
+            or stat.S_IMODE(identity.st_mode) != 0o700):
+        raise ValueError("profile case namespace must be private and owned")
+    if evidence.exists() or evidence.is_symlink() or owner.exists() or owner.is_symlink():
+        raise FileExistsError("profile outputs must not replace or reuse an existing owner")
+    if len(str(owner / "runtime" / "broker.sock").encode()) > 107:
+        raise ValueError("profile owner socket path exceeds the native boundary")
+    return evidence, owner
+
+
+def main(*, profile_evidence: Path | None = None, profile_owner: Path | None = None) -> None:
+    exact_inputs()
+    if (profile_evidence is None) != (profile_owner is None):
+        raise ValueError("profile evidence and owner must be supplied together")
+    EVIDENCE = DEFAULT_EVIDENCE
+    if profile_evidence is not None:
+        EVIDENCE, profile_owner = profile_output_paths(profile_evidence, profile_owner)
+    EVIDENCE.mkdir(mode=0o700 if profile_owner is not None else 0o777, parents=True, exist_ok=False)
+
+    if profile_owner is not None:
+        profile_owner.mkdir(mode=0o700, exist_ok=False)
+    owner_context = (tempfile.TemporaryDirectory(prefix="motionwright-native-av-")
+                     if profile_owner is None else nullcontext(str(profile_owner)))
+    with owner_context as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         paths: dict[str, Path] = {}
@@ -155,6 +197,7 @@ def main() -> None:
             "output",
             "scratch",
             "motionwright-data",
+            *(["motionwright-import"] if profile_owner is not None else []),
         ]:
             path = root / name
             path.mkdir(mode=0o700)
@@ -173,11 +216,17 @@ def main() -> None:
             SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
             SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
         )
+        if profile_owner is not None:
+            env.update(TMPDIR=str(paths["scratch"]), XDG_CACHE_HOME=str(paths["scratch"]),
+                       XDG_CONFIG_HOME=str(paths["config"]))
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
         seed_command = [str(MW_BIN), "seed", str(database)]
         if IS_HERO:
             seed_command = [str(MW_BIN), "seed-hero", str(database), FIXTURE, str(EVIDENCE / "editable-project.json")]
+            if profile_owner is not None:
+                seed_command[1] = "seed-hero-retained"
+                seed_command.append(str(paths["motionwright-import"] / "motionwright.sqlite3"))
         elif IS_STAGE:
             seed_command = [str(MW_BIN), "seed-stage", str(database), FIXTURE.removeprefix("stage-"), str(EVIDENCE / "editable-project.json")]
         elif IS_CAMERA:
@@ -190,6 +239,11 @@ def main() -> None:
         elif IS_COMPOSITION:
             seed_command = [str(MW_BIN), "seed-composition", str(database), str(EVIDENCE / "editable-project.json")]
         seeded = run_json(seed_command, env=env)
+        if profile_owner is not None:
+            reopen_command = [str(MW_BIN), "reopen-hero-retained", str(database), FIXTURE,
+                str(EVIDENCE / "editable-project.json"),
+                str(paths["motionwright-import"] / "motionwright.sqlite3")]
+            run_json([*reopen_command, str(EVIDENCE / "profile-before-native-reopen.json")], env=env)
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
         expected_family = ("contrast-comparison/1" if FIXTURE.startswith("contrast-") else
@@ -413,7 +467,10 @@ def main() -> None:
         socket = paths["runtime"] / "broker.sock"
         session = paths["runtime"] / "motionwright.session"
         daemon_log = EVIDENCE / "semwrightd.log"
-        log_stream = daemon_log.open("wb")
+        # The retained profile caller owns bounded private stdout/stderr pipes.
+        # Inheriting them keeps daemon diagnostics within the same hard stream
+        # budget; a separate unbounded daemon log would escape that custodian.
+        log_stream = daemon_log.open("wb") if profile_owner is None else None
         daemon = subprocess.Popen(
             [
                 str(SW_BINS / "semwrightd"),
@@ -612,8 +669,7 @@ def main() -> None:
             audio_path.chmod(0o600)
             audio_sha256 = digest(audio_path)
 
-            master_result = run_json(
-                [
+            master_command = [
                     str(MW_BIN),
                     "master",
                     str(database),
@@ -622,10 +678,14 @@ def main() -> None:
                     audio_relative,
                     audio_sha256,
                     str(EVIDENCE / "motionwright-av-master-evidence.json"),
-                ],
-                env=env,
-                timeout=1500 if IS_COMPOSITION else 420,
-            )
+                ]
+            if profile_owner is None:
+                master_result = run_json(master_command, env=env, timeout=1500 if IS_COMPOSITION else 420)
+            else:
+                from native_profiles_workflow import original_mlt_observer
+                with original_mlt_observer(daemon.pid, paths["output"], EVIDENCE) as confirm_original_mlt:
+                    master_result = run_json(master_command, env=env, timeout=420)
+                    confirm_original_mlt(master_result)
             if master_result.get("native_av_master_e2e") != "PASS":
                 raise AssertionError(f"Motionwright AV master did not pass: {master_result}")
             master_artifact = master_result.get("artifact")
@@ -654,6 +714,8 @@ def main() -> None:
             if decoded["source_wav_sha256"] != audio_sha256:
                 raise AssertionError("Decoded-media probe used a different WAV source")
             write_private_json(EVIDENCE / "decoded-media-proof.json", decoded)
+            if profile_owner is not None:
+                run_json([*reopen_command, str(EVIDENCE / "profile-after-native-reopen.json")], env=env)
             if IS_STAGE:
                 from product_stage_native_evidence import inspect_stage_mp4
                 inspect_stage_mp4(master_path, EVIDENCE, seeded, ffmpeg)
@@ -840,7 +902,8 @@ def main() -> None:
                             os.killpg(pid, signal.SIGKILL)
                             daemon.wait(timeout=5)
                 finally:
-                    log_stream.close()
+                    if log_stream is not None:
+                        log_stream.close()
 
     print(
         json.dumps(
@@ -848,7 +911,8 @@ def main() -> None:
                 "native_av_master_e2e": "PASS",
                 "motionwright_sha": GITHUB_SHA,
                 "semwright_sha": PIN,
-                "evidence": str(EVIDENCE.relative_to(ROOT)),
+                "evidence": (str(EVIDENCE.relative_to(ROOT)) if profile_owner is None
+                             else EVIDENCE.name),
             },
             sort_keys=True,
         )

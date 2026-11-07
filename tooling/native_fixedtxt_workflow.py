@@ -24,6 +24,8 @@ import stat
 import subprocess
 import sys
 import time
+
+from native_owner_resources import OWNER_RESOURCE_POLICY
 import zipfile
 
 
@@ -35,9 +37,13 @@ DELIVERY_MAX = 65536
 DELIVERY_MEMBERS_MAX = 60 * 1024
 API_JOURNAL_MAX = 1024 * 1024
 NATIVE_PATH = "integrations/composition/motion/native.ts"
-PAIR = {
+HISTORICAL_PAIR = {
     "RED": "dfe6c0fc226d7e9017eb718c7e745d942c4067a54f968d4483b80bbdd51b4fa8",
     "GREEN": "a400b38608e169a20e7ade099aa8632c11629152951b9e62a0fb66858b530f36",
+}
+PAIR = {
+    "RED": "2d8ab6983d0845fe0290d6f25bef277759cb530ed85e6f3bd5e94f263a5f2bb3",
+    "GREEN": "0aa5b9bd414f3c7d88e9b871ee96e3523729c02caddd8d420d63d9f14c2c794d",
 }
 FIXTURE_HELPER = "crates/driver-motion-canvas/examples/support/fixed_text_fixtures_v4.rs"
 FIXTURE_HELPER_SHA256 = "3e1da867921c1f0a82342ac0c9c4cc85f7081ad5ad8c5dab0ade449f63a1c907"
@@ -78,16 +84,19 @@ def strict(raw, maximum=DELIVERY_MAX):
     return value
 
 
-def artifact_name(target_run):
+def artifact_name(target_run, request_sha256=None):
     need(type(target_run) is str and RUN.fullmatch(target_run), "fixedtxt-delivery-target")
-    return "motionwright-fixedtxt-r28-delivery-" + target_run + "-1"
+    need(request_sha256 is None or type(request_sha256) is str and SHA.fullmatch(request_sha256),
+         "fixedtxt-delivery-case-digest")
+    suffix = "" if request_sha256 is None else "-" + request_sha256
+    return "motionwright-fixedtxt-r28-delivery-" + target_run + "-1" + suffix
 
 
 def original_descriptor(raw):
     return {"bytes": len(raw), "sha256": sha(raw)}
 
 
-def select_delivery_artifact(listing, target_run):
+def select_delivery_artifact(listing, target_run, request_sha256=None):
     """Select the complete name result BEFORE provenance, digest or content filters."""
     need(type(listing) is dict and type(listing.get("total_count")) is int
          and type(listing.get("artifacts")) is list, "fixedtxt-delivery-list-shape")
@@ -96,7 +105,7 @@ def select_delivery_artifact(listing, target_run):
     if count == 0:
         return None
     item = items[0]
-    need(type(item) is dict and item.get("name") == artifact_name(target_run),
+    need(type(item) is dict and item.get("name") == artifact_name(target_run, request_sha256),
          "fixedtxt-delivery-name")
     need(type(item.get("id")) is int and item["id"] > 0, "fixedtxt-delivery-artifact-id")
     return item
@@ -194,7 +203,7 @@ def delivery_members(archive, *, item):
 
 
 def validate_delivery_originals(originals, *, current, target, delivery, workflow,
-                               review_artifact, held_plan, held_runtime, held_cycle):
+                               review_artifact, held_plan, held_runtime, held_cycle, session=None):
     import native_fixedtxt_g2_admission as fixed
     live_identity = checked_delivery_runs(target, delivery, workflow, current=current)
     need(delivery.get("status") == "completed" and delivery.get("conclusion") == "success",
@@ -213,7 +222,11 @@ def validate_delivery_originals(originals, *, current, target, delivery, workflo
          and recorded_delivery.get("conclusion") is None,
          "fixedtxt-delivery-original-server-identity")
     handoff = strict(originals["handoff.original.json"])
-    need(set(handoff) == {"schema", "target_run_id", "delivery_run_id", "source_sha", "workflow_id",
+    request_sha256 = None if session is None else session["binding"]["request"]["sha256"]
+    expected_session = {} if session is None else {"request_sha256": request_sha256}
+    need(all(handoff.get(key) == value for key, value in expected_session.items()),
+         "fixedtxt-delivery-independent-case-request")
+    need(set(handoff) == set(expected_session) | {"schema", "target_run_id", "delivery_run_id", "source_sha", "workflow_id",
                          "review_artifact_id", "review_artifact_sha256", "dispatch_original"}
          and handoff["schema"] == "motionwright.native.fixedtxt-workflow-delivery/1"
          and handoff["target_run_id"] == current["run_id"]
@@ -223,7 +236,8 @@ def validate_delivery_originals(originals, *, current, target, delivery, workflo
     review = strict(originals["review-artifact.original.json"])
     for observed in (review, review_artifact):
         checked_artifact(observed, run=target,
-            expected_name="motionwright-fixedtxt-preparation-" + current["run_id"] + "-1",
+            expected_name="motionwright-fixedtxt-preparation-" + current["run_id"] + "-1"
+                + ("" if request_sha256 is None else "-" + request_sha256),
             maximum=256 * 1024 * 1024)
         need(observed["id"] == handoff["review_artifact_id"]
              and observed["digest"] == "sha256:" + handoff["review_artifact_sha256"],
@@ -325,10 +339,12 @@ def original_clock(raw, request, *, current):
     return value
 
 
-def wait_for_owner(*, current, request, clock, directory, originals, review):
+def wait_for_owner(*, current, request, clock, directory, originals, review, session=None):
     import native_fixedtxt_g2_admission as fixed
     from ci_private_evidence import new_bytes, new_json
-    wait_until = clock["deadline_monotonic"] - request["limits"]["custody_seconds"] - request["native_seconds"]
+    import native_fixedtxt_session as serial
+    wait_until = serial.effective_deadline(clock, session) - request["limits"]["custody_seconds"] - request["native_seconds"]
+    request_sha256 = None if session is None else session["binding"]["request"]["sha256"]
     need(time.monotonic() < wait_until, "fixedtxt-preparation-exhausted-native-reserve")
     api = ReadOnlyApi(directory, wait_until)
     try:
@@ -336,10 +352,10 @@ def wait_for_owner(*, current, request, clock, directory, originals, review):
         target = strict(api.get("repos/" + REPO + "/actions/runs/" + current["run_id"]))
         checked_run(target, run_id=current["run_id"], source_sha=current["source_sha"],
                     workflow_id=checked_workflow(workflow))
-        route = "repos/" + REPO + "/actions/artifacts?name=" + artifact_name(current["run_id"]) + "&per_page=2&page=1"
+        route = "repos/" + REPO + "/actions/artifacts?name=" + artifact_name(current["run_id"], request_sha256) + "&per_page=2&page=1"
         while True:
             need(time.monotonic() < wait_until, "fixedtxt-external-delivery-not-observed-before-deadline")
-            item = select_delivery_artifact(strict(api.get(route)), current["run_id"])
+            item = select_delivery_artifact(strict(api.get(route)), current["run_id"], request_sha256)
             if item is not None:
                 break
             time.sleep(min(1, max(0, wait_until - time.monotonic())))
@@ -356,8 +372,8 @@ def wait_for_owner(*, current, request, clock, directory, originals, review):
                 break
             need(delivery.get("status") in {"queued", "in_progress"}, "fixedtxt-delivery-run-state")
             time.sleep(min(1, max(0, wait_until - time.monotonic())))
-        checked_artifact(item, run=delivery, expected_name=artifact_name(current["run_id"]), maximum=DELIVERY_MAX)
-        fresh = select_delivery_artifact(strict(api.get(route)), current["run_id"])
+        checked_artifact(item, run=delivery, expected_name=artifact_name(current["run_id"], request_sha256), maximum=DELIVERY_MAX)
+        fresh = select_delivery_artifact(strict(api.get(route)), current["run_id"], request_sha256)
         need(artifact_identity(fresh) == artifact_identity(item), "fixedtxt-delivery-selection-changed")
         actual = strict(api.get("repos/" + REPO + "/actions/artifacts/" + str(item["id"])))
         need(artifact_identity(actual) == artifact_identity(item), "fixedtxt-delivery-metadata-changed")
@@ -369,8 +385,8 @@ def wait_for_owner(*, current, request, clock, directory, originals, review):
         need(reviewed.get("digest") == "sha256:" + review["artifact_sha256"], "fixedtxt-preparation-upload-digest")
         held = validate_delivery_originals(members, current=current, target=target, delivery=delivery,
             workflow=workflow, review_artifact=reviewed, held_plan=originals["plan"],
-            held_runtime=originals["runtime"], held_cycle=originals["cycle"])
-        final_selection = select_delivery_artifact(strict(api.get(route)), current["run_id"])
+            held_runtime=originals["runtime"], held_cycle=originals["cycle"], session=session)
+        final_selection = select_delivery_artifact(strict(api.get(route)), current["run_id"], request_sha256)
         need(artifact_identity(final_selection) == artifact_identity(item),
              "fixedtxt-delivery-not-unique-before-owner")
         need(time.monotonic() < wait_until, "fixedtxt-delivery-consumed-native-reserve")
@@ -400,7 +416,7 @@ def limit_api_stream_files():
     resource.setrlimit(resource.RLIMIT_FSIZE, (maximum, maximum))
 
 
-def preflight_request_capacity(value, *, source_zip_bytes=0):
+def preflight_request_capacity(value, *, source_zip_bytes=0, session=False):
     """Reject an already impossible declaration before checkout/install effects.
 
     This pure subset also runs in the inline bootstrap. Its closed role counts
@@ -449,11 +465,19 @@ def preflight_request_capacity(value, *, source_zip_bytes=0):
                    65536, 65536, 1024 * 1024 + 1, 1024 * 1024 + 1, 65536,
                    1024 * 1024, 65536, 65536, 65536, 65536,
                    49152, 65536, 16384])
-    need(len(bounds) <= limits["files"], "fixedtxt-preparation-declared-file-budget")
+    # Retained historical GREEN, derived RED, and reversible observer proof.
+    bounds.extend([128 * 1024, 128 * 1024, 16384])
+    need(type(session) is bool, "fixedtxt-session-capacity-selection")
+    # The five active resource originals fit inside the existing session reserve.
+    # A standalone case explicitly reserves those same five bounded metadata files.
+    extra_bytes, extra_files = (2 * 1024 * 1024, 192) if session else (5 * 65536, 5)
+    need(len(bounds) + extra_files <= limits["files"], "fixedtxt-preparation-declared-file-budget")
     # Same USTAR headers/padding, metadata, record rounding, envelope and
     # public-projection reserve as the existing R28 plan validator.
-    total = sum(bounds)
+    total = sum(bounds) + extra_bytes
     tar_bound = sum(512 + ((bound + 511) // 512) * 512 for bound in bounds)
+    # Reserve every added original's header and worst-case padding as well.
+    tar_bound += extra_bytes + extra_files * 1024
     tar_bound += 512 + 512 * 1024 + 1024
     tar_bound = ((tar_bound + 10239) // 10240) * 10240
     capsule_bound = tar_bound + 8192 + 64 + 512 * 1024
@@ -471,6 +495,7 @@ def preflight_request_capacity(value, *, source_zip_bytes=0):
          "fixedtxt-preparation-review-existing-bounds")
     sources = value["sources"]
     review_bounds = [49152, 65536, 16384, 512 * 1024, 65536, 1024 * 1024]
+    review_bounds.extend([128 * 1024, 128 * 1024, 16384])
     for key, maximum in (("template_film", 4 * 1024 * 1024), ("managed_project", 4 * 1024 * 1024),
         ("caption_source", 65536), ("red_native", 2 * 1024 * 1024), ("measurement_protocol", 65536)):
         bound = sources[key]["bytes"]
@@ -490,20 +515,32 @@ def preflight_request_capacity(value, *, source_zip_bytes=0):
     # Before download its size is unknown; after download this same arithmetic
     # runs with the observed length before the second copy or next command.
     review_bounds.extend([source_zip_bytes, source_zip_bytes])
-    review_total = sum(review_bounds)
+    review_total = sum(review_bounds) + extra_bytes
     review_tar = sum(512 + ((bound + 511) // 512) * 512 for bound in review_bounds)
+    review_tar += extra_bytes + extra_files * 1024
     review_tar += 512 + 512 * 1024 + 1024
     review_tar = ((review_tar + 10239) // 10240) * 10240
     # Existing encrypted envelope/public-projection reserves plus the review
     # ZIP's existing 8192 bytes. Keep collect_workflow_originals' 1 MiB reserve.
     review_bound = review_tar + 8192 + 64 + 512 * 1024 + 8192
-    need(len(review_bounds) <= limits["files"] and review_total <= review - 1024 * 1024
+    need(len(review_bounds) + extra_files <= limits["files"] and review_total <= review - 1024 * 1024
          and review_bound <= review, "fixedtxt-preparation-declared-review-capsule-budget")
-    return {"mandatory_role_counts": counts, "declared_files": len(bounds),
+    return {"mandatory_role_counts": counts, "declared_files": len(bounds) + extra_files,
             "declared_raw_bytes": total, "declared_capsule_bound": capsule_bound,
-            "review_declared_files": len(review_bounds), "review_declared_raw_bytes": review_total,
+            "review_declared_files": len(review_bounds) + extra_files, "review_declared_raw_bytes": review_total,
             "review_declared_capsule_bound": review_bound, "source_zip_observed_bytes": source_zip_bytes,
-            "future_original_sizes_verified": False}
+            "future_original_sizes_verified": False, "session_provenance_reserved": session}
+
+
+def checked_owner_resources(request):
+    """A /2 request explicitly binds the unchanged physical owner ceilings."""
+    need(type(request) is dict
+         and request.get("schema") == "motionwright.native.fixedtxt-workflow-request/2",
+         "fixedtxt-owner-resource-request-version")
+    need(type(request.get("owner_resources")) is dict
+         and canonical(request["owner_resources"]) == canonical(OWNER_RESOURCE_POLICY),
+         "fixedtxt-owner-resource-request-policy")
+    return request["owner_resources"]
 
 
 def checked_request(raw, *, current):
@@ -512,10 +549,11 @@ def checked_request(raw, *, current):
     import native_fixedtxt_g2_admission as fixed
     import native_mlt_g2_custody as custody
     value = strict(raw, 49152)
+    checked_owner_resources(value)
     need(set(value) == {"schema", "source_sha", "source_tree", "semwright_sha", "semwright_tree",
          "arm", "fixture", "purpose", "admission_id", "limits", "preparation_seconds", "native_seconds",
-         "upload_seconds", "attempt_minutes", "preparation_stream_bytes", "review_capsule_bytes", "role_limits", "sources"}
-         and value["schema"] == "motionwright.native.fixedtxt-workflow-request/1",
+         "upload_seconds", "attempt_minutes", "preparation_stream_bytes", "review_capsule_bytes", "role_limits", "sources", "owner_resources"}
+         and value["schema"] == "motionwright.native.fixedtxt-workflow-request/2",
          "fixedtxt-preparation-request-fields")
     need(value["source_sha"] == current["source_sha"]
          and value["semwright_sha"] == current["semwright_sha"]
@@ -568,7 +606,7 @@ def checked_request(raw, *, current):
     for key, maximum in (("template_film", 4 * 1024 * 1024), ("managed_project", 4 * 1024 * 1024),
         ("caption_source", 65536), ("red_native", 2 * 1024 * 1024), ("measurement_protocol", 65536)):
         member(sources[key], maximum)
-    need(sources["red_native"]["sha256"] == PAIR["RED"], "fixedtxt-original-reviewed-red-source")
+    need(sources["red_native"]["sha256"] == HISTORICAL_PAIR["RED"], "fixedtxt-original-reviewed-red-source")
     files = sources["project_files"]
     need(type(files) is list and len(files) <= 256, "fixedtxt-source-project-roster-bound")
     relative = set()
@@ -618,7 +656,7 @@ def load_original_request(current):
     return raw, request, clock_raw, clock
 
 
-def admitted_original_clock(plan, *, current, runner_temp):
+def admitted_original_clock(plan, *, current, runner_temp, include_session=False):
     import native_fixedtxt_g2_admission as fixed
     import native_evidence_projection as core
     layout = fixed.owner_layout(current=current, runner_temp=runner_temp)
@@ -643,7 +681,27 @@ def admitted_original_clock(plan, *, current, runner_temp):
          and request["fixture"] == plan["fixture"]
          and clock["request_sha256"] == sha(originals["request.original.json"]),
          "fixedtxt-independent-clock-plan-binding")
-    return clock, request
+    import native_fixedtxt_session as serial
+    session = serial.clock_from_plan(plan, current=current, runner_temp=runner_temp,
+        request_raw=originals["request.original.json"], clock_raw=originals["clock.original.json"])
+    need(session is not None or not Path(runner_temp).name.startswith("fx"),
+         "fixedtxt-session-required-clock-originals")
+    need(time.monotonic() < serial.effective_deadline(clock, session), "fixedtxt-session-reviewed-deadline")
+    return (clock, request, session) if include_session else (clock, request)
+
+
+def current_session(current, request_raw=None, clock_raw=None):
+    import native_fixedtxt_session as serial
+    control = owned_layout(current)["control_root"]
+    if request_raw is None:
+        from ci_private_evidence import regular
+        request_raw = regular(control / "request.original.json", 49152)[0]
+        clock_raw = regular(control / "clock.original.json", 65536)[0]
+    session = serial.clock_from_control(control, request_raw, clock_raw,
+        current=current, runner_temp=os.environ["RUNNER_TEMP"])
+    need(session is not None or not Path(os.environ["RUNNER_TEMP"]).name.startswith("fx"),
+         "fixedtxt-session-required-clock-originals")
+    return session
 
 
 def read_git(root, *args):
@@ -680,9 +738,11 @@ def check_sources(current, request, *, physical_arm):
 
 class PreparationClock:
     """The existing child supervisor consumes the original setup interval."""
-    def __init__(self, original, request):
-        self.started, self.total = original["started_monotonic"], original["deadline_monotonic"]
-        self.until = self.started + request["preparation_seconds"]
+    def __init__(self, original, request, session=None):
+        import native_fixedtxt_session as serial
+        self.started = original["started_monotonic"]
+        self.total = serial.effective_deadline(original, session)
+        self.until = serial.preparation_deadline(original, request, session)
         self.close_until = self.total - request["upload_seconds"]
         self.used = set()
 
@@ -763,7 +823,7 @@ def execute_preparation_commands(request, current, clock):
     child_environment = dict(os.environ)
     child_environment["MW_MLT_G2_ADMISSION"] = (control / "runtime-bootstrap.original.json").read_text()
     group = owner.OwnerCgroup(current["run_id"], "preparation")
-    timeline = PreparationClock(clock, request)
+    timeline = PreparationClock(clock, request, current_session(current))
     new_json(control / "preparation-intent.original.json", {"context": current, "commands": commands,
         "attempt_started_monotonic": timeline.started, "preparation_deadline_monotonic": timeline.until,
         "attempt_deadline_monotonic": timeline.total, "stream_limit": request["preparation_stream_bytes"],
@@ -783,7 +843,9 @@ def execute_preparation_commands(request, current, clock):
                         phase="prepare-%02d" % number, clock=timeline, containment=group,
                         stream_limit=request["preparation_stream_bytes"])
                     need(result["original_complete"] and result["exit_code"] == 0
-                         and not result["overflow"] and not result["deadline_exceeded"],
+                         and not result["overflow"] and not result["deadline_exceeded"]
+                         and result.get("native_outcome") == "NOT_INFERRED"
+                         and "descendants_survived_wrapper" not in result,
                          "fixedtxt-original-preparation-incomplete-no-retry")
                 except BaseException as error:
                     if number == 12:  # exactly the existing installation command
@@ -812,7 +874,8 @@ def intake_sources(request, current):
     sources = request["sources"]
     archive = custody.download_artifact(sources["artifact"], "source", intake)
     need(len(archive) <= request["review_capsule_bytes"], "fixedtxt-source-zip-inside-predeclared-capsule-bound")
-    preflight_request_capacity(request, source_zip_bytes=len(archive))
+    preflight_request_capacity(request, source_zip_bytes=len(archive),
+                               session=current_session(current) is not None)
     new_bytes(inputs / "source-kit.original.zip", archive)
     originals = {}
     def retain(row, name):
@@ -840,16 +903,26 @@ def intake_sources(request, current):
 
 
 def apply_reviewed_arm(request, sources):
-    """Only the disposable checkout; preserve the committed original before RED overlay."""
+    """Derive both arms from original bytes, then overlay only this disposable SDK."""
     from ci_private_evidence import regular, new_bytes
+    import native_fixedtxt_observer_overlay as overlay
     sdk = Path(os.environ["SEMWRIGHT_CHECKOUT"])
     path = sdk / NATIVE_PATH
-    original, observed = regular(path, 2 * 1024 * 1024)
+    original, observed = regular(path, overlay.MAX_SOURCE_BYTES)
+    need(PAIR == overlay.OBSERVED and HISTORICAL_PAIR == overlay.HISTORICAL,
+         "fixedtxt-reviewed-observer-pair")
     need(sha(original) == PAIR["GREEN"], "fixedtxt-original-GREEN-source-before-overlay")
-    new_bytes(Path(sources["red_native"]["path"]).parents[1] / "committed-native.original.ts", original)
+    red_path = Path(sources["red_native"]["path"])
+    inputs = red_path.parents[1]
+    need(red_path == inputs / overlay.BUNDLE_PATHS["historical_red"], "fixedtxt-original-RED-custody-path")
+    historical_red = regular(red_path, overlay.MAX_SOURCE_BYTES)[0]
+    bundle = overlay.build_bundle(historical_red, original)
+    for relative, raw in bundle.items():
+        if relative != overlay.BUNDLE_PATHS["historical_red"]:
+            new_bytes(inputs / relative, raw)
     if request["arm"] == "RED":
-        replacement = Path(sources["red_native"]["path"]).read_bytes()
-        need(sha(replacement) == PAIR["RED"], "fixedtxt-original-RED-source-before-overlay")
+        replacement = bundle[overlay.BUNDLE_PATHS["observed_red"]]
+        need(sha(replacement) == PAIR["RED"], "fixedtxt-derived-RED-source-before-overlay")
         fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             before = os.fstat(fd)
@@ -979,11 +1052,321 @@ def preparation_snapshot(current, request, plan_raw, runtime_raw, cycle_raw, kno
     return directory
 
 
+def retain_owner_resource_prefix(current, session):
+    """Keep only this preparation guard's genuine, immutable active prefix."""
+    import native_owner_resources as resources
+    from ci_private_evidence import new_bytes
+    index = None if session is None else session["binding"]["index"]
+    originals = resources.resource_originals("fixedtxt", "prepare", index)
+    destination = owned_layout(current)["control_root"] / "owner-resources"
+    destination.mkdir(mode=0o700, exist_ok=False)
+    for name, raw in sorted(originals.items()):
+        path = destination / name
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        new_bytes(path, raw)
+
+
+def prior_resource_custody(current, session, *, completed_count=None):
+    """Only a completed case with actual ZIP/ciphertext readback covers bytes."""
+    if session is None:
+        return {}, []
+    import native_fixedtxt_session as serial
+    from ci_private_evidence import regular
+    covered, references = {}, []
+    count = session["binding"]["index"] if completed_count is None else completed_count
+    need(type(count) is int and 0 <= count <= len(serial.ROSTER), "fixedtxt-resource-custody-completed-count")
+    for index in range(count):
+        root = serial.session_root()
+        raw = regular(root / ("case-%02d.resource-custody.original.json" % index), 1024 * 1024)[0]
+        reference = strict(raw, 1024 * 1024)
+        closed = strict(regular(root / ("case-%02d.closed.original.json" % index), 65536)[0])
+        expected_request = session["plan"]["cases"][index]["request"]
+        need(reference.get("schema") == "motionwright.native.fixedtxt-resource-custody-reference/1"
+             and reference.get("context") == current and reference.get("index") == index
+             and reference.get("request") == expected_request
+             and reference.get("ciphertext_publication_readback") is True
+             and reference.get("automatic_retry") is False
+             and closed.get("context") == current and closed.get("index") == index
+             and closed.get("request") == expected_request and closed.get("mechanics_complete") is True
+             and closed.get("resource_custody_reference") == original_descriptor(raw),
+             "fixedtxt-resource-custody-reference-case")
+        artifact = reference["workflow_artifact"]
+        need(artifact == artifact_identity(closed["artifacts"]["workflow"])
+             and artifact["workflow_run"]["id"] == int(current["run_id"])
+             and artifact["workflow_run"]["head_sha"] == current["source_sha"]
+             and artifact["expired"] is False and artifact["digest"] == "sha256:" + reference["zip"]["sha256"]
+             and artifact["size_in_bytes"] == reference["zip"]["bytes"],
+             "fixedtxt-resource-custody-reference-upload")
+        manifest = reference["resource_manifest"]
+        manifest_raw = canonical(manifest)
+        need(original_descriptor(manifest_raw) == reference["resource_manifest_original"]
+             and manifest.get("schema") == "motionwright.native.fixedtxt-resource-custody-manifest/1"
+             and manifest.get("context") == current and manifest.get("case_index") == index
+             and manifest.get("request") == expected_request and manifest.get("failures") == []
+             and manifest.get("origin") == reference["origin"]
+             and manifest.get("active_action") == "seal-workflow"
+             and manifest.get("active_guard_completion_claimed") is False,
+             "fixedtxt-resource-custody-reference-manifest")
+        for row in manifest["originals"]:
+            need(type(row) is dict and set(row) == {"path", "bytes", "sha256"}
+                 and type(row["path"]) is str and 0 < len(row["path"]) <= 256
+                 and "\\" not in row["path"] and not row["path"].startswith("/")
+                 and all(part not in ("", ".", "..") for part in row["path"].split("/"))
+                 and row["path"] not in covered and type(row["bytes"]) is int
+                 and 0 <= row["bytes"] <= 8 * 1024 * 1024 and SHA.fullmatch(row["sha256"]),
+                 "fixedtxt-resource-custody-covered-original")
+            covered[row["path"]] = {"bytes": row["bytes"], "sha256": row["sha256"]}
+        references.append({"case_index": index, "request": expected_request,
+            "reference": original_descriptor(raw), "origin": reference["origin"],
+            "workflow_artifact": artifact, "ciphertext": reference["ciphertext"],
+            "resource_manifest": reference["resource_manifest_original"]})
+    return covered, references
+
+
+def select_owner_resource_custody(current, request, request_raw, session, *, action, completed_count=None):
+    """Select the not-yet-custodied tail; no live stream or future terminal."""
+    import native_owner_resources as resources
+    from ci_private_evidence import regular
+    index = None if session is None or action == "seal-session" else session["binding"]["index"]
+    covered, references = prior_resource_custody(current, session, completed_count=completed_count)
+    active_case = index if action == "seal-workflow" else None
+    active = resources.resource_originals("fixedtxt", action, active_case)
+    origin_raw = active["origin.original.json"]
+    origin = resources.strict(origin_raw)
+    need(origin["context"] == current and all(row["origin"] == original_descriptor(origin_raw) for row in references),
+         "fixedtxt-resource-custody-single-original-origin")
+    journal = Path(os.environ["MW_NATIVE_RESOURCE_ORIGIN"]).parent / "journal"
+    need(journal.resolve(strict=True) == journal and not journal.is_symlink(), "fixedtxt-resource-custody-real-journal")
+    select = resources.journal_selection(action, active_case)
+    retained, seen, failures = {}, set(), []
+    total = 0
+    for path in sorted(journal.rglob("*")):
+        relative = path.relative_to(journal)
+        need(not path.is_symlink(), "fixedtxt-resource-custody-no-journal-link")
+        if not path.is_file() or not select(relative.parts):
+            continue
+        name = "origin.original.json" if relative.as_posix() == "origin.original.json" else "commands/" + relative.as_posix()
+        need(name not in seen and len(seen) < request["limits"]["files"], "fixedtxt-resource-custody-original-roster")
+        seen.add(name)
+        maximum = 4 * 1024 * 1024 if path.name in ("stdout.original", "stderr.original") else 65536
+        raw = regular(path, maximum)[0]
+        if name in covered:
+            need(original_descriptor(raw) == covered[name], "fixedtxt-resource-custody-covered-byte-changed")
+            continue
+        total += len(raw)
+        need(total <= request["review_capsule_bytes"] - 1024 * 1024,
+             "fixedtxt-resource-custody-original-byte-budget")
+        retained[name] = raw
+    need(set(covered) <= seen, "fixedtxt-resource-custody-covered-original-disappeared")
+    for name, raw in active.items():
+        need(name in retained or name in covered, "fixedtxt-resource-custody-active-prefix-missing")
+        need(original_descriptor(raw) == (original_descriptor(retained[name]) if name in retained else covered[name]),
+             "fixedtxt-resource-custody-active-prefix-changed")
+    manifest = {"schema": "motionwright.native.fixedtxt-resource-custody-manifest/1", "context": current,
+        "case_index": index, "request": original_descriptor(request_raw),
+        "origin": original_descriptor(origin_raw), "active_action": action,
+        "active_guard_completion_claimed": False, "previous_custody": references,
+        "originals": [{"path": name, **original_descriptor(raw)} for name, raw in sorted(retained.items())],
+        "failures": failures, "Native_outcome": "NOT_INFERRED", "automatic_retry": False}
+    need(strict(request_raw, 49152) == request, "fixedtxt-resource-custody-original-request")
+    need(len(canonical(manifest)) <= 512 * 1024, "fixedtxt-resource-custody-manifest-budget")
+    return retained, manifest
+
+
+def readback_uploaded_workflow(artifact, directory, *, current, request, deadline, expected_ciphertext, expected_public):
+    """One bounded GET, streamed ZIP and two exact member digests; no retry."""
+    from ci_private_evidence import new_bytes, new_json
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, exist_ok=False)
+    maximum = request["review_capsule_bytes"]
+    need(0 < artifact["size_in_bytes"] <= maximum and shutil.disk_usage(directory).free >= 10 * 1024**3 + maximum,
+         "fixedtxt-resource-publication-original-disk-budget")
+    until = min(deadline, time.monotonic() + 60)
+    need(time.monotonic() + 2 < until, "fixedtxt-resource-publication-original-deadline")
+    route = "repos/" + REPO + "/actions/artifacts/" + str(artifact["id"]) + "/zip"
+    argv = ["/usr/bin/gh", "api", "--method", "GET", route]
+    environment = {"PATH": "/usr/bin:/bin", "GH_HOST": "github.com", "GH_TOKEN": os.environ.get("GH_TOKEN", "")}
+    need(environment["GH_TOKEN"], "fixedtxt-resource-publication-token-absent")
+    new_json(directory / "get.intent.json", {"context": current, "argv": argv,
+        "artifact": artifact_identity(artifact), "deadline_monotonic": until,
+        "maximum_bytes": maximum, "automatic_retry": False, "native_calls": 0})
+    process = None
+    selector = selectors.DefaultSelector()
+    sizes, hashes = {"stdout": 0, "stderr": 0}, {key: hashlib.sha256() for key in ("stdout", "stderr")}
+    eof, error, code = set(), None, None
+    secondary_errors = []
+    group_state, group_killed, group_survived_parent = "not_spawned", False, False
+    def failed(failure, phase):
+        nonlocal error
+        if error is None:
+            error = failure
+        else:
+            secondary_errors.append({"phase": phase, "type": type(failure).__name__})
+    archive_path = directory / "workflow-artifact.original.zip"
+    streams = {}
+    try:
+        # Both reservations and every post-spawn mutation share this cleanup.
+        streams["stdout"] = archive_path.open("xb")
+        streams["stderr"] = (directory / "get.stderr.original").open("xb")
+        process = subprocess.Popen(argv, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, start_new_session=True, close_fds=True)
+        new_json(directory / "get.spawned.json", {"context": current, "pid": process.pid, "automatic_retry": False})
+        for name in streams:
+            pipe = getattr(process, name)
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        while selector.get_map() or process.poll() is None:
+            need(time.monotonic() < until - 1, "fixedtxt-resource-publication-GET-deadline-no-retry")
+            for key, _ in selector.select(timeout=0.05):
+                name = key.data
+                raw = os.read(key.fileobj.fileno(), 65536)
+                if not raw:
+                    eof.add(name)
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                limit = artifact["size_in_bytes"] if name == "stdout" else 8192
+                before = sizes[name]
+                sizes[name] += len(raw)
+                retained = raw[:max(0, limit - before)]
+                streams[name].write(retained)
+                hashes[name].update(retained)
+                need(sizes[name] <= limit, "fixedtxt-resource-publication-GET-overflow-no-retry")
+        code = process.wait(timeout=max(0.01, until - time.monotonic()))
+        need(code == 0 and eof == {"stdout", "stderr"} and sizes["stdout"] == artifact["size_in_bytes"]
+             and hashes["stdout"].hexdigest() == artifact["digest"].removeprefix("sha256:"),
+             "fixedtxt-resource-publication-original-ZIP-differs")
+    except BaseException as failure:
+        failed(failure, "read")
+    finally:
+        if process is not None:
+            # This Popen created a new session. Observe its own group even if
+            # the parent already exited; surviving children remain a negative.
+            try:
+                parent_exited = process.poll() is not None
+                os.killpg(process.pid, 0)
+                group_state = "present"
+                if parent_exited:
+                    group_survived_parent = True
+                    failed(WorkflowRejected("fixedtxt-resource-publication-group-survived-parent"), "group")
+                os.killpg(process.pid, signal.SIGKILL)
+                group_killed = True
+            except ProcessLookupError:
+                group_state = "absent"
+            except BaseException as failure:
+                group_state = "unknown"
+                failed(failure, "group-kill")
+            try:
+                process.wait(timeout=max(0.01, min(1, until - time.monotonic())))
+            except BaseException as failure:
+                failed(failure, "parent-wait")
+            code = process.poll()
+            for name in ("stdout", "stderr"):
+                pipe = getattr(process, name)
+                if pipe is not None and not pipe.closed:
+                    try:
+                        pipe.close()
+                    except BaseException as failure:
+                        failed(failure, name + "-pipe-close")
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                group_state = "absent"
+            except BaseException as failure:
+                group_state = "unknown"
+                failed(failure, "group-observe")
+            else:
+                group_state = "present"
+                failed(WorkflowRejected("fixedtxt-resource-publication-group-still-observed"), "group-observe")
+        try:
+            selector.close()
+        except BaseException as failure:
+            failed(failure, "selector-close")
+        for name, stream in streams.items():
+            try:
+                stream.flush()
+                os.fsync(stream.fileno())
+            except BaseException as failure:
+                failed(failure, name + "-flush")
+            try:
+                stream.close()
+            except BaseException as failure:
+                failed(failure, name + "-close")
+        terminal = {"context": current, "exit_code": code,
+            "first_error_type": None if error is None else type(error).__name__,
+            "first_error": str(error) if isinstance(error, WorkflowRejected) else None,
+            "secondary_errors": secondary_errors,
+            "observed_bytes": sizes, "retained_sha256": {name: value.hexdigest() for name, value in hashes.items()},
+            "owned_process_group": None if process is None else process.pid,
+            "process_group_kill_sent": group_killed, "group_survived_parent_exit": group_survived_parent,
+            "final_process_group_state": group_state,
+            "complete": error is None and code == 0 and eof == {"stdout", "stderr"} and group_state == "absent",
+            "automatic_retry": False, "native_calls": 0}
+        try:
+            new_json(directory / "get.terminal.json", terminal)
+        except BaseException as failure:
+            failed(failure, "terminal-original")
+    if error is not None:
+        raise error
+    expected = {"sealed-workflow-originals.bin": expected_ciphertext, "workflow-public.json": expected_public}
+    verify_workflow_zip_members(archive_path, artifact, expected, maximum, deadline=until)
+    value = {"schema": "motionwright.native.fixedtxt-workflow-upload-readback/1", "context": current,
+        "artifact": artifact_identity(artifact), "zip": {"bytes": sizes["stdout"], "sha256": hashes["stdout"].hexdigest()},
+        "members": expected, "ciphertext_publication_readback": True, "automatic_retry": False, "native_calls": 0}
+    new_json(directory / "ciphertext-readback.original.json", value)
+    return value
+
+
+def verify_workflow_zip_members(archive_path, artifact, expected, maximum, *, deadline=None):
+    """Compare streamed member bytes, without decrypting or decoding media."""
+    need(set(expected) == {"sealed-workflow-originals.bin", "workflow-public.json"}
+         and sum(row["bytes"] for row in expected.values()) <= maximum,
+         "fixedtxt-resource-publication-closed-member-budget")
+    before = archive_path.lstat()
+    need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size == artifact["size_in_bytes"],
+         "fixedtxt-resource-publication-original-ZIP-type")
+    fd = os.open(archive_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    opened = os.fstat(fd)
+    identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_nlink, row.st_size, row.st_mtime_ns, row.st_ctime_ns)
+    if identity(opened) != identity(before):
+        os.close(fd)
+        raise WorkflowRejected("fixedtxt-resource-publication-original-ZIP-open-race")
+    with os.fdopen(fd, "rb") as original, zipfile.ZipFile(original) as archive:
+        rows = archive.infolist()
+        need(len(rows) == 2 and {row.filename for row in rows} == set(expected)
+             and sum(row.file_size for row in rows) <= maximum,
+             "fixedtxt-resource-publication-closed-member-roster")
+        for row in rows:
+            need(deadline is None or time.monotonic() < deadline, "fixedtxt-resource-publication-member-deadline")
+            need(not row.is_dir() and not row.flag_bits & 1
+                 and stat.S_IFMT(row.external_attr >> 16) in (0, stat.S_IFREG)
+                 and row.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                 and row.file_size == expected[row.filename]["bytes"],
+                 "fixedtxt-resource-publication-regular-member")
+            size, digest = 0, hashlib.sha256()
+            with archive.open(row) as stream:
+                while True:
+                    need(deadline is None or time.monotonic() < deadline, "fixedtxt-resource-publication-member-deadline")
+                    raw = stream.read(65536)
+                    if not raw:
+                        break
+                    size += len(raw)
+                    need(size <= row.file_size, "fixedtxt-resource-publication-member-overflow")
+                    digest.update(raw)
+            need({"bytes": size, "sha256": digest.hexdigest()} == expected[row.filename],
+                 "fixedtxt-resource-publication-member-differs")
+        need(identity(os.fstat(original.fileno())) == identity(before), "fixedtxt-resource-publication-open-ZIP-mutated")
+    after = archive_path.lstat()
+    need(identity(before) == identity(after)
+         and after.st_size == artifact["size_in_bytes"], "fixedtxt-resource-publication-original-ZIP-mutated")
+
+
 def collect_workflow_originals(current, request, *, partial=False):
     """Retain this route's private originals; never walk an owner or a checkout."""
     from ci_private_evidence import regular
     layout = owned_layout(current)
-    runtime = Path(os.environ["RUNNER_TEMP"]) / ("mw-mlt-g2-control-" + current["run_id"] + "-1")
+    import native_fixedtxt_session as serial
+    runtime = serial.runtime_control(current, current_session(current))
     roots = {"control": layout["control_root"], "inputs": layout["inputs_root"], "runtime_custody": runtime}
     paths, failures = [], []
     for label, directory in roots.items():
@@ -1031,17 +1414,30 @@ def seal_workflow_originals():
     import native_mlt_g2_custody as custody
     from ci_private_evidence import regular, encrypt_snapshot, new_bytes
     current = workflow_context()
-    _, request, _, clock = load_original_request(current)
+    request_raw, request, clock_raw, clock = load_original_request(current)
+    session = current_session(current, request_raw, clock_raw)
     layout = owned_layout(current)
     bootstrap = custody.runtime_preparation_dispatch(
         regular(layout["control_root"] / "runtime-bootstrap.original.json", 16384)[0], current, scenario=SCOPE)
     directory = Path(os.environ["RUNNER_TEMP"]) / ("mw-fixedtxt-g2-workflow-" + current["run_id"] + "-1")
     directory.mkdir(mode=0o700, exist_ok=False)
+    resource_known, resource_manifest = select_owner_resource_custody(current, request, request_raw, session,
+        action="seal-workflow")
+    resource_manifest_raw = canonical(resource_manifest)
+    new_bytes(layout["control_root"] / "resource-workflow-manifest.original.json", resource_manifest_raw)
     known, failures = collect_workflow_originals(current, request, partial=True)
+    total = sum(len(raw) for raw in known.values())
+    for name, raw in sorted(resource_known.items()):
+        if len(known) >= request["limits"]["files"] or total + len(raw) > request["review_capsule_bytes"] - 1024 * 1024:
+            failures.append({"root": "owner_resources", "relative_path": name, "reason": "ORIGINAL_RESOURCE_BOUND"})
+            continue
+        known[("owner_resources", name)] = raw
+        total += len(raw)
     metadata = canonical({"schema": "motionwright.native.fixedtxt-workflow-snapshot/1", "context": current,
         "files": [{"path": root + "/" + name, **original_descriptor(raw)}
                   for (root, name), raw in sorted(known.items())], "failures": failures,
-        "scope": ["FixedTxt control", "FixedTxt inputs", "existing runtime custody"],
+        "scope": ["FixedTxt control", "FixedTxt inputs", "existing runtime custody", "original owner-resource tail"],
+        "resource_custody_manifest": original_descriptor(resource_manifest_raw),
         "native_result_inferred": False, "automatic_retry": False})
     need(len(metadata) <= 512 * 1024, "fixedtxt-workflow-original-manifest-bound")
     originals = {root + "/" + name: raw for (root, name), raw in known.items()}
@@ -1051,10 +1447,11 @@ def seal_workflow_originals():
     public = canonical({"schema": "motionwright.native.fixedtxt-workflow-public/1", "context": current,
         "sealed_originals": original_descriptor(envelope), "recipient_sha256": bootstrap["recipient"]["sha256"],
         "workflow_original_files": len(known), "workflow_original_failures": len(failures),
+        "resource_custody_manifest": original_descriptor(resource_manifest_raw),
         "native_acceptance_inferred": False, "numerical_oracle_approved": False, "automatic_retry": False,
-        "within_original_deadline_at_seal": time.monotonic() < clock["deadline_monotonic"]})
+        "within_original_deadline_at_seal": time.monotonic() < __import__("native_fixedtxt_session").effective_deadline(clock, session)})
     new_bytes(directory / "workflow-public.json", public)
-    need(time.monotonic() < clock["deadline_monotonic"], "fixedtxt-original-clock-exhausted-at-seal")
+    need(time.monotonic() < __import__("native_fixedtxt_session").effective_deadline(clock, session), "fixedtxt-original-clock-exhausted-at-seal")
 
 
 def prepare_originals():
@@ -1064,19 +1461,29 @@ def prepare_originals():
     current = workflow_context()
     request_raw, request, clock_raw, clock = load_original_request(current)
     layout = owned_layout(current)
-    need(time.monotonic() < clock["started_monotonic"] + request["preparation_seconds"],
+    import native_fixedtxt_session as serial
+    session = current_session(current, request_raw, clock_raw)
+    reuse = session is not None and session["binding"]["index"] > 0
+    retain_owner_resource_prefix(current, session)
+    need(time.monotonic() < serial.preparation_deadline(clock, request, session),
          "fixedtxt-preparation-expired-before-source-intake")
-    source_before = check_sources(current, request, physical_arm="GREEN")
+    source_before = check_sources(current, request, physical_arm=request["arm"] if reuse else "GREEN")
     new_json(layout["control_root"] / "source-before.original.json", source_before)
     bootstrap_raw = regular(layout["control_root"] / "runtime-bootstrap.original.json", 16384)[0]
     bootstrap = custody.runtime_preparation_dispatch(bootstrap_raw, current, scenario=SCOPE)
-    execute_preparation_commands(request, current, clock)
+    if reuse:
+        serial.reuse_preparation(current, request, session)
+    else:
+        execute_preparation_commands(request, current, clock)
+        if session is not None:
+            serial.record_shared_preparation(current, request, session)
     sources = strict(regular(layout["inputs_root"] / "source-descriptors.original.json", 65536)[0])
     source_after = check_sources(current, request, physical_arm=request["arm"])
     need(source_before == source_after, "fixedtxt-preparation-changed-Motionwright-source")
     new_json(layout["control_root"] / "source-after.original.json", source_after)
     cycle_raw = make_cycle(request, current, sources)
-    runtime_control = Path(os.environ["RUNNER_TEMP"]) / ("mw-mlt-g2-control-" + current["run_id"] + "-1")
+    serial.verify_reused_cycle(cycle_raw, session)
+    runtime_control = serial.runtime_control(current, session)
     prepared = strict(regular(runtime_control / "records/g2-inputs.json", 65536)[0])
     need(set(prepared) == g2.RUNTIME_INPUT_KEYS | {"schema", "private_evidence_dir"}
          and prepared["schema"] == "motionwright.native.fixedtxt-runtime-preparation/1",
@@ -1092,6 +1499,7 @@ def prepare_originals():
         raw = regular(Path(prepared[key]))[0]
         new_bytes(runtime_copies / key, raw)
     known, _ = collect_workflow_originals(current, request)
+    serial.check_final_provenance_budget(known, session)
     # Preparation's raw streams remain verbatim in the independently reviewed
     # encrypted preparation artifact. The final P keeps its existing literal
     # stream selector unchanged; the delivered handoff pins that original
@@ -1109,8 +1517,9 @@ def prepare_originals():
     need(len(runtime_raw) <= 65536, "fixedtxt-existing-R-bound")
     new_bytes(layout["plan"], plan_raw)
     new_bytes(layout["runtime"], runtime_raw)
+    serial.record_first_prepared(current, request, session, known, plan_raw, runtime_raw, cycle_raw)
     review = preparation_snapshot(current, request, plan_raw, runtime_raw, cycle_raw, known, bootstrap["recipient"])
-    need(time.monotonic() < clock["started_monotonic"] + request["preparation_seconds"],
+    need(time.monotonic() < serial.preparation_deadline(clock, request, session),
          "fixedtxt-original-preparation-budget-exhausted")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write("review_directory=" + str(review) + "\n")
@@ -1133,7 +1542,8 @@ def receive_and_run():
     import native_fixedtxt_g2_admission as fixed
     from ci_private_evidence import regular
     current = workflow_context()
-    _, request, _, clock = load_original_request(current)
+    request_raw, request, clock_raw, clock = load_original_request(current)
+    session = current_session(current, request_raw, clock_raw)
     layout = owned_layout(current)
     originals = {key: regular(layout[key], maximum)[0] for key, maximum in
                  (("plan", 512 * 1024), ("runtime", 65536), ("cycle", 1024 * 1024))}
@@ -1141,7 +1551,7 @@ def receive_and_run():
               "artifact_sha256": os.environ["MW_FIXEDTXT_REVIEW_ARTIFACT_SHA256"]}
     need(review["artifact_id"] > 0 and SHA.fullmatch(review["artifact_sha256"]), "fixedtxt-real-preparation-upload")
     held = wait_for_owner(current=current, request=request, clock=clock, directory=layout["control_root"],
-                          originals=originals, review=review)
+                          originals=originals, review=review, session=session)
     plan = fixed.strict(held.plan_raw, 512 * 1024)
     admitted_original_clock(plan, current=current, runner_temp=os.environ["RUNNER_TEMP"])
     check_sources(current, request, physical_arm=request["arm"])

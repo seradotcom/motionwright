@@ -122,7 +122,7 @@ class OwnerCgroup:
 
 
 class AttemptClock:
-    def __init__(self, limits, *, started=None, upload_seconds=0):
+    def __init__(self, limits, *, started=None, upload_seconds=0, ceiling=None):
         need(type(limits) is dict and all(type(limits.get(key)) is int for key in
              ("attempt_seconds", "custody_seconds"))
              and 0 < limits["custody_seconds"] < limits["attempt_seconds"] <= 2**31 - 1,
@@ -134,7 +134,10 @@ class AttemptClock:
         need(type(upload_seconds) is int and 0 <= upload_seconds < limits["custody_seconds"],
              "fixedtxt-supervisor-upload-inside-custody-reserve")
         self.started = now if started is None else started
-        self.total = self.started + limits["attempt_seconds"]
+        original_total = self.started + limits["attempt_seconds"]
+        need(ceiling is None or type(ceiling) in (int, float) and math.isfinite(ceiling)
+             and self.started < ceiling <= original_total, "fixedtxt-supervisor-session-can-only-shorten")
+        self.total = original_total if ceiling is None else ceiling
         self.custody_end = self.total - upload_seconds
         self.work = self.total - limits["custody_seconds"]
         self.custody_seconds = limits["custody_seconds"]
@@ -322,10 +325,11 @@ def supervise_owner(held, *, environment, source_root, custody_directory):
     if (environment.get("MW_FIXEDTXT_WORKFLOW_ROUTE") == "original-r28-delivery/1"
             or "clock.original.json" in clock_members or "request.original.json" in clock_members):
         from native_fixedtxt_workflow import admitted_original_clock
-        original, request = admitted_original_clock(plan, current=current,
-                                                     runner_temp=environment["RUNNER_TEMP"])
+        original, request, session = admitted_original_clock(plan, current=current,
+            runner_temp=environment["RUNNER_TEMP"], include_session=True)
         clock = AttemptClock(plan["limits"], started=original["started_monotonic"],
-                             upload_seconds=request["upload_seconds"])
+                             upload_seconds=request["upload_seconds"],
+                             ceiling=None if session is None else session["effective_deadline_monotonic"])
     else:
         clock = AttemptClock(plan["limits"])
     groups = []

@@ -2266,7 +2266,8 @@ mod fixed_text_v4 {
                 json!({
                     "expected_fingerprint":&fingerprint,
                     "profile":{"first_frame":0,"end_frame_exclusive":180,"scale":"full",
-                               "transparent":false,"timeout_ms":300000}
+                               "transparent":false,"timeout_ms":300000,
+                               "text_pixel_observation_frames":frames(&self.case.key)}
                 }),
                 true,
             )
@@ -2471,6 +2472,7 @@ mod fixed_text_v4 {
                     "background",
                     "alpha",
                     "timeoutMs",
+                    "textPixelObservationFrames",
                 ],
             )?;
             require(
@@ -2486,6 +2488,7 @@ mod fixed_text_v4 {
                     && config["colorSpace"] == "srgb"
                     && config["alpha"] == false
                     && config["timeoutMs"] == 300000
+                    && config["textPixelObservationFrames"] == json!(frames(&self.case.key))
                     && config["background"] == self.compiled_project["settings"]["background"]
                     && config["dependencyLockDigest"] == self.case.runtime.dependency_lock.sha256
                     && config["renderInputDigest"].as_str().is_some_and(sha_shape),
@@ -2600,7 +2603,9 @@ mod fixed_text_v4 {
                         == config["fontResourcesDigest"]
                     && manifest["plan"]["first_frame"] == 0
                     && manifest["plan"]["end_frame_exclusive"] == 180
-                    && manifest["plan"]["frame_count"] == 180,
+                    && manifest["plan"]["frame_count"] == 180
+                    && manifest["plan"]["text_pixel_observation_frames"]
+                        == config["textPixelObservationFrames"],
                 "Original observations do not join the captured Host input",
             )?;
             Ok(json!({
