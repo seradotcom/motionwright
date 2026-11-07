@@ -284,23 +284,6 @@ class InertOriginals:
         if self.mode == "release_parent_error_after_final":
             responses.append({"event": "ERROR", "code": "NATIVE_ORIGINAL_FAILED",
                               "runtime_stage": "OWNER_CLOSE"})
-        owner_stdout = self.put(
-            "graph-flow/owner-parent.stdout.original",
-            b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n"
-                     for row in responses))
-        owner_stderr = self.put("graph-flow/raw/python-owner.stderr.original", b"")
-        stderr_ref = {**owner_stderr, "eof": self.mode != "release_parent_stderr_no_eof"}
-        if self.mode == "release_parent_stderr_digest_changed":
-            stderr_ref["sha256"] = "0" * 64
-        if self.mode == "release_parent_stderr_foreign_path":
-            stderr_ref["path"] = str(self.root / "other-source" / "stderr.original")
-        parent_raw = {"stdout": {**owner_stdout, "eof": True}}
-        if self.mode != "release_parent_stderr_missing":
-            parent_raw["stderr"] = stderr_ref
-        self.put("graph-flow/owner-parent-terminal.original.json", {
-            "exit": {"process_id": owner_pid, "code": 0, "signal": None},
-            "raw": parent_raw,
-        })
         lifecycle = {"status": "CLOSED", "taints": [], "start_failures": []}
         cohort = {"status": "PASS", "authority": "process_custody_only_not_revocation",
                   "signals": ([] if self.mode != "release_emergency_signaled"
@@ -338,6 +321,58 @@ class InertOriginals:
                                          "status": "READY",
                                          "connection_original": connection,
                                          "session_original": self.native_client_session}]}
+        # The inert parent stdout is produced after the final original exists,
+        # just as the real owner writes its receipt before emitting FINAL_RECEIPT.
+        self.final.update(schema="motionwright.graph-browser-owner-final/6",
+                          case_id="graph-flow", status="CLOSED",
+                          owner_cohort_absent=True, owner_streams_eof=True,
+                          capture_permitted=True)
+        final_ref = self.put("graph-flow/owner/owner-final.original.json", self.final)
+        final_event = {
+            "event": "FINAL_RECEIPT", "id": "close-graph-flow",
+            "case_id": "graph-flow", "status": "CLOSED",
+            "receipt_path": final_ref["path"], "receipt_sha256": final_ref["sha256"],
+            "owner_cohort_absent": True, "owner_streams_eof": True,
+            "capture_permitted": True,
+        }
+        if self.mode == "parent_final_wrong_id":
+            final_event["id"] = "close-foreign-case"
+        if self.mode == "parent_final_wrong_case":
+            final_event["case_id"] = "foreign-case"
+        if self.mode == "parent_final_wrong_status":
+            final_event["status"] = "UNKNOWN"
+        if self.mode == "parent_final_wrong_receipt_path":
+            final_event["receipt_path"] = str(self.root / "other-source" / "final.json")
+        if self.mode == "parent_final_wrong_receipt_hash":
+            final_event["receipt_sha256"] = "0" * 64
+        if self.mode == "parent_final_false_cohort":
+            final_event["owner_cohort_absent"] = False
+        if self.mode == "parent_final_false_streams":
+            final_event["owner_streams_eof"] = False
+        if self.mode == "parent_final_false_capture":
+            final_event["capture_permitted"] = False
+        if self.mode == "parent_final_extra_field":
+            final_event["accepted"] = True
+        final_slot = next(i for i, event in enumerate(responses)
+                          if event["event"] == "FINAL_RECEIPT")
+        responses[final_slot] = final_event
+        owner_stdout = self.put(
+            "graph-flow/owner-parent.stdout.original",
+            b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n"
+                     for row in responses))
+        owner_stderr = self.put("graph-flow/raw/python-owner.stderr.original", b"")
+        stderr_ref = {**owner_stderr, "eof": self.mode != "release_parent_stderr_no_eof"}
+        if self.mode == "release_parent_stderr_digest_changed":
+            stderr_ref["sha256"] = "0" * 64
+        if self.mode == "release_parent_stderr_foreign_path":
+            stderr_ref["path"] = str(self.root / "other-source" / "stderr.original")
+        parent_raw = {"stdout": {**owner_stdout, "eof": True}}
+        if self.mode != "release_parent_stderr_missing":
+            parent_raw["stderr"] = stderr_ref
+        self.put("graph-flow/owner-parent-terminal.original.json", {
+            "exit": {"process_id": owner_pid, "code": 0, "signal": None},
+            "raw": parent_raw,
+        })
         intent = {"schema": "motionwright.graph.same-original-store-reopen/1", "source": self.source,
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
                          self.physical["path"], *([] if self.mode == "writable_argv" else ["--read-only"])],
@@ -412,7 +447,7 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
     def check(self, mode="valid"):
         fixture = InertOriginals(mode)
         with mock.patch.object(gate, "graph_ref",
-                               side_effect=lambda path: fixture.refs[str(path)]):
+                               side_effect=lambda path, maximum=gate.GRAPH_BYTES * 512: fixture.refs[str(path)]):
             return gate.graph_verify_readonly_reopen_originals(
                 fixture.reopen, fixture.index, fixture.final,
                 fixture.reopen_path, fixture.retained)
@@ -479,6 +514,16 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                      "release_parent_stderr_no_eof",
                      "release_parent_stderr_digest_changed",
                      "release_parent_stderr_foreign_path"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_original_final_receipt_must_bind_source_final_and_close_id(self):
+        for mode in ("parent_final_wrong_id", "parent_final_wrong_case",
+                     "parent_final_wrong_status", "parent_final_wrong_receipt_path",
+                     "parent_final_wrong_receipt_hash", "parent_final_false_cohort",
+                     "parent_final_false_streams", "parent_final_false_capture",
+                     "parent_final_extra_field"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

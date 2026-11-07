@@ -9635,6 +9635,28 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
                   if msg.get("event") == "FINAL_RECEIPT"]
     require(len(matches) == len(final_rows) == 1 and matches[0][0] < final_rows[0],
             "Graph original owner provider release event missing or replayed")
+    # Python graph_close_v6 writes this exact source-bound final original
+    # before it emits FINAL_RECEIPT. A final event merely named FINAL_RECEIPT
+    # cannot stand in for its actual case, close request, receipt bytes or
+    # closed/EOF/absent-cohort conjunction.
+    final_ref = graph_ref(owner_root / "owner-final.original.json", 4 * GRAPH_BYTES)
+    require(graph_json(retained(final_ref, 4 * GRAPH_BYTES)) == final
+            and final.get("case_id") == case_root.name
+            and final.get("status") == "CLOSED"
+            and final.get("owner_cohort_absent") is True
+            and final.get("owner_streams_eof") is True
+            and final.get("capture_permitted") is True,
+            "Graph final owner original is not the same closed case")
+    expected_final = {
+        "event": "FINAL_RECEIPT", "id": "close-" + case_root.name,
+        "case_id": case_root.name, "status": "CLOSED",
+        "receipt_path": final_ref["path"],
+        "receipt_sha256": final_ref["sha256"],
+        "owner_cohort_absent": True, "owner_streams_eof": True,
+        "capture_permitted": True,
+    }
+    require(messages[-1] == expected_final,
+            "Graph original parent final receipt differs from closed owner original")
     original_event = {
         "event": "PROVIDER_RELEASED", "id": "release-" + case_root.name,
         "status": "RELEASED", "receipt_path": provider_ref["path"],
