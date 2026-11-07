@@ -742,6 +742,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           <button className="text-button" disabled={busy || copy.writerId === session.custody.writerId} onClick={() => discard(copy)}>Discard copy {copy.writerId.slice(0, 8)}</button></div>)}
       </details>
       <section aria-label="Saved Graph reviews"><h3>Review saved Graph</h3><label className="production-field"><span>Graph review anchor</span><select aria-label="Graph review anchor" value={reviewResource} onChange={e => setReviewResource(e.target.value)}>
+        {reviewResource !== "graph:" + draft.graphId && !reviewAnchor && <option value={reviewResource}>Unavailable saved review anchor · {reviewResource}</option>}
         <option value={"graph:" + draft.graphId}>Whole Graph</option>{saved?.content.vertices.map(vertex => <option key={vertex.id} value={"graph-vertex:" + draft.graphId + ":" + vertex.id}>{vertex.label}</option>)}
         {saved?.content.edges.map(edge => <option key={edge.id} value={"graph-edge:" + draft.graphId + ":" + edge.id}>{edge.label}</option>)}
       </select></label><button className="secondary-button" disabled={!reviewAnchor || busy} onClick={() => reviewAnchor && props.openReview(reviewAnchor)}>Open review of saved Graph</button>

@@ -1110,3 +1110,40 @@ test("Graph retains an unavailable Deliverable after a peer deletes its source p
   expect(await page.evaluate(key => localStorage.getItem(key), copy.copyKey)).toBe(copy.raw);
   expect(await requestCount(page)).toBe(1);
 });
+
+// A previously selected review edge must remain visibly unavailable after
+// a peer revises its saved UUID. A misleading HTML select fallback to the
+// Whole Graph option can hide that no anchor is currently authorized.
+test("Graph review selector shows a vanished saved edge anchor without silently selecting Whole Graph", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const graph = saved.production_design!.semantic_graphs![0];
+  if (graph.content.kind !== "causal_diagram") throw new Error("Expected saved causal source");
+  const oldReviewResource = "graph-edge:" + graph.id + ":" + graph.content.edges[0].id;
+  const whole = "graph:" + graph.id;
+  await field(page, "Graph source").selectOption(graph.id);
+  await field(page, "Graph review anchor").selectOption(oldReviewResource);
+  await expect(field(page, "Graph review anchor")).toHaveValue(oldReviewResource);
+  await expect(button(page, "Open review of saved Graph")).toBeEnabled();
+  await page.evaluate(async id => {
+    const project = window.__GRAPH_AUTHORITY__.project();
+    const savedGraph = project.production_design!.semantic_graphs!.find(item => item.id === id);
+    if (!savedGraph || savedGraph.content.kind !== "causal_diagram") throw new Error("Saved graph was removed");
+    savedGraph.content.edges[0].id = crypto.randomUUID();
+    project.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(project);
+  }, graph.id);
+  await expect(field(page, "Graph source")).toHaveValue(graph.id);
+  await expect(field(page, "Graph review anchor")).toHaveValue(oldReviewResource);
+  await expect(field(page, "Graph review anchor").locator("option:checked"))
+    .toContainText("Unavailable saved review anchor");
+  await expect(button(page, "Open review of saved Graph")).toBeDisabled();
+  expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.reviews())).toHaveLength(0);
+  await field(page, "Graph review anchor").selectOption(whole);
+  await expect(button(page, "Open review of saved Graph")).toBeEnabled();
+  await button(page, "Open review of saved Graph").click();
+  const anchors = await page.evaluate(() => window.__GRAPH_AUTHORITY__.reviews());
+  expect(anchors).toHaveLength(1);
+  expect(anchors[0].resource).toBe(whole);
+  expect(await requestCount(page)).toBe(1);
+});
