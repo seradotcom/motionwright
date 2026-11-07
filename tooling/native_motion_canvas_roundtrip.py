@@ -32,6 +32,8 @@ MAX_JSON = 8 * 1024 * 1024
 MAX_SOURCE = 16 * 1024 * 1024
 MAX_SOURCE_FILES = 64
 MAX_TOTAL_SOURCE = 64 * 1024 * 1024
+# Semwright Reference::decode bounds an ASCII reference, including its source stamp.
+MAX_NATIVE_JOB_REF = 320
 
 
 class RoundtripRefused(ValueError):
@@ -364,14 +366,20 @@ def assert_managed_edit(original: dict, edited: dict, request: dict,
             "managed_source_fingerprint_not_changed")
 
 
+def stage_identity(stage: dict) -> tuple[str, str]:
+    session, job = stage["session"], stage["native_job_ref"]
+    require(type(session) is str and 1 <= len(session) <= 128
+            and type(job) is str and job.isascii() and 1 <= len(job) <= MAX_NATIVE_JOB_REF,
+            "missing_stage_identity")
+    return session, job
+
+
 def one_stage(root: Path, stage: object, expected_count: int,
               width: int, height: int, *, binding_verifier=None) -> dict:
     stage = exact(stage, {"session", "project", "film", "source_files",
                           "managed_inspection", "frames_dir", "native_job_ref"},
                   "invalid_stage_fields")
-    require(type(stage["session"]) is str and 1 <= len(stage["session"]) <= 128
-            and type(stage["native_job_ref"]) is str and 1 <= len(stage["native_job_ref"]) <= 128,
-            "missing_stage_identity")
+    session, job = stage_identity(stage)
     project = checked_json(bounded_file(root, stage["project"]))
     film = checked_json(bounded_file(root, stage["film"]))
     output = film.get("output")
@@ -423,7 +431,7 @@ def one_stage(root: Path, stage: object, expected_count: int,
         "frame_file_digests": frame_bytes, "rgba_frame_digests": pixels,
         "project_sha256": stage["project"]["sha256"],
         "film_sha256": stage["film"]["sha256"],
-        "session": stage["session"], "native_job_ref": stage["native_job_ref"],
+        "session": session, "native_job_ref": job,
         "frame_count": expected_count,
         "binding_verification": binding_result,
     }

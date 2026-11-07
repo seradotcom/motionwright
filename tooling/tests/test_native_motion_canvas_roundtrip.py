@@ -23,6 +23,11 @@ SCENE_ID = "33333333-3333-4333-8333-333333333333"
 NODE_ID = "44444444-4444-4444-8444-444444444444"
 
 
+def native_job_ref(index: int) -> str:
+    return (f"mc1:mwmc-{PROJECT_ID.replace('-', '')}:" + "a" * 32
+            + ":1:" + "b" * 64 + f":render_job:render-{index:032x}")
+
+
 def sha(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
 
@@ -92,7 +97,7 @@ def fixture(root: Path) -> dict:
         source_content = b"renderNode({fill: '#E85A35'})" if is_edited else b"renderNode({fill: '#F5F5F2'})"
         entry = {
             "session": "unique-native-session-" + str(i),
-            "native_job_ref": "separate-native-job-" + str(i),
+            "native_job_ref": native_job_ref(i),
             "project": record(root, f"{stage}/project.json",
                               (json.dumps(project, sort_keys=True) + "\n").encode()),
             "film": record(root, f"{stage}/film.json",
@@ -485,6 +490,24 @@ class ActualSourceMetadataControls(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.witness = fixture(self.root)
+
+    def test_source_bound_native_job_identity_preserved_with_sdk_length(self):
+        for index, name in enumerate(mc.STAGES):
+            row = self.witness["stages"][name]
+            self.assertEqual(len(native_job_ref(index)), 192)
+            self.assertEqual(mc.stage_identity(row), (row["session"], native_job_ref(index)))
+        boundary = {"session": "s" * 128, "native_job_ref": "j" * 320}
+        self.assertEqual(mc.stage_identity(boundary), (boundary["session"], boundary["native_job_ref"]))
+
+    def test_native_identity_budget_rejects_oversize_nonascii_and_missing(self):
+        original = self.witness["stages"]["original"]
+        for field, invalid in (("native_job_ref", "j" * 321), ("native_job_ref", "référence"),
+                               ("native_job_ref", ""), ("native_job_ref", None),
+                               ("session", "s" * 129), ("session", ""), ("session", None)):
+            with self.subTest(field=field, invalid=invalid):
+                row = {**original, field: invalid}
+                with self.assertRaisesRegex(mc.RoundtripRefused, "missing_stage_identity"):
+                    mc.stage_identity(row)
 
     def projects(self):
         return tuple(json.loads((self.root / self.witness["stages"][stage]["project"]["path"]).read_bytes())
