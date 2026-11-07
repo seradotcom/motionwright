@@ -270,6 +270,38 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("no-sandbox", source)
         self.assertNotIn("synthetic-authority", source)
 
+    @unittest.skipUnless(sys.platform == "linux", "Execute actual Bash G0 boundary")
+    def test_a4_gn1_development_scope_is_exact_and_keeps_other_acceptance_gates(self):
+        text = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/studio-service-verification.yml").read_text()
+        start = text.index('          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch"')
+        end = text.index("          fi\n", start) + len("          fi\n")
+        script = "\n".join(line[10:] for line in text[start:end].splitlines())
+        script = script.replace("python -B tooling/acceptance_policy.py", "printf 'acceptance\\n'")
+        script = script.replace("python -B tooling/creative_status_policy.py", "printf 'creative\\n'")
+        a1 = "refs/heads/integrate/phase1-final-composition-20261027"
+        a4 = "refs/heads/fix/native-production-causal-20261106-a4"
+        cases = [
+            ("workflow_dispatch", a1, "phase1-service47", True),
+            ("workflow_dispatch", a1, "phase1-native-graph", True),
+            ("workflow_dispatch", a1, "phase1-native-gn1", True),
+            ("workflow_dispatch", a4, "phase1-native-gn1", True),
+            ("workflow_dispatch", a4, "phase1-native-graph", False),
+            ("workflow_dispatch", a4, "phase1-service47", False),
+            ("workflow_dispatch", a4 + "-extra", "phase1-native-gn1", False),
+            ("workflow_dispatch", a4.replace("/heads/", "/tags/"), "phase1-native-gn1", False),
+            ("pull_request", a4, "phase1-native-gn1", False),
+            ("push", a4, "phase1-native-gn1", False),
+        ]
+        for event, ref, selection, deferred in cases:
+            with self.subTest(event=event, ref=ref, selection=selection):
+                result = subprocess.run(["bash", "--noprofile", "--norc", "-c", script],
+                    env={**os.environ, "GITHUB_EVENT_NAME": event, "GITHUB_REF": ref,
+                         "REQUESTED_G0_SELECTION": selection},
+                    capture_output=True, text=True, timeout=5, check=True)
+                self.assertEqual(result.stdout.splitlines(),
+                                 [] if deferred else ["acceptance", "creative"])
+
     def test_registered_studio_gn1_selection_excludes_regular_service_and_g3(self):
         studio = (Path(__file__).resolve().parents[2] /
                   ".github/workflows/studio-service-verification.yml").read_text()
