@@ -37,11 +37,13 @@ def readback():
     return {"status": "READBACK_VERIFIED", "errors": [], "expectedCases": 1,
             "backendSourceShaAssertedByCaller": "b" * 40,
             "playwrightExitCodeReportedByCaller": 0, "readbackMode": "original_physical_store",
-            "binary": {"sha256": "c" * 64}, "receipt": {"status": "WRITTEN"},
+            "binary": {"path": "/source-built/studio_review_session", "sha256": "c" * 64},
+            "receipt": {"status": "WRITTEN"},
             "transportAttempted": True, "transportExecuted": True,
             "observationJournal": {"status": "CLOSED", "recordsAttempted": 5,
                                    "recordsConfirmed": 5},
             "cases": [{"captureStatus": "VERIFIED", "errors": [],
+                       "originalBinaryPaths": ["/source-built/studio_review_session"],
                        "playwrightIdentity": {"playwrightId": "ORIGINAL-TEST-ID",
                                              "projectId": "chromium"},
                        "readback": observation}]}
@@ -158,6 +160,22 @@ class FirstCaseSourceOnly(unittest.TestCase):
             else: value["cases"].append(copy.deepcopy(value["cases"][0]))
             with self.subTest(change=change), self.assertRaises(ValueError):
                 firstcase.readback_pass(value, "c"*64, "b"*40, "ORIGINAL-TEST-ID")
+
+    def test_first_writer_binary_path_must_match_executed_original_reader(self):
+        valid = readback()
+        self.assertEqual(firstcase.readback_pass(valid, "c"*64, "b"*40, "ORIGINAL-TEST-ID")["rpcCount"], 5)
+        for changed in ("missing_original", "substituted_writer", "missing_reader_path", "substituted_reader"):
+            report = copy.deepcopy(valid)
+            if changed == "missing_original":
+                report["cases"][0].pop("originalBinaryPaths")
+            elif changed == "substituted_writer":
+                report["cases"][0]["originalBinaryPaths"] = ["/other/rebuilt_service"]
+            elif changed == "missing_reader_path":
+                report["binary"].pop("path")
+            else:
+                report["binary"]["path"] = "/other/copied_service"
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "first writer binary"):
+                firstcase.readback_pass(report, "c"*64, "b"*40, "ORIGINAL-TEST-ID")
 
     def test_build_output_must_have_exact_one_compiled_example(self):
         with tempfile.TemporaryDirectory() as temp:

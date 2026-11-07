@@ -206,6 +206,15 @@ def readback_pass(report, binary_hash, expected_source, test_id):
             and case.get("playwrightIdentity", {}).get("playwrightId") == test_id
             and case.get("playwrightIdentity", {}).get("projectId") == "chromium",
             "R3 case evidence is not bound to original Playwright ID")
+    # The reader retains the first real writer binary paths independently of
+    # the second process. Equal binary hashes alone do not establish that the
+    # captured original writer used the very executable admitted for readback.
+    reader_path = report.get("binary", {}).get("path")
+    writer_paths = case.get("originalBinaryPaths")
+    require(isinstance(reader_path, str) and reader_path.startswith("/")
+            and isinstance(writer_paths, list) and len(writer_paths) == 1
+            and writer_paths[0] == reader_path,
+            "R3 first writer binary differs from the authenticated physical reader")
     obs = case.get("readback", {})
     before = obs.get("physicalSourceBeforeSha256")
     close = obs.get("close", {})
