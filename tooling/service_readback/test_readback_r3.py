@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tempfile
 import types
@@ -32,12 +33,16 @@ class FakeReader:
     instances = []
     fail_rpc = False
     fail_close = False
+    writable_bootstrap = False
+    wrong_witness_on = 0
 
     def __init__(self, binary, database, output, timeout):
         self.process = None
         self.sequence = 0
         self.taints = []
-        self.command = [str(binary), '--database', str(database), '--desktop-invoke-fixture']
+        self.command = [str(binary), '--database', str(database), '--read-only']
+        self.database = Path(database)
+        self.witness_count = 0
         self.calls = []
         self.closes = 0
         FakeReader.instances.append(self)
@@ -51,8 +56,13 @@ class FakeReader:
         if self.fail_rpc and command == 'get_project':
             raise ValueError('PRIMARY_FAKE_RPC_FAILURE')
         if command == 'bootstrap':
-            return {'test_transport': 'service-test-jsonl', 'fixture': {'label': 'synthetic_test_fixture'},
-                    'desktop_invoke_fixture': True, 'native_sdk': {'mode': 'tauri'}}
+            return {'test_transport': 'service-test-jsonl', 'read_only': not self.writable_bootstrap}
+        if command == 'opened_store_identity_witness':
+            self.witness_count += 1
+            if self.witness_count == self.wrong_witness_on:
+                return 'f' * 64
+            info = self.database.stat()
+            return hashlib.sha256(f'linux:{os.major(info.st_dev)}:{os.minor(info.st_dev)}:{info.st_ino}'.encode()).hexdigest()
         if command == 'project_history':
             return []
         return {'id': 'mock-project', 'generation': 'mock-generation', 'revision': 0}
@@ -137,6 +147,8 @@ class RuntimeFixture(unittest.TestCase):
         FakeReader.instances = []
         FakeReader.fail_rpc = False
         FakeReader.fail_close = False
+        FakeReader.writable_bootstrap = False
+        FakeReader.wrong_witness_on = 0
 
     def run_main(self, fail_names=(), mutate_report=None, omit_flags=(), extra_flags=()):
         if mutate_report:
@@ -182,9 +194,13 @@ class RuntimeFixture(unittest.TestCase):
             except (ValueError, AttributeError): pass
         return code, raised, saved or emitted, stdout.getvalue(), stderr.getvalue()
 
-    def assert_executed_once(self):
+    def assert_executed_once(self, physical=False):
         self.assertEqual(len(FakeReader.instances), 1)
-        self.assertEqual(FakeReader.instances[0].calls, ['bootstrap', 'reopen', 'get_project', 'project_history', 'get_project'])
+        expected = ['bootstrap', 'reopen', 'get_project', 'project_history', 'get_project']
+        if physical:
+            expected = ['bootstrap', 'opened_store_identity_witness', 'reopen', 'opened_store_identity_witness',
+                        'get_project', 'project_history', 'get_project', 'opened_store_identity_witness']
+        self.assertEqual(FakeReader.instances[0].calls, expected)
         self.assertEqual(FakeReader.instances[0].closes, 1)
 
 
@@ -356,7 +372,7 @@ class RosterAndDurabilityTests(RuntimeFixture):
 
 
 
-@unittest.skipUnless(os.name == 'posix', 'Physical inode preflight runs only on POSIX')
+@unittest.skipUnless(sys.platform == 'linux', 'Original Linux inode preflight runs only on Linux')
 class PhysicalOriginalRootTests(RuntimeFixture):
     """Source-only FakeReader tests; they neither create nor re-admit a real CAS Store."""
 
@@ -385,6 +401,22 @@ class PhysicalOriginalRootTests(RuntimeFixture):
         manifest['entries'] = reader_module.tree_entries(store)
         manifest['sourceDirectory'] = str(source) if not wrong_source_path else str(source) + '-wrong'
         manifest['snapshotDirectory'] = str(store)
+        physical_entries = []
+        for item in reader_module.tree_entries(source):
+            info = (source / item['path']).lstat()
+            physical_entries.append({'path': item['path'], 'kind': item['kind'],
+                                     'dev': str(info.st_dev), 'ino': str(info.st_ino),
+                                     'mode': stat.S_IMODE(info.st_mode), 'uid': info.st_uid, 'gid': info.st_gid})
+        info = (source / 'studio.sqlite3').stat()
+        witness = hashlib.sha256(f'linux:{os.major(info.st_dev)}:{os.minor(info.st_dev)}:{info.st_ino}'.encode()).hexdigest()
+        writer = {'helperId': 'SOURCE-ONLY-HELPER', 'processId': 313131,
+                  'launchIndex': 0, 'requestId': 'SOURCE-ONLY-WITNESS'}
+        manifest['physicalIdentity'] = {'schemaVersion': 1, 'platform': 'linux',
+                                        'databaseWitnessSha256': witness, 'entries': physical_entries, 'writer': writer}
+        manifest['readOnlyHandoff'] = True
+        manifest['readOnlyHandoffReceipt'] = {**writer, 'requestId': 'SOURCE-ONLY-HANDOFF',
+                                             'response': {'read_only_handoff': True, 'journal_mode': 'delete'}}
+        manifest['lifecycle'][0]['exits'][0]['processId'] = 313131
         digest = reader_module.digest_json(manifest['entries'])
         for key in ('sourceBeforeSha256', 'sourceAfterSha256', 'snapshotSha256'):
             manifest[key] = digest
@@ -392,21 +424,173 @@ class PhysicalOriginalRootTests(RuntimeFixture):
         outcomes_path = target / 'closed-store-outcomes.json'
         outcomes = json.loads(outcomes_path.read_text())
         outcomes['capture'] = manifest
+        outcomes['closures'][0]['exits'][0]['processId'] = 313131
+        closure_path = target / 'closed-store-service-closure.json'
+        dump(closure_path, {'schema': 'motionwright.service-closure/1', 'status': 'CLOSED',
+             'directory': str(source), 'database_path': str(source / 'studio.sqlite3'),
+             'sealed_helper_ids': ['SOURCE-ONLY-HELPER'], 'participants': [{
+                 'helper_id': 'SOURCE-ONLY-HELPER', 'database_path': str(source / 'studio.sqlite3'),
+                 'binary_path': 'mock-only', 'launch_count': 1, 'close_status': 'fulfilled',
+                 'active_child_count': 0, 'starting_count': 0, 'closing_count': 0, 'pending_count': 0, 'taints': [],
+                 'process_streams': [{'launch_index': 0, 'process_id': 313131, 'exit_index': 0,
+                                     'stdout_ended': True, 'stderr_ended': True, 'jsonl_reader_closed': True}],
+                 'process_exits': [{'process_id': 313131, 'code': 0, 'signal': None,
+                                    'observed_at': '2026-10-26T00:00:00Z'}]}]})
+        outcomes['serviceClosure'] = {'closed': True, 'receipt_path': str(closure_path),
+                                      'receipt_sha256': reader_module.sha256(closure_path)}
         dump(outcomes_path, outcomes)
         attachment = target / 'attachments' / 'closed-store-outcomes-exact-copy.json'
         attachment.write_bytes(outcomes_path.read_bytes())
+        evidence_path = target / 'production-design-service-evidence.json'
+        evidence = json.loads(evidence_path.read_text())
+        service = evidence['services'][0]
+        service['databasePath'] = str(source / 'studio.sqlite3')
+        service['processExits'][0]['processId'] = 313131
+        service['transcript'] = [
+            {'processId': 313131, 'direction': 'request',
+             'payload': {'id': 'SOURCE-ONLY-HANDOFF', 'command': 'prepare_read_only_handoff'}},
+            {'processId': 313131, 'direction': 'response',
+             'payload': {'id': 'SOURCE-ONLY-HANDOFF', 'ok': True,
+                         'result': {'read_only_handoff': True, 'journal_mode': 'delete'}}},
+            {'processId': 313131, 'direction': 'request',
+             'payload': {'id': 'SOURCE-ONLY-WITNESS', 'command': 'opened_store_identity_witness'}},
+            {'processId': 313131, 'direction': 'response',
+             'payload': {'id': 'SOURCE-ONLY-WITNESS', 'ok': True, 'result': witness}},
+        ]
+        dump(evidence_path, evidence)
+        (target / 'attachments' / 'production-design-service-evidence-exact-copy.json').write_bytes(evidence_path.read_bytes())
         return source
+
+    def rewrite_manifest(self, change):
+        target = self.results / 'case-one'
+        path = target / 'closed-store' / 'manifest.json'
+        value = json.loads(path.read_text())
+        change(value)
+        dump(path, value)
+        outcome_path = target / 'closed-store-outcomes.json'
+        outcomes = json.loads(outcome_path.read_text())
+        outcomes['capture'] = value
+        dump(outcome_path, outcomes)
+        (target / 'attachments' / 'closed-store-outcomes-exact-copy.json').write_bytes(outcome_path.read_bytes())
+
+    def rewrite_evidence(self, change):
+        target = self.results / 'case-one'
+        path = target / 'production-design-service-evidence.json'
+        value = json.loads(path.read_text())
+        change(value)
+        dump(path, value)
+        (target / 'attachments' / 'production-design-service-evidence-exact-copy.json').write_bytes(path.read_bytes())
 
     def test_fresh_reader_uses_real_original_physical_store_not_a_copy(self):
         source = self.make_physical_source()
         code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
         self.assertIsNone(raised); self.assertEqual(code, 0, report)
-        self.assert_executed_once()
+        self.assert_executed_once(physical=True)
         self.assertEqual(FakeReader.instances[0].command[2], str(source / 'studio.sqlite3'))
         self.assertEqual(report['cases'][0]['readback']['readbackMode'], 'original_physical_store')
         self.assertEqual(report['cases'][0]['readback']['physicalSourceBeforeSha256'],
                          report['cases'][0]['readback']['physicalSourceAfterSha256'])
         self.assertEqual(list((self.output / 'readback-copies').glob('*/store')), [])
+        case = report['cases'][0]
+        observation = case['readback']
+        self.assertTrue(observation['readOnly'])
+        self.assertEqual(observation['physicalIdentityBeforeSha256'], case['originalPhysicalIdentitySha256'])
+        self.assertEqual(observation['physicalIdentityAfterSha256'], case['originalPhysicalIdentitySha256'])
+        self.assertEqual(observation['databaseIdentityWitnesses'], {
+            stage: case['originalDatabaseWitnessSha256'] for stage in ('beforeReopen', 'afterReopen', 'afterReadback')})
+        self.assertEqual(case['originalReadOnlyHandoff']['processId'], 313131)
+        self.assertEqual(observation['rpcCount'], 8)
+
+    def test_writer_mode_response_is_rejected_after_one_rpc_without_retry(self):
+        self.make_physical_source()
+        FakeReader.writable_bootstrap = True
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1)
+        self.assertEqual(FakeReader.instances[0].calls, ['bootstrap'])
+        self.assertEqual(FakeReader.instances[0].closes, 1)
+        self.assertFalse(report['cases'][0]['readback']['readOnly'])
+        self.assertIn('read-only service transport', report['cases'][0]['readback']['primaryFailure'])
+
+    def test_changed_held_database_witness_is_rejected_at_each_observation(self):
+        self.make_physical_source()
+        for ordinal, stage in enumerate(('beforeReopen', 'afterReopen', 'afterReadback'), 1):
+            with self.subTest(stage=stage):
+                self.output = self.base / ('witness-' + str(ordinal))
+                FakeReader.instances = []
+                FakeReader.wrong_witness_on = ordinal
+                code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+                self.assertIsNone(raised); self.assertEqual(code, 1)
+                self.assertEqual(len(FakeReader.instances), 1); self.assertEqual(FakeReader.instances[0].closes, 1)
+                result = report['cases'][0]['readback']
+                self.assertEqual(result['databaseIdentityWitnesses'][stage], 'f' * 64)
+                self.assertIn('held-descriptor witness differs at ' + stage, result['primaryFailure'])
+                self.assertEqual(result['rpcCount'], (2, 4, 8)[ordinal - 1])
+
+    def test_physical_permissions_change_during_reader_is_rejected_after_clean_close(self):
+        source = self.make_physical_source()
+        original_close = FakeReader.close
+        def changed(instance):
+            result = original_close(instance)
+            database = source / 'studio.sqlite3'
+            database.chmod(stat.S_IMODE(database.stat().st_mode) ^ 0o040)
+            return result
+        with mock.patch.object(FakeReader, 'close', changed):
+            code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1)
+        self.assert_executed_once(physical=True)
+        self.assertTrue(report['cases'][0]['readback']['close']['clean'])
+        self.assertIn('physical identity', ' '.join(report['cases'][0]['readback']['errors']))
+
+    def test_original_handoff_response_from_another_process_is_rejected(self):
+        self.make_physical_source()
+        self.rewrite_evidence(lambda value: value['services'][0]['transcript'][1].update(processId=999999))
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1); self.assertEqual(FakeReader.instances, [])
+        self.assertIn('no unique correlated response', ' '.join(report['cases'][0]['errors']))
+
+    def test_unknown_original_handoff_is_rejected_without_transport(self):
+        self.make_physical_source()
+        def unknown(value):
+            value['services'][0]['transcript'][1]['payload'] = {
+                'id': 'SOURCE-ONLY-HANDOFF', 'ok': False, 'error': 'UNKNOWN_SOURCE_ONLY_FIXTURE'}
+        self.rewrite_evidence(unknown)
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1); self.assertEqual(FakeReader.instances, [])
+        self.assertIn('did not succeed; no retry', ' '.join(report['cases'][0]['errors']))
+
+    def test_handoff_marker_without_original_rpc_proof_is_rejected(self):
+        self.make_physical_source()
+        self.rewrite_evidence(lambda value: value['services'][0].update(transcript=[]))
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1); self.assertEqual(FakeReader.instances, [])
+        self.assertIn('Exactly one original writer handoff', ' '.join(report['cases'][0]['errors']))
+
+    def test_byte_identical_database_replacement_is_rejected_before_transport(self):
+        source = self.make_physical_source()
+        database = source / 'studio.sqlite3'
+        original = self.base / 'retained-inert-original'
+        database.rename(original)
+        shutil.copy2(original, database)
+        self.assertEqual(reader_module.sha256(database), reader_module.sha256(original))
+        self.assertNotEqual(database.stat().st_ino, original.stat().st_ino)
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1, report)
+        self.assertEqual(FakeReader.instances, [])
+        self.assertIn('physical identity', ' '.join(report['errors']))
+
+    def test_permissions_change_is_rejected_before_transport(self):
+        source = self.make_physical_source()
+        database = source / 'studio.sqlite3'
+        database.chmod(stat.S_IMODE(database.stat().st_mode) ^ 0o040)
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1, report)
+        self.assertEqual(FakeReader.instances, [])
+        self.assertIn('physical identity', ' '.join(report['errors']))
+
+    def test_real_transport_argv_requires_read_only_mode(self):
+        transport = reader_module.JsonlReader(self.binary, self.base / 'studio.sqlite3', self.output, 10)
+        self.assertIn('--read-only', transport.command)
+        self.assertNotIn('--desktop-invoke-fixture', transport.command)
 
     def test_copied_directory_with_a_new_inode_is_rejected_before_transport(self):
         source = self.make_physical_source()
@@ -439,7 +623,7 @@ class PhysicalOriginalRootTests(RuntimeFixture):
         code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
         self.assertIsNone(raised); self.assertEqual(code, 1)
         self.assertEqual(FakeReader.instances, [])
-        self.assertIn('captured original source directory', ' '.join(report['errors']))
+        self.assertIn('Original writer closure does not bind this Store', ' '.join(report['cases'][0]['errors']))
 
     def test_physical_mode_without_executed_transport_is_rejected(self):
         self.make_physical_source()

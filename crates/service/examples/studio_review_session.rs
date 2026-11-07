@@ -43,7 +43,9 @@ use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, GraphAuthoringContext,
     HeroConfig, NodeStyle, Project, RevisionStamp, hero_node_id,
 };
-use motionwright_service::{BundleFingerprint, SemanticGraphContextRequest, StudioService};
+use motionwright_service::{
+    BundleFingerprint, SemanticGraphContextRequest, StudioService, StudioServiceReader,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -382,6 +384,7 @@ pub struct Session {
     grants: EffectGrantRegistry,
     workspace_session: Uuid,
     desktop_invoke_fixture: bool,
+    read_only_handoff_completed: bool,
     graph_backend: Option<Box<dyn GraphBackend>>,
 }
 
@@ -421,6 +424,7 @@ impl Session {
             grants: EffectGrantRegistry::default(),
             workspace_session: Uuid::now_v7(),
             desktop_invoke_fixture: false,
+            read_only_handoff_completed: false,
             graph_backend,
         })
     }
@@ -443,6 +447,16 @@ impl Session {
     }
 
     fn dispatch_wire(&mut self, command: &str, args: Value) -> Result<Value, Value> {
+        if self.read_only_handoff_completed
+            && !matches!(
+                command,
+                "bootstrap" | "get_project" | "project_history" | "opened_store_identity_witness"
+            )
+        {
+            return Err(Value::String(
+                "Writer is sealed after its read-only handoff".into(),
+            ));
+        }
         match command {
             // Private test transport only. The fingerprint comes from the
             // live SQLite pager, not a filename or a caller-owned identity.
@@ -462,6 +476,19 @@ impl Session {
                 Ok(Value::String(hex::encode(sha2::Sha256::digest(
                     identity.as_bytes(),
                 ))))
+            }
+            "prepare_read_only_handoff" => {
+                if !args.is_null() {
+                    return Err(Value::String(
+                        "Read-only handoff accepts no arguments".into(),
+                    ));
+                }
+                self.service
+                    .prepare_read_only_handoff()
+                    .map_err(|error| Value::String(error.to_string()))?;
+                self.read_only_handoff_completed = true;
+                self.grants = EffectGrantRegistry::default();
+                Ok(json!({"read_only_handoff": true, "journal_mode": "delete"}))
             }
             "semantic_graph_authoring_context" => self.graph_context(args),
             "semantic_graph_operation_recovery" => self.graph_operation_recovery(args),
@@ -880,6 +907,136 @@ impl Session {
     }
 }
 
+/// Reader transport has no writer service, grants, fixture seed or Graph factory.
+/// Reopen retains this same restricted authority and the held database identity.
+struct ReadOnlySession {
+    database: PathBuf,
+    service: StudioServiceReader,
+}
+
+impl ReadOnlySession {
+    fn open(database: impl AsRef<Path>) -> Result<Self, String> {
+        let database = database.as_ref().to_path_buf();
+        if !database.is_absolute() {
+            return Err("Read-only database path must be absolute".into());
+        }
+        let service = StudioServiceReader::open(&database).map_err(|error| error.to_string())?;
+        Ok(Self { database, service })
+    }
+
+    fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
+        match command {
+            "bootstrap" => {
+                let selection_request: project_library::BootstrapRequest =
+                    match args.get("request") {
+                        None | Some(Value::Null) => project_library::BootstrapRequest::default(),
+                        Some(value) => serde_json::from_value(value.clone())
+                            .map_err(|error| error.to_string())?,
+                    };
+                let (project, project_selection) = match selection_request.project_id {
+                    None => (None, project_library::BootstrapProjectSelection::Unselected),
+                    Some(project_id) => match self.service.project(project_id) {
+                        Ok(project) => (
+                            Some(project),
+                            project_library::BootstrapProjectSelection::Selected { project_id },
+                        ),
+                        Err(error) => (
+                            None,
+                            project_library::BootstrapProjectSelection::Unavailable {
+                                project_id,
+                                message: error.to_string(),
+                            },
+                        ),
+                    },
+                };
+                Ok(json!({
+                    "project": project,
+                    "project_selection": project_selection,
+                    "native_sdk": {
+                        "application": "motionwright",
+                        "pinned_revision": source_locked_sdk_revision()?,
+                        "version": "1.0.0",
+                        "mode": "browser-demo"
+                    },
+                    "test_transport": "service-test-jsonl",
+                    "read_only": true,
+                    "evidence_scope": "real_service_sqlite_cas_read_only; excludes_tauri_installer_native_render"
+                }))
+            }
+            "get_project" | "reopen" => {
+                let request: ProjectRequest = request(args)?;
+                if command == "reopen" {
+                    let identity = self
+                        .service
+                        .database_file_identity()
+                        .map_err(|error| error.to_string())?;
+                    let replacement = Self::open(&self.database)?;
+                    if replacement
+                        .service
+                        .database_file_identity()
+                        .map_err(|error| error.to_string())?
+                        != identity
+                    {
+                        return Err("Read-only reopen changed the held database identity".into());
+                    }
+                    *self = replacement;
+                }
+                encoded(
+                    self.service
+                        .project(request.project_id)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            "project_history" => {
+                let request: HistoryRequest = request(args)?;
+                encoded(
+                    self.service
+                        .project_history(request.project_id, request.after_revision, request.limit)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            "opened_store_identity_witness" => {
+                if !args.is_null() {
+                    return Err("Opened SQLite identity witness accepts no arguments".into());
+                }
+                let identity = self
+                    .service
+                    .database_file_identity()
+                    .map_err(|_| "Opened SQLite identity unavailable".to_owned())?;
+                Ok(Value::String(hex::encode(sha2::Sha256::digest(
+                    identity.as_bytes(),
+                ))))
+            }
+            _ => Err("Command is not admitted by the read-only session".into()),
+        }
+    }
+
+    fn handle(&mut self, input: Value) -> Value {
+        let id = input.get("id").cloned().unwrap_or(Value::Null);
+        match serde_json::from_value::<Invoke>(input) {
+            Ok(invoke) => match self.dispatch(&invoke.command, invoke.args) {
+                Ok(result) => json!({"id": invoke.id, "ok": true, "result": result}),
+                Err(error) => json!({"id": invoke.id, "ok": false, "error": error}),
+            },
+            Err(error) => json!({"id": id, "ok": false, "error": error.to_string()}),
+        }
+    }
+}
+
+enum TransportSession {
+    Writer(Box<Session>),
+    Reader(Box<ReadOnlySession>),
+}
+
+impl TransportSession {
+    fn handle(&mut self, input: Value) -> Value {
+        match self {
+            Self::Writer(session) => session.handle(input),
+            Self::Reader(session) => session.handle(input),
+        }
+    }
+}
+
 /// Reuse the exact CLI parser, private Session gates and bounded JSONL loop.
 /// Native owns the factory and asynchronous client/runtime; Service does not
 /// depend on Native. A standalone run has no injected Graph backend.
@@ -889,22 +1046,33 @@ pub fn run_with_graph_backend(
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some("--database") {
         return Err(
-            "Usage: studio_review_session --database /absolute/test.sqlite3 [--synthetic-fixture] [--desktop-invoke-fixture]"
+            "Usage: studio_review_session --database /absolute/test.sqlite3 [--synthetic-fixture | --read-only] [--desktop-invoke-fixture]"
                 .into(),
         );
     }
     let database = args.next().ok_or("Missing test database path")?;
     let mut synthetic = false;
+    let mut read_only = false;
     let mut desktop_invoke_fixture = false;
     for arg in args {
         match arg.as_str() {
             "--synthetic-fixture" if !synthetic => synthetic = true,
+            "--read-only" if !read_only => read_only = true,
             "--desktop-invoke-fixture" if !desktop_invoke_fixture => desktop_invoke_fixture = true,
             _ => return Err("Unknown or duplicate test transport option".into()),
         }
     }
-    let mut session = Session::open_with_graph_backend(database, synthetic, factory)?;
-    session.desktop_invoke_fixture = desktop_invoke_fixture;
+    if read_only && synthetic {
+        return Err("Read-only sessions cannot create synthetic fixtures".into());
+    }
+    let mut session = if read_only {
+        // The native-owned factory is deliberately never invoked in this branch.
+        TransportSession::Reader(Box::new(ReadOnlySession::open(database)?))
+    } else {
+        let mut writer = Session::open_with_graph_backend(database, synthetic, factory)?;
+        writer.desktop_invoke_fixture = desktop_invoke_fixture;
+        TransportSession::Writer(Box::new(writer))
+    };
     let input = io::stdin();
     let mut input = input.lock();
     let output = io::stdout();
@@ -1606,5 +1774,132 @@ mod source_lock_tests {
                 line.trim_start().starts_with("source = ") && line.ends_with(&suffix)
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod read_only_session_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn read_only_session_reopen_denies_mutations_and_preserves_project_and_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("read-only-session.sqlite3");
+        let mut writer = Session::open(&database, false).unwrap();
+        let initial = writer
+            .service
+            .create_project("Original writer project")
+            .unwrap();
+        let project = writer
+            .service
+            .apply(
+                initial.id,
+                &initial.stamp(),
+                "read-only-history-entry",
+                &Change::AddScene {
+                    name: "Persisted scene".into(),
+                    objective: "Read the original journal".into(),
+                    duration_seconds: 6,
+                },
+            )
+            .unwrap()
+            .project;
+        let expected_project = serde_json::to_value(&project).unwrap();
+        let expected_history =
+            serde_json::to_value(writer.service.history(project.id, 0, 100).unwrap()).unwrap();
+        let handoff = writer.handle(json!({
+            "id": "handoff", "command": "prepare_read_only_handoff", "args": null
+        }));
+        assert_eq!(handoff["ok"], true, "{handoff}");
+        assert_eq!(
+            handoff["result"],
+            json!({
+                "read_only_handoff": true, "journal_mode": "delete"
+            })
+        );
+        let expected_witness = writer.handle(json!({
+            "id": "writer-witness", "command": "opened_store_identity_witness", "args": null
+        }))["result"]
+            .clone();
+        assert!(expected_witness.is_string());
+        for command in [
+            "issue_effect_grant",
+            "issue_project_creation_grant",
+            "create_project",
+            "apply_change",
+            "reopen",
+            "prepare_read_only_handoff",
+        ] {
+            let denied = writer.handle(json!({
+                "id": format!("sealed-{command}"), "command": command, "args": null
+            }));
+            assert_eq!(denied["ok"], false, "{denied}");
+            assert_eq!(
+                denied["error"],
+                "Writer is sealed after its read-only handoff"
+            );
+        }
+        drop(writer);
+        let before_bytes = fs::read(&database).unwrap();
+        let mut reader = ReadOnlySession::open(&database).unwrap();
+        let bootstrap = reader.handle(json!({
+            "id": "bootstrap", "command": "bootstrap", "args": {"request": {"project_id": project.id}}
+        }));
+        assert_eq!(bootstrap["ok"], true, "{bootstrap}");
+        assert_eq!(bootstrap["result"]["read_only"], true);
+        assert_eq!(bootstrap["result"]["project"], expected_project);
+        for pass in 0..2 {
+            for command in [
+                "issue_effect_grant",
+                "issue_project_creation_grant",
+                "create_project",
+                "apply_change",
+                "commit_file_import",
+                "prepare_read_only_handoff",
+            ] {
+                let denied = reader.handle(json!({
+                    "id": format!("{pass}-{command}"), "command": command, "args": null
+                }));
+                assert_eq!(denied["ok"], false, "{denied}");
+                assert_eq!(
+                    denied["error"],
+                    "Command is not admitted by the read-only session"
+                );
+            }
+            let read = reader.handle(json!({
+                "id": "get", "command": "get_project", "args": {"request": {"project_id": project.id}}
+            }));
+            assert_eq!(read["result"], expected_project);
+            let journal = reader.handle(json!({
+                "id": "journal", "command": "project_history",
+                "args": {"request": {"project_id": project.id, "after_revision": 0, "limit": 100}}
+            }));
+            assert_eq!(journal["result"], expected_history);
+            let witness = reader.handle(json!({
+                "id": "reader-witness", "command": "opened_store_identity_witness", "args": null
+            }));
+            assert_eq!(witness["ok"], true, "{witness}");
+            assert_eq!(witness["result"], expected_witness);
+            let reopen = reader.handle(json!({
+                "id": "reopen", "command": "reopen", "args": {"request": {"project_id": project.id}}
+            }));
+            assert_eq!(reopen["ok"], true, "{reopen}");
+            assert_eq!(reopen["result"], expected_project);
+        }
+        drop(reader);
+        assert_eq!(fs::read(&database).unwrap(), before_bytes);
+        assert!(!database.with_extension("sqlite3-wal").exists());
+        assert!(!database.with_extension("sqlite3-shm").exists());
+    }
+
+    #[test]
+    fn read_only_session_missing_store_does_not_create_database_or_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("never-created");
+        let database = parent.join("missing.sqlite3");
+        assert!(ReadOnlySession::open(&database).is_err());
+        assert!(!database.exists());
+        assert!(!parent.exists());
     }
 }

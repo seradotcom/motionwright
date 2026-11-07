@@ -29,6 +29,7 @@ mod portability;
 mod production;
 mod project_creation;
 mod project_projection;
+mod read_only;
 mod render_window_cache;
 mod root_operation_budget;
 mod scene_boundary_target;
@@ -55,6 +56,7 @@ pub use project_projection::{
     NodePageCursor, ProjectionError, ProjectionHead, ProjectionIdentity, ProjectionResult,
     ScenePage, ScenePageCursor, SceneRef, SceneSummary,
 };
+pub use read_only::StoreReader;
 pub use render_window_cache::{
     RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };

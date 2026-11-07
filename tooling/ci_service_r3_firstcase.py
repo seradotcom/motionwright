@@ -220,11 +220,12 @@ def readback_pass(report, binary_hash, expected_source, test_id):
     close = obs.get("close", {})
     require(obs.get("status") == "VERIFIED" and obs.get("errors") == []
             and obs.get("readbackMode") == "original_physical_store"
+            and obs.get("readOnly") is True
             and isinstance(before, str) and re.fullmatch(r"[0-9a-f]{64}", before) is not None
             and obs.get("physicalSourceAfterSha256") == before
             and obs.get("transportAttempted") is True and obs.get("transportExecuted") is True
             and type(obs.get("processId")) is int and obs["processId"] > 0
-            and type(obs.get("rpcCount")) is int and obs["rpcCount"] >= 5
+            and type(obs.get("rpcCount")) is int and obs["rpcCount"] >= 8
             and obs.get("primaryFailure") is None and obs.get("projectEqual") is True
             and obs.get("journalEqual") is True and obs.get("receipt", {}).get("status") == "WRITTEN"
             and close.get("clean") is True and close.get("errors") == []
@@ -232,6 +233,21 @@ def readback_pass(report, binary_hash, expected_source, test_id):
             and close.get("processId") == obs["processId"]
             and close.get("rpcCount") == obs["rpcCount"],
             "Independent real-service Project/journal, CAS or clean process custody incomplete")
+    original_identity = case.get("originalPhysicalIdentitySha256")
+    original_witness = case.get("originalDatabaseWitnessSha256")
+    handoff = case.get("originalReadOnlyHandoff", {})
+    require(isinstance(original_identity, str) and re.fullmatch(r"[0-9a-f]{64}", original_identity) is not None
+            and obs.get("physicalIdentityBeforeSha256") == original_identity
+            and obs.get("physicalIdentityAfterSha256") == original_identity
+            and isinstance(original_witness, str) and re.fullmatch(r"[0-9a-f]{64}", original_witness) is not None
+            and obs.get("databaseIdentityWitnesses") == {
+                "beforeReopen": original_witness, "afterReopen": original_witness, "afterReadback": original_witness}
+            and handoff.get("status") == "VERIFIED" and handoff.get("readOnlyHandoff") is True
+            and handoff.get("journalMode") == "delete"
+            and handoff.get("databaseWitnessSha256") == original_witness
+            and type(handoff.get("processId")) is int and handoff["processId"] > 0
+            and isinstance(handoff.get("requestId"), str) and bool(handoff["requestId"]),
+            "Original writer handoff, physical identity or held SQLite witnesses are incomplete")
     journal = report.get("observationJournal", {})
     require(journal.get("status") == "CLOSED"
             and type(journal.get("recordsAttempted")) is int
@@ -357,7 +373,8 @@ def main():
         recorder.run("chromium-install", [node, str(cli), "install", "--with-deps", "chromium"],
                      studio, env, 900)
         pw_env = dict(env, MOTIONWRIGHT_SERVICE_TEST_BIN=str(binary),
-                      MOTIONWRIGHT_SERVICE_TEST_TMPDIR=str(root / "tmp"))
+                      MOTIONWRIGHT_SERVICE_TEST_TMPDIR=str(root / "tmp"),
+                      MOTIONWRIGHT_R3_READ_ONLY_HANDOFF="1")
         originals = {}
         for listing, label in ((True, "list"), (False, "execution")):
             reporter = evidence / ("playwright-" + label + ".json")
@@ -402,7 +419,9 @@ def main():
                                           originals["execution"]["id"][0])
         require(source_snapshot(repo, args.expected_source) == before
                 and digest(binary) == binary_hash, "Source/binary changed after real readback")
-        status["physicalReadback"] = "ONE_REAL_ORIGINAL_PHYSICAL_CAS_STORE_VERIFIED"
+        status["physicalReadback"] = "ONE_REAL_ORIGINAL_PHYSICAL_CAS_STORE_READ_ONLY_HANDOFF_VERIFIED"
+        status["physicalReadbackScope"] = ("Explicit legitimate writer handoff to rollback journaling, clean close, "
+                                           "then original Store read-only reopen; default WAL reopen is not certified")
         status["status"] = "PASS_ONE_REAL_CASE_DIAGNOSTIC_NOT_G2"
         result_code = 0
     except BaseException as error:

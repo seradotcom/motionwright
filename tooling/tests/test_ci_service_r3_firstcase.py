@@ -28,12 +28,15 @@ def reporter(listing=False):
 def readback():
     observation = {"status": "VERIFIED", "errors": [], "readbackMode": "original_physical_store",
                    "physicalSourceBeforeSha256": "a" * 64, "physicalSourceAfterSha256": "a" * 64,
+                   "physicalIdentityBeforeSha256": "d" * 64, "physicalIdentityAfterSha256": "d" * 64,
+                   "readOnly": True, "databaseIdentityWitnesses": {
+                       stage: "e" * 64 for stage in ("beforeReopen", "afterReopen", "afterReadback")},
                    "transportAttempted": True, "transportExecuted": True,
-                   "processId": 444, "rpcCount": 5, "primaryFailure": None,
+                   "processId": 444, "rpcCount": 8, "primaryFailure": None,
                    "projectEqual": True, "journalEqual": True, "journalEntries": 8,
                    "receipt": {"status": "WRITTEN"},
                    "close": {"clean": True, "errors": [], "taints": [], "returnCode": 0,
-                             "processId": 444, "rpcCount": 5}}
+                             "processId": 444, "rpcCount": 8}}
     return {"status": "READBACK_VERIFIED", "errors": [], "expectedCases": 1,
             "backendSourceShaAssertedByCaller": "b" * 40,
             "playwrightExitCodeReportedByCaller": 0, "readbackMode": "original_physical_store",
@@ -44,6 +47,11 @@ def readback():
                                    "recordsConfirmed": 5},
             "cases": [{"captureStatus": "VERIFIED", "errors": [],
                        "originalBinaryPaths": ["/source-built/studio_review_session"],
+                       "originalPhysicalIdentitySha256": "d" * 64,
+                       "originalDatabaseWitnessSha256": "e" * 64,
+                       "originalReadOnlyHandoff": {"status": "VERIFIED", "readOnlyHandoff": True,
+                           "journalMode": "delete", "processId": 333, "requestId": "SOURCE-ONLY-HANDOFF",
+                           "databaseWitnessSha256": "e" * 64},
                        "playwrightIdentity": {"playwrightId": "ORIGINAL-TEST-ID",
                                              "projectId": "chromium"},
                        "readback": observation}]}
@@ -139,10 +147,10 @@ class FirstCaseSourceOnly(unittest.TestCase):
 
     def test_original_physical_real_reader_receipt_requires_every_boundary(self):
         correct = readback()
-        self.assertEqual(firstcase.readback_pass(correct, "c"*64, "b"*40, "ORIGINAL-TEST-ID")["rpcCount"], 5)
+        self.assertEqual(firstcase.readback_pass(correct, "c"*64, "b"*40, "ORIGINAL-TEST-ID")["rpcCount"], 8)
         for change in ("copied", "invalid_root", "changed_root", "journal", "process",
                        "binary", "source", "project", "unclean", "receipt", "foreign_id",
-                       "short_rpc", "extra_case"):
+                       "short_rpc", "extra_case", "read_only", "physical_identity", "held_witness", "handoff"):
             value = copy.deepcopy(correct)
             r = value["cases"][0]["readback"]
             if change == "copied": value["readbackMode"] = "archive_extracted_copy"
@@ -156,14 +164,18 @@ class FirstCaseSourceOnly(unittest.TestCase):
             elif change == "unclean": r["close"]["clean"] = False
             elif change == "receipt": value["receipt"]["status"] = "PENDING"
             elif change == "foreign_id": value["cases"][0]["playwrightIdentity"]["playwrightId"] = "other"
-            elif change == "short_rpc": r["rpcCount"] = 4
+            elif change == "short_rpc": r["rpcCount"] = 7
+            elif change == "read_only": r["readOnly"] = False
+            elif change == "physical_identity": r["physicalIdentityAfterSha256"] = "f" * 64
+            elif change == "held_witness": r["databaseIdentityWitnesses"]["afterReopen"] = "f" * 64
+            elif change == "handoff": value["cases"][0]["originalReadOnlyHandoff"]["readOnlyHandoff"] = False
             else: value["cases"].append(copy.deepcopy(value["cases"][0]))
             with self.subTest(change=change), self.assertRaises(ValueError):
                 firstcase.readback_pass(value, "c"*64, "b"*40, "ORIGINAL-TEST-ID")
 
     def test_first_writer_binary_path_must_match_executed_original_reader(self):
         valid = readback()
-        self.assertEqual(firstcase.readback_pass(valid, "c"*64, "b"*40, "ORIGINAL-TEST-ID")["rpcCount"], 5)
+        self.assertEqual(firstcase.readback_pass(valid, "c"*64, "b"*40, "ORIGINAL-TEST-ID")["rpcCount"], 8)
         for changed in ("missing_original", "substituted_writer", "missing_reader_path", "substituted_reader"):
             report = copy.deepcopy(valid)
             if changed == "missing_original":

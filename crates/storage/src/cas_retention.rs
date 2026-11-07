@@ -401,6 +401,14 @@ fn absolute_normalized_path(path: &Path) -> bool {
 }
 
 pub(super) fn discover(root: &Path) -> Result<Option<ManagedRoot>> {
+    discover_with_lock_access(root, true)
+}
+
+pub(super) fn discover_read_only(root: &Path) -> Result<Option<ManagedRoot>> {
+    discover_with_lock_access(root, false)
+}
+
+fn discover_with_lock_access(root: &Path, writable_lock: bool) -> Result<Option<ManagedRoot>> {
     super::ensure_regular_directory(root, "CAS root")?;
     let canonical_root = fs::canonicalize(root)?;
     let anchor_path = canonical_root.join(ROOT_ANCHOR);
@@ -432,7 +440,7 @@ pub(super) fn discover(root: &Path) -> Result<Option<ManagedRoot>> {
     {
         return Err(invalid("managed root identity changed"));
     }
-    let lock = open_control(&control.join("root.lock"), false, true, false)?;
+    let lock = open_control(&control.join("root.lock"), false, writable_lock, false)?;
     if file_identity(&lock)? != anchor.lock_id {
         return Err(invalid("root gate identity changed"));
     }
@@ -556,7 +564,16 @@ pub(super) fn prepare_blob_root(root: &Path, require_managed: bool) -> Result<()
 
 impl ManagedRoot {
     fn validate_location(&self) -> Result<()> {
-        let current = discover(&self.root)?.ok_or_else(|| invalid("managed anchor disappeared"))?;
+        self.validate_location_with_lock_access(true)
+    }
+
+    pub(super) fn validate_location_read_only(&self) -> Result<()> {
+        self.validate_location_with_lock_access(false)
+    }
+
+    fn validate_location_with_lock_access(&self, writable_lock: bool) -> Result<()> {
+        let current = discover_with_lock_access(&self.root, writable_lock)?
+            .ok_or_else(|| invalid("managed anchor disappeared"))?;
         if current.root_id != self.root_id
             || current.control != self.control
             || current.recorded_root != self.recorded_root

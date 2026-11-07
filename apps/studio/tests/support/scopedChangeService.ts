@@ -309,6 +309,60 @@ async function storeTree(directory: string): Promise<StoreEntry[]> {
   return entries;
 }
 
+export interface PhysicalStoreEntry {
+  path: string;
+  kind: "directory" | "file";
+  dev: string;
+  ino: string;
+  mode: number;
+  uid: number;
+  gid: number;
+}
+
+export interface ClosedStorePhysicalIdentity {
+  schemaVersion: 1;
+  platform: "linux";
+  databaseWitnessSha256: string;
+  entries: PhysicalStoreEntry[];
+  writer: { helperId: string; processId: number; launchIndex: number; requestId: RpcId };
+}
+
+/** Physical identity belongs only to the original filesystem, never its archive copy. */
+async function physicalStoreTree(directory: string): Promise<PhysicalStoreEntry[]> {
+  const entries: PhysicalStoreEntry[] = [];
+  const safeNumber = (value: bigint): number => {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || BigInt(number) !== value) throw new Error("Store metadata exceeds exact numeric representation");
+    return number;
+  };
+  const visit = async (path: string, name: string): Promise<void> => {
+    const info = await lstat(path, { bigint: true });
+    if (info.isSymbolicLink() || (!info.isDirectory() && !info.isFile())) throw new Error(`Original store has an unsupported physical entry: ${name || "."}`);
+    entries.push({ path: name, kind: info.isDirectory() ? "directory" : "file",
+      dev: info.dev.toString(), ino: info.ino.toString(), mode: safeNumber(info.mode & 0o7777n),
+      uid: safeNumber(info.uid), gid: safeNumber(info.gid) });
+    if (info.isDirectory()) for (const child of (await readdir(path)).sort()) await visit(join(path, child), name ? `${name}/${child}` : child);
+  };
+  await visit(directory, "");
+  return entries;
+}
+
+function databasePhysicalWitness(entry: PhysicalStoreEntry): string {
+  const dev = BigInt(entry.dev);
+  // Linux gnu_dev_major/minor split a dev_t; match SQLite's held mapping witness.
+  const major = ((dev >> 8n) & 0xfffn) | ((dev >> 32n) & 0xfffff000n);
+  const minor = (dev & 0xffn) | ((dev >> 12n) & 0xffffff00n);
+  return createHash("sha256").update(`linux:${major}:${minor}:${entry.ino}`).digest("hex");
+}
+
+export interface ClosedStoreHandoffReceipt {
+  helperId: string;
+  processId: number;
+  launchIndex: number;
+  requestId: RpcId;
+  response: { read_only_handoff: true; journal_mode: "delete" };
+}
+
 export interface ClosedStoreCapture {
   schemaVersion: 1;
   capturedAt: string;
@@ -319,6 +373,9 @@ export interface ClosedStoreCapture {
   sourceBeforeSha256: string;
   sourceAfterSha256: string;
   snapshotSha256: string;
+  physicalIdentity?: ClosedStorePhysicalIdentity;
+  readOnlyHandoff?: true;
+  readOnlyHandoffReceipt?: ClosedStoreHandoffReceipt;
   lifecycle: { databasePath: string; exits: ServiceProcessExit[]; taints: ServiceLifecycleTaint[] }[];
   evidenceScope: string;
 }
@@ -345,6 +402,8 @@ export class ScopedChangeService {
   private readonly graphCustodyRequired: boolean;
   private readonly rawCaptures: RawStreamCaptureState[] = [];
   private child: ChildProcessWithoutNullStreams | null = null;
+  private writerPhysicalIdentity: ClosedStorePhysicalIdentity | null = null;
+  private readOnlyHandoffReceipt: ClosedStoreHandoffReceipt | null = null;
   private starting: Promise<this> | null = null;
   private closing: Promise<void> | null = null;
   private exited: Promise<ServiceProcessExit> | null = null;
@@ -1014,6 +1073,32 @@ export class ScopedChangeService {
     return expected;
   }
 
+  /** Observe the held database through the last live writer, after its explicit handoff. */
+  private async observeWriterPhysicalIdentity(): Promise<void> {
+    if (process.platform !== "linux") throw new Error("R3 physical read-only handoff requires Linux identity evidence");
+    const child = this.child;
+    const launch = this.processStreams.at(-1);
+    if (!child?.pid || !launch || launch.process_id !== child.pid || child.exitCode !== null || child.signalCode !== null)
+      throw new Error("Physical identity requires the observed live writer process");
+    const before = await physicalStoreTree(this.directory);
+    const requestId = randomUUID();
+    const response = await this.rawRequest<string>({ id: requestId, command: "opened_store_identity_witness", args: null });
+    const after = await physicalStoreTree(this.directory);
+    if (this.child !== child || this.processStreams.at(-1) !== launch || child.exitCode !== null || child.signalCode !== null
+        || !isDeepStrictEqual(before, after))
+      throw new Error("Original Store or writer changed while observing its physical identity");
+    if (!response.ok || typeof response.result !== "string" || !/^[a-f0-9]{64}$/.test(response.result))
+      throw new Error("The live writer did not supply an authentic opened database identity witness");
+    const databaseRelativePath = relative(this.directory, this.databasePath).split("\\").join("/");
+    const database = before.find(entry => entry.path === databaseRelativePath && entry.kind === "file");
+    if (!database || databasePhysicalWitness(database) !== response.result)
+      throw new Error("The live writer's held database differs from the original Store file");
+    this.writerPhysicalIdentity = {
+      schemaVersion: 1, platform: "linux", databaseWitnessSha256: response.result, entries: before,
+      writer: { helperId: this.sessionId, processId: child.pid, launchIndex: launch.launch_index, requestId },
+    };
+  }
+
   /**
    * One finalization per store: quiesce browser/gates, observe the full oracle,
    * attempt every peer's close, close external writers, retain every outcome,
@@ -1030,7 +1115,7 @@ export class ScopedChangeService {
     const owners = [...new Set(participants.map(service => service.processOwner).filter((owner): owner is ServiceProcessOwner => !!owner))];
     const ownerSeals: ClosurePhase[] = [];
     // Every finalization seals its roster, including ordinary services without
-    // an external owner. Reopening evidence uses a separate captured copy.
+    // an external owner. R3 later reads the original through a separate read-only process.
     for (const service of participants) ScopedChangeService.sealedDirectories.add(ScopedChangeService.directoryIdentity(service.directory));
     if (owners.length) {
       for (const owner of owners) {
@@ -1050,6 +1135,20 @@ export class ScopedChangeService {
         if (!isDeepStrictEqual(await service.project(expected.id), expected)) throw new Error("A peer's final stored Project differs from the expected Project");
       }
       result.oracle = await this.observeStoredProject(expected);
+      if (process.env.MOTIONWRIGHT_R3_READ_ONLY_HANDOFF === "1") {
+        if (participants.some(service => service !== this && service.child) || owners.length)
+          throw new Error("R3 read-only handoff requires the final writer to be the sole live Store participant");
+        const child = this.child, launch = this.processStreams.at(-1), requestId = randomUUID();
+        if (!child?.pid || !launch || launch.process_id !== child.pid)
+          throw new Error("R3 handoff requires the observed live writer");
+        const response = await this.rawRequest<ClosedStoreHandoffReceipt["response"]>({ id: requestId, command: "prepare_read_only_handoff", args: null });
+        if (!response.ok || !isDeepStrictEqual(response.result, { read_only_handoff: true, journal_mode: "delete" })
+            || this.child !== child || this.processStreams.at(-1) !== launch || child.exitCode !== null || child.signalCode !== null)
+          throw new Error("The original writer did not complete the read-only handoff");
+        this.readOnlyHandoffReceipt = { helperId: this.sessionId, processId: child.pid,
+          launchIndex: launch.launch_index, requestId, response: response.result };
+        await this.observeWriterPhysicalIdentity();
+      }
     } catch (error) { result.errors.push(String(error)); }
     const closed = await Promise.allSettled(participants.map(service => service.close()));
     // One bounded cleanup pass for any late registered helper. The frozen roster
@@ -1122,8 +1221,9 @@ export class ScopedChangeService {
    * have clean exits. Hashes detect any source change during copying. This does
    * not claim to discover unrelated external processes or open SQLite here.
    * WAL/SHM, when present, are copied and hashed like every other regular file.
-   * The runner must archive this capture before its execution returns, then
-   * verify/extract/reopen a separate copy; never normalize the original store.
+   * The runner must archive this capture before its execution returns. Archive
+   * readback uses its separate copy; R3 additionally reads the unchanged original
+   * after the explicit writer handoff, with its retained physical identities.
    */
   async captureClosedStore(destination: string, peers: ScopedChangeService[] = []): Promise<ClosedStoreCapture> {
     if (!isAbsolute(destination)) throw new Error("Closed store capture needs an absolute destination");
@@ -1147,6 +1247,11 @@ export class ScopedChangeService {
     try {
       const inventory = (directory: string) => custody ? custody.inventory(directory) : storeTree(directory);
       const before = await inventory(sourceDirectory);
+      const physicalBefore = this.writerPhysicalIdentity ? await physicalStoreTree(sourceDirectory) : null;
+      if (this.readOnlyHandoffReceipt && !physicalBefore)
+        throw new Error("Read-only handoff has no live-writer physical identity");
+      if (physicalBefore && !isDeepStrictEqual(physicalBefore, this.writerPhysicalIdentity!.entries))
+        throw new Error("Original Store objects or permissions changed between the live writer and its clean exit");
       const snapshotDirectory = join(target, "store");
       if (custody) {
         const copied = await custody.copyClosedStore(sourceDirectory, target);
@@ -1161,6 +1266,8 @@ export class ScopedChangeService {
       }
       const copied = await inventory(snapshotDirectory);
       const after = await inventory(sourceDirectory);
+      if (physicalBefore && !isDeepStrictEqual(physicalBefore, await physicalStoreTree(sourceDirectory)))
+        throw new Error("Original Store physical identity changed while copying its evidence");
       const beforeJson = JSON.stringify(before);
       const afterJson = JSON.stringify(after);
       const copiedJson = JSON.stringify(copied);
@@ -1173,6 +1280,8 @@ export class ScopedChangeService {
         databaseRelativePath: relative(sourceDirectory, this.databasePath).split("\\").join("/"),
         entries: before, sourceBeforeSha256: digest(beforeJson), sourceAfterSha256: digest(afterJson),
         snapshotSha256: digest(copiedJson),
+        ...(physicalBefore ? { physicalIdentity: { ...this.writerPhysicalIdentity!, entries: physicalBefore } } : {}),
+        ...(this.readOnlyHandoffReceipt ? { readOnlyHandoff: true as const, readOnlyHandoffReceipt: this.readOnlyHandoffReceipt } : {}),
         lifecycle: [...participants].map(service => ({ databasePath: service.databasePath,
           exits: service.processExits.map(exit => ({ ...exit })), taints: structuredClone(service.lifecycleTaints) })),
         evidenceScope: "complete_closed_store_copy_with_verified_helper_exits; unopened_snapshot; later_archive_reopen_verification_required",

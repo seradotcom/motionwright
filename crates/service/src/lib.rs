@@ -12,6 +12,7 @@ mod native_capsule_source;
 mod portability;
 mod project_creation;
 mod project_projection;
+mod read_only;
 mod scene_boundary;
 mod semantic_graph;
 mod semantic_graph_admission;
@@ -40,6 +41,7 @@ pub use project_projection::{
     NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
     ProjectionResult, ScenePage, ScenePageCursor, SceneRef, SceneSummary,
 };
+pub use read_only::StudioServiceReader;
 pub use scene_boundary::{
     SceneBoundaryAuthoringContext, SceneBoundaryContextRequest, SceneBoundaryPredecessorContext,
 };

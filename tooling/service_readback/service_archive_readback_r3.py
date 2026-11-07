@@ -26,7 +26,7 @@ import zipfile
 
 
 SCHEMA = "motionwright.service-archive-readback/3"
-HELPER_SHA256 = "c5f29e1f840e95ffc6e1013bc34d77b834d4385402f6a8c1e1b962f31de4e914"
+HELPER_SHA256 = "0f6b8b184564234012778dbee8a53182fcb787b25f08212517aa548ea7443a47"
 SAFE_INTEGER = 9007199254740991
 EVIDENCE_NAMES = (
     "brand-authoring-service-evidence.json",
@@ -35,7 +35,7 @@ EVIDENCE_NAMES = (
     "branch-authoring-evidence.json",
     "production-design-service-evidence.json",
 )
-READ_COMMANDS = {"bootstrap", "reopen", "get_project", "project_history"}
+READ_COMMANDS = {"bootstrap", "reopen", "get_project", "project_history", "opened_store_identity_witness"}
 
 
 def now():
@@ -381,6 +381,105 @@ def validate_oracle(oracle):
     return project, journal
 
 
+def verify_original_read_only_handoff(manifest, services, closure):
+    """Bind the explicit writer transition and live witness to original RPC observations."""
+    require(manifest.get("readOnlyHandoff") is True, "Original writer read-only handoff was not recorded")
+    physical = manifest.get("physicalIdentity")
+    require(isinstance(physical, dict) and isinstance(physical.get("databaseWitnessSha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", physical["databaseWitnessSha256"]) is not None,
+            "Original writer held database witness is missing")
+    directory = manifest.get("sourceDirectory")
+    require(isinstance(directory, str) and PurePosixPath(directory).is_absolute(),
+            "Original writer handoff must name its absolute Linux Store")
+    database = str(PurePosixPath(directory) / normal_relative(manifest.get("databaseRelativePath")))
+    writer, receipt = physical.get("writer"), manifest.get("readOnlyHandoffReceipt")
+    require(isinstance(writer, dict) and isinstance(receipt, dict)
+            and isinstance(writer.get("helperId"), str) and writer["helperId"]
+            and safe_integer(writer.get("launchIndex")),
+            "Original writer handoff provenance is missing")
+    require(closure.get("schema") == "motionwright.service-closure/1" and closure.get("status") == "CLOSED"
+            and closure.get("directory") == directory and closure.get("database_path") == database
+            and isinstance(closure.get("sealed_helper_ids"), list)
+            and closure["sealed_helper_ids"].count(writer["helperId"]) == 1,
+            "Original writer closure does not bind this Store and helper")
+    handoffs = []
+    for service in services:
+        transcript = service.get("transcript")
+        require(isinstance(transcript, list), "Original writer handoff requires its complete service transcript")
+        for index, entry in enumerate(transcript):
+            require(isinstance(entry, dict), "Original service transcript entry is malformed")
+            payload = entry.get("payload")
+            if not (entry.get("direction") == "request" and isinstance(payload, dict)
+                    and payload.get("command") == "prepare_read_only_handoff"):
+                continue
+            require(service.get("databasePath") == database, "Original writer handoff names a different database")
+            pid, request_id = entry.get("processId"), payload.get("id")
+            require(type(pid) is int and pid > 0 and isinstance(request_id, str) and request_id
+                    and payload.get("args") is None, "Original writer handoff request identity is invalid")
+            responses = [(i, item) for i, item in enumerate(transcript)
+                         if isinstance(item, dict) and item.get("direction") == "response"
+                         and item.get("processId") == pid and isinstance(item.get("payload"), dict)
+                         and item["payload"].get("id") == request_id]
+            require(len(responses) == 1 and responses[0][0] > index,
+                    "Original writer handoff has no unique correlated response")
+            response_index, response = responses[0]
+            result = response["payload"].get("result")
+            require(response["payload"].get("ok") is True and isinstance(result, dict)
+                    and result.get("read_only_handoff") is True and result.get("journal_mode") == "delete",
+                    "Original writer read-only handoff did not succeed; no retry is admitted")
+            exits = [exit for exit in service.get("processExits", []) if exit.get("processId") == pid]
+            require(len(exits) == 1 and exits[0].get("code") == 0 and exits[0].get("signal") is None,
+                    "Original writer handoff process has no unique clean exit")
+            require(any(life.get("databasePath") == database and exits[0] in life.get("exits", [])
+                        for life in manifest.get("lifecycle", [])),
+                    "Original writer handoff process is absent from the captured closure")
+            witnesses = [(i, item) for i, item in enumerate(transcript)
+                         if i > response_index and isinstance(item, dict) and item.get("direction") == "request"
+                         and item.get("processId") == pid and isinstance(item.get("payload"), dict)
+                         and item["payload"].get("command") == "opened_store_identity_witness"]
+            require(len(witnesses) == 1, "Original writer handoff needs one later held database witness")
+            witness_index, witness_request = witnesses[0]
+            witness_id = witness_request["payload"].get("id")
+            require(isinstance(witness_id, str) and witness_id and witness_id != request_id
+                    and witness_request["payload"].get("args") is None,
+                    "Original writer witness request contains caller identity")
+            witness_replies = [(i, item) for i, item in enumerate(transcript)
+                               if isinstance(item, dict) and item.get("direction") == "response"
+                               and item.get("processId") == pid and isinstance(item.get("payload"), dict)
+                               and item["payload"].get("id") == witness_id]
+            require(len(witness_replies) == 1 and witness_replies[0][0] > witness_index
+                    and witness_replies[0][1]["payload"].get("ok") is True
+                    and witness_replies[0][1]["payload"].get("result") == physical["databaseWitnessSha256"],
+                    "Original writer held database witness is not correlated to the handoff")
+            same_json(writer, {"helperId": writer["helperId"], "processId": pid,
+                               "launchIndex": writer["launchIndex"], "requestId": witness_id},
+                      "$.originalWriterWitness")
+            same_json(receipt, {"helperId": writer["helperId"], "processId": pid,
+                                "launchIndex": writer["launchIndex"], "requestId": request_id, "response": result},
+                      "$.originalWriterHandoffReceipt")
+            participants = [item for item in closure.get("participants", [])
+                            if item.get("helper_id") == writer["helperId"]]
+            require(len(participants) == 1, "Original writer is not unique in the service closure")
+            participant = participants[0]
+            streams = participant.get("process_streams", [])
+            launches = [item for item in streams if item.get("launch_index") == writer["launchIndex"]]
+            require(participant.get("database_path") == database
+                    and participant.get("binary_path") == service.get("binaryPath")
+                    and participant.get("close_status") == "fulfilled"
+                    and all(participant.get(key) == 0 for key in
+                            ("active_child_count", "starting_count", "closing_count", "pending_count"))
+                    and participant.get("taints") == [] and len(launches) == 1
+                    and launches[0].get("process_id") == pid
+                    and all(launches[0].get(key) is True for key in
+                            ("stdout_ended", "stderr_ended", "jsonl_reader_closed")),
+                    "Original writer launch or closed resources differ from the handoff")
+            handoffs.append({"status": "VERIFIED", "readOnlyHandoff": True, "journalMode": result["journal_mode"],
+                             "processId": pid, "requestId": request_id, "databasePath": database,
+                             "databaseWitnessSha256": physical["databaseWitnessSha256"], "writer": writer})
+    require(len(handoffs) == 1, "Exactly one original writer handoff is required; no retry is admitted")
+    return handoffs[0]
+
+
 def verify_case(case_root):
     capture_root = case_root / "closed-store"
     outcomes = read_json(case_root / "closed-store-outcomes.json")
@@ -420,7 +519,16 @@ def verify_case(case_root):
     require(isinstance(services, list) and services and all(isinstance(value, dict) for value in services), "Scenario service records are missing")
     for index, service in enumerate(services):
         clean_exits(service.get("processExits"), service.get("lifecycleTaints"), "scenario service " + str(index))
-    return {"oracle": oracle, "manifest": manifest, "treeSha256": digest,
+    handoff = None
+    if manifest.get("readOnlyHandoff") is True:
+        barrier = outcomes.get("serviceClosure", {})
+        closure_path = case_root / "closed-store-service-closure.json"
+        expected_path = str(PurePosixPath(manifest["sourceDirectory"]).parent / closure_path.name)
+        require(barrier.get("closed") is True and barrier.get("receipt_path") == expected_path
+                and barrier.get("receipt_sha256") == sha256(closure_path),
+                "Original writer service closure receipt is missing or not bound")
+        handoff = verify_original_read_only_handoff(manifest, services, read_json(closure_path))
+    return {"oracle": oracle, "manifest": manifest, "treeSha256": digest, "readOnlyHandoff": handoff,
             "evidenceFile": evidence_paths[0].name, "originalBinaryPaths": [service.get("binaryPath") for service in services]}
 
 
@@ -466,7 +574,7 @@ class JsonlReader:
         self.output = output
         self.process = self.transcript = self.stderr = None
         self.stdout_thread = self.stderr_thread = None
-        self.command = [str(binary), "--database", str(database), "--desktop-invoke-fixture"]
+        self.command = [str(binary), "--database", str(database), "--read-only"]
 
     def start(self):
         # The caller owns this object before Popen. Even a partial thread/file
@@ -508,12 +616,15 @@ class JsonlReader:
             self.incoming.put(("error", "stderr capture failed: " + str(error)))
 
     def rpc(self, command, request):
-        require(command in READ_COMMANDS, "Only the four observed readback commands are admitted")
+        require(command in READ_COMMANDS, "Only the observed readback commands are admitted")
         require(self.process is not None and self.transcript is not None, "Service transport has not started")
         require(self.pending is None, "Another RPC is still pending")
         self.sequence += 1
         identity = "archive-readback:" + self.token + ":" + str(self.sequence)
-        payload = {"id": identity, "command": command, "args": {"request": request}}
+        if command == "opened_store_identity_witness":
+            require(request is None, "The held Store witness accepts no caller identity")
+        payload = {"id": identity, "command": command,
+                   "args": None if command == "opened_store_identity_witness" else {"request": request}}
         self.pending = identity
         self.record("request", payload)
         try:
@@ -602,18 +713,56 @@ class JsonlReader:
 def new_readback_observation(destination):
     return {"status": "FAILED", "startedAt": now(), "transportAttempted": False, "transportExecuted": False,
             "processId": None, "rpcCount": 0, "primaryFailure": None, "errors": [], "close": None,
+            "readOnly": False, "databaseIdentityWitnesses": {},
             "outputDirectory": str(destination), "receipt": {"path": str(destination / "readback.json"),
             "status": "PENDING", "requiresCallerReport": True}}
 
 
+def physical_identity_sha256(value):
+    # Physical metadata is independent of the byte inventory's JS key order.
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def physical_store_identity(store, database_relative):
+    """Observe original Linux filesystem objects; never compare these to ZIP copies."""
+    require(sys.platform == "linux", "Original physical identity requires a Linux runner")
+    database_relative = normal_relative(database_relative)
+    entries, aliases = [], set()
+
+    def visit(path, name):
+        normal_relative(name, allow_root=True)
+        require(name.casefold() not in aliases, "Case-aliased path in physical Store: " + name)
+        aliases.add(name.casefold())
+        kind, info = regular_kind(path)
+        entries.append({"path": name, "kind": kind, "dev": str(info.st_dev), "ino": str(info.st_ino),
+                        "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid})
+        if kind == "directory":
+            for child in sorted(path.iterdir(), key=lambda item: item.name.encode("utf-16-be")):
+                visit(child, name + "/" + child.name if name else child.name)
+
+    visit(Path(store), "")
+    database = next((item for item in entries if item["path"] == database_relative), None)
+    require(database is not None and database["kind"] == "file", "Original physical database identity is absent")
+    device = int(database["dev"])
+    # This is SQLite's held-descriptor identity format. The first writer and
+    # every reader witness must match it; a pathname alone is not a witness.
+    raw = f"linux:{os.major(device)}:{os.minor(device)}:{database['ino']}"
+    return {"schemaVersion": 1, "platform": "linux",
+            "databaseWitnessSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(), "entries": entries}
+
+
 def check_physical_original_store(store, capture):
-    """A source-only fast-fail guard, never an alternative to CAS Store::open.
+    """A runtime preflight, never an alternative to the held StoreReader guards.
 
     Archive extraction and copytree create new directory inodes. A managed CAS
     root deliberately refuses those copies; a subsequent, distinct real-service
     reader must use the original physical Store after every first writer exits.
     """
-    require(os.name == "posix", "Original physical-root readback requires a POSIX runner")
+    require(sys.platform == "linux", "Original physical-root readback requires a Linux runner")
+    require(capture["manifest"].get("readOnlyHandoff") is True and isinstance(capture.get("readOnlyHandoff"), dict)
+            and capture["readOnlyHandoff"].get("status") == "VERIFIED",
+            "Original physical readback requires the verified explicit writer read-only handoff")
     require(store.is_dir() and not store.is_symlink(), "Original physical Store is missing or redirected")
     require(str(store.resolve()) == capture["manifest"].get("sourceDirectory"),
             "Physical Store is not the exactly captured original source directory")
@@ -635,7 +784,15 @@ def check_physical_original_store(store, capture):
     require(anchor.get("canonical_root") == str(blobs.resolve())
             and anchor.get("control") == str(control.resolve()),
             "Original CAS anchor paths do not name this physical runner's Store")
-    return digest_json(tree_entries(store))
+    physical = capture["manifest"].get("physicalIdentity")
+    require(isinstance(physical, dict), "Original physical identity was not captured by the first writer")
+    observed = physical_store_identity(store, capture["manifest"]["databaseRelativePath"])
+    # This reference is proven by the original handoff/closure transcript, not
+    # inferred from filesystem metadata or attributed to the reader process.
+    observed["writer"] = capture["readOnlyHandoff"]["writer"]
+    same_json(physical, observed, "$.original physical identity")
+    return {"inventorySha256": digest_json(tree_entries(store)), "physicalIdentity": observed,
+            "physicalIdentitySha256": physical_identity_sha256(observed)}
 
 
 def read_fresh_copy(binary, expected_hash, case_root, capture, destination, timeout, observation=None, checkpoint=None,
@@ -649,7 +806,10 @@ def read_fresh_copy(binary, expected_hash, case_root, capture, destination, time
         destination.mkdir(parents=True)
         if original_store is not None:
             store = original_store
-            result["physicalSourceBeforeSha256"] = check_physical_original_store(store, capture)
+            physical = check_physical_original_store(store, capture)
+            result.update(physicalSourceBeforeSha256=physical["inventorySha256"],
+                          physicalIdentityBefore=physical["physicalIdentity"],
+                          physicalIdentityBeforeSha256=physical["physicalIdentitySha256"])
         else:
             shutil.copytree(case_root / "closed-store" / "store", store, copy_function=shutil.copy2)
             same_json(capture["manifest"]["entries"], tree_entries(store), "$.freshCopy")
@@ -665,12 +825,23 @@ def read_fresh_copy(binary, expected_hash, case_root, capture, destination, time
         if checkpoint:
             checkpoint("transport_observed", result)
         bootstrap = reader.rpc("bootstrap", {"project_id": None})
-        require(bootstrap.get("test_transport") == "service-test-jsonl" and bootstrap.get("fixture", {}).get("label") == "synthetic_test_fixture",
-                "Binary did not identify the observed real-service test transport")
-        require(bootstrap.get("desktop_invoke_fixture") is True and bootstrap.get("native_sdk", {}).get("mode") == "tauri",
-                "Binary did not identify the requested desktop invoke fixture")
+        require(bootstrap.get("test_transport") == "service-test-jsonl" and bootstrap.get("read_only") is True,
+                "Binary did not identify the real read-only service transport")
+        result["readOnly"] = True
+
+        def observe_database_witness(stage):
+            if original_store is None:
+                return
+            witness = reader.rpc("opened_store_identity_witness", None)
+            result["databaseIdentityWitnesses"][stage] = witness
+            expected = capture["manifest"]["physicalIdentity"]["databaseWitnessSha256"]
+            require(isinstance(witness, str) and re.fullmatch(r"[0-9a-f]{64}", witness) is not None
+                    and witness == expected, "Original SQLite held-descriptor witness differs at " + stage)
+
+        observe_database_witness("beforeReopen")
         identity = oracle["project"]["id"]
         reopened = reader.rpc("reopen", {"project_id": identity})
+        observe_database_witness("afterReopen")
         same_json(oracle["project"], reopened, "$.reopenedProject")
         project = reader.rpc("get_project", {"project_id": identity})
         same_json(oracle["project"], project, "$.project")
@@ -687,6 +858,7 @@ def read_fresh_copy(binary, expected_hash, case_root, capture, destination, time
         require(cursor == project["revision"], "Readback journal is truncated before Project revision")
         same_json(oracle["journal"], journal, "$.journal")
         same_json(project, reader.rpc("get_project", {"project_id": identity}), "$.projectAfterHistory")
+        observe_database_witness("afterReadback")
         observed = {"schemaVersion": 1, "observedAt": now(), "project": project, "journal": journal,
                     "journalAfterRevisionExclusive": 0, "journalComplete": True}
         result.update(projectId=identity, generation=project.get("generation"), revision=project["revision"], journalEntries=len(journal),
@@ -714,9 +886,13 @@ def read_fresh_copy(binary, expected_hash, case_root, capture, destination, time
             require(sha256(binary) == expected_hash, "Service binary changed during readback")
             same_json(capture["manifest"]["entries"], tree_entries(case_root / "closed-store" / "store"), "$.unopenedSnapshotAfterReadback")
             if original_store is not None:
-                result["physicalSourceAfterSha256"] = check_physical_original_store(store, capture)
-                require(result["physicalSourceBeforeSha256"] == result["physicalSourceAfterSha256"],
-                        "Physical Store inventory changed during independent readback")
+                physical = check_physical_original_store(store, capture)
+                result.update(physicalSourceAfterSha256=physical["inventorySha256"],
+                              physicalIdentityAfter=physical["physicalIdentity"],
+                              physicalIdentityAfterSha256=physical["physicalIdentitySha256"])
+                require(result["physicalSourceBeforeSha256"] == result["physicalSourceAfterSha256"]
+                        and result["physicalIdentityBeforeSha256"] == result["physicalIdentityAfterSha256"],
+                        "Physical Store inventory or physical identity changed during independent readback")
         except BaseException as error:
             result["errors"].append(type(error).__name__ + ": " + str(error))
         result["finishedAt"] = now()
@@ -853,6 +1029,11 @@ def main(observation=None):
                 item.update(captureStatus="VERIFIED", treeSha256=capture["treeSha256"], evidenceFile=capture["evidenceFile"],
                             originalBinaryPaths=capture["originalBinaryPaths"], projectId=capture["oracle"]["project"]["id"],
                             revision=capture["oracle"]["project"]["revision"])
+                physical = capture["manifest"].get("physicalIdentity")
+                if isinstance(physical, dict):
+                    item.update(originalPhysicalIdentitySha256=physical_identity_sha256(physical),
+                                originalDatabaseWitnessSha256=physical.get("databaseWitnessSha256"),
+                                originalReadOnlyHandoff=capture["readOnlyHandoff"])
                 destination = output / "readback-copies" / (str(index).zfill(3) + "-" + hashlib.sha256(case_id.encode()).hexdigest()[:12])
                 prepared.append((item, case_root, capture, destination))
             except BaseException as error:
