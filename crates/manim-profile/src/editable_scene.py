@@ -62,6 +62,12 @@ class MotionwrightPlainText(Text):
     wrap a long line. This fixed backend uses the existing Manim/Pango methods
     with pango_width=-1 and a bounded SVG surface; no project code is invoked.
     """
+    def __init__(self, text, *, color, fill_opacity, **kwargs):
+        super().__init__(text, color=color, fill_opacity=fill_opacity, **kwargs)
+        # Text0.21 colors the SVG glyphs but leaves its container fill unset.
+        # Apply the native style to both so the getters describe the same fill.
+        self.set_fill(color=color, opacity=fill_opacity, family=True)
+
     def _text2svg(self, color):
         directory = config.get_dir("text_dir")
         directory.mkdir(parents=True, exist_ok=True)
