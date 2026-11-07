@@ -3455,9 +3455,9 @@ jobs:
             --original-source "$control/intake/original_c_source" \
             --repaired-source "$control/intake/repaired_c_source" \
             --compiled-module "$control/intake/compiled_module" \
-            --compiled-module-sha256 e0d32f13536d568762be4b426edf9dce11602a3ec0eea4bc334d5346316b515a \
+            --compiled-module-sha256 4e9b6d9ec6efe97807ba9c53bfdca8299e60e5582c40eca355f866a058ed7eac \
             --compiler-receipt "$control/intake/compiler_receipt_path" \
-            --compiler-receipt-sha256 cefa3ed54d02eaf894245248c07a39439489566d56a94b7f356748eba63cb2e8 \
+            --compiler-receipt-sha256 e16d8d73cdb780cd8fb26bc2b43c2a27db0d8972050c508c9d6432e67b5018a8 \
             --installed-original-sha256 "$original_sha" --admit \
             --new-runner-private-evidence "$installed" \
             > "$control/logs/admission.stdout" 2> "$control/logs/admission.stderr"
