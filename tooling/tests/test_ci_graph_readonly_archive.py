@@ -373,6 +373,40 @@ class InertOriginals:
             "exit": {"process_id": owner_pid, "code": 0, "signal": None},
             "raw": parent_raw,
         })
+        # Inert retained originals are only source-oracle test inputs. They
+        # must match the exact private GraphCaseFactoryCore.request protocol
+        # published before the genuine owner stdin write.
+        controls = [
+            {"op": "new-client", "id": self.final["client_roster"][0]["id"]},
+            {"op": "quiesce", "id": "release-graph-flow"},
+            {"op": "close", "id": "close-graph-flow", "service_barrier": {
+                "closed": True, "receipt_path": closure_ref["path"],
+                "receipt_sha256": closure_ref["sha256"]}},
+        ]
+        if self.mode == "control_wrong_client_id":
+            controls[0]["id"] = "different-client-request"
+        if self.mode == "control_duplicate_request_id":
+            controls[1]["id"] = controls[0]["id"]
+        if self.mode == "control_wrong_release_id":
+            controls[1]["id"] = "release-other-case"
+        if self.mode == "control_wrong_barrier":
+            controls[2]["service_barrier"]["receipt_sha256"] = "0" * 64
+        if self.mode == "control_extra_field":
+            controls[0]["approved"] = True
+        if self.mode == "control_swapped_order":
+            controls[0], controls[1] = controls[1], controls[0]
+        for index, value in enumerate(controls):
+            if self.mode == "control_missing_new_client" and index == 0:
+                continue
+            if self.mode == "control_missing_quiesce" and index == 1:
+                continue
+            raw = json.dumps(value, separators=(",", ":")).encode()
+            if self.mode == "control_missing_newline" and index == 0:
+                self.put("graph-flow/control-0.original.jsonl", raw)
+            elif self.mode == "control_repeated_raw_line" and index == 0:
+                self.put("graph-flow/control-0.original.jsonl", (raw + b"\n") * 2)
+            else:
+                self.put(f"graph-flow/control-{index}.original.jsonl", raw + b"\n")
         intent = {"schema": "motionwright.graph.same-original-store-reopen/1", "source": self.source,
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
                          self.physical["path"], *([] if self.mode == "writable_argv" else ["--read-only"])],
@@ -534,6 +568,19 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                      "parent_missing_client", "parent_duplicate_client",
                      "parent_client_wrong_id", "parent_client_wrong_connection",
                      "parent_client_after_release"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_original_owner_control_stdin_requests_are_source_bound_one_shot(self):
+        # The parent logs an original control line BEFORE each private owner
+        # stdin effect. The R74 archive must not infer these requests from
+        # an apparently valid owner stdout or a forged final JSON receipt.
+        for mode in ("control_missing_new_client", "control_missing_quiesce",
+                     "control_wrong_client_id", "control_duplicate_request_id",
+                     "control_wrong_release_id", "control_wrong_barrier",
+                     "control_extra_field", "control_swapped_order",
+                     "control_missing_newline", "control_repeated_raw_line"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

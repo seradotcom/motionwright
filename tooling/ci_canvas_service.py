@@ -9665,6 +9665,32 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
     }
     require(matches[0][1] == original_event,
             "Graph original source-bound owner release event differs")
+    # The live GraphCaseFactoryCore retains exactly one source-owned stdin
+    # request JSONL *before* each Native owner effect. The stdout acknowledgments
+    # alone cannot prove these one-shot requests came from its real parent.
+    controls = [{"op": "new-client", "id": row["id"]} for row in clients]
+    controls += [
+        {"op": "quiesce", "id": "release-" + case_root.name},
+        {"op": "close", "id": "close-" + case_root.name, "service_barrier": {
+            "closed": True, "receipt_path": final["service_closure"]["path"],
+            "receipt_sha256": final["service_closure"]["sha256"],
+        }},
+    ]
+    request_ids = [row["id"] for row in controls]
+    require(all(type(value) is str and bool(value) for value in request_ids)
+            and len(set(request_ids)) == len(request_ids),
+            "Graph source-owned original stdin request IDs reused")
+    for index, required_control in enumerate(controls):
+        request_original = graph_ref(case_root / f"control-{index}.original.jsonl")
+        require(type(request_original) is dict and set(request_original) ==
+                {"path", "sha256", "size_bytes"},
+                "Graph source-owned original stdin file ref missing")
+        raw_control = retained(request_original, 1024)
+        require(raw_control.endswith(b"\n") and raw_control.count(b"\n") == 1,
+                "Graph source-owned original stdin control not exactly one line")
+        actual_control = graph_json(raw_control)
+        require(type(actual_control) is dict and actual_control == required_control,
+                "Graph original private owner request was absent, changed or reordered")
 
     # The provider release does not close the daemon. Only the later actual
     # Service barrier permits the final owner lifecycle and cohort to close.
