@@ -1,5 +1,6 @@
 """Real temporary FS/TAR/zlib controls; these inert fixtures are not Native."""
 from contextlib import ExitStack, contextmanager
+import copy
 import hashlib
 import importlib.util
 import io
@@ -186,6 +187,97 @@ class ReuseInputTests(unittest.TestCase):
             self.assertEqual(record["status"], "UNKNOWN_NO_RETRY")
             self.assertTrue(source.exists() and (intake / "graph52-build-inputs.original.tar").exists())
             self.assertFalse((intake / "release-terminal.original.json").exists())
+
+
+class CurrentLoaderEnvironmentTests(unittest.TestCase):
+    # The prefix and inherited library value are retained in run42403366783's
+    # original job log. These are pure G0 controls, not a Linux ABI observation.
+    PREFIX = "/opt/hostedtoolcache/Python/3.13.18/x64"
+    PYTHON = PREFIX + "/bin/python3.13"
+
+    def environment(self):
+        return {"pythonLocation": self.PREFIX, "LD_LIBRARY_PATH": self.PREFIX + "/lib",
+                "SEMWRIGHT_TEST_PYTHON": "/usr/bin/python3", "PATH": "/usr/bin:/bin",
+                "MOTIONWRIGHT_GRAPH_PRODUCER_RUN": "1"}
+
+    def prepared(self):
+        return reuse.prepare_abi_environment(self.environment(), self.PYTHON, self.PREFIX)
+
+    def test_observed_control_library_is_removed_only_from_probe_copy(self):
+        inherited = self.environment(); original = copy.deepcopy(inherited)
+        clean, record = reuse.prepare_abi_environment(inherited, self.PYTHON, self.PREFIX)
+        self.assertEqual(inherited, original)
+        self.assertEqual(record["before"]["LD_LIBRARY_PATH"], self.PREFIX + "/lib")
+        self.assertEqual(record["removed_keys"], ["LD_LIBRARY_PATH"])
+        self.assertEqual(record["after"], dict.fromkeys(reuse.ABI_LOADER_ENVIRONMENT_KEYS))
+        self.assertTrue(all(name not in clean for name in reuse.ABI_LOADER_ENVIRONMENT_KEYS))
+        self.assertEqual(clean, {key: value for key, value in original.items() if key != "LD_LIBRARY_PATH"})
+        self.assertEqual(reuse.validate_abi_environment(record), record)
+
+    def test_empty_loader_environment_preserves_absence_and_empty_originals(self):
+        for mode in ("absent", "empty"):
+            with self.subTest(mode=mode):
+                inherited = self.environment(); inherited.pop("LD_LIBRARY_PATH")
+                if mode == "empty":
+                    inherited.update(dict.fromkeys(reuse.ABI_LOADER_ENVIRONMENT_KEYS, ""))
+                clean, record = reuse.prepare_abi_environment(inherited, self.PYTHON, self.PREFIX)
+                self.assertEqual(record["removed_keys"], [] if mode == "absent" else list(reuse.ABI_LOADER_ENVIRONMENT_KEYS))
+                self.assertEqual(reuse.validate_abi_environment(record), record)
+                self.assertTrue(all(name not in clean for name in reuse.ABI_LOADER_ENVIRONMENT_KEYS))
+
+    def test_other_directories_overrides_and_interpreter_claims_fail_closed(self):
+        for key in reuse.ABI_LOADER_ENVIRONMENT_KEYS[:-1]:
+            with self.subTest(key=key), self.assertRaises(reuse.Rejected):
+                reuse.prepare_abi_environment({**self.environment(), key: "/unadmitted/library.so"}, self.PYTHON, self.PREFIX)
+        for value in ("/other/lib", self.PREFIX + "/lib:/other/lib", self.PREFIX + "/lib:", False, None):
+            with self.subTest(library=value), self.assertRaises(reuse.Rejected):
+                reuse.prepare_abi_environment({**self.environment(), "LD_LIBRARY_PATH": value}, self.PYTHON, self.PREFIX)
+        for python, prefix, location in (("/usr/bin/python3", self.PREFIX, self.PREFIX),
+                (self.PYTHON, "/usr", self.PREFIX), (self.PYTHON, self.PREFIX, "/other"),
+                (self.PREFIX + "/bin/../../python3.13", self.PREFIX, self.PREFIX),
+                (self.PYTHON, self.PREFIX, None)):
+            with self.subTest(python=python, prefix=prefix, location=location), self.assertRaises(reuse.Rejected):
+                reuse.prepare_abi_environment({**self.environment(), "pythonLocation": location}, python, prefix)
+
+    def test_provenance_and_scope_tampering_are_rejected(self):
+        _, record = self.prepared()
+        mutations = [
+            lambda x: x["before"].__setitem__("LD_LIBRARY_PATH", "/other/lib"),
+            lambda x: x["after"].__setitem__("LD_LIBRARY_PATH", ""),
+            lambda x: x.__setitem__("removed_keys", []),
+            lambda x: x.__setitem__("scope", "NATIVE_RUNTIME"),
+            lambda x: x.__setitem__("new_builds", False),
+            lambda x: x.__setitem__("control_python", "/usr/bin/python3"),
+            lambda x: x["before"].pop("LD_AUDIT"),
+        ]
+        for mutation in mutations:
+            changed = copy.deepcopy(record); mutation(changed)
+            with self.subTest(changed=changed), self.assertRaises(reuse.Rejected):
+                reuse.validate_abi_environment(changed)
+
+    def test_each_process_must_record_all_four_absent_loader_variables(self):
+        _, record = self.prepared()
+        observed = dict.fromkeys(reuse.ABI_LOADER_ENVIRONMENT_KEYS)
+        reuse.validate_abi_process_environment({"selected_environment": observed}, record)
+        for key in reuse.ABI_LOADER_ENVIRONMENT_KEYS:
+            for value in ("missing", "", False, self.PREFIX + "/lib"):
+                changed = dict(observed)
+                if value == "missing": changed.pop(key)
+                else: changed[key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(reuse.Rejected):
+                    reuse.validate_abi_process_environment({"selected_environment": changed}, record)
+
+    def test_writer_selection_is_limited_to_the_eight_current_abi_probes(self):
+        ci_path = PATH.parent / "ci_canvas_service.py"
+        spec = importlib.util.spec_from_file_location("graph_current_abi_writer_fixture", ci_path)
+        ci = importlib.util.module_from_spec(spec); spec.loader.exec_module(ci)
+        self.assertEqual(set(ci.GRAPH_RUST_ROLES), set(reuse.ROLES))
+        for role in reuse.ROLES:
+            self.assertEqual(ci.graph_current_abi_environment_keys("graph-current-abi-" + role),
+                             reuse.ABI_LOADER_ENVIRONMENT_KEYS)
+        for label in ("graph-runtime-producer", "graph-cases", "graph-current-abi-unknown",
+                      "graph-custody-dependencies", "graph-current-abi-native_graph_session-extra"):
+            self.assertEqual(ci.graph_current_abi_environment_keys(label), ())
 
 
 if __name__ == "__main__":

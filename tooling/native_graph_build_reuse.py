@@ -484,6 +484,68 @@ def copy_builds(origin_root, index, source, comparison, producer, target_roots, 
     return binaries, builds, contracts, receipt
 
 
+ABI_LOADER_ENVIRONMENT_KEYS = ("LD_PRELOAD", "LD_AUDIT", "LD_DEBUG", "LD_LIBRARY_PATH")
+
+
+def prepare_abi_environment(environment, control_python, control_prefix):
+    """Remove only the control interpreter's exact toolcache library directory.
+
+The caller supplies resolved sys.executable/sys.base_prefix from its live
+controller. This copy is used only for current system-loader --list probes.
+The inherited runtime/Native environment is not mutated.
+"""
+    require(type(control_python) is str and type(control_prefix) is str,
+            "reuse_ABI_control_interpreter_types")
+    python, prefix = PurePosixPath(control_python), PurePosixPath(control_prefix)
+    require(python.is_absolute() and prefix.is_absolute()
+            and str(python) == control_python and str(prefix) == control_prefix
+            and prefix.name == "x64" and prefix.parent.parent == PurePosixPath("/opt/hostedtoolcache/Python")
+            and re.fullmatch(r"3\.13\.[0-9]+", prefix.parent.name) is not None
+            and python.parent == prefix / "bin" and python.name in ("python", "python3", "python3.13")
+            and environment.get("pythonLocation") == control_prefix,
+            "reuse_ABI_current_toolcache_interpreter")
+    require(all(name not in environment or type(environment[name]) is str
+                for name in ABI_LOADER_ENVIRONMENT_KEYS), "reuse_ABI_loader_environment_types")
+    before = {name: environment.get(name) for name in ABI_LOADER_ENVIRONMENT_KEYS}
+    require(all(before[name] in (None, "") for name in ABI_LOADER_ENVIRONMENT_KEYS[:-1]),
+            "reuse_ABI_loader_override")
+    require(before["LD_LIBRARY_PATH"] in (None, "", str(prefix / "lib")),
+            "reuse_ABI_library_directory_not_current_control")
+    clean = dict(environment)
+    removed = [name for name in ABI_LOADER_ENVIRONMENT_KEYS if name in clean]
+    for name in ABI_LOADER_ENVIRONMENT_KEYS:
+        clean.pop(name, None)
+    record = {"schema": "motionwright.graph.current-loader-environment/1",
+        "scope": "CURRENT_SYSTEM_LOADER_PROBES_ONLY", "control_python": control_python,
+        "control_prefix": control_prefix, "python_location": environment.get("pythonLocation"),
+        "before": before, "after": {name: clean.get(name) for name in ABI_LOADER_ENVIRONMENT_KEYS},
+        "removed_keys": removed, "parent_runtime_environment_changed": False,
+        "new_builds": 0, "native_calls": 0, "owner_authority": False}
+    return clean, record
+
+
+def validate_abi_environment(record):
+    require(type(record) is dict and type(record.get("before")) is dict
+            and set(record["before"]) == set(ABI_LOADER_ENVIRONMENT_KEYS),
+            "reuse_ABI_environment_original_fields")
+    before = record["before"]
+    require(all(value is None or type(value) is str for value in before.values()),
+            "reuse_ABI_environment_original_types")
+    environment = {name: value for name, value in before.items() if value is not None}
+    environment["pythonLocation"] = record.get("python_location")
+    _, expected = prepare_abi_environment(environment, record.get("control_python"), record.get("control_prefix"))
+    require(encoded(record) == encoded(expected), "reuse_ABI_environment_original_changed")
+    return expected
+
+
+def validate_abi_process_environment(command, environment):
+    validate_abi_environment(environment)
+    selected = command.get("selected_environment")
+    require(type(selected) is dict
+            and all(name in selected and selected[name] is None for name in ABI_LOADER_ENVIRONMENT_KEYS),
+            "reuse_ABI_process_loader_environment")
+
+
 def validate_record(record, current_index, original):
     """Pure join for the live controller and independent bounded reader.
 
@@ -553,19 +615,21 @@ capsule as a current producer index or adopts its runtime/owner authority.
             and release["retained_originals_preserved"] is True, "reuse_exact_temporary_release")
     abi = strict(original(record["abi_observation"], MAX_METADATA))
     require(set(abi) == {"schema", "current", "binaries", "interpreter", "loader", "loader_retained",
-        "processes", "new_builds", "native_calls", "owner_authority"}
-            and abi["schema"] == "motionwright.graph.reused-elf-current-loader-observation/1"
+        "processes", "loader_environment", "new_builds", "native_calls", "owner_authority"}
+            and abi["schema"] == "motionwright.graph.reused-elf-current-loader-observation/2"
             and abi["current"] == current and abi["binaries"] == record["binaries"]
             and abi["interpreter"] == "/lib64/ld-linux-x86-64.so.2"
             and set(abi["processes"]) == set(ROLES) and type(abi["new_builds"]) is int and abi["new_builds"] == 0
             and type(abi["native_calls"]) is int and abi["native_calls"] == 0 and abi["owner_authority"] is False,
             "reuse_current_ABI_binding")
+    validate_abi_environment(abi["loader_environment"])
     require({key: abi["loader"][key] for key in ("size_bytes", "sha256")} ==
             {key: abi["loader_retained"][key] for key in ("size_bytes", "sha256")}, "reuse_loader_original")
     original(abi["loader_retained"], 4 * MIB)
     for role, refs in abi["processes"].items():
         require(set(refs) == {"command", "stdout", "stderr"}, "reuse_ABI_process_refs")
         command = strict(original(refs["command"], MIB))
+        validate_abi_process_environment(command, abi["loader_environment"])
         require(command["argv"] == [abi["loader"]["path"], "--list", record["binaries"][role]["path"]]
                 and command["cwd"] == current["repository_root"] and command["exit_code"] == 0
                 and command["process_boundary"] == "OWNED_POSIX_SESSION_GROUP"
