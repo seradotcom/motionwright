@@ -37,3 +37,24 @@ test('Graph reader cannot claim handoff without real producer, EOF and original 
   assert.match(readback, /bootstrap\?\.read_only === true/);
   assert.match(readback, /REOPEN_HANDOFF_REQUEST_NOT_IN_WRITER_RAW/);
 });
+
+test('Graph Native cohort must close before writer WAL-to-DELETE handoff', () => {
+  const handoff = fs.readFileSync(
+    new URL('../../tests/support/graph-owner/same_store_reopen.mjs', import.meta.url), 'utf8');
+  const factory = fs.readFileSync(
+    new URL('../../tests/support/graph-owner/factory.mjs', import.meta.url), 'utf8');
+  const owner = fs.readFileSync(
+    new URL('../../../../tooling/native_graph_browser_owner.py', import.meta.url), 'utf8');
+  const nativeStop = handoff.indexOf('await factory.quiesceNativeOwner()');
+  const writerSwitch = handoff.indexOf("command: 'prepare_read_only_handoff', args: null");
+  assert.ok(nativeStop > 0 && writerSwitch > nativeStop);
+  assert.match(handoff, /native_owner_quiescence: nativeQuiescence\.ref/);
+  assert.match(handoff, /REOPEN_HANDOFF_NATIVE_OWNER_NOT_QUIESCENT/);
+  assert.match(factory, /NATIVE_QUIESCED/);
+  assert.match(factory, /ownerClose\.status === 'CLOSED' && cohort\.status === 'PASS'/);
+  assert.match(factory, /observed\.processes\.length === 1/);
+  assert.match(owner, /def graph_quiesce_v6\(self, \*, request_id\):/);
+  assert.match(owner, /self\.lifecycle\.close\(reason="explicit-close"\)/);
+  assert.match(owner, /cohort, absent = close_complete_cohort\(\)/);
+  assert.match(owner, /"NATIVE_QUIESCENCE_MISSING"/);
+});

@@ -9455,6 +9455,48 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             and preseal.get("binary") == index["binaries"]["native_graph_session"],
             "Graph original Native writer launch/source")
 
+    # The Native provider owns a *separate* SQLite connection. The original
+    # writer may switch WAL to DELETE only after this source-owned provider
+    # cohort actually closes. A producer-supplied QUIESCED flag is insufficient.
+    native_ref = handoff.get("native_owner_quiescence")
+    require(type(native_ref) is dict and set(native_ref) == {"path", "sha256", "size_bytes"},
+            "Graph Native owner quiescence original missing")
+    native = original(native_ref, 65536)
+    require(native.get("schema") == "motionwright.graph-native-owner-quiescence/1"
+            and native.get("source") == source
+            and type(native.get("owner_pid")) is int and native["owner_pid"] > 1
+            and native["owner_pid"] != writer_pid
+            and all(native.get(key) is True for key in (
+                "source_verified_before_native_close", "native_lifecycle_closed",
+                "native_owner_streams_eof", "owner_cohort_absent"))
+            and native.get("automatic_retry") is False
+            and native.get("graph_acceptance") is False,
+            "Graph actual Native provider quiescence/source/owner identity")
+    for observation in (native.get("original_store"), native.get("current_store")):
+        require(type(observation) is dict and observation.get("path") == physical["path"]
+                and type(observation.get("device")) is int
+                and type(observation.get("inode")) is int
+                and str(observation["device"]) == physical["device"]
+                and str(observation["inode"]) == physical["inode"],
+                "Graph quiesced provider no longer owns original physical SQLite")
+    native_lifecycle = original(native["owner_close_original"], GRAPH_BYTES)
+    native_cohort = original(native["cohort_original"], 4 * GRAPH_BYTES)
+    owner_final = original(final["owner_close"], 4 * GRAPH_BYTES)
+    cohort_tree = native_cohort.get("complete_empty_descendant_tree", {})
+    owner_processes = cohort_tree.get("processes", [])
+    require(native_lifecycle.get("status") == "CLOSED"
+            and native_cohort.get("status") == "PASS"
+            and cohort_tree.get("root_observed") is True
+            and cohort_tree.get("truncated") is False
+            and type(owner_processes) is list and len(owner_processes) == 1
+            and owner_processes[0].get("pid") == native["owner_pid"]
+            and owner_final.get("status") == "CLOSED"
+            and owner_final.get("owner_streams_eof") is True
+            and owner_final.get("source_validated_before_close") is True
+            and owner_final.get("lifecycle") == native_lifecycle
+            and owner_final.get("cohort") == native_cohort,
+            "Graph Native owner cohort did not close before writer read-only handoff")
+
     closure = original(closure_ref, 4 * GRAPH_BYTES)
     require(closure_ref == final["service_closure"] and closure.get("status") == "CLOSED"
             and closure.get("database_path") == physical["path"],

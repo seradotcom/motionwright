@@ -95,6 +95,40 @@ class InertOriginals:
                    "process_id": 303 if self.mode == "handoff_wrong_pid" else 101,
                    "context": context, "request_original": href, "response": writer_results[1],
                    "identity_request_original": iref, "identity_response": writer_results[2]}
+        owner_pid = 777
+        lifecycle = {"status": "CLOSED"}
+        cohort = {"status": "PASS", "complete_empty_descendant_tree": {
+            "root_observed": True, "truncated": False,
+            "processes": [{"pid": owner_pid}]}}
+        if self.mode == "native_quiescence_closure_unknown":
+            lifecycle["status"] = "UNKNOWN"
+        if self.mode == "native_quiescence_extra_cohort_child":
+            cohort["complete_empty_descendant_tree"]["processes"].append({"pid": 778})
+        native_close_ref = self.put("owner/native-close.original.json", lifecycle)
+        cohort_ref = self.put("owner/native-cohort.original.json", cohort)
+        native_original = {"path": self.physical["path"],
+                           "device": int(self.physical["device"]),
+                           "inode": int(self.physical["inode"])}
+        native_current = dict(native_original)
+        if self.mode == "native_quiescence_foreign_store":
+            native_current["inode"] += 1
+        quiescence = {
+            "schema": "motionwright.graph-native-owner-quiescence/1",
+            "source": {"sha": "b" * 40} if self.mode == "native_quiescence_wrong_source" else self.source,
+            "owner_pid": owner_pid + (1 if self.mode == "native_quiescence_wrong_pid" else 0),
+            "source_verified_before_native_close": True,
+            "native_lifecycle_closed": True, "native_owner_streams_eof": True,
+            "owner_cohort_absent": True,
+            "owner_close_original": native_close_ref, "cohort_original": cohort_ref,
+            "original_store": native_original, "current_store": native_current,
+            "automatic_retry": False, "graph_acceptance": False}
+        quiescence_ref = self.put("owner/native-quiescence.original.json", quiescence)
+        self.owner_complete = self.put("owner/owner-complete-close.original.json", {
+            "lifecycle": lifecycle, "cohort": cohort,
+            "status": "CLOSED" if lifecycle["status"] == "CLOSED" else "UNKNOWN",
+            "source_validated_before_close": True, "owner_streams_eof": True})
+        if self.mode != "native_quiescence_missing":
+            handoff["native_owner_quiescence"] = quiescence_ref
         handoff_ref = self.put("writer/handoff.original.json", handoff)
         closure = {"status": "CLOSED", "database_path": self.physical["path"],
                    "participants": [{"helper_id": context["helper_id"],
@@ -105,7 +139,8 @@ class InertOriginals:
         closure_ref = self.put("writer/closure.original.json", closure)
         self.final = {"service_closure": closure_ref,
                       "database_initial": self.put("writer/store-first.json", self.physical),
-                      "database_final": self.put("writer/store-last.json", self.physical)}
+                      "database_final": self.put("writer/store-last.json", self.physical),
+                      "owner_close": self.owner_complete}
         intent = {"schema": "motionwright.graph.same-original-store-reopen/1", "source": self.source,
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
                          self.physical["path"], *([] if self.mode == "writable_argv" else ["--read-only"])],
@@ -200,6 +235,15 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
     def test_changed_native_writer_pid_source_digest_or_raw_is_rejected(self):
         for mode in ("handoff_wrong_source", "handoff_wrong_digest", "handoff_wrong_pid",
                      "writer_raw_missing_handoff", "writer_raw_reordered", "writer_raw_duplicate"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_native_owner_must_quiesce_before_original_writer_handoff(self):
+        for mode in ("native_quiescence_missing", "native_quiescence_wrong_source",
+                     "native_quiescence_wrong_pid", "native_quiescence_foreign_store",
+                     "native_quiescence_closure_unknown",
+                     "native_quiescence_extra_cohort_child"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

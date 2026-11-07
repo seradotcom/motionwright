@@ -326,6 +326,7 @@ export class GraphCaseFactoryCore {
     this.declaredNativeLaunches = ticketPlan.plan.clients.length;
     this.clientAdmissionTail = Promise.resolve();
     this.sealed = false; this.owner = null; this.ownerStart = null; this.closePromise = null; this.closed = false;
+    this.nativeQuiescence = null; // None -> consumed -> original owner receipt; never replayed.
     this.metadata = new OriginalWriter(this.root, this.pool.counter(this.pool.reserve('parent-metadata', 'metadata', 4 * MiB, 128)));
     this.closureWriter = new OriginalWriter(this.root, this.pool.counter(this.pool.reserve('parent-close-and-errors', 'close', 4 * MiB, 64)));
     this.evidenceWriter = new OriginalWriter(this.root, this.pool.counter(this.pool.reserve('service-evidence-metadata', 'evidence', 16 * MiB, 128)));
@@ -615,7 +616,7 @@ export class GraphCaseFactoryCore {
     this.taint(error); for (const waiter of this.waiters?.values() ?? []) waiter.reject(error); this.waiters?.clear();
   }
   receive(message) {
-    need(message && ['READY','CLIENT','ERROR','FINAL_RECEIPT'].includes(message.event), 'OWNER_EVENT');
+    need(message && ['READY','CLIENT','NATIVE_QUIESCED','ERROR','FINAL_RECEIPT'].includes(message.event), 'OWNER_EVENT');
     if (message.event === 'ERROR') {
       need(ERROR_CODES.has(message.code), 'OWNER_ERROR_CODE');
       const stage = message.runtime_stage;
@@ -654,6 +655,68 @@ export class GraphCaseFactoryCore {
   }
   controlSequence = 0;
   sealClientAdmissions() { this.sealed = true; }
+
+  /** Release the real Semwright Native owner cohort while this exact Studio
+   * writer is still alive. A prior Ready/boolean cannot replace the original
+   * closed process tree, terminal streams and source-bound receipt. */
+  async quiesceNativeOwner() {
+    need(this.owner && this.ready && this.nativeQuiescence === null
+      && !this.closed && this.failures.length === 0,
+      'NATIVE_OWNER_QUIESCENCE_ONE_SHOT');
+    this.nativeQuiescence = false; // Consume the attempt before any owner action.
+    this.sealClientAdmissions();
+    const natives = [...this.launches.values()].filter(row => row.role === 'native');
+    this.sdkTickets.requireComplete(natives.map(row => row.context));
+    need(natives.length > 0 && natives.every(row => row.client),
+      'NATIVE_OWNER_QUIESCENCE_UNBOUND_CLIENT');
+    const id = 'quiesce-' + this.options.caseId;
+    const reply = await this.request({ op:'quiesce', id }, 'NATIVE_QUIESCED');
+    exact(reply, ['event','id','status','receipt_path','receipt_sha256','owner_pid','owner_cohort_absent'],
+      'NATIVE_OWNER_QUIESCENCE_FIELDS');
+    need(reply.event === 'NATIVE_QUIESCED' && reply.id === id && reply.status === 'QUIESCED'
+      && reply.owner_pid === this.ready.owner_pid && reply.owner_cohort_absent === true
+      && /^[0-9a-f]{64}$/.test(reply.receipt_sha256), 'NATIVE_OWNER_QUIESCENCE_RESPONSE');
+    inside(this.spec.paths.private_root, reply.receipt_path);
+    const original = fileRef(reply.receipt_path, null, 65536);
+    need(original.ref.sha256 === reply.receipt_sha256,
+      'NATIVE_OWNER_QUIESCENCE_ORIGINAL_DIGEST');
+    const proof = strictJSON(original.data, 65536);
+    same(proof.source, this.admission.source, 'NATIVE_OWNER_QUIESCENCE_SOURCE_CHANGED');
+    need(proof.schema === 'motionwright.graph-native-owner-quiescence/1'
+      && proof.owner_pid === this.ready.owner_pid
+      && proof.source_verified_before_native_close === true
+      && proof.native_lifecycle_closed === true
+      && proof.native_owner_streams_eof === true
+      && proof.owner_cohort_absent === true
+      && proof.automatic_retry === false && proof.graph_acceptance === false
+      && proof.original_store?.device === proof.current_store?.device
+      && proof.original_store?.inode === proof.current_store?.inode,
+      'NATIVE_OWNER_QUIESCENCE_NOT_PHYSICAL');
+    for (const ref of [proof.owner_close_original, proof.cohort_original]) {
+      need(ref && typeof ref.path === 'string', 'NATIVE_OWNER_QUIESCENCE_ORIGINALS_MISSING');
+      inside(this.spec.paths.private_root, ref.path);
+    }
+    const ownerClose = strictJSON(matchRef(proof.owner_close_original.path,
+      proof.owner_close_original, 1024 * 1024).data);
+    const cohort = strictJSON(matchRef(proof.cohort_original.path,
+      proof.cohort_original, 4 * 1024 * 1024).data);
+    const observed = cohort.complete_empty_descendant_tree;
+    need(ownerClose.status === 'CLOSED' && cohort.status === 'PASS'
+      && observed?.root_observed === true && observed?.truncated === false
+      && Array.isArray(observed.processes) && observed.processes.length === 1
+      && observed.processes[0]?.pid === this.ready.owner_pid,
+      'NATIVE_OWNER_QUIESCENCE_DESCENDANTS_REMAIN');
+    const result = Object.freeze({
+      ref: Object.freeze({ ...original.ref }), response: Object.freeze({ ...reply }),
+    });
+    this.nativeQuiescence = result;
+    this.metadata.json(path.join(this.root, 'native-owner-quiescence-parent.original.json'), {
+      source: this.admission.source, owner_pid:reply.owner_pid,
+      original:result.ref, raw_response:reply, automatic_retry:false, gate_credit:false,
+    });
+    return result;
+  }
+
   expectedServices() {
     return new Map([...this.helpers].map(([id, value]) => [id, { binaryPath: value.binaryPath, launches: value.launches.map(item => ({ pid: item.pid, rawComplete: item.rawComplete, exit:item.exit })) }]));
   }

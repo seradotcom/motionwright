@@ -1033,6 +1033,9 @@ class GraphBrowserOwner:
         self.clients = []
         self.client_ledger = ClientReservationLedger(max_clients=_OWNER_SPEC["limits"]["max_clients"])
         self.closed = False
+        # A one-way transition: the Native owner must release its SQLite peer
+        # before the original StudioService writer changes WAL to DELETE.
+        self.native_quiescence = None
         runtime_stage("PRIVATE_PROFILE")
         self.paths = {name: private_directory(lifecycle.evidence / name)
                       for name in ("home", "state", "config", "clients", "work", "native-output")}
@@ -1110,7 +1113,8 @@ class GraphBrowserOwner:
         return child.json_result(self.shared, timeout=_OWNER_SPEC["limits"]["cli_timeout_ms"] / 1000)
 
     def new_client(self, request_id):
-        require(not self.closed and len(self.clients) < MAX_CLIENTS, "owner-closed-or-client-budget")
+        require(not self.closed and self.native_quiescence is None
+                and len(self.clients) < MAX_CLIENTS, "owner-closed-or-client-budget")
         require(all(row["status"] == "CLIENT_READY_NOT_ACCEPTANCE" for row in self.clients),
                 "previous-client-outcome-unknown-no-retry")
         require(self.daemon.child.poll() is None, "owner-exited-before-new-client")
@@ -2097,6 +2101,74 @@ def close_complete_cohort():
     return _COHORT_RESULT
 
 
+def graph_quiesce_v6(self, *, request_id):
+    """Stop the actual Native provider cohort while the original writer lives.
+
+    No new client or replay is permitted after this attempt. The pre-handoff
+    proof is built from the original source, child terminal streams, and the
+    kernel-observed empty owner cohort, not a caller's Ready or close boolean.
+    """
+    require(not self.closed and self.native_quiescence is None,
+            "native-quiescence-one-shot")
+    self.native_quiescence = False  # Irrevocably consume the transition.
+    self.client_ledger.seal()
+    require(not self.client_ledger.failed
+            and all(row["status"] == "READY" for row in self.client_ledger.snapshot()),
+            "native-quiescence-client-unknown")
+    require(self.daemon.child.poll() is None, "native-quiescence-daemon-already-exited")
+    # This source check starts its last Git children BEFORE lifecycle closure.
+    observe_source_before_close(self)
+    receipt = self.lifecycle.close(reason="explicit-close")
+    cohort, absent = close_complete_cohort()
+    streams = all(child.closed and child.out.eof and child.err.eof
+                  and child.out.failure is None and child.err.failure is None
+                  for child in self.lifecycle.children)
+    daemon_terminal = self.daemon.terminal
+    require(receipt["status"] == "CLOSED" and absent and streams
+            and daemon_terminal is not None
+            and daemon_terminal["status"] in ("SUCCESS", "STOPPED")
+            and daemon_terminal["writers_closed_within_owned_group"] is True,
+            "native-quiescence-owner-processes-not-closed")
+    current = file_identity(self.database)
+    require((current["device"], current["inode"])
+            == (self.database_initial["device"], self.database_initial["inode"]),
+            "native-quiescence-store-replaced")
+    record = {"schema": "motionwright.graph-native-owner-quiescence/1",
+              "source": _OWNER_SPEC["source"], "owner_pid": os.getpid(),
+              "source_verified_before_native_close": True,
+              "native_lifecycle_closed": True, "native_owner_streams_eof": streams,
+              "owner_cohort_absent": absent,
+              "owner_close_original": original_ref(self.lifecycle.evidence / "owner-close.json"),
+              "cohort_original": original_ref(_COHORT_RECEIPT),
+              "original_store": self.database_initial, "current_store": current,
+              "automatic_retry": False, "graph_acceptance": False}
+    path = self.lifecycle.evidence / "owner-native-quiescence.original.json"
+    new_json(path, record)
+    ref = original_ref(path)
+    self.native_quiescence = {"ref": ref, "record": record}
+    return {"event": "NATIVE_QUIESCED", "id": request_id, "status": "QUIESCED",
+            "receipt_path": ref["path"], "receipt_sha256": ref["sha256"],
+            "owner_pid": os.getpid(), "owner_cohort_absent": True}
+
+
+def graph_native_final_lifecycle_receipt(self, *, reason, native_quiescence):
+    """Reuse the one actual Native cohort shutdown in the later Service final.
+
+    The earlier quiescence already completed the child lifecycle and created
+    its immutable close receipt. Closing that same lifecycle again would turn
+    the legitimate two-phase owner/SQLite handoff into an UNKNOWN final.
+    """
+    if type(native_quiescence) is not dict:
+        # This cleanup path cannot yield Graph approval: graph_close_v6 also
+        # records NATIVE_QUIESCENCE_MISSING. Preserve failure custody.
+        return self.lifecycle.close(reason=reason)
+    receipt = getattr(self.lifecycle, "receipt", None)
+    require(self.lifecycle.closed and type(receipt) is dict
+            and receipt.get("status") == "CLOSED" and reason == "explicit-close",
+            "native-quiescence-final-lifecycle-original-not-reusable")
+    return receipt
+
+
 def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="explicit-close"):
     require(not self.closed, "graph-owner-close-replay")
     self.client_ledger.seal()
@@ -2105,8 +2177,31 @@ def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="expli
         service_original = literal_service_barrier(self, service_barrier)
     except BaseException:
         errors.append("SERVICE_BARRIER_INVALID")
+    original_quiescence = getattr(self, "native_quiescence", None)
+    if type(original_quiescence) is not dict:
+        errors.append("NATIVE_QUIESCENCE_MISSING")
     try:
-        observe_source_before_close(self)
+        if type(original_quiescence) is dict:
+            held = original_quiescence["ref"]
+            raw, observed = read_original(held["path"], 65536,
+                                          expected_sha=held["sha256"],
+                                          root=self.lifecycle.evidence)
+            record = strict_json(raw)
+            require(observed == held and record == original_quiescence["record"]
+                    and record["schema"] == "motionwright.graph-native-owner-quiescence/1"
+                    and record["source"] == _OWNER_SPEC["source"]
+                    and record["owner_pid"] == os.getpid()
+                    and record["owner_cohort_absent"] is True
+                    and self.lifecycle.closed and self.lifecycle.receipt["status"] == "CLOSED",
+                    "native-quiescence-original-changed")
+            # The source and binary identities must also survive until final
+            # close. Git proof was captured before the one-way Native stop.
+            for item in (*self.source_inputs["sources"].values(),
+                         *self.source_inputs["binaries"].values()):
+                require(file_identity(item["path"]) == item,
+                        "source-original-changed-after-native-quiescence")
+        else:
+            observe_source_before_close(self)
         source_validated = True
     except BaseException:
         errors.append("SOURCE_MISMATCH")
@@ -2114,7 +2209,8 @@ def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="expli
     require_subquota().closing = True
     lifecycle_receipt, cohort, cohort_absent = None, None, False
     try:
-        lifecycle_receipt = self.lifecycle.close(reason=reason)
+        lifecycle_receipt = graph_native_final_lifecycle_receipt(
+            self, reason=reason, native_quiescence=original_quiescence)
     except BaseException:
         errors.append("OWNER_CLOSE_FAILED")
     finally:
@@ -2196,7 +2292,8 @@ def control_messages(stream, *, deadline):
             buffer = bytearray(rest)
             value = strict_json(line.decode("utf8", errors="strict"))
             require(type(value) is dict and type(value.get("id")) is str and 0 < len(value["id"]) <= 180, "control-message-id")
-            require((value.get("op") == "new-client" and set(value) == {"op", "id"})
+            require((value.get("op") in ("new-client", "quiesce")
+                     and set(value) == {"op", "id"})
                     or (value.get("op") == "close" and set(value) == {"op", "id", "service_barrier"}), "control-message-fields")
             yield value
         require(len(buffer) <= MAX_CONTROL_BYTES, "control-message-budget")
@@ -2204,7 +2301,7 @@ def control_messages(stream, *, deadline):
 
 
 def emit(value):
-    if value.get("event") in ("READY", "CLIENT") or value.get("status") == "CLOSED":
+    if value.get("event") in ("READY", "CLIENT", "NATIVE_QUIESCED") or value.get("status") == "CLOSED":
         raise_deferred_cancellation()
     raw = (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
     require(len(raw) <= 65536, "owner-public-protocol-bound")
@@ -2446,6 +2543,9 @@ def protocol_main():
                 except BaseException:
                     graph.client_ledger.unknown(request_id)
                     raise
+            elif request["op"] == "quiesce":
+                phase = "OWNER_CLOSE_FAILED"
+                emit(graph_quiesce_v6(graph, request_id=request_id))
             else:
                 phase = "OWNER_CLOSE_FAILED"
                 final = graph_close_v6(graph, service_barrier=request["service_barrier"], request_id=request_id)

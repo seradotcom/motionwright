@@ -196,6 +196,12 @@ export async function prepareOriginalReadOnlyHandoff(factory, service, presealRe
     need(witness === expectedLinuxHeldStoreDigest(before), 'READ_ONLY_HANDOFF_ORIGINAL_PAGER_MISMATCH');
     factory.sealClientAdmissions();
     need(factory.sealed === true, 'READ_ONLY_HANDOFF_CLIENT_ADMISSIONS_OPEN');
+    // The Native provider retains a separate SQLite connection until its
+    // genuine Semwright daemon/Host cohort closes. No journal switch is
+    // attempted while that competing connection remains alive.
+    const nativeQuiescence = await factory.quiesceNativeOwner();
+    need(nativeQuiescence?.ref && factory.nativeQuiescence === nativeQuiescence,
+      'READ_ONLY_HANDOFF_NATIVE_OWNER_NOT_CLOSED');
     const request = { id: 'graph-read-only-handoff-' + record.context.helper_id +
       '-' + record.context.launch_index, command: 'prepare_read_only_handoff', args: null };
     const requestRef = await factory.publish(path.join(factory.root,
@@ -236,6 +242,7 @@ export async function prepareOriginalReadOnlyHandoff(factory, service, presealRe
       request_original: requestRef, response,
       identity_request_original: identityRef, identity_response: identityResponse,
       held_store_digest: retained, phase: 'after-admissions-seal-before-writer-exit',
+      native_owner_quiescence: nativeQuiescence.ref,
       read_only_handoff: true, journal_mode: 'delete', synthetic_adapter_only: false,
       automatic_retry: false, gate_credit: false,
     };
@@ -349,6 +356,23 @@ function requireOriginalReadOnlyHandoff(factory, ref, preseal) {
     && observation.synthetic_adapter_only === false && factory.sealed === true,
     'REOPEN_WRITER_HANDOFF_NOT_VERIFIED');
   same(observation.writer_original, preseal.ref, 'REOPEN_HANDOFF_PRESEAL_CHANGED');
+  const quiescence = factory.nativeQuiescence;
+  need(quiescence?.ref && quiescence.response?.event === 'NATIVE_QUIESCED'
+    && quiescence.response.owner_cohort_absent === true,
+    'REOPEN_HANDOFF_NATIVE_QUIESCENCE_REQUIRED');
+  same(observation.native_owner_quiescence, quiescence.ref,
+    'REOPEN_HANDOFF_NATIVE_ORIGINAL_CHANGED');
+  const ownerOriginal = strictJSON(matchRef(quiescence.ref.path,
+    quiescence.ref, 65536).data);
+  need(ownerOriginal.schema === 'motionwright.graph-native-owner-quiescence/1'
+    && ownerOriginal.owner_cohort_absent === true
+    && ownerOriginal.native_lifecycle_closed === true
+    && ownerOriginal.source_verified_before_native_close === true
+    && ownerOriginal.automatic_retry === false
+    && ownerOriginal.graph_acceptance === false,
+    'REOPEN_HANDOFF_NATIVE_OWNER_NOT_QUIESCENT');
+  same(ownerOriginal.source, factory.admission.source,
+    'REOPEN_HANDOFF_NATIVE_OWNER_SOURCE_CHANGED');
   need(requireHeldStoreWitness(observation.held_store_digest,
     expectedLinuxHeldStoreDigest(factory.initializerPhysical)) === preseal.digest,
     'REOPEN_HANDOFF_HELD_STORE_CHANGED');
