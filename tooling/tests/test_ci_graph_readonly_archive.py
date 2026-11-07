@@ -76,6 +76,12 @@ class InertOriginals:
             original_writer_results = [writer_results[1], writer_results[0], writer_results[2]]
         elif self.mode == "writer_raw_duplicate":
             original_writer_results = [*writer_results, writer_results[1]]
+        elif self.mode == "writer_raw_extra_unmatched":
+            # Original writer emitted an additional successful response that
+            # the controlled request roster did not authorize.
+            original_writer_results = [*writer_results,
+                                       {"id": "unmatched-effect", "ok": True,
+                                        "result": {"mutation": "unreviewed"}}]
         else:
             original_writer_results = writer_results
         writer_lines = [json.dumps(x, separators=(",", ":")).encode() + b"\n"
@@ -504,6 +510,13 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
+
+    def test_unmatched_successful_writer_response_cannot_receive_custody_credit(self):
+        # The original writer may run only the three authenticated identity,
+        # read-only handoff and identity-readback requests; unrelated successful
+        # responses are NOT evidence for this same physical Store.
+        with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+            self.check("writer_raw_extra_unmatched")
 
     def test_provider_only_release_requires_original_same_session_broker_lease(self):
         for mode in ("release_missing", "release_old_quiescence_key",

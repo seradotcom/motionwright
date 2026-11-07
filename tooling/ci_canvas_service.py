@@ -9824,8 +9824,9 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
     preseal_request = one_request(preseal["request_original"], "opened_store_identity_witness")
     writer_requests = [preseal_request, one_request(handoff["request_original"], "prepare_read_only_handoff"),
                        one_request(handoff["identity_request_original"], "opened_store_identity_witness")]
-    require(len({row["id"] for row in writer_requests}) == 3,
-            "Graph distinct original writer RPCs")
+    require(len({row["id"] for row in writer_requests}) == 3
+            and set(writer_rows) == {row["id"] for row in writer_requests},
+            "Graph original writer stdout must contain exactly the three authorized RPC responses")
     writer_responses = [preseal["response"], handoff["response"], handoff["identity_response"]]
     require(list(writer_rows).index(writer_requests[0]["id"]) <
             list(writer_rows).index(writer_requests[1]["id"]) <
