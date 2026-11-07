@@ -18,9 +18,19 @@ import { requireCoherentProcNamespace, captureLinuxProcessIdentity, expectedLinu
 const attempted = new WeakSet();
 const presealAttempted = new WeakSet();
 const presealOriginals = new WeakMap();
+const handoffAttempted = new WeakSet();
+const originalReadOnlyHandoffs = new WeakMap();
 const MiB = 1024 * 1024;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
-const allowed = new Set(['get_project', 'project_history', 'opened_store_identity_witness']);
+const allowed = new Set(['bootstrap', 'get_project', 'project_history', 'opened_store_identity_witness']);
+
+/** Argument construction only; neither a source admission nor a reader launch. */
+export function independentGraphReaderArgv(executable, database) {
+  need(typeof executable === 'string' && path.isAbsolute(executable)
+    && typeof database === 'string' && path.isAbsolute(database),
+    'REOPEN_READER_ORIGINAL_ABSOLUTE_PATHS');
+  return Object.freeze([executable, '--database', database, '--read-only']);
+}
 
 function matchRef(file, expected, maximum) {
   const observed = stableRead(file, maximum);
@@ -161,6 +171,82 @@ async function capturePreseal(factory, service, expected, synthetic) {
   } catch (error) { factory?.taint?.(error); throw error; }
 }
 
+/** The actual final Native Service writer must finish its WAL journal on its
+ * own held SQLite connection before the independent, strictly read-only child
+ * starts. This is a one-shot original RPC, not a caller's boolean or copy. */
+export async function prepareOriginalReadOnlyHandoff(factory, service, presealRef) {
+  requireOriginalAdmission(factory);
+  need(factory && !handoffAttempted.has(factory), 'READ_ONLY_HANDOFF_NO_REPLAY');
+  handoffAttempted.add(factory);
+  try {
+    const captured = presealOriginals.get(factory);
+    need(captured && !captured.synthetic && isDeepStrictEqual(captured.ref, presealRef),
+      'READ_ONLY_HANDOFF_ORIGINAL_PRESEAL_REQUIRED');
+    const record = activeOriginalLaunch(factory, service);
+    need(record === captured.record && service.pending.size === 0,
+      'READ_ONLY_HANDOFF_ORIGINAL_WRITER_PENDING');
+    // Close all outstanding client admissions first. No new Native connection
+    // may be granted once the held writer starts the irreversible handoff.
+    await timeout(factory.clientAdmissionTail, factory.deadline, 'READ_ONLY_HANDOFF_CLIENT_DEADLINE');
+    need(activeOriginalLaunch(factory, service) === record && service.pending.size === 0,
+      'READ_ONLY_HANDOFF_LAUNCH_CHANGED');
+    const before = physical(factory.options.databasePath);
+    same(before, factory.initializerPhysical, 'READ_ONLY_HANDOFF_NOT_ORIGINAL_STORE');
+    const witness = captured.observation.held_store_digest;
+    need(witness === expectedLinuxHeldStoreDigest(before), 'READ_ONLY_HANDOFF_ORIGINAL_PAGER_MISMATCH');
+    factory.sealClientAdmissions();
+    need(factory.sealed === true, 'READ_ONLY_HANDOFF_CLIENT_ADMISSIONS_OPEN');
+    const request = { id: 'graph-read-only-handoff-' + record.context.helper_id +
+      '-' + record.context.launch_index, command: 'prepare_read_only_handoff', args: null };
+    const requestRef = await factory.publish(path.join(factory.root,
+      'original-service-read-only-handoff-request.original.jsonl'),
+      Buffer.from(JSON.stringify(request) + '\n'));
+    const transcriptStart = service.transcript.length;
+    const response = await service.rawRequest(request);
+    exact(response, ['id', 'ok', 'result'], 'READ_ONLY_HANDOFF_RESPONSE_FIELDS');
+    need(response.id === request.id && response.ok === true, 'READ_ONLY_HANDOFF_FAILED');
+    same(response.result, { read_only_handoff: true, journal_mode: 'delete' },
+      'READ_ONLY_HANDOFF_NOT_SQLITE_DELETE');
+    const correlated = service.transcript.slice(transcriptStart)
+      .filter(item => item.payload?.id === request.id);
+    need(correlated.length === 2 && correlated[0].direction === 'request'
+      && correlated[1].direction === 'response'
+      && correlated.every(item => item.processId === record.pid),
+      'READ_ONLY_HANDOFF_NOT_ORIGINAL_WRITER_RPC');
+    same(correlated[0].payload, request, 'READ_ONLY_HANDOFF_REQUEST_CHANGED');
+    same(correlated[1].payload, response, 'READ_ONLY_HANDOFF_RESPONSE_CHANGED');
+    const identityRequest = { id: request.id + '-held-identity',
+      command: 'opened_store_identity_witness', args: null };
+    const identityRef = await factory.publish(path.join(factory.root,
+      'original-service-after-handoff-identity-request.original.jsonl'),
+      Buffer.from(JSON.stringify(identityRequest) + '\n'));
+    const identityResponse = await service.rawRequest(identityRequest);
+    exact(identityResponse, ['id', 'ok', 'result'], 'READ_ONLY_IDENTITY_RESPONSE_FIELDS');
+    need(identityResponse.id === identityRequest.id && identityResponse.ok === true,
+      'READ_ONLY_HANDOFF_IDENTITY_UNAVAILABLE');
+    const retained = requireHeldStoreWitness(identityResponse.result, witness);
+    const after = physical(factory.options.databasePath);
+    same(after, before, 'READ_ONLY_HANDOFF_REPLACED_ORIGINAL_STORE');
+    need(factory.sealed === true && service.child?.pid === record.pid && record.exit === null,
+      'READ_ONLY_HANDOFF_WRITER_NOT_LIVE');
+    const observation = {
+      schema: 'motionwright.graph.original-read-only-handoff/1',
+      source: factory.admission.source, process_id: record.pid,
+      context: record.context, before, after, writer_original: presealRef,
+      request_original: requestRef, response,
+      identity_request_original: identityRef, identity_response: identityResponse,
+      held_store_digest: retained, phase: 'after-admissions-seal-before-writer-exit',
+      read_only_handoff: true, journal_mode: 'delete', synthetic_adapter_only: false,
+      automatic_retry: false, gate_credit: false,
+    };
+    const ref = await factory.publish(path.join(factory.root,
+      'original-service-read-only-handoff.original.json'),
+      Buffer.from(JSON.stringify(observation, null, 2) + '\n'));
+    originalReadOnlyHandoffs.set(factory, { ref, record, observation });
+    return Object.freeze({ ...ref });
+  } catch (error) { factory?.taint?.(error); throw error; }
+}
+
 /** Read the original already published by finalizeClosedStore, never rewrite
  * it or substitute the captured Store. That publisher writes JSON without LF. */
 export function publishedOracleReference(factory, destination, finalization) {
@@ -242,6 +328,80 @@ function requirePresealOriginal(factory, ref, oracle, synthetic) {
     process: observation.process };
 }
 
+/** Verify the actual final writer's handoff against its raw EOF and the
+ * original preseal witness. A JSON receipt alone can never authorize a reader. */
+function requireOriginalReadOnlyHandoff(factory, ref, preseal) {
+  const retained = originalReadOnlyHandoffs.get(factory);
+  const captured = presealOriginals.get(factory);
+  need(retained && captured && retained.record === captured.record
+    && isDeepStrictEqual(retained.ref, ref) && isDeepStrictEqual(preseal.ref, captured.ref),
+    'REOPEN_ORIGINAL_WRITER_HANDOFF_REQUIRED');
+  const observation = strictJSON(matchRef(ref.path, ref, 256 * 1024).data);
+  same(observation, retained.observation, 'REOPEN_HANDOFF_ORIGINAL_CHANGED');
+  same(observation.source, factory.admission.source, 'REOPEN_HANDOFF_SOURCE_CHANGED');
+  same(observation.before, factory.initializerPhysical, 'REOPEN_HANDOFF_NOT_ORIGINAL_STORE');
+  same(observation.after, observation.before, 'REOPEN_HANDOFF_STORE_REPLACED');
+  need(observation.schema === 'motionwright.graph.original-read-only-handoff/1'
+    && observation.process_id === retained.record.pid
+    && isDeepStrictEqual(observation.context, retained.record.context)
+    && observation.read_only_handoff === true && observation.journal_mode === 'delete'
+    && observation.automatic_retry === false && observation.gate_credit === false
+    && observation.synthetic_adapter_only === false && factory.sealed === true,
+    'REOPEN_WRITER_HANDOFF_NOT_VERIFIED');
+  same(observation.writer_original, preseal.ref, 'REOPEN_HANDOFF_PRESEAL_CHANGED');
+  need(requireHeldStoreWitness(observation.held_store_digest,
+    expectedLinuxHeldStoreDigest(factory.initializerPhysical)) === preseal.digest,
+    'REOPEN_HANDOFF_HELD_STORE_CHANGED');
+  const requests = [
+    [observation.request_original, observation.response, 'prepare_read_only_handoff'],
+    [observation.identity_request_original, observation.identity_response, 'opened_store_identity_witness'],
+  ];
+  const original = retained.record.raw?.stdout;
+  need(retained.record.rawComplete && original?.eof === true,
+    'REOPEN_HANDOFF_WRITER_RAW_EOF_REQUIRED');
+  const rawRef = { path: original.path, sha256: original.sha256, size_bytes: original.size_bytes };
+  const rawBytes = matchRef(rawRef.path, rawRef, factory.options.maxStreamBytes ?? MiB).data;
+  need(rawBytes.length > 0 && rawBytes.at(-1) === 10, 'REOPEN_HANDOFF_WRITER_RAW_INCOMPLETE');
+  const expectedResponses = new Map(requests.map(([requestRef, response, command]) => {
+    const raw = matchRef(requestRef.path, requestRef, 1024).data;
+    need(raw.at(-1) === 10, 'REOPEN_HANDOFF_REQUEST_RAW_INCOMPLETE');
+    const request = strictJSON(raw.subarray(0, raw.length - 1), 1024);
+    exact(request, ['id','command','args'], 'REOPEN_HANDOFF_REQUEST_FIELDS');
+    need(request.command === command && request.args === null,
+      'REOPEN_HANDOFF_COMMAND_MISMATCH');
+    return [JSON.stringify(request.id), { response, request }];
+  }));
+  need(expectedResponses.size === requests.length, 'REOPEN_HANDOFF_DUPLICATE_REQUEST_IDS');
+  let offset = 0;
+  const actual = new Map();
+  while (offset < rawBytes.length) {
+    const end = rawBytes.indexOf(10, offset);
+    need(end >= offset, 'REOPEN_HANDOFF_RAW_MISSING_NEWLINE');
+    const response = strictJSON(rawBytes.subarray(offset, end), MiB);
+    const key = JSON.stringify(response.id);
+    if (expectedResponses.has(key)) {
+      need(!actual.has(key), 'REOPEN_HANDOFF_RAW_REPEATED_OR_AMBIGUOUS');
+      same(response, expectedResponses.get(key).response, 'REOPEN_HANDOFF_RAW_RESPONSE_CHANGED');
+      actual.set(key, { offset, length: end + 1 - offset });
+    }
+    offset = end + 1;
+  }
+  for (const [requestRef, response, command] of requests) {
+    const bytes = matchRef(requestRef.path, requestRef, 1024).data;
+    need(bytes.at(-1) === 10, 'REOPEN_HANDOFF_REQUEST_RAW_INCOMPLETE');
+    const request = strictJSON(bytes.subarray(0, bytes.length - 1), 1024);
+    exact(request, ['id','command','args'], 'REOPEN_HANDOFF_REQUEST_FIELDS');
+    need(request.command === command && request.args === null
+      && actual.has(JSON.stringify(request.id)), 'REOPEN_HANDOFF_REQUEST_NOT_IN_WRITER_RAW');
+    need(response.id === request.id && response.ok === true,
+      'REOPEN_HANDOFF_RESPONSE_NOT_SUCCESS');
+  }
+  same(observation.response.result, { read_only_handoff: true, journal_mode: 'delete' },
+    'REOPEN_HANDOFF_WRITER_NOT_SEALED');
+  requireHeldStoreWitness(observation.identity_response.result, preseal.digest);
+  return { ref, held_store_digest: preseal.digest, raw: rawRef };
+}
+
 /** Production entry point: no adapter/mock argument and no source fallback.
  * An actual factory must already have passed its unchanged producer guard.
  * A caller's CLOSED boolean, a copied database or an internal restart is not
@@ -255,7 +415,8 @@ export async function runIndependentSameStoreReopen(factory, options) {
 /** Exported only for finite mechanism controls. Its adapter may be synthetic;
  * the receipt states that fact and cannot be used as production admission. */
 export async function runSameStoreReopenCore(factory, {
-  expectedOracleRef, originalPresealWitnessRef, relativeOutput = 'independent-reopen',
+  expectedOracleRef, originalPresealWitnessRef, originalReadOnlyHandoffRef,
+  relativeOutput = 'independent-reopen',
   maximumStreamBytes = MiB, timeoutMs = 20000,
 }, adapters) {
   need(factory && typeof factory === 'object', 'REOPEN_FACTORY_REQUIRED');
@@ -282,10 +443,11 @@ export async function runSameStoreReopenCore(factory, {
     const oracle = validateOracle(strictJSON(oracleBytes.data, 16 * MiB));
     const preseal = requirePresealOriginal(factory, originalPresealWitnessRef,
       oracle, adapters.synthetic === true);
+    const handoff = requireOriginalReadOnlyHandoff(factory, originalReadOnlyHandoffRef, preseal);
     inside(factory.root, factory.finalOriginal.path);
     matchRef(factory.finalOriginal.path, factory.finalOriginal, 4 * MiB);
     const requestLimit = Math.min(256, oracle.journal.length + 6);
-    need(Math.ceil(oracle.journal.length / 100) + 5 <= requestLimit, 'REOPEN_REQUEST_PLAN_BOUND');
+    need(Math.ceil(oracle.journal.length / 100) + 6 <= requestLimit, 'REOPEN_REQUEST_PLAN_BOUND');
     const observedBytes = Buffer.from(JSON.stringify({ project: oracle.project,
       journal: oracle.journal, journalComplete: true, journalAfterRevisionExclusive: 0 }, null, 2) + '\n');
     need(observedBytes.length <= 16 * MiB, 'REOPEN_OBSERVED_ORACLE_BOUND');
@@ -304,7 +466,7 @@ export async function runSameStoreReopenCore(factory, {
     const counter = factory.pool.counter(allocation);
     freshDirectory(outputRoot);
     writer = new OriginalWriter(outputRoot, counter);
-    const argv = [executable.path, '--database', database];
+    const argv = independentGraphReaderArgv(executable.path, database);
     // No fixture, reopen command, import, mutation, grant, native connection,
     // changed project generation, synthetic seed or extra argument is accepted.
     // This read-only child may inspect the same sealed physical Store; it
@@ -332,6 +494,8 @@ export async function runSameStoreReopenCore(factory, {
       original_preseal_response_raw: preseal.response_raw,
       original_service_closure: preseal.service_closure,
       original_preseal_held_pager_witness_bound: true,
+      original_writer_read_only_handoff: handoff.ref,
+      read_only_child_required: true,
     });
     factory.assertClosed(); // Recheck immediately before the only process spawn.
     matchRef(factory.finalOriginal.path, factory.finalOriginal, 4 * MiB);
@@ -399,6 +563,11 @@ export async function runSameStoreReopenCore(factory, {
       child.stdin.write(raw, error => { if (error) rejectProtocol(error); });
       return timeout(result, deadline, 'REOPEN_REQUEST_DEADLINE');
     };
+    const bootstrap = await request('bootstrap', { request: { project_id: oracle.project.id } });
+    need(bootstrap?.read_only === true && bootstrap.test_transport === 'service-test-jsonl'
+      && bootstrap.evidence_scope === 'real_service_sqlite_cas_read_only; excludes_tauri_installer_native_render',
+      'REOPEN_CHILD_NOT_READ_ONLY_SERVICE');
+    same(bootstrap.project, oracle.project, 'REOPEN_READ_ONLY_BOOTSTRAP_PROJECT_MISMATCH');
     const project = await request('get_project', { request: { project_id: oracle.project.id } });
     same(project, oracle.project, 'REOPEN_FULL_PROJECT_MISMATCH');
     const journal = []; let revision = 0;
@@ -481,6 +650,9 @@ export async function runSameStoreReopenCore(factory, {
       original_preseal_response_raw:preseal.response_raw,
       original_service_closure:preseal.service_closure,
       original_preseal_held_pager_witness_bound:true,
+      original_writer_read_only_handoff:handoff.ref,
+      original_writer_handoff_raw:handoff.raw,
+      read_only_child_bootstrap_proved:true,
       source_bound_service_pager_query_identity_proved:false,
       identity_scope:'Original preseal Service observation and both new-child witnesses joined through raw EOF and owner-linked Service closure; owner FINAL does not attest the preseal witness hash; product acceptance remains pending',
       native_recovery_oracle_executed: false, formal_acceptance: false, gate_credit: false,

@@ -14,8 +14,8 @@ import type { TestInfo } from "@playwright/test";
 import { ScopedChangeService, type ScopedChangeServiceOptions } from "./scopedChangeService.ts";
 import { createGraphCaseFactory } from "./graph-owner/factory.mjs";
 import { inside } from "./graph-owner/custody.mjs";
-import { captureOriginalOpenedStoreWitness, publishedOracleReference,
-  runIndependentSameStoreReopen } from "./graph-owner/same_store_reopen.mjs";
+import { captureOriginalOpenedStoreWitness, prepareOriginalReadOnlyHandoff,
+  publishedOracleReference, runIndependentSameStoreReopen } from "./graph-owner/same_store_reopen.mjs";
 
 export type NativeGraphOperation = "authoring_context" | "upsert" | "remove" | "operation_recovery";
 export type NativeGraphCaseId = "graph-source-review" | "graph-flow" | "graph-lost-reply"
@@ -259,6 +259,7 @@ export async function finalizeGraphCase(service: ScopedChangeService,
     return () => outcome ??= Promise.resolve().then(action);
   });
   let originalPresealWitnessRef: Awaited<ReturnType<typeof captureOriginalOpenedStoreWitness>> | undefined;
+  let originalReadOnlyHandoffRef: Awaited<ReturnType<typeof prepareOriginalReadOnlyHandoff>> | undefined;
   const result = await service.finalizeClosedStore(destination, expected, peers, [
     ...preparations,
     async () => {
@@ -266,6 +267,11 @@ export async function finalizeGraphCase(service: ScopedChangeService,
       const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Graph preseal preparation failed");
       originalPresealWitnessRef = await captureOriginalOpenedStoreWitness(factory, service, expected);
+      // No new Native clients after this point. The real held writer finishes
+      // WAL checkpoint/DELETE mode before Service and Host close; any failure
+      // is terminal and the existing finalizer still retains cleanup outcomes.
+      originalReadOnlyHandoffRef = await prepareOriginalReadOnlyHandoff(factory, service,
+        originalPresealWitnessRef);
     },
   ]);
   factory.assertClosed();
@@ -275,6 +281,7 @@ export async function finalizeGraphCase(service: ScopedChangeService,
   await runIndependentSameStoreReopen(factory, {
     expectedOracleRef: publishedOracleReference(factory, destination, result),
     originalPresealWitnessRef,
+    originalReadOnlyHandoffRef,
   });
   return result;
 }
