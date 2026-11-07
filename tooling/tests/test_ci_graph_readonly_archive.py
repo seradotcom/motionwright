@@ -31,6 +31,7 @@ class InertOriginals:
         self.ordinary = {"path": str(self.root / "bin" / "studio-review-session")}
         self.index = {"source": self.source, "binaries": {
             "native_graph_session": self.native, "ordinary_service": self.ordinary,
+            "semwright": {"path": str(self.root / "bin" / "semwright")},
             "semwrightd": {"path": str(self.root / "bin" / "semwrightd")}}}
         self.make()
 
@@ -96,111 +97,199 @@ class InertOriginals:
                    "process_id": 303 if self.mode == "handoff_wrong_pid" else 101,
                    "context": context, "request_original": href, "response": writer_results[1],
                    "identity_request_original": iref, "identity_response": writer_results[2]}
-        owner_pid = 202 if self.mode == "native_quiescence_owner_reuses_reader_pid" else 777
-        daemon_stdout_ref = self.put("graph-flow/owner/owner-restricted.stdout.original", b"OWNER_READY\\n")
-        daemon_stderr_ref = self.put("graph-flow/owner/owner-restricted.stderr.original", b"")
-        def identity(ref):
-            return {"path": ref["path"], "sha256": ref["sha256"], "bytes": ref["size_bytes"]}
-        daemon = {
-            "schema": "motionwright.native.graph-browser-owner/1",
-            "label": "owner-restricted", "pid": 888, "reason": "explicit-close",
-            "status": "STOPPED",
-            "exit_code": -15 if self.mode == "native_daemon_signal_only" else 0,
-            "termination_requested": True,
-            "deadline_exceeded": self.mode == "native_daemon_timed_out",
-            "forced_termination": (self.mode in ("native_quiescence_forced_daemon",
-                                                "native_daemon_forced")),
-            "descendant_cleanup_required": False,
-            "automatic_retry": False, "writers_closed_within_owned_group": True,
-            "group_observation": {"writers_closed_within_owned_group": True},
-            "stdout": identity(daemon_stdout_ref), "stderr": identity(daemon_stderr_ref),
+        owner_pid = 777
+        owner_root = self.root / "graph-flow" / "owner"
+        client_id = "original-native-client"
+        session = self.put("graph-flow/owner/clients/" + client_id + ".session",
+                           b"synthetic-inert-session-not-a-runtime-token")
+        original_mount = {
+            "provider": "driver:motionwright", "connection": "real-original-lease",
+            "provider_generation": 7,
+            "mount": {"root": "motionwright-data",
+                      "path": str(Path(self.physical["path"]).parent),
+                      "read": True, "write": True, "execute": False},
         }
-        lifecycle = {"status": "CLOSED", "taints": [], "start_failures": [],
-                     "automatic_retry": False, "terminals": [daemon]}
+        if self.mode == "release_mount_wrong_store":
+            original_mount["mount"]["path"] = str(owner_root / "other-store")
+        custody_mount = ({**original_mount, "provider": "other"}
+                         if self.mode == "release_custody_changed" else original_mount)
+        self.put("graph-flow/owner/clients/" + client_id + ".custody.json",
+                 {"actual_mount_observation": custody_mount})
+        fresh_mount = {**original_mount, "binding_ref": "source-bound-binding-one"}
+        if self.mode == "release_fresh_foreign_connection":
+            fresh_mount["connection"] = "foreign-lease"
+        if self.mode == "release_fresh_foreign_generation":
+            fresh_mount["provider_generation"] = 8
+        released = {
+            "provider": original_mount["provider"],
+            "connection": original_mount["connection"],
+            "provider_generation": original_mount["provider_generation"],
+            "binding_ref": fresh_mount["binding_ref"],
+            "catalog_revision": 11, "lease_shutdown_completed": True,
+            "native_process_closure_inferred": False,
+        }
+        if self.mode == "release_binding_changed":
+            released["binding_ref"] = "other-binding"
+        if self.mode == "release_not_drained":
+            released["lease_shutdown_completed"] = False
+        if self.mode == "release_native_process_inferred":
+            released["native_process_closure_inferred"] = True
+
+        def make_cli(label, command, args, expected):
+            label_name = "native-provider-release-" + label
+            basename = "graph-flow/owner/" + label_name
+            envelope = {"ok": True, "data": expected}
+            if self.mode == "release_cli_false_ok" and label == "bound":
+                envelope["ok"] = False
+            elif self.mode == "release_cli_no_data" and label == "bound":
+                envelope.pop("data")
+            stdout = self.put(basename + ".stdout.original",
+                              json.dumps(envelope, separators=(",", ":")).encode() + b"\n")
+            stderr = self.put(basename + ".stderr.original", b"")
+            def identity(ref):
+                return {"path": ref["path"], "sha256": ref["sha256"],
+                        "bytes": ref["size_bytes"]}
+            terminal = {
+                "schema": "motionwright.native.graph-browser-owner/1",
+                "label": label_name, "status": "SUCCESS",
+                "pid": 454 if label == "mount" else 455,
+                "exit_code": 0, "automatic_retry": False,
+                "forced_termination": False, "deadline_exceeded": False,
+                "descendant_cleanup_required": False,
+                "writers_closed_within_owned_group": True,
+                "stdout": identity(stdout), "stderr": identity(stderr),
+            }
+            if self.mode == "release_cli_bad_exit" and label == "bound":
+                terminal["exit_code"] = 1
+            if self.mode == "release_cli_forced" and label == "bound":
+                terminal["forced_termination"] = True
+            terminal_ref = (None if self.mode == "release_cli_no_terminal" and label == "bound"
+                            else self.put(basename + ".terminal.json", terminal))
+            argv = [self.index["binaries"]["semwright"]["path"], "--socket",
+                    str(owner_root / "runtime" / "broker.sock"),
+                    "--session-file", session["path"], "--json", "execute", command,
+                    "--args-json", json.dumps(args, separators=(",", ":"))]
+            if self.mode == "release_cli_wrong_binary" and label == "bound":
+                argv[0] = str(self.root / "bin" / "other-cli")
+            if self.mode == "release_cli_other_session" and label == "bound":
+                argv[4] = str(owner_root / "clients" / "foreign.session")
+            if self.mode == "release_cli_other_binding" and label == "bound":
+                argv[-1] = '{"provider":"other","root":"motionwright-data","binding_ref":"wrong"}'
+            intent = {
+                "schema": "motionwright.native.graph-browser-owner/1",
+                "label": label_name, "argv": argv, "cwd": None,
+                "automatic_retry": False, "owned_process_group": True,
+            }
+            if self.mode != "release_cli_no_intent" or label != "bound":
+                self.put(basename + ".intent.json", intent)
+            return {"terminal": terminal_ref or {
+                       "path": str(owner_root / (label_name + ".terminal.json")),
+                       "sha256": "0" * 64, "size_bytes": 0},
+                    "stdout": stdout, "stderr": stderr}
+
+        mount_originals = make_cli("mount", "providers.mount.observe", {
+            "provider": "driver:motionwright", "root": "motionwright-data",
+        }, fresh_mount)
+        release_originals = make_cli("bound", "providers.release_bound", {
+            "provider": "driver:motionwright", "root": "motionwright-data",
+            "binding_ref": fresh_mount["binding_ref"],
+        }, released)
+        provider = {
+            "schema": "motionwright.graph-mounted-provider-release/1",
+            "source": ({"sha": "b" * 40} if self.mode == "release_wrong_source"
+                       else self.source),
+            "owner_pid": owner_pid,
+            "source_verified_before_release": True,
+            "provider_lease_shutdown_completed": True,
+            "owner_broker_remains_live": True,
+            "native_process_closure_inferred": False,
+            "original_session": session,
+            "original_mount_observation": original_mount,
+            "fresh_mount_observation": fresh_mount,
+            "provider_release_observation": released,
+            "mount_command_originals": mount_originals,
+            "release_command_originals": release_originals,
+            "original_store": {"path": self.physical["path"],
+                               "device": int(self.physical["device"]),
+                               "inode": int(self.physical["inode"])},
+            "current_store": {"path": self.physical["path"],
+                              "device": int(self.physical["device"]),
+                              "inode": int(self.physical["inode"])},
+            "automatic_retry": False, "graph_acceptance": False,
+        }
+        if self.mode == "release_wrong_session":
+            provider["original_session"] = {**session, "path": "/foreign/session"}
+        if self.mode == "release_wrong_owner":
+            provider["owner_pid"] = 101
+        if self.mode == "release_wrong_inode":
+            provider["current_store"]["inode"] += 1
+        provider_path = ("other-source/owner-provider-release.original.json"
+                         if self.mode == "release_foreign_case" else
+                         "graph-flow/owner/owner-provider-release.original.json")
+        provider_ref = self.put(provider_path, provider)
+        if self.mode == "release_old_quiescence_key":
+            handoff["native_owner_quiescence"] = provider_ref
+        if self.mode != "release_missing":
+            handoff["native_provider_release"] = provider_ref
+
+        provider_event = {
+            "event": "PROVIDER_RELEASED",
+            "id": "release-graph-flow", "status": "RELEASED",
+            "receipt_path": provider_ref["path"],
+            "receipt_sha256": provider_ref["sha256"],
+            "owner_pid": owner_pid,
+            "lease_shutdown_completed": True,
+            "native_process_closure_inferred": False,
+        }
+        if self.mode == "release_owner_event_changed":
+            provider_event["receipt_sha256"] = "0" * 64
+        responses = [] if self.mode == "release_owner_event_missing" else [provider_event]
+        if self.mode == "release_owner_event_duplicate":
+            responses.append(provider_event)
+        responses.append({"event": "FINAL_RECEIPT", "id": "close-graph-flow"})
+        if self.mode == "release_parent_error_before_final":
+            responses.insert(1, {"event": "ERROR", "code": "NATIVE_ORIGINAL_FAILED",
+                                 "runtime_stage": "PROVIDER_RELEASED"})
+        if self.mode == "release_parent_error_after_final":
+            responses.append({"event": "ERROR", "code": "NATIVE_ORIGINAL_FAILED",
+                              "runtime_stage": "OWNER_CLOSE"})
+        owner_stdout = self.put(
+            "graph-flow/owner-parent.stdout.original",
+            b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n"
+                     for row in responses))
+        owner_stderr = self.put("graph-flow/raw/python-owner.stderr.original", b"")
+        stderr_ref = {**owner_stderr, "eof": self.mode != "release_parent_stderr_no_eof"}
+        if self.mode == "release_parent_stderr_digest_changed":
+            stderr_ref["sha256"] = "0" * 64
+        if self.mode == "release_parent_stderr_foreign_path":
+            stderr_ref["path"] = str(self.root / "other-source" / "stderr.original")
+        parent_raw = {"stdout": {**owner_stdout, "eof": True}}
+        if self.mode != "release_parent_stderr_missing":
+            parent_raw["stderr"] = stderr_ref
+        self.put("graph-flow/owner-parent-terminal.original.json", {
+            "exit": {"process_id": owner_pid, "code": 0, "signal": None},
+            "raw": parent_raw,
+        })
+        lifecycle = {"status": "CLOSED", "taints": [], "start_failures": []}
         cohort = {"status": "PASS", "authority": "process_custody_only_not_revocation",
-                  "signals": ([{"pid": 789, "signal": 9}]
-                              if self.mode == "native_quiescence_emergency_signal" else []),
+                  "signals": ([] if self.mode != "release_emergency_signaled"
+                              else [{"pid": 451, "signal": 9}]),
                   "complete_empty_descendant_tree": {
                       "root_observed": True, "truncated": False,
-                      "processes": [{"pid": owner_pid}]}}
-        if self.mode == "native_quiescence_cleanup_sigterm":
-            cohort["signals"] = [{"pid": 789, "signal": 15}]
-        if self.mode == "native_quiescence_missing_signal_inventory":
-            cohort.pop("signals")
-        if self.mode == "native_quiescence_closure_unknown":
+                      "processes": [{"pid": owner_pid, "ppid": 0}],
+                  }}
+        if self.mode == "release_cohort_extra_member":
+            cohort["complete_empty_descendant_tree"]["processes"].append(
+                {"pid": 889, "ppid": owner_pid})
+        if self.mode == "release_owner_final_unknown":
             lifecycle["status"] = "UNKNOWN"
-        if self.mode == "native_quiescence_extra_cohort_child":
-            cohort["complete_empty_descendant_tree"]["processes"].append({"pid": 778})
-        if self.mode == "native_quiescence_no_daemon_terminal":
-            lifecycle["terminals"] = []
-        if self.mode == "native_quiescence_tainted_close":
-            lifecycle["taints"] = ["owner-restricted:UNKNOWN"]
-        if self.mode == "native_quiescence_unknown_daemon_terminal":
-            daemon["status"] = "UNKNOWN"
-        if self.mode == "native_quiescence_forced_daemon":
-            daemon["forced_termination"] = True
-        if self.mode == "native_quiescence_modified_stdout":
-            daemon["stdout"]["sha256"] = "0" * 64
-        # The original launched argv, terminal and both retained raw streams
-        # must agree with the reviewed binary and same-case owner root.
-        daemon_argv = [self.index["binaries"]["semwrightd"]["path"], "--config",
-                       str(self.root / "graph-flow" / "owner" / "config" /
-                           "owner-restricted.toml"), "--socket",
-                       str(self.root / "graph-flow" / "owner" / "runtime" /
-                           "broker.sock")]
-        if self.mode == "native_daemon_wrong_executable":
-            daemon_argv[0] = str(self.root / "bin" / "other-daemon")
-        if self.mode == "native_daemon_wrong_config":
-            daemon_argv[2] = str(self.root / "other" / "owner-restricted.toml")
-        if self.mode == "native_daemon_wrong_socket":
-            daemon_argv[4] = str(self.root / "other" / "broker.sock")
-        if self.mode == "native_daemon_extra_flag":
-            daemon_argv.append("--foreign-capability")
-        daemon_intent = {"schema": "motionwright.native.graph-browser-owner/1",
-                         "label": "owner-restricted", "argv": daemon_argv,
-                         "cwd": None, "automatic_retry": False,
-                         "owned_process_group": True}
-        if self.mode != "native_daemon_missing_intent":
-            self.put("graph-flow/owner/owner-restricted.intent.json", daemon_intent)
-        daemon_original = dict(daemon)
-        if self.mode == "native_daemon_terminal_mismatch":
-            daemon_original["pid"] = 889
-        if self.mode != "native_daemon_missing_terminal_original":
-            self.put("graph-flow/owner/owner-restricted.terminal.json", daemon_original)
-        if self.mode == "native_daemon_group_alive":
-            daemon["group_observation"]["writers_closed_within_owned_group"] = False
-        if self.mode == "native_daemon_wrong_pid":
-            daemon["pid"] = 101
-        native_close_path = ("other-source/owner-close.json" if self.mode == "native_quiescence_foreign_close_path"
-                             else "graph-flow/owner/owner-close.json")
-        native_close_ref = self.put(native_close_path, lifecycle)
-        cohort_ref = self.put("graph-flow/owner/complete-descendant-scope.original.json", cohort)
-        native_original = {"path": self.physical["path"],
-                           "device": int(self.physical["device"]),
-                           "inode": int(self.physical["inode"])}
-        native_current = dict(native_original)
-        if self.mode == "native_quiescence_foreign_store":
-            native_current["inode"] += 1
-        quiescence = {
-            "schema": "motionwright.graph-native-owner-quiescence/1",
-            "source": {"sha": "b" * 40} if self.mode == "native_quiescence_wrong_source" else self.source,
-            "owner_pid": owner_pid + (1 if self.mode == "native_quiescence_wrong_pid" else 0),
-            "source_verified_before_native_close": True,
-            "native_lifecycle_closed": True, "native_owner_streams_eof": True,
-            "owner_cohort_absent": True,
-            "owner_close_original": native_close_ref, "cohort_original": cohort_ref,
-            "original_store": native_original, "current_store": native_current,
-            "automatic_retry": False, "graph_acceptance": False}
-        quiescence_path = ("other-source/owner-native-quiescence.original.json"
-                           if self.mode == "native_quiescence_foreign_quiescence_path"
-                           else "graph-flow/owner/owner-native-quiescence.original.json")
-        quiescence_ref = self.put(quiescence_path, quiescence)
-        self.owner_complete = self.put("graph-flow/owner/owner-complete-close.original.json", {
-            "lifecycle": lifecycle, "cohort": cohort,
-            "status": "CLOSED" if lifecycle["status"] == "CLOSED" else "UNKNOWN",
-            "source_validated_before_close": True, "owner_streams_eof": True})
-        if self.mode != "native_quiescence_missing":
-            handoff["native_owner_quiescence"] = quiescence_ref
+        self.owner_complete = self.put(
+            "graph-flow/owner/owner-complete-close.original.json", {
+                "lifecycle": lifecycle, "cohort": cohort, "status": "CLOSED",
+                "owner_streams_eof": True, "source_validated_before_close": True,
+            })
+        self.native_client_session = session
+        self.native_client_id = client_id
         handoff_ref = self.put("writer/handoff.original.json", handoff)
         closure = {"status": "CLOSED", "database_path": self.physical["path"],
                    "participants": [{"helper_id": context["helper_id"],
@@ -212,7 +301,10 @@ class InertOriginals:
         self.final = {"service_closure": closure_ref,
                       "database_initial": self.put("writer/store-first.json", self.physical),
                       "database_final": self.put("writer/store-last.json", self.physical),
-                      "owner_close": self.owner_complete}
+                      "owner_close": self.owner_complete,
+                      "client_roster": [{"client_id": self.native_client_id,
+                                         "status": "READY",
+                                         "session_original": self.native_client_session}]}
         intent = {"schema": "motionwright.graph.same-original-store-reopen/1", "source": self.source,
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
                          self.physical["path"], *([] if self.mode == "writable_argv" else ["--read-only"])],
@@ -311,34 +403,49 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
 
-    def test_native_owner_must_quiesce_before_original_writer_handoff(self):
-        for mode in ("native_quiescence_missing", "native_quiescence_wrong_source",
-                     "native_quiescence_wrong_pid", "native_quiescence_foreign_store",
-                     "native_quiescence_closure_unknown",
-                     "native_quiescence_extra_cohort_child",
-                     "native_quiescence_emergency_signal",
-                     "native_quiescence_cleanup_sigterm",
-                     "native_quiescence_missing_signal_inventory",
-                     "native_quiescence_no_daemon_terminal",
-                     "native_quiescence_tainted_close",
-                     "native_quiescence_unknown_daemon_terminal",
-                     "native_quiescence_forced_daemon",
-                     "native_quiescence_modified_stdout",
-                     "native_quiescence_foreign_close_path",
-                     "native_quiescence_foreign_quiescence_path",
-                     "native_quiescence_owner_reuses_reader_pid"):
+    def test_provider_only_release_requires_original_same_session_broker_lease(self):
+        for mode in ("release_missing", "release_old_quiescence_key",
+                     "release_wrong_source", "release_wrong_session",
+                     "release_wrong_owner", "release_wrong_inode",
+                     "release_foreign_case", "release_mount_wrong_store",
+                     "release_custody_changed", "release_fresh_foreign_connection",
+                     "release_fresh_foreign_generation", "release_binding_changed",
+                     "release_not_drained", "release_native_process_inferred"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
 
-    def test_graceful_daemon_exit_original_argv_and_terminal_required(self):
-        for mode in ("native_daemon_signal_only", "native_daemon_timed_out",
-                     "native_daemon_forced", "native_daemon_group_alive",
-                     "native_daemon_missing_terminal_original",
-                     "native_daemon_terminal_mismatch", "native_daemon_wrong_pid",
-                     "native_daemon_missing_intent", "native_daemon_wrong_executable",
-                     "native_daemon_wrong_config", "native_daemon_wrong_socket",
-                     "native_daemon_extra_flag"):
+    def test_provider_release_rejects_changed_cli_originals_and_envelopes(self):
+        for mode in ("release_cli_false_ok", "release_cli_no_data",
+                     "release_cli_bad_exit", "release_cli_forced",
+                     "release_cli_no_terminal", "release_cli_wrong_binary",
+                     "release_cli_other_session", "release_cli_other_binding",
+                     "release_cli_no_intent"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_provider_release_emits_only_one_original_owner_event(self):
+        for mode in ("release_owner_event_changed", "release_owner_event_missing",
+                     "release_owner_event_duplicate",
+                     "release_emergency_signaled", "release_owner_final_unknown",
+                     "release_cohort_extra_member"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_parent_original_error_events_deny_clean_provider_release(self):
+        for mode in ("release_parent_error_before_final",
+                     "release_parent_error_after_final"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_parent_original_stderr_custody_must_be_complete(self):
+        for mode in ("release_parent_stderr_missing",
+                     "release_parent_stderr_no_eof",
+                     "release_parent_stderr_digest_changed",
+                     "release_parent_stderr_foreign_path"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

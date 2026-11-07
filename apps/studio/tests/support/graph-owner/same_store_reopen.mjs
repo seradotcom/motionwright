@@ -242,7 +242,7 @@ export async function prepareOriginalReadOnlyHandoff(factory, service, presealRe
       request_original: requestRef, response,
       identity_request_original: identityRef, identity_response: identityResponse,
       held_store_digest: retained, phase: 'after-admissions-seal-before-writer-exit',
-      native_owner_quiescence: nativeQuiescence.ref,
+      native_provider_release: nativeQuiescence.ref,
       read_only_handoff: true, journal_mode: 'delete', synthetic_adapter_only: false,
       automatic_retry: false, gate_credit: false,
     };
@@ -357,22 +357,24 @@ function requireOriginalReadOnlyHandoff(factory, ref, preseal) {
     'REOPEN_WRITER_HANDOFF_NOT_VERIFIED');
   same(observation.writer_original, preseal.ref, 'REOPEN_HANDOFF_PRESEAL_CHANGED');
   const quiescence = factory.nativeQuiescence;
-  need(quiescence?.ref && quiescence.response?.event === 'NATIVE_QUIESCED'
-    && quiescence.response.owner_cohort_absent === true,
-    'REOPEN_HANDOFF_NATIVE_QUIESCENCE_REQUIRED');
-  same(observation.native_owner_quiescence, quiescence.ref,
-    'REOPEN_HANDOFF_NATIVE_ORIGINAL_CHANGED');
+  need(quiescence?.ref && quiescence.response?.event === 'PROVIDER_RELEASED'
+    && quiescence.response.lease_shutdown_completed === true
+    && quiescence.response.native_process_closure_inferred === false,
+    'REOPEN_HANDOFF_PROVIDER_RELEASE_REQUIRED');
+  same(observation.native_provider_release, quiescence.ref,
+    'REOPEN_HANDOFF_PROVIDER_RELEASE_ORIGINAL_CHANGED');
   const ownerOriginal = strictJSON(matchRef(quiescence.ref.path,
     quiescence.ref, 65536).data);
-  need(ownerOriginal.schema === 'motionwright.graph-native-owner-quiescence/1'
-    && ownerOriginal.owner_cohort_absent === true
-    && ownerOriginal.native_lifecycle_closed === true
-    && ownerOriginal.source_verified_before_native_close === true
+  need(ownerOriginal.schema === 'motionwright.graph-mounted-provider-release/1'
+    && ownerOriginal.provider_lease_shutdown_completed === true
+    && ownerOriginal.owner_broker_remains_live === true
+    && ownerOriginal.native_process_closure_inferred === false
+    && ownerOriginal.source_verified_before_release === true
     && ownerOriginal.automatic_retry === false
     && ownerOriginal.graph_acceptance === false,
-    'REOPEN_HANDOFF_NATIVE_OWNER_NOT_QUIESCENT');
+    'REOPEN_HANDOFF_PROVIDER_RELEASE_NOT_AUTHENTIC');
   same(ownerOriginal.source, factory.admission.source,
-    'REOPEN_HANDOFF_NATIVE_OWNER_SOURCE_CHANGED');
+    'REOPEN_HANDOFF_PROVIDER_RELEASE_SOURCE_CHANGED');
   need(requireHeldStoreWitness(observation.held_store_digest,
     expectedLinuxHeldStoreDigest(factory.initializerPhysical)) === preseal.digest,
     'REOPEN_HANDOFF_HELD_STORE_CHANGED');

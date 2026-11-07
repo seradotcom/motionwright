@@ -910,6 +910,13 @@ def graph_manifest(repo, source_inputs, runtime, work):
 def graph_owner_config(shared, database, manifest, resource, project, runtime, source_inputs, work):
     require(CORE_PROJECT.fullmatch(project) is not None, "real-core-project-required")
     result = shared.owner_config(database.parent, manifest=manifest, selections=[(resource, project)])
+    # Add provider-only shutdown only to this isolated Graph owner. The default
+    # shared owner and unrelated app capabilities remain unchanged.
+    previous = 'allow = ' + json.dumps(["driver:motionwright", "providers.execute_bound"])
+    require(result.count(previous) == 1, "provider-release-owner-policy-binding")
+    result = result.replace(previous,
+        'allow = ' + json.dumps(["driver:motionwright", "providers.execute_bound",
+                                 "providers.release_bound"]), 1)
     grants = [("manim-runtime", runtime["runtime"], False), ("manim-work", work, True),
               ("fontconfig", runtime["fontconfig"], False),
               ("manim-runner-root", source_inputs["binaries"]["motionwright-manim-runner"]["path"], False),
@@ -2102,79 +2109,136 @@ def close_complete_cohort():
 
 
 def graph_quiesce_v6(self, *, request_id):
-    """Stop the actual Native provider cohort while the original writer lives.
+    """Retire the original mounted provider lease, not the owner Broker.
 
-    No new client or replay is permitted after this attempt. The pre-handoff
-    proof is built from the original source, child terminal streams, and the
-    kernel-observed empty owner cohort, not a caller's Ready or close boolean.
+    This is a real Broker remove_provider lease shutdown and drained-operation
+    action, authenticated by a new mount reference from the original session.
+    The daemon/owner remain alive for the genuine StudioService closure barrier.
+    A native OS process exit or SQLite WAL handoff is NEVER inferred here.
     """
     require(not self.closed and self.native_quiescence is None,
-            "native-quiescence-one-shot")
-    self.native_quiescence = False  # Irrevocably consume the transition.
+            "provider-release-one-shot")
+    self.native_quiescence = False  # Irrevocably consume the attempt.
     self.client_ledger.seal()
     require(not self.client_ledger.failed
             and all(row["status"] == "READY" for row in self.client_ledger.snapshot()),
-            "native-quiescence-client-unknown")
-    require(self.daemon.child.poll() is None, "native-quiescence-daemon-already-exited")
-    # This source check starts its last Git children BEFORE lifecycle closure.
+            "provider-release-client-unknown")
+    require(self.daemon.child.poll() is None and not self.lifecycle.closed,
+            "provider-release-owner-not-live")
+    require(bool(self.clients) and all(row["status"] == "CLIENT_READY_NOT_ACCEPTANCE"
+            for row in self.clients), "provider-release-client-custody-incomplete")
+    # The final successful original client owns the exact Core session file;
+    # it is not a caller-provided provider ID, grant, endpoint or new session.
+    selected = self.clients[-1]
+    original = selected["actual_mount_observation"]
+    require(original["provider"] == "driver:motionwright"
+            and original["mount"]["root"] == "motionwright-data"
+            and original["mount"]["path"] == str(self.database.parent)
+            and original["mount"]["read"] is True
+            and original["mount"]["write"] is True,
+            "provider-release-original-mount-unavailable")
+    session = Path(selected["session"]["path"])
+    require(session.is_file() and session.is_relative_to(self.paths["clients"]),
+            "provider-release-original-session-changed")
     observe_source_before_close(self)
-    receipt = self.lifecycle.close(reason="explicit-close")
-    cohort, absent = close_complete_cohort()
-    streams = all(child.closed and child.out.eof and child.err.eof
-                  and child.out.failure is None and child.err.failure is None
-                  for child in self.lifecycle.children)
-    daemon_terminal = self.daemon.terminal
-    # The subreaper may report PASS after signaling SIGKILL to surviving
-    # provider children. Such cleanup proves process absence, never a clean
-    # Native provider release: do not convert emergency termination into an
-    # authorized SQLite handoff even when the final descendant tree is empty.
-    require(type(cohort) is dict and cohort.get("status") == "PASS"
-            and cohort.get("authority") == "process_custody_only_not_revocation"
-            and type(cohort.get("signals")) is list and not cohort["signals"],
-            "native-quiescence-owner-processes-not-closed")
-    require(receipt["status"] == "CLOSED" and absent and streams
-            and daemon_terminal is not None
-            and daemon_terminal["status"] in ("SUCCESS", "STOPPED")
-            and daemon_terminal["writers_closed_within_owned_group"] is True,
-            "native-quiescence-owner-processes-not-closed")
+    # Obtain a fresh short-lived binding through the SAME real session and
+    # SAME active lease. This does not grant a new client or replay an effect.
+    fresh_envelope = self.invoke("native-provider-release-mount", self.socket, session,
+        "providers.mount.observe",
+        {"provider": original["provider"], "root": original["mount"]["root"]})
+    # Real CLI JSON is a typed {"ok": true, "data": {...}} envelope.
+    # Unwrapping the whole response as a mount would throw KeyError before
+    # the source-bound lease can ever be released.
+    require(type(fresh_envelope) is dict and fresh_envelope.get("ok") is True
+            and type(fresh_envelope.get("data")) is dict,
+            "provider-release-fresh-mount-cli-envelope-not-authenticated")
+    fresh = fresh_envelope["data"]
+    require(fresh["provider"] == original["provider"]
+            and fresh["connection"] == original["connection"]
+            and fresh["provider_generation"] == original["provider_generation"]
+            and fresh["mount"] == original["mount"]
+            and isinstance(fresh.get("binding_ref"), str)
+            and bool(fresh["binding_ref"]),
+            "provider-release-lease-or-generation-changed")
+    released_envelope = self.invoke("native-provider-release-bound", self.socket, session,
+        "providers.release_bound",
+        {"provider": fresh["provider"], "root": "motionwright-data",
+         "binding_ref": fresh["binding_ref"]})
+    require(type(released_envelope) is dict and released_envelope.get("ok") is True
+            and type(released_envelope.get("data")) is dict,
+            "provider-release-bound-cli-envelope-not-authenticated")
+    released = released_envelope["data"]
+    require(released["provider"] == original["provider"]
+            and released["connection"] == original["connection"]
+            and released["provider_generation"] == original["provider_generation"]
+            and released["binding_ref"] == fresh["binding_ref"]
+            and released["lease_shutdown_completed"] is True
+            and released["native_process_closure_inferred"] is False,
+            "provider-release-broker-lease-not-drained")
+    require(self.daemon.child.poll() is None and not self.lifecycle.closed,
+            "provider-release-killed-original-broker")
     current = file_identity(self.database)
     require((current["device"], current["inode"])
             == (self.database_initial["device"], self.database_initial["inode"]),
-            "native-quiescence-store-replaced")
-    record = {"schema": "motionwright.graph-native-owner-quiescence/1",
-              "source": _OWNER_SPEC["source"], "owner_pid": os.getpid(),
-              "source_verified_before_native_close": True,
-              "native_lifecycle_closed": True, "native_owner_streams_eof": streams,
-              "owner_cohort_absent": absent,
-              "owner_close_original": original_ref(self.lifecycle.evidence / "owner-close.json"),
-              "cohort_original": original_ref(_COHORT_RECEIPT),
-              "original_store": self.database_initial, "current_store": current,
-              "automatic_retry": False, "graph_acceptance": False}
-    path = self.lifecycle.evidence / "owner-native-quiescence.original.json"
+            "provider-release-original-store-changed")
+    # All terminal/stdout/stderr files below are the original OwnedChild output;
+    # no invented provider-free flag can stand in for a real CLI envelope.
+    def command_originals(label):
+        rows = [row for row in self.lifecycle.children if row.label == label]
+        require(len(rows) == 1 and rows[0].terminal is not None
+                and rows[0].terminal["status"] == "SUCCESS",
+                "provider-release-original-command-not-complete")
+        child = rows[0]
+        return {"terminal": original_ref(self.lifecycle.evidence / (label + ".terminal.json")),
+                "stdout": original_ref(child.stdout),
+                "stderr": original_ref(child.stderr)}
+    record = {
+        "schema": "motionwright.graph-mounted-provider-release/1",
+        "source": _OWNER_SPEC["source"], "owner_pid": os.getpid(),
+        "source_verified_before_release": True,
+        "original_session": original_ref(session),
+        "original_mount_observation": original,
+        "fresh_mount_observation": fresh,
+        "provider_release_observation": released,
+        "mount_command_originals": command_originals("native-provider-release-mount"),
+        "release_command_originals": command_originals("native-provider-release-bound"),
+        "provider_lease_shutdown_completed": True,
+        "native_process_closure_inferred": False,
+        "owner_broker_remains_live": True,
+        "original_store": self.database_initial, "current_store": current,
+        "automatic_retry": False, "graph_acceptance": False,
+    }
+    path = self.lifecycle.evidence / "owner-provider-release.original.json"
     new_json(path, record)
     ref = original_ref(path)
     self.native_quiescence = {"ref": ref, "record": record}
-    return {"event": "NATIVE_QUIESCED", "id": request_id, "status": "QUIESCED",
+    return {"event": "PROVIDER_RELEASED", "id": request_id, "status": "RELEASED",
             "receipt_path": ref["path"], "receipt_sha256": ref["sha256"],
-            "owner_pid": os.getpid(), "owner_cohort_absent": True}
+            "owner_pid": os.getpid(), "lease_shutdown_completed": True,
+            "native_process_closure_inferred": False}
 
 
 def graph_native_final_lifecycle_receipt(self, *, reason, native_quiescence):
-    """Reuse the one actual Native cohort shutdown in the later Service final.
+    """Close original Native/Host cohort ONLY after a bound provider release.
 
-    The earlier quiescence already completed the child lifecycle and created
-    its immutable close receipt. Closing that same lifecycle again would turn
-    the legitimate two-phase owner/SQLite handoff into an UNKNOWN final.
+    The upstream providers.release_bound call drains the actual lease but
+    deliberately leaves the Semwright broker and Python owner alive so Studio
+    can checkpoint the original SQLite writer. The *later* original Service
+    closure barrier is the sole permission to close the full owner lifecycle.
     """
-    if type(native_quiescence) is not dict:
-        # This cleanup path cannot yield Graph approval: graph_close_v6 also
-        # records NATIVE_QUIESCENCE_MISSING. Preserve failure custody.
-        return self.lifecycle.close(reason=reason)
-    receipt = getattr(self.lifecycle, "receipt", None)
-    require(self.lifecycle.closed and type(receipt) is dict
-            and receipt.get("status") == "CLOSED" and reason == "explicit-close",
-            "native-quiescence-final-lifecycle-original-not-reusable")
-    return receipt
+    if type(native_quiescence) is dict:
+        record = native_quiescence.get("record")
+        require(not self.lifecycle.closed and type(record) is dict
+                and record.get("schema") == "motionwright.graph-mounted-provider-release/1"
+                and record.get("provider_lease_shutdown_completed") is True
+                and record.get("native_process_closure_inferred") is False
+                and record.get("owner_broker_remains_live") is True
+                and reason == "explicit-close",
+                "graph-provider-release-final-lifecycle-not-ready")
+    # If the release is absent/tainted, cleanup is still mandatory, but the
+    # final caller has already latched PROVIDER_RELEASE_ORIGINAL_MISSING and
+    # cannot publish a positive Graph closure.
+    return self.lifecycle.close(reason=reason)
 
 
 def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="explicit-close"):
@@ -2187,7 +2251,7 @@ def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="expli
         errors.append("SERVICE_BARRIER_INVALID")
     original_quiescence = getattr(self, "native_quiescence", None)
     if type(original_quiescence) is not dict:
-        errors.append("NATIVE_QUIESCENCE_MISSING")
+        errors.append("PROVIDER_RELEASE_ORIGINAL_MISSING")
     try:
         if type(original_quiescence) is dict:
             held = original_quiescence["ref"]
@@ -2196,18 +2260,18 @@ def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="expli
                                           root=self.lifecycle.evidence)
             record = strict_json(raw)
             require(observed == held and record == original_quiescence["record"]
-                    and record["schema"] == "motionwright.graph-native-owner-quiescence/1"
+                    and record["schema"] == "motionwright.graph-mounted-provider-release/1"
                     and record["source"] == _OWNER_SPEC["source"]
                     and record["owner_pid"] == os.getpid()
-                    and record["owner_cohort_absent"] is True
-                    and self.lifecycle.closed and self.lifecycle.receipt["status"] == "CLOSED",
-                    "native-quiescence-original-changed")
-            # The source and binary identities must also survive until final
-            # close. Git proof was captured before the one-way Native stop.
+                    and record["provider_lease_shutdown_completed"] is True
+                    and record["native_process_closure_inferred"] is False
+                    and record["owner_broker_remains_live"] is True
+                    and not self.lifecycle.closed,
+                    "provider-release-original-changed")
             for item in (*self.source_inputs["sources"].values(),
                          *self.source_inputs["binaries"].values()):
                 require(file_identity(item["path"]) == item,
-                        "source-original-changed-after-native-quiescence")
+                        "source-original-changed-after-provider-release")
         else:
             observe_source_before_close(self)
         source_validated = True
@@ -2309,7 +2373,7 @@ def control_messages(stream, *, deadline):
 
 
 def emit(value):
-    if value.get("event") in ("READY", "CLIENT", "NATIVE_QUIESCED") or value.get("status") == "CLOSED":
+    if value.get("event") in ("READY", "CLIENT", "PROVIDER_RELEASED") or value.get("status") == "CLOSED":
         raise_deferred_cancellation()
     raw = (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
     require(len(raw) <= 65536, "owner-public-protocol-bound")

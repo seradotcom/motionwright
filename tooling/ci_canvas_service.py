@@ -9383,6 +9383,249 @@ def graph_validate_allocation_union(observations, caps):
             "members": sum(row["files"] for row in by_id.values()) - 1096, "reservations": len(by_id)}
 
 
+
+def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_path, retained):
+    """Original-case, session-bound release of the actual mounted Native lease.
+
+    The exact source-built Semwright CLI must emit TWO successful original
+    command envelopes from one unchanged Core session. Provider release
+    occurs while the owner broker is alive; the subsequent original Studio
+    WAL-to-DELETE RPC independently proves competing SQLite handles left.
+    A caller's provider-release JSON flag or a daemon STOPPED receipt cannot
+    stand in for the same-session Broker lease drain.
+    """
+    def need_original(ref, max_bytes=GRAPH_BYTES):
+        return graph_json(retained(ref, max_bytes))
+
+    case_root = reopen_path.parent.parent
+    owner_root = case_root / "owner"
+    source = index["source"]
+    original_store = reopen["physical_store_before"]
+    provider_ref = handoff.get("native_provider_release")
+    require(type(provider_ref) is dict
+            and set(provider_ref) == {"path", "sha256", "size_bytes"}
+            and provider_ref["path"] == str(owner_root / "owner-provider-release.original.json")
+            and "native_owner_quiescence" not in handoff,
+            "Graph old Native owner closure cannot replace a bound provider lease release")
+    proof = need_original(provider_ref, 65536)
+    require(proof.get("schema") == "motionwright.graph-mounted-provider-release/1"
+            and proof.get("source") == source
+            and type(proof.get("owner_pid")) is int
+            and proof["owner_pid"] > 1
+            and proof["owner_pid"] != handoff["process_id"]
+            and all(proof.get(flag) is True for flag in
+                    ("source_verified_before_release", "provider_lease_shutdown_completed",
+                     "owner_broker_remains_live"))
+            and all(proof.get(flag) is False for flag in
+                    ("native_process_closure_inferred", "automatic_retry", "graph_acceptance")),
+            "Graph provider lease release source, status or owner identity missing")
+    for key in ("original_store", "current_store"):
+        observation = proof.get(key)
+        require(type(observation) is dict
+                and observation.get("path") == original_store["path"]
+                and type(observation.get("device")) is int
+                and type(observation.get("inode")) is int
+                and str(observation["device"]) == original_store["device"]
+                and str(observation["inode"]) == original_store["inode"],
+                "Graph bound provider release original SQLite identity differs")
+
+    # The lease is bound to the LAST real mounted Native client and its
+    # actual private Core session. Do not accept a newly fabricated session.
+    clients = final.get("client_roster")
+    require(type(clients) is list and clients
+            and all(type(row) is dict and row.get("status") == "READY" for row in clients),
+            "Graph owner original Native client roster is incomplete")
+    selected = clients[-1]
+    client_id = selected.get("client_id")
+    session_ref = proof.get("original_session")
+    require(type(client_id) is str and 1 <= len(client_id) <= 160
+            and "/" not in client_id and "\\" not in client_id and client_id not in (".", "..")
+            and type(session_ref) is dict
+            and set(session_ref) == {"path", "sha256", "size_bytes"}
+            and session_ref == selected.get("session_original")
+            and session_ref["path"] == str(owner_root / "clients" / (client_id + ".session")),
+            "Graph provider lease release session was replaced")
+    retained(session_ref, 256 * 1024)
+    custody = need_original(graph_ref(owner_root / "clients" /
+                                      (client_id + ".custody.json")), GRAPH_BYTES)
+    original_mount = proof.get("original_mount_observation")
+    fresh = proof.get("fresh_mount_observation")
+    released = proof.get("provider_release_observation")
+    require(type(original_mount) is dict
+            and custody.get("actual_mount_observation") == original_mount
+            and original_mount.get("provider") == "driver:motionwright"
+            and type(original_mount.get("connection")) is str
+            and bool(original_mount["connection"])
+            and type(original_mount.get("provider_generation")) is int
+            and original_mount["provider_generation"] >= 0,
+            "Graph provider release mounted source is not the original client")
+    mount = original_mount.get("mount")
+    require(type(mount) is dict and mount.get("root") == "motionwright-data"
+            and mount.get("path") == str(Path(original_store["path"]).parent)
+            and mount.get("read") is True and mount.get("write") is True
+            and mount.get("execute") is False,
+            "Graph provider release not on writable original mount")
+    require(type(fresh) is dict and fresh.get("provider") == original_mount["provider"]
+            and fresh.get("connection") == original_mount["connection"]
+            and fresh.get("provider_generation") == original_mount["provider_generation"]
+            and fresh.get("mount") == mount
+            and type(fresh.get("binding_ref")) is str and bool(fresh["binding_ref"]),
+            "Graph provider release fresh reference did not come from same lease")
+    require(type(released) is dict and released.get("provider") == original_mount["provider"]
+            and released.get("connection") == original_mount["connection"]
+            and released.get("provider_generation") == original_mount["provider_generation"]
+            and released.get("binding_ref") == fresh["binding_ref"]
+            and type(released.get("catalog_revision")) is int
+            and released["catalog_revision"] >= 0
+            and released.get("lease_shutdown_completed") is True
+            and released.get("native_process_closure_inferred") is False,
+            "Graph provider release returned no real drained lease receipt")
+
+    def command_originals(label, command, args, expected):
+        originals_key = "mount_command_originals" if label == "mount" else "release_command_originals"
+        rows = proof.get(originals_key)
+        require(type(rows) is dict and set(rows) == {"terminal", "stdout", "stderr"},
+                "Graph provider release CLI original triple missing")
+        refdir = owner_root
+        for suffix, filename in (("terminal", ".terminal.json"),
+                                 ("stdout", ".stdout.original"),
+                                 ("stderr", ".stderr.original")):
+            ref = rows[suffix]
+            require(type(ref) is dict and set(ref) == {"path", "sha256", "size_bytes"}
+                    and ref["path"] == str(refdir / (("native-provider-release-" + label) + filename)),
+                    "Graph source built release CLI original location changed")
+        terminal = need_original(rows["terminal"], GRAPH_BYTES)
+        require(terminal.get("schema") == "motionwright.native.graph-browser-owner/1"
+                and terminal.get("label") == "native-provider-release-" + label
+                and terminal.get("status") == "SUCCESS"
+                and type(terminal.get("pid")) is int and terminal["pid"] > 1
+                and terminal["pid"] not in (proof["owner_pid"], handoff["process_id"],
+                                            reopen["service_process"]["pid"])
+                and type(terminal.get("exit_code")) is int and terminal["exit_code"] == 0
+                and terminal.get("forced_termination") is False
+                and terminal.get("deadline_exceeded") is False
+                and terminal.get("descendant_cleanup_required") is False
+                and terminal.get("writers_closed_within_owned_group") is True
+                and terminal.get("automatic_retry") is False,
+                "Graph provider CLI command was not a clean original exit")
+        for stream in ("stdout", "stderr"):
+            info = terminal.get(stream)
+            ref = rows[stream]
+            require(type(info) is dict
+                    and info.get("path") == ref["path"]
+                    and info.get("sha256") == ref["sha256"]
+                    and info.get("bytes") == ref["size_bytes"],
+                    "Graph release CLI stdout/stderr terminal did not match original")
+            retained(ref, GRAPH_BYTES)
+        command_intent = need_original(graph_ref(owner_root /
+                   ("native-provider-release-" + label + ".intent.json")), GRAPH_BYTES)
+        expected_argv = [
+            index["binaries"]["semwright"]["path"], "--socket",
+            str(owner_root / "runtime" / "broker.sock"), "--session-file",
+            session_ref["path"], "--json", "execute", command, "--args-json",
+            json.dumps(args, separators=(",", ":")),
+        ]
+        require(type(command_intent) is dict
+                and set(command_intent) == {"schema", "label", "argv", "cwd",
+                                           "automatic_retry", "owned_process_group"}
+                and command_intent.get("schema") == "motionwright.native.graph-browser-owner/1"
+                and command_intent.get("label") == "native-provider-release-" + label
+                and command_intent.get("argv") == expected_argv
+                and command_intent.get("cwd") is None
+                and command_intent.get("automatic_retry") is False
+                and command_intent.get("owned_process_group") is True,
+                "Graph provider release CLI source, same session, args or binding changed")
+        raw = retained(rows["stdout"], GRAPH_BYTES)
+        envelope = graph_json(raw)
+        require(type(envelope) is dict and envelope.get("ok") is True
+                and envelope.get("data") == expected,
+                "Graph provider lease CLI raw typed envelope does not match original")
+        return terminal["pid"]
+
+    mount_pid = command_originals("mount", "providers.mount.observe", {
+        "provider": "driver:motionwright", "root": "motionwright-data",
+    }, fresh)
+    release_pid = command_originals("bound", "providers.release_bound", {
+        "provider": "driver:motionwright", "root": "motionwright-data",
+        "binding_ref": fresh["binding_ref"],
+    }, released)
+    require(mount_pid != release_pid,
+            "Graph provider lease command processes are not independently accounted")
+
+    # The parent owner remains alive through provider retirement and releases
+    # the SQLite-backed Store later. This original output proves the one
+    # provider release reply was emitted by that very owner, before FINAL.
+    parent = need_original(graph_ref(case_root / "owner-parent-terminal.original.json"),
+                           4 * GRAPH_BYTES)
+    require(parent.get("exit", {}).get("process_id") == proof["owner_pid"]
+            and parent["exit"].get("code") == 0 and parent["exit"].get("signal") is None
+            and parent.get("raw", {}).get("stdout", {}).get("eof") is True,
+            "Graph provider lease release lost its live owner original")
+    parent_stderr = parent["raw"].get("stderr")
+    require(type(parent_stderr) is dict
+            and set(parent_stderr) == {"path", "sha256", "size_bytes", "eof"}
+            and parent_stderr["path"] == str(case_root / "raw" / "python-owner.stderr.original")
+            and parent_stderr["eof"] is True
+            and type(parent_stderr["size_bytes"]) is int
+            and 0 <= parent_stderr["size_bytes"] <= 4 * GRAPH_BYTES
+            and type(parent_stderr["sha256"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}", parent_stderr["sha256"]),
+            "Graph original owner stderr missing, unclosed or foreign")
+    stderr_ref = {key: parent_stderr[key] for key in ("path", "sha256", "size_bytes")}
+    stderr_original = retained(stderr_ref, 4 * GRAPH_BYTES)
+    require(len(stderr_original) == stderr_ref["size_bytes"]
+            and hashlib.sha256(stderr_original).hexdigest() == stderr_ref["sha256"],
+            "Graph original owner stderr bytes do not match retained source")
+    parent_stdout = parent["raw"]["stdout"]
+    parent_ref = {key: parent_stdout[key] for key in ("path", "sha256", "size_bytes")}
+    parent_raw = retained(parent_ref, 4 * GRAPH_BYTES)
+    require(parent_raw.endswith(b"\n"),
+            "Graph original owner provider lease stdout incomplete")
+    messages = [graph_json(line) for line in parent_raw.splitlines()]
+    require(bool(messages) and all(type(message) is dict and
+            message.get("event") in ("READY", "CLIENT", "PROVIDER_RELEASED",
+                                     "FINAL_RECEIPT") for message in messages)
+            and messages[-1].get("event") == "FINAL_RECEIPT",
+            "Graph original Native owner emitted ERROR, unknown or post-final event")
+    matches = [(i, msg) for i, msg in enumerate(messages)
+               if msg.get("event") == "PROVIDER_RELEASED"]
+    final_rows = [i for i, msg in enumerate(messages)
+                  if msg.get("event") == "FINAL_RECEIPT"]
+    require(len(matches) == len(final_rows) == 1 and matches[0][0] < final_rows[0],
+            "Graph original owner provider release event missing or replayed")
+    original_event = {
+        "event": "PROVIDER_RELEASED", "id": "release-" + case_root.name,
+        "status": "RELEASED", "receipt_path": provider_ref["path"],
+        "receipt_sha256": provider_ref["sha256"], "owner_pid": proof["owner_pid"],
+        "lease_shutdown_completed": True, "native_process_closure_inferred": False,
+    }
+    require(matches[0][1] == original_event,
+            "Graph original source-bound owner release event differs")
+
+    # The provider release does not close the daemon. Only the later actual
+    # Service barrier permits the final owner lifecycle and cohort to close.
+    owner_final = need_original(final["owner_close"], 4 * GRAPH_BYTES)
+    lifecycle = owner_final.get("lifecycle")
+    cohort = owner_final.get("cohort")
+    tree = cohort.get("complete_empty_descendant_tree", {}) if type(cohort) is dict else {}
+    require(owner_final.get("status") == "CLOSED"
+            and owner_final.get("source_validated_before_close") is True
+            and owner_final.get("owner_streams_eof") is True
+            and type(lifecycle) is dict and lifecycle.get("status") == "CLOSED"
+            and lifecycle.get("taints") == [] and lifecycle.get("start_failures") == []
+            and type(cohort) is dict and cohort.get("status") == "PASS"
+            and cohort.get("authority") == "process_custody_only_not_revocation"
+            and cohort.get("signals") == []
+            and tree.get("root_observed") is True and tree.get("truncated") is False
+            and type(tree.get("processes")) is list
+            and len(tree["processes"]) == 1
+            and type(tree["processes"][0]) is dict
+            and tree["processes"][0].get("pid") == proof["owner_pid"],
+            "Graph final source-owned Native owner closure/cohort differs after lease release")
+    return {"owner_pid": proof["owner_pid"],
+            "release_cli_pids": (mount_pid, release_pid)}
+
+
 def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, retained):
     """Independently join the original writer's WAL handoff and new read-only child.
 
@@ -9455,133 +9698,11 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             and preseal.get("binary") == index["binaries"]["native_graph_session"],
             "Graph original Native writer launch/source")
 
-    # The Native provider owns a *separate* SQLite connection. The original
-    # writer may switch WAL to DELETE only after this source-owned provider
-    # cohort actually closes. A producer-supplied QUIESCED flag is insufficient.
-    native_ref = handoff.get("native_owner_quiescence")
-    require(type(native_ref) is dict and set(native_ref) == {"path", "sha256", "size_bytes"},
-            "Graph Native owner quiescence original missing")
-    native = original(native_ref, 65536)
-    require(native.get("schema") == "motionwright.graph-native-owner-quiescence/1"
-            and native.get("source") == source
-            and type(native.get("owner_pid")) is int and native["owner_pid"] > 1
-            and native["owner_pid"] != writer_pid
-            and all(native.get(key) is True for key in (
-                "source_verified_before_native_close", "native_lifecycle_closed",
-                "native_owner_streams_eof", "owner_cohort_absent"))
-            and native.get("automatic_retry") is False
-            and native.get("graph_acceptance") is False,
-            "Graph actual Native provider quiescence/source/owner identity")
-    for observation in (native.get("original_store"), native.get("current_store")):
-        require(type(observation) is dict and observation.get("path") == physical["path"]
-                and type(observation.get("device")) is int
-                and type(observation.get("inode")) is int
-                and str(observation["device"]) == physical["device"]
-                and str(observation["inode"]) == physical["inode"],
-                "Graph quiesced provider no longer owns original physical SQLite")
-    # Bind the Native owner evidence to this particular case, not just a
-    # hash-valid JSON object elsewhere in an archive or another owner's tree.
-    # The source producer writes all three paths at fixed original locations.
-    native_owner_root = reopen_path.parent.parent / "owner"
-    require(native_ref["path"] == str(native_owner_root / "owner-native-quiescence.original.json")
-            and type(native.get("owner_close_original")) is dict
-            and native["owner_close_original"].get("path") == str(native_owner_root / "owner-close.json")
-            and type(native.get("cohort_original")) is dict
-            and native["cohort_original"].get("path") == str(native_owner_root / "complete-descendant-scope.original.json"),
-            "Graph Native owner evidence belongs to a foreign original case")
-    native_lifecycle = original(native["owner_close_original"], GRAPH_BYTES)
-    native_cohort = original(native["cohort_original"], 4 * GRAPH_BYTES)
-    owner_final = original(final["owner_close"], 4 * GRAPH_BYTES)
-    # 'CLOSED' alone does not attest daemon shutdown. The real first-party
-    # OwnerLifecycle.close retains the full terminal roster and the original
-    # daemon stdout/stderr. Reject fabricated scalar closures and tainted
-    # shutdowns before accepting a WAL-to-DELETE handoff.
-    terminals = native_lifecycle.get("terminals")
-    require(native_lifecycle.get("status") == "CLOSED"
-            and native_lifecycle.get("automatic_retry") is False
-            and native_lifecycle.get("taints") == []
-            and native_lifecycle.get("start_failures") == []
-            and type(terminals) is list and bool(terminals)
-            and all(type(t) is dict and type(t.get("label")) is str
-                    and t.get("status") in ("SUCCESS", "STOPPED")
-                    and t.get("automatic_retry") is False for t in terminals)
-            and len(set(t["label"] for t in terminals)) == len(terminals),
-            "Graph Native owner lifecycle original lacks untainted terminal roster")
-    daemon = [t for t in terminals if t["label"] == "owner-restricted"]
-    require(len(daemon) == 1 and daemon[0].get("reason") == "explicit-close"
-            and type(daemon[0].get("pid")) is int and daemon[0]["pid"] > 1
-            and daemon[0]["pid"] not in (native["owner_pid"], writer_pid)
-            and daemon[0].get("deadline_exceeded") is False
-            and daemon[0].get("forced_termination") is False
-            and daemon[0].get("descendant_cleanup_required") is False
-            and daemon[0].get("writers_closed_within_owned_group") is True
-            and type(daemon[0].get("group_observation")) is dict
-            and daemon[0]["group_observation"].get("writers_closed_within_owned_group") is True,
-            "Graph Native daemon original was not a clean owned-process shutdown")
-    for stream in ("stdout", "stderr"):
-        identity = daemon[0].get(stream)
-        require(type(identity) is dict
-                and identity.get("path") == str(native_owner_root / ("owner-restricted." + stream + ".original"))
-                and type(identity.get("bytes")) is int and 0 <= identity["bytes"] <= 64 * GRAPH_BYTES
-                and type(identity.get("sha256")) is str and re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]),
-                "Graph Native daemon terminal stream original not source-bound")
-        source_bytes = retained({"path": identity["path"], "sha256": identity["sha256"],
-                                 "size_bytes": identity["bytes"]}, 64 * GRAPH_BYTES)
-        require(len(source_bytes) == identity["bytes"]
-                and hashlib.sha256(source_bytes).hexdigest() == identity["sha256"],
-                "Graph Native daemon terminal stream not retained")
-    # A CLOSED owner lifecycle by itself is insufficient: Semwrightd must
-    # actually have finished its Broker drain, not merely exited by SIGTERM.
-    # Its argv and retained terminal are independently bound to this case.
-    native_daemon = daemon[0]
-    require(native_daemon.get("status") == "STOPPED"
-            and type(native_daemon.get("exit_code")) is int
-            and native_daemon["exit_code"] == 0
-            and native_daemon.get("termination_requested") is True
-            and native_daemon.get("forced_termination") is False
-            and native_daemon.get("deadline_exceeded") is False
-            and native_daemon.get("descendant_cleanup_required") is False,
-            "Graph original Semwright daemon did not exit after graceful drain")
-    daemon_intent = original(graph_ref(native_owner_root / "owner-restricted.intent.json"),
-                             GRAPH_BYTES)
-    require(type(daemon_intent) is dict
-            and set(daemon_intent) == {"schema", "label", "argv", "cwd",
-                                       "automatic_retry", "owned_process_group"}
-            and daemon_intent["schema"] == "motionwright.native.graph-browser-owner/1"
-            and daemon_intent["label"] == "owner-restricted"
-            and daemon_intent["cwd"] is None
-            and daemon_intent["automatic_retry"] is False
-            and daemon_intent["owned_process_group"] is True
-            and daemon_intent["argv"] == [
-                index["binaries"]["semwrightd"]["path"], "--config",
-                str(native_owner_root / "config" / "owner-restricted.toml"),
-                "--socket", str(native_owner_root / "runtime" / "broker.sock")],
-            "Graph daemon source-built original CLI is not the reviewed broker")
-    daemon_terminal = original(
-        graph_ref(native_owner_root / "owner-restricted.terminal.json"), GRAPH_BYTES)
-    require(daemon_terminal == native_daemon
-            and daemon_terminal.get("schema") == "motionwright.native.graph-browser-owner/1",
-            "Graph original daemon terminal differs from lifecycle source custody")
-    cohort_tree = native_cohort.get("complete_empty_descendant_tree", {})
-    owner_processes = cohort_tree.get("processes", [])
-    # The Linux subreaper may return PASS after emergency SIGTERM/SIGKILL of
-    # surviving descendants. An empty tree alone is custody, not clean Native
-    # provider release before the original SQLite WAL-to-DELETE handoff.
-    require(native_lifecycle.get("status") == "CLOSED"
-            and native_cohort.get("status") == "PASS"
-            and native_cohort.get("authority") == "process_custody_only_not_revocation"
-            and type(native_cohort.get("signals")) is list
-            and not native_cohort["signals"]
-            and cohort_tree.get("root_observed") is True
-            and cohort_tree.get("truncated") is False
-            and type(owner_processes) is list and len(owner_processes) == 1
-            and owner_processes[0].get("pid") == native["owner_pid"]
-            and owner_final.get("status") == "CLOSED"
-            and owner_final.get("owner_streams_eof") is True
-            and owner_final.get("source_validated_before_close") is True
-            and owner_final.get("lifecycle") == native_lifecycle
-            and owner_final.get("cohort") == native_cohort,
-            "Graph Native owner cohort did not close before writer read-only handoff")
+    verified_provider = graph_verify_mounted_provider_release(
+        handoff, index, final, reopen, reopen_path, retained)
+    require(type(verified_provider) is dict
+            and set(verified_provider) == {"owner_pid", "release_cli_pids"},
+            "Graph mounted Native provider release original not independently verified")
 
     closure = original(closure_ref, 4 * GRAPH_BYTES)
     require(closure_ref == final["service_closure"] and closure.get("status") == "CLOSED"
@@ -9657,7 +9778,8 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
 
     child_pid = reopen["service_process"]["pid"]
     require(type(child_pid) is int and child_pid > 1
-            and child_pid not in (writer_pid, native["owner_pid"], daemon[0]["pid"]),
+            and child_pid not in (writer_pid, verified_provider["owner_pid"],
+                                  *verified_provider["release_cli_pids"]),
             "Graph owner/writer/read-only reader process identities must be independent")
     reader_rows = raw_lines(retained({k: reopen["raw"]["stdout"][k]
                             for k in ("path", "sha256", "size_bytes")}, GRAPH_BYTES))

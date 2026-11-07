@@ -38,7 +38,7 @@ test('Graph reader cannot claim handoff without real producer, EOF and original 
   assert.match(readback, /REOPEN_HANDOFF_REQUEST_NOT_IN_WRITER_RAW/);
 });
 
-test('Graph Native cohort must close before writer WAL-to-DELETE handoff', () => {
+test('Graph mounted provider lease must be released before writer WAL-to-DELETE handoff', () => {
   const handoff = fs.readFileSync(
     new URL('../../tests/support/graph-owner/same_store_reopen.mjs', import.meta.url), 'utf8');
   const factory = fs.readFileSync(
@@ -48,17 +48,12 @@ test('Graph Native cohort must close before writer WAL-to-DELETE handoff', () =>
   const nativeStop = handoff.indexOf('await factory.quiesceNativeOwner()');
   const writerSwitch = handoff.indexOf("command: 'prepare_read_only_handoff', args: null");
   assert.ok(nativeStop > 0 && writerSwitch > nativeStop);
-  assert.match(handoff, /native_owner_quiescence: nativeQuiescence\.ref/);
-  assert.match(handoff, /REOPEN_HANDOFF_NATIVE_OWNER_NOT_QUIESCENT/);
-  assert.match(factory, /NATIVE_QUIESCED/);
-  assert.match(factory, /ownerClose\.status === 'CLOSED' && cohort\.status === 'PASS'/);
-  assert.match(factory, /observed\.processes\.length === 1/);
-  // Subreaper cleanup can report an empty tree after emergency SIGKILL.
-  // Neither owner nor parent may convert that into Native clean-close proof.
-  assert.match(factory, /Array\.isArray\(cohort\.signals\) && cohort\.signals\.length === 0/);
-  assert.match(owner, /type\(cohort\.get\("signals"\)\) is list and not cohort\["signals"\]/);
+  assert.match(handoff, /native_provider_release: nativeQuiescence\.ref/);
+  assert.match(handoff, /REOPEN_HANDOFF_PROVIDER_RELEASE_NOT_AUTHENTIC/);
+  assert.match(factory, /PROVIDER_RELEASED/);
+  assert.match(factory, /released\.lease_shutdown_completed === true/);
   assert.match(owner, /def graph_quiesce_v6\(self, \*, request_id\):/);
-  assert.match(owner, /self\.lifecycle\.close\(reason="explicit-close"\)/);
-  assert.match(owner, /cohort, absent = close_complete_cohort\(\)/);
-  assert.match(owner, /"NATIVE_QUIESCENCE_MISSING"/);
+  assert.match(owner, /"providers\.release_bound"/);
+  assert.match(owner, /"provider_lease_shutdown_completed": True/);
+  assert.match(owner, /"PROVIDER_RELEASE_ORIGINAL_MISSING"/);
 });
