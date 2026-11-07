@@ -95,7 +95,10 @@ class GraphNativeQuiescenceSourceTests(unittest.TestCase):
             lifecycle=self.lifecycle, daemon=self.daemon, database=self.db,
             database_initial=identity)
         cohort_path = self.root / "complete-descendant-scope.original.json"
-        cohort_path.write_bytes(canonical({"status": "PASS", "synthetic": True}))
+        self.cohort = {"status": "PASS", "synthetic": True,
+                       "signals": [], "reaped": [],
+                       "authority": "process_custody_only_not_revocation"}
+        cohort_path.write_bytes(canonical(self.cohort))
 
         def source_check(_owner):
             self.source_checks += 1
@@ -103,7 +106,7 @@ class GraphNativeQuiescenceSourceTests(unittest.TestCase):
                 raise ValueError(self.source_error)
 
         def cohort():
-            return ({"status": "PASS", "synthetic": True}, self.absent)
+            return (self.cohort, self.absent)
 
         def new_json(path, value):
             with Path(path).open("xb") as output:
@@ -173,6 +176,18 @@ class GraphNativeQuiescenceSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "native-quiescence-final-lifecycle"):
             final(self.owner, reason="explicit-close",
                   native_quiescence=self.owner.native_quiescence)
+        self.assertEqual(self.lifecycle.close_calls, 1)
+
+    def test_emergency_sigkill_cannot_claim_clean_native_quiescence(self):
+        # The real Linux subreaper can return status=PASS after SIGKILLing
+        # surviving provider descendants. That proves absence, not an
+        # authorized and settled provider shutdown before SQLite handoff.
+        self.cohort["signals"] = [{"pid": 43210, "signal": 9}]
+        (self.root / "complete-descendant-scope.original.json").write_bytes(
+            canonical(self.cohort))
+        with self.assertRaisesRegex(ValueError, "native-quiescence-owner-processes-not-closed"):
+            self.quiesce(self.owner, request_id="q-sigkill")
+        self.assert_no_positive_original()
         self.assertEqual(self.lifecycle.close_calls, 1)
 
     def test_foreign_cohort_keeps_transition_denied_without_a_positive_receipt(self):

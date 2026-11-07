@@ -701,7 +701,11 @@ export class GraphCaseFactoryCore {
     const cohort = strictJSON(matchRef(proof.cohort_original.path,
       proof.cohort_original, 4 * 1024 * 1024).data);
     const observed = cohort.complete_empty_descendant_tree;
+    // The kernel subreaper's PASS only establishes an empty process tree.
+    // A recovery SIGTERM/SIGKILL on an orphan is not clean Native shutdown.
     need(ownerClose.status === 'CLOSED' && cohort.status === 'PASS'
+      && cohort.authority === 'process_custody_only_not_revocation'
+      && Array.isArray(cohort.signals) && cohort.signals.length === 0
       && observed?.root_observed === true && observed?.truncated === false
       && Array.isArray(observed.processes) && observed.processes.length === 1
       && observed.processes[0]?.pid === this.ready.owner_pid,

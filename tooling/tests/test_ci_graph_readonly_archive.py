@@ -97,9 +97,16 @@ class InertOriginals:
                    "identity_request_original": iref, "identity_response": writer_results[2]}
         owner_pid = 777
         lifecycle = {"status": "CLOSED"}
-        cohort = {"status": "PASS", "complete_empty_descendant_tree": {
-            "root_observed": True, "truncated": False,
-            "processes": [{"pid": owner_pid}]}}
+        cohort = {"status": "PASS", "authority": "process_custody_only_not_revocation",
+                  "signals": ([{"pid": 789, "signal": 9}]
+                              if self.mode == "native_quiescence_emergency_signal" else []),
+                  "complete_empty_descendant_tree": {
+                      "root_observed": True, "truncated": False,
+                      "processes": [{"pid": owner_pid}]}}
+        if self.mode == "native_quiescence_cleanup_sigterm":
+            cohort["signals"] = [{"pid": 789, "signal": 15}]
+        if self.mode == "native_quiescence_missing_signal_inventory":
+            cohort.pop("signals")
         if self.mode == "native_quiescence_closure_unknown":
             lifecycle["status"] = "UNKNOWN"
         if self.mode == "native_quiescence_extra_cohort_child":
@@ -243,7 +250,10 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
         for mode in ("native_quiescence_missing", "native_quiescence_wrong_source",
                      "native_quiescence_wrong_pid", "native_quiescence_foreign_store",
                      "native_quiescence_closure_unknown",
-                     "native_quiescence_extra_cohort_child"):
+                     "native_quiescence_extra_cohort_child",
+                     "native_quiescence_emergency_signal",
+                     "native_quiescence_cleanup_sigterm",
+                     "native_quiescence_missing_signal_inventory"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

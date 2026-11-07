@@ -2124,6 +2124,14 @@ def graph_quiesce_v6(self, *, request_id):
                   and child.out.failure is None and child.err.failure is None
                   for child in self.lifecycle.children)
     daemon_terminal = self.daemon.terminal
+    # The subreaper may report PASS after signaling SIGKILL to surviving
+    # provider children. Such cleanup proves process absence, never a clean
+    # Native provider release: do not convert emergency termination into an
+    # authorized SQLite handoff even when the final descendant tree is empty.
+    require(type(cohort) is dict and cohort.get("status") == "PASS"
+            and cohort.get("authority") == "process_custody_only_not_revocation"
+            and type(cohort.get("signals")) is list and not cohort["signals"],
+            "native-quiescence-owner-processes-not-closed")
     require(receipt["status"] == "CLOSED" and absent and streams
             and daemon_terminal is not None
             and daemon_terminal["status"] in ("SUCCESS", "STOPPED")

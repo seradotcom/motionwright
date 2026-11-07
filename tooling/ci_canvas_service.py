@@ -9484,8 +9484,14 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
     owner_final = original(final["owner_close"], 4 * GRAPH_BYTES)
     cohort_tree = native_cohort.get("complete_empty_descendant_tree", {})
     owner_processes = cohort_tree.get("processes", [])
+    # The Linux subreaper may return PASS after emergency SIGTERM/SIGKILL of
+    # surviving descendants. An empty tree alone is custody, not clean Native
+    # provider release before the original SQLite WAL-to-DELETE handoff.
     require(native_lifecycle.get("status") == "CLOSED"
             and native_cohort.get("status") == "PASS"
+            and native_cohort.get("authority") == "process_custody_only_not_revocation"
+            and type(native_cohort.get("signals")) is list
+            and not native_cohort["signals"]
             and cohort_tree.get("root_observed") is True
             and cohort_tree.get("truncated") is False
             and type(owner_processes) is list and len(owner_processes) == 1
