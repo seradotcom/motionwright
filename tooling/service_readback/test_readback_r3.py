@@ -11,7 +11,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import types
@@ -136,7 +138,7 @@ class RuntimeFixture(unittest.TestCase):
         FakeReader.fail_rpc = False
         FakeReader.fail_close = False
 
-    def run_main(self, fail_names=(), mutate_report=None, omit_flags=()):
+    def run_main(self, fail_names=(), mutate_report=None, omit_flags=(), extra_flags=()):
         if mutate_report:
             value = json.loads(self.report.read_text()); mutate_report(value); dump(self.report, value)
         args = ['readback', '--results-root', str(self.results), '--output', str(self.output), '--expected-cases', '1',
@@ -149,6 +151,7 @@ class RuntimeFixture(unittest.TestCase):
         for flag in omit_flags:
             index = args.index(flag)
             del args[index:index + (1 if flag in ('--provenance-reviewed', '--execute-readback') else 2)]
+        args.extend(extra_flags)
         original = reader_module.write_json
         def failing(path, value, *a, **kw):
             if Path(path).name in fail_names:
@@ -350,6 +353,102 @@ class RosterAndDurabilityTests(RuntimeFixture):
             reader_module.report_relative(r'E:\run\other\copy.json', 'E:/run/artifacts')
         with self.assertRaises(ValueError):
             reader_module.report_relative(r'E:\run\artifacts\case-id\..\other\copy.json', 'E:/run/artifacts')
+
+
+
+@unittest.skipUnless(os.name == 'posix', 'Physical inode preflight runs only on POSIX')
+class PhysicalOriginalRootTests(RuntimeFixture):
+    """Source-only FakeReader tests; they neither create nor re-admit a real CAS Store."""
+
+    def make_physical_source(self, *, invalid_root_identity=False, wrong_source_path=False):
+        target = self.results / 'case-one'
+        source = target / 'service'
+        blobs = source / 'blobs'
+        blobs.mkdir(parents=True)
+        root_id = '01a1a823-b250-7157-94b2-46f874da5dfe'
+        control = source / ('.motionwright-cas-' + root_id)
+        control.mkdir()
+        lock = control / 'root.lock'
+        lock.touch()
+        (source / 'studio.sqlite3').write_bytes((target / 'closed-store' / 'store' / 'studio.sqlite3').read_bytes())
+        token = lambda path: f"unix:{path.stat().st_dev}:{path.stat().st_ino}"
+        anchor = {'format_version': 1, 'root_id': root_id, 'canonical_root': str(blobs.resolve()),
+                  'control': str(control.resolve()), 'directory_id': token(blobs),
+                  'control_id': token(control), 'lock_id': token(lock)}
+        if invalid_root_identity:
+            anchor['directory_id'] = 'unix:0:0'
+        dump(blobs / '.motionwright-cas-root-v1.json', anchor)
+        store = target / 'closed-store' / 'store'
+        shutil.copytree(source, store, dirs_exist_ok=True)
+        manifest_path = target / 'closed-store' / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['entries'] = reader_module.tree_entries(store)
+        manifest['sourceDirectory'] = str(source) if not wrong_source_path else str(source) + '-wrong'
+        manifest['snapshotDirectory'] = str(store)
+        digest = reader_module.digest_json(manifest['entries'])
+        for key in ('sourceBeforeSha256', 'sourceAfterSha256', 'snapshotSha256'):
+            manifest[key] = digest
+        dump(manifest_path, manifest)
+        outcomes_path = target / 'closed-store-outcomes.json'
+        outcomes = json.loads(outcomes_path.read_text())
+        outcomes['capture'] = manifest
+        dump(outcomes_path, outcomes)
+        attachment = target / 'attachments' / 'closed-store-outcomes-exact-copy.json'
+        attachment.write_bytes(outcomes_path.read_bytes())
+        return source
+
+    def test_fresh_reader_uses_real_original_physical_store_not_a_copy(self):
+        source = self.make_physical_source()
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 0, report)
+        self.assert_executed_once()
+        self.assertEqual(FakeReader.instances[0].command[2], str(source / 'studio.sqlite3'))
+        self.assertEqual(report['cases'][0]['readback']['readbackMode'], 'original_physical_store')
+        self.assertEqual(report['cases'][0]['readback']['physicalSourceBeforeSha256'],
+                         report['cases'][0]['readback']['physicalSourceAfterSha256'])
+        self.assertEqual(list((self.output / 'readback-copies').glob('*/store')), [])
+
+    def test_copied_directory_with_a_new_inode_is_rejected_before_transport(self):
+        source = self.make_physical_source()
+        preserved = self.base / 'original-moved-away'
+        source.rename(preserved)  # Physical original remains valid, but is not the target path.
+        shutil.copytree(preserved, source)  # Exact bytes, different directory identities.
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1)
+        self.assertEqual(FakeReader.instances, [])
+        self.assertFalse(report['transportExecuted'])
+        self.assertIn('physical identity', ' '.join(report['errors']))
+
+    def test_missing_original_physical_store_blocks_transport(self):
+        source = self.make_physical_source()
+        shutil.rmtree(source)
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1)
+        self.assertEqual(FakeReader.instances, [])
+        self.assertIn('missing or redirected', ' '.join(report['errors']))
+
+    def test_forged_root_identity_blocks_transport(self):
+        self.make_physical_source(invalid_root_identity=True)
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1)
+        self.assertEqual(FakeReader.instances, [])
+        self.assertIn('physical identity', ' '.join(report['errors']))
+
+    def test_unbound_source_path_blocks_transport(self):
+        self.make_physical_source(wrong_source_path=True)
+        code, raised, report, _, _ = self.run_main(extra_flags=('--physical-original-store',))
+        self.assertIsNone(raised); self.assertEqual(code, 1)
+        self.assertEqual(FakeReader.instances, [])
+        self.assertIn('captured original source directory', ' '.join(report['errors']))
+
+    def test_physical_mode_without_executed_transport_is_rejected(self):
+        self.make_physical_source()
+        code, raised, report, _, _ = self.run_main(omit_flags=('--execute-readback',),
+                                                    extra_flags=('--physical-original-store',))
+        self.assertIsInstance(raised, ValueError)
+        self.assertIsNone(code)  # CLI rejects the invalid mode before writing any report.
+        self.assertIsNone(report)
+        self.assertEqual(FakeReader.instances, [])
 
 
 if __name__ == '__main__':

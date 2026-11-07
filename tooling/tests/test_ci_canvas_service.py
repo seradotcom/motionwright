@@ -3972,12 +3972,15 @@ class Studio68SourceContracts(unittest.TestCase):
         report = {"status": "READBACK_VERIFIED", "errors": [], "expectedCases": 68,
             "backendSourceShaAssertedByCaller": gate.STUDIO68_SOURCE, "playwrightExitCodeReportedByCaller": 0,
             "transportAttempted": True, "transportExecuted": True,
+            "readbackMode": "original_physical_store",
             "binary": binary, "receipt": {"status": "WRITTEN"},
             "observationJournal": {"status": "CLOSED", "recordsAttempted": 206, "recordsConfirmed": 206}, "cases": []}
         ids = [r[4] for r in gate.STUDIO68_CASES]
         for index, identifier in enumerate(ids):
             report["cases"].append({"case": "owned-case-" + str(index), "captureStatus": "VERIFIED", "errors": [],
                 "readback": {"status": "VERIFIED", "errors": [], "transportAttempted": True, "transportExecuted": True,
+                             "readbackMode": "original_physical_store",
+                             "physicalSourceBeforeSha256": "f" * 64, "physicalSourceAfterSha256": "f" * 64,
                              "processId": index + 100, "rpcCount": 5, "primaryFailure": None,
                              "projectEqual": True, "journalEqual": True, "receipt": {"status": "WRITTEN"},
                              "close": {"clean": True, "errors": [], "taints": [], "returnCode": 0,
@@ -3996,7 +3999,8 @@ class Studio68SourceContracts(unittest.TestCase):
                 gate.studio68_readback_admission(report, command, binary, ids)
 
     def test_missing_duplicate_store_pending_journal_foreign_binary_or_F_does_not_close(self):
-        for mutation in ("missing", "duplicate", "id", "capture", "readback", "journal", "binary", "source", "boolean-exit"):
+        for mutation in ("missing", "duplicate", "id", "capture", "readback", "journal", "binary", "source", "mode",
+                         "physical-inventory", "boolean-exit"):
             report, binary, ids = self.readback_fixture()
             report = copy.deepcopy(report)
             if mutation == "missing": report["cases"].pop()
@@ -4007,6 +4011,8 @@ class Studio68SourceContracts(unittest.TestCase):
             elif mutation == "journal": report["observationJournal"]["recordsConfirmed"] = 139
             elif mutation == "binary": report["binary"]["sha256"] = "b" * 64
             elif mutation == "source": report["backendSourceShaAssertedByCaller"] = "b" * 40
+            elif mutation == "mode": report["cases"][0]["readback"]["readbackMode"] = "archive_extracted_copy"
+            elif mutation == "physical-inventory": report["cases"][0]["readback"]["physicalSourceAfterSha256"] = "0" * 64
             else: report["playwrightExitCodeReportedByCaller"] = False
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 gate.studio68_readback_admission(report, studio68_command_fixture(), binary, ids)
@@ -4020,6 +4026,7 @@ class Studio68SourceContracts(unittest.TestCase):
                               ("--expected-provenance-sha256", "c" * 64), ("--expected-binary-sha256", "d" * 64)):
             self.assertEqual(args[args.index(option) + 1], value)
         self.assertIn("--execute-readback", args)
+        self.assertEqual(args.count("--physical-original-store"), 1)
         self.assertEqual([item for item in args if item.endswith("-reviewed")], ["--provenance-reviewed"])
         for name, expected in gate.STUDIO68_READER_PINS.items():
             self.assertEqual(gate.digest(PATH.parents[1] / name)["sha256"], expected)
