@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-import yaml
+import re
 
 TOOLING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLING))
@@ -15,6 +15,44 @@ import native_evidence_projection as core
 import native_film180_evidence_selection as selection
 import native_fixedtxt_g2_admission as fixed
 import native_fixedtxt_workflow as route
+
+def exact_clock_script(workflow_text, job_name):
+    """Extract only the reviewed owner's original inline clock without PyYAML.
+
+    The private-evidence custody venv contains no PyYAML. An unrelated job,
+    duplicate clock step, missing literal marker, or changed indentation fails
+    before a source test can compare the Python AST.
+    """
+    lines = workflow_text.splitlines()
+    header = "  " + job_name + ":"
+    if lines.count(header) != 1:
+        raise ValueError("FixedTxt reviewed owner job missing or repeated")
+    first = lines.index(header) + 1
+    limit = next((i for i in range(first, len(lines))
+                  if re.fullmatch(r"  [a-z][a-z0-9-]*:", lines[i])), len(lines))
+    scope = lines[first:limit]
+    name = "      - name: Retain the one original clock before checkout and preparation"
+    if scope.count(name) != 1:
+        raise ValueError("FixedTxt literal original clock step missing or repeated")
+    start = scope.index(name)
+    stop = next((i for i in range(start + 1, len(scope))
+                 if scope[i].startswith("      - name: ")
+                 or scope[i].startswith("      - uses: ")), len(scope))
+    step = scope[start:stop]
+    if step.count("        id: fixedtxt_clock") != 1 or step.count("        run: |") != 1:
+        raise ValueError("FixedTxt original clock step identity missing")
+    marker = "          python3 -B - <<'PY_CLOCK'"
+    end = "          PY_CLOCK"
+    if step.count(marker) != 1 or step.count(end) != 1:
+        raise ValueError("FixedTxt inline original clock missing or repeated")
+    open_at, close_at = step.index(marker), step.index(end)
+    if not open_at < close_at:
+        raise ValueError("FixedTxt inline clock order changed")
+    body = step[open_at + 1:close_at]
+    if not body or any(line and not line.startswith("          ") for line in body):
+        raise ValueError("FixedTxt inline clock indentation changed")
+    return "\n".join(line[10:] if line else "" for line in body) + "\n"
+
 
 # Capacity-only data; this is not an admitted request, R28 or Native result.
 CAPACITY_REQUEST = {'fixture': 'fixed-multirun-control', 'limits': {'attempt_seconds': 3900, 'capsule_bytes': 268435456, 'custody_seconds': 300, 'files': 1024}, 'role_limits': {'authored-film': 1048576, 'canvas-observations': 4194304, 'case-final-custody': 1048576, 'case-inputs': 1048576, 'compile-component': 1048576, 'compiled-project': 1048576, 'cycle-inputs': 1048576, 'cycle-observation': 1048576, 'decoder-stderr': 65536, 'decoder-terminal': 65536, 'final-custody': 1048576, 'fixture-expectations': 1048576, 'fixture-set': 1048576, 'font-inventory': 1048576, 'font-readiness': 1048576, 'generated-inventory': 1048576, 'host-capture': 2097152, 'host-readback': 2097152, 'host-readback-intent': 1048576, 'host-return-snapshot': 1048576, 'host-session': 1048576, 'host-source-binding': 1048576, 'host-stdin': 2097152, 'host-terminal': 1048576, 'native-frame-manifest': 1048576, 'native-observations': 8388608, 'native-observations-receipt': 1048576, 'native-png': 786432, 'native-result': 1048576, 'owner-close': 1048576, 'owner-closed-original': 1048576, 'owner-shutdown-intent': 1048576, 'owner-shutdown-terminal': 1048576, 'owner-workspace': 1048576, 'owner-workspace-terminal': 1048576, 'project-snapshot-original': 1048576, 'selected-originals': 1048576, 'selected-png': 786432, 'selected-rgba': 8294400, 'selection-plan': 524288}, 'sources': {'caption_source': {'bytes': 35}, 'managed_project': {'bytes': 6675}, 'measurement_protocol': {'bytes': 35228}, 'project_files': [], 'red_native': {'bytes': 33809}, 'template_film': {'bytes': 9584}}, 'review_capsule_bytes': 268435456, 'preparation_stream_bytes': 1048576}
@@ -122,13 +160,41 @@ class PreOwnerCapture(unittest.TestCase):
             self.assertLess(capacity["declared_capsule_bound"], 256 * 1024**2)
             if fixture == "fixed-counter-captions":
                 self.assertEqual(capacity["declared_capsule_bound"], 268421184)
-        workflow = yaml.safe_load((TOOLING.parent / ".github/workflows/native-mlt-sequence-e2e.yml").read_text())
+        workflow = (TOOLING.parent / ".github/workflows/native-mlt-sequence-e2e.yml").read_text(encoding="utf-8")
         for job in ("fixedtxt-original-owner", "fixedtxt-session-owner"):
-            step = next(step for step in workflow["jobs"][job]["steps"] if step.get("id") == "fixedtxt_clock")
-            script = step["run"].split("<<'PY_CLOCK'\n", 1)[1].rsplit("PY_CLOCK", 1)[0]
-            inline = next(item for item in ast.parse(script).body if isinstance(item, ast.FunctionDef)
-                          and item.name == "preflight_request_capacity")
-            self.assertEqual(ast.dump(inline, include_attributes=False), ast.dump(node, include_attributes=False))
+            clock = exact_clock_script(workflow, job)
+            inline = [item for item in ast.parse(clock).body
+                      if isinstance(item, ast.FunctionDef)
+                      and item.name == "preflight_request_capacity"]
+            self.assertEqual(len(inline), 1)
+            self.assertEqual(ast.dump(inline[0], include_attributes=False),
+                             ast.dump(node, include_attributes=False))
+
+
+    def test_pr_source_contract_includes_original_clock_and_new_owner_modules(self):
+        workflow = (TOOLING.parent / ".github/workflows/native-mlt-sequence-e2e.yml").read_text(encoding="utf-8")
+        paths = workflow.split("  pull_request:", 1)[1].split("\npermissions:", 1)[0]
+        for item in ("tooling/native_fixedtxt_observer_overlay.py",
+                     "tooling/tests/test_native_fixedtxt_pre_owner.py",
+                     "tooling/tests/test_native_owner_release.py",
+                     "tooling/tests/test_native_fixedtxt_external_g2.py"):
+            with self.subTest(path=item):
+                self.assertIn("      - '" + item + "'", paths)
+                if item.startswith("tooling/tests/"):
+                    self.assertIn("--pattern " + Path(item).name, workflow)
+        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_pre_owner':6", workflow)
+        self.assertIn("'dotted:tooling.tests.test_native_owner_release':4", workflow)
+        for job in ("fixedtxt-original-owner", "fixedtxt-session-owner"):
+            self.assertEqual(len([n for n in ast.parse(exact_clock_script(workflow, job)).body
+                                  if isinstance(n, ast.FunctionDef)
+                                  and n.name == "preflight_request_capacity"]), 1)
+        with self.assertRaises(ValueError):
+            exact_clock_script(workflow.replace(
+                "  fixedtxt-session-owner:", "  other-session-owner:", 1), "fixedtxt-session-owner")
+        with self.assertRaises(ValueError):
+            exact_clock_script(workflow.replace(
+                "      - name: Retain the one original clock before checkout and preparation",
+                "      - name: Changed original clock identity", 1), "fixedtxt-original-owner")
 
 
 if __name__ == "__main__":

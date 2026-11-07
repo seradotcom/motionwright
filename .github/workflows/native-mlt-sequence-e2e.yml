@@ -67,10 +67,14 @@ on:
       - 'tooling/native_fixedtxt_workflow.py'
       - 'tooling/native_owner_resources.py'
       - 'tooling/native_fixedtxt_session.py'
+      - 'tooling/native_fixedtxt_observer_overlay.py'
       - '.github/actions/fixedtxt-session-case/action.yml'
       - 'tooling/fixedtxt_source_kit.py'
       - 'tooling/fixedtxt/prepare_fixedtxt_managed_project.rs'
       - 'tooling/tests/test_native_fixedtxt_workflow.py'
+      - 'tooling/tests/test_native_fixedtxt_external_g2.py'
+      - 'tooling/tests/test_native_owner_release.py'
+      - 'tooling/tests/test_native_fixedtxt_pre_owner.py'
       - 'tooling/tests/test_fixedtxt_retained_source_kit.py'
       - 'tooling/native_film180_media_readback.py'
       - 'tooling/native_mp4_aac_presentation.py'
@@ -262,13 +266,15 @@ jobs:
         root="$RUNNER_TEMP/mw-fixedtxt-workflow-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         test ! -e "$root"
         mkdir -m 700 "$root"
-        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py           --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete           --expected-source "$GITHUB_SHA" --report "$root/contracts.json"           --pattern test_native_fixedtxt_external_g2.py --pattern test_native_fixedtxt_workflow.py           > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py           --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete           --expected-source "$GITHUB_SHA" --report "$root/contracts.json"           --pattern test_native_fixedtxt_external_g2.py --pattern test_native_fixedtxt_workflow.py --pattern test_native_fixedtxt_pre_owner.py --pattern test_native_owner_release.py           > "$root/runner.stdout" 2> "$root/runner.stderr"
         "$CUSTODY_PYTHON" -B -E -s - "$root/contracts.json" <<'PY_CONTROLS'
         import json, os, sys
         from pathlib import Path
         report=json.loads(Path(sys.argv[1]).read_bytes())
         expected={'dotted:tooling.tests.test_native_fixedtxt_external_g2':21,
-                  'dotted:tooling.tests.test_native_fixedtxt_workflow':26}
+                  'dotted:tooling.tests.test_native_fixedtxt_workflow':26,
+                  'dotted:tooling.tests.test_native_fixedtxt_pre_owner':6,
+                  'dotted:tooling.tests.test_native_owner_release':4}
         assert report['status']=='PASS' and report['exit_code']==0
         assert report['executed_source_sha']==os.environ['GITHUB_SHA']
         assert 'source_postcheck_error' not in report and len(report['steps'])==len(expected)
