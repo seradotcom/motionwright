@@ -576,6 +576,14 @@ pub(crate) fn readback_recovered(
     }
     let (bytes, package, native_link) =
         native_source(&current_service, &current, native_path, output_root)?;
+    let original_native = object(native_path)?;
+    let receipt_delta = super::reference::classify_added_receipts(
+        &prior_receipts,
+        &current_receipts,
+        &native_link,
+        &serde_json::to_value(&package.plan.render_profile)?,
+        text(&original_native, "/runtime_observation/connection_identity")?,
+    )?;
     if hash(&bytes) != text(&recovery, "/current_export_sha256")?
         || serde_json::to_value(&package.plan)? != recovery["prepared_plan"]
         || current_service.project(current.id)? != current
@@ -597,7 +605,16 @@ pub(crate) fn readback_recovered(
         "status":"SOURCE_READBACK_REQUIRES_NATIVE_CUSTODY", "project_id":current.id,
         "canonical_stamp":RevisionStamp::from(&current), "recovery_receipt_sha256":hash(&recovery_raw),
         "current_native":native_link, "source_sha256":hash(&bytes), "source_closure":package.closure,
-        "additional_native_receipts":new_rows.len() - old_rows.len(), "typed_commit_lookup_performed":true,
+        "additional_native_receipts":receipt_delta["additional_native_receipts"],
+        "added_native_receipts":receipt_delta["added_native_receipts"],
+        "additional_native_receipts_scope":receipt_delta["additional_native_receipts_scope"],
+        "additional_production_receipts":receipt_delta["additional_production_receipts"],
+        "added_production_receipts":receipt_delta["added_production_receipts"],
+        "operational_native_receipts":receipt_delta["operational_native_receipts"],
+        "native_render_groups":receipt_delta["native_render_groups"],
+        "all_added_production_receipts_classified":true,
+        "historical_production_receipts_unchanged":true,
+        "typed_commit_lookup_performed":true,
         "committed_bindings":bindings, "fresh_sqlite_readback":true,
         "source_assets_original_bytes_verified":true, "saved_export_matches_native_carrier":true,
         "original_native_receipts_unchanged":true, "production_receipts_unchanged_during_readback":true,

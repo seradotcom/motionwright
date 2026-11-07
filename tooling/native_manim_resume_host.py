@@ -171,6 +171,8 @@ def checked_run(value, current):
 
 def prepare(args):
     os.environ["MANIM_NATIVE_SCENARIO"] = transfer.selected_scenario(args.scenario)
+    from native_manim_retained_reference import ENVIRONMENT, selection
+    os.environ[ENVIRONMENT] = selection(getattr(args, "recovery_continuation", "none"))
     source, run_id = args.source_sha, args.run_id
     current = {"source_sha": source, "semwright_sha": transfer.SDK, "run_id": run_id, "run_attempt": "1"}
     engine.validate_context(current)
@@ -257,7 +259,7 @@ def prepare(args):
     require(transfer.timestamp(engine.strict(run_raw)["created_at"]) <= transfer.timestamp(record["issued_at"]),
             "resume_host_recipient_predates_run")
     files = {}
-    for filename, (size, digest) in transfer.INPUTS.items():
+    for filename, (size, digest) in transfer.input_files().items():
         raw = bounded(originals / filename, size)
         require(len(raw) == size and sha(raw) == digest, "resume_host_original_source_changed:" + filename)
         files[filename] = raw
@@ -270,7 +272,7 @@ def prepare(args):
         os.fsync(stream.fileno())
     require(bounded(root / transfer.ASSET_NAME, transfer.MAX_CIPHERTEXT) == envelope,
             "resume_host_ciphertext_physical_readback")
-    for filename, (size, digest) in transfer.INPUTS.items():
+    for filename, (size, digest) in transfer.input_files().items():
         require(sha(bounded(originals / filename, size)) == digest, "resume_host_original_changed_after_seal")
     plan = {"schema": "motionwright.manim.resume.draft-publish-plan/1", "context": current,
             "actor_id": actor_id, "recipient_artifact": {"id": artifact["id"], "sha256": sha(archive)},
@@ -287,6 +289,10 @@ def prepare(args):
         plan.update(scenario=transfer.RECOVERY_SCENARIO, authorized_new_native_effects=4,
                     additional_reference_renders=2, equivalence_to_old_runtime=False,
                     runtime_binding=gate["runtime"])
+        from native_manim_retained_reference import CONTINUATION, contract, selected
+        if selected():
+            plan.update(recovery_continuation=CONTINUATION, retained_reference=contract(),
+                        authorized_new_native_effects=3, additional_reference_renders=1)
     plan_sha = save(root, "publish-plan.json", plan)
     print(json.dumps({"status": "ENCRYPTED_INPUT_PREPARED_NO_POST", "handoff": str(root),
                       "plan_sha256": plan_sha, "ciphertext": plan["ciphertext"], "context": current}))
@@ -301,9 +307,14 @@ def publish(args):
     require(sha(raw) == args.plan_sha256, "resume_host_reviewed_plan_digest_required")
     plan = engine.strict(raw)
     os.environ["MANIM_NATIVE_SCENARIO"] = transfer.selected_scenario(plan.get("scenario", transfer.RESUME_SCENARIO))
+    from native_manim_retained_reference import ENVIRONMENT, contract, selected, selection
+    os.environ[ENVIRONMENT] = selection(plan.get("recovery_continuation", "none"))
     if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
-        require(plan.get("authorized_new_native_effects") == 4 and plan.get("additional_reference_renders") == 2
+        require(plan.get("authorized_new_native_effects") == (3 if selected() else 4)
+                and plan.get("additional_reference_renders") == (1 if selected() else 2)
                 and plan.get("equivalence_to_old_runtime") is False, "recovery_runtime_reviewed_native_scope")
+        require(plan.get("retained_reference") == (contract() if selected() else None),
+                "recovery_runtime_reviewed_retained_reference")
     current = plan["context"]
     engine.validate_context(current)
     public = root / "public-recipient-originals"
@@ -378,6 +389,8 @@ def main():
     prepare_parser.add_argument("--originals", type=Path, required=True)
     prepare_parser.add_argument("--scenario", choices=(transfer.RESUME_SCENARIO, transfer.RECOVERY_SCENARIO),
                                 default=transfer.RESUME_SCENARIO)
+    from native_manim_retained_reference import CONTINUATION
+    prepare_parser.add_argument("--recovery-continuation", choices=("none", CONTINUATION), default="none")
     publish_parser = sub.add_parser("publish")
     publish_parser.add_argument("--handoff", type=Path, required=True)
     publish_parser.add_argument("--plan-sha256", required=True)

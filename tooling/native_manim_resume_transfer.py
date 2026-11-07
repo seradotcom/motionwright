@@ -64,6 +64,15 @@ def selected_scenario(value=None):
     return value
 
 
+def input_files():
+    from native_manim_retained_reference import CAPSULE, CAPSULE_IDENTITY, selected
+    result = dict(INPUTS)
+    if selected():
+        require(selected_scenario() == RECOVERY_SCENARIO, "retained_reference_transfer_scenario")
+        result[CAPSULE] = CAPSULE_IDENTITY
+    return result
+
+
 def selected_source_gate(current, root=None):
     if selected_scenario() == RECOVERY_SCENARIO:
         from native_manim_recovery_gate import check_source_gate
@@ -103,6 +112,7 @@ def hosted_context():
             and os.environ.get("MW_MANIM_RESUME_EXPECTED_SHA") == current["source_sha"]
             and current["semwright_sha"] == SDK and current["run_attempt"] == "1"
             and os.geteuid() != 0, "resume_explicit_original_hosted_selection")
+    input_files()  # Reject a foreign continuation before any key or Native owner.
     return current
 
 
@@ -126,7 +136,7 @@ def manifest(current, recipient_sha256):
     value = {"schema": "motionwright.manim.resume.input-manifest/1",
             "origin": ORIGIN, "target": current, "recipient_sha256": recipient_sha256,
             "files": {name: {"bytes": size, "sha256": digest}
-                      for name, (size, digest) in sorted(INPUTS.items())},
+                      for name, (size, digest) in sorted(input_files().items())},
             "source_recovery": SOURCE_RECOVERY,
             "old_phases": ["original", "reopen-original"],
             "remaining_phases": ["edited", "reopen-edited"],
@@ -139,6 +149,11 @@ def manifest(current, recipient_sha256):
                      remaining_phases=["original-reference", "reopen-original-reference", "edited", "reopen-edited"],
                      remaining_native_effect_invocations=4,
                      additional_reference_renders=2, equivalence_to_old_runtime=False)
+        from native_manim_retained_reference import PHASES, contract, selected
+        if selected():
+            value.update(schema="motionwright.manim.recovery-runtime.retained-reference-input-manifest/1",
+                         retained_reference=contract(), remaining_phases=list(PHASES),
+                         remaining_native_effect_invocations=3, additional_reference_renders=1)
     return value
 
 
@@ -164,6 +179,10 @@ def recipient_record(recipient, current, actor_id, issued, expires, source_gate_
         value.update(schema="motionwright.manim.recovery-runtime.recipient/1",
                      scenario=RECOVERY_SCENARIO, native_effect_invocations=4,
                      equivalence_to_old_runtime=False)
+        from native_manim_retained_reference import contract, selected
+        if selected():
+            value.update(schema="motionwright.manim.recovery-runtime.retained-reference-recipient/1",
+                         retained_reference=contract(), native_effect_invocations=3)
     return value
 
 
@@ -179,9 +198,10 @@ def validate_recipient(value, current, actor_id, source_gate_sha256, *, clock=No
 
 
 def make_plaintext(files, current, recipient_sha256):
-    require(type(files) is dict and set(files) == set(INPUTS), "resume_five_file_roster")
+    inputs = input_files()
+    require(type(files) is dict and set(files) == set(inputs), "resume_closed_input_file_roster")
     for name, raw in files.items():
-        size, digest = INPUTS[name]
+        size, digest = inputs[name]
         require(type(raw) is bytes and len(raw) == size and sha(raw) == digest,
                 "resume_original_input_changed:" + name)
     entries = {**files, MANIFEST: engine.json_bytes(manifest(current, recipient_sha256))}
@@ -199,13 +219,13 @@ def make_plaintext(files, current, recipient_sha256):
 
 def inspect_plaintext(raw, current, recipient_sha256):
     require(type(raw) is bytes and 0 < len(raw) <= MAX_PLAINTEXT, "resume_plaintext_budget")
-    files = {}
+    files, inputs = {}, input_files()
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
         rows = archive.getmembers()
-        require(len(rows) == 6 and {row.name for row in rows} == set(INPUTS) | {MANIFEST},
+        require(len(rows) == len(inputs) + 1 and {row.name for row in rows} == set(inputs) | {MANIFEST},
                 "resume_closed_archive_roster")
         for row in rows:
-            expected_size = INPUTS[row.name][0] if row.name in INPUTS else 16384
+            expected_size = inputs[row.name][0] if row.name in inputs else 16384
             require(row.isfile() and not row.pax_headers and not row.linkname
                     and row.mode == 0o600 and row.uid == row.gid == row.mtime == 0
                     and row.uname == row.gname == "" and 0 < row.size <= expected_size,
@@ -311,7 +331,7 @@ def release_body(public, current):
         "input_contract_sha256": public["input_contract_sha256"],
         "source_gate_sha256": public["source_gate_sha256"],
         "recipient_issued_at": public["issued_at"], "recipient_expires_at": public["expires_at"],
-        "source_original_count": 5, "automatic_retry": False,
+        "source_original_count": len(input_files()), "automatic_retry": False,
         "native_authority_granted_by_release": False,
     }).decode("ascii")
 
@@ -403,7 +423,7 @@ def receive_inputs():
     scopes["inputs"].mkdir(mode=0o700)
     engine.new_json(scopes["inputs"] / "intake-intent.original.json", {
         "context": current, "recipient_sha256": recipient["sha256"], "tag": tag(current),
-        "maximum_poll_seconds": POLL_SECONDS, "maximum_files": 6,
+        "maximum_poll_seconds": POLL_SECONDS, "maximum_files": len(input_files()) + 1,
         "maximum_ciphertext_bytes": MAX_CIPHERTEXT, "automatic_retry": False})
     token = os.environ["GH_TOKEN"]
     endpoint = None
@@ -463,15 +483,17 @@ def receive_inputs():
     for name, raw in sorted(files.items()):
         engine.new_bytes(destination / name, raw)
     engine.new_bytes(destination / MANIFEST, manifest_raw)
+    from native_manim_retained_reference import selected as retained_selected
+    intake_status = "SOURCE_AND_RETAINED_REFERENCE_INPUTS" if retained_selected() else "SOURCE_INPUTS_ONLY"
     engine.new_json(scopes["inputs"] / "intake-result.original.json", {
-        "schema": "motionwright.manim.resume.input-intake/1", "status": "SOURCE_INPUTS_ONLY",
+        "schema": "motionwright.manim.resume.input-intake/1", "status": intake_status,
         "context": current, "origin": ORIGIN, "asset": identity,
         "recipient_sha256": recipient["sha256"], "manifest_sha256": sha(manifest_raw),
         "input_contract_sha256": public["input_contract_sha256"],
-        "original_file_count": 5, "plaintext_bytes": len(plaintext),
+        "original_file_count": len(input_files()), "plaintext_bytes": len(plaintext),
         "project_changes_applied": 0, "native_effect_invocations": 0,
         "historical_private_key_received": False, "automatic_retry": False})
-    print(json.dumps({"status": "SOURCE_INPUTS_ONLY", "context": current,
+    print(json.dumps({"status": intake_status, "context": current,
                       "asset_id": identity["asset_id"], "sha256": identity["sha256"]}))
 
 

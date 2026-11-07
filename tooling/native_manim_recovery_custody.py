@@ -3,10 +3,11 @@
 from __future__ import annotations
 import ci_private_evidence as engine
 from native_manim_camera_evidence import read, read_object, require, sha
-from native_manim_recovery_cycle import PHASES, scopes, verify_phase
+from native_manim_recovery_cycle import PHASES, owned_root, original_plan, scopes, verify_phase
 from native_manim_recovery_gate import check_runtime, check_source_gate
 from native_manim_resume_cycle import admitted_originals
 from native_manim_resume_transfer import ORIGIN, RECOVERY_SCENARIO, SOURCE_RECOVERY, selected_scenario
+import native_manim_retained_reference as retained_reference
 
 
 def verify_cycle(current):
@@ -16,10 +17,21 @@ def verify_cycle(current):
     gate, gate_sha = check_source_gate(current)
     runtime = check_runtime(current)
     require(gate["runtime"] == runtime, "recovery_runtime_unchanged_through_custody")
-    admitted_originals(current, frozen=True)
+    files, _, _ = admitted_originals(current, frozen=True)
+    retained_mode = retained_reference.selected()
+    retained = None
+    if retained_mode:
+        retained = retained_reference.locate(owned_root(current), current)
+        # This is the old native observation plus a new source-only readback.
+        # It is deliberately not a replacement historical result.json.
+        old = retained_reference.phase_original(retained, {
+            "original_plan": original_plan(files["original-source.mwedit.zip"]),
+            "reference_database": owned_root(current) / "reference-data/motionwright.sqlite3"})
+        old["phase_observation"] = read_object(retained["derived"] / "observation.json")
+        retained_reference.verify_phase(old, current)
     outer = verify_outer(current)
     phases = []
-    for name in PHASES:
+    for name in PHASES[1:] if retained_mode else PHASES:
         evidence = root / name
         observation = read_object(evidence / "result.json")
         require(observation.get("phase") == name and observation.get("context") == current
@@ -37,17 +49,28 @@ def verify_cycle(current):
         phases.append({"phase": name, "result_sha256": sha(read(evidence / "result.json")),
                        "ciphertext_sha256": sha(read(sealed / (name + ".mwseal"), 256 * 1024 * 1024))})
     result = read_object(root / "cycle-result.json")
-    require(result.get("schema") == "motionwright.manim.recovery-runtime.cycle-observation/1"
-            and result.get("status") == "NEW_REFERENCE_TWO_PLUS_EDITED_TWO_REQUIRES_INDEPENDENT_CUSTODY"
+    require(result.get("schema") == ("motionwright.manim.recovery-runtime.retained-reference-cycle/1"
+                if retained_mode else "motionwright.manim.recovery-runtime.cycle-observation/1")
+            and result.get("status") == ("THREE_NEW_PHASES_COMPLETE_REFERENCE_RUNTIME_POSTCHECK_NOT_RETAINED"
+                if retained_mode else "NEW_REFERENCE_TWO_PLUS_EDITED_TWO_REQUIRES_INDEPENDENT_CUSTODY")
             and result.get("context") == current and result.get("origin_context") == ORIGIN
-            and result.get("phase_results") == phases and result.get("native_effect_invocations") == 4
-            and result.get("additional_reference_renders") == 2 and result.get("source_recovery") == SOURCE_RECOVERY
+            and result.get("phase_results") == phases
+            and result.get("native_effect_invocations") == (3 if retained_mode else 4)
+            and result.get("additional_reference_renders") == (1 if retained_mode else 2)
+            and result.get("source_recovery") == SOURCE_RECOVERY
             and result.get("runtime_binding") == runtime and result.get("project_changes_applied") == 0
             and result.get("original_edit_report_recreated") is False
             and result.get("equivalence_to_old_runtime") is False and result.get("old_result_replaced") is False
             and result.get("formal_G2_granted") is False and result.get("final_F_association") == "PENDING"
             and result.get("automatic_retry") is False,
             "recovery_runtime_cannot_promote_old_results_or_skip_final_custody")
+    if retained_mode:
+        require(result.get("retained_reference") == retained_reference.contract()
+                and result.get("retained_reference_observation_sha256") == sha(read(retained["derived"] / "observation.json"))
+                and result.get("reference_phase_complete") is False
+                and result.get("complete_cycle_verification") is False
+                and result.get("reference_post_native_runtime_observation") == "NOT_RETAINED",
+                "recovery_runtime_missing_historical_postcheck_stays_missing")
     pixels_raw = read(root / "reopen-edited/recovery-runtime-pixels.json")
     pixels = engine.strict(pixels_raw)
     require(result.get("pixel_cycle_sha256") == sha(pixels_raw)
@@ -59,13 +82,19 @@ def verify_cycle(current):
             "recovery_runtime_four_physical_pixel_phases")
     public.mkdir(mode=0o700, exist_ok=False)
     summary = {"schema": "motionwright.manim.recovery-runtime.public-summary/1", "status": result["status"],
-               "context": current, "origin_context": ORIGIN, "native_effect_invocations": 4,
-               "additional_reference_renders": 2, "project_changes_applied": 0,
+               "context": current, "origin_context": ORIGIN,
+               "native_effect_invocations": 3 if retained_mode else 4,
+               "additional_reference_renders": 1 if retained_mode else 2, "project_changes_applied": 0,
                "source_gate_sha256": gate_sha, "actual_rust_focals_passed": 10,
                "runtime_binding": runtime, "cycle_result_sha256": sha(read(root / "cycle-result.json")),
                "outer_ciphertext_sha256": outer["ciphertext_sha256"], "phase_results": phases,
                "old_result_replaced": False, "equivalence_to_old_runtime": False,
                "independent_custody": "PENDING", "final_F_association": "PENDING",
                "formal_G2_granted": False, "human_acceptance": False, "automatic_retry": False}
+    if retained_mode:
+        summary.update(retained_reference=retained_reference.contract(),
+            retained_reference_observation_sha256=result["retained_reference_observation_sha256"],
+            reference_phase_complete=False, complete_cycle_verification=False,
+            reference_post_native_runtime_observation="NOT_RETAINED")
     engine.new_json(public / "summary.json", summary)
     return summary

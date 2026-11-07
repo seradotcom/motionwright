@@ -14,7 +14,7 @@ use motionwright_native::manim_editable_projection::{
     preview_saved_manim_editable_edit, verify_rendered_manim_editable_source,
 };
 pub(super) use recovery::{readback_recovered, recover_edit, recover_edit_default_cas};
-pub(super) use reference::readback_reference;
+pub(super) use reference::{readback_reference, rehydrate_reference};
 use std::{collections::BTreeMap, fs, io::Read};
 
 type SourceResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;

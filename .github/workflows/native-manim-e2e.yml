@@ -8,6 +8,11 @@ on:
         type: choice
         options: [source-contracts, source-recovery-tool-only, static-scene, camera120, camera120-source-cycle, editable-source-cycle, editable-source-resume, recovery-runtime-cycle]
         default: source-contracts
+      recovery_continuation:
+        description: Reuse the authenticated first reference and execute only the three unstarted phases
+        type: choice
+        options: [none, retained-n1-42369864661]
+        default: none
       source_recovery_expected_sha:
         description: Exact checkout SHA for source-recovery-tool-only; never authorizes Native work
         type: string
@@ -126,11 +131,14 @@ jobs:
         env:
           WORKFLOW_EVENT: ${{ github.event_name }}
           MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
+          MW_MANIM_RECOVERY_CONTINUATION: ${{ inputs.recovery_continuation || 'none' }}
         run: |
           python3 -B - <<'PY'
           import os
           event = os.environ["WORKFLOW_EVENT"]
           scenario = os.environ["MANIM_REQUESTED_SCENARIO"]
+          if os.environ["MW_MANIM_RECOVERY_CONTINUATION"] != "none":
+              raise SystemExit("A retained reference requires recovery-runtime-cycle")
           if event == "workflow_dispatch":
               if scenario not in {"source-contracts", "static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle"}:
                   raise SystemExit("Unsupported Manim workflow scenario")
@@ -929,6 +937,7 @@ jobs:
       CARGO_TERM_COLOR: never
       MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
       MANIM_EXPECTED_SOURCE_SHA: ${{ inputs.source_recovery_expected_sha }}
+      MW_MANIM_RECOVERY_CONTINUATION: ${{ inputs.recovery_continuation || 'none' }}
       MANIM_AFFECTED_RUST_DIAGNOSTICS: ${{ inputs.affected_rust_diagnostics && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -938,7 +947,9 @@ jobs:
           persist-credentials: false
 
       - name: Bind unchanged Rust inputs to the 41 original tests before building
-        run: python3 -B tooling/retain_manim_source_recovery_tool.py --verify-reuse-only
+        run: |
+          test "$MW_MANIM_RECOVERY_CONTINUATION" = "none"
+          python3 -B tooling/retain_manim_source_recovery_tool.py --verify-reuse-only
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
@@ -995,6 +1006,7 @@ jobs:
     env:
       MANIM_NATIVE_SCENARIO: ${{ inputs.scenario }}
       MW_MANIM_RESUME_EXPECTED_SHA: ${{ inputs.resume_expected_sha }}
+      MW_MANIM_RECOVERY_CONTINUATION: ${{ inputs.recovery_continuation || 'none' }}
       CARGO_BUILD_JOBS: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1006,7 +1018,15 @@ jobs:
       - name: Start the original resume clock before preparation
         id: resume_outer_origin
         timeout-minutes: 1
-        run: python3 -B tooling/native_manim_editable_outer.py initialize
+        run: |
+          python3 -B - <<'PY'
+          import os
+          selected = os.environ["MW_MANIM_RECOVERY_CONTINUATION"]
+          if selected not in {"none", "retained-n1-42369864661"} or (
+                  selected != "none" and os.environ["MANIM_NATIVE_SCENARIO"] != "recovery-runtime-cycle"):
+              raise SystemExit("Retained reference continuation requires its exact recovery scenario")
+          PY
+          python3 -B tooling/native_manim_editable_outer.py initialize
 
       - name: Configure the original 1536 MiB command-tree cap and 512 MiB reserve
         run: |
@@ -1064,6 +1084,8 @@ jobs:
           PY
 
       - name: Verify only the changed resume predicates and original outer regression controls
+        env:
+          MW_MANIM_RECOVERY_CONTINUATION: 'none'
         run: |
           exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
             workflow-step --label resume-python --script "$0"
@@ -1081,6 +1103,10 @@ jobs:
               -s tooling/tests -p test_native_manim_frozen_runtime.py -v
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest \
               tooling.tests.test_native_manim_runtime_restore -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+              -s tooling/tests -p test_native_manim_retained_reference.py -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+              -s tooling/tests -p test_native_manim_recovery_lineage.py -v
           fi
 
       - name: Resolve exact Semwright source pin
@@ -1647,12 +1673,27 @@ jobs:
 
       - name: Retain all four attempted new phases and their original outer envelope
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always() && inputs.scenario == 'recovery-runtime-cycle' && steps.resume_private_budget.outcome == 'success'
+        if: always() && inputs.scenario == 'recovery-runtime-cycle' && inputs.recovery_continuation != 'retained-n1-42369864661' && steps.resume_private_budget.outcome == 'success'
         timeout-minutes: ${{ fromJSON(steps.resume_private_budget.outputs.minutes) }}
         with:
           name: motionwright-manim-recovery-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/original-reference.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-original-reference.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/edited.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-edited.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/resume-outer.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/resume-outer.public.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain the three attempted continuation phases and their original outer envelope
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && inputs.scenario == 'recovery-runtime-cycle' && inputs.recovery_continuation == 'retained-n1-42369864661' && steps.resume_private_budget.outcome == 'success'
+        timeout-minutes: ${{ fromJSON(steps.resume_private_budget.outputs.minutes) }}
+        with:
+          name: motionwright-manim-recovery-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: |
             ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-original-reference.mwseal
             ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/edited.mwseal
             ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-edited.mwseal
@@ -3025,6 +3066,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           inputs.affected_rust_diagnostics == true &&
+          (inputs.recovery_continuation == '' || inputs.recovery_continuation == 'none') &&
           inputs.scenario == 'source-contracts' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

@@ -81,6 +81,17 @@ def outer_inputs(current):
                 result["runtime-reuse-" + label + "-" + suffix.split(".")[0]] = work / (label + "." + suffix)
         if (work / "reuse-failure.json").exists():
             result["runtime-reuse-failure"] = work / "reuse-failure.json"
+        from native_manim_retained_reference import selected as retained_selected
+        if retained_selected():
+            from native_manim_recovery_cycle import owned_root
+            retained = owned_root(current) / "retained-reference"
+            result["original-reference-custody"] = retained / "originals/origin/phase-custody.original.json"
+            result.update({
+                "retained-reference-observation": retained / "derived/observation.json",
+                "retained-reference-readback": retained / "derived/reference-source-readback.json",
+                "retained-reference-rehydration": retained / "derived/reference-rehydration.json",
+                "retained-reference-manifest": retained / "originals/retained-reference-manifest.json",
+            })
     return result
 
 

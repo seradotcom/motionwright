@@ -19,10 +19,11 @@ from native_manim_editable_cycle import (
     EVIDENCE_NAME, FONT_SHA, LICENSE_SHA, ORIGIN_SHA, binding, checked_native_link,
     checked_seed, retained_source, stamp, verify_phase as verify_custody,
 )
-from native_manim_resume_cycle import admitted_originals, checked_readback, checked_recovery
+from native_manim_resume_cycle import admitted_originals, checked_readback, checked_recovery, checked_receipt_classification
 from native_manim_resume_transfer import (
     INPUTS, MANIFEST, ORIGIN, RECOVERY_SCENARIO, SOURCE_RECOVERY, hosted_context, selected_scenario,
 )
+import native_manim_retained_reference as retained_reference
 
 PHASES = ("original-reference", "reopen-original-reference", "edited", "reopen-edited")
 SHORT_PHASES = ("n1", "n2", "n3", "n4")
@@ -57,10 +58,17 @@ def original_plan(raw):
     return plan
 
 
-def prepare_sources(current, owner, *, capture, source_binary):
+def prepare_sources(current, owner, *, capture, source_binary, retained=None):
+    if retained is not None:
+        retained_reference.check_runtime_input(
+            read_object(retained["originals"] / "evidence/runtime-inventory.json"),
+            read_object(Path(__file__).resolve().parents[1] / "verification/native-manim-e2e/runtime-inventory.json"),
+            current)
     files, manifest_raw, intake = admitted_originals(current, frozen=True)
     roots = {name: owner / name for name in ("source-originals", "reference-data", "motionwright-data",
                                              "readback-baseline", "source-recovery")}
+    if retained is not None:
+        roots["reference-recovery-input"] = owner / "reference-recovery-input"
     for path in roots.values():
         path.mkdir(mode=0o700, exist_ok=False)
     originals = roots["source-originals"]
@@ -68,7 +76,7 @@ def prepare_sources(current, owner, *, capture, source_binary):
         private_bytes(originals / name, raw)
     private_bytes(originals / MANIFEST, manifest_raw)
     private_json(roots["source-recovery"] / "input-intake.original.json", intake)
-    reference_db = roots["reference-data"] / "motionwright.sqlite3"
+    reference_db = roots["reference-recovery-input" if retained is not None else "reference-data"] / "motionwright.sqlite3"
     current_db = roots["motionwright-data"] / "motionwright.sqlite3"
     baseline_db = roots["readback-baseline"] / "motionwright.sqlite3"
     for target in (reference_db, baseline_db):
@@ -102,9 +110,60 @@ def prepare_sources(current, owner, *, capture, source_binary):
     require(result["baseline_copy_initial_sha256"] == INPUTS["reopen-original-reference.sqlite3"][1],
             "recovery_runtime_baseline_is_original_copy")
     private_json(roots["source-recovery"] / "source-preparation.json", result)
-    return {"reference_database": reference_db, "database": current_db, "before_database": baseline_db,
+    state = {"reference_database": reference_db, "database": current_db, "before_database": baseline_db,
             "references": originals, "recovery_path": report, "original_plan": before_plan,
             "prepared_plan": recovered["prepared_plan"], "preparation": result}
+    if retained is not None:
+        reference_db = roots["reference-data"] / "motionwright.sqlite3"
+        private_bytes(reference_db, read(retained["database_original"], 4 * 1024 * 1024))
+        state["reference_database"] = reference_db
+        for suffix, expected in (("Montserrat-OFL.txt", LICENSE_SHA), ("Montserrat-source.json", ORIGIN_SHA)):
+            raw = read(fixture / suffix, 64 * 1024)
+            require(sha(raw) == expected, "retained_reference_original_font_attribution")
+            private_bytes(reference_db.with_suffix("." + suffix), raw)
+        original = retained_reference.phase_original(retained, state)
+        rehydration_path = retained["derived"] / "reference-rehydration.json"
+        rehydration = capture([str(source_binary), "source-cycle-rehydrate-reference",
+            str(baseline_db), str(reference_db), str(retained["source_bundle"]), str(rehydration_path)],
+            env=dict(os.environ), evidence=retained["derived"], label="retained-reference-rehydration",
+            timeout=120, record_native=False)
+        require(read_object(rehydration_path) == rehydration
+                and rehydration.get("schema") == "motionwright.manim.editable.retained-reference-rehydration/1"
+                and rehydration.get("status") == "REFERENCE_CAS_REHYDRATED_SOURCE_ONLY"
+                and rehydration.get("canonical_stamp") == stamp(original["prepared"]["binding"])
+                and rehydration.get("input_sha256") == {
+                    "baseline_database": INPUTS["reopen-original-reference.sqlite3"][1],
+                    "reference_database": retained["manifest"]["files"][retained_reference.DATABASE]["sha256"],
+                    "original_bundle": INPUTS["original-source.mwedit.zip"][1]}
+                and rehydration.get("source_sha256") == INPUTS["original-source.mwedit.zip"][1]
+                and rehydration.get("source_bytes") == INPUTS["original-source.mwedit.zip"][0]
+                and rehydration.get("source_closure") == original["source"]["descriptor"]["closure"]
+                and rehydration.get("baseline_production_receipt_count") == 20
+                and rehydration.get("retained_production_receipt_count") == 30
+                and rehydration.get("working_cas_provenance") == "CAS_REHYDRATED_NEW_IDENTITY"
+                and rehydration.get("new_cas_capture_count") == 1
+                and rehydration.get("project_changes_applied") == 0,
+                "retained_reference_new_cas_binding")
+        require(all(rehydration.get(key) is True for key in (
+                    "project_events_and_all_production_receipts_unchanged",
+                    "source_assets_original_bytes_verified", "saved_source_bundle_unchanged"))
+                and all(rehydration.get(key) is False for key in (
+                    "original_cas_identity_claimed", "source_edit_performed", "native_execution_performed",
+                    "provider_dispatch_performed", "original_edit_report_recreated",
+                    "native_bundle_reopen_verified", "human_acceptance", "automatic_retry")),
+                "retained_reference_rehydration_is_source_only")
+        readback_path = retained["derived"] / "reference-source-readback.json"
+        readback = capture([str(source_binary), "source-cycle-readback-reference", str(baseline_db),
+            str(reference_db), str(retained["source_bundle"]), str(original["native_path"]),
+            str(original["output_root"]), str(readback_path)], env=dict(os.environ),
+            evidence=retained["derived"], label="retained-reference-readback", timeout=120, record_native=False)
+        require(read_object(readback_path) == readback, "retained_reference_new_readback_stdout")
+        checked_reference_readback(readback, original, {"phase": "original-reference", "history": []})
+        original["phase_observation"] = retained_reference.record_source_readback(
+            retained, readback, readback_path, rehydration_path, current)
+        original["sealed_custody"] = retained_reference.verify_phase(original, current)
+        state["retained_reference"] = original
+    return state
 
 
 def new_phase_inputs(context, evidence, database, output_root, env, *, capture, source_binary):
@@ -161,6 +220,7 @@ def checked_reference_readback(value, current, context):
             and value.get("source_closure") == current["source"]["descriptor"]["closure"]
             and value.get("additional_native_receipts") == 2 * (phase_index + 1),
             "recovery_runtime_original_reference_readback")
+    checked_receipt_classification(value, 2 * (phase_index + 1))
     require(all(value.get(key) is True for key in ("fresh_sqlite_readback", "saved_export_matches_native_carrier",
             "original_project_and_events_unchanged", "original_native_receipts_unchanged",
             "production_receipts_unchanged_during_readback"))
@@ -245,6 +305,8 @@ def finish_phase(context, prepared, native, evidence, output_root, work_root, da
 
 
 def verify_phase(phase, current):
+    if phase.get("retained_reference") is True:
+        return retained_reference.verify_phase(phase, current)
     custody = verify_custody(phase, current)
     value = phase["phase_observation"]
     require(value.get("schema") == "motionwright.manim.recovery-runtime.native-phase/1"
@@ -273,20 +335,26 @@ def run_cycle(args, *, run_phase, validate_phase, capture, source_binary):
     gate, _ = check_source_gate(current)
     runtime_binding = check_runtime(current)
     require(gate["runtime"] == runtime_binding, "recovery_runtime_gate_binding")
-    admitted_originals(current, frozen=True)
+    files, _, _ = admitted_originals(current, frozen=True)
+    retained_mode = retained_reference.selected()
     root.mkdir(mode=0o700)
     sealed.mkdir(mode=0o700)
     owner = owned_root(current)
     owner.mkdir(mode=0o700)
     private_json(root / "cycle-intent.json", {"schema": "motionwright.manim.recovery-runtime.cycle-intent/1",
-        "context": current, "origin_context": ORIGIN, "phases": list(PHASES), "native_effect_invocations": 4,
-        "additional_reference_renders": 2, "source_recovery": SOURCE_RECOVERY,
+        "context": current, "origin_context": ORIGIN,
+        "phases": list(PHASES[1:] if retained_mode else PHASES), "native_effect_invocations": 3 if retained_mode else 4,
+        "additional_reference_renders": 1 if retained_mode else 2, "source_recovery": SOURCE_RECOVERY,
+        **({"retained_reference": retained_reference.contract()} if retained_mode else {}),
         "runtime_binding": runtime_binding, "outer_origin": deadline.binding(),
         "project_changes_authorized": 0, "equivalence_to_old_runtime": False,
         "original_edit_report_recreated": False, "next_phase_after_failure": False, "automatic_retry": False})
-    state = prepare_sources(current, owner, capture=capture, source_binary=source_binary)
-    history = []
-    for index, (phase, short) in enumerate(zip(PHASES, SHORT_PHASES)):
+    retained = (retained_reference.materialize(files[retained_reference.CAPSULE], owner, current)
+                if retained_mode else None)
+    state = prepare_sources(current, owner, capture=capture, source_binary=source_binary, retained=retained)
+    history = [state["retained_reference"]] if retained_mode else []
+    remaining = list(enumerate(zip(PHASES, SHORT_PHASES)))[1 if retained_mode else 0:]
+    for index, (phase, short) in remaining:
         deadline.admit_work()
         require(check_runtime(current) == runtime_binding, "recovery_runtime_changed_before_native_phase")
         selected = argparse.Namespace(scenario=RECOVERY_SCENARIO, evidence_root=root / phase,
@@ -308,13 +376,15 @@ def run_cycle(args, *, run_phase, validate_phase, capture, source_binary):
         history.append(observed)
     require(history[-1]["pixel_report"] is not None and check_runtime(current) == runtime_binding,
             "recovery_runtime_complete_four_phase_comparison")
+    new_phases = history[1:] if retained_mode else history
     result = {"schema": "motionwright.manim.recovery-runtime.cycle-observation/1",
         "status": "NEW_REFERENCE_TWO_PLUS_EDITED_TWO_REQUIRES_INDEPENDENT_CUSTODY", "context": current,
-        "origin_context": ORIGIN, "native_effect_invocations": 4, "additional_reference_renders": 2,
+        "origin_context": ORIGIN, "native_effect_invocations": 3 if retained_mode else 4,
+        "additional_reference_renders": 1 if retained_mode else 2,
         "source_recovery": SOURCE_RECOVERY, "runtime_binding": runtime_binding,
         "phase_results": [{"phase": row["phase_observation"]["phase"],
                            "result_sha256": sha(read(row["evidence"] / "result.json")),
-                           "ciphertext_sha256": sha(read(row["sealed_originals"], 256 * 1024 * 1024))} for row in history],
+                           "ciphertext_sha256": sha(read(row["sealed_originals"], 256 * 1024 * 1024))} for row in new_phases],
         "fresh_process_and_session_per_phase": True, "same_saved_store_within_each_pair": True,
         "both_original_bundle_byte_preserving_native_reopens": True,
         "all_96_decoded_frames_checked": True, "saved_text_change_observed_in_all_frames": True,
@@ -323,6 +393,13 @@ def run_cycle(args, *, run_phase, validate_phase, capture, source_binary):
         "old_result_replaced": False, "equivalence_to_old_runtime": False,
         "formal_G2_granted": False, "final_F_association": "PENDING", "human_acceptance": False,
         "automatic_retry": False}
+    if retained_mode:
+        result.update(schema="motionwright.manim.recovery-runtime.retained-reference-cycle/1",
+            status="THREE_NEW_PHASES_COMPLETE_REFERENCE_RUNTIME_POSTCHECK_NOT_RETAINED",
+            retained_reference=retained_reference.contract(),
+            retained_reference_observation_sha256=sha(read(retained["derived"] / "observation.json")),
+            reference_phase_complete=False, complete_cycle_verification=False,
+            reference_post_native_runtime_observation="NOT_RETAINED")
     private_json(root / "cycle-result.json", result)
     return result
 
@@ -343,7 +420,8 @@ def main():
         native.exact_inputs()
         result = run_cycle(args, run_phase=native._run_single, validate_phase=native.editable_options,
                            capture=native.captured_json, source_binary=native.MW_EXAMPLE)
-        print(json.dumps({"status": result["status"], "context": result["context"], "native_effect_invocations": 4}))
+        print(json.dumps({"status": result["status"], "context": result["context"],
+                          "native_effect_invocations": result["native_effect_invocations"]}))
     except BaseException as error:
         native._retain_editable_error(error)
         raise

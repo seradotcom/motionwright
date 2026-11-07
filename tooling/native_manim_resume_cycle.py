@@ -69,6 +69,8 @@ def checked_recovery(value, report, export):
 
 def admitted_originals(current, *, frozen=False):
     from native_manim_resume_transfer import RECOVERY_SCENARIO, RESUME_SCENARIO, selected_scenario
+    from native_manim_resume_transfer import input_files
+    from native_manim_retained_reference import selected as retained_selected
     require(selected_scenario() == (RECOVERY_SCENARIO if frozen else RESUME_SCENARIO),
             "resume_input_runtime_mode_must_be_explicit")
     if frozen:
@@ -80,14 +82,16 @@ def admitted_originals(current, *, frozen=False):
     require(check_runtime(current) == gate["runtime"], "resume_input_runtime_identity_changed")
     scope = paths(current)["inputs"]
     intake = read_object(scope / "intake-result.original.json")
+    inputs = input_files()
+    expected_status = "SOURCE_AND_RETAINED_REFERENCE_INPUTS" if retained_selected() else "SOURCE_INPUTS_ONLY"
     require(intake.get("schema") == "motionwright.manim.resume.input-intake/1"
-            and intake.get("status") == "SOURCE_INPUTS_ONLY" and intake.get("context") == current
-            and intake.get("origin") == ORIGIN and intake.get("original_file_count") == 5
+            and intake.get("status") == expected_status and intake.get("context") == current
+            and intake.get("origin") == ORIGIN and intake.get("original_file_count") == len(inputs)
             and intake.get("project_changes_applied") == 0 and intake.get("native_effect_invocations") == 0
             and intake.get("historical_private_key_received") is False
             and intake.get("automatic_retry") is False, "resume_original_input_intake_required")
     root = scope / "originals"
-    require({item.name for item in root.iterdir()} == set(INPUTS) | {MANIFEST},
+    require({item.name for item in root.iterdir()} == set(inputs) | {MANIFEST},
             "resume_original_input_namespace")
     from ci_private_evidence import json_bytes
     manifest_raw = read(root / MANIFEST, 16384)
@@ -95,7 +99,7 @@ def admitted_originals(current, *, frozen=False):
             and sha(manifest_raw) == intake.get("manifest_sha256") == intake.get("input_contract_sha256"),
             "resume_input_manifest_changed")
     files = {}
-    for name, (size, digest) in INPUTS.items():
+    for name, (size, digest) in inputs.items():
         raw = read(root / name, size)
         require(len(raw) == size and sha(raw) == digest, "resume_input_original_changed:" + name)
         files[name] = raw
@@ -170,7 +174,28 @@ def new_phase_inputs(context, evidence, database, output_root, env, *, capture, 
             "before_database": before_database, "references": references}
 
 
+def checked_receipt_classification(value, expected_endpoints):
+    endpoints, operational = value.get("added_native_receipts"), value.get("operational_native_receipts")
+    records, groups = value.get("added_production_receipts"), value.get("native_render_groups")
+    require(value.get("additional_native_receipts_scope") == "completed_start_and_result_only"
+            and value.get("all_added_production_receipts_classified") is True
+            and value.get("historical_production_receipts_unchanged") is True
+            and value.get("additional_native_receipts") == expected_endpoints
+            and type(endpoints) is list and len(endpoints) == expected_endpoints
+            and type(operational) is list and type(records) is list
+            and type(groups) is list and len(groups) == expected_endpoints // 2
+            and type(value.get("additional_production_receipts")) is int
+            and value["additional_production_receipts"] == len(records)
+            and len(records) == len(endpoints) + len(operational),
+            "resume_native_endpoint_and_operational_receipt_scope")
+    canonical = lambda rows: sorted(json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows)
+    require(canonical(records) == canonical(endpoints + operational)
+            and len({row.get("id") for row in records}) == len(records),
+            "resume_all_actual_receipt_records_preserved_once")
+
+
 def checked_readback(value, report, recovered, current, phase):
+    checked_receipt_classification(value, 2 if phase == "edited" else 4)
     require(value.get("schema") == "motionwright.manim.editable.recovered-source-readback/1"
             and value.get("status") == "SOURCE_READBACK_REQUIRES_NATIVE_CUSTODY"
             and value.get("canonical_stamp") == stamp(current["prepared"]["binding"])
