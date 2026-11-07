@@ -153,6 +153,145 @@ class StagingBudgetTests(unittest.TestCase):
                              gn1.MAX_DAEMON_LOG_BYTES)
 
 
+@unittest.skipUnless(sys.platform == "linux", "Linux executable ownership and mode boundary")
+class ExecutableInputTests(unittest.TestCase):
+    """Real file operations, inert ELF bytes; no Native launch or G2 claim."""
+
+    def source(self, root, mode=0o775):
+        path = root / "built-provider"
+        path.write_bytes(b"\x7fELF" + b"source-bound-inert-fixture" * 31)
+        path.chmod(mode)
+        return path, gn1.file_identity(path)
+
+    def test_group_writable_source_becomes_private_copy_without_original_changes(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-private-input-") as tmp:
+            root = Path(tmp).resolve()
+            source, expected = self.source(root)
+            before = gn1.executable_metadata(source.stat())
+            directory = gn1.mkdir(root, "inputs")
+            copied, receipt = gn1.stage_executable_input(expected, directory, "motionwright-native-provider")
+            destination = Path(copied["path"])
+            observed = destination.stat()
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertEqual(copied["sha256"], expected["sha256"])
+            self.assertEqual(gn1.executable_metadata(source.stat()), before)
+            self.assertEqual(observed.st_mode & 0o777, 0o500)
+            self.assertEqual(observed.st_uid, os.getuid())
+            self.assertEqual(observed.st_nlink, 1)
+            self.assertEqual(receipt["source_metadata"], before)
+            self.assertTrue(receipt["source_group_or_other_writable"])
+            self.assertFalse(receipt["source_modified"])
+            self.assertFalse(receipt["automatic_retry"])
+
+    def test_existing_destination_is_never_reused_or_overwritten(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-input-once-") as tmp:
+            root = Path(tmp).resolve()
+            _, expected = self.source(root)
+            directory = gn1.mkdir(root, "inputs")
+            destination = directory / "python3"
+            destination.write_bytes(b"prior-uncertain-preparation")
+            with self.assertRaises(FileExistsError):
+                gn1.stage_executable_input(expected, directory, "python3")
+            self.assertEqual(destination.read_bytes(), b"prior-uncertain-preparation")
+
+    def test_source_digest_mismatch_cannot_make_private_copy_executable(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-input-digest-") as tmp:
+            root = Path(tmp).resolve()
+            source, expected = self.source(root)
+            directory = gn1.mkdir(root, "inputs")
+            expected["sha256"] = "0" * 64
+            with self.assertRaisesRegex(gn1.GN1Failure, "GN1_EXECUTABLE_INPUT_DIGEST"):
+                gn1.stage_executable_input(expected, directory, "python3")
+            self.assertEqual((directory / "python3").stat().st_mode & 0o111, 0)
+            self.assertEqual(source.stat().st_mode & 0o777, 0o775)
+
+    def test_source_mutation_during_copy_rejects_original_identity(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-input-race-") as tmp:
+            root = Path(tmp).resolve()
+            source, expected = self.source(root)
+            directory = gn1.mkdir(root, "inputs")
+            original_read = os.read
+            changed = False
+
+            def mutate_after_read(descriptor, maximum):
+                nonlocal changed
+                raw = original_read(descriptor, maximum)
+                if raw and not changed:
+                    changed = True
+                    source.write_bytes(b"\x7fELF" + b"changed-source" * 31)
+                return raw
+
+            with mock.patch.object(gn1.os, "read", side_effect=mutate_after_read):
+                with self.assertRaisesRegex(gn1.GN1Failure, "GN1_EXECUTABLE_INPUT_CHANGED"):
+                    gn1.stage_executable_input(expected, directory, "python3")
+            self.assertTrue(changed)
+            self.assertEqual((directory / "python3").stat().st_mode & 0o111, 0)
+
+    def test_source_alias_is_rejected_before_destination_creation(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-input-alias-") as tmp:
+            root = Path(tmp).resolve()
+            source, expected = self.source(root)
+            directory = gn1.mkdir(root, "inputs")
+            alias = root / "alias"
+            alias.symlink_to(source)
+            expected["path"] = str(alias)
+            with self.assertRaisesRegex(gn1.GN1Failure, "GN1_EXECUTABLE_INPUT_ALIAS"):
+                gn1.stage_executable_input(expected, directory, "python3")
+            self.assertEqual(list(directory.iterdir()), [])
+
+    def test_fifo_input_cannot_block_or_create_an_executable(self):
+        code = """
+import json, os, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tooling import ci_graph_dev_native_startup as gn1
+with tempfile.TemporaryDirectory(prefix='gn1-executable-fifo-') as tmp:
+    root = Path(tmp).resolve()
+    directory = gn1.mkdir(root, 'inputs')
+    source = root / 'fifo'
+    os.mkfifo(source, 0o700)
+    expected = {'path': str(source), 'bytes': 4, 'sha256': '0' * 64}
+    try:
+        gn1.stage_executable_input(expected, directory, 'python3')
+    except gn1.GN1Failure as error:
+        assert error.code == 'GN1_EXECUTABLE_INPUT_SOURCE_IDENTITY'
+    else:
+        raise AssertionError('FIFO accepted')
+    assert not list(directory.iterdir())
+    print(json.dumps({'fifo': 'REJECTED_WITHOUT_BLOCKING', 'native_host': False}))
+"""
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", "-c", code,
+             str(Path(__file__).resolve().parents[2])],
+            capture_output=True, timeout=5, check=True,
+        )
+        self.assertEqual(json.loads(result.stdout)["fifo"], "REJECTED_WITHOUT_BLOCKING")
+
+    def test_four_private_inputs_retain_source_bindings_and_fixed_budget(self):
+        with tempfile.TemporaryDirectory(prefix="gn1-input-roster-") as tmp:
+            root = Path(tmp).resolve()
+            _, expected = self.source(root)
+            private = gn1.mkdir(root, "private")
+            inputs = {role: dict(expected) for role in ("native_provider", "manim_runner", "python", "ffmpeg")}
+            prepared = gn1.prepare_executable_inputs(root, private, {"inputs": inputs})
+            self.assertEqual(set(prepared), set(inputs))
+            self.assertEqual(len({row["path"] for row in prepared.values()}), 4)
+            for role, copied in prepared.items():
+                self.assertEqual(copied["bytes"], expected["bytes"])
+                self.assertEqual(copied["sha256"], expected["sha256"])
+                self.assertEqual(Path(copied["path"]).stat().st_mode & 0o777, 0o500)
+                receipt = json.loads((private / ("executable-input-" + role + ".original.json")).read_bytes())
+                self.assertEqual(receipt["source"], expected)
+                self.assertTrue(receipt["source_group_or_other_writable"])
+            intent = json.loads((private / "executable-inputs.intent.original.json").read_bytes())
+            self.assertEqual(intent["copy_files"], 4)
+            self.assertEqual(intent["copy_bytes"], 4 * expected["bytes"])
+            self.assertFalse(intent["source_files_modified"])
+            self.assertFalse(intent["derived_executable_bytes_archived"])
+            self.assertEqual(gn1.MAX_NATIVE_STAGING_BYTES, 64 * 1024 * 1024)
+            self.assertEqual(gn1.MAX_DAEMON_LOG_BYTES, 2 * 1024 * 1024)
+
+
 class PartialCustodyTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "linux", "Actual FIFO replacement race")
     def test_partial_snapshot_fifo_replacement_cannot_block_capture(self):

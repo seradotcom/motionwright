@@ -54,7 +54,7 @@ jobs:
           set -euo pipefail
           python -B tooling/source_policy.py
           # Development integration uses affected source contracts; F retains full G0 assessment.
-          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" ) ]]; then
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" && ( "$GITHUB_REF" != "refs/heads/fix/native-production-causal-20261106-a4" || "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" ) ) || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" ) ]]; then
             python -B tooling/acceptance_policy.py
             python -B tooling/creative_status_policy.py
           fi
@@ -73,7 +73,7 @@ jobs:
             workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
               python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests -q
               ;;
-            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)
+            workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-gn1|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)
               # Source/inert GN1 G0 only: Native effects require the separate
               # explicit, source-bound one-original-owner reusable job below.
               python -B -m unittest                 tooling.tests.test_ci_graph_dev_native_startup.SourceIdentityTests                 tooling.tests.test_ci_graph_dev_native_startup.WorkflowBoundaryTests                 tooling.tests.test_ci_graph_dev_native_startup.PrivateOriginalTests.test_owner_stage_marker_is_not_evidence_of_launched_daemon -q
@@ -980,7 +980,7 @@ jobs:
   # first-party Native startup. No push, repeated R74, or release acceptance.
   phase1-native-gn1:
     name: GN1 one real disposable Native owner (development only, not G2)
-    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'phase1-native-gn1' && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'
+    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'phase1-native-gn1' && (github.ref == 'refs/heads/integrate/phase1-final-composition-20261027' || github.ref == 'refs/heads/fix/native-production-causal-20261106-a4')
     needs: g0
     permissions:
       contents: read

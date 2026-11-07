@@ -199,6 +199,137 @@ def daemon_staging_plan(binaries: dict):
             "driver_file_size_limit_unchanged": True}
 
 
+def executable_metadata(info):
+    """Stable input identity; reading may change atime, never these fields."""
+    return {"device": info.st_dev, "inode": info.st_ino, "bytes": info.st_size,
+            "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid,
+            "gid": info.st_gid, "links": info.st_nlink,
+            "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+
+def stage_executable_input(expected: dict, directory: Path, name: str):
+    """Prepare one immutable private copy without chmod on a build/tool input.
+
+    Source-bound Cargo and toolchain inputs can retain group-writable modes.
+    The SDK correctly rejects those modes. Copy only the already admitted
+    bytes to an exclusive owner-only file, then verify the unchanged source
+    and completed destination before making the copy executable. The source
+    metadata, including its original writable bits, remains explicit evidence.
+    """
+    need(name in ("motionwright-native-provider", "motionwright-manim-runner",
+                  "python3", "ffmpeg"), "GN1_EXECUTABLE_INPUT_ROLE")
+    source = Path(expected["path"])
+    need(source.is_absolute() and source.resolve(strict=True) == source
+         and not any(path.is_symlink() for path in (source, *source.parents)),
+         "GN1_EXECUTABLE_INPUT_ALIAS")
+    need(type(expected.get("bytes")) is int
+         and 0 < expected["bytes"] <= MAX_NATIVE_STAGING_BYTES
+         and type(expected.get("sha256")) is str
+         and SHA256.fullmatch(expected["sha256"]) is not None,
+         "GN1_EXECUTABLE_INPUT_BOUND")
+    need(directory.resolve(strict=True) == directory and directory.is_dir()
+         and stat.S_IMODE(directory.stat().st_mode) == 0o700
+         and directory.stat().st_uid == os.getuid(),
+         "GN1_EXECUTABLE_INPUT_DIRECTORY")
+    destination = directory / name
+    read_fd = write_fd = None
+    try:
+        read_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        before = os.fstat(read_fd)
+        need(stat.S_ISREG(before.st_mode) and before.st_size == expected["bytes"]
+             and before.st_mode & 0o111 and before.st_uid in (0, os.getuid()),
+             "GN1_EXECUTABLE_INPUT_SOURCE_IDENTITY")
+        original = executable_metadata(before)
+        need(original == executable_metadata(source.lstat()),
+             "GN1_EXECUTABLE_INPUT_CHANGED")
+        write_fd = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL
+                           | os.O_NOFOLLOW, 0o600)
+        digest = hashlib.sha256()
+        remaining = expected["bytes"]
+        first_chunk = True
+        while remaining:
+            raw = os.read(read_fd, min(1024 * 1024, remaining))
+            need(bool(raw), "GN1_EXECUTABLE_INPUT_SHORT_READ")
+            if first_chunk:
+                need(raw.startswith(b"\x7fELF"), "GN1_EXECUTABLE_INPUT_NOT_ELF")
+                first_chunk = False
+            digest.update(raw)
+            remaining -= len(raw)
+            pending = memoryview(raw)
+            while pending:
+                written = os.write(write_fd, pending)
+                need(written > 0, "GN1_EXECUTABLE_INPUT_SHORT_WRITE")
+                pending = pending[written:]
+        need(not os.read(read_fd, 1)
+             and original == executable_metadata(os.fstat(read_fd))
+             and original == executable_metadata(source.lstat()),
+             "GN1_EXECUTABLE_INPUT_CHANGED")
+        need(digest.hexdigest() == expected["sha256"],
+             "GN1_EXECUTABLE_INPUT_DIGEST")
+        os.fsync(write_fd)
+        os.lseek(write_fd, 0, os.SEEK_SET)
+        copied_digest = hashlib.sha256()
+        remaining = expected["bytes"]
+        while remaining:
+            raw = os.read(write_fd, min(1024 * 1024, remaining))
+            need(bool(raw), "GN1_EXECUTABLE_COPY_SHORT_READ")
+            copied_digest.update(raw)
+            remaining -= len(raw)
+        need(not os.read(write_fd, 1)
+             and copied_digest.hexdigest() == expected["sha256"],
+             "GN1_EXECUTABLE_COPY_DIGEST")
+        # Only this newly created private descriptor changes mode. Original
+        # toolchain files, their ACLs and SDK admission checks stay unchanged.
+        os.fchmod(write_fd, 0o500)
+        os.fsync(write_fd)
+        completed = os.fstat(write_fd)
+        need(stat.S_ISREG(completed.st_mode) and completed.st_nlink == 1
+             and completed.st_uid == os.getuid()
+             and stat.S_IMODE(completed.st_mode) == 0o500
+             and completed.st_size == expected["bytes"]
+             and executable_metadata(completed) == executable_metadata(destination.lstat()),
+             "GN1_EXECUTABLE_COPY_IDENTITY")
+        return {"path": str(destination), "sha256": expected["sha256"],
+                "bytes": expected["bytes"]}, {
+            "source": dict(expected), "source_metadata": original,
+            "source_group_or_other_writable": bool(original["mode"] & 0o022),
+            "private_copy": {"path": str(destination), "sha256": expected["sha256"],
+                             **executable_metadata(completed)},
+            "source_modified": False, "automatic_retry": False,
+        }
+    finally:
+        # Preserve a failed/partial destination and never reuse it. A later
+        # attempt must not relabel or overwrite this preparation's outcome.
+        for descriptor in (write_fd, read_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def prepare_executable_inputs(root: Path, private: Path, staging: dict):
+    names = {"native_provider": "motionwright-native-provider",
+             "manim_runner": "motionwright-manim-runner",
+             "python": "python3", "ffmpeg": "ffmpeg"}
+    inputs = staging["inputs"]
+    need(type(inputs) is dict and set(inputs) == set(names),
+         "GN1_EXECUTABLE_INPUT_ROSTER")
+    need(all(type(row.get("bytes")) is int
+             and 0 < row["bytes"] <= MAX_NATIVE_STAGING_BYTES
+             for row in inputs.values()), "GN1_EXECUTABLE_INPUT_BOUND")
+    total = sum(row["bytes"] for row in inputs.values())
+    need(total <= 4 * MAX_NATIVE_STAGING_BYTES, "GN1_EXECUTABLE_INPUT_TOTAL")
+    new_json(private / "executable-inputs.intent.original.json", {
+        "schema": "motionwright.gn1-executable-inputs/1", "inputs": inputs,
+        "copy_files": 4, "copy_bytes": total, "source_files_modified": False,
+        "derived_executable_bytes_archived": False, "automatic_retry": False,
+    })
+    directory = mkdir(root, "executable-inputs")
+    prepared, originals = {}, {}
+    for role, name in names.items():
+        prepared[role], originals[role] = stage_executable_input(inputs[role], directory, name)
+        new_json(private / ("executable-input-" + role + ".original.json"), originals[role])
+    return prepared
+
+
 def _limits(file_size_limit=MAX_DAEMON_LOG_BYTES):
     import resource
     need(type(file_size_limit) is int
@@ -416,6 +547,7 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
                   "automatic_retry": False})
 
     mark("BUILD_INPUTS")
+    prepared_inputs = prepare_executable_inputs(root, private, staging)
     locations = {}
     for name in ("home", "state", "runtime", "config", "clients",
                  "motionwright-data", "manim-runtime", "manim-work"):
@@ -463,8 +595,8 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
              "GN1_CORE_DID_NOT_ISSUE_REAL_PROJECT")
     mark("BOOTSTRAP_CLOSE")
 
-    provider = binaries["native_provider"]
-    manim_runner = binaries["manim_runner"]
+    provider = prepared_inputs["native_provider"]
+    manim_runner = prepared_inputs["manim_runner"]
     source_inputs = {"binaries": {
         "motionwright-native-provider": dict(provider),
         "motionwright-manim-runner": dict(manim_runner),
@@ -472,8 +604,8 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
     runtime = {
         "runtime": locations["manim-runtime"],
         "fontconfig": Path("/etc/fonts").resolve(strict=True),
-        "python": staging["inputs"]["python"],
-        "ffmpeg": staging["inputs"]["ffmpeg"],
+        "python": prepared_inputs["python"],
+        "ffmpeg": prepared_inputs["ffmpeg"],
     }
 
     mark("RESTRICTED_MANIFEST")
