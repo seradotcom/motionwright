@@ -47,7 +47,8 @@ def source_request(current, plan):
               if row['role'] in set(rows.values())}
     def original(member, digest='2' * 64):
         return {'member': member, 'bytes': 10, 'sha256': digest}
-    return {'schema': 'motionwright.native.fixedtxt-workflow-request/1',
+    return {'schema': 'motionwright.native.fixedtxt-workflow-request/2',
+        'owner_resources': copy.deepcopy(route.OWNER_RESOURCE_POLICY),
         'source_sha': current['source_sha'], 'source_tree': 'e' * 40,
         'semwright_sha': current['semwright_sha'], 'semwright_tree': 'f' * 40,
         'arm': plan['arm'], 'fixture': plan['fixture'], 'purpose': 'candidate24',
@@ -58,7 +59,7 @@ def source_request(current, plan):
         'sources': {'artifact': {'artifact_id': 33, 'run_id': 22, 'run_attempt': 1,
                     'source_sha': 'b' * 40, 'zip_sha256': 'c' * 64},
             'template_film': original('film.original.json'), 'managed_project': original('project.original.json'),
-            'caption_source': original('caption.original'), 'red_native': original('red-native.original', route.PAIR['RED']),
+            'caption_source': original('caption.original'), 'red_native': original('red-native.original', route.HISTORICAL_PAIR['RED']),
             'measurement_protocol': original('measurement.original.json'), 'project_files': []}}
 
 
@@ -220,6 +221,22 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.current, cls.p, cls.r, cls.q, cls.dispatch = external_fixture()
 
+    def write_control_originals(self, control, request):
+        """Create genuine-shape standalone clock/request originals for focused source tests."""
+        request_raw = route.canonical(request)
+        started = time.monotonic() - 1
+        clock = {
+            'schema': 'motionwright.native.fixedtxt-original-clock/1',
+            'context': self.current,
+            'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'started_monotonic': started,
+            'deadline_monotonic': started + request['limits']['attempt_seconds'],
+            'request_sha256': route.sha(request_raw),
+        }
+        (control / 'request.original.json').write_bytes(request_raw)
+        (control / 'clock.original.json').write_bytes(route.canonical(clock))
+        return clock
+
     def test_single_clock_preserves_early_start_and_upload_stays_inside_existing_custody(self):
         limits = {'attempt_seconds': 600, 'custody_seconds': 120}
         with mock.patch.object(supervisor.time, 'monotonic', return_value=250):
@@ -293,6 +310,16 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         bad = {**request,'purpose':'auxiliary-calibration'}
         with self.assertRaises(route.WorkflowRejected):
             route.checked_request(route.canonical(bad),current=self.current)
+        for label in ('historical-request-v1', 'absent-policy', 'larger-policy'):
+            invalid = copy.deepcopy(request)
+            if label == 'historical-request-v1':
+                invalid['schema'] = 'motionwright.native.fixedtxt-workflow-request/1'
+            elif label == 'absent-policy':
+                del invalid['owner_resources']
+            else:
+                invalid['owner_resources']['pids_max'] += 1
+            with self.subTest(label=label), self.assertRaises(route.WorkflowRejected):
+                route.checked_request(route.canonical(invalid), current=self.current)
         self.assertEqual(route.CALIBRATION_KEYS,('fixed-multirun-control','fixed-multirun','fixed-camera-scene'))
 
     def test_capacity_uses_every_original_and_existing_padding_files_and_envelope(self):
@@ -304,7 +331,8 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             capacity = route.preflight_request_capacity(selected)
             actual = Counter(selection.fixedtxt_required_members(fixture, fixed.NATIVE_SLOT).values())
             self.assertEqual(capacity['mandatory_role_counts'], dict(actual))
-            self.assertEqual(capacity['declared_files'], sum(actual.values()) + 15)
+            # Six separately bounded pre-owner diagnostics supplement the original budget.
+            self.assertEqual(capacity['declared_files'], sum(actual.values()) + 15 + 3 + 5 + 6)
             self.assertGreater(capacity['declared_capsule_bound'], capacity['declared_raw_bytes'])
             self.assertFalse(capacity['future_original_sizes_verified'])
             exact = copy.deepcopy(selected)
@@ -329,6 +357,8 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         request = source_request(self.current, fixed.strict(self.p, 512 * 1024))
         capacity = route.preflight_request_capacity(request)
         sizes = [49152, 65536, 16384, 512 * 1024, 65536, 1024 * 1024]
+        sizes += [128 * 1024, 128 * 1024, 16384]  # Original/derived observer custody.
+        sizes += [65536] * 5  # Real active resource-prefix maxima, no future terminal.
         sizes += [request['sources'][key]['bytes'] for key in
                   ('template_film', 'managed_project', 'caption_source', 'red_native', 'measurement_protocol')]
         sizes += [item['original']['bytes'] for item in request['sources']['project_files']]
@@ -346,7 +376,11 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
                                        for index, size in enumerate(sizes)}, bytes(512 * 1024))
         self.assertEqual(capacity['review_declared_files'], len(sizes))
         self.assertEqual(capacity['review_declared_raw_bytes'], sum(sizes))
-        self.assertEqual(capacity['review_declared_capsule_bound'], len(packed) + 8192 + 64 + 512 * 1024 + 8192)
+        envelope = 8192 + 64 + 512 * 1024 + 8192
+        # Five separately reserved resource records include worst-case padding;
+        # their real USTAR packet must fit, with at most one extra record block.
+        self.assertGreaterEqual(capacity['review_declared_capsule_bound'], len(packed) + envelope)
+        self.assertLessEqual(capacity['review_declared_capsule_bound'], len(packed) + envelope + 10240)
         self.assertFalse(capacity['future_original_sizes_verified'])
         exact = {**request, 'review_capsule_bytes': capacity['review_declared_capsule_bound']}
         route.checked_request(route.canonical(exact), current=self.current)
@@ -375,6 +409,7 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         archive = bytes(20000)  # inert own data; never accepted as a real ZIP
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {'RUNNER_TEMP': directory}):
             control = route.owned_layout(self.current)['control_root']; control.mkdir(mode=0o700)
+            self.write_control_originals(control, request)
             with mock.patch.object(custody, 'download_artifact', return_value=archive) as download, \
                     mock.patch.object(custody, 'zip_member') as extract, \
                     mock.patch.object(private, 'new_bytes') as copy, \
@@ -408,7 +443,7 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         source_check = owner.index('Bind the early capacity counts')
         self.assertLess(source_check, owner.index('toolchain: 1.98.1'))
         self.assertLess(source_check, owner.index('actions/setup-node'))
-        self.assertLess(source_check, owner.index('sudo -n apt-get'))
+        self.assertLess(source_check, owner.index('--action bootstrap'))
         actual = hashlib.sha256((TOOLING / 'native_film180_evidence_selection.py').read_bytes()).hexdigest()
         self.assertIn(actual, owner)
 
@@ -417,7 +452,14 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         request = source_request(self.current,original)
         source = {'files':{row['path']:row['sha256'] for row in original['source_bindings']}}
         known = {('inputs',fixed.CYCLE_MEMBER):self.q,('control','request.original.json'):route.canonical(request)}
-        raw = route.make_plan(request,self.current,self.q,source,known=known)
+        import native_fixedtxt_observer_overlay as overlay
+        # This older structural fixture has no observed source bundle. Its
+        # current-pair attempt must stay negative; it cannot certify custody.
+        with self.assertRaisesRegex(overlay.OverlayRejected, 'observer_custody_original_missing'):
+            route.make_plan(request, self.current, self.q, source, known=known)
+        # Preserve the original historical structural control and its scope.
+        with mock.patch.object(route, 'PAIR', route.HISTORICAL_PAIR):
+            raw = route.make_plan(request,self.current,self.q,source,known=known)
         result = fixed.validate_plan(fixed.strict(raw,512*1024),current=self.current)
         self.assertEqual(sum(row['role']=='native-png' for row in result['members']),180)
         self.assertEqual(result['case_roster'],original['case_roster'])
@@ -446,6 +488,7 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             layout=route.owned_layout(current)
             layout['control_root'].mkdir(mode=0o700)
             layout['inputs_root'].mkdir(mode=0o700)
+            (layout['control_root']/'request.original.json').write_bytes(route.canonical(request))
             (layout['control_root']/'clock.original.json').write_bytes(b'123')
             (layout['control_root']/'preparation').mkdir(mode=0o700)
             original=layout['control_root']/'preparation/prepare-00.stderr'
@@ -469,10 +512,12 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         def execute(argv,**kwargs):
             phase=kwargs['phase']; phases.append(phase)
             return {'original_complete':True,'exit_code':1 if phase=='prepare-12' else 0,
-                    'overflow':False,'deadline_exceeded':False}
+                    'overflow':False,'deadline_exceeded':False,
+                    'native_outcome':'NOT_INFERRED'}
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ,{
                 'RUNNER_TEMP':directory,'GITHUB_WORKSPACE':directory,'SEMWRIGHT_CHECKOUT':directory}):
             control=route.owned_layout(self.current)['control_root'];control.mkdir(mode=0o700)
+            self.write_control_originals(control, request)
             (control/'runtime-bootstrap.original.json').write_text('{}')
             commands=[['mechanical-source-command'] for _ in range(15)]
             clock={'started_monotonic':time.monotonic(),'deadline_monotonic':time.monotonic()+600}

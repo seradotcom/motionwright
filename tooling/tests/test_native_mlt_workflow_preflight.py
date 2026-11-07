@@ -155,12 +155,13 @@ class OriginalIntakeOrderTests(unittest.TestCase):
         empty = "test '${{ inputs.retained_reference_zip_base64 == '' }}' = 'true'"
         selected = ("test '${{ inputs.retained_reference_zip_base64 == '' || "
                     "inputs.verification_scope == 'repaired-g2' }}' = 'true'")
-        for name in ("source-contracts", "fixedtxt-original-owner", "fixedtxt-r28-original-delivery"):
+        for name in ("source-contracts", "fixedtxt-original-owner",
+                     "fixedtxt-session-owner", "fixedtxt-r28-original-delivery"):
             self.assertEqual(self.job(name).count(empty), 1)
         self.assertEqual(self.job("native-mlt-sequence").count(selected), 1)
         references = [line.strip() for line in self.workflow.splitlines()
                       if "inputs.retained_reference_zip_base64" in line]
-        self.assertEqual(sorted(references), sorted([empty, empty, empty, selected]))
+        self.assertEqual(sorted(references), sorted([empty] * 4 + [selected]))
 
 
 class PreflightCustodyTests(unittest.TestCase):

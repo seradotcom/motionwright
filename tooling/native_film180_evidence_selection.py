@@ -882,6 +882,7 @@ FIXEDTXT_PLAN_PATH = "fixedtxt-plan.original.json"
 FIXEDTXT_MAX_JSON = 512 * 1024
 FIXEDTXT_SOURCE_PATHS = tuple(sorted(set(mlt.FILM_SOURCE_PATHS) | {
     "tooling/native_film180_evidence_selection.py",
+    "tooling/native_fixedtxt_observer_overlay.py",
     "tooling/native_film180_original_g2.py",
     "tooling/native_evidence_projection.py",
     "tooling/ci_private_evidence.py",
@@ -1076,12 +1077,16 @@ def fixedtxt_validate_plan(value, *, current):
     require(total <= crypto.MAX_TOTAL and tar_bound + 8192 + 64 + FIXEDTXT_MAX_JSON
             <= limits["capsule_bytes"], "fixedtxt-whole-capsule-budget")
     require(len(crypto.json_bytes(value)) <= FIXEDTXT_MAX_JSON, "fixedtxt-plan-size")
+    import native_fixedtxt_observer_overlay as overlay
+    overlay.validate_bundle_plan(value)
     return value
 
 
 def fixedtxt_validate_selected_frames(originals, *, plan):
     """Read existing RGBA and terminal bytes; never decode or rerun anything."""
     import ci_private_evidence as crypto
+    import native_fixedtxt_observer_overlay as overlay
+    overlay.verify_bundle_originals(originals, plan=plan)
     readback = "observation/" + plan["fixture"] + "/fixed-text-original-readback/"
     selected = crypto.strict(originals[readback + "selected-originals.json"])
     fields = {"schema", "arm", "fixture", "manifest_sha256", "native_observation_sha256",

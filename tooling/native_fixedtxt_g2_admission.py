@@ -24,14 +24,29 @@ SELECTOR = "original-fixedtxt-host-joined-artifact-directory/1"
 # This is an ARCHIVE SLOT, never a physical output path or reserved job name.
 NATIVE_SLOT = "output/__original_host_artifact__"
 HELPER_PATHS = (
+    "tooling/native_owner_resources.py",
+    "tooling/source_policy.py",
     "tooling/native_fixedtxt_g2_admission.py",
     "tooling/native_fixedtxt_g2_supervisor.py",
     "tooling/native_fixedtxt_workflow.py",
+    "tooling/native_fixedtxt_session.py",
+    ".github/actions/fixedtxt-session-case/action.yml",
 )
 PLAN_MEMBER = "fixedtxt-plan.original.json"
 RUNTIME_MEMBER = "source-input.original.json"
 CYCLE_MEMBER = "cycle.original.json"
 SHA = re.compile(r"[0-9a-f]{64}\Z")
+# These six literal originals are emitted before the first native owner. Their
+# transport bounds fit the original capsule, including the seven-frame case.
+# Overflow remains missing evidence; no stream is truncated to make it fit.
+PRE_OWNER_DIAGNOSTICS = (
+    ("source-plan.json", 4096),
+    ("runtime-input-custody.json", 16384),
+    ("fixed.source-fixtures.intent.json", 4096),
+    ("fixed.source-fixtures.stdout", 16384),
+    ("fixed.source-fixtures.stderr", 16384),
+    ("fixed.source-fixtures.terminal.json", 4096),
+)
 
 
 class FixedTxtRejected(ValueError):
@@ -109,6 +124,11 @@ def validate_plan(value, *, current):
     fixedtxt_validate_plan(shape, current=current)
     required = ("observation", value["fixture"] + "/native-result.host-stdin/broker-receipt.snapshot.json")
     rows = {(row["root"], row["relative_path"]): row for row in value["members"]}
+    for name, bound in PRE_OWNER_DIAGNOSTICS:
+        diagnostic = rows.get(("observation", name))
+        need(diagnostic is not None and diagnostic["role"] == "attempt-original"
+             and diagnostic["maximum"] == bound and diagnostic["expected_sha256"] is None,
+             "fixedtxt-v2-original-pre-owner-diagnostic-required")
     need(required in rows and rows[required]["role"] == "attempt-original"
          and rows[required]["maximum"] == 8 * 1024 * 1024
          and rows[required]["expected_sha256"] is None,
@@ -333,6 +353,23 @@ def acquire_wrapper_inputs(environment, *, runtime_input_path, cycle_input_path,
     return acquire_inputs(raw, environment=environment, source_root=source_root)
 
 
+def verify_text_pixel_host_samples(plan, config, manifest):
+    """The new observer requires the original closed fixture sample roster."""
+    from native_film180_evidence_selection import fixedtxt_frames
+    from native_fixedtxt_observer_overlay import OBSERVED
+    source = plan["arm_sources"][plan["arm"]]["native_source_sha256"]
+    if source == OBSERVED[plan["arm"]]:
+        requested = config.get("textPixelObservationFrames")
+        need(type(requested) is list and requested == list(fixedtxt_frames(plan["fixture"]))
+             and all(type(frame) is int for frame in requested)
+             and manifest.get("plan", {}).get("text_pixel_observation_frames") == requested,
+             "fixedtxt-v2-original-text-pixel-Host-plan-samples")
+    else:
+        need("textPixelObservationFrames" not in config
+             and "text_pixel_observation_frames" not in manifest.get("plan", {}),
+             "fixedtxt-v2-text-pixel-profile-foreign-observer")
+
+
 def resolve_native_directory(plan, originals, *, cycle_raw):
     """Resolve one physical suffix from held, mutually joined ORIGINAL bytes.
 
@@ -459,6 +496,7 @@ def resolve_native_directory(plan, originals, *, cycle_raw):
          and descriptor(helper) == {key: runtime.get("render_helper", {}).get(key)
                                     for key in ("bytes", "sha256")},
          "fixedtxt-v2-original-host-program-and-helper")
+    verify_text_pixel_host_samples(plan, config, manifest)
     native_observations = manifest.get("native_observations", {})
     need(native_observations.get("render_input_digest") == config.get("renderInputDigest")
          and type(config.get("renderInputDigest")) is str and SHA.fullmatch(config["renderInputDigest"])
@@ -507,6 +545,7 @@ def _read_admitted_original(handles, row, physical, *, plan):
         allowed[("observation", stem + "stderr")] = ("decoder-stderr", 256 * 1024)
     for stream in ("stdout", "stderr"):
         allowed[("control", "supervision/work." + stream)] = ("attempt-original", 1024 * 1024 + 1)
+        allowed[("observation", "fixed.source-fixtures." + stream)] = ("attempt-original", 16384)
     admitted = allowed.get((row["root"], physical))
     need(admitted is not None and physical == row["relative_path"]
          and row["role"] == admitted[0] and type(row["maximum"]) is int
@@ -541,6 +580,73 @@ def _read_admitted_original(handles, row, physical, *, plan):
         if fd >= 0:
             os.close(fd)
         handles.close_parents(parents)
+
+
+def verify_owner_resource_prefix(originals, *, plan, current, runner_temp):
+    """Validate observed preparation entry and caps without a future terminal."""
+    import native_fixedtxt_session as serial
+    import native_fixedtxt_workflow as route
+    import native_owner_resources as resources
+    need("control/request.original.json" in originals
+         and "control/clock.original.json" in originals,
+         "fixedtxt-resource-clock-originals-missing")
+    request_raw = originals["control/request.original.json"]
+    clock_raw = originals["control/clock.original.json"]
+    request = route.checked_request(request_raw, current=current)
+    clock = strict(clock_raw, 65536)
+    rows = {row["root"] + "/" + row["relative_path"]: row for row in plan["members"]}
+    raw_clock = {name: originals["control/" + name] for name in serial.SESSION_MEMBERS
+                 if "control/" + name in rows}
+    session = serial.validate_clock_bundle(raw_clock, request_raw, clock_raw,
+                                          current=current, runner_temp=runner_temp)
+    need(session is not None or not PurePosixPath(runner_temp).name.startswith("fx"),
+         "fixedtxt-resource-prefix-session-required")
+    index = None if session is None else session["binding"]["index"]
+    label = resources.action_label("prepare", index)
+    names = {"origin.original.json", *("commands/" + label + "/" + name for name in resources.PREFIX_FILES)}
+    prefix = "control/owner-resources/"
+    selected = {name.removeprefix(prefix): row for name, row in rows.items() if name.startswith(prefix)}
+    need(set(selected) == names, "fixedtxt-resource-prefix-exact-original-plan")
+    values = {}
+    for name, row in selected.items():
+        raw = originals[prefix + name]
+        need(row["role"] == "input-original" and type(raw) is bytes and 0 < len(raw) <= row["maximum"] <= 65536
+             and row["expected_sha256"] == sha(raw), "fixedtxt-resource-prefix-plan-digest")
+        values[name] = raw
+    source = {row["path"]: row["sha256"] for row in plan["source_bindings"]}
+    need("tooling/native_owner_resources.py" in source, "fixedtxt-resource-helper-source-absent")
+    verified = resources.validate_resource_originals(values, scope="fixedtxt", current=current,
+        action="prepare", case=index, completed=False, helper_sha256=source["tooling/native_owner_resources.py"])
+    origin = resources.strict(values["origin.original.json"])
+    need(origin["job"] == ("fixedtxt-original-owner" if session is None else "fixedtxt-session-owner"),
+         "fixedtxt-resource-original-owner-mode")
+    need(all(name in source and row.get("sha256") == source[name]
+             for name, row in origin["source_closure"].items()), "fixedtxt-resource-original-source-closure")
+    intent = resources.strict(values["commands/" + label + "/intent.original.json"])
+    binding = intent["deadline"]
+    selected_clock = binding["selected"]
+    need(selected_clock["clock"] == descriptor(clock_raw)
+         and selected_clock["request"] == descriptor(request_raw)
+         and selected_clock["folder"] == str(PurePosixPath(runner_temp) / ("mw-fixedtxt-g2-control-" + current["run_id"] + "-1"))
+         and selected_clock["started_monotonic"] == clock["started_monotonic"]
+         and selected_clock["deadline_monotonic"] == clock["deadline_monotonic"]
+         and selected_clock["boot_id"] == clock["boot_id"]
+         and binding["effective_deadline_monotonic"] == serial.preparation_deadline(clock, request, session)
+         and binding["initial"] == origin["clock"], "fixedtxt-resource-original-preparation-clock")
+    initial = binding["initial"]
+    if session is None:
+        need(initial == selected_clock, "fixedtxt-resource-single-clock-differs")
+    else:
+        first_clock = (clock_raw if index == 0 else originals["control/reused-preparation/control/clock.original.json"])
+        need(initial["clock"] == descriptor(first_clock)
+             and initial["request"] == session["session"]["template"]
+             and initial["started_monotonic"] == session["session"]["started_monotonic"]
+             and initial["deadline_monotonic"] == session["session"]["deadline_monotonic"]
+             and initial["boot_id"] == session["session"]["boot_id"], "fixedtxt-resource-original-session-clock")
+    expected_argv = [str(PurePosixPath(origin["base_temp"]) / ("mw-fixedtxt-custody-python-" + current["run_id"] + "-1") / "bin/python"),
+        "-B", "-E", "-s", str(PurePosixPath(origin["source_root"]) / "tooling/native_fixedtxt_workflow.py"), "--prepare-originals"]
+    need(intent["argv"] == expected_argv, "fixedtxt-resource-closed-preparation-command")
+    return verified
 
 
 def verify_supervisor_originals(originals, *, plan, current, runner_temp):
@@ -582,8 +688,31 @@ def verify_supervisor_originals(originals, *, plan, current, runner_temp):
     need(all(type(value) in (int, float) and math.isfinite(value) for value in times),
          "fixedtxt-v2-work-original-clock")
     start, execution, stage, total, finished = times
+    import native_fixedtxt_session as serial
+    members = {row["relative_path"]: row for row in plan["members"] if row["root"] == "control"}
+    session_raws = {}
+    for name, maximum in serial.SESSION_MEMBERS.items():
+        if name in members:
+            row = members[name]
+            raw = originals.get("control/" + name)
+            need(row["role"] == "input-original" and type(raw) is bytes and len(raw) <= maximum
+                 and row["expected_sha256"] == sha(raw), "fixedtxt-session-supervisor-plan-pin")
+            session_raws[name] = raw
+    session = serial.validate_clock_bundle(session_raws,
+        originals.get("control/request.original.json", b""), originals.get("control/clock.original.json", b""),
+        current=current, runner_temp=runner_temp)
+    need(session is not None or not PurePosixPath(runner_temp).name.startswith("fx"),
+         "fixedtxt-session-supervisor-clock-required")
+    expected_total = start + plan["limits"]["attempt_seconds"]
+    if session is not None:
+        case_clock = strict(originals["control/clock.original.json"], 65536)
+        case_request = strict(originals["control/request.original.json"], 49152)
+        need(start == case_clock["started_monotonic"] and case_request["limits"] == plan["limits"]
+             and (case_request["arm"], case_request["fixture"]) == (plan["arm"], plan["fixture"]),
+             "fixedtxt-session-supervisor-original-case-clock")
+        expected_total = session["effective_deadline_monotonic"]
     need(0 <= start <= execution < stage < total and start <= finished <= stage
-         and abs(total - start - plan["limits"]["attempt_seconds"]) < 0.000001
+         and abs(total - expected_total) < 0.000001
          and abs(total - stage - plan["limits"]["custody_seconds"]) < 0.000001,
          "fixedtxt-v2-work-original-budget")
     streams = terminal["streams"]
@@ -595,7 +724,59 @@ def verify_supervisor_originals(originals, *, plan, current, runner_temp):
              and type(observed["retained_bytes"]) is int
              and observed["observed_bytes"] == observed["retained_bytes"] == len(raw) <= 1024 * 1024
              and observed["observed_sha256"] == sha(raw), "fixedtxt-v2-work-original-stream-binding")
+    verify_owner_resource_prefix(originals, plan=plan, current=current, runner_temp=runner_temp)
     return {"original_work_stage_verified": True, "native_success_verified": False}
+
+
+def _pre_owner_observation_paths(fixture):
+    """Only originals the unchanged wrapper can produce before its owner."""
+    return frozenset(name for name, _ in PRE_OWNER_DIAGNOSTICS) | {
+        "fixed-text-inputs.original.json", "final-custody.json",
+        "canonical-fixture-set/evidence/fixture-set-component.json",
+        "canonical-fixture-set/fixtures/" + fixture + "/film.original.json",
+        "canonical-fixture-set/fixtures/" + fixture + "/expectations.json",
+    }
+
+
+def _close_selected_handles(opened, primary=None):
+    close_error = None
+    for handles in reversed(opened):
+        try:
+            handles.close()
+        except BaseException as error:
+            if close_error is None:
+                close_error = error
+    if close_error is not None:
+        if primary is None:
+            raise close_error
+        primary.add_note("Original selected handle close failed; no second read attempted.")
+
+
+def _selected_root_handles(roots):
+    """An absent/rejected pre-owner observation root cannot erase P/R/Q."""
+    import native_evidence_projection as core
+    if roots["owner"] is not None:
+        handles = core.RootHandles(roots)
+        return {key: handles for key in roots}, [handles]
+    handles = core.RootHandles({key: roots[key] for key in ("control", "inputs")})
+    opened, readable = [handles], {key: handles for key in ("control", "inputs")}
+    observation = None
+    try:
+        try:
+            observation = core.RootHandles({"observation": roots["observation"]})
+            mark = observation.initial["observation"]
+            need(all((mark.st_dev, mark.st_ino) != (old.st_dev, old.st_ino)
+                     for old in handles.initial.values()), "fixedtxt-v2-aliased-pre-owner-root")
+        except (OSError, ValueError, core.SelectionError):
+            if observation is not None:
+                _close_selected_handles([observation])
+        else:
+            opened.append(observation)
+            readable["observation"] = observation
+    except BaseException as error:
+        _close_selected_handles([handles], primary=error)
+        raise
+    return readable, opened
 
 
 def capture_selected(held, *, current, runner_temp, source_root, roots):
@@ -622,12 +803,11 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
                                          Path(roots["observation"]) / plan["fixture"])
         need(str(owner) == str(roots["owner"]), "fixedtxt-v2-original-owner-root")
     core.verify_source_bindings(source_root, current["source_sha"], plan["source_bindings"])
-    # When no original owner identity can be verified, retain P/R/Q and the
-    # outer work originals. No guessed owner path is read, and all unresolved
-    # native members remain explicitly missing, never evidence of no effect.
-    readable = (roots if roots["owner"] is not None else
-                {key: roots[key] for key in ("control", "inputs")})
-    handles = core.RootHandles(readable)
+    # An owner is not needed to retain the explicitly admitted compiler
+    # prefix. Its root still uses anchored no-follow handles and private mode.
+    # Native members remain missing without the original owner identity.
+    readable, opened = _selected_root_handles(roots)
+    pre_owner_paths = _pre_owner_observation_paths(plan["fixture"])
     originals, observations, failed, identities = {}, [], [], set()
     total, resolved, primary = 0, None, None
     try:
@@ -637,7 +817,10 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
             nonlocal total
             key = row["root"] + "/" + row["relative_path"]
             need(row["root"] in readable, "fixedtxt-v2-original-owner-identity-unavailable")
-            raw, identity = _read_admitted_original(handles, row, physical, plan=plan)
+            need(roots["owner"] is not None or row["root"] != "observation"
+                 or row["relative_path"] in pre_owner_paths,
+                 "fixedtxt-v2-pre-owner-observation-not-selected")
+            raw, identity = _read_admitted_original(readable[row["root"]], row, physical, plan=plan)
             need(identity[:2] not in identities, "fixedtxt-v2-aliased-selected-original")
             identities.add(identity[:2])
             need(row["expected_sha256"] is None or row["expected_sha256"] == sha(raw),
@@ -659,10 +842,11 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
             if key in originals and originals[key] != expected:
                 failed.append({"archive_path": key, "error_class": "FrozenOriginalChanged",
                                "automatic_retry": False})
-        try:
-            resolved = resolve_native_directory(plan, originals, cycle_raw=held.cycle_raw)
-        except (KeyError, TypeError, ValueError):
-            resolved = None
+        if roots["owner"] is not None:
+            try:
+                resolved = resolve_native_directory(plan, originals, cycle_raw=held.cycle_raw)
+            except (KeyError, TypeError, ValueError):
+                resolved = None
         for row in dynamic:
             if resolved is None:
                 failed.append({"archive_path": row["root"] + "/" + row["relative_path"],
@@ -674,17 +858,12 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
             except (OSError, ValueError, core.SelectionError) as error:
                 failed.append({"archive_path": row["root"] + "/" + row["relative_path"],
                                "error_class": type(error).__name__, "automatic_retry": False})
-        need(handles.stable_roots(), "fixedtxt-v2-selected-roots-changed")
+        need(all(handles.stable_roots() for handles in opened), "fixedtxt-v2-selected-roots-changed")
     except BaseException as error:
         primary = error
         raise
     finally:
-        try:
-            handles.close()
-        except BaseException:
-            if primary is None:
-                raise
-            primary.add_note("Original selected handle close failed; no second read attempted.")
+        _close_selected_handles(opened, primary=primary)
     core.verify_source_bindings(source_root, current["source_sha"], plan["source_bindings"])
     complete = not failed and len(originals) == len(plan["members"])
     verified = supervisor_verified = False

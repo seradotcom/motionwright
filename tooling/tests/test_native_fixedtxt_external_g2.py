@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 TOOLING = Path(__file__).resolve().parents[1]
 if str(TOOLING) not in sys.path:
@@ -191,6 +192,9 @@ def external_fixture():
         {"root": "observation", "relative_path": "flow-control-base/native-result.host-stdin/broker-receipt.snapshot.json",
          "role": "attempt-original", "maximum": 8 * 1024 * 1024, "expected_sha256": None},
     ])
+    for name, bound in fixed.PRE_OWNER_DIAGNOSTICS:
+        members.append({"root": "observation", "relative_path": name, "role": "attempt-original",
+                        "maximum": bound, "expected_sha256": None})
     for suffix, bound in (("intent.json", 65536), ("spawned.json", 65536), ("stdout", 1024 * 1024 + 1),
                           ("stderr", 1024 * 1024 + 1), ("terminal.json", 65536)):
         members.append({"root": "control", "relative_path": "supervision/work." + suffix,
@@ -514,12 +518,21 @@ class OfflineOriginalReaderTests(unittest.TestCase):
 
     def test_real_reader_binds_all180_and_full_rgba_without_decoder_or_acceptance(self):
         _, _, originals, manifest = self.fixture
-        result = self.verify(originals, manifest)
+        # This synthetic source fixture predates the separate owner-resource
+        # admission. Isolate only the frame/readback logic; no Native or G2
+        # acceptance is produced by bypassing the separately tested prefix.
+        with mock.patch.object(fixed, "verify_owner_resource_prefix"):
+            result = self.verify(originals, manifest)
         self.assertEqual(result["frame_count"], 180)
         self.assertEqual(result["selected_decode_count"], 3)
         self.assertIs(result["decoder_invoked_by_intake"], False)
         self.assertIs(result["native_success_verified"], False)
         self.assertIs(result["human_acceptance"], False)
+
+    def test_legacy_snapshot_without_owner_resource_clock_fails_closed(self):
+        _, _, originals, manifest = self.fixture
+        with self.assertRaisesRegex(fixed.FixedTxtRejected, "fixedtxt-resource-clock-originals-missing"):
+            self.verify(originals, manifest)
 
     def test_changed_unselected_native_png_cannot_hide_behind_valid_selected_rgba(self):
         _, _, original, before = self.fixture

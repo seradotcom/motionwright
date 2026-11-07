@@ -1,0 +1,153 @@
+name: One independently admitted FixedTxt case
+description: Fresh P R Q and one external R28, with original shared preparation provenance
+inputs:
+  case-index:
+    required: true
+    description: Closed original fixture ordinal within the selected arm
+  session-root:
+    required: true
+    description: Original session journal directory from this run
+  custody-python:
+    required: true
+    description: Existing pinned custody interpreter
+runs:
+  using: composite
+  steps:
+    - name: Retain this case clock and exclusive namespace
+      id: begin
+      shell: bash
+      env:
+        CASE_INDEX: ${{ inputs.case-index }}
+        MW_FIXEDTXT_SESSION_ROOT: ${{ inputs.session-root }}
+        CUSTODY_PYTHON: ${{ inputs.custody-python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        owner_resource_status=0
+        owner_resource_return_status=0
+        sudo -n --preserve-env /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" enter --scope fixedtxt --action begin-case --case-index "$CASE_INDEX" --original-path "$PATH" --original-home "$HOME" || owner_resource_status=$?
+        /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" observe --scope fixedtxt --action begin-case --case-index "$CASE_INDEX" || owner_resource_return_status=$?
+        if [ "$owner_resource_status" -ne 0 ]; then exit "$owner_resource_status"; fi
+        test "$owner_resource_return_status" -eq 0
+    - name: Prepare this case P R Q with exact original provenance
+      id: prepare
+      shell: bash
+      env:
+        CASE_INDEX: ${{ inputs.case-index }}
+        GH_TOKEN: ${{ github.token }}
+        FIXEDTXT_CASE_TEMP: ${{ steps.begin.outputs.case_temp }}
+        MW_FIXEDTXT_SESSION_ROOT: ${{ inputs.session-root }}
+        CUSTODY_PYTHON: ${{ inputs.custody-python }}
+      run: |
+        set -euo pipefail
+        export RUNNER_TEMP="$FIXEDTXT_CASE_TEMP"
+        umask 077
+        owner_resource_status=0
+        owner_resource_return_status=0
+        sudo -n --preserve-env /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" enter --scope fixedtxt --action prepare --case-index "$CASE_INDEX" --original-path "$PATH" --original-home "$HOME" || owner_resource_status=$?
+        /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" observe --scope fixedtxt --action prepare --case-index "$CASE_INDEX" || owner_resource_return_status=$?
+        if [ "$owner_resource_status" -ne 0 ]; then exit "$owner_resource_status"; fi
+        test "$owner_resource_return_status" -eq 0
+    - name: Retain this case encrypted P R Q for independent review
+      id: review
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.begin.outputs.review_name }}
+        path: |
+          ${{ steps.prepare.outputs.review_directory }}/sealed-preparation.bin
+          ${{ steps.prepare.outputs.review_directory }}/preparation-public.json
+        if-no-files-found: error
+        overwrite: false
+        compression-level: 0
+        retention-days: 14
+    - name: Consume this case external R28 once
+      id: owner
+      shell: bash
+      env:
+        CASE_INDEX: ${{ inputs.case-index }}
+        GH_TOKEN: ${{ github.token }}
+        FIXEDTXT_CASE_TEMP: ${{ steps.begin.outputs.case_temp }}
+        MW_FIXEDTXT_SESSION_ROOT: ${{ inputs.session-root }}
+        CUSTODY_PYTHON: ${{ inputs.custody-python }}
+        MW_FIXEDTXT_REVIEW_ARTIFACT_ID: ${{ steps.review.outputs.artifact-id }}
+        MW_FIXEDTXT_REVIEW_ARTIFACT_SHA256: ${{ steps.review.outputs.artifact-digest }}
+      run: |
+        set -euo pipefail
+        export RUNNER_TEMP="$FIXEDTXT_CASE_TEMP"
+        umask 077
+        owner_resource_status=0
+        owner_resource_return_status=0
+        sudo -n --preserve-env /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" enter --scope fixedtxt --action receive-and-run --case-index "$CASE_INDEX" --original-path "$PATH" --original-home "$HOME" || owner_resource_status=$?
+        /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" observe --scope fixedtxt --action receive-and-run --case-index "$CASE_INDEX" || owner_resource_return_status=$?
+        if [ "$owner_resource_status" -ne 0 ]; then exit "$owner_resource_status"; fi
+        test "$owner_resource_return_status" -eq 0
+    - name: Preserve this case workflow originals after any causal failure
+      id: seal
+      if: always() && steps.begin.outcome == 'success'
+      shell: bash
+      env:
+        CASE_INDEX: ${{ inputs.case-index }}
+        FIXEDTXT_CASE_TEMP: ${{ steps.begin.outputs.case_temp }}
+        MW_FIXEDTXT_SESSION_ROOT: ${{ inputs.session-root }}
+        CUSTODY_PYTHON: ${{ inputs.custody-python }}
+      run: |
+        set -euo pipefail
+        export RUNNER_TEMP="$FIXEDTXT_CASE_TEMP"
+        umask 077
+        owner_resource_status=0
+        owner_resource_return_status=0
+        sudo -n --preserve-env /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" enter --scope fixedtxt --action seal-workflow --case-index "$CASE_INDEX" --original-path "$PATH" --original-home "$HOME" || owner_resource_status=$?
+        /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" observe --scope fixedtxt --action seal-workflow --case-index "$CASE_INDEX" || owner_resource_return_status=$?
+        if [ "$owner_resource_status" -ne 0 ]; then exit "$owner_resource_status"; fi
+        test "$owner_resource_return_status" -eq 0
+    - name: Retain this case encrypted workflow originals
+      id: workflow
+      if: always() && steps.seal.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.begin.outputs.workflow_name }}
+        path: |
+          ${{ steps.begin.outputs.case_temp }}/mw-fixedtxt-g2-workflow-${{ github.run_id }}-1/sealed-workflow-originals.bin
+          ${{ steps.begin.outputs.case_temp }}/mw-fixedtxt-g2-workflow-${{ github.run_id }}-1/workflow-public.json
+        if-no-files-found: error
+        overwrite: false
+        compression-level: 0
+        retention-days: 14
+    - name: Retain this case existing selected originals
+      id: selected
+      if: always() && steps.owner.outcome != 'skipped' && steps.begin.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.begin.outputs.selected_name }}
+        path: |
+          ${{ steps.begin.outputs.case_temp }}/mw-fixedtxt-g2-sealed-${{ github.run_id }}-1/sealed-originals.bin
+          ${{ steps.begin.outputs.case_temp }}/mw-fixedtxt-g2-sealed-${{ github.run_id }}-1/public-evidence.json
+        if-no-files-found: error
+        overwrite: false
+        compression-level: 0
+        retention-days: 14
+    - name: Verify this case closure before any following case
+      if: success() && steps.owner.outcome == 'success' && steps.selected.outcome == 'success' && steps.workflow.outcome == 'success'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CASE_INDEX: ${{ inputs.case-index }}
+        FIXEDTXT_CASE_TEMP: ${{ steps.begin.outputs.case_temp }}
+        MW_FIXEDTXT_SESSION_ROOT: ${{ inputs.session-root }}
+        CUSTODY_PYTHON: ${{ inputs.custody-python }}
+        MW_FIXEDTXT_REVIEW_ARTIFACT_ID: ${{ steps.review.outputs.artifact-id }}
+        MW_FIXEDTXT_REVIEW_ARTIFACT_SHA256: ${{ steps.review.outputs.artifact-digest }}
+        MW_FIXEDTXT_WORKFLOW_ARTIFACT_ID: ${{ steps.workflow.outputs.artifact-id }}
+        MW_FIXEDTXT_WORKFLOW_ARTIFACT_SHA256: ${{ steps.workflow.outputs.artifact-digest }}
+        MW_FIXEDTXT_SELECTED_ARTIFACT_ID: ${{ steps.selected.outputs.artifact-id }}
+        MW_FIXEDTXT_SELECTED_ARTIFACT_SHA256: ${{ steps.selected.outputs.artifact-digest }}
+      run: |
+        set -euo pipefail
+        export RUNNER_TEMP="$FIXEDTXT_CASE_TEMP"
+        umask 077
+        owner_resource_status=0
+        owner_resource_return_status=0
+        sudo -n --preserve-env /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" enter --scope fixedtxt --action close-case --case-index "$CASE_INDEX" --original-path "$PATH" --original-home "$HOME" || owner_resource_status=$?
+        /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" observe --scope fixedtxt --action close-case --case-index "$CASE_INDEX" || owner_resource_return_status=$?
+        if [ "$owner_resource_status" -ne 0 ]; then exit "$owner_resource_status"; fi
+        test "$owner_resource_return_status" -eq 0
