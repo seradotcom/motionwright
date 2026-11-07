@@ -734,6 +734,7 @@ jobs:
           MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
         run: python -I -B tooling/ci_canvas_service.py graph wait --repo .
       - name: Execute the six original Graph cases and complete closure
+        id: graph-cases
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 20
         env:
@@ -827,6 +828,27 @@ jobs:
           set -euo pipefail
           python -I -B tooling/ci_canvas_service.py graph-budget --repo . --phase final-upload
           echo 'admitted=true' >> "$GITHUB_OUTPUT"
+      - name: Seal selected negative Graph originals for the admitted private recipient
+        id: graph-negative
+        if: always() && matrix.selection == 'phase1-native-graph' && steps.graph-cases.outcome == 'failure'
+        timeout-minutes: 11
+        env:
+          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64: ${{ inputs.graph_review_spki_der_base64 }}
+          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256: ${{ inputs.graph_review_spki_sha256 }}
+        run: python -I -B tooling/ci_canvas_service.py graph negative --repo .
+      - name: Retain encrypted negative Graph originals without public closure credit
+        if: always() && matrix.selection == 'phase1-native-graph' && steps.graph-negative.outputs.sealed == 'true'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: graph-negative-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            v/graph-negative/attempt.original.json
+            v/graph-negative/carrier.original.json
+            v/graph-negative/negative-originals.mwseal
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain verified TAR and original custody receipt
         if: always() && (matrix.selection != 'phase1-service47' || steps.phase1-closed-upload-admission.outputs.admitted == 'true') && (matrix.selection != 'phase1-native-graph' || steps.graph-final-upload-admission.outputs.admitted == 'true' && steps.archive.outcome == 'success')
         timeout-minutes: ${{ contains(fromJSON('["phase1-service47","phase1-native-graph"]'), matrix.selection) && 5 || 360 }}

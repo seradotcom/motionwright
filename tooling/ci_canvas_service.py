@@ -7905,6 +7905,9 @@ GRAPH_DEADLINE_ENV = "MOTIONWRIGHT_GRAPH_DEADLINE_SHA256"
 GRAPH_TOKEN_ENV = "MOTIONWRIGHT_GRAPH_METADATA_TOKEN"
 GRAPH_INDEX_SCHEMA = "motionwright.private.graph-producer-reference-index/0"
 GRAPH_BYTES = 1024 * 1024
+# Ciphertext-only diagnostic custody consumes an existing shared slice. It is
+# withheld during review waiting, before any case can leave UNKNOWN originals.
+GRAPH_NEGATIVE_RESERVATION = {"bytes": 32 * GRAPH_BYTES, "members": 4}
 GRAPH_BUDGET = {
     "producer_bytes": 384 * GRAPH_BYTES, "producer_members": 768,
     "case_bytes": 260 * GRAPH_BYTES, "case_members": 3000,
@@ -7941,7 +7944,7 @@ GRAPH_TARGETS = {
     "native_graph_session": ("motionwright-native", "native-graph-review-session", "example"),
 }
 GRAPH_IMPORTS = tuple("tooling/" + name + ".py" for name in (
-    "native_graph_browser_owner", "native_graph_executable_inputs", "ci_graph_dev_native_startup",
+    "native_graph_browser_owner", "native_graph_executable_inputs", "native_graph_negative_evidence", "ci_graph_dev_native_startup",
     "native_host_shared_state", "native_host_installed_shared_state",
     "native_manim_graph_runtime_intake", "native_av_failure_guard", "candidate_smoke",
     "linux_first_use_custody", "linux_cold_start", "linux_first_use_accessible",
@@ -8994,6 +8997,7 @@ def graph_source_paths(repo, targets, intake_rows):
     extra = ("Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json",
              "apps/studio/package.json", "crates/service/Cargo.toml",
              "tooling/tests/test_graph_staging_file_limits.py", "tooling/tests/test_graph_executable_inputs.py",
+             "tooling/tests/test_graph_negative_evidence.py",
              "apps/studio/tooling/graph-owner/staging_file_limits.test.mjs",
              "apps/studio/tooling/graph-owner/producer_guard.test.mjs",
              "apps/studio/src/semanticGraphMutationError.ts", "crates/manim-profile/src/semantic_graph_source.rs",
@@ -9043,7 +9047,9 @@ def graph_produce(repo, recipient):
             # recipient must parse before a build/runtime can consume its phase.
             preparation_source = graph_source_observe(repo, source_sha, (
                 "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
-                "tooling/requirements/mlt-g2-custody.txt", "tooling/source_checkout_observation.py"))
+                "tooling/requirements/mlt-g2-custody.txt", "tooling/source_checkout_observation.py",
+                "tooling/native_graph_negative_evidence.py", "tooling/tests/test_graph_negative_evidence.py",
+                "tooling/ci_canvas_service.py", GRAPH_WORKFLOW))
             graph_put_json(producer / "custody-preparation-source.original.json", preparation_source)
             graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
                 "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")],
@@ -9052,6 +9058,9 @@ def graph_produce(repo, recipient):
             import ci_private_evidence as seal
             require(Path(seal.__file__).resolve() == repo / "tooling/ci_private_evidence.py", "Graph existing sealer origin")
             seal.public_key(recipient)
+            graph_command(env, [sys.executable, "-B", "-m", "unittest",
+                "tooling.tests.test_graph_negative_evidence", "-q"], repo, producer,
+                "graph-negative-evidence-tests", 30, clock)
             # This is the same locked Studio/system preparation used by the
             # existing workflows. Every actual command now has owned originals.
             graph_command(env, [npm, "ci", "--no-audit", "--no-fund"], repo / "apps/studio", producer, "graph-npm", 300, clock)
@@ -9249,8 +9258,10 @@ def graph_wait_for_external_review(repo):
                 clock.admit("read-only-status-observation", 15)
                 def publish(name, raw):
                     observed = graph_tree_allocation(root / "tools", GRAPH_BUDGET["shared_bytes"], GRAPH_BUDGET["shared_members"])
-                    require(observed["bytes"] + len(raw) + 8 * GRAPH_BYTES <= GRAPH_BUDGET["shared_bytes"]
-                            and observed["members"] + 64 <= GRAPH_BUDGET["shared_members"], "Graph shared approval-original capacity")
+                    require(observed["bytes"] + len(raw) + 8 * GRAPH_BYTES + GRAPH_NEGATIVE_RESERVATION["bytes"]
+                                <= GRAPH_BUDGET["shared_bytes"]
+                            and observed["members"] + 64 + GRAPH_NEGATIVE_RESERVATION["members"]
+                                <= GRAPH_BUDGET["shared_members"], "Graph shared approval-original capacity")
                     return graph_put(wait_root / name, raw)
                 run, rows, observed = graph_api_observation(index, index_ref, token, publish, "poll-" + str(attempt), time.monotonic() + 12)
                 accepted = {}
@@ -9931,15 +9942,100 @@ def graph_budget_main(arguments):
     return 0
 
 
+def graph_negative_originals(repo, recipient):
+    """A private negative selection has no public-closure or Native authority."""
+    import types
+    repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    index_ref = graph_ref(root / "e/graph-producer/producer-index.original.json", GRAPH_BYTES)
+    index = graph_json(graph_read(index_ref, GRAPH_BYTES))
+    receipt_ref = graph_ref(root / "e/receipt.json", 4 * GRAPH_BYTES)
+    receipt = graph_json(graph_read(receipt_ref, 4 * GRAPH_BYTES))
+    carrier_ref = graph_ref(root / "graph-review/carrier.original.json", 65536)
+    carrier = graph_json(graph_read(carrier_ref, 65536))
+    context = {"source_sha": os.environ["GITHUB_SHA"], "semwright_sha": index["source"]["sdk_sha"],
+               "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1"}
+    require(index["schema"] == GRAPH_INDEX_SCHEMA and index["source"]["sha"] == context["source_sha"]
+            and index["source"]["run_id"] == context["run_id"] and index["source"]["run_attempt"] == 1
+            and index["source"]["repository_root"] == str(repo)
+            and index["contract"]["execution"]["budget"] == GRAPH_BUDGET,
+            "Graph negative source/run/allocation binding")
+    require(receipt.get("status") in ("DENY", "UNKNOWN") and receipt.get("formal_acceptance") is False
+            and receipt.get("selection_plan", {}).get("requested") == GRAPH_SCOPE
+            and receipt.get("producer_index") == index_ref
+            and receipt.get("run_id") == context["run_id"] and receipt.get("run_attempt") == "1",
+            "Graph negative original receipt required")
+    require(carrier["index_sha256"] == index_ref["sha256"] and carrier["run_attempt"] == 1
+            and all(carrier[name] == context[name] for name in ("source_sha", "semwright_sha", "run_id"))
+            and recipient["sha256"] == carrier["recipient_spki_sha256"], "Graph negative original recipient binding")
+    # Execute the pinned source bytes even under python -I; no cwd/PYTHONPATH,
+    # cached .pyc, or a preloaded foreign module can supply a collector edge.
+    names = ("mlt_official_runtime_intake", "ci_private_evidence", "native_graph_negative_evidence")
+    missing = object(); previous = {name: sys.modules.get(name, missing) for name in names}
+    loaded, sources = {}, []
+    try:
+        for name in (*names, "ci_canvas_service"):
+            relative = "tooling/" + name + ".py"; expected = index["contract"]["source_files"][relative]
+            path = repo / relative
+            raw = graph_read({"path": str(path), "sha256": expected["sha256"], "size_bytes": expected["bytes"]}, 2 * GRAPH_BYTES)
+            if name == "ci_canvas_service":
+                continue
+            prior = previous[name]
+            require(prior is missing or type(prior) is types.ModuleType
+                    and isinstance(prior.__dict__.get("__file__"), str)
+                    and Path(prior.__dict__["__file__"]).resolve(strict=True) == path, "Graph negative foreign module")
+            sources.append((name, path, raw))
+        for name, path, raw in sources:
+            module = types.ModuleType(name); module.__file__ = str(path)
+            sys.modules[name] = loaded[name] = module
+            exec(compile(raw, str(path), "exec", dont_inherit=True), module.__dict__)
+            require(sys.modules.get(name) is module, "Graph negative module binding changed")
+        collector = loaded["native_graph_negative_evidence"]
+        require(collector.RESERVATION == GRAPH_NEGATIVE_RESERVATION, "Graph negative shared reservation changed")
+        admission = clock.admit("negative-originals", GRAPH_PHASES["archive"], reserve=GRAPH_PHASES["final-upload"])
+        binding = {"context": context, "index_sha256": index_ref["sha256"],
+            "receipt_sha256": receipt_ref["sha256"], "receipt_status": receipt["status"],
+            "review_carrier_sha256": carrier_ref["sha256"], "recipient_spki_sha256": recipient["sha256"]}
+        with clock.window(reserve=GRAPH_PHASES["final-upload"], cap=GRAPH_PHASES["archive"]):
+            sealed = collector.seal_once(root,
+                [(case, graph_case_layout(root / "e/graph-cases", case)["private_root"].name)
+                 for case in sorted(row[0] for row in GRAPH_CASES)], binding, recipient,
+                {"maximum_bytes": GRAPH_BUDGET["shared_bytes"], "maximum_members": GRAPH_BUDGET["shared_members"]}, admission)
+            require(graph_ref(root / "e/receipt.json", 4 * GRAPH_BYTES) == receipt_ref
+                    and not clock.unknown, "Graph negative original receipt changed or collection interrupted")
+        clock.admit("encrypted-negative-upload", GRAPH_PHASES["final-upload"], reserve=0)
+        # Only this closed output flag enables the exact ciphertext-only upload.
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write("sealed=true\n")
+        print(json.dumps({"status": "ENCRYPTED_NEGATIVE_DIAGNOSTIC_ONLY", "formal_acceptance": False,
+            "effects": "UNKNOWN", "quiescence": "UNKNOWN", "public_original_upload": "HOLD",
+            "ciphertext_sha256": sealed["envelope"]["sha256"]}))
+        return 0
+    finally:
+        for name in names:
+            if previous[name] is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous[name]
+
+
 def graph_main(arguments):
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("produce", "wait", "run"))
+    parser.add_argument("phase", choices=("produce", "wait", "run", "negative"))
     parser.add_argument("--repo", type=Path, required=True)
     args = parser.parse_args(arguments)
-    if args.phase == "produce":
+    if args.phase in ("produce", "negative"):
         recipient = {"spki_der_base64": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64", ""),
                      "sha256": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256", "")}
-        return graph_produce(args.repo, recipient)
+        if args.phase == "produce":
+            return graph_produce(args.repo, recipient)
+        try:
+            return graph_negative_originals(args.repo, recipient)
+        except BaseException as error:
+            # Private diagnostics may contain capability-bearing paths/bytes.
+            # A failed sealer prints only a closed type, never exception text.
+            print(json.dumps({"status": "NEGATIVE_DIAGNOSTIC_HOLD", "error_type": type(error).__name__,
+                              "formal_acceptance": False, "automatic_retry": False}))
+            return 1
     return graph_wait_for_external_review(args.repo) if args.phase == "wait" else graph_run_cases(args.repo)
 
 

@@ -45,7 +45,8 @@ test("Graph creates, edits, reopens SQLite, persists an actual review and rechec
   const service = await createGraphServiceCase(info, "graph-source-review", { databasePath: info.outputPath("store", "semantic-graph.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
   let bodyFailed = false, primaryFailure: unknown;
   try {
-    const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId);
+    const setup = await arrange(service), initial = setup.project; latest = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId);
     await prepare(page, "causal_diagram"); await field(page, "Vertex 1 label").fill("Declared intervention"); await field(page, "Vertex 1 box x").fill("1e");
     await expect(button(page, "Save semantic Graph")).toBeDisabled(); await page.reload(); await open(page, setup.sceneId); await expect(field(page, "Vertex 1 box x")).toHaveValue("1e");
     expect(graphRequests(service)).toHaveLength(0); await field(page, "Vertex 1 box x").fill("120"); await button(page, "Inspect current Graph support and sources").click();
