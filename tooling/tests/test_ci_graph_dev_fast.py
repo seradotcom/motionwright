@@ -261,6 +261,31 @@ class ImpactRoutingTests(unittest.TestCase):
 
 
 class ManualWorkflowBoundaryTests(unittest.TestCase):
+    def test_semwright_atomic_pin_is_checked_on_every_source_change_before_graph_intake(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        for path in ("Cargo.toml", "**/Cargo.toml", "Cargo.lock",
+                     "SOURCE_LOCK.json", "tooling/semwright_pin_atomicity.py",
+                     "tooling/tests/test_semwright_pin_atomicity.py",
+                     "tooling/source_lock_admission.py",
+                     "third_party/semwright-source-evidence/**"):
+            with self.subTest(path=path):
+                self.assertIn("      - '" + path + "'", trigger)
+        name = "      - name: Verify exact source-locked Semwright dependencies without promotion"
+        self.assertEqual(workflow.count(name), 1)
+        self.assertLess(workflow.index(name),
+                        workflow.index("      - name: Check exact source and first-case owner/producer intake"))
+        step = workflow.split(name, 1)[1].split("      - name:", 1)[0]
+        self.assertIn("set -euo pipefail", step)
+        self.assertIn("python3 -B -m unittest -q tooling.tests.test_semwright_pin_atomicity", step)
+        self.assertIn("python3 -B tooling/semwright_pin_atomicity.py --root .", step)
+        self.assertIn("knowledge/runtime/graph-fast-sem-pin-audit.original.json", step)
+        self.assertIn("knowledge/runtime/graph-fast-sem-pin-audit.original.json", workflow)
+        self.assertNotIn("cargo update", step)
+        self.assertNotIn("source_pin_promotion_authorized=true", step)
+
     def test_original_managed_cas_catalog_source_triggers_graph_fast(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(

@@ -42,6 +42,12 @@ on:
       - 'apps/studio/tooling/graph-owner/**'
       - 'SOURCE_LOCK.json'
       - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.toml'
+      - 'tooling/semwright_pin_atomicity.py'
+      - 'tooling/tests/test_semwright_pin_atomicity.py'
+      - 'tooling/source_lock_admission.py'
+      - 'third_party/semwright-source-evidence/**'
   workflow_dispatch:
     inputs:
       expected_source_sha:
@@ -83,6 +89,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+      - name: Verify exact source-locked Semwright dependencies without promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p knowledge/runtime
+          # This is an offline consistency check, never a SOURCE_LOCK promotion.
+          python3 -B -m unittest -q tooling.tests.test_semwright_pin_atomicity
+          python3 -B tooling/semwright_pin_atomicity.py --root . \
+            > knowledge/runtime/graph-fast-sem-pin-audit.original.json
       - name: Check exact source and first-case owner/producer intake
         shell: bash
         run: |
@@ -140,5 +155,6 @@ jobs:
           path: |
             knowledge/runtime/graph-fast-source-result.json
             knowledge/runtime/graph-fast-gn1-unittest.original.log
+            knowledge/runtime/graph-fast-sem-pin-audit.original.json
           if-no-files-found: warn
           retention-days: 7
