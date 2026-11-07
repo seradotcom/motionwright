@@ -447,6 +447,8 @@ class InertOriginals:
             reader_results.append(response(request, result))
         if self.mode == "reader_raw_duplicate":
             reader_results.append(reader_results[0])
+        if self.mode == "reader_raw_reordered":
+            reader_results[0], reader_results[1] = reader_results[1], reader_results[0]
         if self.mode == "reader_success_with_error_field":
             reader_results[1]["error"] = "Hidden unauthorized failure alongside success."
         reader_raw = b"".join(json.dumps(x, separators=(",", ":")).encode() + b"\n"
@@ -611,6 +613,13 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
+
+    def test_original_reader_stdout_preserves_synchronous_request_order(self):
+        # studio_review_session::run() replies and flushes each response
+        # before accepting the next request. Reordered raw stdout is not
+        # compatible with the original single-process Session transport.
+        with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+            self.check("reader_raw_reordered")
 
     def test_wrong_reader_store_journal_or_replayed_raw_is_rejected(self):
         for mode in ("descriptor_other_store", "descriptor_wrong_phase", "database_outside_case",

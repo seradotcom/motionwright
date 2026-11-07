@@ -9885,8 +9885,11 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             and commands[-3:] == ["opened_store_identity_witness", "get_project", "opened_store_identity_witness"]
             and all(cmd == "project_history" for cmd in commands[2:-3]),
             "Graph exact independent read-only request sequence")
+    # The compiled studio_review_session processes one JSONL request,
+    # writes and flushes its reply, then accepts the next request. A dictionary
+    # equality alone discards this independent original response order.
     require(len(ids) == len(set(ids)) and len(ids) == len(reader_rows)
-            and set(ids) == set(reader_rows)
+            and ids == list(reader_rows)
             and requests[0]["command"] == "bootstrap"
             and all(request["command"] in intent["allowed_commands"] for request in requests)
             and all(reader_rows[request["id"]].get("ok") is True for request in requests),
