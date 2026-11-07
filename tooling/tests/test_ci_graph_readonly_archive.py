@@ -95,8 +95,21 @@ class InertOriginals:
                    "process_id": 303 if self.mode == "handoff_wrong_pid" else 101,
                    "context": context, "request_original": href, "response": writer_results[1],
                    "identity_request_original": iref, "identity_response": writer_results[2]}
-        owner_pid = 777
-        lifecycle = {"status": "CLOSED"}
+        owner_pid = 202 if self.mode == "native_quiescence_owner_reuses_reader_pid" else 777
+        daemon_stdout_ref = self.put("graph-flow/owner/owner-restricted.stdout.original", b"OWNER_READY\\n")
+        daemon_stderr_ref = self.put("graph-flow/owner/owner-restricted.stderr.original", b"")
+        def identity(ref):
+            return {"path": ref["path"], "sha256": ref["sha256"], "bytes": ref["size_bytes"]}
+        daemon = {
+            "label": "owner-restricted", "pid": 888, "reason": "explicit-close",
+            "status": "STOPPED", "exit_code": -15, "deadline_exceeded": False,
+            "forced_termination": False, "descendant_cleanup_required": False,
+            "automatic_retry": False, "writers_closed_within_owned_group": True,
+            "group_observation": {"writers_closed_within_owned_group": True},
+            "stdout": identity(daemon_stdout_ref), "stderr": identity(daemon_stderr_ref),
+        }
+        lifecycle = {"status": "CLOSED", "taints": [], "start_failures": [],
+                     "automatic_retry": False, "terminals": [daemon]}
         cohort = {"status": "PASS", "authority": "process_custody_only_not_revocation",
                   "signals": ([{"pid": 789, "signal": 9}]
                               if self.mode == "native_quiescence_emergency_signal" else []),
@@ -111,8 +124,20 @@ class InertOriginals:
             lifecycle["status"] = "UNKNOWN"
         if self.mode == "native_quiescence_extra_cohort_child":
             cohort["complete_empty_descendant_tree"]["processes"].append({"pid": 778})
-        native_close_ref = self.put("owner/native-close.original.json", lifecycle)
-        cohort_ref = self.put("owner/native-cohort.original.json", cohort)
+        if self.mode == "native_quiescence_no_daemon_terminal":
+            lifecycle["terminals"] = []
+        if self.mode == "native_quiescence_tainted_close":
+            lifecycle["taints"] = ["owner-restricted:UNKNOWN"]
+        if self.mode == "native_quiescence_unknown_daemon_terminal":
+            daemon["status"] = "UNKNOWN"
+        if self.mode == "native_quiescence_forced_daemon":
+            daemon["forced_termination"] = True
+        if self.mode == "native_quiescence_modified_stdout":
+            daemon["stdout"]["sha256"] = "0" * 64
+        native_close_path = ("other-source/owner-close.json" if self.mode == "native_quiescence_foreign_close_path"
+                             else "graph-flow/owner/owner-close.json")
+        native_close_ref = self.put(native_close_path, lifecycle)
+        cohort_ref = self.put("graph-flow/owner/complete-descendant-scope.original.json", cohort)
         native_original = {"path": self.physical["path"],
                            "device": int(self.physical["device"]),
                            "inode": int(self.physical["inode"])}
@@ -129,8 +154,11 @@ class InertOriginals:
             "owner_close_original": native_close_ref, "cohort_original": cohort_ref,
             "original_store": native_original, "current_store": native_current,
             "automatic_retry": False, "graph_acceptance": False}
-        quiescence_ref = self.put("owner/native-quiescence.original.json", quiescence)
-        self.owner_complete = self.put("owner/owner-complete-close.original.json", {
+        quiescence_path = ("other-source/owner-native-quiescence.original.json"
+                           if self.mode == "native_quiescence_foreign_quiescence_path"
+                           else "graph-flow/owner/owner-native-quiescence.original.json")
+        quiescence_ref = self.put(quiescence_path, quiescence)
+        self.owner_complete = self.put("graph-flow/owner/owner-complete-close.original.json", {
             "lifecycle": lifecycle, "cohort": cohort,
             "status": "CLOSED" if lifecycle["status"] == "CLOSED" else "UNKNOWN",
             "source_validated_before_close": True, "owner_streams_eof": True})
@@ -253,7 +281,15 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                      "native_quiescence_extra_cohort_child",
                      "native_quiescence_emergency_signal",
                      "native_quiescence_cleanup_sigterm",
-                     "native_quiescence_missing_signal_inventory"):
+                     "native_quiescence_missing_signal_inventory",
+                     "native_quiescence_no_daemon_terminal",
+                     "native_quiescence_tainted_close",
+                     "native_quiescence_unknown_daemon_terminal",
+                     "native_quiescence_forced_daemon",
+                     "native_quiescence_modified_stdout",
+                     "native_quiescence_foreign_close_path",
+                     "native_quiescence_foreign_quiescence_path",
+                     "native_quiescence_owner_reuses_reader_pid"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

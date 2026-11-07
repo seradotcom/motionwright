@@ -9479,9 +9479,57 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
                 and str(observation["device"]) == physical["device"]
                 and str(observation["inode"]) == physical["inode"],
                 "Graph quiesced provider no longer owns original physical SQLite")
+    # Bind the Native owner evidence to this particular case, not just a
+    # hash-valid JSON object elsewhere in an archive or another owner's tree.
+    # The source producer writes all three paths at fixed original locations.
+    native_owner_root = reopen_path.parent.parent / "owner"
+    require(native_ref["path"] == str(native_owner_root / "owner-native-quiescence.original.json")
+            and type(native.get("owner_close_original")) is dict
+            and native["owner_close_original"].get("path") == str(native_owner_root / "owner-close.json")
+            and type(native.get("cohort_original")) is dict
+            and native["cohort_original"].get("path") == str(native_owner_root / "complete-descendant-scope.original.json"),
+            "Graph Native owner evidence belongs to a foreign original case")
     native_lifecycle = original(native["owner_close_original"], GRAPH_BYTES)
     native_cohort = original(native["cohort_original"], 4 * GRAPH_BYTES)
     owner_final = original(final["owner_close"], 4 * GRAPH_BYTES)
+    # 'CLOSED' alone does not attest daemon shutdown. The real first-party
+    # OwnerLifecycle.close retains the full terminal roster and the original
+    # daemon stdout/stderr. Reject fabricated scalar closures and tainted
+    # shutdowns before accepting a WAL-to-DELETE handoff.
+    terminals = native_lifecycle.get("terminals")
+    require(native_lifecycle.get("status") == "CLOSED"
+            and native_lifecycle.get("automatic_retry") is False
+            and native_lifecycle.get("taints") == []
+            and native_lifecycle.get("start_failures") == []
+            and type(terminals) is list and bool(terminals)
+            and all(type(t) is dict and type(t.get("label")) is str
+                    and t.get("status") in ("SUCCESS", "STOPPED")
+                    and t.get("automatic_retry") is False for t in terminals)
+            and len(set(t["label"] for t in terminals)) == len(terminals),
+            "Graph Native owner lifecycle original lacks untainted terminal roster")
+    daemon = [t for t in terminals if t["label"] == "owner-restricted"]
+    require(len(daemon) == 1 and daemon[0].get("reason") == "explicit-close"
+            and type(daemon[0].get("pid")) is int and daemon[0]["pid"] > 1
+            and daemon[0]["pid"] not in (native["owner_pid"], writer_pid)
+            and daemon[0].get("deadline_exceeded") is False
+            and daemon[0].get("forced_termination") is False
+            and daemon[0].get("descendant_cleanup_required") is False
+            and daemon[0].get("writers_closed_within_owned_group") is True
+            and type(daemon[0].get("group_observation")) is dict
+            and daemon[0]["group_observation"].get("writers_closed_within_owned_group") is True,
+            "Graph Native daemon original was not a clean owned-process shutdown")
+    for stream in ("stdout", "stderr"):
+        identity = daemon[0].get(stream)
+        require(type(identity) is dict
+                and identity.get("path") == str(native_owner_root / ("owner-restricted." + stream + ".original"))
+                and type(identity.get("bytes")) is int and 0 <= identity["bytes"] <= 64 * GRAPH_BYTES
+                and type(identity.get("sha256")) is str and re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]),
+                "Graph Native daemon terminal stream original not source-bound")
+        source_bytes = retained({"path": identity["path"], "sha256": identity["sha256"],
+                                 "size_bytes": identity["bytes"]}, 64 * GRAPH_BYTES)
+        require(len(source_bytes) == identity["bytes"]
+                and hashlib.sha256(source_bytes).hexdigest() == identity["sha256"],
+                "Graph Native daemon terminal stream not retained")
     cohort_tree = native_cohort.get("complete_empty_descendant_tree", {})
     owner_processes = cohort_tree.get("processes", [])
     # The Linux subreaper may return PASS after emergency SIGTERM/SIGKILL of
@@ -9576,8 +9624,9 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             "Graph second Service child did not prove original read-only launch")
 
     child_pid = reopen["service_process"]["pid"]
-    require(type(child_pid) is int and child_pid > 1 and child_pid != writer_pid,
-            "Graph writer/reader are not independent processes")
+    require(type(child_pid) is int and child_pid > 1
+            and child_pid not in (writer_pid, native["owner_pid"], daemon[0]["pid"]),
+            "Graph owner/writer/read-only reader process identities must be independent")
     reader_rows = raw_lines(retained({k: reopen["raw"]["stdout"][k]
                             for k in ("path", "sha256", "size_bytes")}, GRAPH_BYTES))
     requests = [original(ref, 1024) for ref in reopen["requests"]]
