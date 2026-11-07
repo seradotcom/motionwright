@@ -8736,6 +8736,37 @@ def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
     return outputs, records, contracts
 
 
+def graph_runtime_python():
+    # The selected native Python must be complete inside the SDK's existing
+    # /usr and /lib mounts. The outer custody controller keeps its own ABI.
+    require(os.environ.get("MOTIONWRIGHT_GRAPH_RUNTIME_PYTHON") == "/usr/bin/python3",
+            "Graph explicit system runtime Python required")
+    selected = Path("/usr/bin/python3").resolve(strict=True)
+    require(selected.parent == Path("/usr/bin") and selected.name == "python3.12",
+            "Graph Ubuntu 24.04 system Python required")
+    return selected
+
+
+def graph_runtime_python_abi():
+    import platform, sysconfig
+    selected = graph_runtime_python()
+    require(Path(sys.executable).resolve(strict=True) == selected
+            and sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 12)
+            and platform.system() == "Linux" and platform.machine() == "x86_64",
+            "Graph bootstrap and native interpreter ABI differ")
+    stdlib = Path(sysconfig.get_path("stdlib")).resolve(strict=True)
+    require(sys.prefix == sys.base_prefix == sys.exec_prefix == sys.base_exec_prefix == "/usr"
+            and stdlib == Path("/usr/lib/python3.12")
+            and sysconfig.get_config_var("SOABI") == "cpython-312-x86_64-linux-gnu"
+            and sys.implementation.cache_tag == "cpython-312",
+            "Graph Python libraries escape mounted system ABI")
+    return {"schema": "motionwright.graph-system-python-abi/1", "executable": str(selected),
+            "version": sys.version, "version_info": list(sys.version_info[:3]), "implementation": "cpython",
+            "cache_tag": sys.implementation.cache_tag, "soabi": sysconfig.get_config_var("SOABI"),
+            "prefix": sys.prefix, "base_prefix": sys.base_prefix, "stdlib": str(stdlib),
+            "wheel_python_tag": "cp312", "wheel_abi_tag": "cp312"}
+
+
 def graph_runtime_inventory(repo, runtime, producer):
     # Existing Manim /2 producer body, retaining its actual observed wheel/imports.
     import hashlib, json, os, platform, shutil, subprocess, sys, zipfile
@@ -8749,6 +8780,11 @@ def graph_runtime_inventory(repo, runtime, producer):
     root = runtime.resolve(strict=True)
     packages = (root / "site-packages").resolve(strict=True)
     private = producer / "runtime-provision"
+    bootstrap = graph_json((private / "python-bootstrap.original.json").read_bytes())
+    python_abi = graph_runtime_python_abi()
+    require(bootstrap == {"schema": "motionwright.graph-system-python-bootstrap/1", "abi": python_abi,
+            "interpreter": graph_ref(Path(python_abi["executable"]), 64 * GRAPH_BYTES),
+            "native_render_performed": False}, "Graph runtime bootstrap ABI changed")
     if manim.__version__ != "0.21.0" or av.__version__ != "15.0.0":
         raise SystemExit("Installed Manim/PyAV versions differ from runtime schema 2")
     if not all(Path(module.__file__).resolve(strict=True).is_relative_to(packages)
@@ -8834,7 +8870,7 @@ def graph_runtime_inventory(repo, runtime, producer):
         "libav_versions": {name: list(version) for name, version in sorted(av.library_versions.items())},
         "platform": {"system": platform.system(), "machine": platform.machine()},
         "runtime_receipt_sha256": file_identity(root / "runtime.json")["sha256"],
-        "binaries": binaries, "binary_versions": versions,
+        "binaries": binaries, "binary_versions": versions, "python_abi": python_abi,
         "pyav_wheel": wheel_info, "pyav_native_files": native_files,
         "files": len(rows), "inventory_sha256": hashlib.sha256(payload).hexdigest(),
         "native_render_performed": False,
@@ -8856,13 +8892,20 @@ def graph_runtime_inner(repo, runtime, producer):
     provision = producer / "runtime-provision"; provision.mkdir(mode=0o700); (provision / "wheels").mkdir(mode=0o700)
     env = dict(os.environ, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
     env.pop(GRAPH_TOKEN_ENV, None)
-    graph_producer_room(producer, 144 * GRAPH_BYTES + 65536, 6)
+    graph_producer_room(producer, 144 * GRAPH_BYTES + 65536, 7)
+    python_abi = graph_runtime_python_abi()
+    graph_put_json(provision / "python-bootstrap.original.json", {
+        "schema": "motionwright.graph-system-python-bootstrap/1", "abi": python_abi,
+        "interpreter": graph_ref(Path(python_abi["executable"]), 64 * GRAPH_BYTES),
+        "native_render_performed": False})
     graph_command(env, [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--no-cache-dir",
         "--no-deps", "--only-binary=:all:", "--dest", str(provision / "wheels"), "av==15.0.0"],
         repo, producer, "graph-runtime-download", 180, clock, maximum_file_bytes=128 * GRAPH_BYTES)
     wheels = list((provision / "wheels").glob("av-15.0.0-*.whl"))
     require(len(wheels) == 1, "Graph one original PyAV wheel")
     wheel = wheels[0]; original = graph_ref(wheel, 128 * GRAPH_BYTES)
+    require(wheel.name.split("-")[2:4] == [python_abi["wheel_python_tag"], python_abi["wheel_abi_tag"]],
+            "Graph PyAV wheel differs from native Python ABI")
     install, _ = graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--no-compile", "--quiet",
         "--target", str(runtime / "site-packages"), "--report", "-",
         "manim==0.21.0", str(wheel)], repo, producer, "graph-runtime-install", 780, clock)
@@ -8910,9 +8953,10 @@ def graph_produce(repo, recipient):
     require(not output.exists() and not sdk.exists() and not runtime.exists(), "Graph once-only fresh production roots")
     output.mkdir(mode=0o700); producer.mkdir(mode=0o700); (producer / "consumption").mkdir(mode=0o700)
     source_sha = os.environ["GITHUB_SHA"]
+    runtime_python = graph_runtime_python()
     env = dict(os.environ, CARGO_INCREMENTAL="0", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
         MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1", SEMWRIGHT_CHECKOUT=str(sdk),
-        SEMWRIGHT_TEST_MANIM_RUNTIME=str(runtime), SEMWRIGHT_TEST_PYTHON=str(Path(sys.executable).resolve()),
+        SEMWRIGHT_TEST_MANIM_RUNTIME=str(runtime), SEMWRIGHT_TEST_PYTHON=str(runtime_python),
         PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
     env.pop(GRAPH_TOKEN_ENV, None)
     cargo, node, npm = (shutil.which(name) for name in ("cargo", "node", "npm"))
@@ -8975,7 +9019,7 @@ def graph_produce(repo, recipient):
             require(all(sdk_before["files"][name] == value for name, value in sdk_preparation["files"].items()), "Graph SDK preparation source changed")
             require(all(source_before["files"][name] == value for name, value in preparation_source["files"].items()), "Graph custody preparation source changed")
         with clock.phase("runtime"):
-            runtime_process, runtime_command = graph_command(env, [str(Path(sys.executable).resolve()), "-I", "-B",
+            runtime_process, runtime_command = graph_command(env, [str(runtime_python), "-I", "-B",
                 str(repo / "tooling/ci_canvas_service.py"), "graph-runtime", "--repo", str(repo), "--runtime", str(runtime), "--producer", str(producer)],
                 repo, producer, "graph-runtime-producer", 1140, clock)
         sdk_bins, sdk_builds, sdk_contracts = graph_build_group(repo, sdk, producer, True, cargo, env, sdk_targets, clock)
