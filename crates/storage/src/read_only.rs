@@ -259,6 +259,57 @@ mod tests {
         assert_eq!(inventory(directory.path()), before);
     }
 
+    /// An idle second SQLite connection can keep WAL open even when a
+    /// checkpoint reports no busy readers. The original writer must fail
+    /// closed rather than manufacture a read-only handoff receipt; after the
+    /// peer truly closes, the exact original Store can be handed off once.
+    #[test]
+    fn handoff_requires_competing_sqlite_connection_to_close() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("Original shared Store")
+            .unwrap();
+        let original_identity = writer.database_file_identity().unwrap();
+        writer
+            .conn
+            .busy_timeout(Duration::from_millis(150))
+            .unwrap();
+        let peer = Connection::open_with_flags(
+            &database,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap();
+        let peer_journal: String = peer
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(peer_journal, "wal");
+
+        // The peer has no active transaction, but still owns a SQLite handle.
+        // A successful checkpoint is not sufficient proof of exclusive
+        // authorization to change the original database journal mode.
+        assert!(writer.prepare_read_only_handoff().is_err());
+        let still_wal: String = writer
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(still_wal, "wal");
+        assert_eq!(writer.database_file_identity().unwrap(), original_identity);
+        assert_eq!(writer.load_project(project.id).unwrap(), project);
+        assert!(StoreReader::open(&database).is_err());
+
+        drop(peer);
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let before_reader = inventory(directory.path());
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), original_identity);
+        assert_eq!(reader.project(project.id).unwrap(), project);
+        drop(reader);
+        assert_eq!(inventory(directory.path()), before_reader);
+    }
+
     #[test]
     fn reader_uses_original_connection_and_sqlite_rejects_writes() {
         let directory = tempfile::tempdir().unwrap();
