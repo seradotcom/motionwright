@@ -310,6 +310,47 @@ mod tests {
         assert_eq!(inventory(directory.path()), before_reader);
     }
 
+    /// The Native provider and StudioService both use full Store handles.
+    /// A second live Store with the same real database must be released
+    /// before the final writer can prepare its strict read-only handoff.
+    #[test]
+    fn handoff_requires_second_full_store_to_release_original_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer.create_named_project("Shared Native source").unwrap();
+        let identity = writer.database_file_identity().unwrap();
+        writer
+            .conn
+            .busy_timeout(Duration::from_millis(150))
+            .unwrap();
+
+        let native_peer = Store::open(&database).unwrap();
+        assert_eq!(native_peer.database_file_identity().unwrap(), identity);
+        assert_eq!(native_peer.load_project(project.id).unwrap(), project);
+
+        // Closing request admissions is not equivalent to closing a retained
+        // Native Store. Even an idle full Store keeps the WAL journal open.
+        assert!(writer.prepare_read_only_handoff().is_err());
+        let mode: String = writer
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        assert_eq!(writer.database_file_identity().unwrap(), identity);
+        assert_eq!(writer.load_project(project.id).unwrap(), project);
+
+        drop(native_peer);
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let before = inventory(directory.path());
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), identity);
+        assert_eq!(reader.project(project.id).unwrap(), project);
+        drop(reader);
+        assert_eq!(inventory(directory.path()), before);
+    }
+
     #[test]
     fn reader_uses_original_connection_and_sqlite_rejects_writes() {
         let directory = tempfile::tempdir().unwrap();
