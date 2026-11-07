@@ -8014,6 +8014,48 @@ def graph_read(reference, maximum=512 * GRAPH_BYTES):
     return raw
 
 
+def graph_load_native_input_helpers(repo, source_files):
+    """Load the two exact source-bound helpers in a fresh isolated Graph process.
+
+    Python -I omits the script directory from sys.path. The verified source
+    manifest supplies both pins; neither a site import nor a preloaded helper
+    is allowed to substitute for those original bytes.
+    """
+    import types
+
+    repo = Path(repo)
+    names = ("ci_graph_dev_native_startup", "native_graph_executable_inputs")
+    require(repo.is_absolute() and repo.resolve(strict=True) == repo
+            and type(source_files) is dict, "Graph native helper source root")
+    require(all(name not in sys.modules for name in names),
+            "Graph native helper was preloaded outside original source")
+    raw_sources = {}
+    for name in names:
+        relative = "tooling/" + name + ".py"
+        identity = source_files.get(relative)
+        require(type(identity) is dict and set(identity) == {"bytes", "sha256"},
+                "Graph native helper source not pinned: " + relative)
+        path = repo / relative
+        raw_sources[name] = graph_read({"path": str(path), "sha256": identity["sha256"],
+                                        "size_bytes": identity["bytes"]}, 2 * GRAPH_BYTES)
+
+    loaded = {}
+    try:
+        for name in names:
+            path = repo / "tooling" / (name + ".py")
+            module = types.ModuleType(name)
+            module.__file__ = str(path)
+            sys.modules[name] = module
+            exec(compile(raw_sources[name], str(path), "exec"), module.__dict__)
+            loaded[name] = module
+    finally:
+        # The GN1 dependency is visible only while the second pinned module
+        # imports it. Neither helper leaks into later unreviewed imports.
+        for name in names:
+            sys.modules.pop(name, None)
+    return loaded["native_graph_executable_inputs"]
+
+
 def graph_put(path, raw):
     path = Path(path)
     require(path.parent.resolve(strict=True) == path.parent and type(raw) is bytes, "Graph publication path")
@@ -8252,7 +8294,7 @@ def graph_verify_producer_index(index_ref, case_id):
                 "Graph compacted executable retention source")
         require(graph_uncompact_cargo_executable(remember(retained, 256 * GRAPH_BYTES), binaries[role]) == raw,
                 "Graph retained compressed executable differs")
-    import native_graph_executable_inputs as native_inputs
+    native_inputs = graph_load_native_input_helpers(Path(source["repository_root"]), contract["source_files"])
     require(Path(native_inputs.__file__).resolve() == Path(source["repository_root"]) / "tooling/native_graph_executable_inputs.py",
             "Graph native input verifier source")
     native_record = graph_json(remember(index["native_executable_inputs"], GRAPH_BYTES))
@@ -9065,7 +9107,7 @@ def graph_produce(repo, recipient):
                         and all(copies[0]["retained"][key] == binaries[role][key]
                                 for key in ("sha256", "size_bytes")),
                         "Graph offline runtime binary original missing")
-            import native_graph_executable_inputs as native_inputs
+            native_inputs = graph_load_native_input_helpers(repo, source_view["files"])
             require(Path(native_inputs.__file__).resolve() == repo / "tooling/native_graph_executable_inputs.py",
                     "Graph native input producer source")
             native_copy_bytes = native_inputs.input_total(binaries)
