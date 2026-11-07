@@ -33,13 +33,19 @@ CASE_FIXED = (
     "owner-launch.intent.original.json", "cleanup-control.original.jsonl",
     "sdk-ticket-precharge.original.json", "sdk-ticket-roster-binding.original.json",
     "owner-original-allocation.original.json",
-    "artifacts/closed-graph-store-service-closure.json",
-    "artifacts/closed-graph-store-outcomes.json",
-    "artifacts/closed-graph-store-outcomes-before-capture.json",
     "owner/owner-final.original.json", "owner/owner-error.original.json",
     "owner/owner-complete-close.original.json", "owner/owner-close.json",
     "owner/complete-descendant-scope.original.json", "owner/error-cohort.original.json",
 )
+CASE_CLOSURE = {
+    "graph-source-review": "closed-graph-store",
+    "graph-flow": "closed-flow-store",
+    "graph-lost-reply": "closed-graph-lost-reply-store",
+    "graph-removal": "closed-graph-removal-store",
+    "graph-label-causal-diagram": "closed-graph-label-store",
+    "graph-label-system-flow": "closed-graph-label-store",
+}
+CLOSURE_SUFFIXES = ("-service-closure.json", "-outcomes.json", "-outcomes-before-capture.json")
 PARENT_RECORD = re.compile(r"(?:reservation-\d+|(?:launch|exit)-[A-Za-z0-9_-]+-\d+|"
     r"client-[A-Za-z0-9_-]+|control-\d+|sdk-ticket-[A-Za-z0-9_-]+(?:\.intent)?)\.original\.(?:json|jsonl)\Z")
 OWNER_RECORD = re.compile(r"[A-Za-z0-9_.-]+(?:\.json|\.stdout\.original|\.stderr\.original)\Z")
@@ -225,6 +231,11 @@ def collect(tree, cases, binding, case_root="e/graph-cases"):
         capture("e/graph-producer/consumption/" + case + ".original.json")
         for name in CASE_FIXED:
             capture(prefix + "/" + name)
+        # Only these source-authored JSON siblings are diagnostic inputs. The
+        # Store directory with the same basename is never selected or opened.
+        if case in CASE_CLOSURE:
+            for suffix in CLOSURE_SUFFIXES:
+                capture(prefix + "/artifacts/" + CASE_CLOSURE[case] + suffix)
         for name in listing(prefix, PARENT_RECORD, 128):
             capture(prefix + "/" + name)
         for name in listing(prefix + "/raw", RAW_RECORD, 64):
@@ -255,8 +266,10 @@ def collect(tree, cases, binding, case_root="e/graph-cases"):
     return raw
 
 
-def seal_once(root, cases, binding, recipient, shared_budget, admission, *, case_root="e/graph-cases"):
+def seal_once(root, cases, binding, recipient, shared_budget, admission, *, case_root="e/graph-cases", progress=None):
     """Reserve exclusively before reading; an interrupted seal cannot be replayed."""
+    if progress is not None:
+        progress["stage"] = "SEAL_BINDING"
     require(os.name == "posix" and hasattr(os, "O_NOFOLLOW"), "negative_linux_handles_required")
     if case_root == "e/graph-cases":
         require(len(cases) == 6 and [directory for _case, directory in cases] == ["g" + str(i) for i in range(1, 7)]
@@ -274,18 +287,32 @@ def seal_once(root, cases, binding, recipient, shared_budget, admission, *, case
     seal.public_key(recipient)
     require(recipient["sha256"] == binding["recipient_spki_sha256"], "negative_recipient_changed")
     tree = SelectedTree(root)
+    if progress is not None:
+        progress["stage"] = "SHARED_BEFORE"
     before = shared_usage(tree, [directory for _case, directory in cases], **shared_budget, case_root=case_root)
     destination = Path(root) / "graph-negative"
+    if progress is not None:
+        progress["stage"] = "ATTEMPT"
     destination.mkdir(mode=0o700)  # O_EXCL directory creation is the one-attempt latch.
     intent = {"schema": SCHEMA, "binding": binding, "admission": admission,
               "shared_before": before, "automatic_retry": False, "formal_acceptance": False}
     seal.new_json(destination / "attempt.original.json", intent)
+    if progress is not None:
+        progress["stage"] = "COLLECT"
     plaintext = collect(tree, cases, binding, case_root)
+    if progress is not None:
+        progress["stage"] = "ENCRYPT"
     ciphertext = seal.encrypt_snapshot(plaintext, recipient, binding["context"])
     del plaintext
     require(len(ciphertext) + 32768 <= RESERVATION["bytes"], "negative_ciphertext_budget")
+    if progress is not None:
+        progress["stage"] = "SHARED_AFTER"
     after = shared_usage(tree, [directory for _case, directory in cases], **shared_budget, case_root=case_root)
+    if progress is not None:
+        progress["stage"] = "CIPHERTEXT_WRITE"
     seal.new_bytes(destination / "negative-originals.mwseal", ciphertext)
+    if progress is not None:
+        progress["stage"] = "CARRIER"
     carrier = {"schema": SCHEMA, "meaning": "ENCRYPTED_NEGATIVE_DIAGNOSTIC_ONLY",
         "binding": binding, "envelope": {"filename": "negative-originals.mwseal", "bytes": len(ciphertext),
             "sha256": hashlib.sha256(ciphertext).hexdigest()}, "shared_after": after,

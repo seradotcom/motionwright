@@ -10122,10 +10122,46 @@ def graph_budget_main(arguments):
     return 0
 
 
-def graph_negative_originals(repo, recipient):
+GRAPH_NEGATIVE_DIAGNOSTIC_STAGES = frozenset((
+    "CONTEXT", "INDEX_RECEIPT", "SOURCE_BINDING", "COLLECTOR_ADMISSION",
+    "SEAL_BINDING", "SHARED_BEFORE", "ATTEMPT", "COLLECT", "ENCRYPT",
+    "SHARED_AFTER", "CIPHERTEXT_WRITE", "CARRIER", "ORIGINAL_RECHECK",
+    "UPLOAD_ADMISSION", "UPLOAD_FLAG",
+))
+GRAPH_NEGATIVE_DIAGNOSTIC_CODES = frozenset((
+    "negative_case_roster", "negative_ciphertext_budget", "negative_continuation_case_roster",
+    "negative_linux_handles_required", "negative_manifest_budget", "negative_public_metadata_budget",
+    "negative_recipient_changed", "negative_shared_reservation", "negative_tar_budget",
+    "selection_directory_bound", "selection_directory_changed", "selection_file_bound_or_alias",
+    "selection_file_changed", "selection_file_grew", "selection_name", "selection_parent_changed",
+    "selection_root", "selection_root_changed", "shared_alias", "shared_byte_budget",
+    "shared_member_budget", "shared_nonregular", "shared_pending_budget", "shared_prepaid_root",
+    "recipient_contract", "recipient_size", "recipient_fingerprint", "recipient_must_be_RSA_3072_65537",
+    "recipient_not_canonical_SPKI", "noncanonical_input", "output_parent_not_canonical",
+    "exclusive_write_readback", "seal_context", "seal_source_identity", "seal_run_identity", "seal_plaintext_size",
+))
+
+
+def graph_negative_failure_diagnostic(error, progress):
+    """Closed identifiers only; never stringify a private exception or path."""
+    stage = progress.get("stage") if type(progress) is dict else None
+    kind = type(error).__name__
+    code = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
+    return {"stage": stage if type(stage) is str and stage in GRAPH_NEGATIVE_DIAGNOSTIC_STAGES else "UNCLASSIFIED",
+            "code": code if kind == "CustodyRejected" and code in GRAPH_NEGATIVE_DIAGNOSTIC_CODES else "UNCLASSIFIED",
+            "error_type": kind if kind in {"CustodyRejected", "ValueError", "FileNotFoundError",
+                "FileExistsError", "PermissionError", "OSError", "UnknownObservation", "TimeoutError"} else "OTHER",
+            "effects": "UNKNOWN", "quiescence": "UNKNOWN", "automatic_retry": False}
+
+
+def graph_negative_originals(repo, recipient, *, progress=None):
     """A private negative selection has no public-closure or Native authority."""
     import types
+    if progress is not None:
+        progress["stage"] = "CONTEXT"
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    if progress is not None:
+        progress["stage"] = "INDEX_RECEIPT"
     index_ref = graph_ref(root / "e/graph-producer/producer-index.original.json", GRAPH_BYTES)
     index = graph_json(graph_read(index_ref, GRAPH_BYTES))
     selected = graph_selected_cases(index)
@@ -10152,6 +10188,8 @@ def graph_negative_originals(repo, recipient):
     # Execute the pinned source bytes even under python -I; no cwd/PYTHONPATH,
     # cached .pyc, or a preloaded foreign module can supply a collector edge.
     names = ("mlt_official_runtime_intake", "ci_private_evidence", "native_graph_negative_evidence")
+    if progress is not None:
+        progress["stage"] = "SOURCE_BINDING"
     missing = object(); previous = {name: sys.modules.get(name, missing) for name in names}
     loaded, sources = {}, []
     try:
@@ -10173,6 +10211,8 @@ def graph_negative_originals(repo, recipient):
             require(sys.modules.get(name) is module, "Graph negative module binding changed")
         collector = loaded["native_graph_negative_evidence"]
         require(collector.RESERVATION == GRAPH_NEGATIVE_RESERVATION, "Graph negative shared reservation changed")
+        if progress is not None:
+            progress["stage"] = "COLLECTOR_ADMISSION"
         admission = clock.admit("negative-originals", GRAPH_PHASES["archive"], reserve=GRAPH_PHASES["final-upload"])
         binding = {"context": context, "index_sha256": index_ref["sha256"],
             "receipt_sha256": receipt_ref["sha256"], "receipt_status": receipt["status"],
@@ -10184,11 +10224,17 @@ def graph_negative_originals(repo, recipient):
                 [(case, graph_case_layout(cases_root, case)["private_root"].name)
                  for case in sorted(row[0] for row in selected)], binding, recipient,
                 {"maximum_bytes": GRAPH_BUDGET["shared_bytes"], "maximum_members": GRAPH_BUDGET["shared_members"]}, admission,
-                case_root=cases_root.relative_to(root).as_posix())
+                case_root=cases_root.relative_to(root).as_posix(), progress=progress)
+            if progress is not None:
+                progress["stage"] = "ORIGINAL_RECHECK"
             require(graph_ref(root / "e/receipt.json", 4 * GRAPH_BYTES) == receipt_ref
                     and not clock.unknown, "Graph negative original receipt changed or collection interrupted")
+        if progress is not None:
+            progress["stage"] = "UPLOAD_ADMISSION"
         clock.admit("encrypted-negative-upload", GRAPH_PHASES["final-upload"], reserve=0)
         # Only this closed output flag enables the exact ciphertext-only upload.
+        if progress is not None:
+            progress["stage"] = "UPLOAD_FLAG"
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write("sealed=true\n")
         print(json.dumps({"status": "ENCRYPTED_NEGATIVE_DIAGNOSTIC_ONLY", "formal_acceptance": False,
@@ -10213,12 +10259,15 @@ def graph_main(arguments):
                      "sha256": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256", "")}
         if args.phase == "produce":
             return graph_produce(args.repo, recipient)
+        progress = {"stage": "CONTEXT"}
         try:
-            return graph_negative_originals(args.repo, recipient)
+            return graph_negative_originals(args.repo, recipient, progress=progress)
         except BaseException as error:
             # Private diagnostics may contain capability-bearing paths/bytes.
-            # A failed sealer prints only a closed type, never exception text.
-            print(json.dumps({"status": "NEGATIVE_DIAGNOSTIC_HOLD", "error_type": type(error).__name__,
+            # Only fixed stage/type/code identifiers leave this boundary.
+            diagnostic = graph_negative_failure_diagnostic(error, progress)
+            print(json.dumps({"status": "NEGATIVE_DIAGNOSTIC_HOLD", "error_type": diagnostic["error_type"],
+                              "failure_diagnostic": diagnostic,
                               "formal_acceptance": False, "automatic_retry": False}))
             return 1
     return graph_wait_for_external_review(args.repo) if args.phase == "wait" else graph_run_cases(args.repo)

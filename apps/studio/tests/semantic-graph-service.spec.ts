@@ -87,7 +87,8 @@ test("Synthetic flow stores exact event times and rejects a real stale CAS witho
   const service = await createGraphServiceCase(info, "graph-flow", { databasePath: info.outputPath("store", "semantic-flow.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
   let bodyFailed = false, primaryFailure: unknown;
   try {
-    const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "system_flow");
+    const setup = await arrange(service), initial = setup.project; latest = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "system_flow");
     await field(page, "Graph motion").selectOption("off"); await button(page, "Add synthetic event").click(); await page.locator("[data-graph-event] summary").first().click(); await field(page, "Event 1 label").fill("Illustrated message transfer");
     await button(page, "Save semantic Graph").click(); await expect.poll(async () => (await service.project(initial.id)).revision).toBe(initial.revision + 1); latest = await service.project(initial.id);
     const graph = (latest as GraphProject).production_design!.semantic_graphs!.find(item => item.scene_id === setup.sceneId)!; expect(graph.motion).toBe("off");
@@ -117,7 +118,8 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
   const original = service.invoke.bind(service); let lost = false;
   let bodyFailed = false, primaryFailure: unknown;
   try {
-    const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "causal_diagram");
+    const setup = await arrange(service), initial = setup.project; latest = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "causal_diagram");
     service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
       const result = await original<T>(command, args), change = (args.request as { change?: { type?: string } } | undefined)?.change;
       if (!lost && command === "apply_change" && change?.type === "upsert_semantic_graph") { lost = true; throw new Error("Transport lost the original reply after actual SQLite Graph commit."); } return result;

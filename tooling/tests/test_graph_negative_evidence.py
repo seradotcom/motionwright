@@ -39,7 +39,7 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve() / "v"
         (self.root / "e/graph-producer").mkdir(parents=True)
         (self.root / "tools").mkdir()
-        self.cases = [("graph-case-" + str(i), "g" + str(i)) for i in range(1, 7)]
+        self.cases = [(case, "g" + str(i)) for i, case in enumerate(sorted(row[0] for row in controller.GRAPH_CASES), 1)]
         self.binding = {"context": {"source_sha": "a" * 40, "semwright_sha": "b" * 40, "run_id": "42", "run_attempt": "1"},
             "index_sha256": "1" * 64, "receipt_sha256": "2" * 64, "receipt_status": "UNKNOWN",
             "review_carrier_sha256": "3" * 64, "recipient_spki_sha256": self.recipient["sha256"]}
@@ -139,6 +139,58 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
         self.assertEqual(manifest["quiescence"], "UNKNOWN")
         self.assertFalse(manifest["native_acceptance"] or manifest["formal_acceptance"])
         self.assertEqual(context, binding["context"])
+
+    def test_source_authored_closure_jsons_are_retained_for_each_case_but_no_store_is_opened(self):
+        self.put("e/receipt.json", b'{"status":"UNKNOWN","private_error":"first-cause"}')
+        # Names come from the actual finalizeGraphCase call sites, not from the
+        # collector's new lookup; every variant has different owner storage.
+        names = {"graph-source-review": "closed-graph-store", "graph-flow": "closed-flow-store",
+            "graph-lost-reply": "closed-graph-lost-reply-store", "graph-removal": "closed-graph-removal-store",
+            "graph-label-causal-diagram": "closed-graph-label-store", "graph-label-system-flow": "closed-graph-label-store"}
+        expected = {}
+        for case, directory in self.cases:
+            prefix = "e/graph-cases/" + directory + "/artifacts/" + names[case]
+            for suffix in ("-service-closure.json", "-outcomes.json", "-outcomes-before-capture.json"):
+                raw = seal.json_bytes({"case": case, "status": "UNKNOWN", "original": suffix})
+                self.put(prefix + suffix, raw); expected[prefix + suffix] = raw
+            self.put(prefix + "/motionwright.sqlite3", b"LIVE-STORE-DO-NOT-CAPTURE")
+        self.run_seal()
+        members, manifest, _ = self.recover()
+        self.assertEqual({name: members.get(name) for name in expected}, expected)
+        self.assertTrue(all((self.root / name).read_bytes() == raw for name, raw in expected.items()))
+        self.assertFalse(any(".sqlite3" in name for name in members))
+        self.assertIn(b"first-cause", members["e/receipt.json"])
+        self.assertEqual((manifest["effects"], manifest["quiescence"]), ("UNKNOWN", "UNKNOWN"))
+
+    def test_physical_shared_rejection_reports_closed_stage_without_bypassing_reservation(self):
+        self.put("e/receipt.json", b"private-first-error")
+        progress = {}
+        try:
+            negative.seal_once(self.root, self.cases, self.binding, self.recipient,
+                {"maximum_bytes": negative.RESERVATION["bytes"], "maximum_members": 1232},
+                self.admission, progress=progress)
+        except seal.CustodyRejected as error:
+            result = controller.graph_negative_failure_diagnostic(error, progress)
+        else:
+            self.fail("physical reservation denial was bypassed")
+        self.assertEqual(result["stage"], "SHARED_BEFORE")
+        self.assertEqual(result["code"], "negative_shared_reservation")
+        self.assertEqual(result["error_type"], "CustodyRejected")
+        self.assertEqual((result["effects"], result["quiescence"]), ("UNKNOWN", "UNKNOWN"))
+        self.assertFalse((self.root / "graph-negative").exists())
+
+    def test_private_exception_text_and_paths_never_enter_public_failure_diagnostic(self):
+        secret = "capability-secret-credential=/private/path"
+        class MustNotStringify(Exception):
+            def __str__(self):
+                raise AssertionError("private exception was stringified")
+        for error in (seal.CustodyRejected(secret), OSError(secret), MustNotStringify(secret)):
+            with self.subTest(kind=type(error).__name__):
+                result = controller.graph_negative_failure_diagnostic(error, {"stage": secret})
+                self.assertEqual(result["stage"], "UNCLASSIFIED")
+                self.assertEqual(result["code"], "UNCLASSIFIED")
+                self.assertNotIn(secret, json.dumps(result))
+                self.assertNotIn("private/path", json.dumps(result))
 
     def test_file_and_parent_aliases_are_never_followed_even_in_private_selection(self):
         self.put("e/receipt.json", b"first-error")
