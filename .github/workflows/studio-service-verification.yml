@@ -709,6 +709,7 @@ jobs:
         env:
           MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64: ${{ inputs.graph_review_spki_der_base64 }}
           MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256: ${{ inputs.graph_review_spki_sha256 }}
+          MOTIONWRIGHT_GRAPH_RUNTIME_PYTHON: /usr/bin/python3
         run: |
           set -euo pipefail
           python -I -B tooling/ci_canvas_service.py graph produce --repo .
