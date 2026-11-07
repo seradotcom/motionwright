@@ -261,6 +261,20 @@ class ImpactRoutingTests(unittest.TestCase):
 
 
 class ManualWorkflowBoundaryTests(unittest.TestCase):
+    def test_original_managed_cas_catalog_source_triggers_graph_fast(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        # The Retained StoreReader now rejects same-inode rechecksummed catalog
+        # replacements: edits to this source affect R74 same-store authenticity,
+        # even if read_only.rs itself is unchanged.
+        self.assertIn("      - 'crates/storage/src/cas_retention.rs'", trigger)
+        self.assertIn("      - 'crates/storage/src/read_only.rs'", trigger)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("cargo test --workspace", workflow)
+
     def test_graph_original_store_and_r74_archive_critical_paths_trigger_source_g0(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(encoding="utf-8")

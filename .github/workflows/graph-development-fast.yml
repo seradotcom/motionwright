@@ -30,6 +30,7 @@ on:
       - 'tooling/tests/test_graph_continuation.py'
       - '.github/workflows/studio-service-verification.yml'
       - 'crates/storage/src/read_only.rs'
+      - 'crates/storage/src/cas_retention.rs'
       - 'crates/native/src/production/graph_authoring.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
       - 'crates/service/examples/studio_review_session.rs'
