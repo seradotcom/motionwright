@@ -7922,6 +7922,18 @@ GRAPH_PHASES = {
     "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
     "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300,
 }
+GRAPH_REUSE_PHASES = {
+    "origin-key": 120, "origin-recipient-upload": 120, "origin-inputs": 900, "prepare": 1200,
+    "origin-build-intake": 300, "runtime": 1200,
+    "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
+    "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300,
+}
+
+
+def graph_phase_plan(selector):
+    require(selector in ("none", GRAPH_CONTINUATION, GRAPH_FOUR_CONTINUATION), "Graph closed phase selector")
+    return GRAPH_REUSE_PHASES if selector == GRAPH_FOUR_CONTINUATION else GRAPH_PHASES
+
 GRAPH_CASES = (
     ("graph-source-review", "Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing", (5, 0)),
     ("graph-flow", "Synthetic flow stores exact event times and rejects a real stale CAS without a new event", (2, 0)),
@@ -7950,11 +7962,38 @@ GRAPH_CONTINUATION_ORIGIN = {
 }
 GRAPH_CONTINUATION_CASES = GRAPH_CASES[1:]
 
+# A distinct continuation retains both earlier UNKNOWN operations unchanged.
+GRAPH_FOUR_CONTINUATION = "unstarted-after-42372165893"
+GRAPH_FOUR_CONTINUATION_CASES = GRAPH_CASES[2:]
+GRAPH_FOUR_CONTINUATION_ORIGIN = {'run_id': '42372165893',
+ 'run_attempt': 1,
+ 'source_sha': '5f61b059f9b8ccc0ce4acf555c2fe0bf6fced89a',
+ 'producer_index_sha256': '2c12a3358367d99d405663c954e251068953e8baab20ffeb44c4cde470cd0a16',
+ 'job_id': 128402490846,
+ 'runner_id': 1000094153,
+ 'runner_name': 'GitHub Actions 1000094153',
+ 'jobs_response_sha256': 'b29ff735bd652391340b520bb27f35db8096bfae57b0bd3cc4e31674387754e2',
+ 'job_log_sha256': '29576888a19e7598710cc64f4b210ad0cfc46735ca43014de49f302bff9a891b',
+ 'cases_root': '/home/runner/work/motionwright/motionwright/v/e/gc42372165893-1',
+ 'observed_counts': {'expected': 0, 'unexpected': 1, 'skipped': 4, 'flaky': 0},
+ 'excluded_case': {'case_id': 'graph-flow',
+                   'execution_status': 'failed',
+                   'effects': 'UNKNOWN',
+                   'owner_quiescence': 'UNKNOWN',
+                   'repeat': 'FORBIDDEN'}}
+
+
+def graph_continuation_parts(selector):
+    if selector == GRAPH_CONTINUATION:
+        return GRAPH_CONTINUATION_ORIGIN, GRAPH_CONTINUATION_CASES, ()
+    require(selector == GRAPH_FOUR_CONTINUATION, "Graph unknown continuation selector")
+    return GRAPH_FOUR_CONTINUATION_ORIGIN, GRAPH_FOUR_CONTINUATION_CASES, (GRAPH_CONTINUATION_ORIGIN,)
+
 
 def graph_requested_continuation(environment):
     value = environment.get(GRAPH_CONTINUATION_ENV, "none")
-    require(value in ("none", GRAPH_CONTINUATION), "Graph unknown continuation selector")
-    return value == GRAPH_CONTINUATION
+    require(value in ("none", GRAPH_CONTINUATION, GRAPH_FOUR_CONTINUATION), "Graph unknown continuation selector")
+    return value != "none"
 
 
 def graph_cases_root(root, run_id, continuation=False):
@@ -7967,37 +8006,39 @@ def graph_continuation_record(source, deadline, cases_root):
             if row.get("name") == "Real SQLite and Studio / " + GRAPH_SCOPE]
     require(len(jobs) == 1, "Graph continuation exact current job")
     job = jobs[0]
-    origin = GRAPH_CONTINUATION_ORIGIN
-    require(deadline.get("graph_continuation_selector") == GRAPH_CONTINUATION,
-            "Graph continuation differs from original bootstrap selection")
+    selector = deadline.get("graph_continuation_selector")
+    origin, selected, previous = graph_continuation_parts(selector)
     expected_root = graph_cases_root(Path(source["repository_root"]).parent / "v", source["run_id"], True)
-    require(source["run_id"] != origin["run_id"] and type(source["run_attempt"]) is int and source["run_attempt"] == 1
+    require(type(source["run_attempt"]) is int and source["run_attempt"] == 1
             and type(job.get("run_id")) is int and str(job["run_id"]) == source["run_id"]
             and type(job.get("run_attempt")) is int and job["run_attempt"] == 1
             and job.get("head_sha") == source["sha"] and job.get("status") == "in_progress"
-            and job.get("conclusion") is None and type(job.get("id")) is int
-            and job["id"] > 0 and job["id"] != origin["job_id"]
+            and job.get("conclusion") is None and type(job.get("id")) is int and job["id"] > 0
             and type(job.get("runner_id")) is int and job["runner_id"] > 0
-            and job["runner_id"] != origin["runner_id"]
             and type(job.get("runner_name")) is str and job["runner_name"]
-            and job["runner_name"] != origin["runner_name"]
             and job["runner_name"] == deadline["binding"]["RUNNER_NAME"]
-            and str(cases_root) == str(expected_root) != origin["cases_root"],
+            and str(cases_root) == str(expected_root)
+            and all(source["run_id"] != old["run_id"] and job["id"] != old["job_id"]
+                and job["runner_id"] != old["runner_id"] and job["runner_name"] != old["runner_name"]
+                and str(cases_root) != old["cases_root"] for old in (*previous, origin)),
             "Graph continuation must use a different authenticated runner and fresh run namespace")
-    for case, _, _ in GRAPH_CONTINUATION_CASES:
+    for case, _, _ in selected:
         graph_case_layout(expected_root, case)
-    return {
-        "schema": "motionwright.graph-unstarted-continuation/1", "selector": GRAPH_CONTINUATION,
-        "origin": json.loads(json.dumps(origin)),
-        "selected_cases": [row[0] for row in GRAPH_CONTINUATION_CASES],
+    record = {
+        "schema": "motionwright.graph-unstarted-continuation/2" if previous else "motionwright.graph-unstarted-continuation/1",
+        "selector": selector, "origin": json.loads(json.dumps(origin)),
+        "selected_cases": [row[0] for row in selected],
         "current": {"run_id": source["run_id"], "run_attempt": 1, "job_id": job["id"],
                     "runner_id": job["runner_id"], "runner_name": job["runner_name"],
                     "cases_root": str(cases_root)},
-        "original_contract_cases": 6, "required_current_cases": 5,
+        "original_contract_cases": 6, "required_current_cases": len(selected),
         "simultaneous_owner_limit": 1, "historical_cleanup_claimed": False,
         "historical_owner_credentials_or_tickets_reused": False,
         "automatic_retry": False, "formal_acceptance": False,
     }
+    if previous:
+        record["prior_origins"] = json.loads(json.dumps(previous))
+    return record
 
 
 def graph_selected_cases(index, deadline=None):
@@ -8014,7 +8055,7 @@ def graph_selected_cases(index, deadline=None):
     require(json.dumps(record, sort_keys=True, allow_nan=False) == json.dumps(
                 graph_continuation_record(source, deadline, execution["cases_root"]), sort_keys=True, allow_nan=False),
             "Graph closed historical continuation binding changed")
-    return GRAPH_CONTINUATION_CASES
+    return graph_continuation_parts(record["selector"])[1]
 
 
 def graph_selection_plan(index):
@@ -8024,19 +8065,23 @@ def graph_selection_plan(index):
         plan.update(continuation=GRAPH_CONTINUATION,
                     original_contract_tests=6, historical_excluded_case="graph-source-review",
                     historical_effects="UNKNOWN", original_contract_complete=False)
+    elif selected == GRAPH_FOUR_CONTINUATION_CASES:
+        plan.update(continuation=GRAPH_FOUR_CONTINUATION, original_contract_tests=6,
+                    historical_excluded_cases=["graph-source-review", "graph-flow"],
+                    historical_effects="UNKNOWN", original_contract_complete=False)
     return plan
 
 
 def graph_closed_status(index):
-    return "CLOSED_GRAPH_CONTINUATION_OBSERVATIONS" if graph_selected_cases(index) == GRAPH_CONTINUATION_CASES else "CLOSED_GRAPH_OBSERVATIONS"
+    return "CLOSED_GRAPH_CONTINUATION_OBSERVATIONS" if graph_selected_cases(index) != GRAPH_CASES else "CLOSED_GRAPH_OBSERVATIONS"
 
 
 def graph_playwright_selection(selected):
-    require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES), "Graph closed Playwright selection")
+    require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES, GRAPH_FOUR_CONTINUATION_CASES), "Graph closed Playwright selection")
     if selected == GRAPH_CASES:
         return []
-    # Playwright matches the full project/file/title string, so only the five
-    # exact terminal test titles match; the failed source-review cannot match.
+    # Playwright matches the full project/file/title string, so only selected
+    # exact terminal test titles match; excluded UNKNOWN cases cannot match.
     return ["--grep", r"(?:^|\s)(?:" + "|".join(re.escape(row[1]) for row in selected) + r")$"]
 GRAPH_ROLES = ("semwright", "semwrightd", "native_provider", "shared_state_actor", "manim_runner",
                "python3", "ffmpeg", "ordinary_service", "native_graph_session", "semwright_sandbox")
@@ -8054,6 +8099,7 @@ GRAPH_TARGETS = {
 }
 GRAPH_IMPORTS = tuple("tooling/" + name + ".py" for name in (
     "native_graph_browser_owner", "native_graph_executable_inputs", "native_graph_negative_evidence", "ci_graph_dev_native_startup",
+    "native_graph_build_reuse", "native_graph_build_transfer",
     "native_host_shared_state", "native_host_installed_shared_state",
     "native_manim_graph_runtime_intake", "native_av_failure_guard", "candidate_smoke",
     "linux_first_use_custody", "linux_cold_start", "linux_first_use_accessible",
@@ -8097,7 +8143,7 @@ def graph_case_layout(cases_root, case_id):
 def graph_collected_case_roots(cases_root, selected=None):
     """Require the declared exclusive roots, never select a historical alias."""
     selected = GRAPH_CASES if selected is None else selected
-    require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES), "Graph closed collected roster")
+    require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES, GRAPH_FOUR_CONTINUATION_CASES), "Graph closed collected roster")
     cases_root = Path(cases_root)
     require(cases_root.is_dir() and cases_root.resolve(strict=True) == cases_root, "Graph canonical cases root absent")
     rows = [(case, graph_case_layout(cases_root, case)["private_root"]) for case in sorted(row[0] for row in selected)]
@@ -8346,10 +8392,11 @@ def graph_verify_producer_index(index_ref, case_id):
         refs[ref["path"]], physical[ref["path"]] = ref, stamp
         return raw
     index = graph_json(remember(index_ref, GRAPH_BYTES))
+    reuse_fields = {"build_reuse"} if "build_reuse" in index else set()
     require(set(index) == {"schema", "source", "binaries", "runtime", "source_original", "sdk_original", "builds",
                            "ordinary_preflight", "runtime_originals", "callback_roster", "native_enforcement",
-                           "native_executable_inputs", "contract"}
-            and index["schema"] == GRAPH_INDEX_SCHEMA and set(index["contract"]) == GRAPH_CONTRACT_FIELDS,
+                           "native_executable_inputs", "contract"} | reuse_fields
+            and index["schema"] == GRAPH_INDEX_SCHEMA and set(index["contract"]) == GRAPH_CONTRACT_FIELDS | reuse_fields,
             "Graph acyclic index contract fields")
     contract, source, binaries = index["contract"], index["source"], index["binaries"]
     require(set(binaries) == set(GRAPH_ROLES) and len({ref["path"] for ref in binaries.values()}) == 10,
@@ -8361,6 +8408,8 @@ def graph_verify_producer_index(index_ref, case_id):
             and execution["budget"] == GRAPH_BUDGET, "Graph finite original allocation")
     require(set(contract["cases"]) == {row[0] for row in GRAPH_CASES} and case_id in contract["cases"], "Graph closed six-case roster")
     selected = graph_selected_cases(index)
+    require(bool(reuse_fields) == (selected == GRAPH_FOUR_CONTINUATION_CASES),
+            "Graph original build reuse is closed to the four-case continuation")
     require(case_id in {row[0] for row in selected}, "Graph historical UNKNOWN case is excluded from continuation")
     for name in GRAPH_AUTHORITY:
         require(name in contract["source_files"], "Graph authority source omitted: " + name)
@@ -8388,6 +8437,22 @@ def graph_verify_producer_index(index_ref, case_id):
     lock = graph_json(remember({"path": str(Path(source["repository_root"]) / "SOURCE_LOCK.json"),
         "sha256": contract["source_files"]["SOURCE_LOCK.json"]["sha256"], "size_bytes": contract["source_files"]["SOURCE_LOCK.json"]["bytes"]}))
     require(lock["dependencies"]["semwright"]["revision"] == source["sdk_sha"], "Graph SOURCE_LOCK SDK pin")
+    build_reuse, reuse_module, current_copy_processes = None, None, []
+    if reuse_fields:
+        import types
+        module_path = Path(source["repository_root"]) / "tooling/native_graph_build_reuse.py"
+        pin = contract["source_files"]["tooling/native_graph_build_reuse.py"]
+        raw = remember({"path": str(module_path), "sha256": pin["sha256"], "size_bytes": pin["bytes"]})
+        reuse_module = types.ModuleType("graph_source_bound_original_build_reuse")
+        reuse_module.__file__ = str(module_path)
+        exec(compile(raw, str(module_path), "exec", dont_inherit=True), reuse_module.__dict__)
+        build_reuse = graph_json(remember(index["build_reuse"], 2 * GRAPH_BYTES))
+        require(build_reuse == contract["build_reuse"], "Graph original build reuse contract changed")
+        reuse_module.validate_record(build_reuse, index, remember)
+        reuse_module.validate_original_build_clocks(build_reuse, remember)
+        abi = graph_json(remember(build_reuse["abi_observation"], 2 * GRAPH_BYTES))
+        remember(abi["loader"], 4 * GRAPH_BYTES)
+        current_copy_processes = [*build_reuse["source_comparison_processes"], *abi["processes"].values()]
     require(set(index["builds"]) == set(contract["builds"]) == set(GRAPH_RUST_ROLES), "Graph eight build roles")
     writer_roles = {*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime", "native_executable_inputs"}
     require(set(contract["writer_sources"]) == writer_roles, "Graph writer source roster")
@@ -8422,8 +8487,9 @@ def graph_verify_producer_index(index_ref, case_id):
         require(relative in contract["sdk_files" if role in GRAPH_SDK_ROLES else "source_files"], "Graph target source omitted")
         raw = remember(binaries[role], 256 * GRAPH_BYTES)
         retained = original["retained_binary"]
+        retained_root = (Path(build_reuse["origin_root"]) / "producer") if build_reuse else Path(execution["producer_root"])
         require(expected["retention_encoding"] == "zlib-level6"
-                and retained["path"] == str(Path(execution["producer_root"]) / "binaries" / (role + ".zlib"))
+                and retained["path"] == str(retained_root / "binaries" / (role + ".zlib"))
                 and retained["path"] != binaries[role]["path"],
                 "Graph compacted executable retention source")
         require(graph_uncompact_cargo_executable(remember(retained, 256 * GRAPH_BYTES), binaries[role]) == raw,
@@ -8505,7 +8571,7 @@ def graph_verify_producer_index(index_ref, case_id):
             and row.get("name") == "Real SQLite and Studio / " + GRAPH_SCOPE]
     require(len(jobs) == 1, "Graph producer original job")
     job_started = datetime.fromisoformat(jobs[0]["started_at"].replace("Z", "+00:00"))
-    for process in [*(item["process"] for item in index["builds"].values()),
+    for process in [*(current_copy_processes if build_reuse else (item["process"] for item in index["builds"].values())),
                     index["ordinary_preflight"]["process"], index["runtime_originals"]["producer"]]:
         command = graph_json(remember(process["command"], GRAPH_BYTES))
         require(command.get("graph_job") == {"source_sha": source["sha"], "run_id": source["run_id"],
@@ -8528,10 +8594,11 @@ def graph_deadline_from_original(original, environment, now_ns, boot_id):
     require(binding["GITHUB_REPOSITORY"] == GRAPH_REPOSITORY and binding["GITHUB_RUN_ATTEMPT"] == "1"
             and original.get("schema") == "motionwright.graph-job-deadline/1"
             and original.get("binding") == binding and original.get("boot_id") == boot_id
-            and original.get("job_seconds") == 10800 and original.get("phase_seconds") == GRAPH_PHASES
+            and original.get("job_seconds") == 10800
+            and original.get("phase_seconds") == graph_phase_plan(environment.get(GRAPH_CONTINUATION_ENV, "none"))
             and original.get("rounding_allowance_seconds") == 2, "Graph original deadline binding")
     require(original.get("graph_continuation_selector", "none") == environment.get(GRAPH_CONTINUATION_ENV, "none")
-            and environment.get(GRAPH_CONTINUATION_ENV, "none") in ("none", GRAPH_CONTINUATION),
+            and environment.get(GRAPH_CONTINUATION_ENV, "none") in ("none", GRAPH_CONTINUATION, GRAPH_FOUR_CONTINUATION),
             "Graph bootstrap continuation selection changed")
     begin, end = original.get("request_started_mono_ns"), original.get("response_received_mono_ns")
     require(type(begin) is int and type(end) is int and 0 < begin <= end <= now_ns, "Graph original clock")
@@ -8588,13 +8655,14 @@ class GraphOriginalClock(Phase1Service47Clock):
         now = time.monotonic_ns()
         self.deadline_ns = graph_deadline_from_original(original, os.environ, now, Path("/proc/sys/kernel/random/boot_id").read_text().strip())
         self.original, self.original_ref, self.last_ns = original, ref, now
+        self.phases = graph_phase_plan(original.get("graph_continuation_selector", "none"))
         self.unknown = self.expired = False; self.active_process = None
         self.admissions = []; self.phase_name = None; self.phase_end = None
 
     def future(self, phase):
-        names = list(GRAPH_PHASES)
-        require(phase in GRAPH_PHASES, "Graph closed phase")
-        return sum(GRAPH_PHASES[name] for name in names[names.index(phase) + 1:])
+        names = list(self.phases)
+        require(phase in self.phases, "Graph closed phase")
+        return sum(self.phases[name] for name in names[names.index(phase) + 1:])
 
     def admit(self, label, seconds, *, reserve=None, now_ns=None):
         now = time.monotonic_ns() if now_ns is None else now_ns
@@ -8612,8 +8680,8 @@ class GraphOriginalClock(Phase1Service47Clock):
 
     @contextmanager
     def phase(self, name):
-        require(self.phase_name is None and name in GRAPH_PHASES, "Graph nested or foreign phase")
-        seconds, future = GRAPH_PHASES[name], self.future(name)
+        require(self.phase_name is None and name in self.phases, "Graph nested or foreign phase")
+        seconds, future = self.phases[name], self.future(name)
         admitted = self.admit(name, seconds, reserve=future)
         self.phase_name, self.phase_end = name, time.monotonic_ns() + seconds * 1000000000
         graph_put_json(self.root / "tools" / ("graph-phase-" + name + ".intent.original.json"), admitted)
@@ -9120,6 +9188,7 @@ def graph_source_paths(repo, targets, intake_rows):
              "apps/studio/package.json", "crates/service/Cargo.toml",
              "tooling/tests/test_graph_staging_file_limits.py", "tooling/tests/test_graph_executable_inputs.py",
              "tooling/tests/test_graph_negative_evidence.py", "tooling/tests/test_graph_continuation.py",
+             "tooling/tests/test_graph_build_reuse.py", "tooling/tests/test_graph_build_transfer.py",
              "apps/studio/tooling/graph-owner/continuation.test.mjs",
              "apps/studio/tooling/graph-owner/staging_file_limits.test.mjs",
              "apps/studio/tooling/graph-owner/producer_guard.test.mjs",
@@ -9141,16 +9210,158 @@ def graph_source_receipt(source_root, expected, names, before, producer, label):
     return graph_put_json(producer / (label + "-source-original.json"), receipt), view
 
 
+GRAPH_INPUT_SOURCE_PATHS = (
+    "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
+    "tooling/requirements/mlt-g2-custody.txt", "tooling/source_checkout_observation.py",
+    "tooling/native_graph_negative_evidence.py", "tooling/tests/test_graph_negative_evidence.py",
+    "tooling/native_graph_build_reuse.py", "tooling/native_graph_build_transfer.py",
+    "SOURCE_LOCK.json", "tooling/ci_canvas_service.py", GRAPH_WORKFLOW)
+
+
+def graph_input_modules(repo):
+    sys.path.insert(0, str(repo / "tooling"))
+    import native_graph_build_reuse as reuse
+    import native_graph_build_transfer as transfer
+    for name, module in (("native_graph_build_reuse", reuse), ("native_graph_build_transfer", transfer)):
+        require(Path(module.__file__).resolve() == repo / "tooling" / (name + ".py"), "Graph input module origin")
+    return reuse, transfer
+
+
+def graph_input_guard(clock, producer):
+    now = time.monotonic_ns()
+    require(not clock.unknown and clock.phase_end is not None and now >= clock.last_ns
+            and now < clock.phase_end and now + clock.future(clock.phase_name) * 1000000000 < clock.deadline_ns,
+            "Graph input deadline exhausted")
+    clock.last_ns = now
+    graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
+
+
+def graph_input_context():
+    return {"source_sha": os.environ["GITHUB_SHA"], "semwright_sha": "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199",
+            "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1"}
+
+
+def graph_input_phase(repo, phase):
+    repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
+    require(os.environ.get(GRAPH_CONTINUATION_ENV) == GRAPH_FOUR_CONTINUATION
+            and phase in ("origin-key", "origin-inputs"), "Graph closed input-only phase")
+    producer = root / "e/graph-producer"
+    with clock.phase(phase):
+        if phase == "origin-key":
+            require(not (root / "e").exists(), "Graph input preparation already started")
+            (root / "e").mkdir(mode=0o700); producer.mkdir(mode=0o700)
+            before = graph_source_observe(repo, os.environ["GITHUB_SHA"], GRAPH_INPUT_SOURCE_PATHS)
+            graph_put_json(producer / "custody-preparation-source.original.json", before)
+            lock = graph_json((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]
+            require(lock["revision"] == graph_input_context()["semwright_sha"], "Graph reused SDK source pin")
+            env = dict(os.environ, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+            env.pop(GRAPH_TOKEN_ENV, None)
+            graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")],
+                repo, producer, "graph-custody-dependencies", 90, clock)
+            reuse, transfer = graph_input_modules(repo)
+            public = transfer.create_recipient(root, graph_input_context(), int(os.environ["GITHUB_ACTOR_ID"]),
+                clock.original_ref["sha256"], (clock.deadline_ns - time.monotonic_ns()) // 1000000000)
+            require(graph_source_observe(repo, os.environ["GITHUB_SHA"], GRAPH_INPUT_SOURCE_PATHS) == before,
+                    "Graph input code changed during preparation")
+            public_root = transfer.paths(root)["public"]
+            reuse.new_json(public_root / "source.original.json", before)
+            for name in ("graph-deadline.original.json", "graph-run-response.original.json",
+                         "graph-jobs-response.original.json", "graph-run-response.transport.original.json",
+                         "graph-jobs-response.transport.original.json"):
+                reuse.new_bytes(public_root / name, graph_read(graph_ref(root / "tools" / name), 8 * GRAPH_BYTES + 65536))
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+                stream.write("artifact=graph-build-recipient-" + public["context"]["run_id"] + "-1\n")
+        else:
+            reuse, transfer = graph_input_modules(repo)
+            public = reuse.strict(reuse.read_small(transfer.paths(root)["public"] / "recipient.json", transfer.MAX_PUBLIC))
+            transfer.validate_recipient(public, graph_input_context(), int(os.environ["GITHUB_ACTOR_ID"]), clock.original_ref["sha256"])
+            token = os.environ.pop(GRAPH_TOKEN_ENV, "")
+            require(token, "Graph read-only courier credential absent")
+            transfer.receive_inputs(root, public, token, lambda: graph_input_guard(clock, producer))
+        graph_input_guard(clock, producer)
+    print(json.dumps({"status": "GRAPH_INPUT_ONLY_PHASE_CLOSED", "phase": phase,
+                      "new_builds": 0, "native_calls": 0, "owner_authority": False, "automatic_retry": False}))
+    return 0
+
+
+def graph_reused_builds(repo, sdk, producer, source, env, clock):
+    reuse, transfer = graph_input_modules(repo)
+    root = repo.parent / "v"
+    with clock.phase("origin-build-intake"):
+        guard = lambda: graph_input_guard(clock, producer)
+        capsule = transfer.paths(root)["intake"] / "graph52-build-inputs.original.tar"
+        origin_root = producer / "origin-build52"
+        manifest, origin = reuse.retain_capsule(capsule, origin_root, guard=guard)
+        comparison_processes = []
+        def git(*args):
+            refs, _ = graph_command(env, ["git", "-C", str(repo), *args], repo, producer,
+                "graph-build-material-" + str(len(comparison_processes) + 1), 10, clock)
+            comparison_processes.append(refs)
+            return graph_read(refs["stdout"], 2 * GRAPH_BYTES)
+        comparison = reuse.compare_git(source["sha"], git)
+        require(reuse.SDK_TREE == graph_source_view(graph_source_observe(sdk, source["sdk_sha"], ("Cargo.toml", "Cargo.lock")))["tree"],
+                "Graph reused actual SDK tree changed")
+        # Once authentication, all 124 original members and actual Git material
+        # comparison close, release only these two temporary runner copies.
+        # This happens before native staging, within the existing 384 MiB pool.
+        release = reuse.release_verified_transport(transfer.paths(root)["intake"], origin_root,
+            comparison, graph_input_context(), guard)
+        binaries, builds, contracts, receipt = reuse.copy_builds(origin_root, origin, source, comparison, producer,
+            {"sdk": sdk / "target", "product": root / "t"}, guard=guard)
+        interpreter = {reuse.elf_interpreter(Path(row["path"])) for row in binaries.values()}
+        require(interpreter == {"/lib64/ld-linux-x86-64.so.2"}, "Graph original ELF interpreter roster")
+        loader = Path(next(iter(interpreter))).resolve(strict=True)
+        require(str(loader) == "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "Graph current system loader path")
+        loader_ref = graph_ref(loader, 4 * GRAPH_BYTES)
+        loader_copy = graph_copy_original(loader, producer / "reuse-abi-loader.original", producer)
+        abi_env = dict(env)
+        require(not any(abi_env.get(name) for name in ("LD_PRELOAD", "LD_AUDIT", "LD_DEBUG", "LD_LIBRARY_PATH")),
+                "Graph loader override environment")
+        processes = {}
+        for role in reuse.ROLES:
+            refs, command = graph_command(abi_env, [str(loader), "--list", binaries[role]["path"]],
+                repo, producer, "graph-current-abi-" + role, 15, clock)
+            stdout = graph_read(refs["stdout"], GRAPH_BYTES)
+            require(stdout and b"not found" not in stdout and b"ld-linux-x86-64.so.2" in stdout,
+                    "Graph current loader did not resolve the retained ELF")
+            processes[role] = refs
+        abi = {"schema": "motionwright.graph.reused-elf-current-loader-observation/1", "current": source,
+            "binaries": binaries, "interpreter": next(iter(interpreter)), "loader": loader_ref,
+            "loader_retained": loader_copy, "processes": processes,
+            "new_builds": 0, "native_calls": 0, "owner_authority": False}
+        receipt["abi_observation"] = graph_put_json(producer / "reused-elf-current-abi.original.json", abi)
+        receipt["temporary_inputs_released"] = release
+        receipt["source_comparison_processes"] = comparison_processes
+        reference = graph_put_json(producer / "original-build-reuse.original.json", receipt)
+        return binaries, builds, contracts, receipt, reference
+
+
 def graph_produce(repo, recipient):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     output, producer, runtime, sdk = root / "e", root / "e/graph-producer", root / "runtime", root / "sdk"
     continuation = graph_requested_continuation(os.environ)
-    selected = GRAPH_CONTINUATION_CASES if continuation else GRAPH_CASES
+    selected = graph_continuation_parts(os.environ[GRAPH_CONTINUATION_ENV])[1] if continuation else GRAPH_CASES
     cases_root = graph_cases_root(root, os.environ["GITHUB_RUN_ID"], True) if continuation else output / "graph-cases"
     for case, _, _ in selected:
         graph_case_layout(cases_root, case)
-    require(not output.exists() and not sdk.exists() and not runtime.exists(), "Graph once-only fresh production roots")
-    output.mkdir(mode=0o700); producer.mkdir(mode=0o700); (producer / "consumption").mkdir(mode=0o700)
+    reused = os.environ.get(GRAPH_CONTINUATION_ENV) == GRAPH_FOUR_CONTINUATION
+    require(not sdk.exists() and not runtime.exists(), "Graph once-only SDK/runtime preparation")
+    if reused:
+        require(output.is_dir() and producer.is_dir() and set(output.iterdir()) == {producer}
+                and {item.name for item in producer.iterdir()} == {
+                    "custody-preparation-source.original.json", "graph-custody-dependencies.command.json",
+                    "graph-custody-dependencies.stdout.log", "graph-custody-dependencies.stderr.log", "origin-transport"},
+                "Graph reuse requires only its authenticated fresh input intake")
+        reuse, transfer = graph_input_modules(repo)
+        incoming = reuse.strict(reuse.read_small(transfer.paths(root)["intake"] / "intake-terminal.original.json"))
+        require(incoming["status"] == "AUTHENTICATED_ORIGINAL_BUILD_INPUTS"
+                and incoming["context"] == graph_input_context() and incoming["capsule"] == reuse.CAPSULE,
+                "Graph retained input context")
+    else:
+        require(not output.exists(), "Graph once-only fresh production roots")
+        output.mkdir(mode=0o700); producer.mkdir(mode=0o700)
+    (producer / "consumption").mkdir(mode=0o700)
     source_sha = os.environ["GITHUB_SHA"]
     runtime_python = graph_runtime_python()
     env = dict(os.environ, CARGO_INCREMENTAL="0", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
@@ -9171,15 +9382,30 @@ def graph_produce(repo, recipient):
         with clock.phase("prepare"):
             # Reuse the existing hash-pinned custody dependency list. The public
             # recipient must parse before a build/runtime can consume its phase.
-            preparation_source = graph_source_observe(repo, source_sha, (
-                "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
-                "tooling/requirements/mlt-g2-custody.txt", "tooling/source_checkout_observation.py",
-                "tooling/native_graph_negative_evidence.py", "tooling/tests/test_graph_negative_evidence.py",
-                "tooling/ci_canvas_service.py", GRAPH_WORKFLOW))
-            graph_put_json(producer / "custody-preparation-source.original.json", preparation_source)
-            graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
-                "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")],
-                repo, producer, "graph-custody-dependencies", 90, clock)
+            if reused:
+                preparation_source = graph_json((producer / "custody-preparation-source.original.json").read_bytes())
+                require(preparation_source == graph_source_observe(repo, source_sha, GRAPH_INPUT_SOURCE_PATHS),
+                        "Graph input preparation code changed before use")
+                dependency_refs = {name: graph_ref(producer / ("graph-custody-dependencies." + suffix))
+                    for name, suffix in (("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))}
+                dependency_command = graph_json(graph_read(dependency_refs["command"]))
+                graph_process_original(dependency_refs,
+                    {key: dependency_command[key] for key in ("argv", "cwd", "selected_environment")}, graph_read)
+                require(dependency_command["argv"] == [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                    "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")]
+                    and dependency_command["graph_job"]["run_id"] == os.environ["GITHUB_RUN_ID"]
+                    and dependency_command["graph_job"]["source_sha"] == source_sha,
+                    "Graph current custody dependency original")
+            else:
+                preparation_source = graph_source_observe(repo, source_sha, (
+                    "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
+                    "tooling/requirements/mlt-g2-custody.txt", "tooling/source_checkout_observation.py",
+                    "tooling/native_graph_negative_evidence.py", "tooling/tests/test_graph_negative_evidence.py",
+                    "tooling/ci_canvas_service.py", GRAPH_WORKFLOW))
+                graph_put_json(producer / "custody-preparation-source.original.json", preparation_source)
+                graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                    "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")],
+                    repo, producer, "graph-custody-dependencies", 90, clock)
             sys.path.insert(0, str(repo / "tooling"))
             import ci_private_evidence as seal
             require(Path(seal.__file__).resolve() == repo / "tooling/ci_private_evidence.py", "Graph existing sealer origin")
@@ -9187,6 +9413,14 @@ def graph_produce(repo, recipient):
             graph_command(env, [sys.executable, "-B", "-m", "unittest",
                 "tooling.tests.test_graph_negative_evidence", "tooling.tests.test_graph_continuation", "-q"], repo, producer,
                 "graph-negative-evidence-tests", 30, clock)
+            if reused:
+                graph_command(env, [sys.executable, "-B", "-m", "unittest",
+                    "tooling.tests.test_graph_build_reuse", "tooling.tests.test_graph_build_transfer", "-q"],
+                    repo, producer, "graph-original-build-input-tests", 30, clock)
+                # Read the original object without another checkout or target.
+                graph_command(env, ["git", "-C", str(repo), "fetch", "--no-tags", "--depth", "1",
+                    "https://github.com/seradotcom/motionwright", reuse.ORIGIN["source_sha"]],
+                    repo, producer, "graph-build-origin-object", 120, clock)
             # This is the same locked Studio/system preparation used by the
             # existing workflows. Every actual command now has owned originals.
             graph_command(env, [npm, "ci", "--no-audit", "--no-fund"], repo / "apps/studio", producer, "graph-npm", 300, clock)
@@ -9229,12 +9463,28 @@ def graph_produce(repo, recipient):
                 [node, "--experimental-strip-types", "--test", "--test-reporter=tap",
                 "tooling/graph-owner/staging_file_limits.test.mjs"], repo / "apps/studio", producer,
                 "graph-store-kernel-observation-tests", 30, clock)
+        build_reuse = build_reuse_ref = None
+        if reused:
+            prepared_view = graph_source_view(source_before)
+            prepared_source = {"repository_root": str(repo), "sha": source_sha, "tree": prepared_view["tree"], "sdk_root": str(sdk),
+                "sdk_sha": lock["revision"], "locks": {name: prepared_view["files"][name]["sha256"] for name in (
+                    "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json")},
+                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": 1}
+            copied, original_builds, original_contracts, build_reuse, build_reuse_ref = graph_reused_builds(
+                repo, sdk, producer, prepared_source, env, clock)
+            sdk_bins = {role: copied[role] for role in GRAPH_SDK_ROLES}
+            product_bins = {role: copied[role] for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES}
+            sdk_builds = {role: original_builds[role] for role in GRAPH_SDK_ROLES}
+            product_builds = {role: original_builds[role] for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES}
+            sdk_contracts = {role: original_contracts[role] for role in GRAPH_SDK_ROLES}
+            product_contracts = {role: original_contracts[role] for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES}
         with clock.phase("runtime"):
             runtime_process, runtime_command = graph_command(env, [str(runtime_python), "-I", "-B",
                 str(repo / "tooling/ci_canvas_service.py"), "graph-runtime", "--repo", str(repo), "--runtime", str(runtime), "--producer", str(producer)],
                 repo, producer, "graph-runtime-producer", 1140, clock)
-        sdk_bins, sdk_builds, sdk_contracts = graph_build_group(repo, sdk, producer, True, cargo, env, sdk_targets, clock)
-        product_bins, product_builds, product_contracts = graph_build_group(repo, sdk, producer, False, cargo, env, product_targets, clock)
+        if not reused:
+            sdk_bins, sdk_builds, sdk_contracts = graph_build_group(repo, sdk, producer, True, cargo, env, sdk_targets, clock)
+            product_bins, product_builds, product_contracts = graph_build_group(repo, sdk, producer, False, cargo, env, product_targets, clock)
         with clock.phase("producer-index"):
             preflight_env = dict(env, CARGO_TARGET_DIR=str(root / "t"))
             graph_producer_room(producer, 18 * GRAPH_BYTES + 65536, 9)
@@ -9276,6 +9526,9 @@ def graph_produce(repo, recipient):
                         and all(copies[0]["retained"][key] == binaries[role][key]
                                 for key in ("sha256", "size_bytes")),
                         "Graph offline runtime binary original missing")
+            if reused:
+                abi = graph_json(graph_read(build_reuse["abi_observation"], 2 * GRAPH_BYTES))
+                review_copies.append({"original": abi["loader"], "retained": abi["loader_retained"]})
             import native_graph_executable_inputs as native_inputs
             require(Path(native_inputs.__file__).resolve() == repo / "tooling/native_graph_executable_inputs.py",
                     "Graph native input producer source")
@@ -9320,6 +9573,15 @@ def graph_produce(repo, recipient):
                 "runtime_originals": {"producer": runtime_process, "inventory": inventory_ref, "receipt": graph_ref(runtime / "runtime.json"),
                     "intake": intake_ref, "profile_files": profiles}, "callback_roster": roster_ref, "native_enforcement": native_ref,
                 "native_executable_inputs": native_record_ref, "contract": contract}
+            if reused:
+                require(build_reuse["current"] == source, "Graph current source changed after binary reuse")
+                index["build_reuse"] = build_reuse_ref
+                contract["build_reuse"] = build_reuse
+                for role in GRAPH_RUST_ROLES:
+                    # These are current copy/verification writers. The actual
+                    # old Cargo writers remain bound by the fixed origin index.
+                    contract["writer_sources"][role] = ["tooling/ci_canvas_service.py", GRAPH_WORKFLOW,
+                        "tooling/native_graph_build_reuse.py", "tooling/native_graph_build_transfer.py"]
             encoded = (json.dumps(index, sort_keys=True, separators=(",", ":")) + "\n").encode()
             require(len(encoded) <= GRAPH_BYTES, "Graph exact private index bound")
             index_ref = graph_put(producer / "producer-index.original.json", encoded)
@@ -9432,7 +9694,7 @@ def graph_wait_for_external_review(repo):
 
 def graph_report(document, *, listing, expected=None, selected=None):
     selected = GRAPH_CASES if selected is None else selected
-    require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES), "Graph closed reporter selection")
+    require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES, GRAPH_FOUR_CONTINUATION_CASES), "Graph closed reporter selection")
     count = len(selected)
     filename = "semantic-graph-service.spec.ts"; titles = tuple(row[1] for row in selected)
     require(document.get("errors") == [], "Graph original report errors")
@@ -9529,9 +9791,9 @@ def graph_archive_bindings(root, inventory, source):
     require(receipt.get("status") == graph_closed_status(index) and receipt.get("formal_acceptance") is False
             and receipt.get("selection_plan") == graph_selection_plan(index)
             and receipt.get("source_before") == receipt.get("source_after") == source, "Graph whole-run source/closure")
-    if selected == GRAPH_CONTINUATION_CASES:
+    if selected != GRAPH_CASES:
         require(receipt.get("continuation") == index["contract"]["execution"]["continuation"]
-                and receipt.get("current_cases_closed") == 5
+                and receipt.get("current_cases_closed") == len(selected)
                 and receipt.get("original_six_case_contract_complete") is False,
                 "Graph continuation cannot close the historical sixth case")
     require(index["source"]["sha"] == os.environ.get("GITHUB_SHA") and index["source"]["run_id"] == os.environ.get("GITHUB_RUN_ID")
@@ -9564,7 +9826,7 @@ def graph_archive_bindings(root, inventory, source):
             expected=receipt["discovery"]["verified"] if name == "execution" else None, selected=selected)
         require(verified == observation["verified"], "Graph late original reporter changed")
     cases_root = Path(index["contract"]["execution"]["cases_root"])
-    require(cases_root == graph_cases_root(root, index["source"]["run_id"], selected == GRAPH_CONTINUATION_CASES),
+    require(cases_root == graph_cases_root(root, index["source"]["run_id"], selected != GRAPH_CASES),
             "Graph final cases root differs from original index")
     case_roots = graph_collected_case_roots(cases_root, selected)
     cases, allocated_bytes, allocated_members = [], 0, 0
@@ -9686,7 +9948,9 @@ def graph_archive_bindings(root, inventory, source):
     require(0 <= shared_members <= GRAPH_BUDGET["shared_members"] and 0 <= shared_bytes <= GRAPH_BUDGET["shared_bytes"], "Graph complete shared allocation")
     runtime_after = graph_runtime_unchanged(index, root / "e/graph-producer")
     require(receipt["runtime_after"] == runtime_after and receipt["runtime_before"] == runtime_after, "Graph complete runtime before/after")
-    return {"meaning": ("CLOSED_FIVE_CONTINUATION_ORIGINALS_HISTORICAL_SIXTH_UNKNOWN_NOT_G2_OR_A5"
+    return {"meaning": ("CLOSED_FOUR_CONTINUATION_ORIGINALS_TWO_HISTORICAL_CASES_UNKNOWN_NOT_G2_OR_A5"
+                        if selected == GRAPH_FOUR_CONTINUATION_CASES else
+                        "CLOSED_FIVE_CONTINUATION_ORIGINALS_HISTORICAL_SIXTH_UNKNOWN_NOT_G2_OR_A5"
                         if selected == GRAPH_CONTINUATION_CASES else "CLOSED_ORIGINAL_GRAPH_OBSERVATIONS_NOT_G2_OR_A5"),
             "producer_index": index_ref, "cases": cases,
             "producer": producer_state, "shared": {"members": shared_members, "bytes": shared_bytes}, "formal_acceptance": False}
@@ -9782,7 +10046,7 @@ def graph_observed_playwright_failure(repo, report_path, command, selected=None)
         value = graph_json(raw)
         require(type(value) is dict, "Graph diagnostic report object")
         selected = GRAPH_CASES if selected is None else selected
-        require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES), "Graph diagnostic selected roster")
+        require(selected in (GRAPH_CASES, GRAPH_CONTINUATION_CASES, GRAPH_FOUR_CONTINUATION_CASES), "Graph diagnostic selected roster")
         titles = {title: case for case, title, _ in selected}
         outcomes = {case: [] for case, _, _ in selected}
         counts, locations, codes, runtime_diagnostics = {}, [], [], []
@@ -9899,7 +10163,7 @@ def graph_run_cases(repo):
     require((output / "r74-wait-complete.original.json").is_file() and not (output / "receipt.json").exists(), "Graph real review wait absent or prior attempt")
     verified = graph_verify_producer_index(index_ref, selected[0][0])
     token = os.environ.get(GRAPH_TOKEN_ENV, ""); require(token, "Graph case independent metadata credential absent")
-    env = dict(os.environ, MOTIONWRIGHT_GRAPH_NATIVE_CASE=(GRAPH_CONTINUATION if selected == GRAPH_CONTINUATION_CASES else "all"), MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL=index_ref["path"],
+    env = dict(os.environ, MOTIONWRIGHT_GRAPH_NATIVE_CASE=(index["contract"]["execution"]["continuation"]["selector"] if selected != GRAPH_CASES else "all"), MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL=index_ref["path"],
         MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1", MOTIONWRIGHT_SERVICE_TEST_BIN=index["binaries"]["ordinary_service"]["path"],
         MOTIONWRIGHT_SERVICE_TEST_TMPDIR=str(root / "x"), SEMWRIGHT_CHECKOUT=index["source"]["sdk_root"],
         SEMWRIGHT_TEST_MANIM_RUNTIME=index["runtime"]["root"], SEMWRIGHT_TEST_PYTHON=index["binaries"]["python3"]["path"],
@@ -9965,9 +10229,9 @@ def graph_run_cases(repo):
             sdk_after = graph_source_observe(Path(index["source"]["sdk_root"]), index["source"]["sdk_sha"], tuple(index["contract"]["sdk_files"]))
             require(graph_source_view(sdk_after)["tree"] == index["contract"]["sdk_tree"], "Graph final SDK tree changed")
             report["status"] = closed_status
-            if selected == GRAPH_CONTINUATION_CASES:
+            if selected != GRAPH_CASES:
                 report["continuation"] = index["contract"]["execution"]["continuation"]
-                report["current_cases_closed"] = 5
+                report["current_cases_closed"] = len(selected)
                 report["original_six_case_contract_complete"] = False
             report["graph_deadline"] = {"original": clock.original_ref, "finished_mono_ns": time.monotonic_ns(),
                 "deadline_mono_ns": clock.deadline_ns, "unknown": False, "retry": "FORBIDDEN"}
@@ -9987,7 +10251,7 @@ def graph_run_cases(repo):
 
 def graph_public_evidence_namespaces(root, index):
     selected = graph_selected_cases(index)
-    expected = graph_cases_root(root, index["source"]["run_id"], selected == GRAPH_CONTINUATION_CASES)
+    expected = graph_cases_root(root, index["source"]["run_id"], selected != GRAPH_CASES)
     require(index["contract"]["execution"]["cases_root"] == str(expected),
             "Graph public upload HOLD: namespace differs from admitted index")
     return frozenset(("graph-producer", expected.name))
@@ -10003,6 +10267,25 @@ def graph_public_evidence_path(name, admitted_namespaces):
                 and (parts[1] in top_files or any(parts[1] == label + suffix
                     for label in ("graph-discovery", "graph-cases") for suffix in raw_suffixes)),
                 "Graph public upload HOLD: unselected original")
+
+
+def graph_public_tool_path(name, index):
+    """Include only the admissions actually possible in this closed route."""
+    parts = Path(name).parts
+    if parts[0] != "tools" or len(parts) == 1:
+        return
+    selector = index["contract"]["execution"].get("continuation", {}).get("selector", "none")
+    admitted = {"rustc.txt", "cargo.txt", "node.txt", "npm.txt", "python.txt",
+        "graph-run-response.original.json", "graph-run-response.transport.original.json",
+        "graph-jobs-response.original.json", "graph-jobs-response.transport.original.json",
+        "graph-deadline.original.json", "graph-review-upload-admission.original.json"}
+    if selector == GRAPH_FOUR_CONTINUATION:
+        admitted.add("graph-origin-recipient-upload-admission.original.json")
+    require(parts[1] == "graph-approval-observations" or len(parts) == 2 and (
+        parts[1] in admitted or any(parts[1] == "graph-phase-" + phase + suffix
+            for phase in graph_phase_plan(selector)
+            for suffix in (".intent.original.json", ".terminal.original.json"))),
+        "Graph public upload HOLD: unselected metadata original")
 
 
 def graph_public_upload_closure(root, clock, token):
@@ -10078,15 +10361,7 @@ def graph_public_upload_closure(root, clock, token):
         require(not any(part.casefold() in {"knowledge", ".git", ".aws", ".ssh", "private", "private-inputs"} for part in parts),
                 "Graph public upload HOLD: private input path")
         graph_public_evidence_path(name, admitted_namespaces)
-        if parts[0] == "tools" and len(parts) > 1:
-            require(parts[1] == "graph-approval-observations" or len(parts) == 2 and (
-                parts[1] in {"rustc.txt", "cargo.txt", "node.txt", "npm.txt", "python.txt",
-                    "graph-run-response.original.json", "graph-run-response.transport.original.json",
-                    "graph-jobs-response.original.json", "graph-jobs-response.transport.original.json",
-                    "graph-deadline.original.json", "graph-review-upload-admission.original.json"}
-                or any(parts[1] == "graph-phase-" + phase + suffix for phase in GRAPH_PHASES
-                       for suffix in (".intent.original.json", ".terminal.original.json"))),
-                "Graph public upload HOLD: unselected metadata original")
+        graph_public_tool_path(name, index)
         if row["kind"] != "file":
             continue
         path = root / name; previous = b""
@@ -10106,7 +10381,7 @@ def graph_public_upload_closure(root, clock, token):
 
 def graph_budget_main(arguments):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", type=Path, required=True); parser.add_argument("--phase", choices=("review-upload", "final-upload"), required=True)
+    parser.add_argument("--repo", type=Path, required=True); parser.add_argument("--phase", choices=("review-upload", "final-upload", "origin-recipient-upload"), required=True)
     args = parser.parse_args(arguments); repo, root = graph_layout(args.repo); clock = GraphOriginalClock(root)
     phase = args.phase
     data_closure = None
@@ -10114,7 +10389,7 @@ def graph_budget_main(arguments):
         token = os.environ.pop(GRAPH_TOKEN_ENV, "")
         require(token, "Graph final external credential exclusion requires its actual readonly job token")
         data_closure = graph_public_upload_closure(root, clock, token)
-    record = clock.admit(phase, GRAPH_PHASES[phase], reserve=clock.future(phase))
+    record = clock.admit(phase, clock.phases[phase], reserve=clock.future(phase))
     if data_closure is not None:
         record["data_closure"] = data_closure
     folder = root / "retained" if phase == "final-upload" and (root / "retained").exists() else root / "tools"
@@ -10217,7 +10492,7 @@ def graph_negative_originals(repo, recipient, *, progress=None):
         binding = {"context": context, "index_sha256": index_ref["sha256"],
             "receipt_sha256": receipt_ref["sha256"], "receipt_status": receipt["status"],
             "review_carrier_sha256": carrier_ref["sha256"], "recipient_spki_sha256": recipient["sha256"]}
-        if selected == GRAPH_CONTINUATION_CASES:
+        if selected != GRAPH_CASES:
             binding["continuation"] = index["contract"]["execution"]["continuation"]
         with clock.window(reserve=GRAPH_PHASES["final-upload"], cap=GRAPH_PHASES["archive"]):
             sealed = collector.seal_once(root,
@@ -10251,9 +10526,23 @@ def graph_negative_originals(repo, recipient, *, progress=None):
 
 def graph_main(arguments):
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("produce", "wait", "run", "negative"))
+    parser.add_argument("phase", choices=("produce", "wait", "run", "negative", "origin-key", "origin-inputs", "courier"))
     parser.add_argument("--repo", type=Path, required=True)
     args = parser.parse_args(arguments)
+    if args.phase == "courier":
+        repo = args.repo.resolve(strict=True)
+        require(repo.name == "g" and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent
+                and os.environ.get("GITHUB_JOB") == "graph-input-delivery", "Graph courier fixed checkout")
+        _, transfer = graph_input_modules(repo)
+        output = repo.parent / "v"
+        output.mkdir(mode=0o700, exist_ok=False)
+        artifact = transfer.create_courier_file(output / "graph-input-delivery", os.environ)
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+            stream.write("artifact=" + artifact + "\n")
+        print("OPAQUE_INPUT_TICKET_ONLY_NO_NATIVE_AUTHORITY")
+        return 0
+    if args.phase in ("origin-key", "origin-inputs"):
+        return graph_input_phase(args.repo, args.phase)
     if args.phase in ("produce", "negative"):
         recipient = {"spki_der_base64": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64", ""),
                      "sha256": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256", "")}
