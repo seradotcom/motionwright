@@ -61,6 +61,42 @@ class TransferTests(unittest.TestCase):
                 "uploader": {"id": 42}, "created_at": "2026-11-07T12:00:30Z",
                 "updated_at": "2026-11-07T12:00:31Z"}
 
+    def test_installation_metadata_never_claims_push_or_draft_visibility(self):
+        for permissions in (None, {}, {"push": False}, {"push": True}):
+            body = {"full_name": transfer.REPOSITORY, "id": 77}
+            if permissions is not None:
+                body["permissions"] = permissions
+            transfer.check_repository_identity(engine.json_bytes(body), 77)
+            self.assertIs(self.public["repository_push_permission_observed"], False)
+            self.assertIs(self.public["draft_visibility_already_observed"], False)
+        for body in ({"full_name": "other/repository", "id": 77},
+                     {"full_name": transfer.REPOSITORY, "id": 78},
+                     {"full_name": transfer.REPOSITORY, "id": True}):
+            with self.assertRaisesRegex(ValueError, "repository_identity"):
+                transfer.check_repository_identity(engine.json_bytes(body), 77)
+        for key in ("repository_push_permission_observed", "draft_visibility_already_observed"):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "recipient_exact_context"):
+                transfer.validate_recipient({**self.public, key: True}, CURRENT, "42", "b" * 64, clock=INSTANT)
+
+    def test_repository_negative_is_retained_before_any_recipient_key_creation(self):
+        raw = engine.json_bytes({"full_name": "other/repository", "id": 77, "permissions": {"push": False}})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scopes = {name: root / name for name in ("key", "public", "inputs")}
+            with mock.patch.dict(os.environ, GH_TOKEN="G0_UNIT_PLACEHOLDER", GITHUB_REPOSITORY_ID="77"), \
+                 mock.patch.object(transfer, "hosted_context", return_value=CURRENT), \
+                 mock.patch.object(outer, "load_deadline"), \
+                 mock.patch.object(transfer, "selected_source_gate", return_value=({}, "b" * 64)), \
+                 mock.patch.object(transfer, "paths", return_value=scopes), \
+                 mock.patch.object(transfer, "github_get", return_value=raw), \
+                 mock.patch.object(transfer.rsa, "generate_private_key") as generation:
+                with self.assertRaisesRegex(ValueError, "repository_identity"):
+                    transfer.create_recipient()
+                generation.assert_not_called()
+            self.assertEqual((scopes["public"] / "repository-preflight.original.json").read_bytes(), raw)
+            self.assertFalse(scopes["key"].exists())
+            self.assertFalse(scopes["inputs"].exists())
+
     def test_real_aead_roundtrip_keeps_exact_five_files_and_sixth_manifest(self):
         raw = transfer.make_plaintext(self.files, CURRENT, self.recipient["sha256"])
         envelope = engine.encrypt_snapshot(raw, self.recipient, CURRENT)

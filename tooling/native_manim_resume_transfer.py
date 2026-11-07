@@ -155,7 +155,7 @@ def recipient_record(recipient, current, actor_id, issued, expires, source_gate_
             "recipient": recipient, "issued_at": issued, "expires_at": expires,
             "source_gate_sha256": source_gate_sha256,
             "draft_discovery": "bounded-list-then-release-id",
-            "repository_push_permission_observed": True,
+            "repository_push_permission_observed": False,
             "draft_visibility_already_observed": False,
             "input_contract_sha256": sha(engine.json_bytes(manifest(current, recipient["sha256"]))),
             "private_key_retained_only_on_this_runner": True,
@@ -222,21 +222,31 @@ def inspect_plaintext(raw, current, recipient_sha256):
     return files, expected
 
 
+def check_repository_identity(raw, expected_id):
+    # Installation-token repository metadata does not establish draft visibility.
+    repository = engine.strict(raw)
+    require(type(repository) is dict and repository.get("full_name") == REPOSITORY
+            and type(expected_id) is int and expected_id > 0
+            and type(repository.get("id")) is int and repository["id"] == expected_id,
+            "resume_repository_identity_preflight_required")
+
+
 def create_recipient():
     from native_manim_editable_outer import load_deadline
     from native_manim_resume_focals import folder
     current, deadline = hosted_context(), load_deadline()
     deadline.admit_work()
     _, gate_sha = selected_source_gate(current)
-    repository_raw = github_get("/repos/" + REPOSITORY, token=os.environ["GH_TOKEN"], limit=128 * 1024)
-    repository = engine.strict(repository_raw)
-    require(repository.get("full_name") == REPOSITORY and repository.get("permissions", {}).get("push") is True,
-            "resume_draft_discovery_requires_observed_repository_push_permission")
     scopes = paths(current)
     require(all(not p.exists() and not p.is_symlink() for p in scopes.values()),
             "resume_key_or_input_owner_already_exists_no_retry")
-    for label in ("key", "public"):
-        scopes[label].mkdir(mode=0o700)
+    scopes["public"].mkdir(mode=0o700)
+    repository_raw = github_get("/repos/" + REPOSITORY, token=os.environ["GH_TOKEN"], limit=128 * 1024)
+    engine.new_bytes(scopes["public"] / "repository-preflight.original.json", repository_raw)
+    check_repository_identity(repository_raw, int(os.environ["GITHUB_REPOSITORY_ID"]))
+    # Source gate + context authorize only this public recipient. Receiving the
+    # exact draft and asset later is the observation that admits private inputs.
+    scopes["key"].mkdir(mode=0o700)
     private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                 serialization.NoEncryption())
@@ -251,9 +261,9 @@ def create_recipient():
     engine.new_json(scopes["public"] / "recipient.json", record)
     for name in selected_public_gate_files():
         engine.new_bytes(scopes["public"] / name, engine.regular(folder() / name, 2 * 1024 * 1024)[0])
-    engine.new_bytes(scopes["public"] / "repository-preflight.original.json", repository_raw)
     print(json.dumps({"status": "PUBLIC_RECIPIENT_READY", "context": current,
-                      "recipient_sha256": recipient["sha256"], "private_key_exposed": False}))
+                      "recipient_sha256": recipient["sha256"], "private_key_exposed": False,
+                      "repository_push_permission_observed": False, "draft_visibility_already_observed": False}))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

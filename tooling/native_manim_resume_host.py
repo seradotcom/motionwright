@@ -252,10 +252,8 @@ def prepare(args):
                 "recovery_runtime_host_observed_exact_retained_artifact")
     record = engine.strict(bounded(public / "recipient.json", 16384))
     recipient = transfer.validate_recipient(record, current, actor_id, gate_sha)
-    repo_preflight = engine.strict(bounded(public / "repository-preflight.original.json", 128 * 1024))
-    require(repo_preflight.get("full_name") == transfer.REPOSITORY
-            and repo_preflight.get("permissions", {}).get("push") is True,
-            "resume_host_runner_push_preflight_original")
+    transfer.check_repository_identity(bounded(public / "repository-preflight.original.json", 128 * 1024),
+                                       engine.strict(run_raw)["repository"]["id"])
     require(transfer.timestamp(engine.strict(run_raw)["created_at"]) <= transfer.timestamp(record["issued_at"]),
             "resume_host_recipient_predates_run")
     files = {}
