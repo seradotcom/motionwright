@@ -275,13 +275,28 @@ def seal_once(root, cases, binding, recipient, shared_budget, admission, *, case
         require(len(cases) == 6 and [directory for _case, directory in cases] == ["g" + str(i) for i in range(1, 7)]
                 and len({case for case, _directory in cases}) == 6 and "continuation" not in binding, "negative_case_roster")
     else:
-        expected = [("graph-flow", "g1"), ("graph-label-causal-diagram", "g2"),
-                    ("graph-label-system-flow", "g3"), ("graph-lost-reply", "g4"), ("graph-removal", "g5")]
-        run = binding["context"]["run_id"]
-        require(run != "42356210001" and re.fullmatch(r"[1-9][0-9]*", run)
-                and case_root == "e/gc" + run + "-1" and cases == expected
-                and binding.get("continuation", {}).get("selector") == "unstarted-after-42356210001"
-                and binding["continuation"].get("origin", {}).get("run_id") == "42356210001",
+        five = [("graph-flow", "g1"), ("graph-label-causal-diagram", "g2"),
+                ("graph-label-system-flow", "g3"), ("graph-lost-reply", "g4"), ("graph-removal", "g5")]
+        run, continuation = binding["context"]["run_id"], binding.get("continuation", {})
+        selector = continuation.get("selector")
+        if selector == "unstarted-after-42356210001":
+            expected, excluded_runs = five, ("42356210001",)
+            require(continuation.get("origin", {}).get("run_id") == "42356210001",
+                    "negative_continuation_case_roster")
+        else:
+            expected, excluded_runs = five[1:], ("42356210001", "42372165893")
+            require(selector == "unstarted-after-42372165893"
+                    and continuation.get("schema") == "motionwright.graph-unstarted-continuation/2"
+                    and continuation.get("origin", {}).get("run_id") == "42372165893"
+                    and [row.get("run_id") for row in continuation.get("prior_origins", [])] == ["42356210001"]
+                    and continuation.get("selected_cases") == ["graph-lost-reply", "graph-removal",
+                        "graph-label-causal-diagram", "graph-label-system-flow"]
+                    and continuation.get("required_current_cases") == 4
+                    and continuation.get("historical_cleanup_claimed") is False
+                    and continuation.get("historical_owner_credentials_or_tickets_reused") is False,
+                    "negative_continuation_case_roster")
+        require(run not in excluded_runs and re.fullmatch(r"[1-9][0-9]*", run)
+                and case_root == "e/gc" + run + "-1" and cases == expected,
                 "negative_continuation_case_roster")
     seal.validate_context(binding["context"])
     seal.public_key(recipient)

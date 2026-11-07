@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: authoring-drafts
-        options: [studio-service-68, phase1-service47, phase1-native-graph, phase1-native-gn1, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source, branch-combination]
+        options: [graph-input-delivery, studio-service-68, phase1-service47, phase1-native-graph, phase1-native-gn1, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source, branch-combination]
       graph_review_spki_der_base64:
         description: Existing external review recipient RSA3072 public SPKI, required only for phase1-native-graph
         type: string
@@ -20,15 +20,31 @@ on:
         type: string
         required: false
       graph_continuation:
-        description: Closed Graph case selection; continuation excludes the UNKNOWN source-review from run 42356210001
+        description: Closed Graph continuation; four-case route preserves source-review and flow as UNKNOWN
         type: choice
-        options: [none, unstarted-after-42356210001]
+        options: [none, unstarted-after-42356210001, unstarted-after-42372165893]
         default: none
+        required: false
+      graph_build_target_run:
+        description: Original Graph4 run for one opaque build-input ticket; courier only
+        type: string
+        required: false
+      graph_build_recipient_sha256:
+        description: SHA256 of the original runner ephemeral SPKI; courier only
+        type: string
+        required: false
+      graph_build_ticket_sha256:
+        description: SHA256 of the opaque encrypted read ticket; courier only
+        type: string
+        required: false
+      graph_build_ticket:
+        description: Base64 encrypted read ticket; no URL or credential in plaintext
+        type: string
         required: false
 permissions:
   contents: read
 concurrency:
-  group: studio-service-${{ github.ref }}
+  group: ${{ inputs.selection == 'graph-input-delivery' && format('graph-input-courier-{0}', github.run_id) || format('studio-service-{0}', github.ref) }}
   cancel-in-progress: false
 env:
   PYTHONDONTWRITEBYTECODE: '1'
@@ -37,7 +53,39 @@ defaults:
     shell: bash
     working-directory: g
 jobs:
+  graph-input-delivery:
+    name: Opaque Graph build-input ticket only
+    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'graph-input-delivery'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: g
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind the opaque ticket to its original source and recipient
+        id: ticket
+        timeout-minutes: 1
+        env:
+          GRAPH_BUILD_TARGET_RUN: ${{ inputs.graph_build_target_run }}
+          GRAPH_BUILD_RECIPIENT_SHA256: ${{ inputs.graph_build_recipient_sha256 }}
+          GRAPH_BUILD_TICKET_SHA256: ${{ inputs.graph_build_ticket_sha256 }}
+          GRAPH_BUILD_TICKET: ${{ inputs.graph_build_ticket }}
+        run: python3 -I -B tooling/ci_canvas_service.py graph courier --repo .
+      - name: Deliver the one ciphertext ticket
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.ticket.outputs.artifact }}
+          path: v/graph-input-delivery/read-ticket.mwseal
+          if-no-files-found: error
+          retention-days: 14
   g0:
+    if: github.event_name != 'workflow_dispatch' || inputs.selection != 'graph-input-delivery'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -60,7 +108,7 @@ jobs:
           set -euo pipefail
           python -B tooling/source_policy.py
           # Development integration uses affected source contracts; F retains full G0 assessment.
-          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" && ( "$GITHUB_REF" != "refs/heads/fix/native-production-causal-20261106-a4" || ( "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" ) ) ) || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" ) ]]; then
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( "$GITHUB_REF" != "refs/heads/integrate/phase1-final-composition-20261027" && ( ( "$GITHUB_REF" != "refs/heads/fix/native-production-causal-20261106-a4" && ( "$GITHUB_REF" != "refs/heads/fix/native-graph-four-original-inputs-20261107-a4" || "$REQUESTED_G0_SELECTION" != "phase1-native-graph" ) ) || ( "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" ) ) ) || ( "$REQUESTED_G0_SELECTION" != "phase1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" ) ]]; then
             python -B tooling/acceptance_policy.py
             python -B tooling/creative_status_policy.py
           fi
@@ -75,15 +123,20 @@ jobs:
           set -euo pipefail
           case "$REQUESTED_GRAPH_CONTINUATION" in
             none) ;;
-            unstarted-after-42356210001) test "$REQUESTED_G0_SELECTION" = phase1-native-graph ;;
+            unstarted-after-42356210001|unstarted-after-42372165893) test "$REQUESTED_G0_SELECTION" = phase1-native-graph ;;
             *) exit 1 ;;
           esac
           case "${GITHUB_EVENT_NAME}:${GITHUB_REF}:${REQUESTED_G0_SELECTION}" in
             workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-service47)
               python -B -m unittest tooling.tests.test_ci_canvas_service.Phase1Service47Tests tooling.tests.test_ci_canvas_service.Phase1Service47DeadlineTests -q
               ;;
-            workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-graph|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
+            workflow_dispatch:refs/heads/fix/native-graph-four-original-inputs-20261107-a4:phase1-native-graph|workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-graph|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
               python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests tooling.tests.test_graph_isolated_native_inputs tooling.tests.test_graph_executable_inputs tooling.tests.test_graph_staging_file_limits tooling.tests.test_graph_continuation -q
+              if [[ "$REQUESTED_GRAPH_CONTINUATION" = unstarted-after-42372165893 ]]; then
+                # Stdlib source/IO controls here; the same producer's locked
+                # custody environment runs the real AEAD round trips before R74.
+                python -B -m unittest tooling.tests.test_graph_build_reuse tooling.tests.test_graph_build_transfer.TransferContractTests -q
+              fi
               ;;
             workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-gn1|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)
               # Source/inert GN1 G0 only: Native effects require the separate
@@ -308,7 +361,7 @@ jobs:
           retention-days: 14
   real-service:
     name: ${{ contains(fromJSON('["browser-contracts","creative-production-browser","review-browser","workflow-preview-browser"]'), matrix.selection) && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ matrix.selection }}
-    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend' && inputs.selection != 'phase1-native-gn1'
+    if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend' && inputs.selection != 'phase1-native-gn1' && inputs.selection != 'graph-input-delivery'
     needs: g0
     # Metadata read is job-wide; only the conditional Service47 guard receives its token.
     permissions:
@@ -494,7 +547,7 @@ jobs:
           signal.alarm(60)
           begin = time.monotonic_ns()
           continuation = os.environ.get("MOTIONWRIGHT_GRAPH_CONTINUATION", "none")
-          check(continuation in ("none", "unstarted-after-42356210001"), "closed continuation selector required")
+          check(continuation in ("none", "unstarted-after-42356210001", "unstarted-after-42372165893"), "closed continuation selector required")
           binding = {key: os.environ.get(key) for key in (
               "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA",
               "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "RUNNER_NAME")}
@@ -581,12 +634,17 @@ jobs:
                 and job.get("head_sha") == binding["GITHUB_SHA"] and job.get("status") == "in_progress"
                 and job.get("conclusion") is None and job.get("runner_name") == binding["RUNNER_NAME"]
                 and type(job.get("id")) is int and job["id"] > 0, "job/runner original differs")
-          if continuation == "unstarted-after-42356210001":
+          if continuation in ("unstarted-after-42356210001", "unstarted-after-42372165893"):
               check(binding["GITHUB_RUN_ID"] != "42356210001" and job["id"] != 128354875162
                     and type(job.get("runner_id")) is int and job["runner_id"] > 0
                     and job["runner_id"] != 1000094142
                     and job["runner_name"] != "GitHub Actions 1000094142",
                     "continuation requires a different authenticated runner")
+          if continuation == "unstarted-after-42372165893":
+              check(binding["GITHUB_RUN_ID"] != "42372165893" and job["id"] != 128402490846
+                    and job["runner_id"] != 1000094153
+                    and job["runner_name"] != "GitHub Actions 1000094153",
+                    "four-case continuation requires a new runner after both UNKNOWN owners")
           server = parsedate_to_datetime(date)
           started = datetime.fromisoformat(job.get("started_at", "").replace("Z", "+00:00"))
           check(server.tzinfo is not None and started.tzinfo is not None
@@ -598,6 +656,11 @@ jobs:
           phases = {"prepare": 1200, "runtime": 1200, "sdk-build": 1800, "product-build": 1800,
                     "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
                     "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300}
+          if continuation == "unstarted-after-42372165893":
+              phases = {"origin-key": 120, "origin-recipient-upload": 120, "origin-inputs": 900, "prepare": 1200,
+                        "origin-build-intake": 300, "runtime": 1200,
+                        "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
+                        "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300}
           anchor_mono, anchor_wall = time.monotonic_ns(), time.time_ns() // 1000000
           original = {"schema": "motionwright.graph-job-deadline/1", "binding": binding,
               "graph_continuation_selector": continuation,
@@ -725,7 +788,31 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
-      - name: Produce the original Graph builds and private R74 review carrier
+      - name: Create a fresh input-only recipient for the retained Graph builds
+        id: graph-build-recipient
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_continuation == 'unstarted-after-42372165893'
+        timeout-minutes: 2
+        run: python -I -B tooling/ci_canvas_service.py graph origin-key --repo .
+      - name: Admit the bounded public recipient upload
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_continuation == 'unstarted-after-42372165893'
+        timeout-minutes: 1
+        run: python -I -B tooling/ci_canvas_service.py graph-budget --repo . --phase origin-recipient-upload
+      - name: Publish the public ephemeral recipient and original input context
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_continuation == 'unstarted-after-42372165893'
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.graph-build-recipient.outputs.artifact }}
+          path: v/graph-build-inputs-public
+          if-no-files-found: error
+          retention-days: 14
+      - name: Receive one encrypted original build capsule with read-only Actions permission
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_continuation == 'unstarted-after-42372165893'
+        timeout-minutes: 15
+        env:
+          MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
+        run: python -I -B tooling/ci_canvas_service.py graph origin-inputs --repo .
+      - name: Prepare the selected Graph binaries and private R74 review carrier
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 112
         env:

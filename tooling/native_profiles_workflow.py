@@ -225,7 +225,7 @@ def source_state(current, request):
 def clean_environment(current, *, preparation=False):
     # Credentials are added only to the two original runtime-intake API stages.
     allowed = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME",
-               "LD_LIBRARY_PATH", "PKG_CONFIG_PATH") if preparation else ("PATH", "LANG", "LC_ALL")
+               "LD_LIBRARY_PATH", "PKG_CONFIG_PATH", "GITHUB_EVENT_PATH") if preparation else ("PATH", "LANG", "LC_ALL")
     value = {key: os.environ[key] for key in allowed if key in os.environ}
     need(value.get("PATH") and not any(key.startswith(("GIT_", "GH_", "ACTIONS_")) for key in value),
          "profiles-private-child-environment")

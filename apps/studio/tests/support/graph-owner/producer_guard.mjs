@@ -124,6 +124,7 @@ export const AUTHORITY_SOURCE_PATHS = Object.freeze([
   'tooling/native_graph_browser_owner.py', 'tooling/native_host_shared_state.py',
   'tooling/native_graph_executable_inputs.py', 'tooling/ci_graph_dev_native_startup.py',
   'tooling/native_manim_graph_runtime_intake.py', 'tooling/ci_canvas_service.py',
+  'tooling/native_graph_build_reuse.py', 'tooling/native_graph_build_transfer.py',
   'tooling/ci_private_evidence.py', 'tooling/requirements/mlt-g2-custody.txt',
   '.github/workflows/studio-service-verification.yml',
   'apps/studio/tests/support/nativeGraphCase.ts',
@@ -476,6 +477,206 @@ function nativeExecutableInputs(index, reviewed, originals) {
   return { recheck: check, staging: record.daemon_staging };
 }
 
+const GRAPH_REUSE_NONCOMPILED_PATHS = new Set([
+  ".github/workflows/native-manim-e2e.yml",
+  ".github/workflows/studio-service-verification.yml",
+  "apps/studio/tests/semantic-graph-service.spec.ts",
+  "apps/studio/tests/support/graph-owner/producer_guard.mjs",
+  "apps/studio/tests/support/nativeGraphCase.ts",
+  "apps/studio/tooling/graph-owner/continuation.test.mjs",
+  "crates/native/examples/native-manim-e2e.rs",
+  "crates/native/examples/native_manim_editable/recovery.rs",
+  "crates/native/examples/native_manim_editable/reference.rs",
+  "crates/native/examples/native_manim_editable/source_cycle.rs",
+  "crates/native/tests/fixtures/manim-n1-receipt-lifecycle-42369864661.json",
+  "tooling/ci_canvas_service.py",
+  "tooling/native_graph_build_reuse.py",
+  "tooling/native_graph_build_transfer.py",
+  "tooling/native_graph_negative_evidence.py",
+  "tooling/native_manim_e2e.py",
+  "tooling/native_manim_editable_outer.py",
+  "tooling/native_manim_frozen_runtime.py",
+  "tooling/native_manim_frozen_runtime_host.py",
+  "tooling/native_manim_frozen_runtime_restore.py",
+  "tooling/native_manim_recovery_custody.py",
+  "tooling/native_manim_recovery_cycle.py",
+  "tooling/native_manim_recovery_gate.py",
+  "tooling/native_manim_recovery_lineage.py",
+  "tooling/native_manim_resume_custody.py",
+  "tooling/native_manim_resume_cycle.py",
+  "tooling/native_manim_resume_focals.py",
+  "tooling/native_manim_resume_host.py",
+  "tooling/native_manim_resume_lineage.py",
+  "tooling/native_manim_resume_pixels.py",
+  "tooling/native_manim_resume_resources.py",
+  "tooling/native_manim_resume_runtime.py",
+  "tooling/native_manim_resume_transfer.py",
+  "tooling/native_manim_retained_reference.py",
+  "tooling/requirements/manim-frozen-runtime-42361964881-artifact.json",
+  "tooling/requirements/manim-frozen-runtime-42361964881-receipt.json",
+  "tooling/requirements/manim-retained-reference-42369864661.json",
+  "tooling/requirements/manim-runtime-observed-42357390508.json",
+  "tooling/tests/fixtures/manim-recovery-42365799758.stdout.txt",
+  "tooling/tests/fixtures/manim-sdk-guard-42365799758.json",
+  "tooling/tests/test_ci_canvas_service.py",
+  "tooling/tests/test_ci_manim_source_selection.py",
+  "tooling/tests/test_graph_build_reuse.py",
+  "tooling/tests/test_graph_build_transfer.py",
+  "tooling/tests/test_graph_continuation.py",
+  "tooling/tests/test_graph_negative_evidence.py",
+  "tooling/tests/test_native_manim_frozen_runtime.py",
+  "tooling/tests/test_native_manim_recovery.py",
+  "tooling/tests/test_native_manim_recovery_lineage.py",
+  "tooling/tests/test_native_manim_resume.py",
+  "tooling/tests/test_native_manim_retained_reference.py",
+  "tooling/tests/test_native_manim_runtime_restore.py"
+]);
+const GRAPH_REUSE_UNCOMPILED_MANIM = new Set([
+  "crates/native/examples/native-manim-e2e.rs",
+  "crates/native/examples/native_manim_editable/recovery.rs",
+  "crates/native/examples/native_manim_editable/reference.rs",
+  "crates/native/examples/native_manim_editable/source_cycle.rs",
+  "crates/native/tests/fixtures/manim-n1-receipt-lifecycle-42369864661.json"
+]);
+
+function verifiedOriginalBuildReuse(index, reviewed, originals) {
+  need(Object.hasOwn(index, 'build_reuse') && reviewed.execution.continuation?.selector === GRAPH_FOUR_CONTINUATION,
+    'J1_REUSE_CLOSED_FOUR_CASE_SELECTOR');
+  const record = originals.json(index.build_reuse, 2 * LIMIT);
+  same(record, reviewed.build_reuse, 'J1_REUSE_REVIEWED_RECORD');
+  exact(record, ['schema', 'origin', 'origin_tree', 'origin_sdk_tree', 'origin_index', 'capsule',
+    'manifest_sha256', 'origin_root', 'source_comparison', 'current', 'roles', 'binaries', 'retained_builds',
+    'new_builds', 'current_rust_kernel_test_execution_claimed', 'historical_owner_credentials_or_tickets_reused',
+    'native_authority', 'abi_observation', 'temporary_inputs_released', 'source_comparison_processes'], 'J1_REUSE_FIELDS');
+  const origin = { source_sha: '52d149ea0dd5550fbded28ad0ea337353f826210',
+    semwright_sha: 'acc0a089e2f0e3e9936632fb2a4aa0c2fab56199', run_id: '42356210001', run_attempt: '1' };
+  const originTree = 'cece8cde18950b2cb7d15ce8c3eeec179e72b905', sdkTree = '39cd9576c4a3213b186c046e146acbbab4fa2e14';
+  const indexSha = '0cd8c7286997286101fbdf09f3970b99e9a3ed1426ca5b40f0384bf4382c1641';
+  const manifestSha = 'ede134824cf9318c5efe6bce1c2100b16f4150be51071cad7f930943804664b8';
+  const roles = ['semwright', 'semwrightd', 'semwright_sandbox', 'native_provider', 'shared_state_actor',
+    'manim_runner', 'ordinary_service', 'native_graph_session'];
+  same(record.origin, origin, 'J1_REUSE_ORIGIN_CONTEXT');
+  same(record.current, index.source, 'J1_REUSE_CURRENT_CONTEXT');
+  same(record.roles, roles, 'J1_REUSE_EIGHT_ORIGINAL_ROLES');
+  same(record.capsule, { bytes: 90163200, sha256: 'a93d94623b2ec11298476bc529c714e8e239fa4bfb2701a9e7f9cb771f10f072' }, 'J1_REUSE_CAPSULE');
+  need(record.schema === 'motionwright.graph.original-build-reuse/1' && record.origin_tree === originTree
+    && record.origin_sdk_tree === sdkTree && index.source.sdk_sha === origin.semwright_sha,
+    'J1_REUSE_SCHEMA_CONTEXT');
+  need(record.new_builds === 0 && record.current_rust_kernel_test_execution_claimed === false
+    && record.historical_owner_credentials_or_tickets_reused === false && record.native_authority === false,
+    'J1_REUSE_NOT_BUILD_OR_AUTHORITY');
+  const root = path.join(reviewed.execution.producer_root, 'origin-build52');
+  need(record.origin_root === root && record.manifest_sha256 === manifestSha
+    && record.origin_index.path === path.join(root, 'producer/producer-index.original.json')
+    && record.origin_index.sha256 === indexSha, 'J1_REUSE_ORIGIN_NAMESPACE');
+  const old = originals.json(record.origin_index, LIMIT);
+  need(old.source.sha === origin.source_sha && old.source.tree === originTree && old.source.sdk_sha === origin.semwright_sha
+    && old.source.run_id === origin.run_id && old.source.run_attempt === 1 && old.contract.sdk_tree === sdkTree,
+    'J1_REUSE_ORIGINAL_INDEX_SOURCE');
+  // The whole capsule manifest is fixed by a previously verified original;
+  // its selected references are not a complete current producer or owner.
+  const manifest = originals.json({ path: path.join(root, 'manifest.json'), sha256: manifestSha, size_bytes: 25905 }, 2 * LIMIT);
+  need(manifest.members.length === 123 && manifest.members.reduce((sum, row) => sum + row.bytes, 0) === 90031737,
+    'J1_REUSE_SELECTED_ROSTER');
+  const members = new Map(manifest.members.map(row => [row.path, row]));
+  need(members.size === 123, 'J1_REUSE_SELECTED_DUPLICATE');
+  const selectedRef = name => {
+    relative(name); const row = members.get(name); need(row, 'J1_REUSE_SELECTED_ORIGINAL_MISSING');
+    return { path: path.join(root, ...name.split('/')), sha256: row.sha256, size_bytes: row.bytes };
+  };
+  const request = originals.json(selectedRef('producer/review-request.original.json'), 2 * LIMIT);
+  same(request.source, old.source, 'J1_REUSE_ORIGINAL_REQUEST');
+  need(request.index.sha256 === indexSha, 'J1_REUSE_ORIGINAL_REQUEST_INDEX');
+  const aliases = new Map();
+  for (const row of request.outside_original_copies) {
+    need(!aliases.has(row.original.path), 'J1_REUSE_ORIGINAL_ALIAS_DUPLICATE');
+    same(oldDigest(row.original), oldDigest(row.retained), 'J1_REUSE_ORIGINAL_ALIAS_DIGEST');
+    aliases.set(row.original.path, row.retained);
+  }
+  const remap = input => {
+    const ref = aliases.get(input.path) ?? input;
+    need(ref.path.startsWith(old.contract.execution.producer_root + '/'), 'J1_REUSE_FOREIGN_ORIGINAL_PATH');
+    const name = 'producer/' + relative(ref.path.slice(old.contract.execution.producer_root.length + 1));
+    const selected = selectedRef(name);
+    same(oldDigest(selected), oldDigest(input), 'J1_REUSE_SELECTED_REFERENCE_CHANGED'); return selected;
+  };
+  same(record.retained_builds, index.builds, 'J1_REUSE_RETAINED_BUILDS');
+  same(reviewed.builds, old.contract.builds, 'J1_REUSE_BUILD_COMMANDS_NOT_REWRITTEN');
+  ownMap(record.binaries, roles, 'J1_REUSE_BINARY_ROSTER');
+  for (const role of roles) {
+    same(record.binaries[role], index.binaries[role], 'J1_REUSE_CURRENT_COPY');
+    same(oldDigest(index.binaries[role]), oldDigest(old.binaries[role]), 'J1_REUSE_ORIGINAL_ELF_DIGEST');
+    same(index.builds[role], { process: Object.fromEntries(['command', 'stdout', 'stderr']
+      .map(name => [name, remap(old.builds[role].process[name])])), retained_binary: remap(old.builds[role].retained_binary) },
+      'J1_REUSE_ORIGINAL_REFERENCE_REMAP');
+  }
+  const oldDeadline = originals.json(remap(old.contract.execution.deadline_original), 8 * LIMIT + 65536);
+  need(oldDeadline.binding.GITHUB_SHA === origin.source_sha && oldDeadline.binding.GITHUB_RUN_ID === origin.run_id
+    && oldDeadline.binding.GITHUB_RUN_ATTEMPT === '1' && oldDeadline.job_seconds === 10800, 'J1_REUSE_ORIGINAL_CLOCK');
+  const oldJob = oldDeadline.jobs.jobs.filter(row => row.id === old.contract.execution.job_id
+    && row.name === 'Real SQLite and Studio / phase1-native-graph');
+  need(oldJob.length === 1, 'J1_REUSE_ORIGINAL_JOB');
+  for (const role of roles) {
+    const cmd = originals.json(index.builds[role].process.command);
+    same(cmd.graph_job, { source_sha: origin.source_sha, run_id: origin.run_id, run_attempt: 1,
+      job_id: old.contract.execution.job_id, deadline_original: old.contract.execution.deadline_original }, 'J1_REUSE_ORIGINAL_BUILD_CLOCK');
+    need(cmd.deadline_admission.deadline_mono_ns === oldDeadline.deadline_mono_ns
+      && time(cmd.started_utc) >= time(oldJob[0].started_at) && time(cmd.finished_utc) >= time(cmd.started_utc)
+      && time(cmd.finished_utc) < time(oldJob[0].started_at) + 10800000, 'J1_REUSE_ORIGINAL_BUILD_TIME');
+  }
+  const commands = [ ['rev-parse', 'HEAD'], ['rev-parse', origin.source_sha + '^{tree}'],
+    ['rev-parse', index.source.sha + '^{tree}'], ['diff', '--name-only', '--no-renames', '-z', origin.source_sha, index.source.sha],
+    ['diff', '--name-only', 'HEAD', '--'] ];
+  need(Array.isArray(record.source_comparison_processes) && record.source_comparison_processes.length === 5,
+    'J1_REUSE_MATERIAL_PROCESS_ROSTER');
+  const currentProcesses = [], outputs = [];
+  for (let i = 0; i < commands.length; i++) {
+    const refs = record.source_comparison_processes[i], command = originals.json(refs.command);
+    const checked = processOriginal(refs, { argv: ['git', '-C', index.source.repository_root, ...commands[i]],
+      cwd: index.source.repository_root, selected_environment: command.selected_environment }, originals);
+    need(checked.stdout.length <= 2 * LIMIT, 'J1_REUSE_GIT_OUTPUT_BOUND');
+    outputs.push(checked.stdout); currentProcesses.push(refs);
+  }
+  need(outputs[0].toString('utf8').trim() === index.source.sha && outputs[1].toString('utf8').trim() === originTree
+    && outputs[2].toString('utf8').trim() === index.source.tree && outputs[4].length === 0, 'J1_REUSE_GIT_TREES_CLEAN');
+  const changed = outputs[3].length ? new TextDecoder('utf-8', { fatal: true }).decode(outputs[3]).replace(/\0$/, '').split('\0').sort() : [];
+  need(changed.length === new Set(changed).size && changed.every(name => GRAPH_REUSE_NONCOMPILED_PATHS.has(name)),
+    'J1_REUSE_CHANGED_COMPILED_INPUT_REBUILD_ONLY_AFFECTED_TARGET');
+  same(record.source_comparison, { schema: 'motionwright.graph.compiled-material-comparison/1',
+    origin_source: origin.source_sha, origin_tree: originTree, current_source: index.source.sha, current_tree: index.source.tree,
+    unchanged_tracked_blobs_except: changed, excluded_uncompiled_paths: changed.filter(name => GRAPH_REUSE_UNCOMPILED_MANIM.has(name)),
+    selected_roles: roles, sdk_sha: origin.semwright_sha, sdk_tree: sdkTree, all_other_tracked_blobs_identical: true,
+    new_builds: 0, native_authority: false }, 'J1_REUSE_ACTUAL_GIT_COMPARISON');
+  const release = originals.json(record.temporary_inputs_released, 2 * LIMIT);
+  need(release.status === 'TWO_VERIFIED_TEMPORARY_COPIES_ABSENT' && release.retained_root === root
+    && release.retained_members === 124 && release.retained_originals_preserved === true
+    && ['host_original_or_draft_deleted', 'negative_or_owner_original_deleted', 'automatic_retry', 'native_authority']
+      .every(name => release[name] === false), 'J1_REUSE_RELEASE_SCOPE');
+  same(release.source_comparison, record.source_comparison, 'J1_REUSE_RELEASE_MATERIAL');
+  same(release.released, ['graph52-build-inputs.mwseal', 'graph52-build-inputs.original.tar'], 'J1_REUSE_TWO_TEMPORARY_COPIES');
+  same(release.current, { source_sha: index.source.sha, semwright_sha: index.source.sdk_sha,
+    run_id: index.source.run_id, run_attempt: '1' }, 'J1_REUSE_RELEASE_CONTEXT');
+  const abi = originals.json(record.abi_observation, 2 * LIMIT);
+  exact(abi, ['schema', 'current', 'binaries', 'interpreter', 'loader', 'loader_retained', 'processes',
+    'new_builds', 'native_calls', 'owner_authority'], 'J1_REUSE_ABI_FIELDS');
+  need(abi.schema === 'motionwright.graph.reused-elf-current-loader-observation/1'
+    && abi.interpreter === '/lib64/ld-linux-x86-64.so.2' && abi.new_builds === 0
+    && abi.native_calls === 0 && abi.owner_authority === false, 'J1_REUSE_CURRENT_ABI_ONLY');
+  same(abi.current, index.source, 'J1_REUSE_ABI_CURRENT'); same(abi.binaries, record.binaries, 'J1_REUSE_ABI_BINARIES');
+  same(oldDigest(abi.loader), oldDigest(abi.loader_retained), 'J1_REUSE_LOADER_COPY');
+  originals.read(abi.loader, 4 * LIMIT); originals.read(abi.loader_retained, 4 * LIMIT);
+  ownMap(abi.processes, roles, 'J1_REUSE_ABI_PROCESS_ROSTER');
+  for (const role of roles) {
+    const refs = abi.processes[role], command = originals.json(refs.command);
+    const checked = processOriginal(refs, { argv: [abi.loader.path, '--list', index.binaries[role].path],
+      cwd: index.source.repository_root, selected_environment: command.selected_environment }, originals);
+    need(checked.stdout.length > 0 && !checked.stdout.includes(Buffer.from('not found'))
+      && checked.stdout.includes(Buffer.from('ld-linux-x86-64.so.2')), 'J1_REUSE_CURRENT_LOADER_RESOLUTION');
+    currentProcesses.push(refs);
+  }
+  return { currentProcesses };
+}
+
 function verifyIndex(indexPath, reviewed, caseId) {
   need(reviewed && DIGEST.test(reviewed.index_sha256), 'J1_REVIEWED_INDEX_PIN_REQUIRED');
   const initial = stableRead(indexPath, LIMIT);
@@ -484,7 +685,7 @@ function verifyIndex(indexPath, reviewed, caseId) {
   const index = originals.json(initial.ref);
   exact(index, ['schema', 'source', 'binaries', 'runtime', 'source_original', 'sdk_original',
     'builds', 'ordinary_preflight', 'runtime_originals', 'callback_roster', 'native_enforcement',
-    'native_executable_inputs', 'contract'], 'J1_INDEX_FIELDS');
+    'native_executable_inputs', 'contract', ...(Object.hasOwn(index, 'build_reuse') ? ['build_reuse'] : [])], 'J1_INDEX_FIELDS');
   same(index.contract, reviewedContract(reviewed), 'J1_REVIEWED_FIELDS_NOT_IN_INDEX');
   need(index.schema === PRODUCER_INDEX_SCHEMA, 'J1_INDEX_SCHEMA');
   schema(index.source, SPEC_SCHEMA.properties.source); schema(index.binaries, SPEC_SCHEMA.properties.binaries);
@@ -534,6 +735,9 @@ function verifyIndex(indexPath, reviewed, caseId) {
     const selected = inspectGraphCaseSelection(index, originals.json(reviewed.execution.deadline_original, 8 * LIMIT + 65536));
     need(selected.includes(caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
   }
+  need(Object.hasOwn(index, 'build_reuse') === (reviewed.execution.continuation?.selector === GRAPH_FOUR_CONTINUATION),
+    'J1_REUSE_EXACT_FOUR_CASE_PATH');
+  const reused = Object.hasOwn(index, 'build_reuse') ? verifiedOriginalBuildReuse(index, reviewed, originals) : null;
   const builds = RUST_ROLES.map(role => cargoBuild(role, index.builds[role], reviewed.builds[role], index, reviewed, originals));
   ordinarySdkPreflight(index.ordinary_preflight, reviewed.ordinary_preflight, index, originals);
   runtimeOriginals(index, reviewed, originals);
@@ -544,7 +748,7 @@ function verifyIndex(indexPath, reviewed, caseId) {
   return { admission: { source: index.source, binaries: index.binaries, runtime: index.runtime,
     ordinaryService: index.binaries.ordinary_service, nativeService: index.binaries.native_graph_session,
     execution: reviewed.execution, daemon_staging: nativeInputs.staging,
-    sdk_ticket_prewrite: plan, producer_originals: { index: initial.ref, builds } }, originals };
+    sdk_ticket_prewrite: plan, producer_originals: { index: initial.ref, builds } }, originals, reuseProcesses: reused?.currentProcesses ?? null };
 }
 
 /** Fixtures may supply a review object to exercise semantic checks. This export
@@ -583,6 +787,19 @@ export const GRAPH_CONTINUATION = 'unstarted-after-42356210001';
 export const GRAPH_CONTINUATION_CASES = Object.freeze([...EXPECTED_CASES].filter(value => value !== 'graph-source-review'));
 export const GRAPH_CONTINUATION_ORIGIN = freeze({"run_id":"42356210001","run_attempt":1,"source_sha":"52d149ea0dd5550fbded28ad0ea337353f826210","producer_index_sha256":"0cd8c7286997286101fbdf09f3970b99e9a3ed1426ca5b40f0384bf4382c1641","job_id":128354875162,"runner_id":1000094142,"runner_name":"GitHub Actions 1000094142","jobs_response_sha256":"b1932107c337883ba1c1467149f98eaf3dec6dd925d2f45bbcf2036b52aef407","job_log_sha256":"cc95d11f8b141585fdadc10ae7f7c019909784cb38e562e654e16b648caac19d","cases_root":"/home/runner/work/motionwright/motionwright/v/e/graph-cases","observed_counts":{"expected":0,"unexpected":1,"skipped":5,"flaky":0},"excluded_case":{"case_id":"graph-source-review","execution_status":"failed","effects":"UNKNOWN","owner_quiescence":"UNKNOWN","repeat":"FORBIDDEN"}});
 
+export const GRAPH_FOUR_CONTINUATION = 'unstarted-after-42372165893';
+export const GRAPH_FOUR_CONTINUATION_CASES = Object.freeze([...EXPECTED_CASES]
+  .filter(value => value !== 'graph-source-review' && value !== 'graph-flow'));
+export const GRAPH_FOUR_CONTINUATION_ORIGIN = freeze({"run_id":"42372165893","run_attempt":1,"source_sha":"5f61b059f9b8ccc0ce4acf555c2fe0bf6fced89a","producer_index_sha256":"2c12a3358367d99d405663c954e251068953e8baab20ffeb44c4cde470cd0a16","job_id":128402490846,"runner_id":1000094153,"runner_name":"GitHub Actions 1000094153","jobs_response_sha256":"b29ff735bd652391340b520bb27f35db8096bfae57b0bd3cc4e31674387754e2","job_log_sha256":"29576888a19e7598710cc64f4b210ad0cfc46735ca43014de49f302bff9a891b","cases_root":"/home/runner/work/motionwright/motionwright/v/e/gc42372165893-1","observed_counts":{"expected":0,"unexpected":1,"skipped":4,"flaky":0},"excluded_case":{"case_id":"graph-flow","execution_status":"failed","effects":"UNKNOWN","owner_quiescence":"UNKNOWN","repeat":"FORBIDDEN"}});
+
+function graphContinuationParts(selector) {
+  if (selector === GRAPH_CONTINUATION)
+    return { origin: GRAPH_CONTINUATION_ORIGIN, cases: GRAPH_CONTINUATION_CASES, previous: [] };
+  need(selector === GRAPH_FOUR_CONTINUATION, 'J1_CONTINUATION_BOOTSTRAP_SELECTOR');
+  return { origin: GRAPH_FOUR_CONTINUATION_ORIGIN, cases: GRAPH_FOUR_CONTINUATION_CASES,
+    previous: [GRAPH_CONTINUATION_ORIGIN] };
+}
+
 /** Source-only selection validation; it never brands an owner admission. */
 export function inspectGraphCaseSelection(index, deadline = null) {
   const execution = index.contract.execution, source = index.source;
@@ -591,36 +808,39 @@ export function inspectGraphCaseSelection(index, deadline = null) {
     need(execution.cases_root === path.join(parent, 'v/e/graph-cases'), 'J1_ORIGINAL_CASE_NAMESPACE');
     return [...EXPECTED_CASES];
   }
-  const continuation = execution.continuation;
-  need(deadline?.graph_continuation_selector === GRAPH_CONTINUATION, 'J1_CONTINUATION_BOOTSTRAP_SELECTOR');
+  const continuation = execution.continuation, selector = deadline?.graph_continuation_selector;
+  const { origin, cases, previous } = graphContinuationParts(selector);
   need(deadline && deadline.binding && Array.isArray(deadline.jobs?.jobs), 'J1_CONTINUATION_DEADLINE_REQUIRED');
   const jobs = deadline.jobs.jobs.filter(row => row.name === 'Real SQLite and Studio / ' + GRAPH_SCOPE);
   need(jobs.length === 1, 'J1_CONTINUATION_CURRENT_JOB');
-  const job = jobs[0], origin = GRAPH_CONTINUATION_ORIGIN;
-  const root = path.join(parent, 'v/e/gc' + source.run_id + '-1');
-  need(/^[1-9][0-9]*$/.test(source.run_id) && source.run_id !== origin.run_id && source.run_attempt === 1
+  const job = jobs[0], root = path.join(parent, 'v/e/gc' + source.run_id + '-1');
+  need(/^[1-9][0-9]*$/.test(source.run_id) && source.run_attempt === 1
     && String(job.run_id) === source.run_id && job.run_attempt === 1 && job.head_sha === source.sha
-    && job.status === 'in_progress' && job.conclusion === null && integer(job.id, 1) && job.id !== origin.job_id
-    && integer(job.runner_id, 1) && job.runner_id !== origin.runner_id
-    && typeof job.runner_name === 'string' && job.runner_name.length > 0 && job.runner_name !== origin.runner_name
-    && job.runner_name === deadline.binding.RUNNER_NAME
-    && execution.cases_root === root && root !== origin.cases_root, 'J1_CONTINUATION_REQUIRES_NEW_RUNNER_AND_NAMESPACE');
-  same(continuation, { schema: 'motionwright.graph-unstarted-continuation/1', selector: GRAPH_CONTINUATION,
-    origin, selected_cases: GRAPH_CONTINUATION_CASES,
+    && job.status === 'in_progress' && job.conclusion === null && integer(job.id, 1)
+    && integer(job.runner_id, 1) && typeof job.runner_name === 'string' && job.runner_name.length > 0
+    && job.runner_name === deadline.binding.RUNNER_NAME && execution.cases_root === root
+    && [...previous, origin].every(old => source.run_id !== old.run_id && job.id !== old.job_id
+      && job.runner_id !== old.runner_id && job.runner_name !== old.runner_name && root !== old.cases_root),
+    'J1_CONTINUATION_REQUIRES_NEW_RUNNER_AND_NAMESPACE');
+  same(continuation, {
+    schema: previous.length ? 'motionwright.graph-unstarted-continuation/2' : 'motionwright.graph-unstarted-continuation/1',
+    selector, origin, selected_cases: cases,
     current: { run_id: source.run_id, run_attempt: 1, job_id: job.id,
       runner_id: job.runner_id, runner_name: job.runner_name, cases_root: root },
-    original_contract_cases: 6, required_current_cases: 5, simultaneous_owner_limit: 1,
+    original_contract_cases: 6, required_current_cases: cases.length, simultaneous_owner_limit: 1,
     historical_cleanup_claimed: false, historical_owner_credentials_or_tickets_reused: false,
-    automatic_retry: false, formal_acceptance: false }, 'J1_CONTINUATION_EXACT_HISTORICAL_BINDING');
-  return [...GRAPH_CONTINUATION_CASES];
+    automatic_retry: false, formal_acceptance: false,
+    ...(previous.length ? { prior_origins: previous } : {}),
+  }, 'J1_CONTINUATION_EXACT_HISTORICAL_BINDING');
+  return [...cases];
 }
 
 /** Even a mistaken Playwright filter cannot fall back to ordinary Service for
- * the excluded uncertain case in this explicit Native continuation. */
+ * either excluded uncertain case in the explicit four-case continuation. */
 export function graphNativeCaseSelected(selector, caseId) {
   need(EXPECTED_CASES.has(caseId), 'J1_NATIVE_CLOSED_CASE');
-  if (selector === GRAPH_CONTINUATION) {
-    need(GRAPH_CONTINUATION_CASES.includes(caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
+  if (selector === GRAPH_CONTINUATION || selector === GRAPH_FOUR_CONTINUATION) {
+    need(graphContinuationParts(selector).cases.includes(caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
     return true;
   }
   need(!selector || selector === 'all' || EXPECTED_CASES.has(selector), 'J1_UNKNOWN_NATIVE_SELECTOR');
@@ -631,10 +851,10 @@ const usedCases = new Set();
 let readOnlyMetadataToken;
 
 function reviewedContract(reviewed) {
-  return Object.fromEntries(CONTRACT_FIELDS.map(name => [name, reviewed[name]]));
+  return Object.fromEntries([...CONTRACT_FIELDS, ...(Object.hasOwn(reviewed, 'build_reuse') ? ['build_reuse'] : [])].map(name => [name, reviewed[name]]));
 }
 function contractReview(index, indexSha) {
-  exact(index.contract, CONTRACT_FIELDS, 'J1_ACYCLIC_CONTRACT_FIELDS');
+  exact(index.contract, [...CONTRACT_FIELDS, ...(Object.hasOwn(index, 'build_reuse') ? ['build_reuse'] : [])], 'J1_ACYCLIC_CONTRACT_FIELDS');
   need(!Object.hasOwn(index.contract, 'index_sha256') && !Object.hasOwn(index.contract, 'source'),
     'J1_CONTRACT_SELF_REFERENCE');
   const execution = index.contract.execution;
@@ -768,9 +988,11 @@ export async function admitOriginalProducers(options) {
   const observed = stableRead(options.producerOriginalPath, LIMIT), index = strictJSON(observed.data, LIMIT);
   const reviewed = contractReview(index, observed.ref.sha256);
   const continuation = Object.hasOwn(reviewed.execution, 'continuation');
-  need((process.env.MOTIONWRIGHT_GRAPH_CONTINUATION ?? 'none') === (continuation ? GRAPH_CONTINUATION : 'none'),
+  const selector = continuation ? reviewed.execution.continuation.selector : 'none';
+  need((process.env.MOTIONWRIGHT_GRAPH_CONTINUATION ?? 'none') === selector,
     'J1_CONTINUATION_ENVIRONMENT_BINDING');
-  need(!continuation || GRAPH_CONTINUATION_CASES.includes(options.caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
+  need(!continuation || graphContinuationParts(selector).cases.includes(options.caseId),
+    'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
   need(integer(options.deadlineUnixMs, Date.now() + 1) && typeof options.privateRoot === 'string', 'J1_CASE_ORIGINAL_DEADLINE');
   inside(reviewed.execution.cases_root, options.privateRoot);
   const once = index.source.run_id + '/1/' + options.caseId;
@@ -787,7 +1009,7 @@ export async function admitOriginalProducers(options) {
   const job = deadline.jobs.jobs.find(row => row.id === reviewed.execution.job_id);
   const began = Date.parse(job.started_at);
   need(Number.isFinite(began), 'J1_ORIGINAL_JOB_START');
-  for (const process of [...Object.values(index.builds).map(row => row.process),
+  for (const process of [...(result.reuseProcesses ?? Object.values(index.builds).map(row => row.process)),
     index.ordinary_preflight.process, index.runtime_originals.producer]) {
     const command = result.originals.json(process.command);
     same(command.graph_job, { source_sha: index.source.sha, run_id: index.source.run_id,

@@ -167,5 +167,104 @@ class GraphContinuationTests(unittest.TestCase):
             graph.graph_public_evidence_path("e/gc42359999999-1/g1/owner/owner-final.original.json", normal)
 
 
+    def four_index(self):
+        deadline = copy.deepcopy(self.deadline)
+        deadline["graph_continuation_selector"] = graph.GRAPH_FOUR_CONTINUATION
+        index = copy.deepcopy(self.index)
+        index["contract"]["execution"]["deadline_original"] = graph.graph_put_json(
+            self.root / "four-deadline.original.json", deadline)
+        record = graph.graph_continuation_record(self.source, deadline, self.cases_root)
+        index["contract"]["execution"]["continuation"] = record
+        return index, deadline, record
+
+    def test_four_selects_only_never_started_titles_and_requires_four_report_rows(self):
+        index, deadline, record = self.four_index()
+        selected = graph.graph_selected_cases(index)
+        self.assertEqual(selected, graph.GRAPH_CASES[2:])
+        pattern = re.compile(graph.graph_playwright_selection(selected)[1])
+        for case, title, _ in graph.GRAPH_CASES:
+            self.assertEqual(bool(pattern.search("chromium semantic-graph-service.spec.ts " + title)),
+                             case not in ("graph-source-review", "graph-flow"))
+        self.assertEqual(graph.graph_report(self.report(selected), listing=True, selected=selected)["selected"], 4)
+        for wrong in (graph.GRAPH_CASES, graph.GRAPH_CONTINUATION_CASES):
+            with self.subTest(count=len(wrong)), self.assertRaises(ValueError):
+                graph.graph_report(self.report(wrong), listing=True, selected=selected)
+        plan = graph.graph_selection_plan(index)
+        self.assertEqual((plan["required_tests"], plan["original_contract_tests"]), (4, 6))
+        self.assertEqual(plan["historical_excluded_cases"], ["graph-source-review", "graph-flow"])
+        self.assertIs(plan["original_contract_complete"], False)
+        self.assertEqual(record["schema"], "motionwright.graph-unstarted-continuation/2")
+        self.assertEqual(graph.graph_closed_status(index), "CLOSED_GRAPH_CONTINUATION_OBSERVATIONS")
+        self.assertTrue(graph.graph_requested_continuation({graph.GRAPH_CONTINUATION_ENV: graph.GRAPH_FOUR_CONTINUATION}))
+
+    def test_four_rejects_each_historical_runner_and_each_changed_unknown(self):
+        index, deadline, record = self.four_index()
+        for origin in (graph.GRAPH_CONTINUATION_ORIGIN, graph.GRAPH_FOUR_CONTINUATION_ORIGIN):
+            for field in ("id", "runner_id", "runner_name"):
+                wrong = copy.deepcopy(deadline)
+                wrong["jobs"]["jobs"][0][field] = origin["job_id" if field == "id" else field]
+                with self.subTest(run=origin["run_id"], field=field), self.assertRaises(ValueError):
+                    graph.graph_continuation_record(self.source, wrong, self.cases_root)
+            old = {**self.source, "run_id": origin["run_id"]}
+            with self.assertRaises(ValueError):
+                graph.graph_continuation_record(old, deadline,
+                    graph.graph_cases_root(self.root / "v", old["run_id"], True))
+        for name in ("origin", "prior_origins"):
+            wrong = copy.deepcopy(index)
+            origin = wrong["contract"]["execution"]["continuation"][name]
+            if isinstance(origin, list):
+                origin = origin[0]
+            origin["excluded_case"]["effects"] = "NONE"
+            with self.subTest(origin=name), self.assertRaises(ValueError):
+                graph.graph_selected_cases(wrong)
+        for key, value in (("prior_origins", []), ("required_current_cases", 5),
+                           ("historical_cleanup_claimed", True),
+                           ("historical_owner_credentials_or_tickets_reused", True),
+                           ("simultaneous_owner_limit", 2), ("formal_acceptance", True)):
+            wrong = copy.deepcopy(index)
+            wrong["contract"]["execution"]["continuation"][key] = value
+            with self.subTest(field=key), self.assertRaises(ValueError):
+                graph.graph_selected_cases(wrong)
+        wrong = copy.deepcopy(deadline)
+        wrong["graph_continuation_selector"] = graph.GRAPH_CONTINUATION
+        with self.assertRaises(ValueError):
+            graph.graph_selected_cases(index, wrong)
+
+    def test_physical_four_roots_reject_both_excluded_owners_and_old_upload_namespace(self):
+        index, deadline, record = self.four_index()
+        self.cases_root.mkdir(parents=True)
+        for case, _, _ in graph.GRAPH_FOUR_CONTINUATION_CASES:
+            root = graph.graph_case_layout(self.cases_root, case)["private_root"]
+            root.mkdir()
+            (root / "parent-source-binding.original.json").write_bytes(b"{}\n")
+        observed = graph.graph_collected_case_roots(self.cases_root, graph.GRAPH_FOUR_CONTINUATION_CASES)
+        self.assertEqual([root.name for _, root in observed], ["g2", "g3", "g4", "g5"])
+        for case in ("graph-source-review", "graph-flow"):
+            excluded = graph.graph_case_layout(self.cases_root, case)["private_root"]
+            excluded.mkdir()
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, "excluded historical case"):
+                graph.graph_collected_case_roots(self.cases_root, graph.GRAPH_FOUR_CONTINUATION_CASES)
+            excluded.rmdir()
+        names = graph.graph_public_evidence_namespaces(self.root / "v", index)
+        graph.graph_public_evidence_path("e/gc42359999999-1/g4/owner/owner-final.original.json", names)
+        for old in ("gc42356210001-1", "gc42372165893-1", "graph-cases"):
+            with self.subTest(namespace=old), self.assertRaises(ValueError):
+                graph.graph_public_evidence_path("e/" + old + "/g4/owner/owner-final.original.json", names)
+
+    def test_input_upload_metadata_is_admitted_only_in_the_four_case_clock(self):
+        index, _, _ = self.four_index()
+        filename = "tools/graph-origin-recipient-upload-admission.original.json"
+        graph.graph_public_tool_path(filename, index)
+        graph.graph_public_tool_path("tools/graph-phase-origin-inputs.terminal.original.json", index)
+        self.assertEqual(sum(graph.graph_phase_plan(graph.GRAPH_FOUR_CONTINUATION).values()), 7980)
+        for value in (self.index, {"contract": {"execution": {}}}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                graph.graph_public_tool_path(filename, value)
+        for name in ("tools/read-ticket.original.json", "tools/recipient.pkcs8.pem",
+                     "tools/graph-origin-other-upload-admission.original.json"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                graph.graph_public_tool_path(name, index)
+
+
 if __name__ == "__main__":
     unittest.main()

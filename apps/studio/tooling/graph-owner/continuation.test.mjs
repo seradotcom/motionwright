@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GRAPH_CONTINUATION, GRAPH_CONTINUATION_CASES, GRAPH_CONTINUATION_ORIGIN,
+  GRAPH_FOUR_CONTINUATION, GRAPH_FOUR_CONTINUATION_CASES, GRAPH_FOUR_CONTINUATION_ORIGIN,
   inspectGraphCaseSelection, graphNativeCaseSelected } from '../../tests/support/graph-owner/producer_guard.mjs';
 
 function fixture() {
@@ -60,4 +61,55 @@ test('continuation requires its original bootstrap selector and rejects historic
   assert.throws(() => inspectGraphCaseSelection(index, wrong), /BOOTSTRAP_SELECTOR/);
   const old = structuredClone(index); old.source.run_id = GRAPH_CONTINUATION_ORIGIN.run_id;
   assert.throws(() => inspectGraphCaseSelection(old, deadline), /NEW_RUNNER_AND_NAMESPACE/);
+});
+
+function fourFixture() {
+  const value = fixture(), continuation = value.index.contract.execution.continuation;
+  value.deadline.graph_continuation_selector = GRAPH_FOUR_CONTINUATION;
+  Object.assign(continuation, { schema: 'motionwright.graph-unstarted-continuation/2',
+    selector: GRAPH_FOUR_CONTINUATION, origin: structuredClone(GRAPH_FOUR_CONTINUATION_ORIGIN),
+    prior_origins: [structuredClone(GRAPH_CONTINUATION_ORIGIN)],
+    selected_cases: [...GRAPH_FOUR_CONTINUATION_CASES], required_current_cases: 4 });
+  return value;
+}
+
+test('four-case selector denies both UNKNOWN cases before Native or ordinary fallback', () => {
+  const { index, deadline } = fourFixture();
+  assert.deepEqual(inspectGraphCaseSelection(index, deadline), [...GRAPH_FOUR_CONTINUATION_CASES]);
+  for (const id of GRAPH_FOUR_CONTINUATION_CASES) assert.equal(graphNativeCaseSelected(GRAPH_FOUR_CONTINUATION, id), true);
+  for (const id of ['graph-source-review', 'graph-flow'])
+    assert.throws(() => graphNativeCaseSelected(GRAPH_FOUR_CONTINUATION, id), /UNKNOWN_CASE_EXCLUDED/);
+  assert.equal(index.contract.execution.continuation.required_current_cases, 4);
+  assert.equal(index.contract.execution.continuation.original_contract_cases, 6);
+  assert.equal(index.contract.execution.continuation.formal_acceptance, false);
+});
+
+test('four-case continuation requires a new runner after each historical UNKNOWN owner', () => {
+  const { index, deadline } = fourFixture();
+  for (const origin of [GRAPH_CONTINUATION_ORIGIN, GRAPH_FOUR_CONTINUATION_ORIGIN]) {
+    for (const [field, value] of [['runner_id', origin.runner_id], ['runner_name', origin.runner_name], ['id', origin.job_id]]) {
+      const wrong = structuredClone(deadline); wrong.jobs.jobs[0][field] = value;
+      assert.throws(() => inspectGraphCaseSelection(index, wrong), /NEW_RUNNER_AND_NAMESPACE/);
+    }
+    const wrong = structuredClone(index); wrong.source.run_id = origin.run_id;
+    assert.throws(() => inspectGraphCaseSelection(wrong, deadline), /NEW_RUNNER_AND_NAMESPACE/);
+  }
+});
+
+test('four-case binding retains both UNKNOWN records and cannot inherit five-case authority', () => {
+  const { index, deadline } = fourFixture();
+  for (const mutate of [
+    value => value.contract.execution.continuation.selected_cases.unshift('graph-flow'),
+    value => { value.contract.execution.continuation.origin.excluded_case.effects = 'NONE'; },
+    value => { value.contract.execution.continuation.prior_origins[0].excluded_case.effects = 'NONE'; },
+    value => { value.contract.execution.continuation.prior_origins = []; },
+    value => { value.contract.execution.continuation.historical_owner_credentials_or_tickets_reused = true; },
+    value => { value.contract.execution.continuation.historical_cleanup_claimed = true; },
+    value => { value.contract.execution.continuation.simultaneous_owner_limit = 2; },
+  ]) {
+    const wrong = structuredClone(index); mutate(wrong);
+    assert.throws(() => inspectGraphCaseSelection(wrong, deadline), /J1_CONTINUATION_/);
+  }
+  const wrong = structuredClone(deadline); wrong.graph_continuation_selector = GRAPH_CONTINUATION;
+  assert.throws(() => inspectGraphCaseSelection(index, wrong), /EXACT_HISTORICAL_BINDING/);
 });
