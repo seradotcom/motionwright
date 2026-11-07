@@ -730,10 +730,11 @@ def validate_assessment(assessment, row_id, index, records):
                 and item["id"] not in index.get("_stale_sufficiency_reviews", {})
                 and set(item["evidence_record_sha256"]).issubset(ids)
                 and any(identity in records[record_id]["complete_criterion_ids"]
-                        for record_id in item["evidence_record_sha256"])
+                        for obligation in item["obligations"] if obligation["status"] == "pass"
+                        for record_id in obligation["evidence_ids"])
             ]
             if not sufficient:
-                raise ValueError("complete criterion needs a separate sufficiency review of a complete execution")
+                raise ValueError("complete criterion needs a separate sufficiency review of a complete execution cited by a passing review obligation")
     expected = {identity for identity in index["criteria"] if identity.startswith(row_id + "#/")}
     if seen != expected:
         raise ValueError("assessment dropped or added canonical criteria")

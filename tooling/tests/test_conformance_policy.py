@@ -127,6 +127,31 @@ class ConformancePolicyTests(unittest.TestCase):
                 obligation["evidence_ids"].append(complete["id"])
         self.validate()
 
+    def test_complete_binding_not_cited_by_passing_review_obligation_cannot_close(self):
+        # A digest-bound full record is not evidence of an obligation unless
+        # the actual sufficiency observation cites it as satisfying that oracle.
+        partial = self.index["records"][0]
+        complete = copy.deepcopy(partial)
+        complete["id"] = "bound-but-unobserved-complete"
+        partial["complete_criterion_ids"] = []
+        self.populate_sufficiency()
+        self.index["records"].append(complete)
+        self.assessment["technical_verification"]["evidence_ids"].append(complete["id"])
+        for field in self.assessment["criteria"]:
+            field["evidence_ids"].append(complete["id"])
+        for review in self.index["sufficiency_reviews"]:
+            review["evidence_record_sha256"][complete["id"]] = policy.canonical_digest(complete)
+            # The complete record is in the review index, but no passing
+            # obligation observes it. The partial original remains the only
+            # evidence actually cited by the sufficiency observations.
+        self.assessment["contract_acceptance"]["status"] = "accepted"
+        with self.assertRaisesRegex(ValueError, "complete execution cited by a passing review obligation"):
+            self.validate()
+
+        for review in self.index["sufficiency_reviews"]:
+            review["obligations"][0]["evidence_ids"].append(complete["id"])
+        self.validate()
+
     def test_missing_negative_criterion_cannot_promote_remaining_positive_criterion(self):
         self.assessment["criteria"].pop()
         with self.assertRaisesRegex(ValueError, "dropped"):

@@ -55,7 +55,8 @@ class CurrencyImpactTests(unittest.TestCase):
         self.observed = {"id": "replay-1", "current_source_relation": "current_execution_candidate"}
         self.review = {"id": "review-1", "criterion_id": self.field["id"], "decision": "sufficient",
                        "source": self.record["source"],
-                       "evidence_record_sha256": {"replay-1": canonical_digest(self.record)}}
+                       "evidence_record_sha256": {"replay-1": canonical_digest(self.record)},
+                       "obligations": [{"id": "observed", "status": "pass", "evidence_ids": ["replay-1"]}]}
 
     def run_git(self, *args):
         result = subprocess.run(["git", "-C", str(self.root), *args],
@@ -342,6 +343,30 @@ class CurrencyImpactTests(unittest.TestCase):
             current_evidence, records, [review], set())
         self.assertEqual(decide(), ("pass_requires_reassessment", []))
         review["evidence_record_sha256"]["unreviewed-2"] = canonical_digest(other)
+        review["obligations"][0]["evidence_ids"].append("unreviewed-2")
+        self.assertEqual(decide(), ("sufficient_current_source", ["review-1"]))
+
+    def test_bound_complete_record_uncited_by_review_obligation_must_not_suffice(self):
+        partial = copy.deepcopy(self.record)
+        partial["complete_criterion_ids"] = []
+        complete = copy.deepcopy(self.record)
+        complete["id"] = "complete-but-unused"
+        records = {"replay-1": partial, "complete-but-unused": complete}
+        review = copy.deepcopy(self.review)
+        review["evidence_record_sha256"] = {
+            "replay-1": canonical_digest(partial),
+            "complete-but-unused": canonical_digest(complete),
+        }
+        field = copy.deepcopy(self.field)
+        field["evidence_ids"].append("complete-but-unused")
+        evidence = {"replay-1": self.observed, "complete-but-unused": {
+            "id": "complete-but-unused", "current_source_relation": "current_execution_candidate",
+        }}
+        decide = lambda: impact.classify_criterion(
+            field, self.assessment, self.first, self.lock,
+            evidence, records, [review], set())
+        self.assertEqual(decide(), ("pass_requires_reassessment", []))
+        review["obligations"][0]["evidence_ids"].append("complete-but-unused")
         self.assertEqual(decide(), ("sufficient_current_source", ["review-1"]))
 
     def test_exact_case_requires_criterion_coverage_and_sufficiency_review(self):

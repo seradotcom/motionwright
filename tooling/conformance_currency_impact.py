@@ -188,8 +188,16 @@ def classify_criterion(field: dict, assessment: dict, target: str, lock: str | N
                         and DIGEST.fullmatch(digest) is not None
                         and digest == canonical_digest(records[record_id])
                         for record_id, digest in bindings.items())
+                and isinstance(review.get("obligations"), list)
+                and bool(review["obligations"])
+                and all(isinstance(obligation, dict)
+                        and obligation.get("status") == "pass"
+                        and isinstance(obligation.get("evidence_ids"), list)
+                        and set(obligation["evidence_ids"]).issubset(bindings)
+                        for obligation in review["obligations"])
                 and any(identity in records[record_id]["complete_criterion_ids"]
-                        for record_id in bindings))
+                        for obligation in review["obligations"]
+                        for record_id in obligation["evidence_ids"]))
 
     valid_reviews = [review["id"] for review in reviews
                      if review["decision"] == "sufficient"
