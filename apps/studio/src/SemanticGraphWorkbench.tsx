@@ -751,7 +751,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     <section className="production-viewer" aria-label="Graph editorial preview"><h3>Editorial vector study</h3><p>Uncommitted source preview · no native render, SQLite save or fidelity acceptance is asserted.</p>
       <label className="production-field"><span>Graph editorial view</span><select aria-label="Graph editorial view" value={previewMode} onChange={e => setPreviewMode(e.target.value as "complete" | "playhead")}><option value="complete">Complete topology</option><option value="playhead">Follow the scene playhead</option></select></label>
       {preview ? <div className="production-preview-mat"><GraphPreview graph={preview} sceneStart={props.scene!.start}
-        playhead={previewMode === "playhead" ? props.playhead : undefined} displayRate={props.displayProfile?.frame_rate} /></div>
+        playhead={previewMode === "playhead" ? props.playhead : undefined} displayRate={profile?.frame_rate} /></div>
         : <p role="status">Finish the current geometric and timing fields to view the editorial study. Every raw input remains retained.</p>}
     </section>
   </div>;

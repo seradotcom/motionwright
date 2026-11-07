@@ -1032,3 +1032,46 @@ test("Graph confirmed removal with failed successor retention blocks reuse and a
   if (next.change.type !== "upsert_semantic_graph") throw new Error("Missing new Graph request.");
   expect(next.change.graph.id).not.toBe(removedId);
 });
+
+test("Graph playhead preview uses selected saved source fractional frame rate", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const source = await page.evaluate(async () => {
+    const p = window.__GRAPH_AUTHORITY__.project();
+    const original = p.production_design!.semantic_graphs![0];
+    const profile = { ...structuredClone(p.deliverables[0]), id: crypto.randomUUID(),
+      frame_rate: { num: "24000", den: "1001" } };
+    const other = structuredClone(original);
+    other.id = crypto.randomUUID(); other.variant_profile_ref = profile.id;
+    // Exactly 9 frames into the B profile, followed by 24 authored frames.
+    other.time_range = { start: { num: "3003", den: "8000" },
+      duration: { num: "1001", den: "1000" } };
+    other.content.vertices.forEach(vertex => {
+      vertex.appearance = { at: { num: "0", den: "1" },
+        duration: { num: "1001", den: "24000" } };
+    });
+    other.content.edges.forEach(edge => {
+      edge.appearance = { at: { num: "1001", den: "24000" },
+        duration: { num: "1001", den: "24000" } };
+    });
+    p.deliverables.push(profile);
+    p.production_design!.semantic_graphs!.push(other);
+    p.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(p);
+    return { id: other.id, profileId: profile.id, displayRate: p.deliverables[0].frame_rate,
+      sceneStart: p.scenes[0].start };
+  });
+  expect(source.displayRate).toEqual({ num: "30", den: "1" });
+  await field(page, "Graph source").selectOption(source.id);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(source.profileId);
+  await field(page, "Graph editorial view").selectOption("playhead");
+  // 9 / (24000/1001) is one ULP below 9009/24000 in the JS clock.
+  // Without frame snapping at the selected source rate, the interval
+  // appears to begin a frame late; no tolerance may be invented.
+  const expected = 9 / (24000 / 1001);
+  expect(expected).toBeLessThan(9009 / 24000);
+  const sceneStart = Number(source.sceneStart.num) / Number(source.sceneStart.den);
+  await page.evaluate(time => window.__GRAPH_AUTHORITY__.setPlayhead(time), sceneStart + expected);
+  await expect(page.locator(".production-study [data-graph-active-interval]"))
+    .toHaveAttribute("data-graph-active-interval", "true");
+  expect(await requestCount(page)).toBe(1);
+});
