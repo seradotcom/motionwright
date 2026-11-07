@@ -299,5 +299,98 @@ class GraphInputWindowBudgetTests(unittest.TestCase):
         self.assertEqual(minutes, (plan["origin-inputs"] + 59) // 60)
         self.assertLess(minutes * 60 - plan["origin-inputs"], 60)
 
+
+class GraphCurrentCustodyDependencyTests(unittest.TestCase):
+    # Projection of the retained, authenticated current deadline from run42400480547:
+    # 28710 bytes, sha256 79ab57bf94faa4d5e694f438d0e626d750764a0655cc00b0819adf79a80f86ac.
+    # These are constructor controls only, not process, clock, Native or G2 evidence.
+    ORIGINAL = {
+        "binding": {"GITHUB_SHA": "deb4ce258e6efb99fca984b104f6f699fa6c7a5e",
+                    "GITHUB_RUN_ID": "42400480547", "GITHUB_RUN_ATTEMPT": "1"},
+        "jobs": {"jobs": [{"name": "Real SQLite and Studio / phase1-native-graph",
+                           "id": 128487111120}]},
+    }
+    ORIGINAL_REF = {
+        "path": "/home/runner/work/motionwright/motionwright/v/tools/graph-deadline.original.json",
+        "size_bytes": 28710,
+        "sha256": "79ab57bf94faa4d5e694f438d0e626d750764a0655cc00b0819adf79a80f86ac",
+    }
+
+    def setUp(self):
+        self.original = copy.deepcopy(self.ORIGINAL)
+        self.reference = copy.deepcopy(self.ORIGINAL_REF)
+        self.repo = Path("/current-source")
+        self.expected = {
+            "source_sha": "deb4ce258e6efb99fca984b104f6f699fa6c7a5e",
+            "run_id": "42400480547", "run_attempt": 1, "job_id": 128487111120,
+            "deadline_original": copy.deepcopy(self.reference),
+        }
+        self.command = {
+            "argv": [graph.sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                     "--only-binary=:all:", "--require-hashes", "-r",
+                     str(self.repo / "tooling/requirements/mlt-g2-custody.txt")],
+            "graph_job": copy.deepcopy(self.expected),
+        }
+
+    def check(self, command):
+        return graph.graph_validate_current_custody_dependency(
+            command, self.repo, self.original, self.reference)
+
+    def test_current_writer_selects_clock_metadata_without_inventing_runtime_or_authority(self):
+        environment = {**self.original["binding"], graph.GRAPH_TOKEN_ENV: "unit-only-unused-token",
+                       "MOTIONWRIGHT_GRAPH_PRODUCER_RUN": "0", "CARGO_INCREMENTAL": "0"}
+        before = copy.deepcopy(environment)
+        result = graph.graph_input_environment(environment)
+        self.assertEqual(result.pop("MOTIONWRIGHT_GRAPH_PRODUCER_RUN"), "1")
+        self.assertEqual(result.pop("PYTHONNOUSERSITE"), "1")
+        self.assertEqual(result.pop("PYTHONDONTWRITEBYTECODE"), "1")
+        self.assertNotIn(graph.GRAPH_TOKEN_ENV, result)
+        expected = {key: value for key, value in before.items()
+                    if key not in (graph.GRAPH_TOKEN_ENV, "MOTIONWRIGHT_GRAPH_PRODUCER_RUN")}
+        self.assertEqual(result, expected)
+        self.assertEqual(environment, before)
+        self.assertEqual(graph.graph_current_job_binding(self.original, self.reference), self.expected)
+
+    def test_exact_current_dependency_is_accepted_without_changing_originals(self):
+        before = copy.deepcopy((self.original, self.reference, self.command))
+        self.check(self.command)
+        self.assertEqual((self.original, self.reference, self.command), before)
+
+    def test_missing_or_different_current_job_fails_closed_without_injecting_fields(self):
+        cases = []
+        missing = copy.deepcopy(self.command)
+        del missing["graph_job"]
+        cases.append(missing)
+        for field, value in (("source_sha", "52d149ea0dd5550fbded28ad0ea337353f826210"),
+                             ("run_id", "42356210001"), ("run_attempt", 2),
+                             ("run_attempt", True), ("job_id", 128354875162),
+                             ("job_id", 128487111120.0)):
+            wrong = copy.deepcopy(self.command)
+            wrong["graph_job"][field] = value
+            cases.append(wrong)
+        for field, value in (("sha256", "0" * 64), ("path", "/old/deadline.original.json"),
+                             ("size_bytes", 1)):
+            wrong = copy.deepcopy(self.command)
+            wrong["graph_job"]["deadline_original"][field] = value
+            cases.append(wrong)
+        for command in cases:
+            before = copy.deepcopy(command)
+            with self.subTest(command=command), self.assertRaisesRegex(
+                    ValueError, "Graph current custody dependency original"):
+                self.check(command)
+            self.assertEqual(command, before)
+
+    def test_command_shape_and_ambiguous_current_job_are_rejected(self):
+        wrong = copy.deepcopy(self.command)
+        wrong["argv"][wrong["argv"].index("--require-hashes")] = "--no-deps"
+        with self.assertRaisesRegex(ValueError, "Graph current custody dependency original"):
+            self.check(wrong)
+        actual = next(row for row in self.original["jobs"]["jobs"]
+                      if row["name"] == "Real SQLite and Studio / " + graph.GRAPH_SCOPE)
+        self.original["jobs"]["jobs"].append(copy.deepcopy(actual))
+        with self.assertRaisesRegex(ValueError, "Graph current job is absent or ambiguous"):
+            graph.graph_current_job_binding(self.original, self.reference)
+
+
 if __name__ == "__main__":
     unittest.main()

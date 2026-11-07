@@ -4727,6 +4727,17 @@ def require_observed_command(command):
             "owned process group exit was not observed; no closed execution credit")
 
 
+
+def graph_current_job_binding(original, original_ref):
+    """Describe the already authenticated current clock; never relabel old receipts."""
+    jobs = [row for row in original["jobs"]["jobs"]
+            if row["name"] == "Real SQLite and Studio / " + GRAPH_SCOPE]
+    require(len(jobs) == 1, "Graph current job is absent or ambiguous")
+    return {"source_sha": original["binding"]["GITHUB_SHA"],
+            "run_id": original["binding"]["GITHUB_RUN_ID"], "run_attempt": 1,
+            "job_id": jobs[0]["id"], "deadline_original": original_ref}
+
+
 def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None, maximum_hard_file_bytes=None):
     env = dict(env)
     env.pop(PHASE1_SERVICE47_TOKEN_ENV, None)
@@ -4773,11 +4784,7 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
         command["deadline_admission"] = admission
     if env.get("MOTIONWRIGHT_GRAPH_PRODUCER_RUN") == "1":
         require(isinstance(deadline, GraphOriginalClock), "Graph process requires its original job clock")
-        actual_job = next(row for row in deadline.original["jobs"]["jobs"]
-                          if row["name"] == "Real SQLite and Studio / " + GRAPH_SCOPE)
-        command["graph_job"] = {"source_sha": deadline.original["binding"]["GITHUB_SHA"],
-            "run_id": deadline.original["binding"]["GITHUB_RUN_ID"], "run_attempt": 1,
-            "job_id": actual_job["id"], "deadline_original": deadline.original_ref}
+        command["graph_job"] = graph_current_job_binding(deadline.original, deadline.original_ref)
     if maximum_file_bytes is not None:
         command["kernel_file_size_limits"] = {"soft_bytes": maximum_file_bytes,
             "hard_bytes": maximum_file_bytes if maximum_hard_file_bytes is None else maximum_hard_file_bytes}
@@ -9241,6 +9248,24 @@ def graph_input_context():
             "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1"}
 
 
+
+def graph_input_environment(environment):
+    env = dict(environment, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
+               MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1")
+    env.pop(GRAPH_TOKEN_ENV, None)
+    return env
+
+
+def graph_validate_current_custody_dependency(command, repo, original, original_ref):
+    current_job = graph_current_job_binding(original, original_ref)
+    job = command.get("graph_job")
+    require(command.get("argv") == [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")]
+            and type(job) is dict
+            and json.dumps(job, sort_keys=True, allow_nan=False) == json.dumps(current_job, sort_keys=True, allow_nan=False),
+            "Graph current custody dependency original")
+
+
 def graph_input_phase(repo, phase):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     require(os.environ.get(GRAPH_CONTINUATION_ENV) == GRAPH_FOUR_CONTINUATION
@@ -9254,8 +9279,7 @@ def graph_input_phase(repo, phase):
             graph_put_json(producer / "custody-preparation-source.original.json", before)
             lock = graph_json((repo / "SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]
             require(lock["revision"] == graph_input_context()["semwright_sha"], "Graph reused SDK source pin")
-            env = dict(os.environ, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
-            env.pop(GRAPH_TOKEN_ENV, None)
+            env = graph_input_environment(os.environ)
             graph_command(env, [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
                 "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")],
                 repo, producer, "graph-custody-dependencies", 90, clock)
@@ -9391,11 +9415,7 @@ def graph_produce(repo, recipient):
                 dependency_command = graph_json(graph_read(dependency_refs["command"]))
                 graph_process_original(dependency_refs,
                     {key: dependency_command[key] for key in ("argv", "cwd", "selected_environment")}, graph_read)
-                require(dependency_command["argv"] == [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
-                    "--only-binary=:all:", "--require-hashes", "-r", str(repo / "tooling/requirements/mlt-g2-custody.txt")]
-                    and dependency_command["graph_job"]["run_id"] == os.environ["GITHUB_RUN_ID"]
-                    and dependency_command["graph_job"]["source_sha"] == source_sha,
-                    "Graph current custody dependency original")
+                graph_validate_current_custody_dependency(dependency_command, repo, clock.original, clock.original_ref)
             else:
                 preparation_source = graph_source_observe(repo, source_sha, (
                     "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
