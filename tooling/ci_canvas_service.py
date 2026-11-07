@@ -8154,6 +8154,49 @@ def graph_process_original(value, expected, remember):
     return command, remember(value["stdout"], 64 * GRAPH_BYTES)
 
 
+def graph_load_native_input_verifier(repo, source_files, remember):
+    """Load the closed two-module verifier from already bound source bytes.
+
+    Each CLI phase and the owner's initial admission use isolated Python.
+    Neither cwd/PYTHONPATH nor an executable .pyc may supply this dependency.
+    The temporary module bindings exist only for its one declared import edge.
+    """
+    import types
+    repo = Path(repo)
+    require(repo.is_absolute() and repo.resolve(strict=True) == repo, "Graph native helper repository alias")
+    names = ("ci_graph_dev_native_startup", "native_graph_executable_inputs")
+    sources = []
+    missing = object()
+    previous = {name: sys.modules.get(name, missing) for name in names}
+    for name in names:
+        relative = "tooling/" + name + ".py"
+        expected = source_files[relative]
+        path = repo / relative
+        raw = remember({"path": str(path), "sha256": expected["sha256"], "size_bytes": expected["bytes"]},
+                       2 * GRAPH_BYTES)
+        prior = previous[name]
+        require(prior is missing or type(prior) is types.ModuleType
+                and isinstance(prior.__dict__.get("__file__"), str)
+                and Path(prior.__dict__["__file__"]).resolve(strict=True) == path,
+                "Graph native helper preloaded from another source")
+        sources.append((name, path, raw))
+    loaded = {}
+    try:
+        for name, path, raw in sources:
+            module = types.ModuleType(name)
+            module.__file__ = str(path)
+            sys.modules[name] = loaded[name] = module
+            exec(compile(raw, str(path), "exec", dont_inherit=True), module.__dict__)
+            require(sys.modules.get(name) is module, "Graph native helper replaced its module binding")
+        return loaded["native_graph_executable_inputs"]
+    finally:
+        for name in names:
+            if previous[name] is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous[name]
+
+
 def graph_verify_producer_index(index_ref, case_id):
     """Original byte/causality checks. The caller must separately authenticate R74.
 
@@ -8252,9 +8295,8 @@ def graph_verify_producer_index(index_ref, case_id):
                 "Graph compacted executable retention source")
         require(graph_uncompact_cargo_executable(remember(retained, 256 * GRAPH_BYTES), binaries[role]) == raw,
                 "Graph retained compressed executable differs")
-    import native_graph_executable_inputs as native_inputs
-    require(Path(native_inputs.__file__).resolve() == Path(source["repository_root"]) / "tooling/native_graph_executable_inputs.py",
-            "Graph native input verifier source")
+    native_inputs = graph_load_native_input_verifier(
+        Path(source["repository_root"]), contract["source_files"], remember)
     native_record = graph_json(remember(index["native_executable_inputs"], GRAPH_BYTES))
     require(native_record == contract["native_executable_inputs"], "Graph original native input contract")
     native_directory = Path(source["repository_root"]).parent / "v/graph-native-inputs"
