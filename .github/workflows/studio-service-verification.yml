@@ -657,7 +657,7 @@ jobs:
                     "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
                     "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300}
           if continuation == "unstarted-after-42372165893":
-              phases = {"origin-key": 120, "origin-recipient-upload": 120, "origin-inputs": 900, "prepare": 1200,
+              phases = {"origin-key": 120, "origin-recipient-upload": 120, "origin-inputs": 1350, "prepare": 1200,
                         "origin-build-intake": 300, "runtime": 1200,
                         "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
                         "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300}
@@ -808,7 +808,7 @@ jobs:
           retention-days: 14
       - name: Receive one encrypted original build capsule with read-only Actions permission
         if: matrix.selection == 'phase1-native-graph' && inputs.graph_continuation == 'unstarted-after-42372165893'
-        timeout-minutes: 15
+        timeout-minutes: 23
         env:
           MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
         run: python -I -B tooling/ci_canvas_service.py graph origin-inputs --repo .
