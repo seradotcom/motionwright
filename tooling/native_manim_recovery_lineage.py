@@ -10,7 +10,7 @@ import argparse
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
@@ -98,6 +98,43 @@ def intake(args):
                       "artifact_id": row["id"], "files": retained}))
 
 
+def checked_reuse_originals(reuse, originals):
+    for label in ("inspect-python", "install-wheels", "observe-native"):
+        for kind in ("intent", "spawn", "terminal", "stdout", "stderr"):
+            raw = originals["runtime-reuse-" + label + "-" + kind]
+            expected = reuse["commands"][label][kind]
+            require(identity(raw) == {key: expected[key] for key in ("bytes", "sha256")}
+                    and (kind in ("stdout", "stderr") or raw.decode("utf-8") == expected["original_utf8"]),
+                    "recovery_lineage_reuse_command_original_changed")
+    for label, key in (("runtime-reuse-native-observation", "native_observation_original"),
+                       ("runtime-reuse-inspect-python-stdout", "python_inspection_original"),
+                       ("runtime-reuse-download-terminal", "download_terminal")):
+        raw, expected = originals[label], reuse[key]
+        require(identity(raw) == {name: expected[name] for name in ("bytes", "sha256")}
+                and raw.decode("utf-8") == expected["original_utf8"],
+                "recovery_lineage_reuse_current_observation_changed")
+    require(identity(originals["runtime-installed-files-observed"]) == reuse["installed_manifest"],
+            "recovery_lineage_reuse_current_installed_roster_changed")
+    intent = object_bytes(originals["runtime-reuse-download-intent"])
+    spawn = object_bytes(originals["runtime-reuse-download-spawn"])
+    terminal = object_bytes(originals["runtime-reuse-download-terminal"])
+    artifact = reuse["origin_artifact"]
+    command = intent.get("command", [])
+    require(type(command) is list and len(command) == 7 and type(command[0]) is str
+            and PurePosixPath(command[0]).is_absolute()
+            and command[1:] == ["api", "--hostname", "github.com", "--method", "GET",
+                "/repos/" + REPOSITORY + "/actions/artifacts/" + str(artifact["artifact_id"]) + "/zip"]
+            and intent.get("attempts_authorized") == 1 and intent.get("automatic_retry") is False
+            and intent.get("maximum_stdout_bytes") == artifact["artifact_zip_bytes"]
+            and type(spawn.get("pid")) is int and spawn["pid"] > 0
+            and spawn.get("pid") == terminal.get("pid") and spawn.get("automatic_retry") is False,
+            "recovery_lineage_reuse_original_get_identity")
+    stderr = terminal["streams"]["stderr"]
+    require(identity(originals["runtime-reuse-download-stderr"])
+            == {"bytes": stderr["written_bytes"], "sha256": stderr["sha256"]},
+            "recovery_lineage_reuse_download_stderr_changed")
+
+
 def new_outer(snapshot, public, root, current):
     require(public.get("schema") == "motionwright.manim.recovery-runtime.outer-custody-public/1"
             and public.get("context") == current and public.get("origin_context") == ORIGIN
@@ -147,12 +184,16 @@ def new_outer(snapshot, public, root, current):
             and resource.get("original_child_exit_known") is True
             and type(resource.get("original_child_exit")) is int and resource["original_child_exit"] == 0
             and resource.get("memory_limit_bytes") == 1536 * 1024 * 1024
+            and resource.get("physical_peak_budget_bytes") == 1536 * 1024 * 1024
+            and resource.get("cgroup_max_bytes") == 1472 * 1024 * 1024
+            and resource.get("cgroup_high_bytes") == 1408 * 1024 * 1024
             and resource.get("physical_reserve_bytes") == 512 * 1024 * 1024
             and resource.get("minimum_physical_available_bytes", 0) >= 512 * 1024 * 1024
             and resource.get("cgroup_quiescent") is True and resource.get("first_error") is None,
             "resume_lineage_native_cgroup_original_terminal")
     require(type(after.get("peak_bytes")) is int and 0 <= after["peak_bytes"] <= 1536 * 1024 * 1024
-            and after.get("limit_bytes") == before.get("limit_bytes") == 1536 * 1024 * 1024
+            and after.get("limit_bytes") == before.get("limit_bytes") == 1472 * 1024 * 1024
+            and after.get("high_bytes") == before.get("high_bytes") == 1408 * 1024 * 1024
             and all(type(after.get(name)) is int and type(before.get(name)) is int
                     and after[name] == before[name] >= 0 for name in ("oom", "oom_kill"))
             and entry.get("schema") == "motionwright.manim.resume.original-cgroup-entry/1"
@@ -172,8 +213,10 @@ def new_outer(snapshot, public, root, current):
             and sha(originals["runtime-freeze-receipt"]) == sha(read(root / "resume-source-gate/runtime-receipt.json"))
             and sha(originals["runtime-installed-files"]) == sha(read(root / "resume-source-gate/runtime-installed-files.json"))
             and sha(originals["runtime-wheel-lock"]) == sha(read(root / "resume-source-gate/runtime-wheel-lock.json"))
-            and sha(originals["runtime-artifact"]) == sha(read(root / "resume-source-gate/runtime-artifact.original.json")),
+            and sha(originals["runtime-artifact"]) == sha(read(root / "resume-source-gate/runtime-artifact.original.json"))
+            and sha(originals["runtime-reuse"]) == sha(read(root / "resume-source-gate/runtime-reuse.json")),
             "recovery_lineage_runtime_metadata_originals")
+    checked_reuse_originals(object_bytes(originals["runtime-reuse"]), originals)
     resume = object_bytes(originals["resume-result"])
     require(resume.get("schema") == "motionwright.manim.recovery-runtime.cycle-observation/1"
             and resume.get("status") == "NEW_REFERENCE_TWO_PLUS_EDITED_TWO_REQUIRES_INDEPENDENT_CUSTODY"

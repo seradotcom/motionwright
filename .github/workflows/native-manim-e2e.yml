@@ -55,9 +55,13 @@ on:
       - 'tooling/native_manim_resume*.py'
       - 'tooling/native_manim_recovery*.py'
       - 'tooling/native_manim_frozen_runtime.py'
+      - 'tooling/native_manim_frozen_runtime_restore.py'
+      - 'tooling/native_manim_frozen_runtime_host.py'
+      - 'tooling/requirements/manim-frozen-runtime-42361964881-*.json'
       - 'tooling/requirements/manim-runtime-observed-42357390508.json'
       - 'tooling/tests/test_native_manim_recovery.py'
       - 'tooling/tests/test_native_manim_frozen_runtime.py'
+      - 'tooling/tests/test_native_manim_runtime_restore.py'
       - 'tooling/tests/test_native_manim_resume.py'
       - 'tooling/native_manim_editable_cycle.py'
       - 'tooling/native_manim_editable_outer.py'
@@ -1075,6 +1079,8 @@ jobs:
               -s tooling/tests -p test_native_manim_recovery.py -v
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
               -s tooling/tests -p test_native_manim_frozen_runtime.py -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest \
+              tooling.tests.test_native_manim_runtime_restore -v
           fi
 
       - name: Resolve exact Semwright source pin
@@ -1330,8 +1336,10 @@ jobs:
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -B \
             "$GITHUB_WORKSPACE/tooling/native_manim_resume_runtime.py"
 
-      - name: Build the single retained comparison runtime from observed distribution hashes
+      - name: Restore the retained comparison runtime without source builds
         if: inputs.scenario == 'recovery-runtime-cycle'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
             workflow-step --label provision-runtime --script "$0"
@@ -1342,9 +1350,10 @@ jobs:
           test ! -e "$RUNNER_TEMP/manim-frozen-runtime-artifact"
           mkdir -m 700 "$RUNNER_TEMP/manim-frozen-runtime-artifact"
           context="$(python3 -B -c 'import os,json; print(json.dumps({"source_sha":os.environ["GITHUB_SHA"],"semwright_sha":json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"],"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"]}))')"
-          python3 -B tooling/native_manim_frozen_runtime.py build \
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_frozen_runtime_restore.py restore \
             --runtime "$runtime" --work "$RUNNER_TEMP/manim-frozen-runtime" \
             --output "$RUNNER_TEMP/manim-frozen-runtime-artifact/runtime-wheels.tar" --context "$context"
+          unset GH_TOKEN
           PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
             python3 - <<'PY'
           import hashlib, json, os, platform, shutil, subprocess, sys, zipfile
@@ -1461,34 +1470,13 @@ jobs:
           PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
             python3 -B "$GITHUB_WORKSPACE/crates/manim-profile/tests/test_editable_text_style.py"
 
-      - name: Admit retention of the frozen runtime before private input or compilation
-        id: runtime_upload_budget
+      - name: Admit reuse of the original runtime artifact before compilation
         if: inputs.scenario == 'recovery-runtime-cycle'
-        timeout-minutes: 1
-        run: python3 -B tooling/native_manim_editable_outer.py admit-action --label runtime-upload
-
-      - name: Retain only the frozen runtime wheels and their reconstruction originals
-        id: frozen_runtime_upload
-        if: inputs.scenario == 'recovery-runtime-cycle'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        timeout-minutes: ${{ fromJSON(steps.runtime_upload_budget.outputs.minutes) }}
-        with:
-          name: manim-frozen-runtime-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/manim-frozen-runtime-artifact/runtime-wheels.tar
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Observe the frozen runtime artifact ID and digest before compilation
-        if: inputs.scenario == 'recovery-runtime-cycle'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MANIM_RUNTIME_ARTIFACT_ID: ${{ steps.frozen_runtime_upload.outputs.artifact-id }}
-          MANIM_RUNTIME_ARTIFACT_SHA256: ${{ steps.frozen_runtime_upload.outputs.artifact-digest }}
         run: |
           exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
             workflow-step --label runtime-artifact-readback --script "$0"
           # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
-          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_recovery_gate.py record-artifact
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_recovery_gate.py record-reuse
 
       - name: Configure disposable-runner Driver Host sandbox
         run: |

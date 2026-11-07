@@ -28,7 +28,8 @@ REFERENCE = tuple(sorted("editable_cycle::reference::tests::" + name for name in
 MAX_ARTIFACT = 128 * 1024 * 1024
 PUBLIC_GATE_FILES = ("source-gate.json", "source-gate.stdout.log", "source-gate.stderr.log",
                      "reference-gate.stdout.log", "reference-gate.stderr.log", "runtime-receipt.json",
-                     "runtime-wheel-lock.json", "runtime-installed-files.json", "runtime-artifact.original.json")
+                     "runtime-wheel-lock.json", "runtime-installed-files.json", "runtime-artifact.original.json",
+                     "runtime-reuse.json")
 
 
 def runtime_paths():
@@ -89,14 +90,19 @@ def validate_artifact(value, current, receipt_sha):
 
 
 def metadata_runtime(current, root):
-    from native_manim_frozen_runtime import validate_receipt
+    from native_manim_frozen_runtime_restore import validate_reuse
     root = Path(root)
-    frozen = validate_receipt(root / "runtime-receipt.json", root / "runtime-installed-files.json",
-                              root / "runtime-wheel-lock.json")
+    frozen = validate_reuse(root / "runtime-receipt.json", root / "runtime-installed-files.json",
+                            root / "runtime-wheel-lock.json", root / "runtime-reuse.json", current)
     receipt_raw = read(root / "runtime-receipt.json", 2 * 1024 * 1024)
-    require(read_object(root / "runtime-receipt.json").get("context") == current,
+    origin = frozen.get("reuse", {}).get("origin_context")
+    require(frozen.get("reuse", {}).get("context") == current
+            and read_object(root / "runtime-receipt.json").get("context") == origin
+            and frozen["reuse"]["origin_receipt_sha256"] == sha(receipt_raw),
             "recovery_runtime_freeze_original_context")
-    artifact = validate_artifact(read_object(root / "runtime-artifact.original.json"), current, sha(receipt_raw))
+    artifact = validate_artifact(read_object(root / "runtime-artifact.original.json"), origin, sha(receipt_raw))
+    require(frozen["reuse"].get("origin_artifact") == artifact,
+            "recovery_runtime_reuse_original_artifact_binding")
     checked_archive_binding(frozen, artifact)
     return {"schema": "motionwright.manim.recovery-runtime.binding/1", "context": current,
             "frozen": frozen, "retained_artifact": artifact, "equivalence_to_old_runtime": False}
@@ -111,9 +117,10 @@ def checked_archive_binding(frozen, artifact):
 
 
 def check_runtime(current):
-    from native_manim_frozen_runtime import check
+    from native_manim_frozen_runtime_restore import check
     runtime, work, archive = runtime_paths()
-    observed = check(runtime, work / "receipt.json", work / "installed-files.json")
+    observed = check(runtime, work / "receipt.json", work / "installed-files.json",
+                      work / "wheel-lock.json", work / "reuse.json", current)
     binding = metadata_runtime(current, folder())
     require(binding["frozen"] == observed, "recovery_runtime_physical_files_changed")
     inventory = read(Path(os.environ["GITHUB_WORKSPACE"]) / "verification/native-manim-e2e/runtime-inventory.json")
@@ -124,6 +131,29 @@ def check_runtime(current):
             "recovery_runtime_original_native_inventory")
     binding["runtime_inventory_sha256"] = sha(inventory)
     return binding
+
+
+def record_reuse():
+    from native_manim_frozen_runtime_restore import check
+    current, deadline = hosted_context(), load_deadline()
+    require(selected_scenario() == RECOVERY_SCENARIO, "recovery_runtime_reuse_explicit_selection")
+    deadline.admit_work()
+    runtime, work, _archive = runtime_paths()
+    observed = check(runtime, work / "receipt.json", work / "installed-files.json",
+                      work / "wheel-lock.json", work / "reuse.json", current)
+    output = folder()
+    output.mkdir(mode=0o700, exist_ok=False)
+    for source, name in (("receipt.json", "runtime-receipt.json"), ("wheel-lock.json", "runtime-wheel-lock.json"),
+                         ("installed-files.json", "runtime-installed-files.json"), ("reuse.json", "runtime-reuse.json"),
+                         ("runtime-origin-artifact.original.json", "runtime-artifact.original.json")):
+        new_bytes(output / name, original(work / source, 2 * 1024 * 1024))
+    require(sum(path.stat().st_size for path in output.iterdir()) <= 1536 * 1024,
+            "recovery_runtime_public_metadata_budget")
+    binding = metadata_runtime(current, output)
+    require(binding["frozen"] == observed, "recovery_runtime_recorded_reuse_changed")
+    print(json.dumps({"status": "ORIGINAL_RUNTIME_REUSED_WITHOUT_REBUILD_OR_UPLOAD",
+                      "artifact_id": binding["retained_artifact"]["artifact_id"], "context": current,
+                      "source_build_invocations": 0, "native_effect_invocations": 0}))
 
 
 def record_artifact():
@@ -195,6 +225,9 @@ def check_source_gate(current, root=None):
                 and row.get("stdout") == {"bytes": len(stdout), "sha256": sha(stdout)}
                 and row.get("stderr") == {"bytes": len(stderr), "sha256": sha(stderr)}
                 and row.get("resources", {}).get("memory_limit_bytes") == 1536 * 1024 * 1024
+                and row.get("resources", {}).get("physical_peak_budget_bytes") == 1536 * 1024 * 1024
+                and row.get("resources", {}).get("cgroup_max_bytes") == 1472 * 1024 * 1024
+                and row.get("resources", {}).get("cgroup_high_bytes") == 1408 * 1024 * 1024
                 and row.get("resources", {}).get("physical_reserve_bytes") == 512 * 1024 * 1024
                 and type(row.get("resources", {}).get("peak_bytes")) is int
                 and 0 <= row["resources"]["peak_bytes"] <= 1536 * 1024 * 1024
@@ -265,8 +298,18 @@ def run_tests():
                     and resource.get("original_child_exit_known") is True
                     and resource.get("original_child_exit") == 0 and resource.get("cgroup_quiescent") is True,
                     "recovery_runtime_original_test_resources")
+            require(resource.get("physical_peak_budget_bytes") == 1536 * 1024 * 1024
+                    and resource.get("cgroup_max_bytes") == 1472 * 1024 * 1024
+                    and resource.get("cgroup_high_bytes") == 1408 * 1024 * 1024
+                    and resource.get("resource_before", {}).get("limit_bytes")
+                        == resource.get("resource_after", {}).get("limit_bytes") == 1472 * 1024 * 1024
+                    and resource.get("resource_before", {}).get("high_bytes")
+                        == resource.get("resource_after", {}).get("high_bytes") == 1408 * 1024 * 1024,
+                    "recovery_runtime_original_test_headroom_policy")
             row["resources"] = {"receipt_sha256": sha(resource_raw), "memory_limit_bytes": resource["memory_limit_bytes"],
                 "physical_reserve_bytes": resource["physical_reserve_bytes"], "peak_bytes": resource["resource_after"]["peak_bytes"],
+                "physical_peak_budget_bytes": resource["physical_peak_budget_bytes"],
+                "cgroup_max_bytes": resource["cgroup_max_bytes"], "cgroup_high_bytes": resource["cgroup_high_bytes"],
                 "minimum_physical_available_bytes": resource["minimum_physical_available_bytes"], "cgroup_quiescent": True}
             row["counts"] = parser(stdout)
         value["source_after"] = source_snapshot(repo, current)
@@ -287,9 +330,9 @@ def run_tests():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("record-artifact", "test"))
+    parser.add_argument("command", choices=("record-artifact", "record-reuse", "test"))
     args = parser.parse_args()
-    (record_artifact if args.command == "record-artifact" else run_tests)()
+    {"record-artifact": record_artifact, "record-reuse": record_reuse, "test": run_tests}[args.command]()
 
 
 if __name__ == "__main__":

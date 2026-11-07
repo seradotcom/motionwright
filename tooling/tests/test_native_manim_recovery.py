@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -15,12 +16,60 @@ sys.path.insert(0, str(ROOT / "tooling"))
 import ci_private_evidence as engine
 import native_manim_resume_transfer as transfer
 import native_manim_recovery_gate as gate
+import native_manim_resume_resources as resources
 
 CURRENT = {"source_sha": "c" * 40, "semwright_sha": transfer.SDK, "run_id": "12345", "run_attempt": "1"}
 NOW = datetime(2026, 11, 7, 9, 0, tzinfo=timezone.utc)
 
 
 class RetainedRuntimeSelectionTests(unittest.TestCase):
+    def test_new_cgroup_headroom_is_required_without_changing_the_old_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values = {"memory.current": "1000", "memory.peak": "1000",
+                "memory.max": str(1472 * 1024 * 1024), "memory.high": str(1408 * 1024 * 1024),
+                "memory.events": "oom 0\noom_kill 0\n", "memory.swap.max": "0", "pids.max": "256"}
+            for name, value in values.items():
+                (root / name).write_text(value)
+            with patch.dict(os.environ, MANIM_NATIVE_SCENARIO=transfer.RECOVERY_SCENARIO):
+                observed = resources.observe(root)
+                self.assertEqual(observed["limit_bytes"], 1472 * 1024 * 1024)
+                self.assertEqual(observed["high_bytes"], 1408 * 1024 * 1024)
+                self.assertEqual(resources.policy_fields()["physical_peak_budget_bytes"], 1536 * 1024 * 1024)
+                for name, changed in (("memory.max", str(1536 * 1024 * 1024)), ("memory.high", "max"),
+                                      ("memory.high", str(1472 * 1024 * 1024))):
+                    (root / name).write_text(changed)
+                    try:
+                        with self.subTest(name=name, changed=changed), self.assertRaises(ValueError):
+                            resources.observe(root)
+                    finally:
+                        (root / name).write_text(values[name])
+            with patch.dict(os.environ, MANIM_NATIVE_SCENARIO=transfer.RESUME_SCENARIO):
+                (root / "memory.max").write_text(str(1536 * 1024 * 1024))
+                (root / "memory.high").unlink()
+                self.assertEqual(resources.policy_fields(), {})
+                self.assertEqual(resources.observe(root)["limit_bytes"], 1536 * 1024 * 1024)
+
+    def test_actual_sdk_peak_failure_remains_failed_after_the_headroom_fix(self):
+        # Original authenticated run42361964881: Cargo exit0 and no OOM.
+        before = {"peak_bytes": 1610612736, "limit_bytes": 1610612736, "oom": 0, "oom_kill": 0}
+        after = {"peak_bytes": 1611550720, "limit_bytes": 1610612736, "oom": 0, "oom_kill": 0}
+        status, reason = resources.classify_completion(0, None, None, before, after, True, 14748495872)
+        self.assertEqual(status, "RESOURCE_OR_COMMAND_FAILED_NO_RETRY")
+        self.assertEqual(reason, "OBSERVED_PEAK_EXCEEDS_PHYSICAL_BUDGET")
+        headroom_before = {**before, "limit_bytes": 1472 * 1024 * 1024, "high_bytes": 1408 * 1024 * 1024}
+        within = {**headroom_before, "peak_bytes": 1536 * 1024 * 1024}
+        self.assertEqual(resources.classify_completion(0, None, None, headroom_before, within, True, 512 * 1024 * 1024),
+                         ("EXITED_WITHIN_LIMITS", None))
+        for code, error, quiescent, reserve, observation in (
+            (None, None, True, 14748495872, within), (True, None, True, 14748495872, within),
+            (0, {"type": "UnknownObservation"}, True, 14748495872, within),
+            (0, None, False, 14748495872, within), (0, None, True, 512 * 1024 * 1024 - 1, within),
+            (0, None, True, 14748495872, {**within, "oom_kill": 1}),
+        ):
+            self.assertEqual(resources.classify_completion(code, None, error, headroom_before, observation, quiescent, reserve)[0],
+                             "RESOURCE_OR_COMMAND_FAILED_NO_RETRY")
+
     def test_four_phase_manifest_is_explicit_and_does_not_change_old_two_phase_contract(self):
         with patch.dict(os.environ, MANIM_NATIVE_SCENARIO=transfer.RESUME_SCENARIO):
             old = transfer.manifest(CURRENT, "a" * 64)
@@ -41,6 +90,46 @@ class RetainedRuntimeSelectionTests(unittest.TestCase):
         with patch.dict(os.environ, MANIM_NATIVE_SCENARIO="recovery-runtime-cycle-other"):
             with self.assertRaises(ValueError):
                 transfer.manifest(CURRENT, "a" * 64)
+
+    def test_independent_reader_binds_restore_records_to_original_bytes(self):
+        from native_manim_recovery_lineage import checked_reuse_originals
+        def row(raw, inline=False):
+            result = {"bytes": len(raw), "sha256": engine.sha(raw)}
+            if inline:
+                result["original_utf8"] = raw.decode()
+            return result
+        # This is a G0 byte-join fixture, with no Native/source result claimed.
+        originals, reuse = {}, {"commands": {}}
+        for label in ("inspect-python", "install-wheels", "observe-native"):
+            reuse["commands"][label] = {}
+            for kind in ("intent", "spawn", "terminal", "stdout", "stderr"):
+                raw = (engine.json_bytes({"fixture": label + ":" + kind})
+                       if kind not in ("stdout", "stderr") or (label, kind) == ("inspect-python", "stdout") else b"")
+                originals["runtime-reuse-" + label + "-" + kind] = raw
+                reuse["commands"][label][kind] = row(raw, kind not in ("stdout", "stderr"))
+        reuse["python_inspection_original"] = row(originals["runtime-reuse-inspect-python-stdout"], True)
+        installed = engine.json_bytes({"g0_roster_fixture": True})
+        originals["runtime-installed-files-observed"] = installed
+        reuse["installed_manifest"] = row(installed)
+        native = engine.json_bytes({"g0_observation_fixture": True})
+        originals["runtime-reuse-native-observation"] = native
+        reuse["native_observation_original"] = row(native, True)
+        download = engine.json_bytes({"pid": 42, "streams": {"stderr": {"written_bytes": 0, "sha256": engine.sha(b"")}}})
+        originals["runtime-reuse-download-terminal"] = download
+        reuse["download_terminal"] = row(download, True)
+        reuse["origin_artifact"] = {"artifact_id": 321, "artifact_zip_bytes": 10240}
+        originals["runtime-reuse-download-intent"] = engine.json_bytes({
+            "command": ["/usr/bin/gh", "api", "--hostname", "github.com", "--method", "GET",
+                "/repos/" + transfer.REPOSITORY + "/actions/artifacts/321/zip"],
+            "attempts_authorized": 1, "automatic_retry": False, "maximum_stdout_bytes": 10240})
+        originals["runtime-reuse-download-spawn"] = engine.json_bytes({"pid": 42, "automatic_retry": False})
+        originals["runtime-reuse-download-stderr"] = b""
+        checked_reuse_originals(reuse, originals)
+        for key in ("runtime-reuse-inspect-python-stdout", "runtime-reuse-install-wheels-stdout", "runtime-reuse-observe-native-terminal",
+                    "runtime-reuse-native-observation", "runtime-installed-files-observed",
+                    "runtime-reuse-download-terminal", "runtime-reuse-download-stderr"):
+            with self.subTest(changed=key), self.assertRaises(ValueError):
+                checked_reuse_originals(reuse, {**originals, key: b"changed"})
 
     def test_recipient_cannot_be_reinterpreted_between_two_and_four_phase_scopes(self):
         from cryptography.hazmat.primitives import serialization
@@ -113,10 +202,12 @@ class RetainedRuntimeSelectionTests(unittest.TestCase):
         self.assertIn("CARGO_BUILD_JOBS: '1'", job)
         self.assertIn("shared-key: source-contracts", job)
         self.assertIn("      actions: read", job)
-        self.assertLess(job.index("native_manim_frozen_runtime.py build"), job.index("Build exact Semwright Broker"))
-        self.assertLess(job.index("native_manim_recovery_gate.py record-artifact"), job.index("native_manim_recovery_gate.py test"))
+        self.assertLess(job.index("native_manim_frozen_runtime_restore.py restore"), job.index("Build exact Semwright Broker"))
+        self.assertLess(job.index("native_manim_recovery_gate.py record-reuse"), job.index("native_manim_recovery_gate.py test"))
         self.assertLess(job.index("native_manim_recovery_gate.py test"), job.index("native_manim_resume_transfer.py create-recipient"))
-        frozen = job.split("      - name: Build the single retained comparison runtime from observed distribution hashes\n", 1)[1].split("      - name: Admit retention of the frozen runtime", 1)[0]
+        self.assertNotIn("frozen_runtime_upload", job)
+        frozen = job.split("      - name: Restore the retained comparison runtime without source builds\n", 1)[1].split("      - name: Admit reuse of the original runtime artifact", 1)[0]
+        self.assertLess(frozen.index("unset GH_TOKEN"), frozen.index('PYTHONPATH="$runtime/site-packages"'))
         self.assertNotIn("pyav-wheel.json", frozen)
         self.assertIn('private / "wheel-lock.json"', frozen)
         self.assertIn('row.get("name") == "av"', frozen)

@@ -78,7 +78,7 @@ def selected_public_gate_files():
         return original
     return original + ("reference-gate.stdout.log", "reference-gate.stderr.log",
                        "runtime-receipt.json", "runtime-wheel-lock.json",
-                       "runtime-installed-files.json", "runtime-artifact.original.json")
+                       "runtime-installed-files.json", "runtime-artifact.original.json", "runtime-reuse.json")
 
 
 def now():

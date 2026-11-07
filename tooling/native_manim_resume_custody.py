@@ -68,7 +68,19 @@ def outer_inputs(current):
             "runtime-freeze-receipt": work / "receipt.json",
             "runtime-wheel-lock": work / "wheel-lock.json",
             "runtime-installed-files": work / "installed-files.json",
+            "runtime-installed-files-observed": work / "installed-files-observed.json",
+            "runtime-reuse": work / "reuse.json",
+            "runtime-reuse-native-observation": work / "native-observation.json",
+            "runtime-reuse-download-intent": work / "download-intent.original.json",
+            "runtime-reuse-download-spawn": work / "download-spawn.original.json",
+            "runtime-reuse-download-terminal": work / "download-terminal.original.json",
+            "runtime-reuse-download-stderr": work / "download-stderr.original",
             "runtime-artifact": root.parent / "manim-resume-source-gate/runtime-artifact.original.json"})
+        for label in ("inspect-python", "install-wheels", "observe-native"):
+            for suffix in ("intent.json", "spawn.json", "terminal.json", "stdout.log", "stderr.log"):
+                result["runtime-reuse-" + label + "-" + suffix.split(".")[0]] = work / (label + "." + suffix)
+        if (work / "reuse-failure.json").exists():
+            result["runtime-reuse-failure"] = work / "reuse-failure.json"
     return result
 
 

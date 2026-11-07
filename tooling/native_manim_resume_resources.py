@@ -24,6 +24,8 @@ from native_provider_lifecycle import memory_events
 
 LIMIT = 1536 * 1024 * 1024
 RESERVE = 512 * 1024 * 1024
+RECOVERY_CGROUP_MAX = 1472 * 1024 * 1024
+RECOVERY_CGROUP_HIGH = 1408 * 1024 * 1024
 TASKS = 256
 _CANCEL = None
 
@@ -51,15 +53,30 @@ def root_for(current):
     return Path("/sys/fs/cgroup") / ("motionwright-manim-resume-" + current["run_id"])
 
 
+def policy_fields():
+    # memory.max can be exceeded temporarily by the kernel. This new path
+    # leaves operating room below the unchanged physical peak budget; it
+    # never accepts an observation above that budget or resets memory.peak.
+    if os.environ.get("MANIM_NATIVE_SCENARIO") == "recovery-runtime-cycle":
+        return {"physical_peak_budget_bytes": LIMIT, "cgroup_max_bytes": RECOVERY_CGROUP_MAX,
+                "cgroup_high_bytes": RECOVERY_CGROUP_HIGH}
+    return {}
+
+
 def observe(root):
     value = memory_events(root)
     require(all(type(value.get(key)) is int for key in (
         "current_bytes", "peak_bytes", "limit_bytes", "oom", "oom_kill")),
         "resume_complete_cgroup_memory_observation_required")
-    require(value["limit_bytes"] == LIMIT
+    policy = policy_fields()
+    require(value["limit_bytes"] == policy.get("cgroup_max_bytes", LIMIT)
             and (root / "memory.swap.max").read_text().strip() == "0"
             and (root / "pids.max").read_text().strip() == str(TASKS),
             "resume_cgroup_limits_changed")
+    if policy:
+        high = (root / "memory.high").read_text().strip()
+        require(high == str(policy["cgroup_high_bytes"]), "recovery_cgroup_high_changed")
+        value["high_bytes"] = int(high)
     return value
 
 
@@ -89,7 +106,10 @@ def initialize(uid, gid):
     if missing:
         (parent / "cgroup.subtree_control").write_text(" ".join("+" + name for name in sorted(missing)))
     root.mkdir(mode=0o755)
-    (root / "memory.max").write_text(str(LIMIT))
+    policy = policy_fields()
+    (root / "memory.max").write_text(str(policy.get("cgroup_max_bytes", LIMIT)))
+    if policy:
+        (root / "memory.high").write_text(str(policy["cgroup_high_bytes"]))
     (root / "memory.swap.max").write_text("0")
     (root / "memory.oom.group").write_text("1")
     (root / "pids.max").write_text(str(TASKS))
@@ -104,12 +124,13 @@ def initialize(uid, gid):
               "scope": "controlled-command-process-trees", "cgroup": str(root), "uid": uid, "gid": gid,
               "memory_limit_bytes": LIMIT, "physical_reserve_bytes": RESERVE, "task_limit": TASKS,
               "initial_available_bytes": available_memory(), "observed": observe(root),
-              "actions_node_limits_claimed": False, "outer_origin": deadline.binding(), "automatic_retry": False}
+              "actions_node_limits_claimed": False, "outer_origin": deadline.binding(), "automatic_retry": False,
+              **policy}
     destination = deadline.root / "resource-origin.json"
     outer.new_json(destination, result)
     os.chown(destination, uid, gid)
     print(json.dumps({"status": "ORIGINAL_CGROUP_LIMITS_CONFIGURED", "memory_limit_bytes": LIMIT,
-                      "physical_reserve_bytes": RESERVE, "actions_node_limits_claimed": False}))
+                      "physical_reserve_bytes": RESERVE, "actions_node_limits_claimed": False, **policy}))
 
 
 def admitted_group(deadline):
@@ -120,6 +141,8 @@ def admitted_group(deadline):
             and value.get("cgroup") == str(root) and value.get("uid") == os.geteuid()
             and value.get("memory_limit_bytes") == LIMIT and value.get("physical_reserve_bytes") == RESERVE
             and root.resolve(strict=True) == root and not root.is_symlink(), "resume_original_cgroup_required")
+    require(all(value.get(key) == expected for key, expected in policy_fields().items()),
+            "recovery_original_resource_policy_changed")
     observe(root)
     return root
 
@@ -133,6 +156,17 @@ def expanded_argv(label, command):
 def run_bounded(deadline, label, command, cwd):
     admitted_group(deadline)
     return outer.run_command(deadline, label, expanded_argv(label, command), cwd)
+
+
+def classify_completion(code, reason, error, before, after, quiescent, minimum):
+    if (reason is None and error is None and type(code) is int and code == 0
+            and after is not None and after["peak_bytes"] > LIMIT):
+        reason = "OBSERVED_PEAK_EXCEEDS_PHYSICAL_BUDGET"
+    success = (type(code) is int and code == 0 and reason is None and error is None
+               and after is not None and after["peak_bytes"] <= LIMIT
+               and after["oom"] == before["oom"] and after["oom_kill"] == before["oom_kill"]
+               and quiescent and minimum >= RESERVE)
+    return ("EXITED_WITHIN_LIMITS" if success else "RESOURCE_OR_COMMAND_FAILED_NO_RETRY"), reason
 
 
 def terminate_owned(child, root, grace):
@@ -222,7 +256,7 @@ def execute(label, command):
     state = {"schema": "motionwright.manim.resume.resource-command/1", "context": deadline.context,
              "origin": deadline.binding(), "label": label, "command": command,
              "memory_limit_bytes": LIMIT, "physical_reserve_bytes": RESERVE,
-             "resource_before": before, "automatic_retry": False}
+             "resource_before": before, "automatic_retry": False, **policy_fields()}
     outer.new_json(folder / "intent.json", state)
     child, code, reason, error, remaining = None, None, None, None, []
     minimum = available_memory()
@@ -279,19 +313,21 @@ def execute(label, command):
                 "resume_actual_nonroot_cgroup_entry_required")
     except BaseException as observation:
         error = error or {"type": type(observation).__name__, "message": str(observation)[:4096]}
-    success = (code == 0 and type(code) is int and reason is None and error is None
-               and after is not None and after["peak_bytes"] <= LIMIT
-               and after["oom"] == before["oom"] and after["oom_kill"] == before["oom_kill"]
-               and not members(root) and minimum >= RESERVE)
-    state.update(status="EXITED_WITHIN_LIMITS" if success else "RESOURCE_OR_COMMAND_FAILED_NO_RETRY",
+    quiescent = not members(root)
+    status, reason = classify_completion(code, reason, error, before, after, quiescent, minimum)
+    state.update(status=status,
                  guard_pid=os.getpid(), child_pid=child.pid if child else None, original_child_exit=code,
                  original_child_exit_known=type(code) is int, resource_after=after,
                  original_cgroup_entry=entry,
                  minimum_physical_available_bytes=minimum, reason=reason, first_error=error,
-                 remaining_processes_before_owned_cleanup=remaining, cgroup_quiescent=not members(root),
+                 remaining_processes_before_owned_cleanup=remaining, cgroup_quiescent=quiescent,
                  native_result_interpreted=False)
     outer.new_json(folder / "terminal.json", state)
-    return 0 if success else 1
+    if status != "EXITED_WITHIN_LIMITS":
+        print(json.dumps({"status": status, "reason": reason, "original_child_exit": code,
+            "physical_peak_budget_bytes": LIMIT, "observed_peak_bytes": after["peak_bytes"] if after else None,
+            "native_result_interpreted": False, "automatic_retry": False}))
+    return 0 if status == "EXITED_WITHIN_LIMITS" else 1
 
 
 def main():

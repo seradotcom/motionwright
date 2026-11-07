@@ -237,16 +237,18 @@ def prepare(args):
                 stream.write(raw)
     gate, gate_sha = check_source_gate(current, public)
     if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
-        from native_manim_recovery_gate import artifact_name
+        from native_manim_recovery_gate import validate_artifact
         retained = gate["runtime"]["retained_artifact"]
-        runtime_rows = [row for row in artifacts.get("artifacts", [])
-                        if row.get("id") == retained["artifact_id"]]
-        require(len(runtime_rows) == 1 and runtime_rows[0].get("name") == artifact_name(current)
-                and runtime_rows[0].get("expired") is False
-                and runtime_rows[0].get("size_in_bytes") == retained["artifact_zip_bytes"]
-                and runtime_rows[0].get("digest") == "sha256:" + retained["artifact_zip_sha256"]
-                and runtime_rows[0].get("workflow_run", {}).get("id") == int(run_id)
-                and runtime_rows[0].get("workflow_run", {}).get("head_sha") == source,
+        origin = gate["runtime"]["frozen"]["reuse"]["origin_context"]
+        # This runtime belongs to its retained origin run, not this new run's
+        # artifact roster. Observe that exact ID without downloading it again.
+        runtime_raw = get(root, "runtime-origin-artifact", args.gh,
+                          prefix + "/actions/artifacts/" + str(retained["artifact_id"]), limit=128 * 1024)
+        original = engine.strict(bounded(public / "runtime-artifact.original.json", 128 * 1024))
+        fresh = {**original, "api": engine.strict(runtime_raw), "api_original_utf8": runtime_raw.decode("utf-8"),
+                 "api_original_sha256": sha(runtime_raw)}
+        require(validate_artifact(fresh, origin, sha(bounded(public / "runtime-receipt.json", 2 * 1024 * 1024)))
+                == retained,
                 "recovery_runtime_host_observed_exact_retained_artifact")
     record = engine.strict(bounded(public / "recipient.json", 16384))
     recipient = transfer.validate_recipient(record, current, actor_id, gate_sha)
