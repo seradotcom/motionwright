@@ -261,6 +261,38 @@ class ImpactRoutingTests(unittest.TestCase):
 
 
 class ManualWorkflowBoundaryTests(unittest.TestCase):
+    def test_graph_original_store_and_r74_archive_critical_paths_trigger_source_g0(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        required = (
+            "tooling/tests/test_ci_graph_r74_singlecase.py",
+            "tooling/tests/test_ci_graph_readonly_archive.py",
+            "tooling/native_graph_build_reuse.py",
+            "tooling/native_graph_build_transfer.py",
+            "tooling/tests/test_graph_build_reuse.py",
+            "tooling/tests/test_graph_build_transfer.py",
+            "tooling/tests/test_graph_continuation.py",
+            ".github/workflows/studio-service-verification.yml",
+            "crates/storage/src/read_only.rs",
+            "crates/native/src/production/graph_authoring.rs",
+            "crates/native/examples/native-graph-review-session.rs",
+            "crates/service/examples/studio_review_session.rs",
+            "apps/studio/tests/support/nativeGraphCase.ts",
+            "apps/studio/tests/semantic-graph-service.spec.ts",
+        )
+        for item in required:
+            with self.subTest(path=item):
+                self.assertIn("      - '" + item + "'", trigger)
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        self.assertIn("tooling.tests.test_ci_graph_readonly_archive -v", gn1)
+        self.assertIn("tee knowledge/runtime/graph-fast-gn1-unittest.original.log", gn1)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("contents: read", workflow)
+        for blocked in ("graph produce", "graph wait", "graph run"):
+            self.assertNotIn(blocked, workflow)
+
     def test_source_only_push_and_manual_job_cannot_be_confused_with_r74_acceptance(self):
         root = Path(__file__).resolve().parents[2]
         p = root / ".github/workflows/graph-development-fast.yml"
