@@ -296,6 +296,11 @@ mod profile_store_tests {
     use motionwright_domain::Change;
 
     fn layout(root: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         for relative in [
             "owner",
             "owner/motionwright-data",
@@ -345,10 +350,14 @@ mod profile_store_tests {
     fn changed_imported_store_is_a_negative_and_does_not_create_reopen_receipt() {
         let root = tempfile::tempdir().unwrap();
         let (database, imported, project) = layout(root.path());
+        validate_paths(&database, "portrait", &project, &imported, true).unwrap();
         super::super::seed_hero_with_import(&database, "portrait", &project, Some(&imported))
             .unwrap();
+        validate_paths(&database, "portrait", &project, &imported, false).unwrap();
         let service = StudioService::open(&imported).unwrap();
-        let original = service.projects(2).unwrap().remove(0);
+        let imported_original =
+            json_original(&project.with_file_name("imported-project.original.json")).unwrap();
+        let original = actual_project(&service, &imported_original).unwrap();
         service
             .apply(
                 original.id,
@@ -361,7 +370,11 @@ mod profile_store_tests {
             .unwrap();
         drop(service);
         let receipt = project.with_file_name("profile-before-native-reopen.json");
-        assert!(reopen(&database, "portrait", &project, &imported, &receipt).is_err());
+        let error = reopen(&database, "portrait", &project, &imported, &receipt).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "retained profile Project differs after physical Store reopen"
+        );
         assert!(!receipt.exists());
         assert_eq!(
             StudioService::open(&imported)

@@ -167,7 +167,8 @@ def capture_tar(destination, roots, selection, *, current, scope, payload_max, f
                     for relative in names:
                         name = label + "/" + relative
                         route.need(len(rows) < files_max, "profiles-private-total-file-count")
-                        maximum = (route.LIMITS["stream_bytes"] if relative.endswith((".log", ".stdout", ".stderr"))
+                        maximum = (FILE_MAX if (label, relative) == ("runtime", "intake/official-zip.stdout")
+                                   else route.LIMITS["stream_bytes"] if relative.endswith((".log", ".stdout", ".stderr"))
                                    else MAX_JSON if relative.endswith((".json", ".ndjson")) else FILE_MAX)
                         try:
                             raw, identity = bounded_member(handles, label, relative, min(maximum, payload_max - total),
