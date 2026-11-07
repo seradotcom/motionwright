@@ -857,6 +857,25 @@ def load_graph_runtime_custody(_repo, _source_inputs, _runtime, _lifecycle):
     raise GraphOwnerFailure("graph-runtime-producer-binding-awaiting-reviewed-contract")
 
 
+def prepared_graph_manifest_inputs(source_inputs, runtime, index):
+    """Use only original pre-R74 copies; this owner never prepares or retries them."""
+    import native_graph_executable_inputs as native_inputs
+    source = index["source"]
+    require(Path(native_inputs.__file__).resolve() == Path(source["repository_root"]) / "tooling/native_graph_executable_inputs.py",
+            "graph-native-input-module-origin")
+    directory = Path(source["repository_root"]).parent / "v/graph-native-inputs"
+    prepared = native_inputs.validate_live(index["contract"]["native_executable_inputs"], index["binaries"], source, directory)
+    binaries = dict(source_inputs["binaries"])
+    for role, label in (("native_provider", "motionwright-native-provider"), ("manim_runner", "motionwright-manim-runner")):
+        ref = prepared[role]
+        binaries[label] = {"path": ref["path"], "sha256": ref["sha256"], "bytes": ref["size_bytes"]}
+    selected_runtime = dict(runtime)
+    for role, label in (("python3", "python"), ("ffmpeg", "ffmpeg")):
+        ref = prepared[role]
+        selected_runtime[label] = {"path": ref["path"], "sha256": ref["sha256"], "bytes": ref["size_bytes"]}
+    return {**source_inputs, "binaries": binaries}, selected_runtime
+
+
 def graph_manifest(repo, source_inputs, runtime, work):
     """The public Motionwright provider delegates only its closed font tools."""
     provider = source_inputs["binaries"]["motionwright-native-provider"]
@@ -1002,6 +1021,12 @@ class GraphBrowserOwner:
         runtime_stage("RUNTIME_INTAKE")
         self.runtime = runtime_inputs(repo)
         self.runtime_custody = load_graph_runtime_custody(repo, self.source_inputs, self.runtime, lifecycle)
+        self.native_manifest_inputs, self.native_manifest_runtime = prepared_graph_manifest_inputs(
+            self.source_inputs, self.runtime, _GRAPH_J1["index"])
+        new_json(lifecycle.evidence / "native-executable-inputs-verified.original.json", {
+            "producer_original": _GRAPH_J1["index"]["native_executable_inputs"],
+            "private_inputs": _GRAPH_J1["index"]["contract"]["native_executable_inputs"]["inputs"],
+            "owner_prepared_copies": False, "original_source_modified": False, "automatic_retry": False})
         self.verified_native_service_binary = _GRAPH_J1["index"]["binaries"]["native_graph_session"]["path"]
         runtime_stage("STORE_READBACK")
         self.initial_store_show = observe_existing_store(self)
@@ -1033,7 +1058,7 @@ class GraphBrowserOwner:
         new_json(lifecycle.evidence / "owner-paths.parsed.json", effective_paths)
         runtime_stage("PROVIDER_MANIFEST")
         manifest_path = self.paths["config"] / "motionwright-driver.json"
-        new_json(manifest_path, graph_manifest(repo, self.source_inputs, self.runtime, self.paths["work"]))
+        new_json(manifest_path, graph_manifest(repo, self.native_manifest_inputs, self.native_manifest_runtime, self.paths["work"]))
         runtime_stage("BOOTSTRAP_SOCKET")
         bootstrap_config = self.paths["config"] / "owner-bootstrap.toml"
         new_bytes(bootstrap_config, self.shared.owner_config(self.database.parent).encode("utf-8"))
@@ -1058,7 +1083,7 @@ class GraphBrowserOwner:
         runtime_stage("RESTRICTED_SOCKET")
         config = self.paths["config"] / "owner-restricted.toml"
         new_bytes(config, graph_owner_config(self.shared, self.database, manifest_path, resource, project,
-                    self.runtime, self.source_inputs, self.paths["work"]).encode("utf-8"))
+                    self.native_manifest_runtime, self.native_manifest_inputs, self.paths["work"]).encode("utf-8"))
         self.socket = self.socket_directory / "broker.sock"
         self.daemon = lifecycle.start("owner-restricted", [self.daemon_executable, "--config", str(config),
                                       "--socket", str(self.socket)], self.env)
@@ -1072,7 +1097,7 @@ class GraphBrowserOwner:
             "owner_inputs": file_identity(lifecycle.evidence / "source-inputs.json"),
             "driver_manifest": file_identity(manifest_path), "owner_config": file_identity(config),
             "runtime": {"root": str(self.runtime["runtime"]), "fontconfig": str(self.runtime["fontconfig"]),
-                        "python": self.runtime["python"], "ffmpeg": self.runtime["ffmpeg"]},
+                        "python": self.native_manifest_runtime["python"], "ffmpeg": self.native_manifest_runtime["ffmpeg"]},
             "session_reuse_across_wrapper_instances_allowed": False,
             "binding_ref_transfers_allowed": False, "new_client_operation": "new-client",
             "database_copied_or_seeded": False, "automatic_retry": False,
@@ -2192,7 +2217,8 @@ _GRAPH_J1_ATTEMPTED = False
 _GRAPH_READ_TOKEN = None
 _GRAPH_API_SEQUENCE = 0
 _GRAPH_IMPORT_CLOSURE = tuple("tooling/" + name + ".py" for name in (
-    "native_graph_browser_owner", "ci_canvas_service", "native_host_shared_state", "native_host_installed_shared_state",
+    "native_graph_browser_owner", "native_graph_executable_inputs", "ci_graph_dev_native_startup",
+    "ci_canvas_service", "native_host_shared_state", "native_host_installed_shared_state",
     "native_manim_graph_runtime_intake", "native_av_failure_guard", "candidate_smoke",
     "linux_first_use_custody", "linux_cold_start", "linux_first_use_accessible",
     "source_checkout_observation", "storage_schema_contract", "linux_gui_probe",
