@@ -184,6 +184,20 @@ class PreOwnerCapture(unittest.TestCase):
                     self.assertIn("--pattern " + Path(item).name, workflow)
         self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_pre_owner':6", workflow)
         self.assertIn("'dotted:tooling.tests.test_native_owner_release':4", workflow)
+        complete = {"test_native_fixedtxt_external_g2.py": 22,
+                    "test_native_fixedtxt_workflow.py": 26,
+                    "test_native_fixedtxt_pre_owner.py": 6,
+                    "test_native_owner_release.py": 4}
+        for filename, count in complete.items():
+            with self.subTest(source_roster=filename):
+                self.assertIn("'dotted:tooling.tests." + Path(filename).stem +
+                              "':" + str(count), workflow)
+                tree = ast.parse((TOOLING / "tests" / filename).read_text(encoding="utf-8"))
+                selected = sum(1 for cls in tree.body if isinstance(cls, ast.ClassDef)
+                               for item in cls.body if isinstance(item, ast.FunctionDef)
+                               and item.name.startswith("test_"))
+                self.assertEqual(selected, count)
+        self.assertEqual(sum(complete.values()), 58)
         for job in ("fixedtxt-original-owner", "fixedtxt-session-owner"):
             self.assertEqual(len([n for n in ast.parse(exact_clock_script(workflow, job)).body
                                   if isinstance(n, ast.FunctionDef)
