@@ -301,6 +301,26 @@ describe("semantic Graph timing on the shared project clock", () => {
     }
   });
 
+  it("recognizes source-frame projections relative to a nonaligned fractional scene origin", () => {
+    const { graph } = source("system_flow");
+    const rate = { num: "24000", den: "1001" }, fps = Number(rate.num) / Number(rate.den);
+    const sceneStart = { num: "1", den: "30" };
+    graph.time_range.start = graphFrameTime(2, rate);
+    graph.time_range.duration = graphFrameTime(12, rate);
+    graph.motion = "off";
+    const at = graphFrameTime(2, rate), duration = graphFrameTime(1, rate);
+    const frame = (index: number) => Number(sceneStart.num) / Number(sceneStart.den) + index / fps;
+    // The exact source-frame projection is one double ULP below the rational
+    // scene+Graph boundary; no arbitrary tolerance may move a continuous seek.
+    const origin = graphAddTime(sceneStart, graph.time_range.start);
+    expect(frame(2)).toBeLessThan(Number(origin.num) / Number(origin.den));
+    expect(graphPreviewClock(graph, sceneStart, frame(2) - 1e-8, rate).inInterval).toBe(false);
+    expect(graphPreviewClock(graph, sceneStart, frame(2), rate).inInterval).toBe(true);
+    expect(graphPreviewClock(graph, sceneStart, frame(4), rate).contains(at, duration)).toBe(true);
+    expect(graphPreviewClock(graph, sceneStart, frame(5), rate).contains(at, duration)).toBe(false);
+    expect(graphPreviewClock(graph, sceneStart, frame(14), rate).inInterval).toBe(false);
+  });
+
   it("preserves continuous playhead positions and the exclusive boundary without a tolerance", () => {
     const { graph, profile } = source("system_flow");
     graph.time_range.start = { num: "1", den: "30" }; graph.motion = "full";

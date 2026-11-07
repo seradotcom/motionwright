@@ -301,7 +301,8 @@ export function graphPreviewClock(
   const seconds = (value: Fraction) => Number(value.num) / Number(value.den);
   // Sum authored fractions before projecting into the numeric clock. Subtracting
   // a scene start from that clock can move both ends of a one-frame event.
-  const origin = add(graphFraction(sceneStart), graphFraction(graph.time_range.start));
+  const sceneOrigin = graphFraction(sceneStart);
+  const origin = add(sceneOrigin, graphFraction(graph.time_range.start));
   const boundary = (at: RationalTime, duration?: RationalTime) => {
     const start = add(origin, graphFraction(at));
     return duration === undefined ? start : add(start, graphFraction(duration));
@@ -315,6 +316,20 @@ export function graphPreviewClock(
       // Recognize only exact projections emitted by the frame clock or rational
       // scene seeks. Other continuous times are not snapped or given a tolerance.
       if (playhead === frame / fps || playhead === seconds(moment)) exactPlayhead = moment;
+    }
+    if (!exactPlayhead) {
+      // A scene can start on a different Deliverable's frame grid. A time
+      // projected as sceneStart + localFrame / fps is still an exact authored
+      // local frame even when it is not an absolute frame of this profile.
+      // Match only the literal numeric projection; never use an epsilon.
+      const sceneSeconds = seconds(sceneOrigin);
+      const localFrame = Math.round((playhead! - sceneSeconds) * fps);
+      if (Number.isSafeInteger(localFrame) && localFrame >= 0) {
+        const relative = { num: BigInt(localFrame) * BigInt(displayRate.den), den: BigInt(displayRate.num) };
+        const absolute = add(sceneOrigin, relative);
+        if (playhead === sceneSeconds + localFrame / fps || playhead === seconds(absolute))
+          exactPlayhead = absolute;
+      }
     }
   }
   const compare = (value: Fraction) => {
