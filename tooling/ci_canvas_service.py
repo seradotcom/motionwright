@@ -7915,6 +7915,32 @@ GRAPH_CASES = (
     ("graph-label-causal-diagram", "Graph causal_diagram follows the edge midpoint through real saves and restores manual placement after SQLite restart", (5, 2, 0)),
     ("graph-label-system-flow", "Graph system_flow follows the edge midpoint through real saves and restores manual placement after SQLite restart", (5, 2, 0)),
 )
+
+GRAPH_CASE_MODE_ENV = "MOTIONWRIGHT_GRAPH_CASE_MODE"
+
+def graph_case_rows(selected_case=None):
+    """Original whole cohort, or only the explicitly reviewed graph-flow case."""
+    require(selected_case is None or selected_case == "graph-flow", "Graph unsupported selected-case scope")
+    rows = GRAPH_CASES if selected_case is None else tuple(row for row in GRAPH_CASES if row[0] == selected_case)
+    require(len(rows) == (6 if selected_case is None else 1), "Graph selected-case roster has changed")
+    return rows
+
+def graph_selection_plan(selected_case=None):
+    rows = graph_case_rows(selected_case)
+    plan = {"requested": GRAPH_SCOPE, "required_tests": len(rows), "workers": 1, "retries": 0}
+    if selected_case is not None:
+        plan["selected_case"] = selected_case
+    return plan
+
+def graph_playwright_argv(node, cli, cases_root, selected_case=None):
+    argv = [str(node), str(cli), "test", "semantic-graph-service.spec.ts", "--project=chromium",
+            "--workers=1", "--retries=0", "--repeat-each=1", "--max-failures=1",
+            "--forbid-only", "--reporter=json", "--output=" + str(cases_root)]
+    if selected_case is not None:
+        title = graph_case_rows(selected_case)[0][1]
+        argv.extend(["--grep", "^" + re.escape("chromium semantic-graph-service.spec.ts " + title) + "$"])
+    return argv
+
 GRAPH_ROLES = ("semwright", "semwrightd", "native_provider", "shared_state_actor", "manim_runner",
                "python3", "ffmpeg", "ordinary_service", "native_graph_session", "semwright_sandbox")
 GRAPH_SDK_ROLES = ("semwright", "semwrightd", "semwright_sandbox")
@@ -7971,15 +7997,15 @@ def graph_case_layout(cases_root, case_id):
             "owner_socket": owner_socket}
 
 
-def graph_collected_case_roots(cases_root):
-    """Require the same six exclusive roots, never select a historical alias."""
+def graph_collected_case_roots(cases_root, *, selected_case=None):
+    """Require only the original selected canonical roots, never historical aliases."""
     cases_root = Path(cases_root)
     require(cases_root.is_dir() and cases_root.resolve(strict=True) == cases_root, "Graph canonical cases root absent")
-    rows = [(case, graph_case_layout(cases_root, case)["private_root"]) for case in sorted(row[0] for row in GRAPH_CASES)]
+    rows = [(case, graph_case_layout(cases_root, case)["private_root"]) for case in sorted(row[0] for row in graph_case_rows(selected_case))]
     require(all(root.is_dir() and not root.is_symlink() and root.resolve(strict=True) == root for _, root in rows),
             "Graph final canonical case root absent or aliased")
     identities = [(root.stat().st_dev, root.stat().st_ino) for _, root in rows]
-    require(len(set(identities)) == 6, "Graph final case roots share physical identity")
+    require(len(set(identities)) == len(rows), "Graph final case roots share physical identity")
     expected = {root / "parent-source-binding.original.json" for _, root in rows}
     require(set(cases_root.rglob("parent-source-binding.original.json")) == expected,
             "Graph final original case root bijection")
@@ -8113,7 +8139,8 @@ def graph_api_observation(index, index_ref, token, publish, label, end):
     run, run_meta = graph_api_get("/actions/runs/" + index["source"]["run_id"], token, publish, label + "-run", end)
     graph_run_binding(run, {"source_sha": index["source"]["sha"], "run_id": index["source"]["run_id"]})
     rows, pages = [], []
-    contexts = {("mw-owner/" + GRAPH_SCOPE + "/" + index["source"]["run_id"] + "/1/" + row[0]).lower() for row in GRAPH_CASES}
+    contexts = {("mw-owner/" + GRAPH_SCOPE + "/" + index["source"]["run_id"] + "/1/" + row[0]).lower()
+                for row in graph_case_rows(index["contract"]["execution"].get("selected_case"))}
     for page in range(1, GRAPH_API_PAGES + 1):
         value, meta = graph_api_get("/commits/" + index["source"]["sha"] + "/statuses?per_page=100&page=" + str(page),
                                     token, publish, label + "-statuses-" + str(page), end)
@@ -8182,10 +8209,14 @@ def graph_verify_producer_index(index_ref, case_id):
     require(set(binaries) == set(GRAPH_ROLES) and len({ref["path"] for ref in binaries.values()}) == 10,
             "Graph ten distinct runtime roles")
     execution = contract["execution"]
-    require(set(execution) == {"scope", "job", "job_id", "deadline_original", "deadline_unix_ms", "producer_root", "cases_root", "budget"}
+    base_execution = {"scope", "job", "job_id", "deadline_original", "deadline_unix_ms", "producer_root", "cases_root", "budget"}
+    selected_case = execution.get("selected_case")
+    selected_rows = graph_case_rows(selected_case)
+    require(set(execution) == (base_execution if selected_case is None else base_execution | {"selected_case"})
             and execution["scope"] == GRAPH_SCOPE and execution["job"] == "real-service"
             and execution["budget"] == GRAPH_BUDGET, "Graph finite original allocation")
-    require(set(contract["cases"]) == {row[0] for row in GRAPH_CASES} and case_id in contract["cases"], "Graph closed six-case roster")
+    require(set(contract["cases"]) == {row[0] for row in GRAPH_CASES}
+            and case_id in {row[0] for row in selected_rows}, "Graph closed reviewed-case roster")
     for name in GRAPH_AUTHORITY:
         require(name in contract["source_files"], "Graph authority source omitted: " + name)
     for ref_name, root_name, expected_sha, expected_tree, files in (
@@ -8948,7 +8979,11 @@ def graph_source_receipt(source_root, expected, names, before, producer, label):
 def graph_produce(repo, recipient):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     output, producer, runtime, sdk = root / "e", root / "e/graph-producer", root / "runtime", root / "sdk"
-    for case, _, _ in GRAPH_CASES:
+    case_mode = os.environ.get(GRAPH_CASE_MODE_ENV, "all")
+    require(case_mode in ("all", "graph-flow"), "Graph explicit reviewed selection must be all or graph-flow")
+    selected_case = None if case_mode == "all" else case_mode
+    selected_rows = graph_case_rows(selected_case)
+    for case, _, _ in selected_rows:
         graph_case_layout(output / "graph-cases", case)
     require(not output.exists() and not sdk.exists() and not runtime.exists(), "Graph once-only fresh production roots")
     output.mkdir(mode=0o700); producer.mkdir(mode=0o700); (producer / "consumption").mkdir(mode=0o700)
@@ -9084,6 +9119,8 @@ def graph_produce(repo, recipient):
             execution = {"scope": GRAPH_SCOPE, "job": "real-service", "job_id": job["id"], "deadline_original": clock.original_ref,
                 "deadline_unix_ms": clock.original["deadline_unix_ms"], "producer_root": str(producer),
                 "cases_root": str(output / "graph-cases"), "budget": GRAPH_BUDGET}
+            if selected_case is not None:
+                execution["selected_case"] = selected_case
             contract = {"source_files": source_view["files"], "sdk_tree": sdk_view["tree"], "sdk_files": sdk_view["files"],
                 "builds": {**sdk_contracts, **product_contracts},
                 "ordinary_preflight": {key: preflight["command"][key] for key in ("argv", "cwd", "selected_environment")},
@@ -9110,11 +9147,11 @@ def graph_produce(repo, recipient):
             index_ref = graph_put(producer / "producer-index.original.json", encoded)
             # Acyclic originals validation precedes the external decision. It is
             # not an approval and cannot launch an owner or a Service case.
-            graph_verify_producer_index(index_ref, GRAPH_CASES[0][0])
+            graph_verify_producer_index(index_ref, selected_rows[0][0])
             graph_runtime_unchanged(index, producer)
             graph_put_json(producer / "review-request.original.json", {"index": index_ref,
                 "source": source, "execution": execution, "outside_original_copies": review_copies,
-                "contexts": ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in GRAPH_CASES],
+                "contexts": ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in selected_rows],
                 "meaning": "REQUIRES_INDEPENDENT_REVIEW_AND_EXTERNAL_STATUS_NO_NATIVE_CASE_EXECUTED"})
             native_inputs.validate_live(native_record, binaries, source, root / "graph-native-inputs")
             graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"] - native_copy_bytes,
@@ -9164,6 +9201,7 @@ def graph_wait_for_external_review(repo):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     producer = root / "e/graph-producer"; index_ref = graph_ref(producer / "producer-index.original.json", GRAPH_BYTES)
     index = graph_json(graph_read(index_ref, GRAPH_BYTES))
+    selected_rows = graph_case_rows(index["contract"]["execution"].get("selected_case"))
     token = os.environ.pop(GRAPH_TOKEN_ENV, "")
     require(token, "Graph readonly status credential absent")
     wait_root = root / "tools/graph-approval-observations"; wait_root.mkdir(mode=0o700)
@@ -9178,7 +9216,7 @@ def graph_wait_for_external_review(repo):
                     return graph_put(wait_root / name, raw)
                 run, rows, observed = graph_api_observation(index, index_ref, token, publish, "poll-" + str(attempt), time.monotonic() + 12)
                 accepted = {}
-                for case, _, _ in GRAPH_CASES:
+                for case, _, _ in selected_rows:
                     context = "mw-owner/" + GRAPH_SCOPE + "/" + index["source"]["run_id"] + "/1/" + case
                     newest = next((row for row in rows if type(row.get("context")) is str and row["context"].lower() == context.lower()), None)
                     if newest is None:
@@ -9190,8 +9228,8 @@ def graph_wait_for_external_review(repo):
                         continue
                     accepted[case] = graph_status_core(run, rows, {"source_sha": index["source"]["sha"],
                         "run_id": index["source"]["run_id"], "case_id": case, "index_sha256": index_ref["sha256"]})
-                if len(accepted) == 6:
-                    graph_verify_producer_index(index_ref, GRAPH_CASES[0][0])
+                if len(accepted) == len(selected_rows):
+                    graph_verify_producer_index(index_ref, selected_rows[0][0])
                     graph_runtime_unchanged(index, producer)
                     graph_put_json(root / "e/r74-wait-complete.original.json", {"index": index_ref, "statuses": accepted,
                         "observation": observed, "meaning": "EXTERNAL_OWNER_ADMISSION_OBSERVED_CASE_CONSUMERS_MUST_REVALIDATE",
@@ -9211,8 +9249,10 @@ def graph_wait_for_external_review(repo):
             token = None
 
 
-def graph_report(document, *, listing, expected=None):
-    filename = "semantic-graph-service.spec.ts"; titles = tuple(row[1] for row in GRAPH_CASES)
+def graph_report(document, *, listing, expected=None, selected_case=None):
+    filename = "semantic-graph-service.spec.ts"
+    selected_rows = graph_case_rows(selected_case)
+    titles = tuple(row[1] for row in selected_rows)
     require(document.get("errors") == [], "Graph original report errors")
     config, stats = document.get("config", {}), document.get("stats", {})
     projects = config.get("projects", [])
@@ -9225,7 +9265,8 @@ def graph_report(document, *, listing, expected=None):
         for suite in suites:
             specs.extend(suite.get("specs", [])); visit(suite.get("suites", []))
     visit(document.get("suites"))
-    require(len(specs) == 6 and {row.get("title") for row in specs} == set(titles), "Graph original six titles")
+    require(len(specs) == len(selected_rows) and {row.get("title") for row in specs} == set(titles),
+            "Graph original reviewed titles")
     identities = []
     for row in specs:
         tests = row.get("tests", [])
@@ -9238,13 +9279,15 @@ def graph_report(document, *, listing, expected=None):
             require(case.get("results") == [], "Graph discovery performed an execution")
         identities.append({key: row[key] for key in ("id", "file", "title", "line", "column")})
     identities.sort(key=lambda row: row["title"])
-    require(len({row["id"] for row in identities}) == 6, "Graph duplicate caller IDs")
+    require(len({row["id"] for row in identities}) == len(selected_rows), "Graph duplicate caller IDs")
     if listing:
-        require(stats.get("expected") == stats.get("unexpected") == stats.get("flaky") == 0 and stats.get("skipped") == 6,
-                "Graph discovery counters")
-        return {"status": "LISTED_NOT_EXECUTED", "identities": identities, "case_timeout_ms": 120000, "selected": 6}
+        require(stats.get("expected") == stats.get("unexpected") == stats.get("flaky") == 0
+                and stats.get("skipped") == len(selected_rows), "Graph discovery counters")
+        return {"status": "LISTED_NOT_EXECUTED", "identities": identities,
+                "case_timeout_ms": 120000, "selected": len(selected_rows)}
     verified = validate_browser_execution(document, filename, titles)
-    require(expected and expected.get("identities") == identities and expected.get("selected") == 6,
+    require(expected and expected.get("identities") == identities
+            and expected.get("selected") == len(selected_rows),
             "Graph execution does not match actual discovery")
     return {**verified, "identities": identities, "original_discovery_matched": True}
 
@@ -9302,10 +9345,13 @@ def graph_archive_bindings(root, inventory, source):
     """Existing whole-evidence collector's Graph branch, after all reporters."""
     receipt = archive_json(root, inventory, "e/receipt.json")
     require(receipt.get("status") == "CLOSED_GRAPH_OBSERVATIONS" and receipt.get("formal_acceptance") is False
-            and receipt.get("selection_plan") == {"requested": GRAPH_SCOPE, "required_tests": 6, "workers": 1, "retries": 0}
-            and receipt.get("source_before") == receipt.get("source_after") == source, "Graph whole-run source/closure")
+            and receipt.get("source_before") == receipt.get("source_after") == source, "Graph reviewed-run source/closure")
     index_ref = receipt["producer_index"]
     index = graph_json(graph_read(index_ref, GRAPH_BYTES))
+    selected_case = index["contract"]["execution"].get("selected_case")
+    selected_rows = graph_case_rows(selected_case)
+    require(receipt.get("selection_plan") == graph_selection_plan(selected_case),
+            "Graph final original selection differs from reviewed execution")
     require(index["source"]["sha"] == os.environ.get("GITHUB_SHA") and index["source"]["run_id"] == os.environ.get("GITHUB_RUN_ID")
             and str(index["source"]["run_attempt"]) == os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "Graph final same-run/attempt/source")
     def retained(ref, maximum=512 * GRAPH_BYTES):
@@ -9319,9 +9365,10 @@ def graph_archive_bindings(root, inventory, source):
         observation = receipt[name]
         command = graph_json(retained(observation["process"]["command"], GRAPH_BYTES))
         require_observed_command(command); require(command.get("exit_code") == 0 and command.get("cleanup_errors") == [], "Graph final reporter process")
-        expected_argv = [str(Path(shutil.which("node")).resolve()), str(Path(index["source"]["repository_root"]) / "apps/studio/node_modules/@playwright/test/cli.js"),
-            "test", "semantic-graph-service.spec.ts", "--project=chromium", "--workers=1", "--retries=0", "--repeat-each=1",
-            "--max-failures=1", "--forbid-only", "--reporter=json", "--output=" + str(root / "e/graph-cases")]
+        expected_argv = graph_playwright_argv(
+            Path(shutil.which("node")).resolve(),
+            Path(index["source"]["repository_root"]) / "apps/studio/node_modules/@playwright/test/cli.js",
+            root / "e/graph-cases", selected_case)
         require(command["argv"] == expected_argv + (["--list"] if name == "discovery" else [])
                 and command["cwd"] == str(Path(index["source"]["repository_root"]) / "apps/studio")
                 and command["selected_environment"]["PLAYWRIGHT_JSON_OUTPUT_FILE"] == str(root / ("e/graph-discovery.json" if name == "discovery" else "e/graph-execution.json"))
@@ -9331,11 +9378,13 @@ def graph_archive_bindings(root, inventory, source):
             raw = retained(observation["process"][stream], 64 * GRAPH_BYTES)
             require(command[stream] == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, "Graph original reporter raw differs")
         document = graph_json(retained(observation["report"], 64 * GRAPH_BYTES))
-        verified = graph_report(document, listing=name == "discovery", expected=receipt["discovery"]["verified"] if name == "execution" else None)
+        verified = graph_report(document, listing=name == "discovery",
+                                expected=receipt["discovery"]["verified"] if name == "execution" else None,
+                                selected_case=selected_case)
         require(verified == observation["verified"], "Graph late original reporter changed")
     cases_root = Path(index["contract"]["execution"]["cases_root"])
     require(cases_root == root / "e/graph-cases", "Graph final cases root differs from original index")
-    case_roots = graph_collected_case_roots(cases_root)
+    case_roots = graph_collected_case_roots(cases_root, selected_case=selected_case)
     cases, allocated_bytes, allocated_members = [], 0, 0
     for admitted_case, case_root in case_roots:
         state = graph_tree_allocation(case_root, GRAPH_BUDGET["case_bytes"], GRAPH_BUDGET["case_members"])
@@ -9445,7 +9494,8 @@ def graph_archive_bindings(root, inventory, source):
         pool = graph_validate_allocation_union(pool_rows, expected_caps)
         cases.append({"case_id": case, "root": str(case_root), "owner": final_ref, "reopen": graph_ref(reopen_path),
                       "capture": captures[0], "allocation": state, "original_pool": pool, "status_id": parent["approval"]["status_id"]})
-    require({row["case_id"] for row in cases} == {row[0] for row in GRAPH_CASES}, "Graph final six-case bijection")
+    require({row["case_id"] for row in cases} == {row[0] for row in selected_rows},
+            "Graph final reviewed-case bijection")
     producer_state = graph_tree_allocation(root / "e/graph-producer", GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
     shared_members = len(inventory["entries"]) - allocated_members - producer_state["members"]
     shared_bytes = sum(row.get("bytes", 0) for row in inventory["entries"].values()) - allocated_bytes - producer_state["bytes"]
@@ -9491,6 +9541,7 @@ def graph_case_failure_cause(error):
     literals = {
         "Graph actual discovery failed": "DISCOVERY_EXIT_NONZERO",
         "Graph actual six-case process failed": "CASES_EXIT_NONZERO",
+        "Graph actual reviewed-case process failed": "CASES_EXIT_NONZERO",
         "Graph complete shared runtime changed": "SHARED_RUNTIME_CHANGED",
         "Graph final exact source changed": "SOURCE_CHANGED",
         "Graph final SDK tree changed": "SDK_TREE_CHANGED",
@@ -9620,18 +9671,24 @@ def graph_run_cases(repo):
     index_ref = graph_ref(producer / "producer-index.original.json", GRAPH_BYTES)
     index = graph_json(graph_read(index_ref, GRAPH_BYTES))
     require((output / "r74-wait-complete.original.json").is_file() and not (output / "receipt.json").exists(), "Graph real review wait absent or prior attempt")
-    verified = graph_verify_producer_index(index_ref, GRAPH_CASES[0][0])
+    selected_case = index["contract"]["execution"].get("selected_case")
+    selected_rows = graph_case_rows(selected_case)
+    verified = graph_verify_producer_index(index_ref, selected_rows[0][0])
+    original_wait = graph_json((output / "r74-wait-complete.original.json").read_bytes())
+    require(original_wait.get("index") == index_ref and
+            set(original_wait.get("statuses", {})) == {row[0] for row in selected_rows},
+            "Graph original R74 status roster differs from reviewed selection")
     token = os.environ.get(GRAPH_TOKEN_ENV, ""); require(token, "Graph case independent metadata credential absent")
-    env = dict(os.environ, MOTIONWRIGHT_GRAPH_NATIVE_CASE="all", MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL=index_ref["path"],
+    env = dict(os.environ, MOTIONWRIGHT_GRAPH_NATIVE_CASE=selected_case or "all",
+               MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL=index_ref["path"],
         MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1", MOTIONWRIGHT_SERVICE_TEST_BIN=index["binaries"]["ordinary_service"]["path"],
         MOTIONWRIGHT_SERVICE_TEST_TMPDIR=str(root / "x"), SEMWRIGHT_CHECKOUT=index["source"]["sdk_root"],
         SEMWRIGHT_TEST_MANIM_RUNTIME=index["runtime"]["root"], SEMWRIGHT_TEST_PYTHON=index["binaries"]["python3"]["path"],
         SEMWRIGHT_TEST_FFMPEG=index["binaries"]["ffmpeg"]["path"], PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
     node = str(Path(shutil.which("node")).resolve()); cli = str(repo / "apps/studio/node_modules/@playwright/test/cli.js")
-    argv = [node, cli, "test", "semantic-graph-service.spec.ts", "--project=chromium", "--workers=1", "--retries=0",
-            "--repeat-each=1", "--max-failures=1", "--forbid-only", "--reporter=json", "--output=" + str(output / "graph-cases")]
+    argv = graph_playwright_argv(node, cli, output / "graph-cases", selected_case)
     report = {"schema": "motionwright.canvas-service-ci/1", "status": "DENY", "formal_acceptance": False,
-              "selection_plan": {"requested": GRAPH_SCOPE, "required_tests": 6, "workers": 1, "retries": 0},
+              "selection_plan": graph_selection_plan(selected_case),
               "run_id": index["source"]["run_id"], "run_attempt": "1", "job": "real-service", "producer_index": index_ref,
               "source_before": graph_source_view(graph_json(graph_read(index["source_original"], 8 * GRAPH_BYTES))["source_before"]),
               "native_render": "PER_CASE_ORIGINALS_REQUIRE_A5_ASSESSMENT", "installed_tauri": "NOT_RUN", "human_acceptance": "NOT_RUN"}
@@ -9647,7 +9704,8 @@ def graph_run_cases(repo):
                 diagnostic["playwright"] = graph_observed_playwright_failure(repo, output / "graph-discovery.json", command)
             require(command["exit_code"] == 0, "Graph actual discovery failed")
             diagnostic["stage"] = "DISCOVERY_REPORT"
-            discovery = graph_report(graph_json((output / "graph-discovery.json").read_bytes()), listing=True)
+            discovery = graph_report(graph_json((output / "graph-discovery.json").read_bytes()),
+                                     listing=True, selected_case=selected_case)
             report["discovery"] = {"process": {name: graph_ref(output / ("graph-discovery." + suffix)) for name, suffix in (
                 ("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))},
                 "report": graph_ref(output / "graph-discovery.json"), "verified": discovery}
@@ -9664,15 +9722,16 @@ def graph_run_cases(repo):
             diagnostic["exit_code"] = command["exit_code"] if type(command["exit_code"]) is int and -255 <= command["exit_code"] <= 255 else None
             if command["exit_code"] != 0:
                 diagnostic["playwright"] = graph_observed_playwright_failure(repo, output / "graph-execution.json", command)
-            require(command["exit_code"] == 0, "Graph actual six-case process failed")
+            require(command["exit_code"] == 0, "Graph actual reviewed-case process failed")
             diagnostic["stage"] = "CASES_REPORT"
-            execution = graph_report(graph_json((output / "graph-execution.json").read_bytes()), listing=False, expected=discovery)
+            execution = graph_report(graph_json((output / "graph-execution.json").read_bytes()),
+                                     listing=False, expected=discovery, selected_case=selected_case)
             report["execution"] = {"process": {name: graph_ref(output / ("graph-cases." + suffix)) for name, suffix in (
                 ("command", "command.json"), ("stdout", "stdout.log"), ("stderr", "stderr.log"))},
                 "report": graph_ref(output / "graph-execution.json"), "verified": execution}
         diagnostic.update(stage="FINAL_PRODUCERS", exit_code=None)
         with clock.phase("closure"):
-            for case, _, _ in GRAPH_CASES:
+            for case, _, _ in selected_rows:
                 graph_verify_producer_index(index_ref, case)
             diagnostic["stage"] = "RUNTIME_AFTER"
             report["runtime_after"] = graph_runtime_unchanged(index, producer)
