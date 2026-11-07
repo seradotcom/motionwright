@@ -122,6 +122,19 @@ class ExecutableInputsTests(unittest.TestCase):
         self.assertFalse(self.directory.exists())
         self.assertEqual(self.intents, [])
 
+    def test_staging_contract_cannot_raise_other_caps_or_drop_reserved_bytes(self):
+        record = self.prepare()
+        for field, value in (("case_hard_file_bytes", inputs.PER_FILE_BYTES),
+                             ("other_child_file_bytes", inputs.PER_FILE_BYTES),
+                             ("driver_file_bytes", inputs.PER_FILE_BYTES),
+                             ("staging_total_bytes", 1), ("simultaneous_owner_limit", 2),
+                             ("charged_to_producer_allocation", False)):
+            with self.subTest(field=field):
+                mutated = copy.deepcopy(record)
+                mutated["daemon_staging"][field] = value
+                with self.assertRaisesRegex(ValueError, "Graph daemon staging contract"):
+                    inputs.validate_contract(mutated, self.binaries, self.source, self.directory)
+
     def test_owner_rejects_foreign_preparation_without_mutating_originals(self):
         record = self.prepare()
         original_source = {"binaries": {"motionwright-native-provider": dict(self.binaries["native_provider"]),

@@ -56,6 +56,78 @@ use uuid::Uuid;
 
 const FIXTURE_LABEL: &str = "synthetic_test_fixture";
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const GRAPH_STORE_FILE_BYTES_ENV: &str = "MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES";
+#[cfg(target_os = "linux")]
+const GRAPH_STORE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const GRAPH_STAGING_FILE_BYTES_CEILING: u64 = 64 * 1024 * 1024;
+
+fn graph_store_file_bound_selected(
+    selected: bool,
+    value: Option<&std::ffi::OsStr>,
+) -> Result<bool, String> {
+    match (selected, value) {
+        (false, None) => Ok(false),
+        (true, Some(value)) if value == std::ffi::OsStr::new("4194304") => Ok(true),
+        _ => Err("Graph Store file bound requires its exact private flag and selector.".into()),
+    }
+}
+
+/// Close the inherited staging allowance before any Service/SQLite open.
+/// This private test-process selector only narrows resources. It confers no
+/// Native/Host authority and cannot be selected through a JSONL request.
+pub fn enforce_graph_store_file_bound(selected: bool) -> Result<(), String> {
+    let value = std::env::var_os(GRAPH_STORE_FILE_BYTES_ENV);
+    if !graph_store_file_bound_selected(selected, value.as_deref())? {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let cap = GRAPH_STORE_FILE_BYTES as libc::rlim_t;
+        let inherited = graph_store_file_limit()?;
+        if inherited.rlim_cur != cap
+            || inherited.rlim_max < cap
+            || inherited.rlim_max > GRAPH_STAGING_FILE_BYTES_CEILING as libc::rlim_t
+        {
+            return Err(
+                "Graph Store inherited file bound is outside its admitted envelope.".into(),
+            );
+        }
+        let closed = libc::rlimit {
+            rlim_cur: cap,
+            rlim_max: cap,
+        };
+        // SAFETY: RLIMIT_FSIZE accepts a valid pointer to this initialized rlimit;
+        // this only reduces limits in the current private child process.
+        if unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &closed) } != 0 {
+            return Err(
+                "Graph Store file bound could not be closed before opening its Store.".into(),
+            );
+        }
+        let observed = graph_store_file_limit()?;
+        if observed.rlim_cur != cap || observed.rlim_max != cap {
+            return Err("Graph Store file bound readback differs before opening its Store.".into());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Graph Store file bound requires the admitted Linux owner.".into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn graph_store_file_limit() -> Result<libc::rlimit, String> {
+    let mut observed = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit initializes a valid, exclusively borrowed rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut observed) } != 0 {
+        return Err("Graph Store file bound is unavailable before opening its Store.".into());
+    }
+    Ok(observed)
+}
 
 fn source_locked_sdk_revision() -> Result<&'static str, String> {
     static REVISION: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
@@ -896,13 +968,16 @@ pub fn run_with_graph_backend(
     let database = args.next().ok_or("Missing test database path")?;
     let mut synthetic = false;
     let mut desktop_invoke_fixture = false;
+    let mut graph_store_file_bound = false;
     for arg in args {
         match arg.as_str() {
             "--synthetic-fixture" if !synthetic => synthetic = true,
             "--desktop-invoke-fixture" if !desktop_invoke_fixture => desktop_invoke_fixture = true,
+            "--graph-store-file-bound" if !graph_store_file_bound => graph_store_file_bound = true,
             _ => return Err("Unknown or duplicate test transport option".into()),
         }
     }
+    enforce_graph_store_file_bound(graph_store_file_bound)?;
     let mut session = Session::open_with_graph_backend(database, synthetic, factory)?;
     session.desktop_invoke_fixture = desktop_invoke_fixture;
     let input = io::stdin();
@@ -938,6 +1013,182 @@ pub fn run_with_graph_backend(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_with_graph_backend(|_, _| Ok(None))
+}
+
+#[cfg(test)]
+mod graph_store_file_bound_tests {
+    use super::*;
+
+    #[test]
+    fn selector_requires_exact_private_pairing() {
+        use std::ffi::OsStr;
+        assert!(!graph_store_file_bound_selected(false, None).unwrap());
+        assert!(graph_store_file_bound_selected(true, Some(OsStr::new("4194304"))).unwrap());
+        assert!(graph_store_file_bound_selected(true, None).is_err());
+        for value in [
+            "",
+            "4194303",
+            "4194305",
+            "04194304",
+            "+4194304",
+            "4194304 ",
+            " 4194304",
+            "4194304\n",
+            "unlimited",
+        ] {
+            assert!(graph_store_file_bound_selected(true, Some(OsStr::new(value))).is_err());
+        }
+        assert!(graph_store_file_bound_selected(false, Some(OsStr::new("4194304"))).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(
+                graph_store_file_bound_selected(true, Some(OsStr::from_bytes(&[0xff, 0xfe])))
+                    .is_err()
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const CHILD_CASE: &str = "MOTIONWRIGHT_GRAPH_FILE_BOUND_TEST_CASE";
+
+    #[cfg(target_os = "linux")]
+    fn actual_child(case: &str) {
+        let module = module_path!().split_once("::").unwrap().1;
+        let test = format!("{module}::graph_store_file_bound_child_process");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            &test,
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        command.env(CHILD_CASE, case);
+        command.env_remove(GRAPH_STORE_FILE_BYTES_ENV);
+        if case != "missing" {
+            command.env(
+                GRAPH_STORE_FILE_BYTES_ENV,
+                if case == "wrong-selector" {
+                    "4194305"
+                } else {
+                    "4194304"
+                },
+            );
+        }
+        let output = command
+            .output()
+            .expect("Actual Linux test child did not start");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "case={case}; {stdout}; {stderr}");
+        assert!(
+            stdout.contains("1 passed; 0 failed"),
+            "No actual child test: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("GRAPH_FILE_BOUND_KERNEL_OBSERVED:{case}")),
+            "Missing actual kernel observation: {stdout}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn actual_kernel_closes_staging_hard_limit_before_opening_store() {
+        actual_child("staging");
+        actual_child("already-closed");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn actual_kernel_rejects_unadmitted_inherited_limits() {
+        actual_child("wrong-soft");
+        actual_child("too-small");
+        actual_child("too-large");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn invalid_selector_cannot_change_the_actual_kernel_limit() {
+        actual_child("missing");
+        actual_child("wrong-selector");
+        actual_child("unselected");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "Executed only by isolated child-process tests; never reduce the test runner's hard limit"]
+    fn graph_store_file_bound_child_process() {
+        let case = std::env::var(CHILD_CASE).expect("A parent test must select this child");
+        let mib = 1024 * 1024;
+        let (soft, hard, accepted) = match case.as_str() {
+            "staging" => (4 * mib, 64 * mib, true),
+            "already-closed" => (4 * mib, 4 * mib, true),
+            "wrong-soft" => (8 * mib, 64 * mib, false),
+            "too-small" => (2 * mib, 2 * mib, false),
+            "too-large" => (4 * mib, 128 * mib, false),
+            "missing" | "wrong-selector" | "unselected" => (4 * mib, 64 * mib, false),
+            _ => panic!("Unknown private child test"),
+        };
+        let inherited = libc::rlimit {
+            rlim_cur: soft,
+            rlim_max: hard,
+        };
+        // SAFETY: This is a separate test process with an initialized limit.
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &inherited) },
+            0
+        );
+        let result = enforce_graph_store_file_bound(case != "unselected");
+        let observed = graph_store_file_limit().unwrap();
+        if accepted {
+            result.unwrap();
+            let cap = GRAPH_STORE_FILE_BYTES as libc::rlim_t;
+            assert_eq!((observed.rlim_cur, observed.rlim_max), (cap, cap));
+            // Re-entrance from Native main into the shared runner is idempotent.
+            enforce_graph_store_file_bound(true).unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let database = directory.path().join("actual.sqlite3");
+            let service = StudioService::open(&database).unwrap();
+            drop(service);
+            assert!(database.is_file());
+            assert!(database.metadata().unwrap().len() < GRAPH_STORE_FILE_BYTES);
+            let probe = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(directory.path().join("bounded-output"))
+                .unwrap();
+            // SAFETY: Only this disposable child ignores SIGXFSZ, so the real
+            // kernel EFBIG can be asserted without killing the test runner.
+            assert_ne!(
+                unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) },
+                libc::SIG_ERR
+            );
+            assert_eq!(
+                probe
+                    .set_len(GRAPH_STORE_FILE_BYTES + 1)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EFBIG)
+            );
+            assert_eq!(probe.metadata().unwrap().len(), 0);
+            let raised_soft = libc::rlimit {
+                rlim_cur: cap + 1,
+                rlim_max: cap,
+            };
+            // SAFETY: The kernel must reject a soft limit above its hard limit.
+            assert_ne!(
+                unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &raised_soft) },
+                0
+            );
+            let after = graph_store_file_limit().unwrap();
+            assert_eq!((after.rlim_cur, after.rlim_max), (cap, cap));
+        } else {
+            assert!(result.is_err());
+            assert_eq!((observed.rlim_cur, observed.rlim_max), (soft, hard));
+        }
+        println!("GRAPH_FILE_BOUND_KERNEL_OBSERVED:{case}");
+    }
 }
 
 #[cfg(test)]

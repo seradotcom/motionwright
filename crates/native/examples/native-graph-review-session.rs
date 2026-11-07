@@ -699,6 +699,10 @@ impl shared_session::GraphBackend for NativeGraphBackend {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The restricted daemon retains a bounded executable-staging allowance.
+    // This service must irreversibly close it before even parsing a connection
+    // or reaching the shared runner that opens the actual Store.
+    shared_session::enforce_graph_store_file_bound(true)?;
     // A6's private restrictions must be valid BEFORE the shared runner opens
     // Service/SQLite, creates its parent or reaches the Native factory. Zero
     // keeps the existing Service available with no Graph callback admission.

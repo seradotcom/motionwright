@@ -13,9 +13,12 @@ from pathlib import Path
 import re
 import stat
 
-from ci_graph_dev_native_startup import executable_metadata, stage_executable_input
+from ci_graph_dev_native_startup import (daemon_staging_plan_from_inputs,
+                                       executable_metadata, stage_executable_input)
 
-SCHEMA = "motionwright.graph-native-executable-inputs/1"
+SCHEMA = "motionwright.graph-native-executable-inputs/2"
+STAGING_SCHEMA = "motionwright.graph-daemon-staging/1"
+STORE_FILE_BYTES = 4 * 1024 * 1024
 ROLES = {"native_provider": "motionwright-native-provider", "manim_runner": "motionwright-manim-runner",
          "python3": "python3", "ffmpeg": "ffmpeg"}
 # The provider's SDK ceiling is 64 MiB; the tools' SDK ceiling is 256 MiB.
@@ -64,6 +67,24 @@ def input_total(binaries):
     return total
 
 
+def daemon_staging_contract(prepared):
+    """Separate trusted executable staging from unchanged Store/output limits."""
+    input_total(prepared)
+    aliases = {"native_provider": "native_provider", "manim_runner": "manim_runner",
+               "python": "python3", "ffmpeg": "ffmpeg"}
+    actual = {name: {"path": prepared[role]["path"], "sha256": prepared[role]["sha256"],
+                     "bytes": prepared[role]["size_bytes"]} for name, role in aliases.items()}
+    shared = daemon_staging_plan_from_inputs(actual)
+    hard = max(STORE_FILE_BYTES, shared["file_size_limit_bytes"])
+    need(STORE_FILE_BYTES <= hard <= PER_FILE_BYTES, "Graph daemon staging ceiling")
+    return {"schema": STAGING_SCHEMA, "inputs": {role: dict(prepared[role]) for role in ROLES},
+            "case_soft_file_bytes": STORE_FILE_BYTES, "case_hard_file_bytes": hard,
+            "restricted_daemon_file_bytes": hard, "other_child_file_bytes": STORE_FILE_BYTES,
+            "driver_file_bytes": STORE_FILE_BYTES, "staging_total_bytes": input_total(prepared),
+            "charged_to_producer_allocation": True, "simultaneous_owner_limit": 1,
+            "original_capture_limits_unchanged": True, "automatic_retry": False}
+
+
 def prepare(directory, binaries, source, retain_intent):
     directory = Path(directory)
     total = input_total(binaries)
@@ -89,6 +110,7 @@ def prepare(directory, binaries, source, retain_intent):
         need(directory_identity(directory) == original_directory, "Graph native input directory changed")
     record = {"schema": SCHEMA, "source": source, "directory": original_directory,
               "limits": LIMITS, "copy_bytes": total, "inputs": inputs,
+              "daemon_staging": daemon_staging_contract({role: row["prepared"] for role, row in inputs.items()}),
               "source_files_modified": False, "automatic_retry": False}
     validate_live(record, binaries, source, directory)
     return record
@@ -96,7 +118,7 @@ def prepare(directory, binaries, source, retain_intent):
 
 def validate_contract(record, binaries, source, directory):
     need(type(record) is dict and set(record) == {"schema", "source", "directory", "limits", "copy_bytes", "inputs",
-         "source_files_modified", "automatic_retry"} and record["schema"] == SCHEMA and record["source"] == source
+         "daemon_staging", "source_files_modified", "automatic_retry"} and record["schema"] == SCHEMA and record["source"] == source
          and record["limits"] == LIMITS and record["source_files_modified"] is False
          and record["automatic_retry"] is False and set(record["inputs"]) == set(ROLES), "Graph native input contract")
     expected_dir = record["directory"]
@@ -124,7 +146,9 @@ def validate_contract(record, binaries, source, directory):
              and copied["mode"] == 0o500 and copied["uid"] == expected_dir["uid"] and copied["links"] == 1
              and (before["device"], before["inode"]) != (copied["device"], copied["inode"]),
              "Graph native input physical identity")
-    return {role: dict(row["prepared"]) for role, row in record["inputs"].items()}
+    prepared = {role: dict(row["prepared"]) for role, row in record["inputs"].items()}
+    need(record["daemon_staging"] == daemon_staging_contract(prepared), "Graph daemon staging contract")
+    return prepared
 
 
 def _unchanged(reference, expected):

@@ -412,8 +412,8 @@ function callbackPlan(index, reviewed, caseId, originals) {
 function nativeExecutableInputs(index, reviewed, originals) {
   const record = originals.json(index.native_executable_inputs, LIMIT);
   same(record, reviewed.native_executable_inputs, 'J1_NATIVE_INPUT_ORIGINAL_CONTRACT');
-  exact(record, ['schema','source','directory','limits','copy_bytes','inputs','source_files_modified','automatic_retry'], 'J1_NATIVE_INPUT_FIELDS');
-  need(record.schema === 'motionwright.graph-native-executable-inputs/1'
+  exact(record, ['schema','source','directory','limits','copy_bytes','inputs','daemon_staging','source_files_modified','automatic_retry'], 'J1_NATIVE_INPUT_FIELDS');
+  need(record.schema === 'motionwright.graph-native-executable-inputs/2'
     && record.source_files_modified === false && record.automatic_retry === false, 'J1_NATIVE_INPUT_SCOPE');
   same(record.source, index.source, 'J1_NATIVE_INPUT_SOURCE');
   const limits = { individual_bytes: 64 * LIMIT, total_bytes: 104 * LIMIT, files: 4,
@@ -461,11 +461,19 @@ function nativeExecutableInputs(index, reviewed, originals) {
   check();
   const total = Object.values(record.inputs).reduce((sum, row) => sum + row.prepared.size_bytes, 0);
   need(record.copy_bytes === total && total <= limits.total_bytes, 'J1_NATIVE_INPUT_TOTAL');
+  const stagingInputs = Object.fromEntries(Object.entries(record.inputs).map(([role, row]) => [role, row.prepared]));
+  const ceiling = Math.max(4 * LIMIT, ...Object.values(stagingInputs).map(row => row.size_bytes));
+  same(record.daemon_staging, { schema: 'motionwright.graph-daemon-staging/1', inputs: stagingInputs,
+    case_soft_file_bytes: 4 * LIMIT, case_hard_file_bytes: ceiling,
+    restricted_daemon_file_bytes: ceiling, other_child_file_bytes: 4 * LIMIT,
+    driver_file_bytes: 4 * LIMIT, staging_total_bytes: total,
+    charged_to_producer_allocation: true, simultaneous_owner_limit: 1,
+    original_capture_limits_unchanged: true, automatic_retry: false }, 'J1_DAEMON_STAGING_CONTRACT');
   for (const row of Object.values(record.inputs)) {
     const raw = originals.read(row.prepared, limits.individual_bytes);
     need(raw.subarray(0, 4).equals(Buffer.from([0x7f,0x45,0x4c,0x46])), 'J1_NATIVE_INPUT_ELF');
   }
-  return { recheck: check };
+  return { recheck: check, staging: record.daemon_staging };
 }
 
 function verifyIndex(indexPath, reviewed, caseId) {
@@ -531,7 +539,7 @@ function verifyIndex(indexPath, reviewed, caseId) {
   nativeInputs.recheck();
   return { admission: { source: index.source, binaries: index.binaries, runtime: index.runtime,
     ordinaryService: index.binaries.ordinary_service, nativeService: index.binaries.native_graph_session,
-    execution: reviewed.execution,
+    execution: reviewed.execution, daemon_staging: nativeInputs.staging,
     sdk_ticket_prewrite: plan, producer_originals: { index: initial.ref, builds } }, originals };
 }
 

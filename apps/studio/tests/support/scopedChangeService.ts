@@ -48,8 +48,36 @@ function closedGraphInitializerEnvironment(databasePath: string): NodeJS.Process
     PYTHONNOUSERSITE: "1", HOME: root,
     XDG_RUNTIME_DIR: root, XDG_STATE_HOME: root,
     XDG_CONFIG_HOME: root, XDG_CACHE_HOME: root, TMPDIR: root,
-    RUST_BACKTRACE: "1",
+    RUST_BACKTRACE: "1", MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES: "4194304",
   };
+}
+
+/** Observe the actual Store process after its Rust entrypoint clamps both limits.
+ * A hard limit of 4 MiB cannot later be raised by this unprivileged process. */
+export async function observeGraphStoreFileBound(child: ChildProcessWithoutNullStreams, deadline: number) {
+  if (process.platform !== "linux" || !Number.isSafeInteger(child.pid) || child.pid! <= 1
+    || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 5000)
+    throw new Error("GRAPH_STORE_KERNEL_OBSERVATION_CONTEXT");
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error("GRAPH_STORE_EXITED_BEFORE_KERNEL_OBSERVATION");
+    let raw: string;
+    try { raw = await readFile(`/proc/${child.pid}/limits`, "utf8"); }
+    catch { throw new Error("GRAPH_STORE_KERNEL_OBSERVATION_UNAVAILABLE"); }
+    if (Buffer.byteLength(raw) > 16384) throw new Error("GRAPH_STORE_KERNEL_OBSERVATION_SIZE");
+    const line = raw.split("\n").find(value => value.startsWith("Max file size"));
+    const match = /^Max file size\s+(\d+)\s+(\d+)\s+bytes\s*$/.exec(line ?? "");
+    if (!match || Number(match[1]) !== 4194304 || !Number.isSafeInteger(Number(match[2]))
+      || Number(match[2]) < 4194304 || Number(match[2]) > 67108864)
+      throw new Error("GRAPH_STORE_KERNEL_LIMITS_INVALID");
+    if (Number(match[2]) === 4194304) return Object.freeze({
+      process_id: child.pid, soft_bytes: 4194304, hard_bytes: 4194304,
+      observed_at: new Date().toISOString(), source: "linux-proc-actual-child",
+    });
+    // The spawned program may still be in its loader, before the Rust main.
+    await new Promise(resolveWait => setTimeout(resolveWait, 10));
+  }
+  throw new Error("GRAPH_STORE_KERNEL_LIMITS_NOT_CLAMPED_BEFORE_RPC");
 }
 
 const projectionCommands = new Set(["project_projection_head", "project_scene_page", "project_scene_nodes"]);
@@ -483,6 +511,7 @@ export class ScopedChangeService {
     this.usedIds.clear();
     this.timedOutIds.clear();
     const args = ["--database", this.databasePath];
+    if (this.graphCustodyRequired) args.push("--graph-store-file-bound");
     if (this.seedFixture) args.push("--synthetic-fixture");
     if (this.desktopInvokeFixture) args.push("--desktop-invoke-fixture");
     // A restarted session and each peer need a fresh authenticated client.
@@ -580,6 +609,18 @@ export class ScopedChangeService {
     });
     await spawned;
     if (bindingFailure) throw bindingFailure;
+    if (this.graphCustodyRequired) {
+      try {
+        const limits = await observeGraphStoreFileBound(child, Date.now() + Math.floor(Math.min(5000, this.timeoutMs)));
+        const witness = { context: launchContext, limits, verified_before_first_rpc: true };
+        await this.publishEvidenceOriginal(join(dirname(this.directory),
+          `service-kernel-bound-${this.sessionId}-${launchContext.launch_index}.original.json`),
+          Buffer.from(JSON.stringify(witness) + "\n"), [this]);
+      } catch (error) {
+        this.taint("transport_failure", "Graph Store kernel bound was not observed", child);
+        throw error;
+      }
+    }
     this.lastExit = "Process is running";
     return this;
   }

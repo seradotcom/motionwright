@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { stripTypeScriptTypes } from "node:module";
 import { SharedPool, GLOBAL_BYTES, GLOBAL_FILES } from "../../tests/support/graph-owner/custody.mjs";
 import { GraphCaseFactoryCore, graphCaseLayout, verifyGraphManagedStoreEntries, verifyGraphManagedCopyBounds,
-  graphOwnerSpawnEnvironment, graphOwnedClientEnvironment, GRAPH_CAS_ALLOWANCE } from "../../tests/support/graph-owner/factory.mjs";
+  graphOwnerSpawnEnvironment, graphOwnedClientEnvironment, verifyGraphClosedOwnerEntries,
+  GRAPH_CAS_ALLOWANCE } from "../../tests/support/graph-owner/factory.mjs";
 import { inspectSourceBoundCandidate, requireNativeGraphParentAdmission,
   admitOriginalProducers, runIndependentSameStoreReopen, inspectR74StatusCore,
   assertOriginalProducerAdmission, inspectProducerOriginalsCore, AUTHORITY_SOURCE_PATHS,
@@ -62,6 +63,7 @@ test('Native Graph service child env is closed, exact and never mixes process.en
   const env = graphOwnedClientEnvironment(admitted, paths);
   assert.equal(env.MOTIONWRIGHT_GRAPH_CONNECTION, admitted.MOTIONWRIGHT_GRAPH_CONNECTION);
   assert.equal(env.MOTIONWRIGHT_GRAPH_CALLBACK_CAP, '12');
+  assert.equal(env.MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES, '4194304');
   assert.equal(env.PATH, '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
   assert.equal(env.HOME, paths.owner_home);
   assert.equal(env.XDG_RUNTIME_DIR, paths.owner_runtime);
@@ -95,6 +97,33 @@ function candidate() {
   };
   return { ...body, digest_sha256: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
 }
+
+test('closed owner allocation charges every file once and keeps independent journal slices', () => {
+  const journal = 'clients/client-0001.connection.json.graph-originals';
+  const entries = [{ path: '', kind: 'directory' },
+    { path: 'owner-final.original.json', kind: 'file', sizeBytes: GRAPH_BUDGET.owner_bytes, sha256: 'a'.repeat(64) },
+    { path: journal + '/command.json', kind: 'file', sizeBytes: GRAPH_BUDGET.journal_bytes, sha256: 'b'.repeat(64) }];
+  const slices = [{ root: journal, bytes: GRAPH_BUDGET.journal_bytes, files: GRAPH_BUDGET.journal_files }];
+  const limit = { bytes: GRAPH_BUDGET.owner_bytes, files: GRAPH_BUDGET.owner_files };
+  const value = verifyGraphClosedOwnerEntries(entries, slices, 'state/semwright/drivers', limit);
+  assert.equal(value.owner.bytes, GRAPH_BUDGET.owner_bytes);
+  assert.equal(value.journals[0].observed_bytes, GRAPH_BUDGET.journal_bytes);
+  assert.equal(value.accounted_files, 2); assert.equal(value.original_files_excluded, 0);
+  assert.throws(() => verifyGraphClosedOwnerEntries([...entries,
+    { path: 'alien-original', kind: 'file', sizeBytes: 1, sha256: 'c'.repeat(64) }], slices,
+    'state/semwright/drivers', limit), /OWNER_ORIGINAL_SLICE_EXCEEDED/);
+  assert.throws(() => verifyGraphClosedOwnerEntries(entries, [], 'state/semwright/drivers', limit),
+    /OWNER_ORIGINAL_SLICE_EXCEEDED/);
+});
+
+test('closed owner allocation refuses surviving SDK staging without deleting any original', () => {
+  const entries = [{ path: '', kind: 'directory' },
+    { path: 'state/semwright/drivers/driver-host-tool-python-deadbeef', kind: 'file', sizeBytes: 1, sha256: 'a'.repeat(64) }];
+  const original = structuredClone(entries);
+  assert.throws(() => verifyGraphClosedOwnerEntries(entries, [], 'state/semwright/drivers',
+    { bytes: GRAPH_BUDGET.owner_bytes, files: GRAPH_BUDGET.owner_files }), /OWNER_STAGING_FILES_REMAIN/);
+  assert.deepEqual(entries, original);
+});
 test("reviewed source shape never grants a Native callback", () => {
   const result = inspectSourceBoundCandidate(candidate());
   assert.equal(result.status, "DENY_INDEPENDENT_ORIGINAL_NATIVE_PRODUCER_AND_BUILD_REQUIRED");
@@ -366,13 +395,22 @@ function fixture(name) {
       source_modified: false, automatic_retry: false };
   }
   const directoryMetadata = fs.statSync(nativeDirectory, { bigint: true });
-  reviewed.native_executable_inputs = { schema: 'motionwright.graph-native-executable-inputs/1', source: structuredClone(source),
+  const stagedInputs = Object.fromEntries(Object.entries(nativeInputs).map(([role, row]) => [role, row.prepared]));
+  const stagedTotal = Object.values(stagedInputs).reduce((total, row) => total + row.size_bytes, 0);
+  const stagedCeiling = Math.max(4194304, ...Object.values(stagedInputs).map(row => row.size_bytes));
+  reviewed.native_executable_inputs = { schema: 'motionwright.graph-native-executable-inputs/2', source: structuredClone(source),
     directory: { path: nativeDirectory, device: Number(directoryMetadata.dev), inode: Number(directoryMetadata.ino),
       mode: 0o700, uid: Number(directoryMetadata.uid), gid: Number(directoryMetadata.gid) },
     limits: { individual_bytes: 64 * 1024 * 1024, total_bytes: 104 * 1024 * 1024, files: 4,
       charged_to_producer_allocation: true, duplicate_executable_bytes_archived: false },
     copy_bytes: Object.values(nativeInputs).reduce((total, row) => total + row.prepared.size_bytes, 0),
-    inputs: nativeInputs, source_files_modified: false, automatic_retry: false };
+    inputs: nativeInputs, daemon_staging: { schema: 'motionwright.graph-daemon-staging/1', inputs: stagedInputs,
+      case_soft_file_bytes: 4194304, case_hard_file_bytes: stagedCeiling,
+      restricted_daemon_file_bytes: stagedCeiling, other_child_file_bytes: 4194304,
+      driver_file_bytes: 4194304, staging_total_bytes: stagedTotal,
+      charged_to_producer_allocation: true, simultaneous_owner_limit: 1,
+      original_capture_limits_unchanged: true, automatic_retry: false },
+    source_files_modified: false, automatic_retry: false };
   index.native_executable_inputs = json('originals/native-executable-inputs.original.json', reviewed.native_executable_inputs);
   index.contract = Object.fromEntries(Object.entries(reviewed).filter(([key]) => !['index_sha256', 'source'].includes(key)));
   index.contract = structuredClone(index.contract);
@@ -458,6 +496,19 @@ test('R74 rejects prepared executable permissions, inode alias, bytes and source
       f.replace(f.index.native_executable_inputs, f.reviewed.native_executable_inputs); f.seal();
     }
     assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), /J1_NATIVE_INPUT_/);
+  }
+});
+
+test('R74 daemon staging rejects unbound ceilings, raised output caps and missing reservation', () => {
+  for (const [name, value] of [['case_hard_file_bytes', 67108864], ['other_child_file_bytes', 67108864],
+    ['driver_file_bytes', 67108864], ['staging_total_bytes', 1], ['simultaneous_owner_limit', 2],
+    ['charged_to_producer_allocation', false], ['original_capture_limits_unchanged', false]]) {
+    const f = fixture('staging-' + name);
+    f.index.contract.native_executable_inputs.daemon_staging[name] = value;
+    f.reviewed.native_executable_inputs = structuredClone(f.index.contract.native_executable_inputs);
+    f.replace(f.index.native_executable_inputs, f.reviewed.native_executable_inputs); f.seal();
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'),
+      /J1_DAEMON_STAGING_CONTRACT/);
   }
 });
 

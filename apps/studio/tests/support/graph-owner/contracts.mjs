@@ -16,10 +16,29 @@ export const ERROR_CODES = new Set(['SPEC_INVALID','SOURCE_MISMATCH','RUNTIME_IN
 // may be projected through the public Graph failure reporter.
 export const GRAPH_RUNTIME_STAGES = new Set([
   'UNCLASSIFIED', 'STORE_BIND', 'SOURCE_INTAKE', 'RUNTIME_INTAKE',
-  'STORE_READBACK', 'PRIVATE_PROFILE', 'CONFIG_PATHS',
+  'STAGING_LIMITS', 'STORE_READBACK', 'PRIVATE_PROFILE', 'CONFIG_PATHS',
   'PROVIDER_MANIFEST', 'BOOTSTRAP_SOCKET', 'BOOTSTRAP_PROJECT',
   'BOOTSTRAP_CLOSE', 'RESTRICTED_SOCKET', 'OWNER_RECEIPT',
 ]);
+export const GRAPH_RUNTIME_TERMINALS = new Set([
+  'NOT_STARTED', 'RUNNING', 'EXITED_ZERO', 'EXITED_NONZERO',
+  'SIGNAL_FSIZE', 'SIGNAL_OTHER', 'READINESS_TIMEOUT',
+]);
+
+/** Closed operational numbers only; never disclose original stderr or paths. */
+export function graphRuntimeDiagnosticHint(value) {
+  if (value === null || value === undefined) return '';
+  exact(value, ['soft_bytes','hard_bytes','required_file_bytes','staging_total_bytes','terminal_kind'],
+    'OWNER_RUNTIME_DIAGNOSTIC_FIELDS');
+  const observed = number => integer(number, 0) || ['UNLIMITED', 'UNREPRESENTABLE'].includes(number);
+  need(observed(value.soft_bytes) && observed(value.hard_bytes)
+    && integer(value.required_file_bytes, 4194304, 67108864)
+    && integer(value.staging_total_bytes, 1, 109051904)
+    && GRAPH_RUNTIME_TERMINALS.has(value.terminal_kind), 'OWNER_RUNTIME_DIAGNOSTIC_VALUES');
+  return ' OWNER_FSIZE:' + value.soft_bytes + '/' + value.hard_bytes
+    + ' OWNER_STAGING_FILE:' + value.required_file_bytes + ' OWNER_STAGING_TOTAL:' + value.staging_total_bytes
+    + ' OWNER_TERMINAL:' + value.terminal_kind;
+}
 export function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 export function exact(value, fields, reason) {
   need(object(value) && Object.keys(value).sort().join('\0') === [...fields].sort().join('\0'), reason);

@@ -5,11 +5,53 @@ import { isDeepStrictEqual } from 'node:util';
 import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusive,
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
-  ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines } from './contracts.mjs';
+  ERROR_CODES, GRAPH_RUNTIME_STAGES, graphRuntimeDiagnosticHint, same, BoundedJsonLines } from './contracts.mjs';
 import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyMetadataCredential, GRAPH_BUDGET } from './producer_guard.mjs';
 import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.mjs';
 
 const MiB = 1024 * 1024;
+
+export function verifyGraphParentFileLimit(line, staging) {
+  const observed = /^Max file size\s+(\d+)\s+(\d+)\s+bytes\s*$/.exec(line ?? '');
+  need(staging && integer(staging.case_hard_file_bytes, 4 * MiB, 64 * MiB)
+    && staging.case_soft_file_bytes === 4 * MiB && observed
+    && Number(observed[1]) === 4 * MiB && Number(observed[2]) === staging.case_hard_file_bytes,
+    'CASE_SOURCE_BOUND_KERNEL_FILE_LIMITS');
+}
+
+/** Account every closed owner file once against its original prepaid slice. */
+export function verifyGraphClosedOwnerEntries(entries, journals, stagingDirectory, ownerLimit) {
+  need(Array.isArray(entries) && Array.isArray(journals)
+    && typeof stagingDirectory === 'string' && stagingDirectory.startsWith('state/')
+    && !stagingDirectory.split('/').includes('..') && stagingDirectory.endsWith('/drivers'),
+    'OWNER_CLOSED_ALLOCATION_CONTEXT');
+  const lanes = journals.map(row => {
+    need(typeof row.root === 'string' && /^clients\/[^/]+\.connection\.json\.graph-originals$/.test(row.root)
+      && integer(row.bytes, 1, GRAPH_BUDGET.journal_bytes) && integer(row.files, 1, GRAPH_BUDGET.journal_files),
+      'OWNER_CLOSED_JOURNAL_SLICE');
+    return { ...row, observed_bytes: 0, observed_files: 0 };
+  });
+  need(new Set(lanes.map(row => row.root)).size === lanes.length
+    && ownerLimit.bytes === GRAPH_BUDGET.owner_bytes && ownerLimit.files === GRAPH_BUDGET.owner_files,
+    'OWNER_CLOSED_PREPAID_LIMITS');
+  const owner = { bytes: 0, files: 0 };
+  for (const entry of entries) {
+    need(!entry.path.startsWith(stagingDirectory + '/driver-'), 'OWNER_STAGING_FILES_REMAIN');
+    if (entry.kind !== 'file') continue;
+    const matches = lanes.filter(row => entry.path.startsWith(row.root + '/'));
+    need(matches.length <= 1, 'OWNER_FILE_CHARGED_TWICE');
+    if (matches.length === 1) {
+      const lane = matches[0]; lane.observed_bytes += entry.sizeBytes; lane.observed_files++;
+      need(lane.observed_bytes <= lane.bytes && lane.observed_files <= lane.files, 'OWNER_JOURNAL_SLICE_EXCEEDED');
+    } else {
+      owner.bytes += entry.sizeBytes; owner.files++;
+      need(owner.bytes <= ownerLimit.bytes && owner.files <= ownerLimit.files, 'OWNER_ORIGINAL_SLICE_EXCEEDED');
+    }
+  }
+  return { owner, journals: lanes, staging_absent: true,
+    accounted_files: owner.files + lanes.reduce((sum, row) => sum + row.observed_files, 0),
+    original_files_excluded: 0 };
+}
 
 // A real Graph owner must never forward the CI process environment wholesale
 // to native children. Keep trusted source/run identities and approved client
@@ -54,6 +96,7 @@ export function graphOwnedClientEnvironment(capability, paths) {
     HOME: paths.owner_home, XDG_RUNTIME_DIR: paths.owner_runtime,
     XDG_STATE_HOME: paths.owner_state, XDG_CONFIG_HOME: ownerConfig,
     XDG_CACHE_HOME: ownerWork, TMPDIR: ownerWork,
+    MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES: '4194304',
     ...capability });
 }
 
@@ -293,7 +336,7 @@ export class GraphCaseFactoryCore {
         'CASE_CANONICAL_LAYOUT_CHANGED');
       need(options.databasePath === path.join(options.privateRoot, 'store', 'motionwright.sqlite3'), 'CASE_STORE_LAYOUT');
       const limit = fs.readFileSync('/proc/self/limits', 'utf8').split('\n').find(row => row.startsWith('Max file size'));
-      need(limit && /^Max file size\s+4194304\s+4194304\s+bytes\s*$/.test(limit), 'CASE_STORE_KERNEL_FILE_BOUND');
+      verifyGraphParentFileLimit(limit, admission.daemon_staging);
     }
     if (fs.existsSync(options.privateRoot)) {
       need(!this.originalProduction, 'CASE_CANONICAL_ROOT_ALREADY_EXISTS');
@@ -622,7 +665,10 @@ export class GraphCaseFactoryCore {
       need(stage === undefined || (message.code === 'RUNTIME_INVALID' &&
         GRAPH_RUNTIME_STAGES.has(stage)), 'OWNER_RUNTIME_STAGE_CODE');
       const hint = stage && stage !== 'UNCLASSIFIED' ? ' OWNER_STAGE:' + stage : '';
-      this.protocolFail(new Error('OWNER_ERROR:' + message.code + hint)); return;
+      need(message.runtime_diagnostic === undefined || message.code === 'RUNTIME_INVALID',
+        'OWNER_RUNTIME_DIAGNOSTIC_SCOPE');
+      const diagnostic = graphRuntimeDiagnosticHint(message.runtime_diagnostic);
+      this.protocolFail(new Error('OWNER_ERROR:' + message.code + hint + diagnostic)); return;
     }
     const key = message.event + ':' + (message.id ?? '');
     need(!this.received.has(key), 'OWNER_EVENT_REPLAY'); this.received.add(key);
@@ -752,6 +798,26 @@ export class GraphCaseFactoryCore {
       &&cohort.complete_empty_descendant_tree?.root_observed===true&&cohort.complete_empty_descendant_tree.truncated===false
       &&cohort.complete_empty_descendant_tree.processes?.length===1
       &&cohort.complete_empty_descendant_tree.processes[0].pid===this.ready.owner_pid,'FINAL_COMPLETE_COHORT_ORIGINAL');
+    if (this.originalProduction) {
+      // This runs only after the real owner exit/EOF and complete empty cohort
+      // have been observed. SDK Drop is merely an attempt, never this witness.
+      const root = this.spec.paths.private_root;
+      const paths = strictJSON(stableRead(path.join(root, 'owner-paths.parsed.json'), MiB).data);
+      inside(this.spec.paths.owner_state, paths.state);
+      const stagingDirectory = path.relative(root, path.join(paths.state, 'drivers')).split(path.sep).join('/');
+      const journals = natives.map(row => ({
+        root: path.relative(root, row.client.connectionPath + '.graph-originals').split(path.sep).join('/'),
+        bytes: row.journal.bytes, files: row.journal.files,
+      }));
+      const entries = inventoryTree(root, {
+        bytes: this.ownerRestriction.bytes + journals.reduce((sum, row) => sum + row.bytes, 0),
+        files: this.ownerRestriction.files + journals.reduce((sum, row) => sum + row.files, 0),
+      });
+      const allocation = verifyGraphClosedOwnerEntries(entries, journals, stagingDirectory, this.ownerRestriction);
+      this.closureWriter.json(path.join(this.root, 'owner-original-allocation.original.json'),
+        { root, staging_directory: stagingDirectory, ...allocation, entries,
+          complete_empty_cohort_original: final.owner_close, automatic_cleanup: false });
+    }
     if (!this.admission.synthetic_adapter_only) for (const role of ['ordinaryService','nativeService']) {
       const original = this.admission[role]; fileRef(original.path,original,GLOBAL_BYTES);
     }

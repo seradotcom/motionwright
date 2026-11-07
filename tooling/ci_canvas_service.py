@@ -4727,7 +4727,7 @@ def require_observed_command(command):
             "owned process group exit was not observed; no closed execution credit")
 
 
-def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None):
+def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None, maximum_hard_file_bytes=None):
     env = dict(env)
     env.pop(PHASE1_SERVICE47_TOKEN_ENV, None)
     env.pop(PHASE1_SERVICE47_DEADLINE_ENV, None)
@@ -4743,6 +4743,11 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
         observed_environment += ("CARGO_INCREMENTAL", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG",
             "SEMWRIGHT_CHECKOUT", "SEMWRIGHT_TEST_MANIM_RUNTIME", "SEMWRIGHT_TEST_PYTHON", "SEMWRIGHT_TEST_FFMPEG")
     child_limits = None
+    if maximum_hard_file_bytes is not None:
+        require(label == "graph-cases" and maximum_file_bytes == 4 * 1024 * 1024
+                and type(maximum_hard_file_bytes) is int
+                and maximum_file_bytes <= maximum_hard_file_bytes <= 64 * 1024 * 1024,
+                "Graph source-bound daemon staging hard ceiling")
     if maximum_stream_bytes is not None:
         require((label.startswith("graph-") or label == "phase1-service-preflight")
                 and type(maximum_stream_bytes) is int and 1024 <= maximum_stream_bytes <= 8 * 1024 * 1024,
@@ -4751,9 +4756,12 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
         require(os.name == "posix" and (label in ("graph-cases", "phase1-service-preflight") and maximum_file_bytes == 4 * 1024 * 1024
                 or label == "graph-runtime-download" and maximum_file_bytes == 128 * 1024 * 1024),
                 "Graph fixed actual Store file-size limit")
+        import resource
         def child_limits():
-            import resource
-            resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_file_bytes, maximum_file_bytes))
+            hard = maximum_file_bytes if maximum_hard_file_bytes is None else maximum_hard_file_bytes
+            resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_file_bytes, hard))
+            require(resource.getrlimit(resource.RLIMIT_FSIZE) == (maximum_file_bytes, hard),
+                    "Graph kernel file-size limit readback")
     owned_group = os.name == "posix"
     command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat(),
                "process_observation_schema": PROCESS_OBSERVATION_SCHEMA,
@@ -4770,6 +4778,9 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
         command["graph_job"] = {"source_sha": deadline.original["binding"]["GITHUB_SHA"],
             "run_id": deadline.original["binding"]["GITHUB_RUN_ID"], "run_attempt": 1,
             "job_id": actual_job["id"], "deadline_original": deadline.original_ref}
+    if maximum_file_bytes is not None:
+        command["kernel_file_size_limits"] = {"soft_bytes": maximum_file_bytes,
+            "hard_bytes": maximum_file_bytes if maximum_hard_file_bytes is None else maximum_hard_file_bytes}
     process = None
     if stdin_original is not None:
         require(label == "phase1-service-preflight" and stdin_original == output / (label + ".stdin.original"),
@@ -8306,7 +8317,8 @@ def graph_verify_producer_index(index_ref, case_id):
     # These live copies share the existing producer allocation, although the
     # carrier reuses original ELF/zlib and runtime bytes instead of duplicating.
     graph_tree_allocation(Path(execution["producer_root"]),
-        GRAPH_BUDGET["producer_bytes"] - native_record["copy_bytes"], GRAPH_BUDGET["producer_members"] - 4)
+        GRAPH_BUDGET["producer_bytes"] - native_record["copy_bytes"] - native_record["daemon_staging"]["staging_total_bytes"],
+        GRAPH_BUDGET["producer_members"] - 8)
     command, stdout = graph_process_original(index["ordinary_preflight"]["process"], contract["ordinary_preflight"], remember)
     stdin_ref = index["ordinary_preflight"]["stdin"]
     require(command["argv"][0] == binaries["ordinary_service"]["path"]
@@ -8775,6 +8787,17 @@ def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
             records[role] = {"process": original, "retained_binary": retained}
             contracts[role] = {"command": expected_command, "target": target,
                                "cargo_executable": str(binary), "retention_encoding": "zlib-level6"}
+        if not sdk:
+            # The freshly compiled Store entrypoint must exercise the real
+            # Linux kernel boundary in child processes before R74. Reuse this
+            # build phase and target; no extra Native or browser invocation.
+            gate_process, _ = graph_command(env, [cargo, "test", "--locked", "--jobs", "1",
+                "-p", "motionwright-service", "--example", "studio_review_session",
+                "graph_store_file_bound_tests", "--", "--test-threads=1"], source_root,
+                producer, "graph-store-file-bound-tests", 120, clock)
+            gate_stdout = graph_read(gate_process["stdout"], GRAPH_BYTES).decode("utf-8", errors="strict")
+            require(len(re.findall(r"^test result: ok[.] 4 passed; 0 failed; 1 ignored; 0 measured; [0-9]+ filtered out;",
+                    gate_stdout, re.MULTILINE)) == 1, "Graph real kernel-bound tests did not execute their full roster")
     return outputs, records, contracts
 
 
@@ -8969,7 +8992,11 @@ def graph_runtime_inner(repo, runtime, producer):
 
 def graph_source_paths(repo, targets, intake_rows):
     extra = ("Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json",
-             "apps/studio/package.json", "crates/manim-profile/src/semantic_graph_source.rs",
+             "apps/studio/package.json", "crates/service/Cargo.toml",
+             "tooling/tests/test_graph_staging_file_limits.py", "tooling/tests/test_graph_executable_inputs.py",
+             "apps/studio/tooling/graph-owner/staging_file_limits.test.mjs",
+             "apps/studio/tooling/graph-owner/producer_guard.test.mjs",
+             "apps/studio/src/semanticGraphMutationError.ts", "crates/manim-profile/src/semantic_graph_source.rs",
              "apps/desktop/src-tauri/src/effect_grants.rs", "apps/desktop/src-tauri/src/effect_authority.rs",
              "crates/manim-profile/src/semantic_graph_helper_loader.py", "crates/manim-profile/src/semantic_graph_text_probe.py")
     return tuple(sorted(set((*GRAPH_AUTHORITY, *extra,
@@ -9060,6 +9087,10 @@ def graph_produce(repo, recipient):
             sdk_before = graph_source_observe(sdk, lock["revision"], sdk_paths)
             require(all(sdk_before["files"][name] == value for name, value in sdk_preparation["files"].items()), "Graph SDK preparation source changed")
             require(all(source_before["files"][name] == value for name, value in preparation_source["files"].items()), "Graph custody preparation source changed")
+            graph_command(dict(env, CARGO_TARGET_DIR=str(repo.parent / "v/t")),
+                [node, "--experimental-strip-types", "--test", "--test-reporter=tap",
+                "tooling/graph-owner/staging_file_limits.test.mjs"], repo / "apps/studio", producer,
+                "graph-store-kernel-observation-tests", 30, clock)
         with clock.phase("runtime"):
             runtime_process, runtime_command = graph_command(env, [str(runtime_python), "-I", "-B",
                 str(repo / "tooling/ci_canvas_service.py"), "graph-runtime", "--repo", str(repo), "--runtime", str(runtime), "--producer", str(producer)],
@@ -9111,7 +9142,9 @@ def graph_produce(repo, recipient):
             require(Path(native_inputs.__file__).resolve() == repo / "tooling/native_graph_executable_inputs.py",
                     "Graph native input producer source")
             native_copy_bytes = native_inputs.input_total(binaries)
-            graph_producer_room(producer, native_copy_bytes + 3 * GRAPH_BYTES, 7)
+            # Reserve both the four stable inputs and one serial daemon's four
+            # transient staging copies within the existing producer allocation.
+            graph_producer_room(producer, 2 * native_copy_bytes + 3 * GRAPH_BYTES, 11)
             native_record = native_inputs.prepare(root / "graph-native-inputs", binaries, source,
                 lambda value: graph_put_json(producer / "native-executable-inputs.intent.original.json", value))
             native_record_ref = graph_put_json(producer / "native-executable-inputs.original.json", native_record)
@@ -9159,8 +9192,9 @@ def graph_produce(repo, recipient):
                 "contexts": ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in GRAPH_CASES],
                 "meaning": "REQUIRES_INDEPENDENT_REVIEW_AND_EXTERNAL_STATUS_NO_NATIVE_CASE_EXECUTED"})
             native_inputs.validate_live(native_record, binaries, source, root / "graph-native-inputs")
-            graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"] - native_copy_bytes,
-                                  GRAPH_BUDGET["producer_members"] - 4)
+            graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"] - native_copy_bytes
+                                  - native_record["daemon_staging"]["staging_total_bytes"],
+                                  GRAPH_BUDGET["producer_members"] - 8)
             plaintext = seal.gather_snapshot({"producer": producer})
             sealed = seal.encrypt_snapshot(plaintext, recipient, {"source_sha": source_sha, "semwright_sha": source["sdk_sha"],
                 "run_id": source["run_id"], "run_attempt": "1"})
@@ -9505,7 +9539,9 @@ GRAPH_CASE_DIAGNOSTIC_CODES = (
     "J1_CARGO_EXECUTABLE_BIJECTION", "J1_RETAINED_BINARY_DIFFERS",
     "J1_SOURCE_FILE_DIGEST", "J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION",
     "CASE_OWNER_SOCKET_PATH_EXCEEDS_100_BYTES", "CASE_CANONICAL_ROOT_ALREADY_EXISTS",
-    "CASE_STORE_KERNEL_FILE_BOUND", "CASE_DEADLINE", "SYNTHETIC_ADMISSION_FORBIDDEN",
+    "CASE_STORE_KERNEL_FILE_BOUND", "CASE_SOURCE_BOUND_KERNEL_FILE_LIMITS", "CASE_DEADLINE", "SYNTHETIC_ADMISSION_FORBIDDEN",
+    "GRAPH_STORE_KERNEL_LIMITS_NOT_CLAMPED_BEFORE_RPC", "GRAPH_STORE_KERNEL_LIMITS_INVALID",
+    "GRAPH_STORE_KERNEL_OBSERVATION_UNAVAILABLE", "GRAPH_STORE_EXITED_BEFORE_KERNEL_OBSERVATION",
     "PRESEAL_NOT_ORIGINAL_PHYSICAL_STORE", "REOPEN_NOT_ORIGINAL_PHYSICAL_STORE",
     "REOPEN_FULL_PROJECT_MISMATCH",
     # Exact literal phases from the original owner ERROR protocol. These
@@ -9521,12 +9557,36 @@ GRAPH_CASE_DIAGNOSTIC_CODES = (
     "OWNER_ERROR:INTERNAL_ERROR",
     # Only immutable first-party stage labels, never runtime error details.
     "OWNER_STAGE:STORE_BIND", "OWNER_STAGE:SOURCE_INTAKE",
-    "OWNER_STAGE:RUNTIME_INTAKE", "OWNER_STAGE:STORE_READBACK",
+    "OWNER_STAGE:RUNTIME_INTAKE", "OWNER_STAGE:STAGING_LIMITS", "OWNER_STAGE:STORE_READBACK",
     "OWNER_STAGE:PRIVATE_PROFILE", "OWNER_STAGE:CONFIG_PATHS",
     "OWNER_STAGE:PROVIDER_MANIFEST", "OWNER_STAGE:BOOTSTRAP_SOCKET",
     "OWNER_STAGE:BOOTSTRAP_PROJECT", "OWNER_STAGE:BOOTSTRAP_CLOSE",
     "OWNER_STAGE:RESTRICTED_SOCKET", "OWNER_STAGE:OWNER_RECEIPT",
 )
+
+
+def graph_closed_runtime_diagnostics(text):
+    """Extract only the exact public owner protocol; never retain raw errors."""
+    observed = r"(?:0|[1-9][0-9]{0,15}|UNLIMITED|UNREPRESENTABLE)"
+    pattern = (r"(?<![A-Za-z0-9_-])OWNER_ERROR:RUNTIME_INVALID OWNER_STAGE:([A-Z_]{1,32}) "
+        r"OWNER_FSIZE:(" + observed + r")/(" + observed + r") "
+        r"OWNER_STAGING_FILE:([1-9][0-9]{0,8}) OWNER_STAGING_TOTAL:([1-9][0-9]{0,8}) "
+        r"OWNER_TERMINAL:(NOT_STARTED|RUNNING|EXITED_ZERO|EXITED_NONZERO|SIGNAL_FSIZE|SIGNAL_OTHER|READINESS_TIMEOUT)"
+        r"(?![A-Za-z0-9_-])")
+    result = []
+    for match in re.finditer(pattern, text):
+        stage, soft, hard, required, total, terminal = match.groups()
+        number = lambda value: int(value) if value.isdecimal() else value
+        soft, hard, required, total = number(soft), number(hard), int(required), int(total)
+        if ("OWNER_STAGE:" + stage not in GRAPH_CASE_DIAGNOSTIC_CODES
+                or not 4194304 <= required <= 67108864 or not 1 <= total <= 109051904
+                or any(type(value) is int and value > (1 << 53) - 1 for value in (soft, hard))):
+            continue
+        row = {"stage": stage, "soft_bytes": soft, "hard_bytes": hard,
+               "required_file_bytes": required, "staging_total_bytes": total, "terminal_kind": terminal}
+        if row not in result and len(result) < 8:
+            result.append(row)
+    return result
 
 
 def graph_case_failure_cause(error):
@@ -9557,7 +9617,7 @@ def graph_observed_playwright_failure(repo, report_path, command):
         require(type(value) is dict, "Graph diagnostic report object")
         titles = {title: case for case, title, _ in GRAPH_CASES}
         outcomes = {case: [] for case, _, _ in GRAPH_CASES}
-        counts, locations, codes = {}, [], []
+        counts, locations, codes, runtime_diagnostics = {}, [], [], []
         stats = value.get("stats", {})
         require(type(stats) is dict, "Graph diagnostic stats object")
         for name in ("expected", "unexpected", "skipped", "flaky"):
@@ -9594,6 +9654,9 @@ def graph_observed_playwright_failure(repo, report_path, command):
             if type(direct) is dict:
                 location(direct.get("file"), direct.get("line"), direct.get("column"))
             text = "\n".join(error[key][:65536] for key in ("message", "stack") if type(error.get(key)) is str).replace("\\", "/")
+            for item in graph_closed_runtime_diagnostics(text):
+                if item not in runtime_diagnostics and len(runtime_diagnostics) < 8:
+                    runtime_diagnostics.append(item)
             for code in GRAPH_CASE_DIAGNOSTIC_CODES:
                 if re.search(r"(?<![A-Za-z0-9_-])" + re.escape(code) + r"(?![A-Za-z0-9_-])", text) and code not in codes:
                     codes.append(code)
@@ -9647,7 +9710,8 @@ def graph_observed_playwright_failure(repo, report_path, command):
                             location(spec.get("file", suite.get("file")), spec.get("line"), spec.get("column"))
         return {"report": "OBSERVED_FAILURE_DIAGNOSTIC_ONLY", "counts": counts,
                 "cases": [{"case_id": case, "statuses": outcomes[case]} for case, _, _ in GRAPH_CASES],
-                "locations": locations, "error_codes": codes}
+                "locations": locations, "error_codes": codes,
+                **({"runtime_diagnostics": runtime_diagnostics} if runtime_diagnostics else {})}
     except UnknownObservation:
         raise
     except OSError:
@@ -9697,11 +9761,15 @@ def graph_run_cases(repo):
         with clock.phase("cases"):
             report["runtime_before"] = graph_runtime_unchanged(index, producer)
             case_env = dict(env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(output / "graph-execution.json"))
-            # Kernel file-size limits are installed before Playwright and inherited
-            # by its actual Service/owner/Native children. No launcher substitute.
+            # All children inherit soft 4 MiB. Only the restricted daemon may
+            # raise it to the exact pre-R74 executable-staging ceiling. Both
+            # real Store binaries lower soft AND hard to 4 MiB before opening
+            # SQLite; driver sandbox, log, request and output limits stay fixed.
+            staging = index["contract"]["native_executable_inputs"]["daemon_staging"]
             diagnostic.update(stage="CASES_COMMAND", exit_code=None)
             command = execute(argv, repo / "apps/studio", case_env, output, "graph-cases", 750, deadline=clock,
-                              maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES)
+                              maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES,
+                              maximum_hard_file_bytes=staging["case_hard_file_bytes"])
             require_observed_command(command)
             diagnostic["exit_code"] = command["exit_code"] if type(command["exit_code"]) is int and -255 <= command["exit_code"] <= 255 else None
             if command["exit_code"] != 0:

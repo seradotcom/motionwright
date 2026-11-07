@@ -51,11 +51,15 @@ GRAPH_HELPERS = frozenset(("manim_bundled_font_intake", "manim_graph_font_probe"
 # They disclose no original errors, paths, subprocess streams or credentials.
 GRAPH_RUNTIME_STAGES = frozenset((
     "UNCLASSIFIED", "STORE_BIND", "SOURCE_INTAKE", "RUNTIME_INTAKE",
-    "STORE_READBACK", "PRIVATE_PROFILE", "CONFIG_PATHS",
+    "STAGING_LIMITS", "STORE_READBACK", "PRIVATE_PROFILE", "CONFIG_PATHS",
     "PROVIDER_MANIFEST", "BOOTSTRAP_SOCKET", "BOOTSTRAP_PROJECT",
     "BOOTSTRAP_CLOSE", "RESTRICTED_SOCKET", "OWNER_RECEIPT",
 ))
 _RUNTIME_STAGE = "UNCLASSIFIED"
+GRAPH_STORE_FILE_BYTES = 4 * 1024 * 1024
+GRAPH_STAGING_MAX_BYTES = 64 * 1024 * 1024
+_STAGING_DIAGNOSTIC = None
+_RUNTIME_TERMINAL_KIND = "NOT_STARTED"
 
 
 class GraphOwnerFailure(ValueError):
@@ -93,6 +97,52 @@ def runtime_stage(value):
     global _RUNTIME_STAGE
     require(value in GRAPH_RUNTIME_STAGES, "unreviewed-runtime-stage")
     _RUNTIME_STAGE = value
+
+
+def verify_staging_file_limits(plan):
+    """Fail before Core project creation if inherited staging is impossible."""
+    global _STAGING_DIAGNOSTIC
+    import resource
+    require(sys.platform == "linux" and type(plan) is dict, "graph-staging-linux-plan")
+    required = plan.get("restricted_daemon_file_bytes")
+    require(type(required) is int and GRAPH_STORE_FILE_BYTES <= required <= GRAPH_STAGING_MAX_BYTES
+            and plan.get("case_soft_file_bytes") == GRAPH_STORE_FILE_BYTES
+            and plan.get("case_hard_file_bytes") == required
+            and plan.get("other_child_file_bytes") == GRAPH_STORE_FILE_BYTES
+            and plan.get("driver_file_bytes") == GRAPH_STORE_FILE_BYTES
+            and type(plan.get("staging_total_bytes")) is int
+            and 0 < plan["staging_total_bytes"] <= 104 * 1024 * 1024,
+            "graph-staging-source-bound-plan")
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    def observed(value):
+        if value == resource.RLIM_INFINITY:
+            return "UNLIMITED"
+        return value if type(value) is int and 0 <= value <= (1 << 53) - 1 else "UNREPRESENTABLE"
+    _STAGING_DIAGNOSTIC = {"soft_bytes": observed(soft), "hard_bytes": observed(hard),
+        "required_file_bytes": required, "staging_total_bytes": plan["staging_total_bytes"]}
+    require(soft == GRAPH_STORE_FILE_BYTES and hard == required,
+            "graph-inherited-file-size-limits-incompatible")
+    return dict(_STAGING_DIAGNOSTIC)
+
+
+def owned_child_file_limit_callback(limit):
+    """Prepare in the parent before fork; the callback imports nothing."""
+    import resource
+    require(type(limit) is int and GRAPH_STORE_FILE_BYTES <= limit <= GRAPH_STAGING_MAX_BYTES,
+            "owned-child-file-limit-shape")
+    set_limit, get_limit, kind = resource.setrlimit, resource.getrlimit, resource.RLIMIT_FSIZE
+    expected = (limit, limit)
+    def apply():
+        set_limit(kind, expected)
+        if get_limit(kind) != expected:
+            raise GraphOwnerFailure("owned-child-file-limit-readback")
+    return apply
+
+
+def closed_runtime_diagnostic():
+    if _STAGING_DIAGNOSTIC is None:
+        return None
+    return {**_STAGING_DIAGNOSTIC, "terminal_kind": _RUNTIME_TERMINAL_KIND}
 
 
 def strict_json(raw):
@@ -249,8 +299,9 @@ def group_observation(pgid):
 
 class OwnedChild:
     """A latched child attempt; terminal custody never retries its command."""
-    def __init__(self, label, argv, env, evidence, *, cwd=None):
+    def __init__(self, label, argv, env, evidence, *, cwd=None, file_limit=GRAPH_STORE_FILE_BYTES):
         require(LABEL.fullmatch(label) is not None and argv, "owned-command-shape")
+        file_limit_callback = owned_child_file_limit_callback(file_limit)
         self.label, self.argv, self.evidence = label, list(argv), Path(evidence)
         self.child = None
         self.closed = False
@@ -263,13 +314,15 @@ class OwnedChild:
             "schema": SCHEMA, "label": label, "argv": self.argv,
             "cwd": str(cwd) if cwd is not None else None,
             "automatic_retry": False, "owned_process_group": True,
+            "kernel_file_size_limits": {"soft_bytes": file_limit, "hard_bytes": file_limit},
         })
         deadline = time.monotonic() + max(0, (_OWNER_SPEC["limits"]["deadline_unix_ms"] - int(time.time() * 1000)) / 1000)
         self.out = OriginalPipeCapture(self.stdout, _OWNER_SPEC["limits"]["max_stream_bytes"], deadline)
         try:
             self.err = OriginalPipeCapture(self.stderr, _OWNER_SPEC["limits"]["max_stream_bytes"], deadline)
             self.child = subprocess.Popen(self.argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                                          preexec_fn=file_limit_callback)
             self.out.bind(self.child.stdout)
             self.err.bind(self.child.stderr)
         except BaseException as error:
@@ -467,6 +520,25 @@ class OwnerLifecycle:
         self.custody_failure = None
         self.taints = []
         self.start_failures = []
+        self.staging_plan = None
+        self.restricted_daemon_executable = None
+
+    def bind_staging_limits(self, plan, daemon_executable):
+        require(self.staging_plan is None and type(daemon_executable) is str
+                and Path(daemon_executable).is_absolute(), "owner-staging-rebind-or-daemon")
+        observed = verify_staging_file_limits(plan)
+        self.staging_plan = dict(plan)
+        self.restricted_daemon_executable = daemon_executable
+        new_json(self.evidence / "staging-file-limits.original.json", observed)
+
+    def child_file_limit(self, label, argv):
+        if label != "owner-restricted":
+            return GRAPH_STORE_FILE_BYTES
+        require(self.staging_plan is not None and argv
+                and argv[0] == self.restricted_daemon_executable,
+                "restricted-daemon-staging-not-bound")
+        verify_staging_file_limits(self.staging_plan)
+        return self.staging_plan["restricted_daemon_file_bytes"]
 
     def start(self, label, argv, env, *, cwd=None):
         raise_deferred_cancellation()
@@ -478,7 +550,8 @@ class OwnerLifecycle:
         enter_cancellation_boundary()
         try:
             try:
-                child = OwnedChild(label, argv, env, self.evidence, cwd=cwd)
+                child = OwnedChild(label, argv, env, self.evidence, cwd=cwd,
+                                   file_limit=self.child_file_limit(label, argv))
             except BaseException as error:
                 status = "UNKNOWN" if getattr(error, "graph_process_started", False) else "NOT_RUN"
                 self.taints.append(label + ":" + status)
@@ -498,15 +571,21 @@ class OwnerLifecycle:
             leave_cancellation_boundary()
 
     def wait_socket(self, child, socket, *, deadline):
+        global _RUNTIME_TERMINAL_KIND
+        _RUNTIME_TERMINAL_KIND = "RUNNING"
         socket = Path(socket)
         while time.monotonic() < deadline:
-            if child.child.poll() is not None:
+            code = child.child.poll()
+            if code is not None:
+                _RUNTIME_TERMINAL_KIND = ("EXITED_ZERO" if code == 0 else "EXITED_NONZERO" if code > 0
+                    else "SIGNAL_FSIZE" if code == -signal.SIGXFSZ else "SIGNAL_OTHER")
                 child.finish(timeout=1)
                 raise GraphOwnerFailure("owner-exited-before-socket")
             if socket.is_socket():
                 return
             time.sleep(0.02)
         self.taints.append("owner-socket-readiness-deadline")
+        _RUNTIME_TERMINAL_KIND = "READINESS_TIMEOUT"
         raise GraphOwnerFailure("owner-socket-readiness-unknown-no-retry")
 
     def close(self, *, reason="explicit-close"):
@@ -1023,6 +1102,9 @@ class GraphBrowserOwner:
         self.runtime_custody = load_graph_runtime_custody(repo, self.source_inputs, self.runtime, lifecycle)
         self.native_manifest_inputs, self.native_manifest_runtime = prepared_graph_manifest_inputs(
             self.source_inputs, self.runtime, _GRAPH_J1["index"])
+        runtime_stage("STAGING_LIMITS")
+        lifecycle.bind_staging_limits(_GRAPH_J1["index"]["contract"]["native_executable_inputs"]["daemon_staging"],
+                                     self.source_inputs["binaries"]["semwrightd"]["path"])
         new_json(lifecycle.evidence / "native-executable-inputs-verified.original.json", {
             "producer_original": _GRAPH_J1["index"]["native_executable_inputs"],
             "private_inputs": _GRAPH_J1["index"]["contract"]["native_executable_inputs"]["inputs"],
@@ -1081,6 +1163,8 @@ class GraphBrowserOwner:
         # Reuse precisely the same private Core owner state, then narrow its
         # resource selection. No prj_ identity, grant or Store is fabricated.
         runtime_stage("RESTRICTED_SOCKET")
+        global _RUNTIME_TERMINAL_KIND
+        _RUNTIME_TERMINAL_KIND = "NOT_STARTED"
         config = self.paths["config"] / "owner-restricted.toml"
         new_bytes(config, graph_owner_config(self.shared, self.database, manifest_path, resource, project,
                     self.native_manifest_runtime, self.native_manifest_inputs, self.paths["work"]).encode("utf-8"))
@@ -2346,7 +2430,9 @@ def receive_original_producer_admission(repo, lifecycle):
     reader = importlib.util.module_from_spec(spec); spec.loader.exec_module(reader)
     verified = reader.graph_verify_producer_index(index_ref, _OWNER_SPEC["case_id"])
     require(verified["index"] == index and parent["nativeService"] == index["binaries"]["native_graph_session"]
-            and parent["ordinaryService"] == index["binaries"]["ordinary_service"], "owner-j1-service-causality")
+            and parent["ordinaryService"] == index["binaries"]["ordinary_service"]
+            and parent["daemon_staging"] == index["contract"]["native_executable_inputs"]["daemon_staging"],
+            "owner-j1-service-causality")
     expected_caps = index["contract"]["cases"][_OWNER_SPEC["case_id"]]["callback_caps"]
     plan = parent["sdk_ticket_prewrite"]
     require(plan["source"] == index["source"] and plan["native_service"] == index["binaries"]["native_graph_session"]
@@ -2482,7 +2568,8 @@ def protocol_main():
                     private = None
             emit({"event": "ERROR", **({"id": request_id} if request_id is not None else {}),
                   "code": phase, "private_receipt": private,
-                  **({"runtime_stage": _RUNTIME_STAGE} if phase == "RUNTIME_INVALID" else {})})
+                  **({"runtime_stage": _RUNTIME_STAGE,
+                      "runtime_diagnostic": closed_runtime_diagnostic()} if phase == "RUNTIME_INVALID" else {})})
             return 1
         finally:
             leave_cancellation_boundary(propagate=False)

@@ -184,17 +184,27 @@ def daemon_staging_plan(binaries: dict):
         "python": file_identity(Path(sys.executable).resolve(strict=True)),
         "ffmpeg": file_identity(Path("/usr/bin/ffmpeg").resolve(strict=True)),
     }
-    need(all(type(row.get("bytes")) is int
+    plan = daemon_staging_plan_from_inputs(inputs)
+    import resource
+    hard = resource.getrlimit(resource.RLIMIT_FSIZE)[1]
+    need(hard == resource.RLIM_INFINITY or hard >= plan["file_size_limit_bytes"],
+         "GN1_STAGING_HARD_LIMIT_INSUFFICIENT")
+    return plan
+
+
+def daemon_staging_plan_from_inputs(inputs: dict):
+    """Pure shared bound for the four independently verified staging inputs."""
+    need(type(inputs) is dict and set(inputs) == {
+        "native_provider", "manim_runner", "python", "ffmpeg"},
+        "GN1_STAGING_INPUT_ROSTER")
+    need(all(type(row) is dict and type(row.get("bytes")) is int
              and 0 < row["bytes"] <= MAX_NATIVE_STAGING_BYTES
              and type(row.get("sha256")) is str
              and SHA256.fullmatch(row["sha256"]) is not None
              for row in inputs.values()), "GN1_STAGING_INPUT_BUDGET")
     budget = max(MAX_DAEMON_LOG_BYTES, *(row["bytes"] for row in inputs.values()))
-    import resource
-    hard = resource.getrlimit(resource.RLIMIT_FSIZE)[1]
-    need(hard == resource.RLIM_INFINITY or hard >= budget,
-         "GN1_STAGING_HARD_LIMIT_INSUFFICIENT")
-    return {"inputs": inputs, "file_size_limit_bytes": budget,
+    return {"inputs": {name: dict(row) for name, row in inputs.items()},
+            "file_size_limit_bytes": budget,
             "daemon_log_limit_bytes": MAX_DAEMON_LOG_BYTES,
             "driver_file_size_limit_unchanged": True}
 
