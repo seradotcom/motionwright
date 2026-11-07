@@ -9383,6 +9383,125 @@ def graph_validate_allocation_union(observations, caps):
             "members": sum(row["files"] for row in by_id.values()) - 1096, "reservations": len(by_id)}
 
 
+
+def graph_archive_readonly_handoff(reopen, intent, index, final, retained):
+    """Independently join a closed original writer handoff with its read-only child.
+
+    Retained reads have already checked the immutable on-run inventory.  Never
+    accept the producer's three new boolean/reference fields by assertion alone.
+    """
+    require(reopen.get("read_only_child_bootstrap_proved") is True,
+            "Graph independent read-only child bootstrap absent")
+    handoff_ref = reopen.get("original_writer_read_only_handoff")
+    raw_ref = reopen.get("original_writer_handoff_raw")
+    require(type(handoff_ref) is dict and type(raw_ref) is dict,
+            "Graph original read-only writer handoff absent")
+    handoff = graph_json(retained(handoff_ref, 4 * GRAPH_BYTES))
+    preseal = graph_json(retained(reopen["original_preseal_held_pager_witness"], 4 * GRAPH_BYTES))
+    source = index["source"]
+    require(handoff.get("schema") == "motionwright.graph.original-read-only-handoff/1"
+            and handoff.get("source") == source and preseal.get("source") == source
+            and handoff.get("writer_original") == reopen["original_preseal_held_pager_witness"]
+            and handoff.get("process_id") == preseal.get("process", {}).get("pid")
+            and handoff.get("context") == preseal.get("context")
+            and handoff.get("read_only_handoff") is True
+            and handoff.get("journal_mode") == "delete"
+            and handoff.get("synthetic_adapter_only") is False
+            and handoff.get("automatic_retry") is False
+            and handoff.get("gate_credit") is False
+            and handoff.get("before") == handoff.get("after") == preseal.get("physical_store")
+            == reopen["physical_store_before"] == reopen["physical_store_after"]
+            and handoff.get("held_store_digest") == preseal.get("held_store_digest"),
+            "Graph original writer read-only handoff/source/physical identity")
+    require(reopen.get("original_service_closure") == final["service_closure"],
+            "Graph handoff writer closure not bound to owner final")
+    closure = graph_json(retained(final["service_closure"], 4 * GRAPH_BYTES))
+    owners = [row for row in closure.get("participants", [])
+              if row.get("helper_id") == handoff["context"].get("helper_id")]
+    require(closure.get("status") == "CLOSED" and len(owners) == 1
+            and owners[0].get("database_path") == handoff["context"].get("database_path")
+            and 0 <= handoff["context"]["launch_index"] < len(owners[0]["process_streams"]),
+            "Graph handoff owner Service closure missing")
+    record = owners[0]["process_streams"][handoff["context"]["launch_index"]]
+    exit_index = record.get("exit_index")
+    exits = owners[0]["process_exits"]
+    require(type(exit_index) is int and 0 <= exit_index < len(exits)
+            and record.get("process_id") == handoff["process_id"]
+            and record.get("stdout_ended") is True and record.get("stderr_ended") is True
+            and record.get("jsonl_reader_closed") is True
+            and exits[exit_index].get("process_id") == handoff["process_id"]
+            and exits[exit_index].get("code") == 0
+            and exits[exit_index].get("signal") is None,
+            "Graph original writer did not close after authentic handoff")
+    require(raw_ref == reopen["original_preseal_response_raw"]["stream"],
+            "Graph writer handoff raw must be its source-bound preseal stream")
+    writer_bytes = retained(raw_ref, 64 * GRAPH_BYTES)
+    require(type(writer_bytes) is bytes and writer_bytes.endswith(b"\n"),
+            "Graph original writer raw EOF/line missing")
+    lines = [graph_json(line) for line in writer_bytes.splitlines()]
+    requests = [
+        (handoff["request_original"], handoff["response"], "prepare_read_only_handoff"),
+        (handoff["identity_request_original"], handoff["identity_response"],
+         "opened_store_identity_witness"),
+    ]
+    seen = set()
+    for request_ref, response, command in requests:
+        request_bytes = retained(request_ref, 1024)
+        require(request_bytes.endswith(b"\n") and len(request_bytes) <= 1024,
+                "Graph original writer request is not a complete JSONL record")
+        request = graph_json(request_bytes)
+        require(set(request) == {"id", "command", "args"}
+                and request["command"] == command and request["args"] is None
+                and response.get("id") == request["id"] and response.get("ok") is True
+                and request["id"] not in seen
+                and sum(1 for row in lines if row.get("id") == request["id"]
+                        and row == response) == 1
+                and sum(1 for row in lines if row.get("id") == request["id"]) == 1,
+                "Graph original writer handoff RPC/EOF was not verified")
+        seen.add(request["id"])
+    require(handoff["response"].get("result") ==
+            {"read_only_handoff": True, "journal_mode": "delete"}
+            and handoff["identity_response"].get("result") == handoff["held_store_digest"],
+            "Graph original writer handoff did not seal the held Store")
+
+    db = handoff["context"].get("database_path")
+    ordinary = index["binaries"]["ordinary_service"]["path"]
+    require(type(db) is str and Path(db).is_absolute()
+            and intent.get("source") == source
+            and intent.get("argv") == [ordinary, "--database", db, "--read-only"]
+            and intent.get("original_writer_read_only_handoff") == handoff_ref
+            and intent.get("read_only_child_required") is True
+            and intent.get("original_owner_final") == reopen.get("original_owner_final")
+            and reopen["service_process"].get("pid") != handoff["process_id"],
+            "Graph independent child is not the original read-only Store reader")
+    original_requests = reopen.get("requests")
+    require(type(original_requests) is list and 1 <= len(original_requests) <= 256,
+            "Graph independent reader request inventory missing")
+    bootstrap_bytes = retained(original_requests[0], 1024)
+    require(bootstrap_bytes.endswith(b"\n"),
+            "Graph read-only bootstrap request incomplete")
+    bootstrap = graph_json(bootstrap_bytes)
+    expected_oracle = graph_json(retained(reopen["expected_oracle"], 16 * GRAPH_BYTES))
+    require(bootstrap.get("command") == "bootstrap"
+            and bootstrap.get("args") == {"request": {
+                "project_id": expected_oracle["project"]["id"]}},
+            "Graph independent read-only bootstrap request mismatched")
+    child_raw = reopen["raw"]["stdout"]
+    require(child_raw.get("eof") is True, "Graph read-only child raw EOF missing")
+    replies = retained({key: child_raw[key] for key in ("path", "sha256", "size_bytes")},
+                       64 * GRAPH_BYTES)
+    require(replies.endswith(b"\n"), "Graph read-only bootstrap raw incomplete")
+    records = [graph_json(line) for line in replies.splitlines()]
+    found = [row for row in records if row.get("id") == bootstrap.get("id")]
+    require(len(found) == 1 and found[0].get("ok") is True
+            and found[0].get("result", {}).get("read_only") is True
+            and found[0]["result"].get("test_transport") == "service-test-jsonl"
+            and found[0]["result"].get("evidence_scope") ==
+            "real_service_sqlite_cas_read_only; excludes_tauri_installer_native_render"
+            and found[0]["result"].get("project") == expected_oracle["project"],
+            "Graph original independent child read-only bootstrap not authenticated")
+
+
 def graph_archive_bindings(root, inventory, source):
     """Existing whole-evidence collector's Graph branch, after all reporters."""
     receipt = archive_json(root, inventory, "e/receipt.json")
@@ -9497,6 +9616,9 @@ def graph_archive_bindings(root, inventory, source):
         for name in ("expected_oracle", "observed_oracle", "original_preseal_held_pager_witness", "original_preseal_response_raw", "original_service_closure"):
             ref = reopen[name]
             retained({key: ref[key] for key in ("path", "sha256", "size_bytes")}, 16 * GRAPH_BYTES)
+        original_intent = graph_json(retained(graph_ref(reopen_path.parent / "intent.original.json"),
+                                              4 * GRAPH_BYTES))
+        graph_archive_readonly_handoff(reopen, original_intent, index, final, retained)
         for ref in reopen["opened_descriptor_observations"]:
             retained(ref, GRAPH_BYTES)
         for raw in reopen["raw"].values():
