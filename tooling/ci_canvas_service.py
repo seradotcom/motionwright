@@ -6973,8 +6973,8 @@ STUDIO68_HELPER_PINS = {
     "ci_sdk_native_source": "65bcda73f16423ebb644a0979bca3a7927f8e7337c124702874bce51adcf8127",
 }
 STUDIO68_READER_PINS = {
-    "tooling/service_readback/service_archive_readback_r3.py": "71319a62dab38779fd29a96d7b88c7e32ddb24a770a771e8db14bee6f30f73c3",
-    "tooling/service_readback/test_readback_r3.py": "b457817f1e05821ef84b1c7c78cca0a3b825264c6cab470747bbd9b73188e855",
+    "tooling/service_readback/service_archive_readback_r3.py": "765cd032aa96bbc8822d65de0fa07e4df570412f1e45a7776737615d6aa91bca",
+    "tooling/service_readback/test_readback_r3.py": "a54e5441fa50ea697c1088a97d0829fca1bd1b76369bbb48b841c0ba5d384b27",
 }
 STUDIO68_POLICIES = ("source_policy.py", "public_surface_policy.py",
                      "acceptance_policy.py", "creative_status_policy.py")
@@ -7375,6 +7375,7 @@ def studio68_readback_admission(report, command, expected_binary, expected_ids):
             and report["playwrightExitCodeReportedByCaller"] == 0
             and report.get("binary") == expected_binary
             and report.get("receipt", {}).get("status") == "WRITTEN"
+            and report.get("readbackMode") == "original_physical_store"
             and report.get("observationJournal", {}).get("status") == "CLOSED"
             and report.get("transportAttempted") is True and report.get("transportExecuted") is True,
             "Studio68 independent reader receipt is incomplete")
@@ -7392,6 +7393,11 @@ def studio68_readback_admission(report, command, expected_binary, expected_ids):
                 and case.get("readback", {}).get("status") == "VERIFIED"
                 and case["readback"].get("errors") == [], "Studio68 closed store/readback failed")
         observed = case["readback"]
+        require(observed.get("readbackMode") == "original_physical_store"
+                and type(observed.get("physicalSourceBeforeSha256")) is str
+                and re.fullmatch(r"[0-9a-f]{64}", observed["physicalSourceBeforeSha256"]) is not None
+                and observed.get("physicalSourceAfterSha256") == observed["physicalSourceBeforeSha256"],
+                "Studio68 independent reader did not retain original physical Store identity and inventory")
         close = observed.get("close", {})
         require(observed.get("transportAttempted") is True and observed.get("transportExecuted") is True
                 and type(observed.get("processId")) is int and observed["processId"] > 0
@@ -7640,7 +7646,8 @@ def studio68_reader_argv(python, reader, root, original, binary):
             "--expected-roster-sha256", original["list"]["sha256"],
             "--provenance-receipt", str(root / "source-build-binary.json"),
             "--expected-provenance-sha256", original["provenance"]["sha256"],
-            "--provenance-reviewed", "--execute-readback", "--expected-binary-sha256", binary["sha256"],
+            "--provenance-reviewed", "--execute-readback", "--physical-original-store",
+            "--expected-binary-sha256", binary["sha256"],
             "--backend-source-sha", STUDIO68_SOURCE, "--rpc-timeout-seconds", "10"]
 
 

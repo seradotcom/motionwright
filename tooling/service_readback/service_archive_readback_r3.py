@@ -606,15 +606,53 @@ def new_readback_observation(destination):
             "status": "PENDING", "requiresCallerReport": True}}
 
 
-def read_fresh_copy(binary, expected_hash, case_root, capture, destination, timeout, observation=None, checkpoint=None):
+def check_physical_original_store(store, capture):
+    """A source-only fast-fail guard, never an alternative to CAS Store::open.
+
+    Archive extraction and copytree create new directory inodes. A managed CAS
+    root deliberately refuses those copies; a subsequent, distinct real-service
+    reader must use the original physical Store after every first writer exits.
+    """
+    require(os.name == "posix", "Original physical-root readback requires a POSIX runner")
+    require(store.is_dir() and not store.is_symlink(), "Original physical Store is missing or redirected")
+    require(str(store.resolve()) == capture["manifest"].get("sourceDirectory"),
+            "Physical Store is not the exactly captured original source directory")
+    same_json(capture["manifest"]["entries"], tree_entries(store), "$.physicalOriginalBeforeReadback")
+    blobs = store / "blobs"
+    require(blobs.is_dir() and not blobs.is_symlink(), "Original managed CAS blob root is missing")
+    anchor = read_json(blobs / ".motionwright-cas-root-v1.json")
+    require(anchor.get("format_version") == 1 and isinstance(anchor.get("root_id"), str),
+            "Original managed CAS root anchor is invalid")
+    control = store / (".motionwright-cas-" + anchor["root_id"])
+    lock = control / "root.lock"
+    for path, recorded, label in ((blobs, anchor.get("directory_id"), "blob root"),
+                                  (control, anchor.get("control_id"), "control"),
+                                  (lock, anchor.get("lock_id"), "root lock")):
+        require(not path.is_symlink() and path.exists(), "Original CAS " + label + " is missing or redirected")
+        identity = path.stat()
+        require(recorded == f"unix:{identity.st_dev}:{identity.st_ino}",
+                "Original CAS " + label + " physical identity differs from the anchor")
+    require(anchor.get("canonical_root") == str(blobs.resolve())
+            and anchor.get("control") == str(control.resolve()),
+            "Original CAS anchor paths do not name this physical runner's Store")
+    return digest_json(tree_entries(store))
+
+
+def read_fresh_copy(binary, expected_hash, case_root, capture, destination, timeout, observation=None, checkpoint=None,
+                    original_store=None):
     # main installs this exact object in its case roster before entering here.
     # Neither a return value nor an optional JSON write owns execution facts.
     result = observation if observation is not None else new_readback_observation(destination)
     store, oracle, reader = destination / "store", capture["oracle"], None
+    result["readbackMode"] = "original_physical_store" if original_store is not None else "archive_extracted_copy"
     try:
         destination.mkdir(parents=True)
-        shutil.copytree(case_root / "closed-store" / "store", store, copy_function=shutil.copy2)
-        same_json(capture["manifest"]["entries"], tree_entries(store), "$.freshCopy")
+        if original_store is not None:
+            store = original_store
+            result["physicalSourceBeforeSha256"] = check_physical_original_store(store, capture)
+        else:
+            shutil.copytree(case_root / "closed-store" / "store", store, copy_function=shutil.copy2)
+            same_json(capture["manifest"]["entries"], tree_entries(store), "$.freshCopy")
         require(sha256(binary) == expected_hash, "Service binary changed before invocation")
         reader = JsonlReader(binary, store / capture["manifest"]["databaseRelativePath"], destination, timeout)
         if checkpoint:
@@ -675,6 +713,10 @@ def read_fresh_copy(binary, expected_hash, case_root, capture, destination, time
         try:
             require(sha256(binary) == expected_hash, "Service binary changed during readback")
             same_json(capture["manifest"]["entries"], tree_entries(case_root / "closed-store" / "store"), "$.unopenedSnapshotAfterReadback")
+            if original_store is not None:
+                result["physicalSourceAfterSha256"] = check_physical_original_store(store, capture)
+                require(result["physicalSourceBeforeSha256"] == result["physicalSourceAfterSha256"],
+                        "Physical Store inventory changed during independent readback")
         except BaseException as error:
             result["errors"].append(type(error).__name__ + ": " + str(error))
         result["finishedAt"] = now()
@@ -742,6 +784,8 @@ def main(observation=None):
     parser.add_argument("--expected-provenance-sha256", help="External receipt SHA-256, mandatory for execution")
     parser.add_argument("--provenance-reviewed", action="store_true", help="Caller explicitly confirms external provenance binding review; not authentication by this tool")
     parser.add_argument("--execute-readback", action="store_true", help="Opt in only after the exact executable and provenance receipt are supplied")
+    parser.add_argument("--physical-original-store", action="store_true",
+                        help="Opt into a fresh reader process on the exact original physical Store after clean closure; never on copied CAS directories")
     parser.add_argument("--expected-binary-sha256")
     parser.add_argument("--backend-source-sha")
     parser.add_argument("--rpc-timeout-seconds", type=float, default=10)
@@ -751,10 +795,15 @@ def main(observation=None):
     require(source.is_dir() and output != source and source not in output.parents and output not in source.parents,
             "Output must be a separate fresh directory outside the results tree")
     require(args.expected_cases > 0 and 0 < args.rpc_timeout_seconds <= 60, "Invalid expected count or RPC timeout")
+    require(not args.physical_original_store or args.execute_readback,
+            "Original physical Store mode requires an actual executed readback")
     output.mkdir(parents=True, exist_ok=False)
     report.update(startedAt=now(), sourceResults=str(source), outputDirectory=str(output),
-                  scope="independent closed-store archive and Project/journal readback; not native rendering or human acceptance",
+                  scope=("Independent real-service readback on original physical Store after clean closure; archive preserved separately"
+                         if args.physical_original_store else
+                         "independent closed-store archive and Project/journal readback; not native rendering or human acceptance"),
                   helperReferenceSha256=HELPER_SHA256, expectedCases=args.expected_cases,
+                  readbackMode="original_physical_store" if args.physical_original_store else "archive_extracted_copy",
                   playwrightExitCodeReportedByCaller=args.playwright_exit_code, backendSourceShaAssertedByCaller=args.backend_source_sha,
                   sourceAuthentication="NOT_ESTABLISHED_BY_THIS_SCRIPT", archive=None, binary=None, playwrightRoster=None,
                   observationJournal={"path": str(output / "execution-observations.jsonl"), "status": "NOT_OPENED"},
@@ -820,6 +869,12 @@ def main(observation=None):
             expected_hash = args.expected_binary_sha256.lower()
             require(sha256(binary) == expected_hash, "Executable differs from the supplied binary SHA-256")
             report["binary"] = {"path": str(binary), "sha256": expected_hash}
+            # Preflight every physical original before launching even the first
+            # reader. No later-case invalidity can trigger a partial readback.
+            if args.physical_original_store:
+                for _, case_root, capture, _ in prepared:
+                    original_store = source / case_root.relative_to(extracted) / "service"
+                    check_physical_original_store(original_store, capture)
             durable = DurableObservations(output / "execution-observations.jsonl")
             report["observationJournal"]["status"] = "OPEN"
             durable.record("run_before_transport", None, report)
@@ -827,8 +882,10 @@ def main(observation=None):
                 result = new_readback_observation(destination)
                 item["readback"] = result  # Caller owns facts before any possible launch.
                 try:
+                    original_store = source / case_root.relative_to(extracted) / "service" if args.physical_original_store else None
                     read_fresh_copy(binary, expected_hash, case_root, capture, destination, args.rpc_timeout_seconds, result,
-                                    lambda kind, facts: durable.record(kind, item["case"], facts))
+                                    lambda kind, facts: durable.record(kind, item["case"], facts),
+                                    original_store=original_store)
                 except BaseException as error:
                     result["status"] = "FAILED"
                     result["errors"].append("Caller boundary: " + type(error).__name__ + ": " + str(error))
