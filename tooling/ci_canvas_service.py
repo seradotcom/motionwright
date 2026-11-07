@@ -9530,6 +9530,38 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
         require(len(source_bytes) == identity["bytes"]
                 and hashlib.sha256(source_bytes).hexdigest() == identity["sha256"],
                 "Graph Native daemon terminal stream not retained")
+    # A CLOSED owner lifecycle by itself is insufficient: Semwrightd must
+    # actually have finished its Broker drain, not merely exited by SIGTERM.
+    # Its argv and retained terminal are independently bound to this case.
+    native_daemon = daemon[0]
+    require(native_daemon.get("status") == "STOPPED"
+            and type(native_daemon.get("exit_code")) is int
+            and native_daemon["exit_code"] == 0
+            and native_daemon.get("termination_requested") is True
+            and native_daemon.get("forced_termination") is False
+            and native_daemon.get("deadline_exceeded") is False
+            and native_daemon.get("descendant_cleanup_required") is False,
+            "Graph original Semwright daemon did not exit after graceful drain")
+    daemon_intent = original(graph_ref(native_owner_root / "owner-restricted.intent.json"),
+                             GRAPH_BYTES)
+    require(type(daemon_intent) is dict
+            and set(daemon_intent) == {"schema", "label", "argv", "cwd",
+                                       "automatic_retry", "owned_process_group"}
+            and daemon_intent["schema"] == "motionwright.native.graph-browser-owner/1"
+            and daemon_intent["label"] == "owner-restricted"
+            and daemon_intent["cwd"] is None
+            and daemon_intent["automatic_retry"] is False
+            and daemon_intent["owned_process_group"] is True
+            and daemon_intent["argv"] == [
+                index["binaries"]["semwrightd"]["path"], "--config",
+                str(native_owner_root / "config" / "owner-restricted.toml"),
+                "--socket", str(native_owner_root / "runtime" / "broker.sock")],
+            "Graph daemon source-built original CLI is not the reviewed broker")
+    daemon_terminal = original(
+        graph_ref(native_owner_root / "owner-restricted.terminal.json"), GRAPH_BYTES)
+    require(daemon_terminal == native_daemon
+            and daemon_terminal.get("schema") == "motionwright.native.graph-browser-owner/1",
+            "Graph original daemon terminal differs from lifecycle source custody")
     cohort_tree = native_cohort.get("complete_empty_descendant_tree", {})
     owner_processes = cohort_tree.get("processes", [])
     # The Linux subreaper may return PASS after emergency SIGTERM/SIGKILL of

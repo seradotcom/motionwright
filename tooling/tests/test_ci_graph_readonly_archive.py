@@ -30,7 +30,8 @@ class InertOriginals:
         self.native = {"path": str(self.root / "bin" / "native-graph-review-session")}
         self.ordinary = {"path": str(self.root / "bin" / "studio-review-session")}
         self.index = {"source": self.source, "binaries": {
-            "native_graph_session": self.native, "ordinary_service": self.ordinary}}
+            "native_graph_session": self.native, "ordinary_service": self.ordinary,
+            "semwrightd": {"path": str(self.root / "bin" / "semwrightd")}}}
         self.make()
 
     def put(self, name, value):
@@ -101,9 +102,15 @@ class InertOriginals:
         def identity(ref):
             return {"path": ref["path"], "sha256": ref["sha256"], "bytes": ref["size_bytes"]}
         daemon = {
+            "schema": "motionwright.native.graph-browser-owner/1",
             "label": "owner-restricted", "pid": 888, "reason": "explicit-close",
-            "status": "STOPPED", "exit_code": -15, "deadline_exceeded": False,
-            "forced_termination": False, "descendant_cleanup_required": False,
+            "status": "STOPPED",
+            "exit_code": -15 if self.mode == "native_daemon_signal_only" else 0,
+            "termination_requested": True,
+            "deadline_exceeded": self.mode == "native_daemon_timed_out",
+            "forced_termination": (self.mode in ("native_quiescence_forced_daemon",
+                                                "native_daemon_forced")),
+            "descendant_cleanup_required": False,
             "automatic_retry": False, "writers_closed_within_owned_group": True,
             "group_observation": {"writers_closed_within_owned_group": True},
             "stdout": identity(daemon_stdout_ref), "stderr": identity(daemon_stderr_ref),
@@ -134,6 +141,36 @@ class InertOriginals:
             daemon["forced_termination"] = True
         if self.mode == "native_quiescence_modified_stdout":
             daemon["stdout"]["sha256"] = "0" * 64
+        # The original launched argv, terminal and both retained raw streams
+        # must agree with the reviewed binary and same-case owner root.
+        daemon_argv = [self.index["binaries"]["semwrightd"]["path"], "--config",
+                       str(self.root / "graph-flow" / "owner" / "config" /
+                           "owner-restricted.toml"), "--socket",
+                       str(self.root / "graph-flow" / "owner" / "runtime" /
+                           "broker.sock")]
+        if self.mode == "native_daemon_wrong_executable":
+            daemon_argv[0] = str(self.root / "bin" / "other-daemon")
+        if self.mode == "native_daemon_wrong_config":
+            daemon_argv[2] = str(self.root / "other" / "owner-restricted.toml")
+        if self.mode == "native_daemon_wrong_socket":
+            daemon_argv[4] = str(self.root / "other" / "broker.sock")
+        if self.mode == "native_daemon_extra_flag":
+            daemon_argv.append("--foreign-capability")
+        daemon_intent = {"schema": "motionwright.native.graph-browser-owner/1",
+                         "label": "owner-restricted", "argv": daemon_argv,
+                         "cwd": None, "automatic_retry": False,
+                         "owned_process_group": True}
+        if self.mode != "native_daemon_missing_intent":
+            self.put("graph-flow/owner/owner-restricted.intent.json", daemon_intent)
+        daemon_original = dict(daemon)
+        if self.mode == "native_daemon_terminal_mismatch":
+            daemon_original["pid"] = 889
+        if self.mode != "native_daemon_missing_terminal_original":
+            self.put("graph-flow/owner/owner-restricted.terminal.json", daemon_original)
+        if self.mode == "native_daemon_group_alive":
+            daemon["group_observation"]["writers_closed_within_owned_group"] = False
+        if self.mode == "native_daemon_wrong_pid":
+            daemon["pid"] = 101
         native_close_path = ("other-source/owner-close.json" if self.mode == "native_quiescence_foreign_close_path"
                              else "graph-flow/owner/owner-close.json")
         native_close_ref = self.put(native_close_path, lifecycle)
@@ -290,6 +327,18 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                      "native_quiescence_foreign_close_path",
                      "native_quiescence_foreign_quiescence_path",
                      "native_quiescence_owner_reuses_reader_pid"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_graceful_daemon_exit_original_argv_and_terminal_required(self):
+        for mode in ("native_daemon_signal_only", "native_daemon_timed_out",
+                     "native_daemon_forced", "native_daemon_group_alive",
+                     "native_daemon_missing_terminal_original",
+                     "native_daemon_terminal_mismatch", "native_daemon_wrong_pid",
+                     "native_daemon_missing_intent", "native_daemon_wrong_executable",
+                     "native_daemon_wrong_config", "native_daemon_wrong_socket",
+                     "native_daemon_extra_flag"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
