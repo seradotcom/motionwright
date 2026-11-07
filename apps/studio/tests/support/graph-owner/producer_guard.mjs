@@ -423,6 +423,10 @@ function callbackPlan(index, reviewed, caseId, originals) {
   need(Object.hasOwn(reviewed.source_files, 'apps/studio/tests/support/nativeGraphCase.ts')
     && Object.hasOwn(reviewed.source_files, 'apps/studio/tests/support/scopedChangeService.ts')
     && Object.hasOwn(reviewed.source_files, 'apps/studio/tests/semantic-graph-service.spec.ts'), 'J1_ACTUAL_WRAPPER_SOURCE_MISSING');
+  if (Object.hasOwn(reviewed.execution, 'selected_case')) {
+    need(reviewed.execution.selected_case === 'graph-flow' && caseId === 'graph-flow',
+      'J1_REVIEWED_ONE_CASE_EXECUTION_MISMATCH');
+  }
   const selection = reviewed.cases[caseId];
   exact(selection, ['title', 'callback_caps', 'roster_source_files'], 'J1_REVIEWED_CASE_FIELDS');
   need(typeof selection.title === 'string' && selection.title.length > 0
@@ -617,8 +621,10 @@ function contractReview(index, indexSha) {
   need(!Object.hasOwn(index.contract, 'index_sha256') && !Object.hasOwn(index.contract, 'source'),
     'J1_CONTRACT_SELF_REFERENCE');
   const execution = index.contract.execution;
+  const selected = Object.hasOwn(execution, 'selected_case');
+  if (selected) need(execution.selected_case === 'graph-flow', 'J1_ONE_CASE_SELECTION_UNREVIEWED');
   exact(execution, ['scope', 'job', 'job_id', 'deadline_original', 'deadline_unix_ms',
-    'producer_root', 'cases_root', 'budget'], 'J1_EXECUTION_FIELDS');
+    'producer_root', 'cases_root', 'budget', ...(selected ? ['selected_case'] : [])], 'J1_EXECUTION_FIELDS');
   need(execution.scope === GRAPH_SCOPE && execution.job === 'real-service'
     && integer(execution.job_id, 1) && integer(execution.deadline_unix_ms, 1), 'J1_EXECUTION_CONTEXT');
   reference(execution.deadline_original, 8 * LIMIT + 65536);
