@@ -293,6 +293,20 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         for blocked in ("graph produce", "graph wait", "graph run"):
             self.assertNotIn(blocked, workflow)
 
+    def test_graph_control_replay_originals_are_selected_in_source_fast_lane(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertIn("      - 'tooling/tests/test_graph_owner_control_replay.py'", trigger)
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        self.assertIn("if [ -f tooling/tests/test_graph_owner_control_replay.py ]; then", gn1)
+        self.assertIn("tooling.tests.test_graph_owner_control_replay -v", gn1)
+        self.assertIn("tooling.tests.test_ci_graph_dev_fast", gn1)
+        self.assertIn("tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log", gn1)
+        self.assertIn("set -euo pipefail", gn1)
+
     def test_source_g0_exercises_graph_owner_quiescence_and_r74_selection(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(encoding="utf-8")
