@@ -25,7 +25,7 @@ mod graph_cycle;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-manim-e2e <seed-graph-cycle DATABASE REPORT_JSON | graph-cycle-edit-prepare DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT_JSON REQUEST_ID | graph-cycle-save-readback DATABASE PENDING_JSON OWNER_TERMINAL_JSON REPORT_JSON | realize-graph DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON REQUEST_ID | realize-graph-bundle DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
+        "usage: native-manim-e2e <seed-graph-cycle DATABASE REPORT_JSON | graph-cycle-edit-prepare DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT_JSON REQUEST_ID | graph-cycle-save-readback DATABASE PENDING_JSON OWNER_TERMINAL_JSON REPORT_JSON | realize-graph DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON REQUEST_ID | realize-graph-bundle DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | source-cycle-recover-edit BEFORE_DATABASE CURRENT_DATABASE ORIGINAL_BUNDLE EDITED_BUNDLE ORIGINAL_INTENT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
     );
     std::process::exit(2);
 }
@@ -1548,6 +1548,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let result =
                 editable_cycle::edit(&database, &original_native, &output_root, &report, &request)?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
+        "source-cycle-recover-edit" => {
+            let before_database = path_arg(&mut args);
+            let current_database = path_arg(&mut args);
+            let original_bundle = path_arg(&mut args);
+            let edited_bundle = path_arg(&mut args);
+            let original_intent = path_arg(&mut args);
+            let report = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let result = editable_cycle::recover_edit(
+                &before_database,
+                &current_database,
+                &original_bundle,
+                &edited_bundle,
+                &original_intent,
+                &report,
+            )?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }

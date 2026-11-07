@@ -4188,9 +4188,18 @@ jobs:
         with:
           toolchain: 1.98.1
 
+      - name: Restore existing MLT dependency cache within the original clock
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-mlt-sequence-1.98.1
+          shared-key: native-mlt-sequence
+          save-if: 'false'
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
 
       - name: Prepare the existing pinned custody Python and empty owner cgroups
         id: fixedtxt_python
