@@ -229,7 +229,12 @@ def clean_environment(current, *, preparation=False):
     value = {key: os.environ[key] for key in allowed if key in os.environ}
     need(value.get("PATH") and not any(key.startswith(("GIT_", "GH_", "ACTIONS_")) for key in value),
          "profiles-private-child-environment")
-    value.update(CI="true", GITHUB_ACTIONS="true", RUNNER_OS="Linux", GITHUB_EVENT_NAME="workflow_dispatch",
+    # The sandbox setup must see the actual runner provenance. Missing or
+    # negative signals stay missing/negative; this function cannot certify CI.
+    runner = ({key: os.environ[key] for key in ("CI", "GITHUB_ACTIONS", "RUNNER_ENVIRONMENT")
+               if key in os.environ} if preparation else {"CI": "true", "GITHUB_ACTIONS": "true"})
+    value.update(runner)
+    value.update(RUNNER_OS="Linux", GITHUB_EVENT_NAME="workflow_dispatch",
         GITHUB_REPOSITORY=REPO, GITHUB_RUN_ATTEMPT="1", GITHUB_SHA=current["source_sha"],
         GITHUB_RUN_ID=current["run_id"], GITHUB_WORKSPACE=os.environ["GITHUB_WORKSPACE"],
         RUNNER_TEMP=os.environ["RUNNER_TEMP"], SEMWRIGHT_CHECKOUT=os.environ["SEMWRIGHT_CHECKOUT"],
