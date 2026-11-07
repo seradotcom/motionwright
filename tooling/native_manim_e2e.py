@@ -895,6 +895,27 @@ def checked_static_originals(native, seeded, evidence):
     }
 
 
+def stage_phase_binaries(binary_root, reuse, *, driver_source=None, runner_source=None):
+    """Stage once in the owned root, then verify its unchanged pinned bytes."""
+    driver = binary_root / "motionwright-manim-community-driver"
+    runner = binary_root / "motionwright-manim-runner"
+    pairs = ((MW_DRIVER if driver_source is None else driver_source, driver),
+             (MW_RUNNER if runner_source is None else runner_source, runner))
+    if reuse:
+        if any(not target.is_file() or target.is_symlink() or digest(target) != digest(source)
+               for source, target in pairs):
+            raise ValueError("editable original admitted binaries changed")
+    else:
+        if any(target.exists() or target.is_symlink() for _, target in pairs):
+            raise ValueError("new native binary staging may not overwrite an existing file")
+        for source, target in pairs:
+            shutil.copyfile(source, target)
+            target.chmod(0o700)
+        if any(digest(target) != digest(source) for source, target in pairs):
+            raise ValueError("new native binary staging differs from its pinned source")
+    return driver, runner
+
+
 def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None, resume_cycle=None,
                 recovery_cycle=None):
     camera = args.scenario == "camera120"
@@ -941,6 +962,10 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                           camera_options(args, camera=camera))
     if lifecycle and current != lifecycle_context["current"]:
         raise ValueError("editable cycle context changed between native phases")
+    reuse_lifecycle_binaries = lifecycle and bool(lifecycle_context["history"])
+    if recovery:
+        from native_manim_recovery_cycle import current_owner_has_phase
+        reuse_lifecycle_binaries = current_owner_has_phase(recovery_cycle)
     if source_cycle is not None and current != source_cycle["current"]:
         raise ValueError("camera cycle context changed between native phases")
     evidence = args.evidence_root
@@ -998,7 +1023,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                         raise ValueError("recovery runtime phase changed its rehydrated saved Store")
                 elif lifecycle and name in ("motionwright-data", "bin"):
                     path = root / name
-                    if lifecycle_context["history"]:
+                    if reuse_lifecycle_binaries:
                         if (not path.is_dir() or path.is_symlink()
                                 or path.resolve(strict=True) != path):
                             raise ValueError("editable shared store or pinned binary root changed")
@@ -1124,16 +1149,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                 if seeded.get("primitive_count") != 3:
                     raise AssertionError(f"unexpected Manim seed: {seeded}")
 
-            driver = paths["bin"] / "motionwright-manim-community-driver"
-            runner = paths["bin"] / "motionwright-manim-runner"
-            if lifecycle and lifecycle_context["history"]:
-                if digest(driver) != digest(MW_DRIVER) or digest(runner) != digest(MW_RUNNER):
-                    raise ValueError("editable original admitted binaries changed")
-            else:
-                shutil.copyfile(MW_DRIVER, driver)
-                shutil.copyfile(MW_RUNNER, runner)
-                driver.chmod(0o700)
-                runner.chmod(0o700)
+            driver, runner = stage_phase_binaries(paths["bin"], reuse_lifecycle_binaries)
 
             manifest = {
                 "manifest_version": 1,

@@ -235,6 +235,85 @@ class RetainedRuntimeSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit four-phase owner"):
             native._run_single(argparse.Namespace(scenario=transfer.RESUME_SCENARIO), recovery_cycle={})
 
+    def test_retained_reference_stages_fresh_owned_binaries_and_reuses_only_current_phases(self):
+        import native_manim_e2e as native
+        import native_manim_recovery_cycle as cycle
+        import native_manim_retained_reference as retained
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary).resolve()
+            binary_root = owner / "bin"
+            sources = []
+            for name in ("driver", "runner"):
+                source = owner / (name + ".source")
+                source.write_bytes(("INERT_UNIT_BYTES_NO_NATIVE_" + name).encode())
+                sources.append(source)
+            reference = {"retained_reference": True, "current": retained.ORIGIN}
+            context = {"recovery_runtime_only": True, "phase": cycle.PHASES[1],
+                       "short_phase": cycle.SHORT_PHASES[1], "owner": owner, "current": CURRENT,
+                       "history": [reference]}
+            environment = {"MANIM_NATIVE_SCENARIO": transfer.RECOVERY_SCENARIO,
+                           retained.ENVIRONMENT: retained.CONTINUATION}
+            with patch.dict(os.environ, environment):
+                reuse = cycle.current_owner_has_phase(context)
+                self.assertFalse(reuse)
+                self.assertFalse(binary_root.exists())
+                binary_root.mkdir(mode=0o700, exist_ok=False)
+                binaries = native.stage_phase_binaries(binary_root, reuse,
+                    driver_source=sources[0], runner_source=sources[1])
+                for source, staged in zip(sources, binaries):
+                    self.assertEqual(staged.read_bytes(), source.read_bytes())
+                    if os.name == "posix":
+                        self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
+                original = [(path.read_bytes(), path.stat().st_mtime_ns) for path in binaries]
+                for index in (2, 3):
+                    context["history"].append({"current": CURRENT, "owner": owner,
+                        "phase_observation": {"phase": cycle.PHASES[index - 1]}})
+                    context.update(phase=cycle.PHASES[index], short_phase=cycle.SHORT_PHASES[index])
+                    self.assertTrue(cycle.current_owner_has_phase(context))
+                    native.stage_phase_binaries(binary_root, True,
+                        driver_source=sources[0], runner_source=sources[1])
+                self.assertEqual(original, [(path.read_bytes(), path.stat().st_mtime_ns) for path in binaries])
+                binaries[0].write_bytes(b"ALTERED_INERT_UNIT_BYTES")
+                with self.assertRaisesRegex(ValueError, "original admitted binaries changed"):
+                    native.stage_phase_binaries(binary_root, True,
+                        driver_source=sources[0], runner_source=sources[1])
+                self.assertEqual(binaries[0].read_bytes(), b"ALTERED_INERT_UNIT_BYTES")
+                with self.assertRaisesRegex(ValueError, "may not overwrite"):
+                    native.stage_phase_binaries(binary_root, False,
+                        driver_source=sources[0], runner_source=sources[1])
+
+    def test_owned_binary_history_rejects_foreign_context_owner_or_phase_order(self):
+        import native_manim_recovery_cycle as cycle
+        import native_manim_retained_reference as retained
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary).resolve()
+            reference = {"retained_reference": True, "current": retained.ORIGIN}
+            prior = {"current": CURRENT, "owner": owner,
+                     "phase_observation": {"phase": cycle.PHASES[1]}}
+            context = {"recovery_runtime_only": True, "phase": cycle.PHASES[2],
+                       "short_phase": cycle.SHORT_PHASES[2], "owner": owner, "current": CURRENT,
+                       "history": [reference, prior]}
+            with patch.dict(os.environ, {"MANIM_NATIVE_SCENARIO": transfer.RECOVERY_SCENARIO,
+                                        retained.ENVIRONMENT: retained.CONTINUATION}):
+                for changed in ({**prior, "current": {**CURRENT, "run_id": "999"}},
+                                {**prior, "owner": owner / "another-owner"},
+                                {**prior, "phase_observation": {"phase": cycle.PHASES[0]}},
+                                {**prior, "retained_reference": True}):
+                    with self.assertRaisesRegex(ValueError, "owned_binary_history_prefix"):
+                        cycle.current_owner_has_phase({**context, "history": [reference, changed]})
+                with self.assertRaisesRegex(ValueError, "owned_binary_phase_order"):
+                    cycle.current_owner_has_phase({**context, "history": [reference]})
+                with self.assertRaisesRegex(ValueError, "owned_binary_retained_origin"):
+                    cycle.current_owner_has_phase({**context, "history": [{**reference, "current": CURRENT}, prior]})
+            with patch.dict(os.environ, {retained.ENVIRONMENT: "none"}):
+                fresh = {**context, "phase": cycle.PHASES[0], "short_phase": cycle.SHORT_PHASES[0], "history": []}
+                self.assertFalse(cycle.current_owner_has_phase(fresh))
+                same_owner = {"current": CURRENT, "owner": owner,
+                              "phase_observation": {"phase": cycle.PHASES[0]}}
+                following = {**fresh, "phase": cycle.PHASES[1], "short_phase": cycle.SHORT_PHASES[1],
+                             "history": [same_owner]}
+                self.assertTrue(cycle.current_owner_has_phase(following))
+
     def test_workflow_selects_new_cycle_without_running_old_native_or_source_rosters(self):
         text = (ROOT / ".github/workflows/native-manim-e2e.yml").read_text(encoding="utf-8")
         job = text.split("  native-manim-resume:\n", 1)[1].split("  native-manim-roundtrip:\n", 1)[0]

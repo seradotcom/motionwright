@@ -166,6 +166,31 @@ def prepare_sources(current, owner, *, capture, source_binary, retained=None):
     return state
 
 
+def current_owner_has_phase(context):
+    """A retained reference supplies media history, never this owner's binaries."""
+    history, phase = context.get("history"), context.get("phase")
+    owner, current = context.get("owner"), context.get("current")
+    require(context.get("recovery_runtime_only") is True and type(history) is list
+            and phase in PHASES and isinstance(owner, Path) and type(current) is dict
+            and owner.is_dir() and not owner.is_symlink() and owner.resolve(strict=True) == owner,
+            "recovery_runtime_owned_binary_history_context")
+    index = PHASES.index(phase)
+    first = 1 if retained_reference.selected() else 0
+    require(index >= first and len(history) == index and context.get("short_phase") == SHORT_PHASES[index],
+            "recovery_runtime_owned_binary_phase_order")
+    if first:
+        retained = history[0]
+        require(type(retained) is dict and retained.get("retained_reference") is True
+                and retained.get("current") == retained_reference.ORIGIN,
+                "recovery_runtime_owned_binary_retained_origin")
+    for position, previous in enumerate(history[first:], first):
+        require(type(previous) is dict and previous.get("retained_reference") is not True
+                and previous.get("current") == current and previous.get("owner") == owner
+                and previous.get("phase_observation", {}).get("phase") == PHASES[position],
+                "recovery_runtime_owned_binary_history_prefix")
+    return len(history) > first
+
+
 def new_phase_inputs(context, evidence, database, output_root, env, *, capture, source_binary):
     index = PHASES.index(context["phase"])
     require(context.get("recovery_runtime_only") is True and len(context["history"]) == index,
