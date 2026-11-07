@@ -2140,17 +2140,33 @@ def graph_quiesce_v6(self, *, request_id):
     session = Path(selected["session"]["path"])
     require(session.is_file() and session.is_relative_to(self.paths["clients"]),
             "provider-release-original-session-changed")
-    # Semwright's persistent CLI atomically rewrites the ticket on EVERY
-    # connection, even for an unchanged session. Verify the original ticket
-    # bytes, not its inode, before and after each CLI command. A stale ticket
-    # may otherwise be silently renewed as a DIFFERENT Broker session.
+    # A successful release for the last client is not evidence that an older
+    # client used the same provider lease. The original cohort must agree on
+    # provider identity, connection, generation and mounted root. Binding refs
+    # are session-scoped, so they are intentionally not compared here.
+    for client in self.clients:
+        observed = client["actual_mount_observation"]
+        require(type(observed) is dict
+                and observed.get("provider") == original["provider"]
+                and observed.get("connection") == original["connection"]
+                and observed.get("provider_generation") == original["provider_generation"]
+                and observed.get("mount") == original["mount"],
+                "provider-release-original-lease-roster-changed")
+    # Semwright's persistent CLI atomically rewrites a ticket on EVERY
+    # connection, even for an unchanged session. Verify ALL original client
+    # ticket bytes (not inodes) before and after each CLI command. A stale
+    # earlier ticket must not silently become a different Broker session.
     def require_original_session_ticket():
-        actual = file_identity(session)
-        original_ticket = selected["session"]
-        require(actual["path"] == original_ticket["path"]
-                and actual["bytes"] == original_ticket["bytes"]
-                and actual["sha256"] == original_ticket["sha256"],
-                "provider-release-original-session-reissued")
+        for client in self.clients:
+            original_ticket = client["session"]
+            ticket = Path(original_ticket["path"])
+            require(ticket.is_file() and ticket.is_relative_to(self.paths["clients"]),
+                    "provider-release-original-session-changed")
+            actual = file_identity(ticket)
+            require(actual["path"] == original_ticket["path"]
+                    and actual["bytes"] == original_ticket["bytes"]
+                    and actual["sha256"] == original_ticket["sha256"],
+                    "provider-release-original-session-reissued")
     require_original_session_ticket()
     observe_source_before_close(self)
     # Obtain a fresh short-lived binding through the SAME real session and
