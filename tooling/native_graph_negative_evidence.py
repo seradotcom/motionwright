@@ -129,9 +129,9 @@ class SelectedTree:
                 os.close(fd)
 
 
-def shared_usage(tree, case_directories, maximum_bytes, maximum_members):
+def shared_usage(tree, case_directories, maximum_bytes, maximum_members, case_root="e/graph-cases"):
     """Count the shared namespace; existing producer/case slices stay charged."""
-    excluded = {"e/graph-producer", *("e/graph-cases/" + case for case in case_directories)}
+    excluded = {"e/graph-producer", *(case_root + "/" + case for case in case_directories)}
     pending, total, members = ["e", "tools"], 0, 0
     while pending:
         relative = pending.pop()
@@ -154,7 +154,7 @@ def shared_usage(tree, case_directories, maximum_bytes, maximum_members):
     return {"bytes": total, "members": members, "withheld": RESERVATION}
 
 
-def collect(tree, cases, binding):
+def collect(tree, cases, binding, case_root="e/graph-cases"):
     """Fixed diagnostic namespaces only; all misses remain explicit and private."""
     records, originals, seen, total = [], [], set(), 0
 
@@ -221,7 +221,7 @@ def collect(tree, cases, binding):
                  "tools/graph-phase-closure.terminal.original.json"):
         capture(name)
     for case, directory in cases:
-        prefix = "e/graph-cases/" + directory
+        prefix = case_root + "/" + directory
         capture("e/graph-producer/consumption/" + case + ".original.json")
         for name in CASE_FIXED:
             capture(prefix + "/" + name)
@@ -231,11 +231,11 @@ def collect(tree, cases, binding):
             capture(prefix + "/raw/" + name, MIB)
         for name in listing(prefix + "/owner", OWNER_RECORD, 768):
             capture(prefix + "/owner/" + name, MIB if name.endswith(".original") else MAX_FILE)
-    for name in listing("e/graph-cases", TRACE_DIRECTORY, 128):
+    for name in listing(case_root, TRACE_DIRECTORY, 128):
         for leaf in ("error-context.md", "trace.zip", "test-failed-1.png"):
-            capture("e/graph-cases/" + name + "/" + leaf)
+            capture(case_root + "/" + name + "/" + leaf)
     for _case, directory in cases:
-        clients = "e/graph-cases/" + directory + "/owner/clients"
+        clients = case_root + "/" + directory + "/owner/clients"
         for name in listing(clients, JOURNAL, 128):
             journal(clients + "/" + name)
     manifest = {"schema": SCHEMA, "scope": "SELECTED_NEGATIVE_BYTES_AT_READ_TIME_ONLY",
@@ -255,26 +255,36 @@ def collect(tree, cases, binding):
     return raw
 
 
-def seal_once(root, cases, binding, recipient, shared_budget, admission):
+def seal_once(root, cases, binding, recipient, shared_budget, admission, *, case_root="e/graph-cases"):
     """Reserve exclusively before reading; an interrupted seal cannot be replayed."""
     require(os.name == "posix" and hasattr(os, "O_NOFOLLOW"), "negative_linux_handles_required")
-    require(len(cases) == 6 and [directory for _case, directory in cases] == ["g" + str(i) for i in range(1, 7)]
-            and len({case for case, _directory in cases}) == 6, "negative_case_roster")
+    if case_root == "e/graph-cases":
+        require(len(cases) == 6 and [directory for _case, directory in cases] == ["g" + str(i) for i in range(1, 7)]
+                and len({case for case, _directory in cases}) == 6 and "continuation" not in binding, "negative_case_roster")
+    else:
+        expected = [("graph-flow", "g1"), ("graph-label-causal-diagram", "g2"),
+                    ("graph-label-system-flow", "g3"), ("graph-lost-reply", "g4"), ("graph-removal", "g5")]
+        run = binding["context"]["run_id"]
+        require(run != "42356210001" and re.fullmatch(r"[1-9][0-9]*", run)
+                and case_root == "e/gc" + run + "-1" and cases == expected
+                and binding.get("continuation", {}).get("selector") == "unstarted-after-42356210001"
+                and binding["continuation"].get("origin", {}).get("run_id") == "42356210001",
+                "negative_continuation_case_roster")
     seal.validate_context(binding["context"])
     seal.public_key(recipient)
     require(recipient["sha256"] == binding["recipient_spki_sha256"], "negative_recipient_changed")
     tree = SelectedTree(root)
-    before = shared_usage(tree, [directory for _case, directory in cases], **shared_budget)
+    before = shared_usage(tree, [directory for _case, directory in cases], **shared_budget, case_root=case_root)
     destination = Path(root) / "graph-negative"
     destination.mkdir(mode=0o700)  # O_EXCL directory creation is the one-attempt latch.
     intent = {"schema": SCHEMA, "binding": binding, "admission": admission,
               "shared_before": before, "automatic_retry": False, "formal_acceptance": False}
     seal.new_json(destination / "attempt.original.json", intent)
-    plaintext = collect(tree, cases, binding)
+    plaintext = collect(tree, cases, binding, case_root)
     ciphertext = seal.encrypt_snapshot(plaintext, recipient, binding["context"])
     del plaintext
     require(len(ciphertext) + 32768 <= RESERVATION["bytes"], "negative_ciphertext_budget")
-    after = shared_usage(tree, [directory for _case, directory in cases], **shared_budget)
+    after = shared_usage(tree, [directory for _case, directory in cases], **shared_budget, case_root=case_root)
     seal.new_bytes(destination / "negative-originals.mwseal", ciphertext)
     carrier = {"schema": SCHEMA, "meaning": "ENCRYPTED_NEGATIVE_DIAGNOSTIC_ONLY",
         "binding": binding, "envelope": {"filename": "negative-originals.mwseal", "bytes": len(ciphertext),

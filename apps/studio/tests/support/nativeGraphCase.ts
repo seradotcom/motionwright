@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { TestInfo } from "@playwright/test";
 import { ScopedChangeService, type ScopedChangeServiceOptions } from "./scopedChangeService.ts";
 import { createGraphCaseFactory } from "./graph-owner/factory.mjs";
+import { graphNativeCaseSelected } from "./graph-owner/producer_guard.mjs";
 import { inside } from "./graph-owner/custody.mjs";
 import { captureOriginalOpenedStoreWitness, publishedOracleReference,
   runIndependentSameStoreReopen } from "./graph-owner/same_store_reopen.mjs";
@@ -197,16 +198,11 @@ export function sourceBoundNativeLaunchObserver(
  * DENY until authentic originals and independent review are available.
  * The final source declaration is still an owner integration dependency.
  */
-const selectedCases = new Set([
-  "graph-source-review", "graph-flow", "graph-lost-reply", "graph-removal",
-  "graph-label-causal-diagram", "graph-label-system-flow",
-]);
 const factories = new WeakMap<ScopedChangeService, Awaited<ReturnType<typeof createGraphCaseFactory>>>();
 
 export async function createGraphServiceCase(info: TestInfo, caseId: string, ordinary: ScopedChangeServiceOptions): Promise<ScopedChangeService> {
   const selected = process.env.MOTIONWRIGHT_GRAPH_NATIVE_CASE;
-  if (selected && selected !== "all" && !selectedCases.has(selected)) throw new Error("Unknown explicit Native Graph case selection");
-  if (!selected || selected !== "all" && selected !== caseId) return ScopedChangeService.create(ordinary);
+  if (!graphNativeCaseSelected(selected, caseId)) return ScopedChangeService.create(ordinary);
   const privateRoot = join(info.outputDir, "native-graph-custody");
   const databasePath = join(privateRoot, "store", "motionwright.sqlite3");
   // The referenced producer input is not trusted because its path is supplied.

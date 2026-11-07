@@ -8453,9 +8453,9 @@ class GraphR74JoinTests(unittest.TestCase):
     def graph_case_diagnostic_run(self, failure):
         import contextlib
         repo, root = Path("/diagnostic-repo"), Path("/diagnostic-root")
-        index = {"source": {"run_id": "123", "sdk_root": "/sdk"}, "source_original": {},
+        index = {"source": {"run_id": "123", "sdk_root": "/sdk", "repository_root": str(repo)}, "source_original": {},
                  "runtime": {"root": "/runtime"},
-                 "contract": {"native_executable_inputs": {
+                 "contract": {"execution": {"cases_root": "/v/e/graph-cases"}, "native_executable_inputs": {
                      "daemon_staging": {"case_hard_file_bytes": 7 * 1024 * 1024}}},
                  "binaries": {role: {"path": "/inert/" + role} for role in ("ordinary_service", "python3", "ffmpeg")}}
         clock = mock.Mock(unknown=False); clock.phase.return_value = contextlib.nullcontext()

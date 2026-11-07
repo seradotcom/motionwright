@@ -19,6 +19,12 @@ on:
         description: SHA256 of that public SPKI DER, required only for phase1-native-graph
         type: string
         required: false
+      graph_continuation:
+        description: Closed Graph case selection; continuation excludes the UNKNOWN source-review from run 42356210001
+        type: choice
+        options: [none, unstarted-after-42356210001]
+        default: none
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -64,14 +70,20 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           REQUESTED_G0_SELECTION: ${{ inputs.selection }}
+          REQUESTED_GRAPH_CONTINUATION: ${{ inputs.graph_continuation || 'none' }}
         run: |
           set -euo pipefail
+          case "$REQUESTED_GRAPH_CONTINUATION" in
+            none) ;;
+            unstarted-after-42356210001) test "$REQUESTED_G0_SELECTION" = phase1-native-graph ;;
+            *) exit 1 ;;
+          esac
           case "${GITHUB_EVENT_NAME}:${GITHUB_REF}:${REQUESTED_G0_SELECTION}" in
             workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-service47)
               python -B -m unittest tooling.tests.test_ci_canvas_service.Phase1Service47Tests tooling.tests.test_ci_canvas_service.Phase1Service47DeadlineTests -q
               ;;
             workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-graph|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
-              python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests tooling.tests.test_graph_isolated_native_inputs tooling.tests.test_graph_executable_inputs tooling.tests.test_graph_staging_file_limits -q
+              python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests tooling.tests.test_graph_isolated_native_inputs tooling.tests.test_graph_executable_inputs tooling.tests.test_graph_staging_file_limits tooling.tests.test_graph_continuation -q
               ;;
             workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-gn1|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)
               # Source/inert GN1 G0 only: Native effects require the separate
@@ -312,6 +324,7 @@ jobs:
     # Each child keeps every original per-case bound; all requires every child.
     timeout-minutes: ${{ matrix.selection == 'phase1-native-graph' && 180 || matrix.selection == 'phase1-service47' && 110 || matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120 || matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring-core' && 360 || matrix.selection == 'creative-production' && 110 || matrix.selection == 'review' && 70 || contains(fromJSON('["creative-production","production-design","creative-workbench","branch-claim","branch-authoring","claim-source"]'), matrix.selection) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}
     env:
+      MOTIONWRIGHT_GRAPH_CONTINUATION: ${{ inputs.graph_continuation || 'none' }}
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
       NPM_CONFIG_CACHE: ${{ github.workspace }}/v/npm
@@ -480,6 +493,8 @@ jobs:
           signal.signal(signal.SIGALRM, timeout)
           signal.alarm(60)
           begin = time.monotonic_ns()
+          continuation = os.environ.get("MOTIONWRIGHT_GRAPH_CONTINUATION", "none")
+          check(continuation in ("none", "unstarted-after-42356210001"), "closed continuation selector required")
           binding = {key: os.environ.get(key) for key in (
               "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA",
               "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "RUNNER_NAME")}
@@ -566,6 +581,12 @@ jobs:
                 and job.get("head_sha") == binding["GITHUB_SHA"] and job.get("status") == "in_progress"
                 and job.get("conclusion") is None and job.get("runner_name") == binding["RUNNER_NAME"]
                 and type(job.get("id")) is int and job["id"] > 0, "job/runner original differs")
+          if continuation == "unstarted-after-42356210001":
+              check(binding["GITHUB_RUN_ID"] != "42356210001" and job["id"] != 128354875162
+                    and type(job.get("runner_id")) is int and job["runner_id"] > 0
+                    and job["runner_id"] != 1000094142
+                    and job["runner_name"] != "GitHub Actions 1000094142",
+                    "continuation requires a different authenticated runner")
           server = parsedate_to_datetime(date)
           started = datetime.fromisoformat(job.get("started_at", "").replace("Z", "+00:00"))
           check(server.tzinfo is not None and started.tzinfo is not None
@@ -579,6 +600,7 @@ jobs:
                     "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300}
           anchor_mono, anchor_wall = time.monotonic_ns(), time.time_ns() // 1000000
           original = {"schema": "motionwright.graph-job-deadline/1", "binding": binding,
+              "graph_continuation_selector": continuation,
               "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
               "job_seconds": 10800, "phase_seconds": phases, "rounding_allowance_seconds": 2,
               "request_started_mono_ns": begin, "response_received_mono_ns": end,
@@ -733,7 +755,7 @@ jobs:
         env:
           MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
         run: python -I -B tooling/ci_canvas_service.py graph wait --repo .
-      - name: Execute the six original Graph cases and complete closure
+      - name: Execute the explicitly selected original Graph cases and complete their closure
         id: graph-cases
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 20

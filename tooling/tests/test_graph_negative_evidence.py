@@ -113,6 +113,33 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
         self.assertEqual(row["status"], "NOT_CAPTURED")
         self.assertEqual(target.read_bytes(), b"early-error-still-writing")
 
+    def test_continuation_seals_only_new_five_namespace_and_keeps_historical_unknown(self):
+        cases = [("graph-flow", "g1"), ("graph-label-causal-diagram", "g2"),
+                 ("graph-label-system-flow", "g3"), ("graph-lost-reply", "g4"), ("graph-removal", "g5")]
+        case_root = "e/gc42-1"
+        binding = {**self.binding, "continuation": {
+            "selector": controller.GRAPH_CONTINUATION, "origin": controller.GRAPH_CONTINUATION_ORIGIN}}
+        self.put("e/receipt.json", b'{"status":"UNKNOWN"}')
+        current = b'{"status":"UNKNOWN","first_error":"current-private-error"}'
+        self.put(case_root + "/g1/owner/owner-error.original.json", current)
+        old = self.put("e/graph-cases/g6/owner/owner-error.original.json", b"HISTORICAL-UNKNOWN-DO-NOT-REUSE")
+        for changed_root, changed_cases in (("e/graph-cases", cases), ("e/gc43-1", cases),
+                (case_root, cases + [("graph-source-review", "g6")])):
+            with self.subTest(root=changed_root, count=len(changed_cases)), self.assertRaises(seal.CustodyRejected):
+                negative.seal_once(self.root, changed_cases, binding, self.recipient,
+                                  self.budget, self.admission, case_root=changed_root)
+            self.assertFalse((self.root / "graph-negative").exists())
+        negative.seal_once(self.root, cases, binding, self.recipient, self.budget, self.admission, case_root=case_root)
+        members, manifest, context = self.recover()
+        self.assertEqual(members[case_root + "/g1/owner/owner-error.original.json"], current)
+        self.assertFalse(any(name.startswith("e/graph-cases/") for name in members))
+        self.assertFalse(any(b"HISTORICAL-UNKNOWN-DO-NOT-REUSE" in raw for raw in members.values()))
+        self.assertEqual(old.read_bytes(), b"HISTORICAL-UNKNOWN-DO-NOT-REUSE")
+        self.assertEqual(manifest["effects"], "UNKNOWN")
+        self.assertEqual(manifest["quiescence"], "UNKNOWN")
+        self.assertFalse(manifest["native_acceptance"] or manifest["formal_acceptance"])
+        self.assertEqual(context, binding["context"])
+
     def test_file_and_parent_aliases_are_never_followed_even_in_private_selection(self):
         self.put("e/receipt.json", b"first-error")
         secret = self.put("unselected/owner-error.original.json", b"FOREIGN_SECRET")

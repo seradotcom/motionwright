@@ -530,6 +530,10 @@ function verifyIndex(indexPath, reviewed, caseId) {
   }
   ownMap(index.builds, RUST_ROLES, 'J1_EIGHT_RUST_PRODUCERS_REQUIRED');
   ownMap(reviewed.builds, RUST_ROLES, 'J1_REVIEWED_BUILD_ROSTER');
+  if (Object.hasOwn(reviewed.execution, 'continuation')) {
+    const selected = inspectGraphCaseSelection(index, originals.json(reviewed.execution.deadline_original, 8 * LIMIT + 65536));
+    need(selected.includes(caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
+  }
   const builds = RUST_ROLES.map(role => cargoBuild(role, index.builds[role], reviewed.builds[role], index, reviewed, originals));
   ordinarySdkPreflight(index.ordinary_preflight, reviewed.ordinary_preflight, index, originals);
   runtimeOriginals(index, reviewed, originals);
@@ -575,6 +579,54 @@ export const GRAPH_BUDGET = Object.freeze({
 const GITHUB_REPOSITORY = 'seradotcom/motionwright';
 const WORKFLOW_PATH = '.github/workflows/studio-service-verification.yml';
 const API_BYTES = 256 * 1024, API_PAGES = 4, API_MS = 12000;
+export const GRAPH_CONTINUATION = 'unstarted-after-42356210001';
+export const GRAPH_CONTINUATION_CASES = Object.freeze([...EXPECTED_CASES].filter(value => value !== 'graph-source-review'));
+export const GRAPH_CONTINUATION_ORIGIN = freeze({"run_id":"42356210001","run_attempt":1,"source_sha":"52d149ea0dd5550fbded28ad0ea337353f826210","producer_index_sha256":"0cd8c7286997286101fbdf09f3970b99e9a3ed1426ca5b40f0384bf4382c1641","job_id":128354875162,"runner_id":1000094142,"runner_name":"GitHub Actions 1000094142","jobs_response_sha256":"b1932107c337883ba1c1467149f98eaf3dec6dd925d2f45bbcf2036b52aef407","job_log_sha256":"cc95d11f8b141585fdadc10ae7f7c019909784cb38e562e654e16b648caac19d","cases_root":"/home/runner/work/motionwright/motionwright/v/e/graph-cases","observed_counts":{"expected":0,"unexpected":1,"skipped":5,"flaky":0},"excluded_case":{"case_id":"graph-source-review","execution_status":"failed","effects":"UNKNOWN","owner_quiescence":"UNKNOWN","repeat":"FORBIDDEN"}});
+
+/** Source-only selection validation; it never brands an owner admission. */
+export function inspectGraphCaseSelection(index, deadline = null) {
+  const execution = index.contract.execution, source = index.source;
+  const parent = path.dirname(source.repository_root);
+  if (!Object.hasOwn(execution, 'continuation')) {
+    need(execution.cases_root === path.join(parent, 'v/e/graph-cases'), 'J1_ORIGINAL_CASE_NAMESPACE');
+    return [...EXPECTED_CASES];
+  }
+  const continuation = execution.continuation;
+  need(deadline?.graph_continuation_selector === GRAPH_CONTINUATION, 'J1_CONTINUATION_BOOTSTRAP_SELECTOR');
+  need(deadline && deadline.binding && Array.isArray(deadline.jobs?.jobs), 'J1_CONTINUATION_DEADLINE_REQUIRED');
+  const jobs = deadline.jobs.jobs.filter(row => row.name === 'Real SQLite and Studio / ' + GRAPH_SCOPE);
+  need(jobs.length === 1, 'J1_CONTINUATION_CURRENT_JOB');
+  const job = jobs[0], origin = GRAPH_CONTINUATION_ORIGIN;
+  const root = path.join(parent, 'v/e/gc' + source.run_id + '-1');
+  need(/^[1-9][0-9]*$/.test(source.run_id) && source.run_id !== origin.run_id && source.run_attempt === 1
+    && String(job.run_id) === source.run_id && job.run_attempt === 1 && job.head_sha === source.sha
+    && job.status === 'in_progress' && job.conclusion === null && integer(job.id, 1) && job.id !== origin.job_id
+    && integer(job.runner_id, 1) && job.runner_id !== origin.runner_id
+    && typeof job.runner_name === 'string' && job.runner_name.length > 0 && job.runner_name !== origin.runner_name
+    && job.runner_name === deadline.binding.RUNNER_NAME
+    && execution.cases_root === root && root !== origin.cases_root, 'J1_CONTINUATION_REQUIRES_NEW_RUNNER_AND_NAMESPACE');
+  same(continuation, { schema: 'motionwright.graph-unstarted-continuation/1', selector: GRAPH_CONTINUATION,
+    origin, selected_cases: GRAPH_CONTINUATION_CASES,
+    current: { run_id: source.run_id, run_attempt: 1, job_id: job.id,
+      runner_id: job.runner_id, runner_name: job.runner_name, cases_root: root },
+    original_contract_cases: 6, required_current_cases: 5, simultaneous_owner_limit: 1,
+    historical_cleanup_claimed: false, historical_owner_credentials_or_tickets_reused: false,
+    automatic_retry: false, formal_acceptance: false }, 'J1_CONTINUATION_EXACT_HISTORICAL_BINDING');
+  return [...GRAPH_CONTINUATION_CASES];
+}
+
+/** Even a mistaken Playwright filter cannot fall back to ordinary Service for
+ * the excluded uncertain case in this explicit Native continuation. */
+export function graphNativeCaseSelected(selector, caseId) {
+  need(EXPECTED_CASES.has(caseId), 'J1_NATIVE_CLOSED_CASE');
+  if (selector === GRAPH_CONTINUATION) {
+    need(GRAPH_CONTINUATION_CASES.includes(caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
+    return true;
+  }
+  need(!selector || selector === 'all' || EXPECTED_CASES.has(selector), 'J1_UNKNOWN_NATIVE_SELECTOR');
+  return !!selector && (selector === 'all' || selector === caseId);
+}
+
 const usedCases = new Set();
 let readOnlyMetadataToken;
 
@@ -587,13 +639,18 @@ function contractReview(index, indexSha) {
     'J1_CONTRACT_SELF_REFERENCE');
   const execution = index.contract.execution;
   exact(execution, ['scope', 'job', 'job_id', 'deadline_original', 'deadline_unix_ms',
-    'producer_root', 'cases_root', 'budget'], 'J1_EXECUTION_FIELDS');
+    'producer_root', 'cases_root', 'budget', ...(Object.hasOwn(execution, 'continuation') ? ['continuation'] : [])], 'J1_EXECUTION_FIELDS');
   need(execution.scope === GRAPH_SCOPE && execution.job === 'real-service'
     && integer(execution.job_id, 1) && integer(execution.deadline_unix_ms, 1), 'J1_EXECUTION_CONTEXT');
   reference(execution.deadline_original, 8 * LIMIT + 65536);
   canonical(execution.producer_root); canonical(execution.cases_root);
   same(execution.budget, GRAPH_BUDGET, 'J1_AGGREGATE_ALLOCATION');
   exact(index.contract.cases, [...EXPECTED_CASES], 'J1_SIX_CASE_CONTRACT');
+  if (Object.hasOwn(execution, 'continuation')) {
+    const original = stableRead(execution.deadline_original.path, 8 * LIMIT + 65536);
+    same(original.ref, execution.deadline_original, 'J1_CONTINUATION_DEADLINE_ORIGINAL');
+    inspectGraphCaseSelection(index, strictJSON(original.data, 8 * LIMIT + 65536));
+  }
   return { index_sha256: indexSha, source: index.source, ...index.contract };
 }
 
@@ -710,6 +767,10 @@ export async function admitOriginalProducers(options) {
   need(options && typeof options.producerOriginalPath === 'string', UNAVAILABLE);
   const observed = stableRead(options.producerOriginalPath, LIMIT), index = strictJSON(observed.data, LIMIT);
   const reviewed = contractReview(index, observed.ref.sha256);
+  const continuation = Object.hasOwn(reviewed.execution, 'continuation');
+  need((process.env.MOTIONWRIGHT_GRAPH_CONTINUATION ?? 'none') === (continuation ? GRAPH_CONTINUATION : 'none'),
+    'J1_CONTINUATION_ENVIRONMENT_BINDING');
+  need(!continuation || GRAPH_CONTINUATION_CASES.includes(options.caseId), 'J1_HISTORICAL_UNKNOWN_CASE_EXCLUDED');
   need(integer(options.deadlineUnixMs, Date.now() + 1) && typeof options.privateRoot === 'string', 'J1_CASE_ORIGINAL_DEADLINE');
   inside(reviewed.execution.cases_root, options.privateRoot);
   const once = index.source.run_id + '/1/' + options.caseId;
