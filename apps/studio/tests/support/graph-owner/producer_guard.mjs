@@ -103,6 +103,7 @@ export function requireNativeGraphParentAdmission(candidate, original) {
 /** Existing J1 original-reader joined to the R74 external status boundary. */
 import path from 'node:path';
 import https from 'node:https';
+import * as fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { stableRead, need, integer, inside, canonical, existingDirectory, GLOBAL_BYTES } from './custody.mjs';
 import { strictJSON, exact, schema, SPEC_SCHEMA } from './contracts.mjs';
@@ -121,6 +122,7 @@ const UNAVAILABLE = 'SOURCE_PRODUCER_ORIGINALS_AND_REVIEWED_CONTRACT_UNAVAILABLE
 const admittedObjects = new WeakMap();
 export const AUTHORITY_SOURCE_PATHS = Object.freeze([
   'tooling/native_graph_browser_owner.py', 'tooling/native_host_shared_state.py',
+  'tooling/native_graph_executable_inputs.py', 'tooling/ci_graph_dev_native_startup.py',
   'tooling/native_manim_graph_runtime_intake.py', 'tooling/ci_canvas_service.py',
   'tooling/ci_private_evidence.py', 'tooling/requirements/mlt-g2-custody.txt',
   '.github/workflows/studio-service-verification.yml',
@@ -407,6 +409,65 @@ function callbackPlan(index, reviewed, caseId, originals) {
     originals: { callback_roster: index.callback_roster, native_enforcement: index.native_enforcement }, clients };
 }
 
+function nativeExecutableInputs(index, reviewed, originals) {
+  const record = originals.json(index.native_executable_inputs, LIMIT);
+  same(record, reviewed.native_executable_inputs, 'J1_NATIVE_INPUT_ORIGINAL_CONTRACT');
+  exact(record, ['schema','source','directory','limits','copy_bytes','inputs','source_files_modified','automatic_retry'], 'J1_NATIVE_INPUT_FIELDS');
+  need(record.schema === 'motionwright.graph-native-executable-inputs/1'
+    && record.source_files_modified === false && record.automatic_retry === false, 'J1_NATIVE_INPUT_SCOPE');
+  same(record.source, index.source, 'J1_NATIVE_INPUT_SOURCE');
+  const limits = { individual_bytes: 64 * LIMIT, total_bytes: 104 * LIMIT, files: 4,
+    charged_to_producer_allocation: true, duplicate_executable_bytes_archived: false };
+  same(record.limits, limits, 'J1_NATIVE_INPUT_LIMITS');
+  const roles = { native_provider: 'motionwright-native-provider', manim_runner: 'motionwright-manim-runner',
+    python3: 'python3', ffmpeg: 'ffmpeg' };
+  ownMap(record.inputs, Object.keys(roles), 'J1_NATIVE_INPUT_ROSTER');
+  const directory = path.join(path.dirname(index.source.repository_root), 'v', 'graph-native-inputs');
+  const directoryIdentity = () => {
+    existingDirectory(directory);
+    const info = fs.lstatSync(directory, { bigint: true });
+    need(info.isDirectory() && !info.isSymbolicLink() && Number(info.mode & 0o777n) === 0o700
+      && Number(info.uid) === process.getuid(), 'J1_NATIVE_INPUT_DIRECTORY_MODE');
+    return { path: directory, device: Number(info.dev), inode: Number(info.ino), mode: Number(info.mode & 0o777n),
+      uid: Number(info.uid), gid: Number(info.gid) };
+  };
+  const metadata = filename => {
+    canonical(filename);
+    const info = fs.lstatSync(filename, { bigint: true });
+    need(info.isFile() && !info.isSymbolicLink(), 'J1_NATIVE_INPUT_REGULAR');
+    return { device: Number(info.dev), inode: Number(info.ino), bytes: Number(info.size), mode: Number(info.mode & 0o777n),
+      uid: Number(info.uid), gid: Number(info.gid), links: Number(info.nlink),
+      mtime_ns: String(info.mtimeNs), ctime_ns: String(info.ctimeNs) };
+  };
+  const check = () => {
+    same(record.directory, directoryIdentity(), 'J1_NATIVE_INPUT_DIRECTORY_IDENTITY');
+    for (const [role, name] of Object.entries(roles)) {
+      const row = record.inputs[role];
+      exact(row, ['source','prepared','source_metadata','prepared_metadata','source_modified','automatic_retry'], 'J1_NATIVE_INPUT_ROW');
+      same(row.source, index.binaries[role], 'J1_NATIVE_INPUT_SOURCE_ROLE');
+      same(row.prepared, { ...index.binaries[role], path: path.join(directory, name) }, 'J1_NATIVE_INPUT_COPY_ROLE');
+      need(row.source_modified === false && row.automatic_retry === false && row.source.path !== row.prepared.path,
+        'J1_NATIVE_INPUT_NOT_AN_EXCLUSIVE_COPY');
+      reference(row.source, limits.individual_bytes); reference(row.prepared, limits.individual_bytes);
+      const before = metadata(row.source.path), copied = metadata(row.prepared.path);
+      same(before, row.source_metadata, 'J1_NATIVE_INPUT_SOURCE_CHANGED');
+      same(copied, row.prepared_metadata, 'J1_NATIVE_INPUT_COPY_CHANGED');
+      need((before.mode & 0o111) !== 0 && [0, record.directory.uid].includes(before.uid)
+        && copied.mode === 0o500 && copied.uid === record.directory.uid && copied.links === 1
+        && before.bytes === copied.bytes && copied.bytes === row.prepared.size_bytes
+        && (before.device !== copied.device || before.inode !== copied.inode), 'J1_NATIVE_INPUT_COPY_PERMISSIONS');
+    }
+  };
+  check();
+  const total = Object.values(record.inputs).reduce((sum, row) => sum + row.prepared.size_bytes, 0);
+  need(record.copy_bytes === total && total <= limits.total_bytes, 'J1_NATIVE_INPUT_TOTAL');
+  for (const row of Object.values(record.inputs)) {
+    const raw = originals.read(row.prepared, limits.individual_bytes);
+    need(raw.subarray(0, 4).equals(Buffer.from([0x7f,0x45,0x4c,0x46])), 'J1_NATIVE_INPUT_ELF');
+  }
+  return { recheck: check };
+}
+
 function verifyIndex(indexPath, reviewed, caseId) {
   need(reviewed && DIGEST.test(reviewed.index_sha256), 'J1_REVIEWED_INDEX_PIN_REQUIRED');
   const initial = stableRead(indexPath, LIMIT);
@@ -414,7 +475,8 @@ function verifyIndex(indexPath, reviewed, caseId) {
   const originals = new Originals();
   const index = originals.json(initial.ref);
   exact(index, ['schema', 'source', 'binaries', 'runtime', 'source_original', 'sdk_original',
-    'builds', 'ordinary_preflight', 'runtime_originals', 'callback_roster', 'native_enforcement', 'contract'], 'J1_INDEX_FIELDS');
+    'builds', 'ordinary_preflight', 'runtime_originals', 'callback_roster', 'native_enforcement',
+    'native_executable_inputs', 'contract'], 'J1_INDEX_FIELDS');
   same(index.contract, reviewedContract(reviewed), 'J1_REVIEWED_FIELDS_NOT_IN_INDEX');
   need(index.schema === PRODUCER_INDEX_SCHEMA, 'J1_INDEX_SCHEMA');
   schema(index.source, SPEC_SCHEMA.properties.source); schema(index.binaries, SPEC_SCHEMA.properties.binaries);
@@ -431,7 +493,7 @@ function verifyIndex(indexPath, reviewed, caseId) {
   // approval/transport contract defines and authenticates that exact reuse.
   need(currentRun(sdk), 'J1_SDK_RUN_ATTEMPT');
   for (const name of AUTHORITY_SOURCE_PATHS) need(Object.hasOwn(reviewed.source_files, name), 'J1_AUTHORITY_SOURCE_MISSING:' + name);
-  const writerRoles = [...RUST_ROLES, 'source_observation', 'sdk_observation', 'ordinary_preflight', 'runtime'];
+  const writerRoles = [...RUST_ROLES, 'source_observation', 'sdk_observation', 'ordinary_preflight', 'runtime', 'native_executable_inputs'];
   ownMap(reviewed.writer_sources, writerRoles, 'J1_REVIEWED_WRITER_ROSTER');
   for (const [role, names] of Object.entries(reviewed.writer_sources)) {
     need(Array.isArray(names) && names.length >= 1 && names.length <= 16
@@ -463,8 +525,10 @@ function verifyIndex(indexPath, reviewed, caseId) {
   const builds = RUST_ROLES.map(role => cargoBuild(role, index.builds[role], reviewed.builds[role], index, reviewed, originals));
   ordinarySdkPreflight(index.ordinary_preflight, reviewed.ordinary_preflight, index, originals);
   runtimeOriginals(index, reviewed, originals);
+  const nativeInputs = nativeExecutableInputs(index, reviewed, originals);
   const plan = callbackPlan(index, reviewed, caseId, originals);
   originals.end();
+  nativeInputs.recheck();
   return { admission: { source: index.source, binaries: index.binaries, runtime: index.runtime,
     ordinaryService: index.binaries.ordinary_service, nativeService: index.binaries.native_graph_session,
     execution: reviewed.execution,
@@ -490,7 +554,7 @@ export async function runIndependentSameStoreReopen() {
 // No output hash is embedded in its own source or in this contract.
 const CONTRACT_FIELDS = Object.freeze(['source_files', 'sdk_tree', 'sdk_files', 'builds',
   'ordinary_preflight', 'runtime', 'callback_roster', 'native_enforcement',
-  'native_enforcing_source', 'cases', 'writer_sources', 'execution']);
+  'native_enforcing_source', 'native_executable_inputs', 'cases', 'writer_sources', 'execution']);
 export const GRAPH_SCOPE = 'phase1-native-graph';
 export const GRAPH_BUDGET = Object.freeze({
   producer_bytes: 384 * 1024 * 1024, producer_members: 768,

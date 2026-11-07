@@ -254,7 +254,7 @@ function fixture(name) {
   const targetFor = role => cargoTargets[['semwright', 'semwrightd', 'semwright_sandbox'].includes(role) ? 'sdk' : 'product'];
   const binaries = Object.fromEntries(BINARY_ROLES.map(role => [role,
     put(Object.hasOwn(targetSources, role) ? path.join(targetFor(role), 'mw-r74-captured', role === 'semwright_sandbox' ? 'semwright-sandbox' : role) : 'bin/' + role,
-      'INERT_NOT_EXECUTABLE:' + role + '\n')]));
+      Buffer.concat([Buffer.from([0x7f,0x45,0x4c,0x46]), Buffer.from('INERT_NOT_A_REAL_EXECUTABLE:' + role + '\n')]))]));
   function processRecord(label, argv, cwd, stdout, extra = {}) {
     const out = put('originals/' + label + '.stdout.log', stdout), err = put('originals/' + label + '.stderr.log', '');
     const command = { argv, cwd, started_utc: '2026-10-29T00:00:00+00:00', finished_utc: '2026-10-29T00:00:01+00:00',
@@ -321,7 +321,7 @@ function fixture(name) {
     callback_roster: json('originals/callback-roster.json', roster), native_enforcement: json('originals/native-enforcement.json', enforcement) };
   const reviewed = { index_sha256: '', source: structuredClone(source), source_files: structuredClone(sourceFiles), sdk_tree: sdkObservation.tree,
     sdk_files: structuredClone(sdkFiles), builds: reviewedBuilds,
-    writer_sources: Object.fromEntries([...Object.keys(targetSources), 'source_observation', 'sdk_observation', 'ordinary_preflight', 'runtime']
+    writer_sources: Object.fromEntries([...Object.keys(targetSources), 'source_observation', 'sdk_observation', 'ordinary_preflight', 'runtime', 'native_executable_inputs']
       .map(role => [role, ['tooling/ci_canvas_service.py', '.github/workflows/studio-service-verification.yml']])),
     ordinary_preflight: preflight.expected,
     runtime: { command: runtimeProcess.expected, inventory: structuredClone(runtimeInventory), intake: structuredClone(intake), profile_files: structuredClone(runtimeFiles) },
@@ -346,6 +346,34 @@ function fixture(name) {
       [name, put('retained-' + label + '/' + name, fs.readFileSync(path.join(sourceRoot, name)))]));
     replace(original, record);
   }
+  const nativeDirectory = path.join(path.dirname(repo), 'v', 'graph-native-inputs');
+  fs.mkdirSync(nativeDirectory, { recursive: true, mode: 0o700 });
+  const nativeRoles = { native_provider: 'motionwright-native-provider', manim_runner: 'motionwright-manim-runner',
+    python3: 'python3', ffmpeg: 'ffmpeg' };
+  const nativeMetadata = filename => {
+    const value = fs.lstatSync(filename, { bigint: true });
+    return { device: Number(value.dev), inode: Number(value.ino), bytes: Number(value.size),
+      mode: Number(value.mode & 0o777n), uid: Number(value.uid), gid: Number(value.gid), links: Number(value.nlink),
+      mtime_ns: String(value.mtimeNs), ctime_ns: String(value.ctimeNs) };
+  };
+  const nativeInputs = {};
+  for (const [role, name] of Object.entries(nativeRoles)) {
+    fs.chmodSync(binaries[role].path, 0o700);
+    const prepared = put(path.join(nativeDirectory, name), fs.readFileSync(binaries[role].path));
+    fs.chmodSync(prepared.path, 0o500);
+    nativeInputs[role] = { source: structuredClone(binaries[role]), prepared,
+      source_metadata: nativeMetadata(binaries[role].path), prepared_metadata: nativeMetadata(prepared.path),
+      source_modified: false, automatic_retry: false };
+  }
+  const directoryMetadata = fs.statSync(nativeDirectory, { bigint: true });
+  reviewed.native_executable_inputs = { schema: 'motionwright.graph-native-executable-inputs/1', source: structuredClone(source),
+    directory: { path: nativeDirectory, device: Number(directoryMetadata.dev), inode: Number(directoryMetadata.ino),
+      mode: 0o700, uid: Number(directoryMetadata.uid), gid: Number(directoryMetadata.gid) },
+    limits: { individual_bytes: 64 * 1024 * 1024, total_bytes: 104 * 1024 * 1024, files: 4,
+      charged_to_producer_allocation: true, duplicate_executable_bytes_archived: false },
+    copy_bytes: Object.values(nativeInputs).reduce((total, row) => total + row.prepared.size_bytes, 0),
+    inputs: nativeInputs, source_files_modified: false, automatic_retry: false };
+  index.native_executable_inputs = json('originals/native-executable-inputs.original.json', reviewed.native_executable_inputs);
   index.contract = Object.fromEntries(Object.entries(reviewed).filter(([key]) => !['index_sha256', 'source'].includes(key)));
   index.contract = structuredClone(index.contract);
   const indexPath = path.join(root, 'private-index.json');
@@ -414,6 +442,25 @@ test('all independently reviewed fields are in the raw private index, not a muta
   }
   assert.throws(() => assertOriginalProducerAdmission(baseline), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
 });
+test('R74 rejects prepared executable permissions, inode alias, bytes and source substitution', () => {
+  for (const mutation of ['mode', 'hardlink', 'content', 'source-role']) {
+    const f = fixture('private-input-' + mutation);
+    const prepared = f.reviewed.native_executable_inputs.inputs.python3.prepared;
+    if (mutation === 'mode') fs.chmodSync(prepared.path, 0o755);
+    else if (mutation === 'hardlink') fs.linkSync(prepared.path, prepared.path + '.alias');
+    else if (mutation === 'content') {
+      fs.chmodSync(prepared.path, 0o600);
+      const raw = fs.readFileSync(prepared.path); raw[raw.length - 1] ^= 1;
+      fs.writeFileSync(prepared.path, raw); fs.chmodSync(prepared.path, 0o500);
+    } else {
+      f.index.contract.native_executable_inputs.inputs.python3.source = structuredClone(f.index.binaries.ffmpeg);
+      f.reviewed.native_executable_inputs = structuredClone(f.index.contract.native_executable_inputs);
+      f.replace(f.index.native_executable_inputs, f.reviewed.native_executable_inputs); f.seal();
+    }
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'), /J1_NATIVE_INPUT_/);
+  }
+});
+
 test('source, retained original, fresh build, and complete runtime roles cannot be substituted', () => {
   for (const mutation of ['retained-source', 'cached-build', 'missing-role']) {
     const f = fixture(mutation);

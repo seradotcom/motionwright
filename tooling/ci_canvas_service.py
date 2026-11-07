@@ -7930,7 +7930,8 @@ GRAPH_TARGETS = {
     "native_graph_session": ("motionwright-native", "native-graph-review-session", "example"),
 }
 GRAPH_IMPORTS = tuple("tooling/" + name + ".py" for name in (
-    "native_graph_browser_owner", "native_host_shared_state", "native_host_installed_shared_state",
+    "native_graph_browser_owner", "native_graph_executable_inputs", "ci_graph_dev_native_startup",
+    "native_host_shared_state", "native_host_installed_shared_state",
     "native_manim_graph_runtime_intake", "native_av_failure_guard", "candidate_smoke",
     "linux_first_use_custody", "linux_cold_start", "linux_first_use_accessible",
     "source_checkout_observation", "storage_schema_contract", "linux_gui_probe",
@@ -7951,7 +7952,8 @@ GRAPH_AUTHORITY = (*GRAPH_IMPORTS, *GRAPH_CALLGRAPH,
         "same_store_reopen.mjs", "opened_store_descriptor.mjs", "opened_store_identity_join.mjs",
         "schemas/spec.r2.json", "schemas/final.r2.json")))
 GRAPH_CONTRACT_FIELDS = {"source_files", "sdk_tree", "sdk_files", "builds", "ordinary_preflight",
-    "runtime", "callback_roster", "native_enforcement", "native_enforcing_source", "cases", "writer_sources", "execution"}
+    "runtime", "callback_roster", "native_enforcement", "native_enforcing_source", "native_executable_inputs",
+    "cases", "writer_sources", "execution"}
 GRAPH_API_BYTES, GRAPH_API_PAGES = 256 * 1024, 4
 
 
@@ -8172,7 +8174,8 @@ def graph_verify_producer_index(index_ref, case_id):
         return raw
     index = graph_json(remember(index_ref, GRAPH_BYTES))
     require(set(index) == {"schema", "source", "binaries", "runtime", "source_original", "sdk_original", "builds",
-                           "ordinary_preflight", "runtime_originals", "callback_roster", "native_enforcement", "contract"}
+                           "ordinary_preflight", "runtime_originals", "callback_roster", "native_enforcement",
+                           "native_executable_inputs", "contract"}
             and index["schema"] == GRAPH_INDEX_SCHEMA and set(index["contract"]) == GRAPH_CONTRACT_FIELDS,
             "Graph acyclic index contract fields")
     contract, source, binaries = index["contract"], index["source"], index["binaries"]
@@ -8210,7 +8213,7 @@ def graph_verify_producer_index(index_ref, case_id):
         "sha256": contract["source_files"]["SOURCE_LOCK.json"]["sha256"], "size_bytes": contract["source_files"]["SOURCE_LOCK.json"]["bytes"]}))
     require(lock["dependencies"]["semwright"]["revision"] == source["sdk_sha"], "Graph SOURCE_LOCK SDK pin")
     require(set(index["builds"]) == set(contract["builds"]) == set(GRAPH_RUST_ROLES), "Graph eight build roles")
-    writer_roles = {*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime"}
+    writer_roles = {*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime", "native_executable_inputs"}
     require(set(contract["writer_sources"]) == writer_roles, "Graph writer source roster")
     for names in contract["writer_sources"].values():
         require(type(names) is list and 1 <= len(names) <= 16 and len(set(names)) == len(names)
@@ -8249,6 +8252,19 @@ def graph_verify_producer_index(index_ref, case_id):
                 "Graph compacted executable retention source")
         require(graph_uncompact_cargo_executable(remember(retained, 256 * GRAPH_BYTES), binaries[role]) == raw,
                 "Graph retained compressed executable differs")
+    import native_graph_executable_inputs as native_inputs
+    require(Path(native_inputs.__file__).resolve() == Path(source["repository_root"]) / "tooling/native_graph_executable_inputs.py",
+            "Graph native input verifier source")
+    native_record = graph_json(remember(index["native_executable_inputs"], GRAPH_BYTES))
+    require(native_record == contract["native_executable_inputs"], "Graph original native input contract")
+    native_directory = Path(source["repository_root"]).parent / "v/graph-native-inputs"
+    prepared = native_inputs.validate_live(native_record, binaries, source, native_directory)
+    for reference in prepared.values():
+        remember(reference, native_inputs.PER_FILE_BYTES)
+    # These live copies share the existing producer allocation, although the
+    # carrier reuses original ELF/zlib and runtime bytes instead of duplicating.
+    graph_tree_allocation(Path(execution["producer_root"]),
+        GRAPH_BUDGET["producer_bytes"] - native_record["copy_bytes"], GRAPH_BUDGET["producer_members"] - 4)
     command, stdout = graph_process_original(index["ordinary_preflight"]["process"], contract["ordinary_preflight"], remember)
     stdin_ref = index["ordinary_preflight"]["stdin"]
     require(command["argv"][0] == binaries["ordinary_service"]["path"]
@@ -8325,6 +8341,7 @@ def graph_verify_producer_index(index_ref, case_id):
                 "Graph producer command predates or exceeds its original job")
     for ref in tuple(refs.values()):
         remember(ref)
+    native_inputs.validate_live(native_record, binaries, source, native_directory)
     return {"index": index, "references": list(refs.values()),
             "physical": {name: list(value) for name, value in physical.items()},
             "meaning": "ORIGINALS_VALIDATED_REQUIRES_SEPARATE_AUTHENTICATED_R74"}
@@ -9004,6 +9021,14 @@ def graph_produce(repo, recipient):
                         and all(copies[0]["retained"][key] == binaries[role][key]
                                 for key in ("sha256", "size_bytes")),
                         "Graph offline runtime binary original missing")
+            import native_graph_executable_inputs as native_inputs
+            require(Path(native_inputs.__file__).resolve() == repo / "tooling/native_graph_executable_inputs.py",
+                    "Graph native input producer source")
+            native_copy_bytes = native_inputs.input_total(binaries)
+            graph_producer_room(producer, native_copy_bytes + 3 * GRAPH_BYTES, 7)
+            native_record = native_inputs.prepare(root / "graph-native-inputs", binaries, source,
+                lambda value: graph_put_json(producer / "native-executable-inputs.intent.original.json", value))
+            native_record_ref = graph_put_json(producer / "native-executable-inputs.original.json", native_record)
             roster = {"cases": [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in GRAPH_CASES],
                 "meaning": "SOURCE_DERIVED_DECLARATION_REQUIRES_INDEPENDENT_CODE_REVIEW"}
             native = {"source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],
@@ -9020,10 +9045,12 @@ def graph_produce(repo, recipient):
                 "ordinary_preflight": {key: preflight["command"][key] for key in ("argv", "cwd", "selected_environment")},
                 "runtime": {"command": {key: runtime_command[key] for key in ("argv", "cwd", "selected_environment")},
                             "inventory": inventory, "intake": runtime_intake, "profile_files": profiles},
-                "callback_roster": roster, "native_enforcement": native,
+                "callback_roster": roster, "native_enforcement": native, "native_executable_inputs": native_record,
                 "native_enforcing_source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],
                 "cases": {case: {"title": title, "callback_caps": list(caps), "roster_source_files": list(GRAPH_CALLGRAPH)} for case, title, caps in GRAPH_CASES},
-                "writer_sources": {role: ["tooling/ci_canvas_service.py", GRAPH_WORKFLOW] for role in (*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime")},
+                "writer_sources": {role: ["tooling/ci_canvas_service.py", GRAPH_WORKFLOW,
+                    "tooling/native_graph_executable_inputs.py", "tooling/ci_graph_dev_native_startup.py"]
+                    for role in (*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime", "native_executable_inputs")},
                 "execution": execution}
             index = {"schema": GRAPH_INDEX_SCHEMA, "source": source, "binaries": binaries,
                 "runtime": {"root": str(runtime), "fontconfig_root": str(Path("/etc/fonts").resolve()),
@@ -9033,7 +9060,7 @@ def graph_produce(repo, recipient):
                 "ordinary_preflight": {"process": preflight_process, "stdin": graph_ref(producer / "phase1-service-preflight.stdin.original")},
                 "runtime_originals": {"producer": runtime_process, "inventory": inventory_ref, "receipt": graph_ref(runtime / "runtime.json"),
                     "intake": intake_ref, "profile_files": profiles}, "callback_roster": roster_ref, "native_enforcement": native_ref,
-                "contract": contract}
+                "native_executable_inputs": native_record_ref, "contract": contract}
             encoded = (json.dumps(index, sort_keys=True, separators=(",", ":")) + "\n").encode()
             require(len(encoded) <= GRAPH_BYTES, "Graph exact private index bound")
             index_ref = graph_put(producer / "producer-index.original.json", encoded)
@@ -9045,7 +9072,9 @@ def graph_produce(repo, recipient):
                 "source": source, "execution": execution, "outside_original_copies": review_copies,
                 "contexts": ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in GRAPH_CASES],
                 "meaning": "REQUIRES_INDEPENDENT_REVIEW_AND_EXTERNAL_STATUS_NO_NATIVE_CASE_EXECUTED"})
-            graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"], GRAPH_BUDGET["producer_members"])
+            native_inputs.validate_live(native_record, binaries, source, root / "graph-native-inputs")
+            graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"] - native_copy_bytes,
+                                  GRAPH_BUDGET["producer_members"] - 4)
             plaintext = seal.gather_snapshot({"producer": producer})
             sealed = seal.encrypt_snapshot(plaintext, recipient, {"source_sha": source_sha, "semwright_sha": source["sdk_sha"],
                 "run_id": source["run_id"], "run_attempt": "1"})
