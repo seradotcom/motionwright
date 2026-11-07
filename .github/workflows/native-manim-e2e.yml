@@ -4,10 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Source contracts, static scene, camera, or an original editable-source cycle
+        description: Source contracts, a build-only recovery tool, or an original Native scene/cycle
         type: choice
-        options: [source-contracts, static-scene, camera120, camera120-source-cycle, editable-source-cycle]
+        options: [source-contracts, source-recovery-tool-only, static-scene, camera120, camera120-source-cycle, editable-source-cycle]
         default: source-contracts
+      source_recovery_expected_sha:
+        description: Exact checkout SHA for source-recovery-tool-only; never authorizes Native work
+        type: string
+        required: false
       development_native_diagnostics:
         description: Explicit editable Native diagnosis; defers historical acceptance only, never grants F/G2/G3 or release
         type: boolean
@@ -93,6 +97,7 @@ env:
 
 jobs:
   source-contracts:
+    if: inputs.scenario != 'source-recovery-tool-only'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -896,6 +901,70 @@ jobs:
             ${{ runner.temp }}/manim-scene-publication-g0/
             ${{ runner.temp }}/manim-source284-admission/
             ${{ runner.temp }}/manim-rust-source-contracts/
+          if-no-files-found: error
+          retention-days: 14
+
+  source-recovery-tool:
+    name: Build source recovery tool only (no tests or Native)
+    if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'source-recovery-tool-only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_TERM_COLOR: never
+      MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
+      MANIM_EXPECTED_SOURCE_SHA: ${{ inputs.source_recovery_expected_sha }}
+      MANIM_AFFECTED_RUST_DIAGNOSTICS: ${{ inputs.affected_rust_diagnostics && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind unchanged Rust inputs to the 41 original tests before building
+        run: python3 -B tooling/retain_manim_source_recovery_tool.py --verify-reuse-only
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Restore the existing source-contracts dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-manim-1.98.1
+          shared-key: source-contracts
+          save-if: 'false'
+
+      - name: Build the one unchanged recovery executable
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-manim-e2e 2>&1 \
+            | tee "$RUNNER_TEMP/manim-source-recovery-build.log"
+
+      - name: Retain the compiled original with bounded streaming readback
+        run: python3 -B tooling/retain_manim_source_recovery_tool.py
+
+      - name: Upload public source-recovery executable
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-source-recovery-tool-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-source-recovery-tool/native-manim-e2e
+            ${{ runner.temp }}/manim-source-recovery-tool/tool-identity.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain original build and per-predicate custody diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-source-recovery-build-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-source-recovery-reuse-check.json
+            ${{ runner.temp }}/manim-source-recovery-build.log
+            ${{ runner.temp }}/manim-source-recovery-tool-attempt.json
           if-no-files-found: error
           retention-days: 14
 

@@ -1,6 +1,7 @@
 """Real filesystem controls for the public source-recovery code artifact."""
 from __future__ import annotations
 import importlib.util
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -19,6 +20,7 @@ class PublicRecoveryToolCustodyTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="mw-recovery-code-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        TOOL.OBSERVED_BINARY = None
 
     def test_group_writable_originals_keep_their_bytes_and_modes(self):
         for mode in (0o775, 0o664):
@@ -73,6 +75,57 @@ class PublicRecoveryToolCustodyTests(unittest.TestCase):
                 self.assertEqual(copied.read_bytes(), raw)
         self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o775)
         self.assertEqual(original.read_bytes(), raw)
+
+    def test_streaming_copy_crosses_old_limit_without_mutating_cargo_original(self):
+        source = self.root / "cargo-large-original"
+        size = 64 * 1024 * 1024 + 1
+        with source.open("xb") as writer:
+            writer.write(b"\x7fELF")
+            writer.truncate(size)
+        source.chmod(0o775)
+        os.link(source, self.root / "cargo-large-dependency")
+        before = TOOL.identity(source.stat())
+        destination = self.root / "private-executable"
+        result = TOOL.retain_binary(source, destination)
+        digest = hashlib.sha256()
+        with destination.open("rb") as reader:
+            while raw := reader.read(65536):
+                digest.update(raw)
+        self.assertEqual(result, {"name": destination.name, "bytes": size, "sha256": digest.hexdigest()})
+        self.assertEqual(TOOL.identity(source.stat()), before)
+        self.assertEqual(destination.stat().st_nlink, 1)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o500)
+        self.assertEqual(TOOL.OBSERVED_BINARY["bytes"], size)
+        self.assertEqual(TOOL.OBSERVED_BINARY["links"], 2)
+        with self.assertRaises(FileExistsError):
+            TOOL.retain_binary(source, destination)
+        self.assertEqual(destination.stat().st_size, size)
+
+    def test_oversize_original_reports_observed_stat_before_creating_any_copy(self):
+        source = self.root / "over-budget"
+        with source.open("xb") as writer:
+            writer.write(b"\x7fELF")
+            writer.truncate(TOOL.MAX_BINARY + 1)
+        before = TOOL.identity(source.stat())
+        destination = self.root / "must-not-exist"
+        with self.assertRaises(TOOL.CustodyRejected) as caught:
+            TOOL.retain_binary(source, destination)
+        self.assertEqual(caught.exception.code, "INPUT_BYTE_BUDGET_REJECTED")
+        self.assertEqual(caught.exception.metadata["bytes"], TOOL.MAX_BINARY + 1)
+        self.assertEqual(caught.exception.metadata, TOOL.OBSERVED_BINARY)
+        self.assertTrue(caught.exception.metadata["regular"])
+        self.assertFalse(destination.exists())
+        self.assertEqual(TOOL.identity(source.stat()), before)
+
+    def test_non_elf_original_is_observed_but_never_copied_or_executed(self):
+        source = self.root / "non-elf-original"
+        source.write_bytes(b"different executable format")
+        destination = self.root / "must-not-exist"
+        with self.assertRaises(TOOL.CustodyRejected) as caught:
+            TOOL.retain_binary(source, destination)
+        self.assertEqual(caught.exception.code, "COMPILED_BINARY_NOT_ELF")
+        self.assertEqual(TOOL.OBSERVED_BINARY["bytes"], source.stat().st_size)
+        self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":
