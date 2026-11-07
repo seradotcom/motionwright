@@ -188,6 +188,10 @@ for path in iter_source_files(ROOT):
             # Retained SQLite identity uses a bounded child only in cfg(test).
             "crates/storage/src/sqlite_identity.rs":
                 "332d6b4789a2a9e00785030ceb965189a90f57f55857388014eeec763b00274c",
+            # Graph RLIMIT controls re-exec only the current test harness
+            # under test/Linux cfg with a fixed filter and no shell.
+            "crates/service/examples/studio_review_session.rs":
+                "3e2fe2bf860bd64aaf29cdfc061e6fa0bc706588ef9295a7f6bf8b9d8cc16061",
             # N83 acceptance CLI, not cfg(test): fixed Git identity reads and
             # the committed preview helper under the admitted runner's owned
             # process group/deadline; no shell or project-selected executable.
