@@ -232,6 +232,31 @@ fn attach(
     // Retain the original staging bytes as private evidence, including after failure.
     Ok((updated, id))
 }
+fn verify_source_edit_commit(
+    attached: &Project,
+    updated: &Project,
+    change: &Change,
+) -> SourceResult<()> {
+    if !matches!(change, Change::UpdateCanvasText { .. }) {
+        return Err("source commit must be the one previewed text Change".into());
+    }
+    let next_revision = attached
+        .revision
+        .checked_add(1)
+        .ok_or("revision overflow")?;
+    let mut intended = attached.clone();
+    intended.apply_change(change)?;
+    // Use the same domain commit semantics as Store::apply, including the
+    // active branch head and any required review invalidation. A later clock
+    // sample from this verification is not the persisted commit timestamp.
+    intended.commit_revision(next_revision, change)?;
+    intended.updated_at = updated.updated_at;
+    if updated != &intended {
+        return Err("source import changed content outside the one authorized text Change".into());
+    }
+    Ok(())
+}
+
 fn apply_pair(
     database: &Path,
     service: StudioService,
@@ -330,18 +355,7 @@ fn apply_pair(
             &preview.change,
         )?
         .project;
-    let mut intended = attached.clone();
-    intended.apply_change(&preview.change)?;
-    intended.revision = updated.revision;
-    if updated != intended
-        || updated.revision
-            != attached
-                .revision
-                .checked_add(1)
-                .ok_or("revision overflow")?
-    {
-        return Err("source import changed content outside the one authorized text Change".into());
-    }
+    verify_source_edit_commit(&attached, &updated, &preview.change)?;
     drop(reopened);
     let reopened = StudioService::open(database)?;
     if reopened.project(project.id)? != updated
@@ -492,6 +506,129 @@ pub(super) fn input_descriptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn committed_text_fixture() -> (tempfile::TempDir, PathBuf, Project, Project, Change) {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = temporary.path().join("source.sqlite3");
+        seed(&database).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let attached = service.projects(2).unwrap().remove(0);
+        let (scene_id, node_id) = attached
+            .scenes
+            .iter()
+            .flat_map(|scene| scene.nodes.iter().map(move |node| (scene.id, node)))
+            .find(|(_, node)| node.text.as_deref() == Some(ORIGINAL_TEXT))
+            .map(|(scene_id, node)| (scene_id, node.id))
+            .unwrap();
+        let change = Change::UpdateCanvasText {
+            scene_id,
+            node_id,
+            text: Some(EDITED_TEXT.into()),
+        };
+        let updated = service
+            .apply(
+                attached.id,
+                &RevisionStamp::from(&attached),
+                "source-edit-commit-regression",
+                &change,
+            )
+            .unwrap()
+            .project;
+        drop(service);
+        (temporary, database, attached, updated, change)
+    }
+
+    #[test]
+    fn source_edit_commit_accepts_real_saved_commit_metadata() {
+        let (_temporary, database, attached, updated, change) = committed_text_fixture();
+        let reopened = StudioService::open(&database).unwrap();
+        let saved = reopened.project(updated.id).unwrap();
+        assert_eq!(saved, updated);
+        assert_eq!(saved.revision, attached.revision + 1);
+        assert_eq!(
+            saved
+                .branches
+                .iter()
+                .find(|branch| branch.id == saved.active_branch)
+                .unwrap()
+                .head_revision,
+            saved.revision,
+        );
+        verify_source_edit_commit(&attached, &saved, &change).unwrap();
+        assert_eq!(reopened.project(updated.id).unwrap(), saved);
+    }
+
+    #[test]
+    fn source_edit_commit_rejects_unrelated_content_or_source_assets() {
+        let (_temporary, _database, attached, updated, change) = committed_text_fixture();
+        let mut other_title = updated.clone();
+        other_title.title.push_str(" unexpected");
+        assert!(verify_source_edit_commit(&attached, &other_title, &change).is_err());
+        assert!(!updated.assets.is_empty());
+        let mut lost_source = updated.clone();
+        lost_source.assets.clear();
+        assert!(verify_source_edit_commit(&attached, &lost_source, &change).is_err());
+    }
+
+    #[test]
+    fn source_edit_commit_rejects_different_text_and_generation() {
+        let (_temporary, _database, attached, updated, change) = committed_text_fixture();
+        let Change::UpdateCanvasText {
+            scene_id, node_id, ..
+        } = &change
+        else {
+            unreachable!()
+        };
+        let mut other_text = updated.clone();
+        other_text
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.id == *scene_id)
+            .unwrap()
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == *node_id)
+            .unwrap()
+            .text = Some("unauthorized".into());
+        assert!(verify_source_edit_commit(&attached, &other_text, &change).is_err());
+        let mut other_generation = updated.clone();
+        other_generation.generation = Uuid::new_v4();
+        assert!(verify_source_edit_commit(&attached, &other_generation, &change).is_err());
+    }
+
+    #[test]
+    fn source_edit_commit_rejects_extra_revision_and_incorrect_branch_head() {
+        let (_temporary, _database, attached, updated, change) = committed_text_fixture();
+        let mut extra_commit = updated.clone();
+        extra_commit.revision += 1;
+        let active = extra_commit.active_branch;
+        extra_commit
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id == active)
+            .unwrap()
+            .head_revision = extra_commit.revision;
+        assert!(verify_source_edit_commit(&attached, &extra_commit, &change).is_err());
+        let mut old_head = updated.clone();
+        old_head
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id == active)
+            .unwrap()
+            .head_revision = attached.revision;
+        assert!(verify_source_edit_commit(&attached, &old_head, &change).is_err());
+    }
+
+    #[test]
+    fn source_edit_commit_rejects_a_non_text_change() {
+        let (_temporary, _database, attached, updated, _change) = committed_text_fixture();
+        let other = Change::AddScene {
+            name: "unrelated".into(),
+            objective: "outside the one previewed text change".into(),
+            duration_seconds: 1,
+        };
+        assert!(verify_source_edit_commit(&attached, &updated, &other).is_err());
+    }
 
     #[test]
     fn forged_native_pass_without_original_store_receipts_cannot_import_or_edit() {

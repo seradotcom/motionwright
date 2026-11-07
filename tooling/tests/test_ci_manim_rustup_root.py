@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tempfile
 import textwrap
+import tomllib
 import unittest
 
 
@@ -137,9 +138,27 @@ class PrivateRustupRootTests(unittest.TestCase):
         action = native.split("- uses: " + ACTION + "\n", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("steps.editable_toolchain_budget.outputs.minutes", action)
         self.assertIn("toolchain: 1.98.1\n", action)
-        self.assertIn("components: clippy\n", action)
         self.assertNotIn("CARGO_HOME", self.preparation)
         self.assertNotIn("CARGO_TARGET_DIR", self.preparation)
+
+    def test_native_action_installs_all_pinned_components_before_sdk_build(self):
+        # Both pinned workspaces require rustfmt and clippy. Omitting rustfmt
+        # defers its installation to cargo in the SDK directory, where the
+        # retained original failed on a cargo-fmt component conflict.
+        required = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(
+            encoding="utf-8"))["toolchain"]
+        self.assertEqual(required["channel"], "1.98.1")
+        self.assertEqual(required["profile"], "minimal")
+        self.assertEqual(set(required["components"]), {"rustfmt", "clippy"})
+        native = self.text.split("  native-manim-roundtrip:\n", 1)[1]
+        action = native.split("- uses: " + ACTION + "\n", 1)[1].split("\n      - ", 1)[0]
+        rows = [line.strip().split(":", 1)[1].strip() for line in action.splitlines()
+                if line.strip().startswith("components:")]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual({name.strip() for name in rows[0].split(",")},
+                         set(required["components"]))
+        self.assertLess(native.index("- uses: " + ACTION),
+                        native.index("- name: Build exact Semwright Broker and sandbox"))
 
 
 if __name__ == "__main__":

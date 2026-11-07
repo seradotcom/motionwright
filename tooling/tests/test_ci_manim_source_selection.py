@@ -1,10 +1,12 @@
 """Exercise the Manim development source gate without native work or acceptance."""
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -95,6 +97,45 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, ["source_policy", "public_surface_policy"])
         self.assertIn("historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP", result.stdout)
+
+    def test_a4_causal_source_scope_keeps_acceptance_unasserted(self):
+        result, calls = self.execute(environment={
+            "GITHUB_REF": "refs/heads/fix/native-production-causal-20261106-a4",
+            "MW_MANIM_DEVELOPMENT_NATIVE": "false",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["source_policy", "public_surface_policy"])
+        self.assertIn("historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP", result.stdout)
+
+    def test_a4_source_admission_does_not_admit_native_or_a_second_attempt(self):
+        base = {"GITHUB_REF": "refs/heads/fix/native-production-causal-20261106-a4",
+                "MW_MANIM_DEVELOPMENT_NATIVE": "false"}
+        for key, value in (("GITHUB_RUN_ATTEMPT", "2"),
+                           ("GITHUB_EVENT_NAME", "pull_request"),
+                           ("MW_MANIM_SCENARIO", "editable-source-cycle"),
+                           ("GITHUB_REF", base["GITHUB_REF"] + "-other")):
+            with self.subTest(key=key, value=value):
+                result, calls = self.execute(environment={**base, key: value})
+                self.assertEqual(result.returncode, 97, result.stderr)
+                self.assertEqual(calls[-1], "acceptance_policy")
+        result, _ = self.execute(environment={**base, "MW_MANIM_DEVELOPMENT_NATIVE": "true"})
+        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_rust_rosters_select_all_five_edit_commit_regressions(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        rosters = [ast.literal_eval(line.strip().split(" = ", 1)[1])
+                   for line in text.splitlines() if line.strip().startswith("RUST_CASES = ")]
+        self.assertEqual(len(rosters), 2)
+        self.assertEqual(rosters[0], rosters[1])
+        self.assertEqual(sum(len(names) for names in rosters[0].values()), 36)
+        self.assertEqual(len(rosters[0]["example24"]), 29)
+        source = (ROOT / "crates/native/examples/native_manim_editable/source_cycle.rs").read_text(encoding="utf-8")
+        cases = {"editable_cycle::tests::" + name for name in re.findall(
+            r"#\[test\]\s*fn (source_edit_commit_[a-z0-9_]+)", source)}
+        self.assertEqual(len(cases), 5)
+        self.assertTrue(cases.issubset(rosters[0]["example24"]))
+        for names in rosters[0].values():
+            self.assertEqual(names, sorted(set(names)))
 
     def test_other_events_refs_scenarios_and_attempts_keep_full_policies(self):
         variants = [("GITHUB_REPOSITORY", "other/motionwright"),
