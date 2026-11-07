@@ -191,6 +191,9 @@ def external_fixture():
         {"root": "observation", "relative_path": "flow-control-base/native-result.host-stdin/broker-receipt.snapshot.json",
          "role": "attempt-original", "maximum": 8 * 1024 * 1024, "expected_sha256": None},
     ])
+    for name, bound in fixed.PRE_OWNER_DIAGNOSTICS:
+        members.append({"root": "observation", "relative_path": name, "role": "attempt-original",
+                        "maximum": bound, "expected_sha256": None})
     for suffix, bound in (("intent.json", 65536), ("spawned.json", 65536), ("stdout", 1024 * 1024 + 1),
                           ("stderr", 1024 * 1024 + 1), ("terminal.json", 65536)):
         members.append({"root": "control", "relative_path": "supervision/work." + suffix,

@@ -467,6 +467,9 @@ def preflight_request_capacity(value, *, source_zip_bytes=0, session=False):
                    49152, 65536, 16384])
     # Retained historical GREEN, derived RED, and reversible observer proof.
     bounds.extend([128 * 1024, 128 * 1024, 16384])
+    # Six explicit pre-owner diagnostics, 60 KiB raw. The existing physical
+    # selection and all PNG/RGBA bounds remain unchanged, including captions.
+    bounds.extend([4096, 16384, 4096, 16384, 16384, 4096])
     need(type(session) is bool, "fixedtxt-session-capacity-selection")
     # The five active resource originals fit inside the existing session reserve.
     # A standalone case explicitly reserves those same five bounded metadata files.
@@ -998,6 +1001,9 @@ def make_plan(request, current, cycle_raw, source, *, known):
          "expected_sha256": None},
         {"root": "observation", "relative_path": request["fixture"] + "/native-result.host-stdin/broker-receipt.snapshot.json",
          "role": "attempt-original", "maximum": 8 * 1024 * 1024, "expected_sha256": None}])
+    for name, bound in fixed.PRE_OWNER_DIAGNOSTICS:
+        members.append({"root": "observation", "relative_path": name, "role": "attempt-original",
+                        "maximum": bound, "expected_sha256": None})
     for suffix, bound in (("intent.json", 65536), ("spawned.json", 65536),
         ("stdout", 1024 * 1024 + 1), ("stderr", 1024 * 1024 + 1), ("terminal.json", 65536)):
         members.append({"root": "control", "relative_path": "supervision/work." + suffix,

@@ -1021,59 +1021,9 @@ def verify_owner_close_originals(originals):
 
 
 def release_shared():
-    """Release only the two positively observed owned mounts after quiescence."""
-    import native_fixedtxt_workflow as route
-    import native_fixedtxt_g2_supervisor as owner
-    current = route.workflow_context()
-    root = session_root()
-    receipt_path = root / "shared-readonly.original.json"
-    if not receipt_path.exists():
-        # A partial mount operation remains a negative. No uncertain mutation
-        # is repeated or an unverified mount detached by this cleanup.
-        write(root / "release-unresolved.original.json", canonical({"context": current,
-            "reason": "shared-readonly-original-absent", "released": False, "automatic_retry": False}))
-        return
-    receipt = strict(read(receipt_path, MIB), MIB)
-    targets = verify_mounts(receipt)
-    empty = quiescent(current)
-    session = strict(read(root / "session-clock.original.json"))
-    template = strict(read(root / "session-template.original.json", 49152), 49152)
-    # This is closure only, inside the same original attempt and upload reserve.
-    original = {"started_monotonic": session["started_monotonic"],
-                "deadline_monotonic": session["deadline_monotonic"]}
-    class ClosureClock:
-        started = original["started_monotonic"]
-        total = original["deadline_monotonic"]
-        used = set()
-        def reserve(self, phase):
-            need(phase in ("release-0", "release-1") and phase not in self.used,
-                 "fixedtxt-session-release-no-retry")
-            self.used.add(phase)
-            until = self.total - min(30, template["upload_seconds"])
-            need(time.monotonic() < until, "fixedtxt-session-release-original-deadline")
-            return until
-    directory = root / "release"
-    directory.mkdir(mode=0o700, exist_ok=False)
-    group = owner.OwnerCgroup(current["run_id"], "preparation")
-    clock = ClosureClock()
-    try:
-        # Python keeps its already imported modules; release venv before checkout.
-        for index, target in enumerate(reversed(targets)):
-            current_rows = mount_rows(Path("/proc/self/mountinfo").read_bytes(), target["path"])
-            need(current_rows == target["mounts"], "fixedtxt-session-release-mount-identity-changed")
-            result = owner._run_original(["sudo", "-n", "umount", "--", target["path"]],
-                environment={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, directory=directory,
-                phase="release-" + str(index), clock=clock, containment=group, stream_limit=65536)
-            need(result["exit_code"] == 0 and result["original_complete"] is True
-                 and result["native_outcome"] == "NOT_INFERRED" and result["containment_empty"] is True,
-                 "fixedtxt-session-release-incomplete-no-retry")
-            need(not mount_rows(Path("/proc/self/mountinfo").read_bytes(), target["path"]),
-                 "fixedtxt-session-owned-bind-still-mounted")
-    finally:
-        group.close()
-    write(root / "released.original.json", canonical({"context": current, "targets": targets,
-        "quiescent_before": empty, "quiescent_after": quiescent(current),
-        "observed_monotonic": time.monotonic(), "native_acceptance": False, "automatic_retry": False}))
+    """Discard custody mappings before releasing the two original bind mounts."""
+    import native_owner_resources as resources
+    resources.handoff_shared_release("fixedtxt")
 
 
 def seal_session():

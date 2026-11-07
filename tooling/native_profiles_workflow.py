@@ -1117,44 +1117,9 @@ def run_cases():
 
 
 def release_shared():
-    import native_fixedtxt_session as shared
-    import native_fixedtxt_g2_supervisor as owned
-    current = context()
-    root, _, _, _, clock, _, _ = load_originals(current)
-    if not (root / "shared-readonly.original.json").is_file():
-        return
-    receipt = strict(read(root / "shared-readonly.original.json"))
-    shared.verify_mounts(receipt)
-    for phase in ("preparation", "work", "custody"):
-        containment = group(current, phase)
-        try:
-            need(not containment.populated(), "profiles-release-live-cohort")
-        finally:
-            containment.close()
-    directory = root / "release"
-    directory.mkdir(mode=0o700, exist_ok=False)
-    class ReleaseClock:
-        started = clock["started_monotonic"]
-        total = min(clock["deadline_monotonic"] - 120, time.monotonic() + 30)
-        used = set()
-        def reserve(self, phase):
-            need(phase in ("release-0", "release-1") and phase not in self.used
-                 and time.monotonic() < self.total, "profiles-release-original-clock")
-            self.used.add(phase)
-            return self.total
-    timeline, containment = ReleaseClock(), group(current, "preparation")
-    try:
-        for ordinal, row in enumerate(reversed(receipt["targets"])):
-            result = owned._run_original(["sudo", "-n", "umount", "--", row["path"]],
-                environment={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, directory=directory,
-                phase="release-" + str(ordinal), clock=timeline, containment=containment, stream_limit=65536)
-            need(stage_complete(result), "profiles-release-not-closed-no-retry")
-            need(not shared.mount_rows(Path("/proc/self/mountinfo").read_bytes(), row["path"]),
-                 "profiles-release-mount-remains")
-        write(root / "released.original.json", {"context": current, "owned_mounts_released": True,
-            "prior_owner_cleanup_inferred": False, "automatic_retry": False})
-    finally:
-        containment.close()
+    """Discard custody mappings before releasing the two original bind mounts."""
+    import native_owner_resources as resources
+    resources.handoff_shared_release("hero")
 
 
 def deliver_permissions():

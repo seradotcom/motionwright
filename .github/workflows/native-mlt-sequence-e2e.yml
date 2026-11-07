@@ -4070,6 +4070,9 @@ jobs:
                              49152, 65536, 16384])
               # Retained historical GREEN, derived RED, and reversible observer proof.
               bounds.extend([128 * 1024, 128 * 1024, 16384])
+              # Six explicit pre-owner diagnostics, 60 KiB raw. The existing physical
+              # selection and all PNG/RGBA bounds remain unchanged, including captions.
+              bounds.extend([4096, 16384, 4096, 16384, 16384, 4096])
               need(type(session) is bool, "fixedtxt-session-capacity-selection")
               # The five active resource originals fit inside the existing session reserve.
               # A standalone case explicitly reserves those same five bounded metadata files.
@@ -4434,6 +4437,9 @@ jobs:
                              49152, 65536, 16384])
               # Retained historical GREEN, derived RED, and reversible observer proof.
               bounds.extend([128 * 1024, 128 * 1024, 16384])
+              # Six explicit pre-owner diagnostics, 60 KiB raw. The existing physical
+              # selection and all PNG/RGBA bounds remain unchanged, including captions.
+              bounds.extend([4096, 16384, 4096, 16384, 16384, 4096])
               need(type(session) is bool, "fixedtxt-session-capacity-selection")
               # The five active resource originals fit inside the existing session reserve.
               # A standalone case explicitly reserves those same five bounded metadata files.
@@ -4743,6 +4749,7 @@ jobs:
           custody-python: ${{ steps.fixedtxt_python.outputs.python }}
 
       - name: Release only observed shared mounts after all owned processes close
+        working-directory: ${{ runner.temp }}
         if: always() && steps.fixedtxt_session.outcome == 'success'
         env:
           MW_FIXEDTXT_SESSION_ROOT: ${{ steps.fixedtxt_session.outputs.session_root }}

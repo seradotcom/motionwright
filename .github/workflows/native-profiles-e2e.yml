@@ -358,14 +358,15 @@ jobs:
           exit "$code"
 
       - name: Release only the observed shared mounts after the owned cohorts close
+        working-directory: ${{ runner.temp }}
         if: always() && steps.custody_python.outcome == 'success'
         timeout-minutes: 1
         shell: bash
         run: |
           set -uo pipefail
           code=0
-          sudo -n -E /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py enter --scope hero --action release-shared --original-path "$PATH" --original-home "$HOME" || code=$?
-          /usr/bin/python3.12 -B -E -s tooling/native_owner_resources.py observe --scope hero --action release-shared || { observed=$?; test "$code" -ne 0 || code=$observed; }
+          sudo -n -E /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" enter --scope hero --action release-shared --original-path "$PATH" --original-home "$HOME" || code=$?
+          /usr/bin/python3.12 -B -E -s "$GITHUB_WORKSPACE/tooling/native_owner_resources.py" observe --scope hero --action release-shared || { observed=$?; test "$code" -ne 0 || code=$observed; }
           exit "$code"
 
       - name: Seal actual session originals and the earlier guard terminals

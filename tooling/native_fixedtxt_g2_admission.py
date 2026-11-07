@@ -36,6 +36,17 @@ PLAN_MEMBER = "fixedtxt-plan.original.json"
 RUNTIME_MEMBER = "source-input.original.json"
 CYCLE_MEMBER = "cycle.original.json"
 SHA = re.compile(r"[0-9a-f]{64}\Z")
+# These six literal originals are emitted before the first native owner. Their
+# transport bounds fit the original capsule, including the seven-frame case.
+# Overflow remains missing evidence; no stream is truncated to make it fit.
+PRE_OWNER_DIAGNOSTICS = (
+    ("source-plan.json", 4096),
+    ("runtime-input-custody.json", 16384),
+    ("fixed.source-fixtures.intent.json", 4096),
+    ("fixed.source-fixtures.stdout", 16384),
+    ("fixed.source-fixtures.stderr", 16384),
+    ("fixed.source-fixtures.terminal.json", 4096),
+)
 
 
 class FixedTxtRejected(ValueError):
@@ -113,6 +124,11 @@ def validate_plan(value, *, current):
     fixedtxt_validate_plan(shape, current=current)
     required = ("observation", value["fixture"] + "/native-result.host-stdin/broker-receipt.snapshot.json")
     rows = {(row["root"], row["relative_path"]): row for row in value["members"]}
+    for name, bound in PRE_OWNER_DIAGNOSTICS:
+        diagnostic = rows.get(("observation", name))
+        need(diagnostic is not None and diagnostic["role"] == "attempt-original"
+             and diagnostic["maximum"] == bound and diagnostic["expected_sha256"] is None,
+             "fixedtxt-v2-original-pre-owner-diagnostic-required")
     need(required in rows and rows[required]["role"] == "attempt-original"
          and rows[required]["maximum"] == 8 * 1024 * 1024
          and rows[required]["expected_sha256"] is None,
@@ -529,6 +545,7 @@ def _read_admitted_original(handles, row, physical, *, plan):
         allowed[("observation", stem + "stderr")] = ("decoder-stderr", 256 * 1024)
     for stream in ("stdout", "stderr"):
         allowed[("control", "supervision/work." + stream)] = ("attempt-original", 1024 * 1024 + 1)
+        allowed[("observation", "fixed.source-fixtures." + stream)] = ("attempt-original", 16384)
     admitted = allowed.get((row["root"], physical))
     need(admitted is not None and physical == row["relative_path"]
          and row["role"] == admitted[0] and type(row["maximum"]) is int
@@ -708,6 +725,57 @@ def verify_supervisor_originals(originals, *, plan, current, runner_temp):
     return {"original_work_stage_verified": True, "native_success_verified": False}
 
 
+def _pre_owner_observation_paths(fixture):
+    """Only originals the unchanged wrapper can produce before its owner."""
+    return frozenset(name for name, _ in PRE_OWNER_DIAGNOSTICS) | {
+        "fixed-text-inputs.original.json", "final-custody.json",
+        "canonical-fixture-set/evidence/fixture-set-component.json",
+        "canonical-fixture-set/fixtures/" + fixture + "/film.original.json",
+        "canonical-fixture-set/fixtures/" + fixture + "/expectations.json",
+    }
+
+
+def _close_selected_handles(opened, primary=None):
+    close_error = None
+    for handles in reversed(opened):
+        try:
+            handles.close()
+        except BaseException as error:
+            if close_error is None:
+                close_error = error
+    if close_error is not None:
+        if primary is None:
+            raise close_error
+        primary.add_note("Original selected handle close failed; no second read attempted.")
+
+
+def _selected_root_handles(roots):
+    """An absent/rejected pre-owner observation root cannot erase P/R/Q."""
+    import native_evidence_projection as core
+    if roots["owner"] is not None:
+        handles = core.RootHandles(roots)
+        return {key: handles for key in roots}, [handles]
+    handles = core.RootHandles({key: roots[key] for key in ("control", "inputs")})
+    opened, readable = [handles], {key: handles for key in ("control", "inputs")}
+    observation = None
+    try:
+        try:
+            observation = core.RootHandles({"observation": roots["observation"]})
+            mark = observation.initial["observation"]
+            need(all((mark.st_dev, mark.st_ino) != (old.st_dev, old.st_ino)
+                     for old in handles.initial.values()), "fixedtxt-v2-aliased-pre-owner-root")
+        except (OSError, ValueError, core.SelectionError):
+            if observation is not None:
+                _close_selected_handles([observation])
+        else:
+            opened.append(observation)
+            readable["observation"] = observation
+    except BaseException as error:
+        _close_selected_handles([handles], primary=error)
+        raise
+    return readable, opened
+
+
 def capture_selected(held, *, current, runner_temp, source_root, roots):
     """One no-follow read per selected file, including all 180 original PNGs.
 
@@ -732,12 +800,11 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
                                          Path(roots["observation"]) / plan["fixture"])
         need(str(owner) == str(roots["owner"]), "fixedtxt-v2-original-owner-root")
     core.verify_source_bindings(source_root, current["source_sha"], plan["source_bindings"])
-    # When no original owner identity can be verified, retain P/R/Q and the
-    # outer work originals. No guessed owner path is read, and all unresolved
-    # native members remain explicitly missing, never evidence of no effect.
-    readable = (roots if roots["owner"] is not None else
-                {key: roots[key] for key in ("control", "inputs")})
-    handles = core.RootHandles(readable)
+    # An owner is not needed to retain the explicitly admitted compiler
+    # prefix. Its root still uses anchored no-follow handles and private mode.
+    # Native members remain missing without the original owner identity.
+    readable, opened = _selected_root_handles(roots)
+    pre_owner_paths = _pre_owner_observation_paths(plan["fixture"])
     originals, observations, failed, identities = {}, [], [], set()
     total, resolved, primary = 0, None, None
     try:
@@ -747,7 +814,10 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
             nonlocal total
             key = row["root"] + "/" + row["relative_path"]
             need(row["root"] in readable, "fixedtxt-v2-original-owner-identity-unavailable")
-            raw, identity = _read_admitted_original(handles, row, physical, plan=plan)
+            need(roots["owner"] is not None or row["root"] != "observation"
+                 or row["relative_path"] in pre_owner_paths,
+                 "fixedtxt-v2-pre-owner-observation-not-selected")
+            raw, identity = _read_admitted_original(readable[row["root"]], row, physical, plan=plan)
             need(identity[:2] not in identities, "fixedtxt-v2-aliased-selected-original")
             identities.add(identity[:2])
             need(row["expected_sha256"] is None or row["expected_sha256"] == sha(raw),
@@ -769,10 +839,11 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
             if key in originals and originals[key] != expected:
                 failed.append({"archive_path": key, "error_class": "FrozenOriginalChanged",
                                "automatic_retry": False})
-        try:
-            resolved = resolve_native_directory(plan, originals, cycle_raw=held.cycle_raw)
-        except (KeyError, TypeError, ValueError):
-            resolved = None
+        if roots["owner"] is not None:
+            try:
+                resolved = resolve_native_directory(plan, originals, cycle_raw=held.cycle_raw)
+            except (KeyError, TypeError, ValueError):
+                resolved = None
         for row in dynamic:
             if resolved is None:
                 failed.append({"archive_path": row["root"] + "/" + row["relative_path"],
@@ -784,17 +855,12 @@ def capture_selected(held, *, current, runner_temp, source_root, roots):
             except (OSError, ValueError, core.SelectionError) as error:
                 failed.append({"archive_path": row["root"] + "/" + row["relative_path"],
                                "error_class": type(error).__name__, "automatic_retry": False})
-        need(handles.stable_roots(), "fixedtxt-v2-selected-roots-changed")
+        need(all(handles.stable_roots() for handles in opened), "fixedtxt-v2-selected-roots-changed")
     except BaseException as error:
         primary = error
         raise
     finally:
-        try:
-            handles.close()
-        except BaseException:
-            if primary is None:
-                raise
-            primary.add_note("Original selected handle close failed; no second read attempted.")
+        _close_selected_handles(opened, primary=primary)
     core.verify_source_bindings(source_root, current["source_sha"], plan["source_bindings"])
     complete = not failed and len(originals) == len(plan["members"])
     verified = supervisor_verified = False

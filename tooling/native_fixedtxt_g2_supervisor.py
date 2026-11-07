@@ -158,13 +158,21 @@ class AttemptClock:
         return deadline
 
 
-def _run_original(argv, *, environment, directory, phase, clock, containment, stream_limit):
+def _run_original(argv, *, environment, directory, phase, clock, containment, stream_limit, original_writer=None):
     """One original child; only the closed owner composition calls this primitive.
 
     Tests may exercise mechanical children with an explicit containment double;
     such tests are never evidence that a Linux native owner was contained.
     """
-    from ci_private_evidence import new_json
+    if original_writer is None:
+        from ci_private_evidence import new_json
+    else:
+        # The closed shared-mount release uses a fresh system Python with -S.
+        # Its exclusive stdlib writer avoids mapping the custody venv's crypto
+        # extension while that same venv is being unmounted. Default owners
+        # retain their original custody writer and behavior.
+        need(callable(original_writer), "fixedtxt-supervisor-original-writer")
+        new_json = original_writer
     global _LAUNCH_CRITICAL
     need(threading.active_count() == 1, "fixedtxt-supervisor-single-thread-before-fork")
     need(type(stream_limit) is int and 0 < stream_limit <= 8 * 1024 * 1024,

@@ -54,7 +54,8 @@ POLICIES = {
                              "tooling/native_fixedtxt_g2_supervisor.py")},
     "hero": {"jobs": ("hero-profiles",), "selector": ("MOTIONWRIGHT_NATIVE_SCOPE", "hero-profiles-three"),
              "prefix": "motionwright-hero-", "python": "mw-hero-custody-python-",
-             "modules": ("tooling/native_profiles_workflow.py", "tooling/native_profiles_custody.py")},
+             "modules": ("tooling/native_profiles_workflow.py", "tooling/native_profiles_custody.py",
+                         "tooling/native_fixedtxt_session.py", "tooling/native_fixedtxt_g2_supervisor.py")},
 }
 _CANCEL = None
 
@@ -416,6 +417,14 @@ def selected_command(scope, action, case, origin, env):
     if action == "source-policy":
         need(case is None, "owner-resource-source-policy-has-no-case")
         return ["/usr/bin/python3.12", "-B", "-E", "-s", str(repo / "tooling/source_policy.py")]
+    if action == "release-shared":
+        need(case is None and (scope == "hero" or origin["job"] == "fixedtxt-session-owner"),
+             "owner-resource-closed-release-action")
+        # A custody interpreter has imported extension modules from the very
+        # bind mount being released. Execute a fresh system interpreter with
+        # site loading disabled, so no mapped venv library can pin that mount.
+        return ["/usr/bin/python3.12", "-B", "-E", "-s", "-S",
+                str(repo / "tooling/native_owner_resources.py"), "release", "--scope", scope]
     if scope == "hero":
         need(case is None and action in ("prepare", "receive-and-run", "record-uploads", "release-shared", "seal-session"),
              "owner-resource-closed-hero-action")
@@ -816,6 +825,9 @@ def command_guard(origin, root, journal, original_digest, action, case, environm
         "scope": origin["scope"], "origin": original_digest, "action": action, "case_index": case,
         "argv": argv, "controller_pid": os.getpid(), "deadline": binding, "before": before,
         "stream_bytes_each": stream_limit, "automatic_retry": False, "Native_outcome": "NOT_INFERRED"}
+    if action == "release-shared":
+        need(Path.cwd() == Path(origin["base_temp"]), "owner-resource-release-controller-cwd")
+        initial["controller_cwd"] = str(Path.cwd())
     new(folder / "intent.original.json", initial)
     new(folder / "controller-entry.original.json", {"context": origin["context"], "origin": original_digest,
         "pid": os.getpid(), "uid": os.getresuid(), "gid": os.getresgid(), "groups": os.getgroups(),
@@ -984,6 +996,8 @@ def enter(scope, action, case, original_path, original_home):
     prepared_environment = controlled_environment(origin, environment)
     os.environ.clear()
     os.environ.update(prepared_environment)
+    if action == "release-shared":
+        os.chdir(base_temp(origin["base_temp"]))
     command_guard(origin, root, journal, original_digest, action, case, os.environ, deadline, binding)
 
 
@@ -1005,6 +1019,172 @@ def child(scope, action, case):
         "membership": Path("/proc/self/cgroup").read_text().splitlines(), "argv": argv,
         "Native_authority_granted": False, "automatic_retry": False})
     os.execve(argv[0], argv, dict(os.environ))
+
+
+def release_process_observation(origin):
+    """Observe only this coordinator; the closed shell/controller start outside."""
+    temp, repo = Path(origin["base_temp"]), Path(origin["source_root"])
+    venv = temp / (POLICIES[origin["scope"]]["python"] + origin["context"]["run_id"] + "-1")
+    roots = (str(repo), str(venv))
+    def inside(value):
+        return any(value == root or value.startswith(root + "/") for root in roots)
+    need(sys.flags.no_site == 1 and sys.prefix == sys.base_prefix
+         and Path(sys.executable).resolve(strict=True) == Path("/usr/bin/python3.12").resolve(strict=True),
+         "owner-resource-release-system-stdlib-interpreter")
+    need(Path.cwd() == temp and not inside(str(Path.cwd())), "owner-resource-release-cwd-outside-mounts")
+    maps = Path("/proc/self/maps").read_bytes()
+    need(len(maps) <= MIB, "owner-resource-release-map-bound")
+    for line in maps.decode("utf-8", "strict").splitlines():
+        fields = line.split(None, 5)
+        need(len(fields) >= 5 and (len(fields) == 5 or not inside(fields[5])),
+             "owner-resource-release-mapped-owned-file")
+    # Materialize and close scandir before observing descriptors, so the
+    # observation does not create an FD which vanishes while being inspected.
+    with os.scandir("/proc/self/fd") as entries:
+        fds = sorted(int(entry.name) for entry in entries if entry.name.isdecimal())
+    observed = []
+    for fd in fds:
+        try:
+            target = os.readlink("/proc/self/fd/" + str(fd))
+        except FileNotFoundError:
+            continue
+        need(not inside(target), "owner-resource-release-open-owned-file")
+        observed.append({"fd": fd, "target": target})
+    need(not any(name == "cryptography" or name.startswith("cryptography.") for name in sys.modules),
+         "owner-resource-release-custody-module-imported")
+    return {"pid": os.getpid(), "cwd": str(Path.cwd()), "executable": sys.executable,
+        "site_disabled": True, "maps": descriptor(maps), "open_fds": observed,
+        "owned_mount_mappings_present": False, "Native_authority_granted": False}
+
+
+def release_deadline(scope, original_deadline, upload_seconds, now):
+    need(scope in POLICIES and all(type(value) in (int, float) and math.isfinite(value)
+         for value in (original_deadline, now)), "owner-resource-release-clock-value")
+    if scope == "fixedtxt":
+        need(type(upload_seconds) is int and 0 < upload_seconds <= 3900,
+             "owner-resource-release-upload-reserve")
+        reserve = min(30, upload_seconds)
+    else:
+        need(upload_seconds is None, "owner-resource-release-hero-clock")
+        reserve = 120
+    until = min(original_deadline - reserve, now + 30)
+    need(now < until, "owner-resource-release-original-clock-expired")
+    return until
+
+
+def handoff_shared_release(scope):
+    """Compatibility entry: exec discards any already mapped custody modules."""
+    origin, _, _, _ = admitted(scope)
+    argv = selected_command(scope, "release-shared", None, origin, os.environ)
+    os.chdir(base_temp(origin["base_temp"]))
+    os.execve(argv[0], argv, dict(os.environ))
+
+
+def release_shared_stdlib(scope):
+    # Both imports have only stdlib at module scope. The supervisor receives
+    # this module's exclusive writer, so its custody/crypto import is not used.
+    import native_fixedtxt_session as shared
+    import native_fixedtxt_g2_supervisor as owned
+    origin, cgroup, journal, origin_digest = admitted(scope)
+    current, temp = origin["context"], Path(origin["base_temp"])
+    need(members(cgroup / "coordinator") == [os.getpid()]
+         and members(cgroup / "controller") == [os.getppid()],
+         "owner-resource-release-original-coordinators")
+    command = strict(regular(journal / "release-shared/intent.original.json", owner=origin["uid"]))
+    need(command.get("context") == current and command.get("origin") == origin_digest
+         and command.get("action") == "release-shared" and command.get("case_index") is None
+         and command.get("argv") == selected_command(scope, "release-shared", None, origin, os.environ)
+         and command.get("controller_cwd") == str(temp), "owner-resource-release-original-command")
+    root = temp / (("hp" + current["run_id"] + "-1") if scope == "hero" else
+                   ("mw-fixedtxt-session-" + current["run_id"] + "-1"))
+    private_directory(root, origin["uid"])
+    if scope == "fixedtxt":
+        need(os.environ.get("MW_FIXEDTXT_SESSION_ROOT") == str(root), "owner-resource-release-session-root")
+    process = release_process_observation(origin)
+    receipt_path = root / "shared-readonly.original.json"
+    if not receipt_path.exists():
+        new(root / "release-unresolved.original.json", {"context": current,
+            "reason": "shared-readonly-original-absent", "released": False, "automatic_retry": False})
+        return
+    receipt = strict(regular(receipt_path, owner=origin["uid"]))
+    expected = [str(Path(origin["source_root"])),
+                str(temp / (POLICIES[scope]["python"] + current["run_id"] + "-1"))]
+    need(receipt.get("context") == current and type(receipt.get("targets")) is list
+         and all(type(row) is dict for row in receipt["targets"])
+         and [row.get("path") for row in receipt["targets"]] == expected,
+         "owner-resource-release-two-original-targets")
+    targets = shared.verify_mounts(receipt)
+    def quiescent():
+        result = {phase: leaf_observation(cgroup / phase) for phase in ("preparation", "work", "custody")}
+        need(all(not row["populated"] and not row["members"] for row in result.values()),
+             "owner-resource-release-live-owned-cohort")
+        return result
+    before = quiescent()
+    binding, _ = clock_originals(scope, current, temp, uid=origin["uid"])
+    upload_seconds = None
+    if scope == "fixedtxt":
+        session = strict(regular(root / "session-clock.original.json", owner=origin["uid"]))
+        need(session.get("schema") == "motionwright.native.fixedtxt-session-clock/1"
+             and session.get("context") == current and session.get("boot_id") == binding["boot_id"]
+             and session.get("started_monotonic") == binding["started_monotonic"]
+             and session.get("deadline_monotonic") == binding["deadline_monotonic"],
+             "owner-resource-release-original-session-clock")
+        template = strict(regular(root / "session-template.original.json", owner=origin["uid"]))
+        upload_seconds = template.get("upload_seconds")
+    until = release_deadline(scope, binding["deadline_monotonic"], upload_seconds, time.monotonic())
+    until = min(until, command["deadline"]["effective_deadline_monotonic"] - 2)
+    class ClosureClock:
+        started = binding["started_monotonic"]
+        total = binding["deadline_monotonic"]
+        used = set()
+        def reserve(self, phase):
+            need(phase in ("release-0", "release-1") and phase not in self.used
+                 and _CANCEL is None and time.monotonic() < until,
+                 "owner-resource-release-expired-or-replayed-stage")
+            self.used.add(phase)
+            return until
+    directory = root / "release"
+    directory.mkdir(mode=0o700, exist_ok=False)
+    new(directory / "stdlib-entry.original.json", {"context": current, "origin": origin_digest,
+        "process": process, "readonly_receipt": descriptor(regular(receipt_path, owner=origin["uid"])),
+        "deadline_monotonic": until, "original_deadline_monotonic": binding["deadline_monotonic"],
+        "automatic_retry": False})
+    timeline = ClosureClock()
+    containment = OwnedLeaf(scope, current, "preparation")
+    first = None
+    try:
+        for index, target in enumerate(reversed(targets)):
+            release_process_observation(origin)
+            need(shared.mount_rows(Path("/proc/self/mountinfo").read_bytes(), target["path"])
+                 == target["mounts"], "owner-resource-release-mount-identity-changed")
+            result = owned._run_original(["sudo", "-n", "umount", "--", target["path"]],
+                environment={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, directory=directory,
+                phase="release-" + str(index), clock=timeline, containment=containment,
+                stream_limit=65536, original_writer=new)
+            need(result.get("exit_code") == 0 and result.get("original_complete") is True
+                 and result.get("containment_empty") is True and result.get("native_outcome") == "NOT_INFERRED"
+                 and result.get("overflow") is False and result.get("deadline_exceeded") is False
+                 and "descendants_survived_wrapper" not in result,
+                 "owner-resource-release-original-unmount-incomplete-no-retry")
+            need(not shared.mount_rows(Path("/proc/self/mountinfo").read_bytes(), target["path"]),
+                 "owner-resource-release-owned-bind-still-mounted")
+    except BaseException as error:
+        first = error
+    finally:
+        try:
+            containment.close()
+        except BaseException as error:
+            if first is None:
+                first = error
+            else:
+                first.add_note("Release leaf descriptor closure also failed: " + type(error).__name__)
+    if first is not None:
+        raise first
+    after = quiescent()
+    new(root / "released.original.json", {"context": current, "targets": targets,
+        "owned_mounts_released": True, "quiescent_before": before, "quiescent_after": after,
+        "observed_monotonic": time.monotonic(), "native_acceptance": False,
+        "prior_owner_cleanup_inferred": False, "automatic_retry": False})
 
 
 def bootstrap(scope):
@@ -1090,17 +1270,17 @@ def cancel(signum, _frame):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("initialize", "enter", "child", "bootstrap", "observe"))
+    parser.add_argument("mode", choices=("initialize", "enter", "child", "bootstrap", "observe", "release"))
     parser.add_argument("--scope", choices=tuple(POLICIES), required=True)
     parser.add_argument("--action")
     parser.add_argument("--case-index", type=int)
     parser.add_argument("--original-path")
     parser.add_argument("--original-home")
     args = parser.parse_args()
-    if args.mode in ("initialize", "bootstrap"):
+    if args.mode in ("initialize", "bootstrap", "release"):
         need(args.action is None and args.case_index is None and args.original_path is None and args.original_home is None,
              "owner-resource-closed-simple-command")
-        (initialize if args.mode == "initialize" else bootstrap)(args.scope)
+        {"initialize": initialize, "bootstrap": bootstrap, "release": release_shared_stdlib}[args.mode](args.scope)
     else:
         need(args.action is not None, "owner-resource-action-required")
         if args.mode == "enter":
