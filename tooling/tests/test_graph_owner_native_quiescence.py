@@ -113,8 +113,17 @@ class SourceOnlyReleaseTests(unittest.TestCase):
                 self.lifecycle.children.append(SimpleNamespace(
                     label=label,terminal={"status":"SUCCESS"},stdout=stdout,stderr=stderr))
             if command=="providers.release_bound" and self.changed_store:
-                self.store.unlink()
+                # Preserve the original inode in this source-only attack fixture.
+                # Unlinking it before creating the replacement lets Linux
+                # immediately reuse the freed inode, making a changed Store
+                # look identical on st_dev/st_ino in hosted Python.
+                original = identity(self.store)
+                self.store.rename(self.root / "held-original-sqlite-inode")
                 self.store.write_bytes(b"replacement-synthetic-sqlite")
+                replacement = identity(self.store)
+                need((replacement["device"], replacement["inode"]) !=
+                     (original["device"], original["inode"]),
+                     "source-only-store-replacement-fixture-did-not-change-inode")
             return envelope
         self.obj.invoke=invoke
         self.obj.socket=self.root/"broker.sock"
