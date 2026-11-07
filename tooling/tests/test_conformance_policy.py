@@ -102,6 +102,31 @@ class ConformancePolicyTests(unittest.TestCase):
         self.assessment["contract_acceptance"]["status"] = "accepted"
         self.validate()
 
+    def test_unreviewed_complete_record_cannot_close_partially_reviewed_criterion(self):
+        # Completeness must belong to an execution in the sufficient review,
+        # not to an unreviewed second record cited by the assessment.
+        reviewed = self.index["records"][0]
+        complete = copy.deepcopy(reviewed)
+        complete["id"] = "unreviewed-complete"
+        reviewed["complete_criterion_ids"] = []
+        self.populate_sufficiency()
+        self.index["records"].append(complete)
+        self.assessment["technical_verification"]["evidence_ids"].append(complete["id"])
+        for criterion in self.assessment["criteria"]:
+            criterion["evidence_ids"].append(complete["id"])
+        self.assessment["contract_acceptance"]["status"] = "accepted"
+
+        with self.assertRaisesRegex(ValueError, "review of a complete execution"):
+            self.validate()
+
+        # The same original complete execution becomes usable after the
+        # sufficient review actually binds it and cites its observation.
+        for review in self.index["sufficiency_reviews"]:
+            review["evidence_record_sha256"][complete["id"]] = policy.canonical_digest(complete)
+            for obligation in review["obligations"]:
+                obligation["evidence_ids"].append(complete["id"])
+        self.validate()
+
     def test_missing_negative_criterion_cannot_promote_remaining_positive_criterion(self):
         self.assessment["criteria"].pop()
         with self.assertRaisesRegex(ValueError, "dropped"):
