@@ -499,6 +499,34 @@ test('R74 rejects missing or mismatched Native runtime Python ABI even if origin
   }
 });
 
+test('R74 single graph-flow review is pinned in the original index and cannot authorize another case', () => {
+  const good = fixture('r74-reviewed-graph-flow');
+  good.reviewed.execution.selected_case = 'graph-flow';
+  good.index.contract.execution.selected_case = 'graph-flow';
+  good.seal();
+  const observation = inspectProducerOriginalsCore(good.indexPath, good.reviewed, 'graph-flow');
+  assert.equal(observation.production_admission, false);
+  assert.equal(observation.synthetic_adapter_only, true);
+  assert.equal(observation.verified.execution.selected_case, 'graph-flow');
+  assert.throws(() => assertOriginalProducerAdmission(observation),
+    /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
+  assert.throws(() => inspectProducerOriginalsCore(good.indexPath, good.reviewed, 'graph-removal'),
+    /J1_REVIEWED_ONE_CASE_EXECUTION_MISMATCH/);
+
+  const altered = structuredClone(good.reviewed);
+  altered.execution.selected_case = 'graph-source-review';
+  assert.throws(() => inspectProducerOriginalsCore(good.indexPath, altered, 'graph-flow'),
+    /J1_REVIEWED_FIELDS_NOT_IN_INDEX/);
+
+  const foreign = fixture('r74-foreign-onecase');
+  foreign.reviewed.execution.selected_case = 'graph-removal';
+  foreign.index.contract.execution.selected_case = 'graph-removal';
+  foreign.seal();
+  // A forbidden case is denied even earlier by the immutable execution/callback join.
+  assert.throws(() => inspectProducerOriginalsCore(foreign.indexPath, foreign.reviewed, 'graph-removal'),
+    /J1_REVIEWED_ONE_CASE_EXECUTION_MISMATCH/);
+});
+
 test('R74 rejects prepared executable permissions, inode alias, bytes and source substitution', () => {
   for (const mutation of ['mode', 'hardlink', 'content', 'source-role']) {
     const f = fixture('private-input-' + mutation);

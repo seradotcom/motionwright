@@ -8447,6 +8447,7 @@ class GraphR74JoinTests(unittest.TestCase):
         import contextlib
         repo, root = Path("/diagnostic-repo"), Path("/diagnostic-root")
         index = {"source": {"run_id": "123", "sdk_root": "/sdk"}, "source_original": {},
+                 "contract": {"execution": {}},
                  "runtime": {"root": "/runtime"},
                  "binaries": {role: {"path": "/inert/" + role} for role in ("ordinary_service", "python3", "ffmpeg")}}
         clock = mock.Mock(unknown=False); clock.phase.return_value = contextlib.nullcontext()
@@ -8469,7 +8470,10 @@ class GraphR74JoinTests(unittest.TestCase):
             receipt = patch("graph_put_json")
             stack.enter_context(mock.patch.object(gate.Path, "is_file", return_value=True))
             stack.enter_context(mock.patch.object(gate.Path, "exists", return_value=False))
-            file_read = stack.enter_context(mock.patch.object(gate.Path, "read_bytes", return_value=b'{}'))
+            original_wait = {"index": {"path": "original"},
+                             "statuses": {case: {"context": case} for case, _, _ in gate.GRAPH_CASES}}
+            file_read = stack.enter_context(mock.patch.object(gate.Path, "read_bytes", side_effect=[
+                gate.json.dumps(original_wait).encode(), b'{}']))
             stack.enter_context(mock.patch.object(gate.shutil, "which", return_value="/inert/node"))
             stack.enter_context(mock.patch.dict(gate.os.environ, {gate.GRAPH_TOKEN_ENV: "SECRET_ENV_TOKEN"}))
             output = stack.enter_context(mock.patch("builtins.print"))
@@ -8493,7 +8497,7 @@ class GraphR74JoinTests(unittest.TestCase):
                 self.assertEqual(result, 1); self.assertEqual(public["status"], status)
                 self.assertEqual(public["failure_diagnostic"], {"stage": stage, "cause": cause, "exit_code": None})
                 self.assertEqual(execute.call_count, commands); details.assert_not_called()
-                self.assertEqual(read.call_count, 2); self.assertEqual(file_read.call_count, 1)
+                self.assertEqual(read.call_count, 2); self.assertEqual(file_read.call_count, 2)
                 self.assertNotIn("SECRET", gate.json.dumps(public))
 
     def test_graph_unknown_from_execute_keeps_original_exception_and_stops_readback(self):
