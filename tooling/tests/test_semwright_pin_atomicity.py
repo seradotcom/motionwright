@@ -112,6 +112,40 @@ class AtomicPinSourceTests(unittest.TestCase):
         result = pins.check_material(OLD, self.manifests, self.lock)
         self.assertEqual(result["direct_git_dependency_count"], 2)
 
+    def test_workspace_inheritance_requires_same_exact_git_pin(self):
+        original = self.manifests["crates/driver/Cargo.toml"]["dependencies"].pop(
+            "semwright-driver-sdk")
+        self.manifests["Cargo.toml"]["workspace"]["dependencies"][
+            "semwright-driver-sdk"] = original
+        self.manifests["crates/driver/Cargo.toml"]["dependencies"][
+            "semwright-driver-sdk"] = {"workspace": True}
+        valid = pins.check_material(OLD, self.manifests, self.lock)
+        self.assertEqual(valid["direct_git_dependency_count"], 2)
+        del self.manifests["Cargo.toml"]["workspace"]["dependencies"][
+            "semwright-driver-sdk"]
+        self.reject("cargo_workspace_unpinned")
+
+    def test_workspace_inheritance_cannot_steal_registry_or_foreign_git(self):
+        original = self.manifests["crates/driver/Cargo.toml"]["dependencies"].pop(
+            "semwright-driver-sdk")
+        self.manifests["Cargo.toml"]["workspace"]["dependencies"][
+            "semwright-driver-sdk"] = original
+        self.manifests["crates/driver/Cargo.toml"]["dependencies"][
+            "semwright-driver-sdk"] = {"workspace": True}
+        self.manifests["Cargo.toml"]["workspace"]["dependencies"][
+            "semwright-driver-sdk"] = {"version": "1.0"}
+        self.reject("cargo_workspace_unpinned")
+        self.manifests["Cargo.toml"]["workspace"]["dependencies"][
+            "semwright-driver-sdk"] = original
+        self.manifests["crates/driver/Cargo.toml"]["dependencies"][
+            "semwright-driver-sdk"]["path"] = "../foreign"
+        self.reject("cargo_direct_source")
+
+    def test_workspace_root_cannot_inherit_unpinned_semwright_entry(self):
+        self.manifests["Cargo.toml"]["workspace"]["dependencies"][
+            "semwright-native-sdk"] = {"workspace": True}
+        self.reject("cargo_workspace_unpinned")
+
     def test_direct_crate_missing_from_lock_is_rejected(self):
         self.lock["package"].pop()
         self.reject("direct_dependency_not_locked")

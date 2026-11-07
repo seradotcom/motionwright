@@ -65,7 +65,9 @@ def manifest_paths(workspace: dict) -> list[str]:
     return paths
 
 
-def manifest_pins(document: dict, pin: str, location: str) -> list[str]:
+def manifest_pins(
+    document: dict, pin: str, location: str, workspace_deps: dict
+) -> list[str]:
     """Walk every relevant Git dependency table, including target-specific ones."""
     found = []
 
@@ -90,9 +92,20 @@ def manifest_pins(document: dict, pin: str, location: str) -> list[str]:
                 require(semwright_package, "cargo_git_package")
                 found.append(location + ":" + package)
             elif (name.startswith("semwright-") or semwright_package) and "git" not in node:
-                # A workspace source inherits the already checked workspace
-                # pin. Registry/version and path tables must never bypass it.
+                # The workspace dependency table is the root authority. It
+                # must declare a real pinned Git source, never inherit itself.
+                if location == "Cargo.toml" and keys[:2] == ("workspace", "dependencies"):
+                    require(False, "cargo_workspace_unpinned")
                 require(node.get("workspace") is True, "cargo_direct_source")
+                require(not any(key in node for key in (
+                    "version", "path", "registry", "rev", "branch", "tag"
+                )), "cargo_direct_source")
+                original = workspace_deps.get(name)
+                require(type(original) is dict and original.get("git") == REPO
+                        and original.get("rev") == pin
+                        and original.get("package", name) == package
+                        and "branch" not in original and "tag" not in original,
+                        "cargo_workspace_unpinned")
             for key, value in node.items():
                 if type(value) in (dict, list):
                     visit(value, (*keys, str(key)))
@@ -116,9 +129,15 @@ def check_material(
             "workspace_manifest_missing")
     expected = manifest_paths(parsed_manifests["Cargo.toml"])
     require(set(parsed_manifests) == set(expected), "workspace_roster_mismatch")
+    workspace_deps = parsed_manifests["Cargo.toml"].get(
+        "workspace", {}
+    ).get("dependencies")
+    require(type(workspace_deps) is dict, "workspace_dependencies_missing")
     direct = []
     for location in expected:
-        direct += manifest_pins(parsed_manifests[location], pinned, location)
+        direct += manifest_pins(
+            parsed_manifests[location], pinned, location, workspace_deps
+        )
     require(bool(direct), "direct_dependencies_missing")
     packages = cargo_lock.get("package")
     require(type(packages) is list and bool(packages), "cargo_lock_packages_missing")
