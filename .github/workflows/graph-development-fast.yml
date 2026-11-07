@@ -18,6 +18,20 @@ on:
       - 'tooling/native_graph_browser_owner.py'
       - 'tooling/ci_canvas_service.py'
       - 'tooling/tests/test_ci_canvas_service.py'
+      - 'tooling/tests/test_ci_graph_r74_singlecase.py'
+      - 'tooling/tests/test_ci_graph_readonly_archive.py'
+      - 'tooling/native_graph_build_reuse.py'
+      - 'tooling/native_graph_build_transfer.py'
+      - 'tooling/tests/test_graph_build_reuse.py'
+      - 'tooling/tests/test_graph_build_transfer.py'
+      - 'tooling/tests/test_graph_continuation.py'
+      - '.github/workflows/studio-service-verification.yml'
+      - 'crates/storage/src/read_only.rs'
+      - 'crates/native/src/production/graph_authoring.rs'
+      - 'crates/native/examples/native-graph-review-session.rs'
+      - 'crates/service/examples/studio_review_session.rs'
+      - 'apps/studio/tests/support/nativeGraphCase.ts'
+      - 'apps/studio/tests/semantic-graph-service.spec.ts'
       - 'tooling/native_host_shared_state.py'
       - 'apps/studio/tests/support/graph-owner/**'
       - 'apps/studio/tooling/graph-owner/**'
@@ -91,7 +105,8 @@ jobs:
             -r tooling/requirements/mlt-g2-custody.txt
           "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
             tooling.tests.test_ci_graph_dev_native_startup \
-            tooling.tests.test_ci_graph_dev_native_budget -v \
+            tooling.tests.test_ci_graph_dev_native_budget \
+            tooling.tests.test_ci_graph_readonly_archive -v \
             2>&1 | tee knowledge/runtime/graph-fast-gn1-unittest.original.log
       - name: Verify original J1 Cargo reader and obsolete sandbox rejection on Linux
         shell: bash
