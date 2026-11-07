@@ -7923,7 +7923,7 @@ GRAPH_PHASES = {
     "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300,
 }
 GRAPH_REUSE_PHASES = {
-    "origin-key": 120, "origin-recipient-upload": 120, "origin-inputs": 900, "prepare": 1200,
+    "origin-key": 120, "origin-recipient-upload": 120, "origin-inputs": 1350, "prepare": 1200,
     "origin-build-intake": 300, "runtime": 1200,
     "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
     "discovery": 60, "cases": 780, "closure": 300, "archive": 600, "final-upload": 300,

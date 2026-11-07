@@ -1,4 +1,5 @@
 """Closed continuation controls; no Service, Native, browser or network calls."""
+import ast
 import copy
 import importlib.util
 import json
@@ -256,7 +257,7 @@ class GraphContinuationTests(unittest.TestCase):
         filename = "tools/graph-origin-recipient-upload-admission.original.json"
         graph.graph_public_tool_path(filename, index)
         graph.graph_public_tool_path("tools/graph-phase-origin-inputs.terminal.original.json", index)
-        self.assertEqual(sum(graph.graph_phase_plan(graph.GRAPH_FOUR_CONTINUATION).values()), 7980)
+        self.assertEqual(sum(graph.graph_phase_plan(graph.GRAPH_FOUR_CONTINUATION).values()), 8430)
         for value in (self.index, {"contract": {"execution": {}}}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 graph.graph_public_tool_path(filename, value)
@@ -265,6 +266,38 @@ class GraphContinuationTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 graph.graph_public_tool_path(name, index)
 
+
+
+class GraphInputWindowBudgetTests(unittest.TestCase):
+    def test_input_window_fits_original_job_and_preserves_future_reserves(self):
+        plan = graph.graph_phase_plan(graph.GRAPH_FOUR_CONTINUATION)
+        self.assertEqual(sum(plan.values()), 8430)
+        self.assertEqual(10800 - sum(plan.values()), 2370)
+        # Shared Native, runtime, review and custody reservations are unchanged.
+        for name in set(plan) & set(graph.GRAPH_PHASES):
+            with self.subTest(phase=name):
+                self.assertEqual(plan[name], graph.GRAPH_PHASES[name])
+        source = ast.parse((ROOT / "tooling/native_graph_build_transfer.py").read_text())
+        constants = {}
+        for node in source.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in {"POLL_SECONDS", "DOWNLOAD_SECONDS", "RECIPIENT_SECONDS"}):
+                constants[node.targets[0].id] = ast.literal_eval(node.value)
+        self.assertEqual(plan["origin-inputs"], constants["POLL_SECONDS"])
+        self.assertEqual(constants["DOWNLOAD_SECONDS"], 180)
+        self.assertEqual(constants["RECIPIENT_SECONDS"], 2190)
+        self.assertEqual(constants["POLL_SECONDS"] - constants["DOWNLOAD_SECONDS"] - 30, 1140)
+        workflow = (ROOT / ".github/workflows/studio-service-verification.yml").read_text()
+        branch = re.search(r'(?m)^          if continuation == "unstarted-after-42372165893":\n'
+                           r'              phases = (\{[^}]+\})', workflow)
+        self.assertIsNotNone(branch)
+        bootstrap = ast.literal_eval(branch.group(1))
+        self.assertEqual(bootstrap, plan)
+        step = workflow.split("name: Receive one encrypted original build capsule with read-only Actions permission", 1)[1]
+        minutes = int(re.search(r"timeout-minutes: ([0-9]+)", step).group(1))
+        self.assertEqual(minutes, (plan["origin-inputs"] + 59) // 60)
+        self.assertLess(minutes * 60 - plan["origin-inputs"], 60)
 
 if __name__ == "__main__":
     unittest.main()
