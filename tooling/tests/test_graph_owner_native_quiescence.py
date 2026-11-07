@@ -32,8 +32,9 @@ def ref(path):
     return {"path":str(path),"sha256":sha(b),"size_bytes":len(b)}
 
 def identity(path):
-    p=Path(path); stat=p.stat()
-    return {"path":str(p),"device":stat.st_dev,"inode":stat.st_ino,"sha256":sha(p.read_bytes())}
+    p=Path(path); stat=p.stat(); raw=p.read_bytes()
+    return {"path":str(p),"device":stat.st_dev,"inode":stat.st_ino,
+            "bytes":len(raw),"sha256":sha(raw)}
 
 class LeaseLedger:
     def __init__(self):self.failed=False;self.status="READY";self.seals=0
@@ -70,7 +71,7 @@ class SourceOnlyReleaseTests(unittest.TestCase):
                     lifecycle=self.lifecycle,paths={"clients":self.client_dir},
                     database=self.store,database_initial=identity(self.store),
                     clients=[{"status":"CLIENT_READY_NOT_ACCEPTANCE",
-                              "session":{"path":str(self.session)},
+                              "session":identity(self.session),
                               "actual_mount_observation":self.mount}])
 
         def source_check(_owner):

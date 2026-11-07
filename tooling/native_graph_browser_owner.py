@@ -2140,12 +2140,25 @@ def graph_quiesce_v6(self, *, request_id):
     session = Path(selected["session"]["path"])
     require(session.is_file() and session.is_relative_to(self.paths["clients"]),
             "provider-release-original-session-changed")
+    # Semwright's persistent CLI atomically rewrites the ticket on EVERY
+    # connection, even for an unchanged session. Verify the original ticket
+    # bytes, not its inode, before and after each CLI command. A stale ticket
+    # may otherwise be silently renewed as a DIFFERENT Broker session.
+    def require_original_session_ticket():
+        actual = file_identity(session)
+        original_ticket = selected["session"]
+        require(actual["path"] == original_ticket["path"]
+                and actual["bytes"] == original_ticket["bytes"]
+                and actual["sha256"] == original_ticket["sha256"],
+                "provider-release-original-session-reissued")
+    require_original_session_ticket()
     observe_source_before_close(self)
     # Obtain a fresh short-lived binding through the SAME real session and
     # SAME active lease. This does not grant a new client or replay an effect.
     fresh_envelope = self.invoke("native-provider-release-mount", self.socket, session,
         "providers.mount.observe",
         {"provider": original["provider"], "root": original["mount"]["root"]})
+    require_original_session_ticket()
     # Real CLI JSON is a typed {"ok": true, "data": {...}} envelope.
     # Unwrapping the whole response as a mount would throw KeyError before
     # the source-bound lease can ever be released.
@@ -2164,6 +2177,7 @@ def graph_quiesce_v6(self, *, request_id):
         "providers.release_bound",
         {"provider": fresh["provider"], "root": "motionwright-data",
          "binding_ref": fresh["binding_ref"]})
+    require_original_session_ticket()
     require(type(released_envelope) is dict and released_envelope.get("ok") is True
             and type(released_envelope.get("data")) is dict,
             "provider-release-bound-cli-envelope-not-authenticated")
