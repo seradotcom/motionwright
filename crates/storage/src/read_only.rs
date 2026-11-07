@@ -15,6 +15,7 @@ pub struct StoreReader {
     store: Store,
     database_identity: String,
     root: cas_retention::ManagedRoot,
+    catalog_original_stamp: String,
 }
 
 fn invalid(message: &str) -> StorageError {
@@ -170,6 +171,7 @@ impl StoreReader {
         }
         validate_existing_project_store_layout(&conn, version)?;
         let cas_store_id = cas_retention::load_store_id(&conn)?;
+        let catalog_original_stamp = root.catalog_original_stamp_read_only()?;
         let reader = Self {
             store: Store {
                 conn,
@@ -180,6 +182,7 @@ impl StoreReader {
             },
             database_identity,
             root,
+            catalog_original_stamp,
         };
         reader.validate()?;
         Ok(reader)
@@ -193,7 +196,10 @@ impl StoreReader {
         {
             return Err(invalid("original database identity changed"));
         }
-        self.root.validate_location_read_only()
+        if self.root.catalog_original_stamp_read_only()? != self.catalog_original_stamp {
+            return Err(invalid("original managed CAS catalog changed"));
+        }
+        Ok(())
     }
 
     fn observe<T>(&self, read: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
@@ -481,6 +487,82 @@ mod tests {
         assert!(reader.project(project.id).is_err());
         fs::write(&catalog_path, original_catalog).unwrap();
         assert_eq!(reader.project(project.id).unwrap(), project);
+    }
+
+    /// A valid checksum alone is not the same original CAS catalog. A
+    /// strict reader that retained the original SQLite snapshot must not
+    /// silently accept a changed, self-consistently rechecksummed control.
+    #[test]
+    fn reader_rejects_rechecksummed_catalog_drift_after_open() {
+        use sha2::Digest;
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("Original catalog snapshot")
+            .unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let control = cas_retention::test_metadata_root(&directory.path().join("blobs")).unwrap();
+        let catalog_path = control.join("catalog.json");
+        let original_bytes = fs::read(&catalog_path).unwrap();
+        let original_envelope: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
+        let original_sha = original_envelope["sha256"].as_str().unwrap();
+        let original_text = String::from_utf8(original_bytes.clone()).unwrap();
+        let original_payload = original_text
+            .split_once("\"catalog\":")
+            .unwrap()
+            .1
+            .strip_suffix('}')
+            .unwrap();
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(original_payload.as_bytes())),
+            original_sha,
+            "fixture must preserve real canonical Catalog checksum"
+        );
+
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.project(project.id).unwrap(), project);
+        let original_pins = "\"legacy_pins\":[]";
+        assert!(original_text.contains(original_pins));
+        let replacement = format!("\"legacy_pins\":[\"{}\"]", "a".repeat(64));
+        let forged = original_text.replacen(original_pins, &replacement, 1);
+        let payload = forged
+            .split_once("\"catalog\":")
+            .unwrap()
+            .1
+            .strip_suffix('}')
+            .unwrap();
+        let new_sha = hex::encode(sha2::Sha256::digest(payload.as_bytes()));
+        assert_ne!(new_sha, original_sha);
+        let authentic_format_forgery = forged.replacen(original_sha, &new_sha, 1);
+        let original_file = fs::metadata(&catalog_path).unwrap();
+        fs::write(&catalog_path, authentic_format_forgery).unwrap();
+        assert_eq!(
+            fs::metadata(&catalog_path).unwrap().ino(),
+            original_file.ino()
+        );
+        assert!(
+            reader.project(project.id).is_err(),
+            "same-inode rechecksummed catalog drift must not be accepted as original Store"
+        );
+        fs::write(&catalog_path, &original_bytes).unwrap();
+        assert_eq!(reader.project(project.id).unwrap(), project);
+
+        // A byte-identical catalog moved to another inode is not the
+        // physically original control acquired by the retained reader.
+        let new_control = control.join("catalog-replacement.original.json");
+        fs::write(&new_control, &original_bytes).unwrap();
+        fs::rename(&new_control, &catalog_path).unwrap();
+        assert_ne!(
+            fs::metadata(&catalog_path).unwrap().ino(),
+            original_file.ino()
+        );
+        assert!(
+            reader.project(project.id).is_err(),
+            "replacing a catalog with identical bytes must revoke original reader authority"
+        );
     }
 
     /// Invalid CAS authority must be rejected before a live writer changes

@@ -595,8 +595,33 @@ impl ManagedRoot {
 
     /// Validate the immutable bytes and root authority of an existing catalog.
     /// Callers opening only for observation never acquire a writable root gate.
+    /// Pin one physical, source-checked catalog for a strict read-only Store.
+    /// Recomputed internal SHA-256 values alone cannot establish that the
+    /// catalog is still the original file opened by this reader.
+    pub(super) fn catalog_original_stamp_read_only(&self) -> Result<String> {
+        self.validate_location_with_lock_access(false)?;
+        self.checked_catalog_with_stamp().map(|(_, stamp)| stamp)
+    }
+
     fn checked_catalog(&self) -> Result<Catalog> {
-        let envelope: CatalogEnvelope = read_control(&self.control.join("catalog.json"))?;
+        self.checked_catalog_with_stamp()
+            .map(|(catalog, _)| catalog)
+    }
+
+    fn checked_catalog_with_stamp(&self) -> Result<(Catalog, String)> {
+        let original = open_control(&self.control.join("catalog.json"), false, false, false)?;
+        let physical_identity = file_identity(&original)?;
+        if original.metadata()?.len() > MAX_CATALOG_BYTES {
+            return Err(invalid("control record exceeds its byte budget"));
+        }
+        let mut bytes = Vec::new();
+        original
+            .take(MAX_CATALOG_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_CATALOG_BYTES {
+            return Err(invalid("control record grew beyond its byte budget"));
+        }
+        let envelope: CatalogEnvelope = serde_json::from_slice(&bytes)?;
         let catalog = envelope.catalog;
         if envelope.sha256 != hash_bytes(&serde_json::to_vec(&catalog)?)
             || !((catalog.format_version == FORMAT_VERSION && catalog.derived.is_none())
@@ -623,7 +648,10 @@ impl ManagedRoot {
                 super::validate_digest(digest)?;
             }
         }
-        Ok(catalog)
+        Ok((
+            catalog,
+            format!("{physical_identity}:{}", hash_bytes(&bytes)),
+        ))
     }
 
     fn gate(&self) -> Result<RootGate> {
