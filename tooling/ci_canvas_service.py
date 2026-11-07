@@ -4728,6 +4728,12 @@ def require_observed_command(command):
 
 
 
+def graph_current_abi_environment_keys(label):
+    if label in {"graph-current-abi-" + role for role in GRAPH_RUST_ROLES}:
+        return ("LD_PRELOAD", "LD_AUDIT", "LD_DEBUG", "LD_LIBRARY_PATH")
+    return ()
+
+
 def graph_current_job_binding(original, original_ref):
     """Describe the already authenticated current clock; never relabel old receipts."""
     jobs = [row for row in original["jobs"]["jobs"]
@@ -4753,6 +4759,7 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
     if env.get("MOTIONWRIGHT_GRAPH_PRODUCER_RUN") == "1":
         observed_environment += ("CARGO_INCREMENTAL", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG",
             "SEMWRIGHT_CHECKOUT", "SEMWRIGHT_TEST_MANIM_RUNTIME", "SEMWRIGHT_TEST_PYTHON", "SEMWRIGHT_TEST_FFMPEG")
+        observed_environment += graph_current_abi_environment_keys(label)
     child_limits = None
     if maximum_hard_file_bytes is not None:
         require(label == "graph-cases" and maximum_file_bytes == 4 * 1024 * 1024
@@ -9339,7 +9346,8 @@ def graph_reused_builds(repo, sdk, producer, source, env, clock):
         require(str(loader) == "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "Graph current system loader path")
         loader_ref = graph_ref(loader, 4 * GRAPH_BYTES)
         loader_copy = graph_copy_original(loader, producer / "reuse-abi-loader.original", producer)
-        abi_env = dict(env)
+        abi_env, loader_environment = reuse.prepare_abi_environment(env,
+            str(Path(sys.executable).resolve(strict=True)), str(Path(sys.base_prefix).resolve(strict=True)))
         require(not any(abi_env.get(name) for name in ("LD_PRELOAD", "LD_AUDIT", "LD_DEBUG", "LD_LIBRARY_PATH")),
                 "Graph loader override environment")
         processes = {}
@@ -9350,9 +9358,9 @@ def graph_reused_builds(repo, sdk, producer, source, env, clock):
             require(stdout and b"not found" not in stdout and b"ld-linux-x86-64.so.2" in stdout,
                     "Graph current loader did not resolve the retained ELF")
             processes[role] = refs
-        abi = {"schema": "motionwright.graph.reused-elf-current-loader-observation/1", "current": source,
+        abi = {"schema": "motionwright.graph.reused-elf-current-loader-observation/2", "current": source,
             "binaries": binaries, "interpreter": next(iter(interpreter)), "loader": loader_ref,
-            "loader_retained": loader_copy, "processes": processes,
+            "loader_retained": loader_copy, "processes": processes, "loader_environment": loader_environment,
             "new_builds": 0, "native_calls": 0, "owner_authority": False}
         receipt["abi_observation"] = graph_put_json(producer / "reused-elf-current-abi.original.json", abi)
         receipt["temporary_inputs_released"] = release
