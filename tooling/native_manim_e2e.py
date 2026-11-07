@@ -895,9 +895,17 @@ def checked_static_originals(native, seeded, evidence):
     }
 
 
-def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None):
+def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None, resume_cycle=None):
     camera = args.scenario == "camera120"
-    editable = args.scenario == "editable-source-cycle"
+    resume = args.scenario == "editable-source-resume"
+    if resume != (resume_cycle is not None) or (resume and editable_cycle is not None):
+        raise ValueError("resumed phases require the explicit two-phase continuation owner")
+    if resume:
+        from native_manim_resume_transfer import hosted_context
+        if hosted_context() != resume_cycle["current"] or resume_cycle.get("resume_only") is not True:
+            raise ValueError("resumed phases require the admitted original input context")
+        editable_cycle = resume_cycle
+    editable = args.scenario in ("editable-source-cycle", "editable-source-resume")
     graph = args.scenario == "graph-source-cycle"
     lifecycle = editable or graph
     lifecycle_context = graph_cycle if graph else editable_cycle
@@ -1067,7 +1075,10 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     "independent_vendor_binary_authentication": False,
                 })
             elif editable:
-                from native_manim_editable_cycle import new_phase_inputs
+                if resume:
+                    from native_manim_resume_cycle import new_phase_inputs
+                else:
+                    from native_manim_editable_cycle import new_phase_inputs
                 prepared_editable = new_phase_inputs(
                     editable_cycle, evidence, database, paths["output"], env,
                     capture=captured_json, source_binary=MW_EXAMPLE,
@@ -1369,9 +1380,11 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                         runtime=MANIM_RUNTIME, tooling=ROOT / "tooling", launch=launch,
                     )
                 elif editable:
-                    from native_manim_editable_cycle import (
-                        EVIDENCE_NAME as EDITABLE_EVIDENCE_NAME, finish_phase,
-                    )
+                    from native_manim_editable_cycle import EVIDENCE_NAME as EDITABLE_EVIDENCE_NAME
+                    if resume:
+                        from native_manim_resume_cycle import finish_phase
+                    else:
+                        from native_manim_editable_cycle import finish_phase
                     request_id = (f"editable-{current['run_id']}-{current['run_attempt']}-"
                                   f"{GITHUB_SHA[:12]}-{editable_cycle['short_phase']}")
                     command = [str(MW_EXAMPLE),

@@ -40,11 +40,15 @@ STEPS = {
     "verify-sources": "work", "install-system": "work", "provision-runtime": "work",
     "sandbox-profile": "work", "build-sdk": "work", "build-product": "work",
     "rust-oracles": "work", "native-wrapper": "work",
+    "resume-recipient": "work", "resume-transfer": "work", "resume-python": "work",
+    "resume-resources": "work",
+    "resume-resource-probe": "work",
     "seal-outer": "seal", "public-safety": "seal", "verify-cycle": "seal",
 }
 ACTIONS = {
     "sdk-checkout": ("work", 120), "toolchain": ("work", 300),
     "rust-upload": ("work", 60),
+    "resume-cache": ("work", 120), "resume-recipient-upload": ("work", 60),
     "public-upload": ("upload", 60), "private-upload": ("upload", 120),
 }
 
@@ -177,9 +181,16 @@ def retain_wrapper_error(deadline, error, stage):
 
 def current_context():
     repo = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+    original_job = os.environ.get("GITHUB_JOB") == "native-manim-roundtrip"
+    resume_job = (os.environ.get("GITHUB_JOB") == "native-manim-resume"
+                  and os.environ.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
+                  and os.environ.get("GITHUB_REF") == "refs/heads/fix/native-production-causal-20261106-a4"
+                  and os.environ.get("MANIM_NATIVE_SCENARIO") == "editable-source-resume"
+                  and os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE") == "true"
+                  and os.environ.get("MW_MANIM_RESUME_EXPECTED_SHA") == os.environ.get("GITHUB_SHA"))
     require(os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and os.environ.get("GITHUB_JOB") == "native-manim-roundtrip"
+            and (original_job or resume_job)
             and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
             and sys.platform == "linux", "editable_outer_original_hosted_job_required")
     pin = json.loads(original(repo / "SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"]
@@ -464,9 +475,32 @@ def run_command(deadline, label, argv, cwd, *, popen=None, killpg=None):
             try:
                 raw = original(path, limit)
                 value = json.loads(raw)
+                expected_error_pid = process.pid if process is not None else None
+                if os.environ.get("GITHUB_JOB") == "native-manim-resume":
+                    resource_start = json.loads(original(deadline.root / "resources/native-wrapper/start.json"))
+                    require(resource_start.get("schema") == "motionwright.manim.resume.resource-child-start/1"
+                            and resource_start.get("context") == deadline.context
+                            and resource_start.get("origin") == deadline.binding()
+                            and resource_start.get("label") == "native-wrapper"
+                            and resource_start.get("guard_pid") == expected_error_pid
+                            and type(resource_start.get("pid")) is int and resource_start["pid"] > 0
+                            and resource_start.get("automatic_retry") is False,
+                            "resume_wrapper_original_resource_child_binding")
+                    entered = json.loads(original(deadline.root / "resources/native-wrapper/entered.json"))
+                    require(entered.get("schema") == "motionwright.manim.resume.original-cgroup-entry/1"
+                            and entered.get("context") == deadline.context
+                            and entered.get("origin") == deadline.binding()
+                            and entered.get("label") == "native-wrapper"
+                            and entered.get("guard_pid") == expected_error_pid
+                            and entered.get("controller_pid") == resource_start["pid"]
+                            and type(entered.get("pid")) is int and entered["pid"] > 0
+                            and entered.get("cgroup_self_membership_observed") is True
+                            and entered.get("privileges_dropped_before_exec") is True,
+                            "resume_wrapper_original_nonroot_exec_binding")
+                    expected_error_pid = entered["pid"]
                 require(value.get("schema") == "motionwright.manim.editable.wrapper-error/1"
                         and value.get("context") == deadline.context and value.get("origin") == deadline.binding()
-                        and process is not None and value.get("pid") == process.pid
+                        and process is not None and value.get("pid") == expected_error_pid
                         and value.get("automatic_retry") is False, "editable_wrapper_error_original_binding")
                 wrapper_error_type = value["error"]["original"]["type"]
                 require(type(wrapper_error_type) is str, "editable_wrapper_error_type")
@@ -524,7 +558,7 @@ def run_command(deadline, label, argv, cwd, *, popen=None, killpg=None):
     return receipt
 
 
-def workflow_step(deadline, label, script):
+def workflow_step(deadline, label, script, *, command_runner=None):
     raw = original(script, 1024 * 1024)
     marker = BODY_MARKER.encode()
     require(raw.count(marker) == 1, "editable_outer_workflow_body_marker")
@@ -534,9 +568,10 @@ def workflow_step(deadline, label, script):
     scripts.mkdir(mode=0o700, exist_ok=True)
     target = scripts / (label + ".sh")
     new_bytes(target, body)
-    return run_command(deadline, label,
-                       ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", str(target)],
-                       Path.cwd().resolve(strict=True))
+    runner = run_command if command_runner is None else command_runner
+    return runner(deadline, label,
+                  ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", str(target)],
+                  Path.cwd().resolve(strict=True))
 
 
 def admit_action(deadline, label):

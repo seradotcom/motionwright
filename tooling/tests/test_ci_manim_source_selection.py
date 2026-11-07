@@ -127,8 +127,8 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
                    for line in text.splitlines() if line.strip().startswith("RUST_CASES = ")]
         self.assertEqual(len(rosters), 2)
         self.assertEqual(rosters[0], rosters[1])
-        self.assertEqual(sum(len(names) for names in rosters[0].values()), 41)
-        self.assertEqual(len(rosters[0]["example24"]), 34)
+        self.assertEqual(sum(len(names) for names in rosters[0].values()), 44)
+        self.assertEqual(len(rosters[0]["example24"]), 37)
         source = (ROOT / "crates/native/examples/native_manim_editable/source_cycle.rs").read_text(encoding="utf-8")
         cases = {"editable_cycle::tests::" + name for name in re.findall(
             r"#\[test\]\s*fn (source_edit_commit_[a-z0-9_]+)", source)}
@@ -139,6 +139,10 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
             r"#\[test\]\s*fn (committed_edit_recovery_[a-z0-9_]+)", recovery)}
         self.assertEqual(len(recovery_cases), 5)
         self.assertTrue(recovery_cases.issubset(rosters[0]["example24"]))
+        resumed_cases = {"editable_cycle::recovery::tests::" + name for name in re.findall(
+            r"#\[test\]\s*fn (committed_source_resume_[a-z0-9_]+)", recovery)}
+        self.assertEqual(len(resumed_cases), 3)
+        self.assertTrue(resumed_cases.issubset(rosters[0]["example24"]))
         for names in rosters[0].values():
             self.assertEqual(names, sorted(set(names)))
 
@@ -203,12 +207,20 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         generated = (ROOT / "crates/manim-profile/src/editable_scene.py").read_text(encoding="utf-8")
         pin = '"manimpango==0.6.1"'
-        self.assertEqual(workflow.count(pin), 1)
-        self.assertIn('or manimpango.__version__ != "0.6.1"', workflow)
-        self.assertIn('for module in (manim, manimpango, av, av._core)', workflow)
+        self.assertEqual(workflow.count(pin), 2)
+        for job, following, native_step in (
+            ("native-manim-resume", "native-manim-roundtrip",
+             "Execute only edited and reopen-edited through the official Native Host"),
+            ("native-manim-roundtrip", "affected-rust-diagnostics",
+             "Realize application-owned scene through real Broker and Manim Driver Host"),
+        ):
+            body = workflow.split("  " + job + ":\n", 1)[1].split("  " + following + ":\n", 1)[0]
+            self.assertEqual(body.count(pin), 1, job)
+            self.assertIn('or manimpango.__version__ != "0.6.1"', body)
+            self.assertIn('for module in (manim, manimpango, av, av._core)', body)
+            self.assertLess(body.index(pin), body.index("      - name: " + native_step))
         self.assertIn('manimpango.__version__ != "0.6.1"', generated)
         self.assertIn('editable_runtime_identity_unsupported', generated)
-        self.assertLess(workflow.index(pin), workflow.index('      - name: Realize application-owned scene through real Broker and Manim Driver Host'))
 
 
 if __name__ == "__main__":

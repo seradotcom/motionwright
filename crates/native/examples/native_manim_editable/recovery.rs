@@ -136,15 +136,69 @@ pub(crate) fn recover_edit(
     intent_path: &Path,
     output: &Path,
 ) -> SourceResult<serde_json::Value> {
-    let current_export = output.with_extension("current.mwedit.zip");
     let before_cas = output.with_extension("before-cas");
     let current_cas = output.with_extension("current-cas");
+    recover_edit_with_roots(
+        before_database,
+        current_database,
+        original_bundle,
+        edited_bundle,
+        intent_path,
+        output,
+        (&before_cas, &current_cas),
+    )
+}
+
+/// Restore into fresh default CAS roots for a later, separately authorized Host
+/// owner. This only observes existing commits and captures original source bytes.
+pub(crate) fn recover_edit_default_cas(
+    before_database: &Path,
+    current_database: &Path,
+    original_bundle: &Path,
+    edited_bundle: &Path,
+    intent_path: &Path,
+    output: &Path,
+) -> SourceResult<serde_json::Value> {
+    let before_cas = before_database
+        .parent()
+        .ok_or("before Store parent absent")?
+        .join("blobs");
+    let current_cas = current_database
+        .parent()
+        .ok_or("current Store parent absent")?
+        .join("blobs");
+    recover_edit_with_roots(
+        before_database,
+        current_database,
+        original_bundle,
+        edited_bundle,
+        intent_path,
+        output,
+        (&before_cas, &current_cas),
+    )
+}
+
+fn recover_edit_with_roots(
+    before_database: &Path,
+    current_database: &Path,
+    original_bundle: &Path,
+    edited_bundle: &Path,
+    intent_path: &Path,
+    output: &Path,
+    cas_roots: (&Path, &Path),
+) -> SourceResult<serde_json::Value> {
+    let current_export = output.with_extension("current.mwedit.zip");
+    let (before_cas, current_cas) = cas_roots;
     if !output.is_absolute()
         || !output.parent().is_some_and(Path::is_dir)
         || output.try_exists()?
         || current_export.try_exists()?
         || before_cas.try_exists()?
         || current_cas.try_exists()?
+        || !before_cas.is_absolute()
+        || !current_cas.is_absolute()
+        || before_cas.starts_with(current_cas)
+        || current_cas.starts_with(before_cas)
         || fs::canonicalize(before_database)? == fs::canonicalize(current_database)?
     {
         return Err(
@@ -387,6 +441,175 @@ pub(crate) fn recover_edit(
     Ok(report)
 }
 
+/// Open both recovered Stores in a fresh process after one original Native phase.
+/// The recovered-source receipt has its own schema; an absent historical edit
+/// report is never reconstructed or used as Native authority.
+pub(crate) fn readback_recovered(
+    before_database: &Path,
+    current_database: &Path,
+    recovery_path: &Path,
+    native_path: &Path,
+    output_root: &Path,
+    output: &Path,
+) -> SourceResult<serde_json::Value> {
+    let recovery_raw = read(recovery_path, 4 * 1024 * 1024)?;
+    let recovery: serde_json::Value = serde_json::from_slice(&recovery_raw)?;
+    if recovery["schema"] != "motionwright.manim.editable.committed-source-recovery/1"
+        || recovery["status"] != "SOURCE_COMMITTED_RECOVERED"
+        || recovery["scope"] != "SOURCE_ONLY_NO_NATIVE_AUTHORITY"
+        || recovery["working_cas_provenance"] != "CAS_REHYDRATED_NEW_IDENTITY"
+        || recovery["original_cas_identity_claimed"] != false
+        || recovery["project_changes_applied"] != 0
+        || recovery["original_edit_report_recreated"] != false
+    {
+        return Err(
+            "committed source recovery receipt is not an original source-only observation".into(),
+        );
+    }
+    let intent: EditIntent = serde_json::from_value(recovery["original_intent"].clone())?;
+    if intent.schema != "motionwright.manim.editable.source-edit-intent/1"
+        || intent.automatic_retry
+        || intent.provider_dispatch_performed
+        || intent.request_id.is_empty()
+        || intent.request_id.len() > 64
+        || intent.request_id.chars().any(char::is_control)
+    {
+        return Err("committed source recovery original intent is invalid".into());
+    }
+    let before_service = StudioService::open(before_database)?;
+    let current_service = StudioService::open(current_database)?;
+    let before = before_service.project(intent.project_id)?;
+    let current = current_service.project(intent.project_id)?;
+    if intent.expected != RevisionStamp::from(&before)
+        || recovery["original_stamp"] != serde_json::to_value(RevisionStamp::from(&before))?
+        || recovery["current_stamp"] != serde_json::to_value(RevisionStamp::from(&current))?
+        || before.generation != current.generation
+        || current.revision != before.revision.checked_add(3).ok_or("revision overflow")?
+    {
+        return Err("committed source recovery Store stamps changed".into());
+    }
+    let before_events = events(&before_service, before.id)?;
+    let current_events = events(&current_service, current.id)?;
+    if current_events.len() != before_events.len() + 3
+        || serde_json::to_value(&current_events[..before_events.len()])?
+            != serde_json::to_value(&before_events)?
+    {
+        return Err("committed source recovery event prefix changed".into());
+    }
+    let changes = &current_events[before_events.len()..];
+    let original_id = source_asset(&changes[0], &intent.original_source_sha256)?;
+    let edited_id = source_asset(&changes[1], &intent.edited_source_sha256)?;
+    let (original_attached, first_binding) = recorded_change(
+        &current_service,
+        &before,
+        &changes[0],
+        &format!("{}:attach-original", intent.request_id),
+    )?;
+    let (attached, second_binding) = recorded_change(
+        &current_service,
+        &original_attached,
+        &changes[1],
+        &format!("{}:attach-edited", intent.request_id),
+    )?;
+    let (applied, third_binding) = recorded_change(
+        &current_service,
+        &attached,
+        &changes[2],
+        &format!("{}:apply-text", intent.request_id),
+    )?;
+    verify_source_edit_commit(&attached, &applied, &changes[2].change)?;
+    let bindings = serde_json::to_value([first_binding, second_binding, third_binding])?;
+    if applied != current
+        || bindings != recovery["committed_bindings"]
+        || recovery["original_source_asset_id"] != json!(original_id)
+        || recovery["edited_source_asset_id"] != json!(edited_id)
+        || recovery["attached_stamp"] != serde_json::to_value(RevisionStamp::from(&attached))?
+    {
+        return Err("committed source recovery verified binding changed".into());
+    }
+    let prior_receipts = receipts(&before_service, before.id)?;
+    let current_receipts = receipts(&current_service, current.id)?;
+    let old_rows = prior_receipts
+        .as_array()
+        .ok_or("original native receipt array absent")?;
+    let new_rows = current_receipts
+        .as_array()
+        .ok_or("current native receipt array absent")?;
+    if new_rows.len() < old_rows.len()
+        || old_rows
+            .iter()
+            .any(|old| new_rows.iter().filter(|row| *row == old).count() != 1)
+    {
+        return Err("original native receipts changed after resumed rendering".into());
+    }
+    for (id, expected_sha) in [
+        (original_id, &intent.original_source_sha256),
+        (edited_id, &intent.edited_source_sha256),
+    ] {
+        let asset = current
+            .assets
+            .iter()
+            .find(|asset| asset.id == id)
+            .ok_or("source Asset disappeared")?;
+        if asset.media_type != SOURCE_BUNDLE_MIME_V2
+            || asset.content_sha256.as_ref() != Some(expected_sha)
+        {
+            return Err("committed source Asset changed after resumed rendering".into());
+        }
+        let bytes = current_service
+            .store()
+            .lock()
+            .read_blob(expected_sha, profile::MAX_BUNDLE_BYTES as u64)?;
+        if hash(&bytes) != *expected_sha {
+            return Err("committed source CAS bytes changed after resumed rendering".into());
+        }
+        profile::inspect_source_bundle(&bytes)?;
+    }
+    let inspected = inspect_saved_manim_editable_source(
+        &current_service,
+        current.id,
+        &RevisionStamp::from(&current),
+        edited_id,
+    )?;
+    if serde_json::to_value(&inspected)? != recovery["current_source_inspection"] {
+        return Err("committed source inspection changed after resumed rendering".into());
+    }
+    let (bytes, package, native_link) =
+        native_source(&current_service, &current, native_path, output_root)?;
+    if hash(&bytes) != text(&recovery, "/current_export_sha256")?
+        || serde_json::to_value(&package.plan)? != recovery["prepared_plan"]
+        || current_service.project(current.id)? != current
+        || before_service.project(before.id)? != before
+        || serde_json::to_value(events(&current_service, current.id)?)?
+            != serde_json::to_value(&current_events)?
+        || serde_json::to_value(events(&before_service, before.id)?)?
+            != serde_json::to_value(&before_events)?
+        || receipts(&current_service, current.id)? != current_receipts
+        || receipts(&before_service, before.id)? != prior_receipts
+    {
+        return Err(
+            "resumed native source differs from its saved recovery or readback changed a Store"
+                .into(),
+        );
+    }
+    let report = json!({
+        "schema":"motionwright.manim.editable.recovered-source-readback/1",
+        "status":"SOURCE_READBACK_REQUIRES_NATIVE_CUSTODY", "project_id":current.id,
+        "canonical_stamp":RevisionStamp::from(&current), "recovery_receipt_sha256":hash(&recovery_raw),
+        "current_native":native_link, "source_sha256":hash(&bytes), "source_closure":package.closure,
+        "additional_native_receipts":new_rows.len() - old_rows.len(), "typed_commit_lookup_performed":true,
+        "committed_bindings":bindings, "fresh_sqlite_readback":true,
+        "source_assets_original_bytes_verified":true, "saved_export_matches_native_carrier":true,
+        "original_native_receipts_unchanged":true, "production_receipts_unchanged_during_readback":true,
+        "project_events_unchanged":true, "original_edit_report_recreated":false,
+        "project_changes_applied":0, "native_execution_performed":false,
+        "provider_dispatch_performed":false, "native_bundle_reopen_verified":false,
+        "human_acceptance":false, "automatic_retry":false,
+    });
+    new_report(output, &report)?;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,5 +834,175 @@ mod tests {
         assert!(recover(&fixture).is_err());
         assert_eq!(fs::read(&fixture.output).unwrap(), retained);
         assert!(!fixture.output.with_extension("current.mwedit.zip").exists());
+    }
+
+    fn default_working_stores(fixture: &Fixture) -> (PathBuf, PathBuf, PathBuf) {
+        let root = fixture._temporary.path().join("fresh-default-owner");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("before")).unwrap();
+        fs::create_dir(root.join("current")).unwrap();
+        let before = root.join("before/motionwright.sqlite3");
+        let current = root.join("current/motionwright.sqlite3");
+        fs::copy(&fixture.before, &before).unwrap();
+        fs::copy(&fixture.current, &current).unwrap();
+        (before, current, root.join("recovery.json"))
+    }
+
+    #[test]
+    fn committed_source_resume_default_cas_reopens_in_fresh_store() {
+        let fixture = fixture(true);
+        let expected = StudioService::open(&fixture.current)
+            .unwrap()
+            .project(fixture.id)
+            .unwrap();
+        let (before, current, output) = default_working_stores(&fixture);
+        // Both modes begin with identical physical SQLite bytes. Their fresh
+        // CAS roots must not leak path or anchor identity into either report
+        // serialization or the saved editable source export.
+        let explicit = recover_edit(
+            &fixture.before,
+            &fixture.current,
+            &fixture.original_bundle,
+            &fixture.edited_bundle,
+            &fixture.intent,
+            &fixture.output,
+        )
+        .unwrap();
+        let report = recover_edit_default_cas(
+            &before,
+            &current,
+            &fixture.original_bundle,
+            &fixture.edited_bundle,
+            &fixture.intent,
+            &output,
+        )
+        .unwrap();
+        assert_eq!(report, explicit);
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            fs::read(&fixture.output).unwrap()
+        );
+        assert_eq!(
+            fs::read(output.with_extension("current.mwedit.zip")).unwrap(),
+            fs::read(fixture.output.with_extension("current.mwedit.zip")).unwrap()
+        );
+        assert_eq!(report["working_cas_blobs_published"], 4);
+        assert_eq!(report["project_changes_applied"], 0);
+        let reopened = StudioService::open(&current).unwrap();
+        assert_eq!(reopened.project(fixture.id).unwrap(), expected);
+        let edited_id = serde_json::from_value(report["edited_source_asset_id"].clone()).unwrap();
+        let inspected = inspect_saved_manim_editable_source(
+            &reopened,
+            fixture.id,
+            &RevisionStamp::from(&expected),
+            edited_id,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(inspected).unwrap(),
+            report["current_source_inspection"]
+        );
+        assert_eq!(
+            reopened
+                .store()
+                .lock()
+                .read_blob(EDITABLE_FONT_SHA256, profile::MAX_BUNDLE_BYTES as u64)
+                .unwrap(),
+            EDITABLE_FONT
+        );
+        let reopened_before = StudioService::open(&before).unwrap();
+        assert_eq!(
+            reopened_before
+                .store()
+                .lock()
+                .read_blob(EDITABLE_FONT_SHA256, profile::MAX_BUNDLE_BYTES as u64)
+                .unwrap(),
+            EDITABLE_FONT
+        );
+        assert_eq!(
+            events(&reopened, fixture.id).unwrap().len(),
+            events(&reopened_before, fixture.id).unwrap().len() + 3
+        );
+    }
+
+    #[test]
+    fn committed_source_resume_existing_or_shared_root_is_not_reinitialized() {
+        let fixture = fixture(true);
+        let original = fs::read(&fixture.current).unwrap();
+        assert!(
+            recover_edit_default_cas(
+                &fixture.before,
+                &fixture.current,
+                &fixture.original_bundle,
+                &fixture.edited_bundle,
+                &fixture.intent,
+                &fixture.output
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&fixture.current).unwrap(), original);
+        assert!(!fixture.output.exists());
+        let shared = fixture._temporary.path().join("shared-default-root");
+        fs::create_dir(&shared).unwrap();
+        let before = shared.join("before.sqlite3");
+        let current = shared.join("current.sqlite3");
+        fs::copy(&fixture.before, &before).unwrap();
+        fs::copy(&fixture.current, &current).unwrap();
+        assert!(
+            recover_edit_default_cas(
+                &before,
+                &current,
+                &fixture.original_bundle,
+                &fixture.edited_bundle,
+                &fixture.intent,
+                &fixture.output
+            )
+            .is_err()
+        );
+        assert!(!shared.join("blobs").exists());
+        assert_eq!(fs::read(&current).unwrap(), original);
+        assert!(!fixture.output.exists());
+    }
+
+    #[test]
+    fn committed_source_resume_readback_rejects_changed_committed_receipt() {
+        let fixture = fixture(true);
+        let (before, current, output) = default_working_stores(&fixture);
+        let mut changed = recover_edit_default_cas(
+            &before,
+            &current,
+            &fixture.original_bundle,
+            &fixture.edited_bundle,
+            &fixture.intent,
+            &output,
+        )
+        .unwrap();
+        changed["committed_bindings"][0] = serde_json::Value::Null;
+        let changed_path = output.with_extension("changed.json");
+        new_report(&changed_path, &changed).unwrap();
+        let report = output.with_extension("readback.json");
+        let before_events = serde_json::to_value(
+            events(&StudioService::open(&current).unwrap(), fixture.id).unwrap(),
+        )
+        .unwrap();
+        let error = readback_recovered(
+            &before,
+            &current,
+            &changed_path,
+            &output.with_extension("native-not-created.json"),
+            output.parent().unwrap(),
+            &report,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("verified binding changed"));
+        assert!(!report.exists());
+        assert_eq!(
+            serde_json::to_value(
+                events(&StudioService::open(&current).unwrap(), fixture.id).unwrap()
+            )
+            .unwrap(),
+            before_events
+        );
     }
 }
