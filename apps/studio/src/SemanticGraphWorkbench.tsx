@@ -597,6 +597,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       {admission && <p role="status">{admission}</p>}
       {occupancyIssue && <p role="status">{occupancyIssue}</p>}
       <label className="production-field"><span>Graph Deliverable</span><select aria-label="Graph Deliverable" value={raw.variant_profile_ref} onChange={e => edit(next => { next.variant_profile_ref = e.target.value; }, "/variant_profile_ref")}>
+        {!profile && <option value={raw.variant_profile_ref}>Unavailable Deliverable · {raw.variant_profile_ref}</option>}
         {props.project.deliverables.map(item => <option key={item.id} value={item.id}>{item.name} · {item.width} × {item.height}</option>)}
       </select></label>
       <p>Authored frame: {raw.reference_frame.width} × {raw.reference_frame.height}. Geometry is retained when the Deliverable changes.</p>

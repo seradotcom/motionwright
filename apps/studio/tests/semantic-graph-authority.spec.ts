@@ -1075,3 +1075,38 @@ test("Graph playhead preview uses selected saved source fractional frame rate", 
     .toHaveAttribute("data-graph-active-interval", "true");
   expect(await requestCount(page)).toBe(1);
 });
+
+test("Graph retains an unavailable Deliverable after a peer deletes its source profile", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const original = await page.evaluate(async () => {
+    const p = window.__GRAPH_AUTHORITY__.project();
+    const source = p.production_design!.semantic_graphs![0];
+    const active = { ...structuredClone(p.deliverables[0]), id: crypto.randomUUID() };
+    p.deliverables.unshift(active); p.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(p);
+    return { graphId: source.id, removedProfile: source.variant_profile_ref, activeProfile: active.id };
+  });
+  await field(page, "Graph source").selectOption(original.graphId);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(original.removedProfile);
+  await field(page, "Vertex 1 label").fill("Unsent concept retained after Deliverable deletion");
+  const copy = await currentGraphCopy(page);
+  await page.evaluate(async id => {
+    const p = window.__GRAPH_AUTHORITY__.project();
+    p.deliverables = p.deliverables.filter(item => item.id !== id);
+    p.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(p);
+  }, original.removedProfile);
+  await expect(field(page, "Graph source")).toHaveValue(original.graphId);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(original.removedProfile);
+  await expect(field(page, "Graph Deliverable").locator("option:checked")).toContainText("Unavailable Deliverable");
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Unsent concept retained after Deliverable deletion");
+  await expect(button(page, "Save Graph changes")).toBeDisabled();
+  expect(await page.evaluate(key => localStorage.getItem(key), copy.copyKey)).toBe(copy.raw);
+  expect(await requestCount(page)).toBe(1);
+  await page.reload();
+  await field(page, "Graph source").selectOption(original.graphId);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(original.removedProfile);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Unsent concept retained after Deliverable deletion");
+  expect(await page.evaluate(key => localStorage.getItem(key), copy.copyKey)).toBe(copy.raw);
+  expect(await requestCount(page)).toBe(1);
+});
