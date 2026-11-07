@@ -20,6 +20,7 @@ on:
       - 'tooling/tests/test_ci_canvas_service.py'
       - 'tooling/tests/test_ci_graph_r74_singlecase.py'
       - 'tooling/tests/test_graph_owner_native_quiescence.py'
+      - 'tooling/tests/test_graph_owner_session_ticket_custody.py'
       - 'tooling/tests/test_graph_owner_control_replay.py'
       - 'tooling/tests/test_ci_graph_readonly_archive.py'
       - 'tooling/native_graph_build_reuse.py'
@@ -111,6 +112,7 @@ jobs:
             tooling.tests.test_ci_graph_dev_native_budget \
             tooling.tests.test_ci_graph_r74_singlecase \
             tooling.tests.test_graph_owner_native_quiescence \
+            tooling.tests.test_graph_owner_session_ticket_custody \
             tooling.tests.test_ci_graph_readonly_archive -v \
             2>&1 | tee knowledge/runtime/graph-fast-gn1-unittest.original.log
           # Run original owner-control replay checks only when their source

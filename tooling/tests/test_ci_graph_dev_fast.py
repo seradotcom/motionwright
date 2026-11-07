@@ -293,6 +293,20 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         for blocked in ("graph produce", "graph wait", "graph run"):
             self.assertNotIn(blocked, workflow)
 
+    def test_original_broker_session_ticket_oracles_are_selected_in_graph_fast(self):
+        """Ticket renewal checks must run whenever the source or test changes."""
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertIn("      - 'tooling/tests/test_graph_owner_session_ticket_custody.py'",
+                      trigger)
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        self.assertIn("tooling.tests.test_graph_owner_session_ticket_custody", gn1)
+        self.assertIn("tooling.tests.test_graph_owner_native_quiescence", gn1)
+        self.assertIn("set -euo pipefail", gn1)
+
     def test_graph_control_replay_originals_are_selected_in_source_fast_lane(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
