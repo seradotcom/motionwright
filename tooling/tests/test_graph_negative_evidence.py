@@ -36,7 +36,7 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="gn-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name).resolve()
+        self.root = Path(self.temp.name).resolve() / "v"
         (self.root / "e/graph-producer").mkdir(parents=True)
         (self.root / "tools").mkdir()
         self.cases = [("graph-case-" + str(i), "g" + str(i)) for i in range(1, 7)]
@@ -194,18 +194,22 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
         with self.assertRaises(Exception):
             seal.decrypt_snapshot(envelope[:-1] + bytes([envelope[-1] ^ 1]), self.key)
 
-    def entrypoint_fixture(self, *, bad_digest=False):
+    def entrypoint_fixture(self, *, bad_digest=False, bad_namespace=False):
         # Only CI layout/authenticated deadline construction are fixture inputs;
         # the actual pinned loader, file reader, crypto, clock window and sink run.
+        repo = self.root.parent / "g"
+        (repo / "tooling").mkdir(parents=True)
         files = {}
         for name in ("ci_canvas_service", "mlt_official_runtime_intake", "ci_private_evidence", "native_graph_negative_evidence"):
             relative = "tooling/" + name + ".py"; raw = (ROOT / relative).read_bytes()
+            (repo / relative).write_bytes(raw)
             files[relative] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
         if bad_digest:
             files["tooling/native_graph_negative_evidence.py"]["sha256"] = "0" * 64
         index = {"schema": controller.GRAPH_INDEX_SCHEMA,
-            "source": {"sha": "a" * 40, "sdk_sha": "b" * 40, "run_id": "42", "run_attempt": 1, "repository_root": str(ROOT)},
-            "contract": {"source_files": files, "execution": {"budget": controller.GRAPH_BUDGET}}}
+            "source": {"sha": "a" * 40, "sdk_sha": "b" * 40, "run_id": "42", "run_attempt": 1, "repository_root": str(repo)},
+            "contract": {"source_files": files, "execution": {"budget": controller.GRAPH_BUDGET,
+                "cases_root": str(self.root / ("e/gc42-1" if bad_namespace else "e/graph-cases"))}}}
         index_path = self.put("e/graph-producer/producer-index.original.json", seal.json_bytes(index))
         index_ref = controller.graph_ref(index_path)
         self.put("e/receipt.json", seal.json_bytes({"status": "UNKNOWN", "formal_acceptance": False,
@@ -220,9 +224,15 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
         output = self.root / "github-output"
         environment = {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "42", "GITHUB_OUTPUT": str(output)}
         modules = {name: sys.modules.get(name) for name in ("mlt_official_runtime_intake", "ci_private_evidence", "native_graph_negative_evidence")}
-        with patch.object(controller, "graph_layout", return_value=(ROOT, self.root)), \
-                patch.object(controller, "GraphOriginalClock", return_value=clock), patch.dict(os.environ, environment):
-            result = controller.graph_negative_originals(ROOT, self.recipient)
+        with patch.dict(sys.modules):
+            # A fresh python -I invocation has no imported custody modules.
+            # Retain the guard: copied source bytes must supply every module.
+            for name in modules:
+                sys.modules.pop(name, None)
+            with patch.object(controller, "graph_layout", return_value=(repo, self.root)), \
+                    patch.object(controller, "GraphOriginalClock", return_value=clock), patch.dict(os.environ, environment):
+                result = controller.graph_negative_originals(repo, self.recipient)
+            self.assertTrue(all(name not in sys.modules for name in modules))
         self.assertTrue(all(sys.modules.get(name) is old for name, old in modules.items()))
         return result, output
 
@@ -237,6 +247,12 @@ class GraphNegativeEvidenceTests(unittest.TestCase):
     def test_changed_collector_source_denies_before_attempt_and_upload_flag(self):
         with self.assertRaises(ValueError):
             self.entrypoint_fixture(bad_digest=True)
+        self.assertFalse((self.root / "graph-negative").exists())
+        self.assertFalse((self.root / "github-output").exists())
+
+    def test_actual_controller_rejects_case_namespace_before_attempt_and_upload_flag(self):
+        with self.assertRaisesRegex(ValueError, "Graph original case namespace"):
+            self.entrypoint_fixture(bad_namespace=True)
         self.assertFalse((self.root / "graph-negative").exists())
         self.assertFalse((self.root / "github-output").exists())
 
