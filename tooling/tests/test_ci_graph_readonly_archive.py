@@ -243,9 +243,40 @@ class InertOriginals:
         }
         if self.mode == "release_owner_event_changed":
             provider_event["receipt_sha256"] = "0" * 64
-        responses = [] if self.mode == "release_owner_event_missing" else [provider_event]
+        connection = self.put("graph-flow/owner/clients/" + client_id + ".connection.json",
+                              {"schema": "motionwright-semwright-connection/1",
+                               "session_file": session["path"]})
+        ready_event = {"event": "READY", "schema": "motionwright.graph-browser-owner/6",
+                       "case_id": "graph-flow", "source_sha": self.source["sha"],
+                       "owner_pid": owner_pid, "private_root": str(owner_root),
+                       "native_authoring_approved": False}
+        client_event = {"event": "CLIENT", "id": "client-request-one",
+                        "client_id": client_id,
+                        "child_env": {"MOTIONWRIGHT_GRAPH_CONNECTION": connection["path"]},
+                        "connection_receipt": connection["path"]}
+        if self.mode == "parent_ready_wrong_source":
+            ready_event["source_sha"] = "0" * 40
+        if self.mode == "parent_ready_wrong_private_root":
+            ready_event["private_root"] = str(self.root / "other-source")
+        if self.mode == "parent_client_wrong_id":
+            client_event["id"] = "foreign-request"
+        if self.mode == "parent_client_wrong_connection":
+            client_event["connection_receipt"] = str(self.root / "other-source" / "client.json")
+        responses = []
+        if self.mode != "parent_missing_ready":
+            responses.append(ready_event)
+        if self.mode == "parent_duplicate_ready":
+            responses.append(ready_event)
+        if self.mode != "parent_missing_client":
+            responses.append(client_event)
+        if self.mode == "parent_duplicate_client":
+            responses.append(client_event)
         if self.mode == "release_owner_event_duplicate":
             responses.append(provider_event)
+        if self.mode != "release_owner_event_missing":
+            responses.append(provider_event)
+        if self.mode == "parent_client_after_release":
+            responses.append(client_event)
         responses.append({"event": "FINAL_RECEIPT", "id": "close-graph-flow"})
         if self.mode == "release_parent_error_before_final":
             responses.insert(1, {"event": "ERROR", "code": "NATIVE_ORIGINAL_FAILED",
@@ -302,8 +333,10 @@ class InertOriginals:
                       "database_initial": self.put("writer/store-first.json", self.physical),
                       "database_final": self.put("writer/store-last.json", self.physical),
                       "owner_close": self.owner_complete,
-                      "client_roster": [{"client_id": self.native_client_id,
+                      "client_roster": [{"id": "client-request-one",
+                                         "client_id": self.native_client_id,
                                          "status": "READY",
+                                         "connection_original": connection,
                                          "session_original": self.native_client_session}]}
         intent = {"schema": "motionwright.graph.same-original-store-reopen/1", "source": self.source,
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
@@ -446,6 +479,16 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                      "release_parent_stderr_no_eof",
                      "release_parent_stderr_digest_changed",
                      "release_parent_stderr_foreign_path"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_parent_ready_and_clients_match_original_request_roster(self):
+        for mode in ("parent_missing_ready", "parent_duplicate_ready",
+                     "parent_ready_wrong_source", "parent_ready_wrong_private_root",
+                     "parent_missing_client", "parent_duplicate_client",
+                     "parent_client_wrong_id", "parent_client_wrong_connection",
+                     "parent_client_after_release"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

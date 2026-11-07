@@ -9587,6 +9587,48 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
                                      "FINAL_RECEIPT") for message in messages)
             and messages[-1].get("event") == "FINAL_RECEIPT",
             "Graph original Native owner emitted ERROR, unknown or post-final event")
+    # The Python owner actually starts with one source-bound READY and emits
+    # exactly one CLIENT for every admitted original request, before release.
+    # An archive containing only a plausible release/final pair is incomplete;
+    # the parent Node protocol would have rejected duplicate/unsolicited replies.
+    expected_ready = {
+        "event": "READY", "schema": "motionwright.graph-browser-owner/6",
+        "case_id": case_root.name, "source_sha": source["sha"],
+        "owner_pid": proof["owner_pid"], "private_root": str(owner_root),
+        "native_authoring_approved": False,
+    }
+    clients = final.get("client_roster")
+    require(messages[0] == expected_ready
+            and type(clients) is list and clients
+            and len(messages) == len(clients) + 3,
+            "Graph original owner READY/client/final event roster incomplete")
+    seen_clients, seen_requests = set(), set()
+    for index_in_roster, client in enumerate(clients):
+        require(type(client) is dict and client.get("status") == "READY",
+                "Graph original parent client was not admitted")
+        client_id, request_id = client.get("client_id"), client.get("id")
+        require(type(client_id) is str and 1 <= len(client_id) <= 160
+                and "/" not in client_id and "\\" not in client_id
+                and client_id not in (".", "..")
+                and type(request_id) is str and bool(request_id)
+                and client_id not in seen_clients and request_id not in seen_requests,
+                "Graph parent Native client ID or request replay")
+        seen_clients.add(client_id)
+        seen_requests.add(request_id)
+        connection_path = owner_root / "clients" / (client_id + ".connection.json")
+        connection_ref = client.get("connection_original")
+        require(type(connection_ref) is dict
+                and connection_ref == graph_ref(connection_path),
+                "Graph parent client connection is not the original owned case")
+        event = {
+            "event": "CLIENT", "id": request_id, "client_id": client_id,
+            "child_env": {"MOTIONWRIGHT_GRAPH_CONNECTION": str(connection_path)},
+            "connection_receipt": str(connection_path),
+        }
+        require(messages[index_in_roster + 1] == event,
+                "Graph original parent CLIENT differs from admitted Native roster")
+    require(messages[len(clients) + 1].get("event") == "PROVIDER_RELEASED",
+            "Graph owner provider release must follow all admitted Native clients")
     matches = [(i, msg) for i, msg in enumerate(messages)
                if msg.get("event") == "PROVIDER_RELEASED"]
     final_rows = [i for i, msg in enumerate(messages)

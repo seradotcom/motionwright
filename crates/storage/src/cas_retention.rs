@@ -568,7 +568,10 @@ impl ManagedRoot {
     }
 
     pub(super) fn validate_location_read_only(&self) -> Result<()> {
-        self.validate_location_with_lock_access(false)
+        self.validate_location_with_lock_access(false)?;
+        // No writable gate or catalog repair is permitted for a StoreReader.
+        // Validate the existing control snapshot and checksum on each read.
+        self.checked_catalog().map(|_| ())
     }
 
     fn validate_location_with_lock_access(&self, writable_lock: bool) -> Result<()> {
@@ -590,14 +593,9 @@ impl ManagedRoot {
         self.control.join("locks").join(format!("{id}.lock"))
     }
 
-    fn gate(&self) -> Result<RootGate> {
-        self.validate_location()?;
-        let lock = open_control(&self.control.join("root.lock"), false, true, false)?;
-        if file_identity(&lock)? != self.lock_id {
-            return Err(invalid("root gate was replaced"));
-        }
-        lock.lock()?;
-        self.validate_location()?;
+    /// Validate the immutable bytes and root authority of an existing catalog.
+    /// Callers opening only for observation never acquire a writable root gate.
+    fn checked_catalog(&self) -> Result<Catalog> {
         let envelope: CatalogEnvelope = read_control(&self.control.join("catalog.json"))?;
         let catalog = envelope.catalog;
         if envelope.sha256 != hash_bytes(&serde_json::to_vec(&catalog)?)
@@ -625,6 +623,18 @@ impl ManagedRoot {
                 super::validate_digest(digest)?;
             }
         }
+        Ok(catalog)
+    }
+
+    fn gate(&self) -> Result<RootGate> {
+        self.validate_location()?;
+        let lock = open_control(&self.control.join("root.lock"), false, true, false)?;
+        if file_identity(&lock)? != self.lock_id {
+            return Err(invalid("root gate was replaced"));
+        }
+        lock.lock()?;
+        self.validate_location()?;
+        let catalog = self.checked_catalog()?;
         Ok(RootGate {
             root: self.clone(),
             catalog,

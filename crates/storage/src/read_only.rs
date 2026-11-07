@@ -442,6 +442,43 @@ mod tests {
         assert!(reader.database_file_identity().is_err());
     }
 
+    /// A retained managed CAS root is not trustworthy if its catalog is
+    /// corrupted, even when the SQLite Project rows and root anchor survive.
+    #[test]
+    fn reader_rejects_corrupted_managed_cas_catalog_at_open_and_observe() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer.create_named_project("Catalog integrity").unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let control = cas_retention::test_metadata_root(&directory.path().join("blobs")).unwrap();
+        let catalog_path = control.join("catalog.json");
+        let original_catalog = fs::read(&catalog_path).unwrap();
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.project(project.id).unwrap(), project);
+
+        // A well-formed Catalog can still have a forged checksum. Parsing
+        // its envelope alone must not grant original StoreReader authority.
+        let mut changed_checksum: serde_json::Value =
+            serde_json::from_slice(&original_catalog).unwrap();
+        changed_checksum["sha256"] = serde_json::Value::String("0".repeat(64));
+        fs::write(
+            &catalog_path,
+            serde_json::to_vec(&changed_checksum).unwrap(),
+        )
+        .unwrap();
+        assert!(StoreReader::open(&database).is_err());
+        assert!(reader.project(project.id).is_err());
+
+        // Also reject an envelope with a structurally corrupt catalog.
+        fs::write(&catalog_path, br#"{"sha256":"forged","catalog":{}}"#).unwrap();
+        assert!(StoreReader::open(&database).is_err());
+        assert!(reader.project(project.id).is_err());
+        fs::write(&catalog_path, original_catalog).unwrap();
+        assert_eq!(reader.project(project.id).unwrap(), project);
+    }
+
     #[test]
     fn reader_rejects_older_schema_without_migration() {
         let directory = tempfile::tempdir().unwrap();
