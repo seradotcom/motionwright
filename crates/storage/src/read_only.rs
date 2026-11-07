@@ -111,6 +111,10 @@ impl Store {
         }
         let root = cas_retention::discover(&self.blob_root)?
             .ok_or_else(|| invalid("writer CAS root is not managed"))?;
+        // Validate the existing managed catalog *before* checkpointing or
+        // switching the original SQLite file out of WAL. A failed CAS
+        // preflight must not leave a nominally failed handoff in DELETE mode.
+        root.validate_location_read_only()?;
         let busy: i64 = self
             .conn
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
@@ -476,6 +480,48 @@ mod tests {
         assert!(StoreReader::open(&database).is_err());
         assert!(reader.project(project.id).is_err());
         fs::write(&catalog_path, original_catalog).unwrap();
+        assert_eq!(reader.project(project.id).unwrap(), project);
+    }
+
+    /// Invalid CAS authority must be rejected before a live writer changes
+    /// WAL journal mode or checkpoints the original SQLite file.
+    #[test]
+    fn corrupt_managed_catalog_blocks_writer_before_wal_handoff() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("CAS handoff preflight")
+            .unwrap();
+        let control = cas_retention::test_metadata_root(&directory.path().join("blobs")).unwrap();
+        let catalog_path = control.join("catalog.json");
+        let original_catalog = fs::read(&catalog_path).unwrap();
+        let original_mode: String = writer
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(original_mode, "wal");
+
+        // Retain a syntactically valid catalog with a forged checksum: the
+        // reader's source of authority is corrupt, not the SQLite Project.
+        let mut forged: serde_json::Value = serde_json::from_slice(&original_catalog).unwrap();
+        forged["sha256"] = serde_json::Value::String("0".repeat(64));
+        fs::write(&catalog_path, serde_json::to_vec(&forged).unwrap()).unwrap();
+        assert!(writer.prepare_read_only_handoff().is_err());
+        let after_failure: String = writer
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after_failure, "wal",
+            "rejected CAS handoff changed the live writer journal mode"
+        );
+        assert_eq!(writer.load_project(project.id).unwrap(), project);
+
+        fs::write(&catalog_path, original_catalog).unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let reader = StoreReader::open(&database).unwrap();
         assert_eq!(reader.project(project.id).unwrap(), project);
     }
 
