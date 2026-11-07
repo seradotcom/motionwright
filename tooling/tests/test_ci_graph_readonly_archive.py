@@ -70,6 +70,8 @@ class InertOriginals:
         writer_results = [response(preseal_request, self.held),
                           response(handoff_request, {"read_only_handoff": True, "journal_mode": "delete"}),
                           response(identity_request, self.held)]
+        if self.mode == "writer_success_with_error_field":
+            writer_results[1]["error"] = "Hidden unauthorized failure alongside success."
         if self.mode == "writer_raw_missing_handoff":
             original_writer_results = [writer_results[0], writer_results[2]]
         elif self.mode == "writer_raw_reordered":
@@ -445,6 +447,8 @@ class InertOriginals:
             reader_results.append(response(request, result))
         if self.mode == "reader_raw_duplicate":
             reader_results.append(reader_results[0])
+        if self.mode == "reader_success_with_error_field":
+            reader_results[1]["error"] = "Hidden unauthorized failure alongside success."
         reader_raw = b"".join(json.dumps(x, separators=(",", ":")).encode() + b"\n"
                               for x in reader_results)
         reader_stdout = self.put("reader/stdout.original", reader_raw)
@@ -517,6 +521,16 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
         # responses are NOT evidence for this same physical Store.
         with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
             self.check("writer_raw_extra_unmatched")
+
+    def test_original_successful_service_response_cannot_carry_hidden_error_fields(self):
+        # The exact compiled StudioService Session emits ONLY id/ok/result on
+        # success, not a success envelope with a hidden error side channel.
+        # Both pre-handoff author writer and second independent reader must
+        # match that original wire protocol before source custody is credited.
+        for mode in ("writer_success_with_error_field", "reader_success_with_error_field"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
 
     def test_provider_only_release_requires_original_same_session_broker_lease(self):
         for mode in ("release_missing", "release_old_quiescence_key",

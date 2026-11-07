@@ -9754,9 +9754,13 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
         require(raw.endswith(b"\n") and len(raw) <= GRAPH_BYTES,
                 "Graph writer/reader original stdout EOF")
         rows = [graph_json(line) for line in raw.split(b"\n")[:-1]]
-        require(rows and all(type(row) is dict and type(row.get("id")) is str
-                and type(row.get("ok")) is bool for row in rows),
-                "Graph original JSONL responses")
+        # The actual compiled studio_review_session::Session emits exactly
+        # {id, ok, result} on success. A claimed successful source read with
+        # hidden error/extra protocol fields is not its original wire reply.
+        require(rows and all(type(row) is dict and set(row) == {"id", "ok", "result"}
+                and type(row["id"]) is str and bool(row["id"])
+                and row["ok"] is True for row in rows),
+                "Graph original successful JSONL response wire schema")
         ids = [row["id"] for row in rows]
         require(len(ids) == len(set(ids)), "Graph original response replay")
         return {row["id"]: row for row in rows}
