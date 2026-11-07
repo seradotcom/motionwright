@@ -67,9 +67,15 @@ def checked_recovery(value, report, export):
     return selected
 
 
-def admitted_originals(current):
-    from native_manim_resume_runtime import check as check_runtime
-    from native_manim_resume_focals import check_source_gate
+def admitted_originals(current, *, frozen=False):
+    from native_manim_resume_transfer import RECOVERY_SCENARIO, RESUME_SCENARIO, selected_scenario
+    require(selected_scenario() == (RECOVERY_SCENARIO if frozen else RESUME_SCENARIO),
+            "resume_input_runtime_mode_must_be_explicit")
+    if frozen:
+        from native_manim_recovery_gate import check_source_gate, check_runtime
+    else:
+        from native_manim_resume_runtime import check as check_runtime
+        from native_manim_resume_focals import check_source_gate
     gate, _ = check_source_gate(current)
     require(check_runtime(current) == gate["runtime"], "resume_input_runtime_identity_changed")
     scope = paths(current)["inputs"]

@@ -24,7 +24,7 @@ import zipfile
 
 import ci_private_evidence as engine
 import native_manim_resume_transfer as transfer
-from native_manim_resume_focals import check_source_gate
+from native_manim_resume_transfer import selected_source_gate as check_source_gate
 
 PUBLIC_FILES = {"recipient.json", "source-gate.json", "source-gate.stdout.log",
                 "source-gate.stderr.log", "repository-preflight.original.json"}
@@ -170,6 +170,7 @@ def checked_run(value, current):
 
 
 def prepare(args):
+    os.environ["MANIM_NATIVE_SCENARIO"] = transfer.selected_scenario(args.scenario)
     source, run_id = args.source_sha, args.run_id
     current = {"source_sha": source, "semwright_sha": transfer.SDK, "run_id": run_id, "run_attempt": "1"}
     engine.validate_context(current)
@@ -192,7 +193,10 @@ def prepare(args):
     selected = [row for row in jobs.get("jobs", []) if row.get("name") == transfer.JOB]
     require(len(selected) == 1 and selected[0].get("status") == "in_progress", "resume_host_live_job_required")
     steps = selected[0].get("steps", [])
-    for name in ("Build the existing Manim provider and example", "Require eight real committed-source recovery regressions"):
+    source_step = ("Require eight recovery and two reference Rust regressions"
+                   if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO else
+                   "Require eight real committed-source recovery regressions")
+    for name in ("Build the existing Manim provider and example", source_step):
         match = [step for step in steps if step.get("name") == name]
         require(len(match) == 1 and match[0].get("conclusion") == "success", "resume_host_source_gate_step_required")
     artifacts = engine.strict(get(root, "workflow-artifacts", args.gh,
@@ -217,9 +221,10 @@ def prepare(args):
     public = root / "public-recipient-originals"
     public.mkdir(mode=0o700)
     total = 0
+    expected_public = {"recipient.json", "repository-preflight.original.json"} | set(transfer.selected_public_gate_files())
     with zipfile.ZipFile(io.BytesIO(archive)) as package:
         rows = package.infolist()
-        require(len(rows) == len(PUBLIC_FILES) and {row.filename for row in rows} == PUBLIC_FILES
+        require(len(rows) == len(expected_public) and {row.filename for row in rows} == expected_public
                 and not package.comment, "resume_host_public_artifact_closed_roster")
         for row in rows:
             require(not row.is_dir() and not row.flag_bits & 1 and 0 <= row.file_size <= 4 * 1024 * 1024
@@ -230,7 +235,19 @@ def prepare(args):
             require(total <= 4 * 1024 * 1024, "resume_host_public_artifact_expansion_budget")
             with (public / row.filename).open("xb") as stream:
                 stream.write(raw)
-    _, gate_sha = check_source_gate(current, public)
+    gate, gate_sha = check_source_gate(current, public)
+    if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
+        from native_manim_recovery_gate import artifact_name
+        retained = gate["runtime"]["retained_artifact"]
+        runtime_rows = [row for row in artifacts.get("artifacts", [])
+                        if row.get("id") == retained["artifact_id"]]
+        require(len(runtime_rows) == 1 and runtime_rows[0].get("name") == artifact_name(current)
+                and runtime_rows[0].get("expired") is False
+                and runtime_rows[0].get("size_in_bytes") == retained["artifact_zip_bytes"]
+                and runtime_rows[0].get("digest") == "sha256:" + retained["artifact_zip_sha256"]
+                and runtime_rows[0].get("workflow_run", {}).get("id") == int(run_id)
+                and runtime_rows[0].get("workflow_run", {}).get("head_sha") == source,
+                "recovery_runtime_host_observed_exact_retained_artifact")
     record = engine.strict(bounded(public / "recipient.json", 16384))
     recipient = transfer.validate_recipient(record, current, actor_id, gate_sha)
     repo_preflight = engine.strict(bounded(public / "repository-preflight.original.json", 128 * 1024))
@@ -266,6 +283,10 @@ def prepare(args):
             "host_permissions": permission, "original_source_hashes_unchanged": True,
             "historical_private_key_accessed": False, "project_changes_applied": 0,
             "native_effect_invocations": 0, "automatic_retry": False}
+    if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
+        plan.update(scenario=transfer.RECOVERY_SCENARIO, authorized_new_native_effects=4,
+                    additional_reference_renders=2, equivalence_to_old_runtime=False,
+                    runtime_binding=gate["runtime"])
     plan_sha = save(root, "publish-plan.json", plan)
     print(json.dumps({"status": "ENCRYPTED_INPUT_PREPARED_NO_POST", "handoff": str(root),
                       "plan_sha256": plan_sha, "ciphertext": plan["ciphertext"], "context": current}))
@@ -279,10 +300,16 @@ def publish(args):
     raw = bounded(root / "publish-plan.json", 65536)
     require(sha(raw) == args.plan_sha256, "resume_host_reviewed_plan_digest_required")
     plan = engine.strict(raw)
+    os.environ["MANIM_NATIVE_SCENARIO"] = transfer.selected_scenario(plan.get("scenario", transfer.RESUME_SCENARIO))
+    if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
+        require(plan.get("authorized_new_native_effects") == 4 and plan.get("additional_reference_renders") == 2
+                and plan.get("equivalence_to_old_runtime") is False, "recovery_runtime_reviewed_native_scope")
     current = plan["context"]
     engine.validate_context(current)
     public = root / "public-recipient-originals"
-    _, gate_sha = check_source_gate(current, public)
+    gate, gate_sha = check_source_gate(current, public)
+    if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
+        require(plan.get("runtime_binding") == gate["runtime"], "recovery_runtime_reviewed_binding_changed")
     record = engine.strict(bounded(public / "recipient.json", 16384))
     transfer.validate_recipient(record, current, plan["actor_id"], gate_sha)
     require(sha(bounded(public / "recipient.json", 16384)) == plan["public_recipient_sha256"],
@@ -349,6 +376,8 @@ def main():
     prepare_parser.add_argument("--source-sha", required=True)
     prepare_parser.add_argument("--run-id", required=True)
     prepare_parser.add_argument("--originals", type=Path, required=True)
+    prepare_parser.add_argument("--scenario", choices=(transfer.RESUME_SCENARIO, transfer.RECOVERY_SCENARIO),
+                                default=transfer.RESUME_SCENARIO)
     publish_parser = sub.add_parser("publish")
     publish_parser.add_argument("--handoff", type=Path, required=True)
     publish_parser.add_argument("--plan-sha256", required=True)

@@ -127,8 +127,8 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
                    for line in text.splitlines() if line.strip().startswith("RUST_CASES = ")]
         self.assertEqual(len(rosters), 2)
         self.assertEqual(rosters[0], rosters[1])
-        self.assertEqual(sum(len(names) for names in rosters[0].values()), 44)
-        self.assertEqual(len(rosters[0]["example24"]), 37)
+        self.assertEqual(sum(len(names) for names in rosters[0].values()), 46)
+        self.assertEqual(len(rosters[0]["example24"]), 39)
         source = (ROOT / "crates/native/examples/native_manim_editable/source_cycle.rs").read_text(encoding="utf-8")
         cases = {"editable_cycle::tests::" + name for name in re.findall(
             r"#\[test\]\s*fn (source_edit_commit_[a-z0-9_]+)", source)}
@@ -143,6 +143,11 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
             r"#\[test\]\s*fn (committed_source_resume_[a-z0-9_]+)", recovery)}
         self.assertEqual(len(resumed_cases), 3)
         self.assertTrue(resumed_cases.issubset(rosters[0]["example24"]))
+        reference = (ROOT / "crates/native/examples/native_manim_editable/reference.rs").read_text(encoding="utf-8")
+        reference_cases = {"editable_cycle::reference::tests::" + name for name in re.findall(
+            r"#\[test\]\s*fn (retained_reference_[a-z0-9_]+)", reference)}
+        self.assertEqual(len(reference_cases), 2)
+        self.assertTrue(reference_cases.issubset(rosters[0]["example24"]))
         for names in rosters[0].values():
             self.assertEqual(names, sorted(set(names)))
 

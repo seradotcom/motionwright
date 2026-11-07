@@ -30,6 +30,8 @@ import ci_private_evidence as engine
 REPOSITORY = "seradotcom/motionwright"
 REF = "refs/heads/fix/native-production-causal-20261106-a4"
 JOB = "native-manim-resume"
+RESUME_SCENARIO = "editable-source-resume"
+RECOVERY_SCENARIO = "recovery-runtime-cycle"
 SDK = "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199"
 ORIGIN = {"source_sha": "b3eaccd0695e91aefb504e3bd23e0e74fdaedfcb",
           "semwright_sha": SDK, "run_id": "42340139012", "run_attempt": "1"}
@@ -56,6 +58,29 @@ POLL_SECONDS = 300
 require, sha = engine.require, engine.sha
 
 
+def selected_scenario(value=None):
+    value = os.environ.get("MANIM_NATIVE_SCENARIO", RESUME_SCENARIO) if value is None else value
+    require(value in (RESUME_SCENARIO, RECOVERY_SCENARIO), "resume_closed_scenario_selection")
+    return value
+
+
+def selected_source_gate(current, root=None):
+    if selected_scenario() == RECOVERY_SCENARIO:
+        from native_manim_recovery_gate import check_source_gate
+    else:
+        from native_manim_resume_focals import check_source_gate
+    return check_source_gate(current, root)
+
+
+def selected_public_gate_files():
+    original = ("source-gate.json", "source-gate.stdout.log", "source-gate.stderr.log")
+    if selected_scenario() == RESUME_SCENARIO:
+        return original
+    return original + ("reference-gate.stdout.log", "reference-gate.stderr.log",
+                       "runtime-receipt.json", "runtime-wheel-lock.json",
+                       "runtime-installed-files.json", "runtime-artifact.original.json")
+
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -73,7 +98,7 @@ def hosted_context():
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
             and os.environ.get("GITHUB_REF") == REF
             and os.environ.get("GITHUB_JOB") == JOB
-            and os.environ.get("MANIM_NATIVE_SCENARIO") == "editable-source-resume"
+            and os.environ.get("MANIM_NATIVE_SCENARIO") in (RESUME_SCENARIO, RECOVERY_SCENARIO)
             and os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE") == "true"
             and os.environ.get("MW_MANIM_RESUME_EXPECTED_SHA") == current["source_sha"]
             and current["semwright_sha"] == SDK and current["run_attempt"] == "1"
@@ -98,7 +123,7 @@ def manifest(current, recipient_sha256):
     engine.validate_context(current)
     require(current["semwright_sha"] == SDK and current["run_attempt"] == "1"
             and engine.HEX.fullmatch(recipient_sha256), "resume_manifest_context")
-    return {"schema": "motionwright.manim.resume.input-manifest/1",
+    value = {"schema": "motionwright.manim.resume.input-manifest/1",
             "origin": ORIGIN, "target": current, "recipient_sha256": recipient_sha256,
             "files": {name: {"bytes": size, "sha256": digest}
                       for name, (size, digest) in sorted(INPUTS.items())},
@@ -108,6 +133,13 @@ def manifest(current, recipient_sha256):
             "project_changes_authorized": 0, "remaining_native_effect_invocations": 2,
             "old_native_results_revalidated_by_transfer": False,
             "automatic_retry": False}
+    if selected_scenario() == RECOVERY_SCENARIO:
+        value.update(schema="motionwright.manim.recovery-runtime.input-manifest/1",
+                     scenario=RECOVERY_SCENARIO,
+                     remaining_phases=["original-reference", "reopen-original-reference", "edited", "reopen-edited"],
+                     remaining_native_effect_invocations=4,
+                     additional_reference_renders=2, equivalence_to_old_runtime=False)
+    return value
 
 
 def recipient_record(recipient, current, actor_id, issued, expires, source_gate_sha256):
@@ -118,7 +150,7 @@ def recipient_record(recipient, current, actor_id, issued, expires, source_gate_
             "resume_actual_source_gate_digest")
     require(timedelta(0) < timestamp(expires) - timestamp(issued) <= timedelta(seconds=2190),
             "resume_key_lifetime")
-    return {"schema": "motionwright.manim.resume.recipient/1", "context": current,
+    value = {"schema": "motionwright.manim.resume.recipient/1", "context": current,
             "repository": REPOSITORY, "ref": REF, "job": JOB, "actor_id": actor_id,
             "recipient": recipient, "issued_at": issued, "expires_at": expires,
             "source_gate_sha256": source_gate_sha256,
@@ -128,6 +160,11 @@ def recipient_record(recipient, current, actor_id, issued, expires, source_gate_
             "input_contract_sha256": sha(engine.json_bytes(manifest(current, recipient["sha256"]))),
             "private_key_retained_only_on_this_runner": True,
             "historical_private_key_requested": False, "automatic_retry": False}
+    if selected_scenario() == RECOVERY_SCENARIO:
+        value.update(schema="motionwright.manim.recovery-runtime.recipient/1",
+                     scenario=RECOVERY_SCENARIO, native_effect_invocations=4,
+                     equivalence_to_old_runtime=False)
+    return value
 
 
 def validate_recipient(value, current, actor_id, source_gate_sha256, *, clock=None):
@@ -187,10 +224,10 @@ def inspect_plaintext(raw, current, recipient_sha256):
 
 def create_recipient():
     from native_manim_editable_outer import load_deadline
-    from native_manim_resume_focals import check_source_gate, folder
+    from native_manim_resume_focals import folder
     current, deadline = hosted_context(), load_deadline()
     deadline.admit_work()
-    _, gate_sha = check_source_gate(current)
+    _, gate_sha = selected_source_gate(current)
     repository_raw = github_get("/repos/" + REPOSITORY, token=os.environ["GH_TOKEN"], limit=128 * 1024)
     repository = engine.strict(repository_raw)
     require(repository.get("full_name") == REPOSITORY and repository.get("permissions", {}).get("push") is True,
@@ -212,8 +249,8 @@ def create_recipient():
     record = recipient_record(recipient, current, os.environ["GITHUB_ACTOR_ID"],
                               instant.isoformat(), expires.isoformat(), gate_sha)
     engine.new_json(scopes["public"] / "recipient.json", record)
-    for name in ("source-gate.json", "source-gate.stdout.log", "source-gate.stderr.log"):
-        engine.new_bytes(scopes["public"] / name, engine.regular(folder() / name, 4 * 1024 * 1024)[0])
+    for name in selected_public_gate_files():
+        engine.new_bytes(scopes["public"] / name, engine.regular(folder() / name, 2 * 1024 * 1024)[0])
     engine.new_bytes(scopes["public"] / "repository-preflight.original.json", repository_raw)
     print(json.dumps({"status": "PUBLIC_RECIPIENT_READY", "context": current,
                       "recipient_sha256": recipient["sha256"], "private_key_exposed": False}))
@@ -340,12 +377,11 @@ def find_draft(raw, public, current):
 
 def receive_inputs():
     from native_manim_editable_outer import load_deadline
-    from native_manim_resume_focals import check_source_gate
     current, deadline = hosted_context(), load_deadline()
     deadline.admit_work()
     scopes = paths(current)
     public = engine.strict(engine.regular(scopes["public"] / "recipient.json", 16384)[0])
-    _, gate_sha = check_source_gate(current)
+    _, gate_sha = selected_source_gate(current)
     recipient = validate_recipient(public, current, os.environ["GITHUB_ACTOR_ID"], gate_sha)
     key_path = scopes["key"] / "recipient.pkcs8.pem"
     info = key_path.lstat()

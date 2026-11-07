@@ -895,8 +895,18 @@ def checked_static_originals(native, seeded, evidence):
     }
 
 
-def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None, resume_cycle=None):
+def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None, resume_cycle=None,
+                recovery_cycle=None):
     camera = args.scenario == "camera120"
+    recovery = args.scenario == "recovery-runtime-cycle"
+    if recovery != (recovery_cycle is not None) or (recovery and any(
+            value is not None for value in (editable_cycle, resume_cycle, source_cycle, graph_cycle))):
+        raise ValueError("recovery runtime phases require their explicit four-phase owner")
+    if recovery:
+        from native_manim_resume_transfer import hosted_context
+        if hosted_context() != recovery_cycle["current"] or recovery_cycle.get("recovery_runtime_only") is not True:
+            raise ValueError("recovery runtime phases require the admitted retained source context")
+        editable_cycle = recovery_cycle
     resume = args.scenario == "editable-source-resume"
     if resume != (resume_cycle is not None) or (resume and editable_cycle is not None):
         raise ValueError("resumed phases require the explicit two-phase continuation owner")
@@ -905,7 +915,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
         if hosted_context() != resume_cycle["current"] or resume_cycle.get("resume_only") is not True:
             raise ValueError("resumed phases require the admitted original input context")
         editable_cycle = resume_cycle
-    editable = args.scenario in ("editable-source-cycle", "editable-source-resume")
+    editable = args.scenario in ("editable-source-cycle", "editable-source-resume", "recovery-runtime-cycle")
     graph = args.scenario == "graph-source-cycle"
     lifecycle = editable or graph
     lifecycle_context = graph_cycle if graph else editable_cycle
@@ -980,7 +990,13 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                 "output",
                 "motionwright-data",
             ]:
-                if lifecycle and name in ("motionwright-data", "bin"):
+                if recovery and name == "motionwright-data":
+                    path = root / ("reference-data" if recovery_cycle["phase"] in
+                                   ("original-reference", "reopen-original-reference") else "motionwright-data")
+                    if (not path.is_dir() or path.is_symlink() or path.resolve(strict=True) != path
+                            or recovery_cycle["database"] != path / "motionwright.sqlite3"):
+                        raise ValueError("recovery runtime phase changed its rehydrated saved Store")
+                elif lifecycle and name in ("motionwright-data", "bin"):
                     path = root / name
                     if lifecycle_context["history"]:
                         if (not path.is_dir() or path.is_symlink()
@@ -1075,7 +1091,9 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     "independent_vendor_binary_authentication": False,
                 })
             elif editable:
-                if resume:
+                if recovery:
+                    from native_manim_recovery_cycle import new_phase_inputs
+                elif resume:
                     from native_manim_resume_cycle import new_phase_inputs
                 else:
                     from native_manim_editable_cycle import new_phase_inputs
@@ -1381,7 +1399,9 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     )
                 elif editable:
                     from native_manim_editable_cycle import EVIDENCE_NAME as EDITABLE_EVIDENCE_NAME
-                    if resume:
+                    if recovery:
+                        from native_manim_recovery_cycle import finish_phase
+                    elif resume:
                         from native_manim_resume_cycle import finish_phase
                     else:
                         from native_manim_editable_cycle import finish_phase

@@ -42,13 +42,14 @@ STEPS = {
     "rust-oracles": "work", "native-wrapper": "work",
     "resume-recipient": "work", "resume-transfer": "work", "resume-python": "work",
     "resume-resources": "work",
-    "resume-resource-probe": "work",
+    "resume-resource-probe": "work", "reference-oracles": "work", "runtime-artifact-readback": "work",
     "seal-outer": "seal", "public-safety": "seal", "verify-cycle": "seal",
 }
 ACTIONS = {
     "sdk-checkout": ("work", 120), "toolchain": ("work", 300),
     "rust-upload": ("work", 60),
     "resume-cache": ("work", 120), "resume-recipient-upload": ("work", 60),
+    "runtime-upload": ("work", 120),
     "public-upload": ("upload", 60), "private-upload": ("upload", 120),
 }
 
@@ -185,7 +186,7 @@ def current_context():
     resume_job = (os.environ.get("GITHUB_JOB") == "native-manim-resume"
                   and os.environ.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
                   and os.environ.get("GITHUB_REF") == "refs/heads/fix/native-production-causal-20261106-a4"
-                  and os.environ.get("MANIM_NATIVE_SCENARIO") == "editable-source-resume"
+                  and os.environ.get("MANIM_NATIVE_SCENARIO") in ("editable-source-resume", "recovery-runtime-cycle")
                   and os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE") == "true"
                   and os.environ.get("MW_MANIM_RESUME_EXPECTED_SHA") == os.environ.get("GITHUB_SHA"))
     require(os.environ.get("GITHUB_ACTIONS") == "true"

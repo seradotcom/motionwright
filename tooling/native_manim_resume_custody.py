@@ -10,10 +10,15 @@ import signal
 import ci_private_evidence as engine
 import native_manim_editable_outer as outer
 from native_manim_camera_evidence import read, read_object, require, sha
-from native_manim_resume_transfer import ORIGIN, SOURCE_RECOVERY, hosted_context, paths
+from native_manim_resume_transfer import (
+    ORIGIN, SOURCE_RECOVERY, RECOVERY_SCENARIO, hosted_context, paths, selected_scenario,
+)
 
 
 def scopes(current):
+    if selected_scenario() == RECOVERY_SCENARIO:
+        from native_manim_recovery_cycle import scopes as recovery_scopes
+        return recovery_scopes(current)
     temporary = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
     suffix = current["source_sha"]
     return (temporary / ("manim-resume-private-" + suffix),
@@ -26,7 +31,8 @@ def wrapper_argv(current):
     temporary = root.parent
     repo = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
     command = [str(temporary / "manim-custody-venv/bin/python"), "-B",
-            str(repo / "tooling/native_manim_resume_cycle.py"),
+            str(repo / ("tooling/native_manim_recovery_cycle.py" if selected_scenario() == RECOVERY_SCENARIO
+                        else "tooling/native_manim_resume_cycle.py")),
             "--evidence-root", str(root), "--sealed-cycle-root", str(sealed)]
     from native_manim_resume_resources import expanded_argv
     return expanded_argv("native-wrapper", command)
@@ -38,7 +44,7 @@ def outer_inputs(current):
     launch = control / "work/native-wrapper"
     runtime = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True) / "verification/native-manim-e2e"
     provision = root.parent / "manim-runtime-provision"
-    return {"resume-intent": root / "resume-intent.json", "resume-result": root / "resume-result.json",
+    result = {"resume-intent": root / "resume-intent.json", "resume-result": root / "resume-result.json",
             "edited-custody": root / "edited/editable-custody.json",
             "reopen-edited-custody": root / "reopen-edited/editable-custody.json",
             "wrapper-stdout": root.parent / "manim-editable-cycle-wrapper.log",
@@ -52,6 +58,18 @@ def outer_inputs(current):
             "runtime-install-stderr": provision / "install.stderr.log",
             "wrapper-requested": launch / "launch-requested.json", "wrapper-start": launch / "start.json",
             "wrapper-terminal": launch / "terminal.json"}
+    if selected_scenario() == RECOVERY_SCENARIO:
+        work = root.parent / "manim-frozen-runtime"
+        for name in ("runtime-match", "runtime-pip-install", "runtime-install-stdout", "runtime-install-stderr"):
+            result.pop(name)
+        result.update({"resume-intent": root / "cycle-intent.json", "resume-result": root / "cycle-result.json",
+            "original-reference-custody": root / "original-reference/editable-custody.json",
+            "reopen-original-reference-custody": root / "reopen-original-reference/editable-custody.json",
+            "runtime-freeze-receipt": work / "receipt.json",
+            "runtime-wheel-lock": work / "wheel-lock.json",
+            "runtime-installed-files": work / "installed-files.json",
+            "runtime-artifact": root.parent / "manim-resume-source-gate/runtime-artifact.original.json"})
+    return result
 
 
 def verify_launcher(current):
@@ -114,7 +132,8 @@ def seal_outer(current):
     root, sealed, _ = scopes(current)
     recipient = output_recipient()
     sealed.mkdir(mode=0o700, exist_ok=True)
-    stage = root.parent / ("manim-resume-outer-" + current["source_sha"])
+    stage = root.parent / (("manim-recovery-outer-" if selected_scenario() == RECOVERY_SCENARIO
+                            else "manim-resume-outer-") + current["source_sha"])
     stage.mkdir(mode=0o700, exist_ok=False)
     roots, selected, failed = {}, {}, []
     for label, source in outer_inputs(current).items():
@@ -138,7 +157,10 @@ def seal_outer(current):
                   "outer-resources": outer.control_root(root.parent, current) / "resources",
                   "resume-inputs": transfer["inputs"], "resume-recipient": transfer["public"],
                   "resume-source-gate": root.parent / "manim-resume-source-gate"})
-    from native_manim_resume_cycle import owned_root
+    if selected_scenario() == RECOVERY_SCENARIO:
+        from native_manim_recovery_cycle import owned_root
+    else:
+        from native_manim_resume_cycle import owned_root
     if failed and owned_root(current).exists():
         # A cgroup OOM may kill the inner Python custodian. Retain its known
         # owner exactly once in this outer failure envelope, without retry.
@@ -149,7 +171,9 @@ def seal_outer(current):
     plaintext, complete = engine.gather_snapshot(roots, preserve_partial=True)
     envelope = engine.encrypt_snapshot(plaintext, recipient, current)
     engine.new_bytes(sealed / "resume-outer.mwseal", envelope)
-    value = {"schema": "motionwright.manim.editable.resume-outer-custody-public/1",
+    value = {"schema": ("motionwright.manim.recovery-runtime.outer-custody-public/1"
+                        if selected_scenario() == RECOVERY_SCENARIO else
+                        "motionwright.manim.editable.resume-outer-custody-public/1"),
              "context": current, "origin_context": ORIGIN, "recipient_sha256": recipient["sha256"],
              "ciphertext_sha256": sha(envelope), "ciphertext_bytes": len(envelope),
              "selected_originals_complete": complete and not failed and len(selected) == len(outer_inputs(current)),
@@ -165,7 +189,9 @@ def verify_outer(current):
     require(set(value) == {"schema", "context", "origin_context", "recipient_sha256", "ciphertext_sha256",
             "ciphertext_bytes", "selected_originals_complete", "original_files", "failed_labels",
             "native_effect_invocations", "automatic_retry"}
-            and value["schema"] == "motionwright.manim.editable.resume-outer-custody-public/1"
+            and value["schema"] == ("motionwright.manim.recovery-runtime.outer-custody-public/1"
+                if selected_scenario() == RECOVERY_SCENARIO else
+                "motionwright.manim.editable.resume-outer-custody-public/1")
             and value["context"] == current and value["origin_context"] == ORIGIN
             and value["recipient_sha256"] == output_recipient()["sha256"]
             and value["selected_originals_complete"] is True and value["failed_labels"] == []
@@ -186,6 +212,9 @@ def verify_outer(current):
 
 
 def verify_resume(current):
+    if selected_scenario() == RECOVERY_SCENARIO:
+        from native_manim_recovery_custody import verify_cycle
+        return verify_cycle(current)
     from native_manim_resume_cycle import PHASES, admitted_originals, verify_phase
     from native_manim_resume_focals import check_source_gate
     from native_manim_resume_runtime import check as check_runtime
