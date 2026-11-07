@@ -300,6 +300,44 @@ function ordinarySdkPreflight(value, expected, index, originals) {
     && rows[0].result?.native_sdk?.pinned_revision === index.source.sdk_sha, 'J1_COMPILED_SDK_BINDING');
 }
 
+/** Source-only ABI predicate. The original runtime producer checks live Python,
+ * wheel and bootstrap bytes; the separate J1 reader must not silently accept
+ * a reviewed inventory that omits or changes this required relationship. */
+export function verifyRuntimePythonAbi(inventory, binaries) {
+  const abi = inventory?.python_abi;
+  exact(abi, ['schema', 'executable', 'version', 'version_info', 'implementation',
+    'cache_tag', 'soabi', 'prefix', 'base_prefix', 'stdlib', 'wheel_python_tag', 'wheel_abi_tag'],
+    'J1_RUNTIME_PYTHON_ABI_FIELDS');
+  const selected = binaries?.python3;
+  need(abi.schema === 'motionwright.graph-system-python-abi/1'
+    && selected && typeof selected.path === 'string' && DIGEST.test(selected.sha256)
+    && integer(selected.size_bytes, 1, GLOBAL_BYTES)
+    && abi.executable === selected.path && abi.implementation === 'cpython'
+    && Array.isArray(abi.version_info) && abi.version_info.length === 3
+    && abi.version_info[0] === 3 && abi.version_info[1] === 12
+    && Number.isSafeInteger(abi.version_info[2]) && abi.version_info[2] >= 0
+    && typeof abi.version === 'string' && abi.version.startsWith('3.12.')
+    && abi.cache_tag === 'cpython-312'
+    && abi.soabi === 'cpython-312-x86_64-linux-gnu'
+    && abi.prefix === '/usr' && abi.base_prefix === '/usr'
+    && abi.stdlib === '/usr/lib/python3.12'
+    && abi.wheel_python_tag === 'cp312' && abi.wheel_abi_tag === 'cp312'
+    && isDeepStrictEqual(inventory.binaries?.python,
+      { path: selected.path, bytes: selected.size_bytes, sha256: selected.sha256 })
+    && inventory.binary_versions?.python === abi.version,
+    'J1_RUNTIME_PYTHON_ABI');
+  const wheel = inventory.pyav_wheel;
+  need(wheel && typeof wheel.filename === 'string'
+    && wheel.filename.split('-')[0] === 'av'
+    && wheel.filename.split('-')[1] === '15.0.0'
+    && wheel.filename.split('-')[2] === abi.wheel_python_tag
+    && wheel.filename.split('-')[3] === abi.wheel_abi_tag
+    && wheel.filename.endsWith('.whl')
+    && integer(wheel.bytes, 1, 128 * LIMIT)
+    && DIGEST.test(wheel.sha256), 'J1_RUNTIME_PYAV_WHEEL_ABI');
+  return true;
+}
+
 function runtimeOriginals(index, reviewed, originals) {
   const runtime = index.runtime;
   existingDirectory(runtime.root); existingDirectory(runtime.fontconfig_root);
@@ -311,6 +349,7 @@ function runtimeOriginals(index, reviewed, originals) {
     'J1_RUNTIME_REFERENCE_BINDING');
   const inventory = originals.json(raw.inventory, 2 * LIMIT), intake = originals.json(raw.intake, 2 * LIMIT);
   same(inventory, reviewed.runtime.inventory, 'J1_RUNTIME_PRODUCER_INVENTORY');
+  verifyRuntimePythonAbi(inventory, index.binaries);
   same(intake, reviewed.runtime.intake, 'J1_RUNTIME_SOURCE_INTAKE');
   same(inventory.context, { source_sha: index.source.sha, semwright_sha: index.source.sdk_sha,
     run_id: index.source.run_id, run_attempt: String(index.source.run_attempt) }, 'J1_RUNTIME_CURRENT_CONTEXT');

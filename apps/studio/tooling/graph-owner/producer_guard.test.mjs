@@ -13,6 +13,7 @@ import { inspectSourceBoundCandidate, requireNativeGraphParentAdmission,
   admitOriginalProducers, runIndependentSameStoreReopen, inspectR74StatusCore,
   assertOriginalProducerAdmission, inspectProducerOriginalsCore, AUTHORITY_SOURCE_PATHS,
   BINARY_ROLES, PRODUCER_INDEX_SCHEMA, GRAPH_BUDGET } from "../../tests/support/graph-owner/producer_guard.mjs";
+import * as guardSource from "../../tests/support/graph-owner/producer_guard.mjs";
 
 test('Graph owner Python environment refuses runner secrets and retains reviewed source identity', () => {
   const root = path.join(path.sep, 'private', 'case');
@@ -285,10 +286,17 @@ function fixture(name) {
     rawJson({ id: 'phase1-service-preflight', ok: true, result: { test_transport: 'service-test-jsonl', native_sdk: { pinned_revision: sdkSha } } }),
     { stdin: { path: path.basename(stdin.path), ...oldDigest(stdin) } });
   const runtimeReceipt = json(path.join(runtime, 'runtime.json'), { schema: 2, fixture: true });
+  const inertPython = '3.12.3 (inert source fixture, not a runtime)';
   const runtimeInventory = { schema: 'motionwright.manim.runtime-inventory/2', context: { source_sha: source.sha, semwright_sha: sdkSha, run_id: source.run_id, run_attempt: '1' },
     manim_version: '0.21.0', pyav_version: '15.0.0', native_render_performed: false, files: 1, inventory_sha256: 'c'.repeat(64),
     runtime_receipt_sha256: runtimeReceipt.sha256,
-    binaries: { python: { path: binaries.python3.path, ...oldDigest(binaries.python3) }, ffmpeg: { path: binaries.ffmpeg.path, ...oldDigest(binaries.ffmpeg) } } };
+    binaries: { python: { path: binaries.python3.path, ...oldDigest(binaries.python3) }, ffmpeg: { path: binaries.ffmpeg.path, ...oldDigest(binaries.ffmpeg) } },
+    binary_versions: { python: inertPython },
+    pyav_wheel: { filename: 'av-15.0.0-cp312-cp312-manylinux_2_17_x86_64.whl', bytes: 512, sha256: 'd'.repeat(64) },
+    python_abi: { schema: 'motionwright.graph-system-python-abi/1', executable: binaries.python3.path,
+      version: inertPython, version_info: [3, 12, 3], implementation: 'cpython', cache_tag: 'cpython-312',
+      soabi: 'cpython-312-x86_64-linux-gnu', prefix: '/usr', base_prefix: '/usr',
+      stdlib: '/usr/lib/python3.12', wheel_python_tag: 'cp312', wheel_abi_tag: 'cp312' } };
   const runtimeFiles = [], intakeRows = [];
   for (let i = 0; i < 15; i++) {
     const sourceName = i < 9 ? 'crates/manim-profile/testdata/graph-fonts/fixture' + i + '.woff2' : 'tooling/fixture_helper' + i + '.py';
@@ -442,6 +450,55 @@ test('all independently reviewed fields are in the raw private index, not a muta
   }
   assert.throws(() => assertOriginalProducerAdmission(baseline), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
 });
+test('J1 source-only runtime ABI verifier rejects foreign Python and PyAV identities', () => {
+  assert.equal(typeof guardSource.verifyRuntimePythonAbi, 'function');
+  const binary = { path: '/fixture/python3.12', sha256: 'a'.repeat(64), size_bytes: 4096 };
+  const version = '3.12.3 (inert fixture)';
+  const valid = { binaries: { python: { path: binary.path, bytes: binary.size_bytes, sha256: binary.sha256 } },
+    binary_versions: { python: version },
+    pyav_wheel: { filename: 'av-15.0.0-cp312-cp312-manylinux_2_17_x86_64.whl', bytes: 512, sha256: 'b'.repeat(64) },
+    python_abi: { schema: 'motionwright.graph-system-python-abi/1', executable: binary.path,
+      version, version_info: [3, 12, 3], implementation: 'cpython', cache_tag: 'cpython-312',
+      soabi: 'cpython-312-x86_64-linux-gnu', prefix: '/usr', base_prefix: '/usr',
+      stdlib: '/usr/lib/python3.12', wheel_python_tag: 'cp312', wheel_abi_tag: 'cp312' } };
+  const binaries = { python3: binary };
+  // This must guard the real J1 reader, not just an unused helper.
+  const originalReader = fs.readFileSync(new URL('../../tests/support/graph-owner/producer_guard.mjs', import.meta.url), 'utf8');
+  const runtimeReader = originalReader.split('function runtimeOriginals(index, reviewed, originals) {')[1]
+    ?.split('function callbackPlan(', 1)[0];
+  assert.match(runtimeReader ?? '', /verifyRuntimePythonAbi\(inventory, index\.binaries\);/);
+  assert.equal(guardSource.verifyRuntimePythonAbi(valid, binaries), true);
+  for (const mutation of ['missing', 'python13', 'foreign-exe', 'wrong-version', 'wrong-wheel']) {
+    const item = structuredClone(valid);
+    if (mutation === 'missing') delete item.python_abi;
+    else if (mutation === 'python13') item.python_abi.soabi = 'cpython-313-x86_64-linux-gnu';
+    else if (mutation === 'foreign-exe') item.python_abi.executable = '/fixture/other-python';
+    else if (mutation === 'wrong-version') item.binary_versions.python = '3.13 (unreviewed)';
+    else item.pyav_wheel.filename = 'av-15.0.0-cp313-cp313-manylinux_2_17_x86_64.whl';
+    assert.throws(() => guardSource.verifyRuntimePythonAbi(item, binaries),
+      /J1_RUNTIME_PYTHON_ABI|J1_RUNTIME_PYAV_WHEEL_ABI/, mutation);
+  }
+});
+
+test('R74 rejects missing or mismatched Native runtime Python ABI even if originals and review agree', () => {
+  for (const mutation of ['missing-abi', 'python13', 'foreign-interpreter', 'unreviewed-wheel', 'wrong-version']) {
+    const f = fixture('r74-python-abi-' + mutation);
+    const inventory = f.load(f.index.runtime_originals.inventory);
+    if (mutation === 'missing-abi') delete inventory.python_abi;
+    else if (mutation === 'python13') inventory.python_abi.soabi = 'cpython-313-x86_64-linux-gnu';
+    else if (mutation === 'foreign-interpreter') inventory.python_abi.executable = f.index.binaries.ffmpeg.path;
+    else if (mutation === 'unreviewed-wheel') inventory.pyav_wheel.filename = 'av-15.0.0-cp313-cp313-manylinux_2_17_x86_64.whl';
+    else inventory.binary_versions.python = '3.13 (unreviewed runtime)';
+    f.replace(f.index.runtime_originals.inventory, inventory);
+    f.index.runtime.manifest_sha256 = f.index.runtime_originals.inventory.sha256;
+    f.reviewed.runtime.inventory = structuredClone(inventory);
+    f.index.contract.runtime.inventory = structuredClone(inventory);
+    f.seal();
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'),
+      /J1_RUNTIME_PYTHON_ABI|J1_RUNTIME_PYAV_WHEEL_ABI/, mutation);
+  }
+});
+
 test('R74 rejects prepared executable permissions, inode alias, bytes and source substitution', () => {
   for (const mutation of ['mode', 'hardlink', 'content', 'source-role']) {
     const f = fixture('private-input-' + mutation);
