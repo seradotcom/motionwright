@@ -311,6 +311,20 @@ class PreflightCustodyTests(unittest.TestCase):
         self.initialize()
         self.reports()
         self.native_dispatch()
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/native-mlt-sequence-e2e.yml").read_text(encoding="utf-8")
+        native_job = workflow.split("\n  native-mlt-sequence:\n", 1)[1]
+        common_step = native_job.split("id: g2_common_contracts", 1)[1].split("\n      - ", 1)[0]
+        common_rosters = [ast.literal_eval(line.split("=", 1)[1].strip())
+                          for line in common_step.splitlines() if line.strip().startswith("SUITES = ")]
+        self.assertEqual(len(common_rosters), 1)
+        common = self.base / "mw-mlt-g2-contracts-41-1"
+        common_streams = {}
+        for index in range(1, len(common_rosters[0])):
+            for stream in ("stdout", "stderr"):
+                name = f"contracts-{index:02d}-{stream}.log"
+                raw = f"original common module {index} {stream}\r\n".encode() + b"\x00\xff"
+                self.custody.new_bytes(common / name, raw)
+                common_streams["common/" + name] = raw
         film = self.base / "mw-film180-contracts-41-1"
         film_streams = {}
         for index in (1, 2, 3, 4):
@@ -325,7 +339,7 @@ class PreflightCustodyTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(public["native_dispatch_valid"])
         self.assertTrue(public["captured_source_originals_complete"])
-        for name, raw in film_streams.items():
+        for name, raw in {**common_streams, **film_streams}.items():
             self.assertEqual(self.custody.captured[name], raw)
         self.assertEqual(public["native_terminal"], "ERROR_OR_UNKNOWN")
         self.assertFalse(public["physical_AV_master_acceptance"])
@@ -399,11 +413,15 @@ class PreflightCustodyTests(unittest.TestCase):
         self.custody.new_bytes(neighbor, b"unselected private neighbor")
         beyond_film = self.base / "mw-film180-contracts-41-1/contracts-05-stderr.log"
         self.custody.new_bytes(beyond_film, b"outside the five-module Film selection")
+        beyond_common = self.base / "mw-mlt-g2-contracts-41-1/contracts-13-stderr.log"
+        self.custody.new_bytes(beyond_common, b"outside the thirteen-module common selection")
         public, code = self.finish()
         self.assertEqual(code, 2)
         self.assertFalse(public["captured_source_originals_complete"])
         self.assertNotIn("common/not-source-original.txt", self.custody.captured)
         self.assertNotIn("film/contracts-05-stderr.log", self.custody.captured)
+        self.assertNotIn("common/contracts-13-stderr.log", self.custody.captured)
+        self.assertEqual(beyond_common.read_bytes(), b"outside the thirteen-module common selection")
         self.assertEqual(neighbor.read_bytes(), b"unselected private neighbor")
         self.assertEqual(beyond_film.read_bytes(), b"outside the five-module Film selection")
 
