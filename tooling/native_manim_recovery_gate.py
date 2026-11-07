@@ -15,7 +15,7 @@ import ci_private_evidence as engine
 from native_manim_camera_evidence import read, read_object, require, sha
 from native_manim_editable_outer import load_deadline, new_bytes, new_json, original
 from native_manim_resume_focals import (
-    SELECTED, binary_identity, folder, parse_original_tests, source_snapshot,
+    SELECTED, binary_identity, folder, parse_original_tests, parse_named_rust_tests, source_snapshot,
 )
 from native_manim_resume_transfer import (
     NoRedirect, RECOVERY_SCENARIO, REPOSITORY, hosted_context, selected_scenario,
@@ -199,15 +199,7 @@ def record_artifact():
 
 
 def parse_reference_tests(stdout):
-    observed = sorted(row.decode() for row in re.findall(
-        rb"^test (editable_cycle::reference::tests::[a-z_]+) \.\.\. ok$", stdout, re.M))
-    footer = re.findall(rb"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
-                        rb"(\d+) measured; (\d+) filtered out; finished in [0-9.]+s$", stdout, re.M)
-    require(observed == list(REFERENCE) and len(footer) == 1
-            and tuple(int(value) for value in footer[0][:4]) == (2, 0, 0, 0),
-            "recovery_runtime_two_actual_reference_tests_required")
-    return {"passed": 2, "failed": 0, "ignored": 0, "measured": 0,
-            "filtered": int(footer[0][4]), "selected_ids": observed}
+    return parse_named_rust_tests(stdout, REFERENCE, "recovery_runtime_two_actual_reference_tests_required")
 
 
 def check_source_gate(current, root=None):

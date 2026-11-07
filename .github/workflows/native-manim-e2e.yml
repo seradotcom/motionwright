@@ -1151,10 +1151,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         timeout-minutes: ${{ fromJSON(steps.resume_cache_budget.outputs.minutes) }}
+        # RUSTUP_HOME is hashed by this action. Hide only its per-run path
+        # while its actual rustc/rustup/cargo commands keep the selected root.
+        env:
+          RUSTUP_HOME: ''
         with:
           key: motionwright-native-manim-1.98.1
-          shared-key: source-contracts
-          save-if: 'false'
+          shared-key: ${{ inputs.scenario == 'recovery-runtime-cycle' && format('source-contracts-manim-sdk-{0}', steps.pin.outputs.sha) || 'source-contracts' }}
+          workspaces: |
+            . -> target
+            ${{ inputs.scenario == 'recovery-runtime-cycle' && '_semwright -> target' || '' }}
+          cmd-format: 'env RUSTUP_HOME=${{ runner.temp }}/manim-native-rustup-${{ github.run_id }}-${{ github.run_attempt }} {0}'
+          cache-workspace-crates: ${{ inputs.scenario == 'recovery-runtime-cycle' }}
+          save-if: ${{ inputs.scenario == 'recovery-runtime-cycle' }}
+          cache-on-failure: 'false'
 
       - name: Install sandbox and Manim Community build dependencies
         run: |
@@ -1489,6 +1499,7 @@ jobs:
             "$GITHUB_WORKSPACE/verification/native-manim-e2e/sandbox-profile.txt"
 
       - name: Build exact Semwright Broker and sandbox
+        id: resume_sdk_build
         working-directory: _semwright
         run: |
           if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
@@ -1506,6 +1517,14 @@ jobs:
           # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
           cargo build --locked --jobs 1 -p motionwright-manim-community-driver --bins
           cargo build --locked --jobs 1 -p motionwright-native --example native-manim-e2e
+
+      - name: Admit Cargo cache retention from the original successful SDK guard
+        if: always() && inputs.scenario == 'recovery-runtime-cycle' && steps.resume_sdk_build.outcome == 'success'
+        timeout-minutes: 1
+        # This enables the same action's post on a later failure. The post keeps
+        # Cargo dependencies/libraries, not final ELF files, and has no Native
+        # cgroup or dynamic outer deadline claim; the original job timeout stays.
+        run: python3 -B tooling/native_manim_resume_resources.py admit-cache-save
 
       - name: Require eight real committed-source recovery regressions
         if: inputs.scenario == 'editable-source-resume'

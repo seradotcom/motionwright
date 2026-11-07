@@ -92,16 +92,50 @@ def binary_identity(path):
         os.close(fd)
 
 
+def parse_named_rust_tests(stdout, selected, code):
+    """Read sequential libtest records, including stdout emitted by --nocapture."""
+    expected = set(selected)
+    observed, pending, headers, footer = [], None, [], None
+    require(len(expected) == len(selected) and expected, code)
+    for line in stdout.splitlines():
+        if line.startswith(b"test result:"):
+            match = re.fullmatch(rb"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                                 rb"(\d+) measured; (\d+) filtered out; finished in \d+(?:\.\d+)?s", line)
+            require(pending is None and footer is None and match is not None, code)
+            footer = tuple(int(value) for value in match.groups())
+        elif line.startswith(b"test "):
+            match = re.fullmatch(rb"test ([A-Za-z0-9_:]+) \.\.\.(?: (.*))?", line)
+            require(footer is None and pending is None and match is not None, code)
+            name, tail = match.group(1).decode("ascii"), match.group(2) or b""
+            require(name in expected and name not in observed, code)
+            require(not tail.startswith((b"FAILED", b"ignored")), code)
+            if tail == b"ok":
+                observed.append(name)
+            else:
+                pending = name
+        elif line == b"ok":
+            require(footer is None and pending is not None, code)
+            observed.append(pending)
+            pending = None
+        elif line.startswith((b"FAILED", b"ignored")):
+            require(False, code)
+        elif line.startswith(b"running "):
+            match = re.fullmatch(rb"running (\d+) tests?", line)
+            require(footer is None and pending is None and not observed and match is not None, code)
+            headers.append(int(match.group(1)))
+        elif line:
+            # Only an open test may own output; stray completion/footer text
+            # cannot substitute for a missing named result.
+            require(footer is None and pending is not None, code)
+    require(pending is None and headers == [len(selected)] and footer is not None
+            and footer[:4] == (len(selected), 0, 0, 0)
+            and sorted(observed) == sorted(selected), code)
+    return {"passed": len(selected), "failed": 0, "ignored": 0, "measured": 0,
+            "filtered": footer[4], "selected_ids": sorted(observed)}
+
+
 def parse_original_tests(stdout):
-    observed = sorted(row.decode() for row in re.findall(
-        rb"^test (editable_cycle::recovery::tests::[a-z_]+) \.\.\. ok$", stdout, re.M))
-    footer = re.findall(rb"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
-                        rb"(\d+) measured; (\d+) filtered out; finished in [0-9.]+s$", stdout, re.M)
-    require(observed == list(SELECTED) and len(footer) == 1
-            and tuple(int(value) for value in footer[0][:4]) == (8, 0, 0, 0),
-            "resume_eight_actual_recovery_tests_required")
-    return {"passed": 8, "failed": 0, "ignored": 0, "measured": 0,
-            "filtered": int(footer[0][4]), "selected_ids": observed}
+    return parse_named_rust_tests(stdout, SELECTED, "resume_eight_actual_recovery_tests_required")
 
 
 def check_source_gate(current, root=None):

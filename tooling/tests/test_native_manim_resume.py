@@ -229,7 +229,7 @@ class GateAndResourcesTests(unittest.TestCase):
                     lineage.Snapshot(capsule, lineage.identity(changed), CURRENT, key, complete=True)
 
     def test_eight_actual_named_lines_and_zero_failures_are_required(self):
-        output = ("\n".join("test " + name + " ... ok" for name in focals.SELECTED)
+        output = ("running 8 tests\n" + "\n".join("test " + name + " ... ok" for name in focals.SELECTED)
                   + "\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.2s\n").encode()
         observed = focals.parse_original_tests(output)
         self.assertEqual(observed["passed"], 8)
@@ -237,6 +237,24 @@ class GateAndResourcesTests(unittest.TestCase):
         for changed in (output.replace(b"8 passed", b"0 passed"), output.replace(b"0 ignored", b"1 ignored"),
                         output.replace(focals.SELECTED[0].encode(), b"synthetic_mismatched_test"),
                         output + output, output.replace(b"... ok", b"... FAILED", 1)):
+            with self.subTest(sha=engine.sha(changed)), self.assertRaisesRegex(ValueError, "eight_actual"):
+                focals.parse_original_tests(changed)
+
+    def test_retained_rust_stdout_keeps_each_nocapture_result_bound_to_its_name(self):
+        # Original G0 stdout from run42365799758; no Native/source result is granted here.
+        path = Path(__file__).with_name("fixtures") / "manim-recovery-42365799758.stdout.txt"
+        raw = path.read_bytes()
+        self.assertEqual(engine.sha(raw), "70ee3826d0048a6a7329c96cc22829e193fdd109f67f9f19706e83b570ee4d3d")
+        self.assertEqual(focals.parse_original_tests(raw), {"passed": 8, "failed": 0, "ignored": 0,
+                         "measured": 0, "filtered": 31, "selected_ids": list(focals.SELECTED)})
+        for changed in (
+            raw.replace(b"\nok\n", b"\n", 1), raw.replace(b"\nok\n", b"\nFAILED\n", 1),
+            raw.replace(b"\nok\n", b"\nignored\n", 1), raw + b"ok\n", raw + raw,
+            raw.replace(focals.SELECTED[0].encode(), focals.SELECTED[1].encode(), 1),
+            raw.replace(focals.SELECTED[0].encode(), b"unselected_case", 1),
+            raw.replace(b"running 8 tests", b"", 1), raw.replace(b"8 passed", b"7 passed", 1),
+            raw.replace(b"0 ignored", b"1 ignored", 1), raw.rsplit(b"\ntest result:", 1)[0],
+        ):
             with self.subTest(sha=engine.sha(changed)), self.assertRaisesRegex(ValueError, "eight_actual"):
                 focals.parse_original_tests(changed)
 

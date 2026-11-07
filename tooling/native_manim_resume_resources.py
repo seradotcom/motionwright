@@ -8,6 +8,7 @@ the runner itself are not represented as cgroup-limited command trees.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import pwd
@@ -145,6 +146,76 @@ def admitted_group(deadline):
             "recovery_original_resource_policy_changed")
     observe(root)
     return root
+
+
+def check_cache_sdk_guard(value, current, origin):
+    """Admit Cargo cache retention from the original SDK guard, not a step label."""
+    require(value.get("schema") == "motionwright.manim.resume.resource-command/1"
+            and value.get("context") == current and value.get("origin") == origin
+            and value.get("label") == "build-sdk" and value.get("status") == "EXITED_WITHIN_LIMITS"
+            and value.get("original_child_exit_known") is True
+            and type(value.get("original_child_exit")) is int and value["original_child_exit"] == 0
+            and value.get("cgroup_quiescent") is True and value.get("first_error") is None
+            and value.get("reason") is None and value.get("automatic_retry") is False,
+            "recovery_cache_original_sdk_success_required")
+    require(value.get("memory_limit_bytes") == value.get("physical_peak_budget_bytes") == LIMIT
+            and value.get("physical_reserve_bytes") == RESERVE
+            and value.get("cgroup_max_bytes") == RECOVERY_CGROUP_MAX
+            and value.get("cgroup_high_bytes") == RECOVERY_CGROUP_HIGH
+            and type(value.get("minimum_physical_available_bytes")) is int
+            and value["minimum_physical_available_bytes"] >= RESERVE,
+            "recovery_cache_original_sdk_budget_required")
+    before, after = value.get("resource_before", {}), value.get("resource_after", {})
+    for row in (before, after):
+        require(row.get("limit_bytes") == RECOVERY_CGROUP_MAX and row.get("high_bytes") == RECOVERY_CGROUP_HIGH
+                and all(type(row.get(k)) is int and row[k] >= 0 for k in ("peak_bytes", "oom", "oom_kill")),
+                "recovery_cache_original_sdk_observations_required")
+    require(before["peak_bytes"] <= after["peak_bytes"] <= LIMIT
+            and all(after[k] == before[k] for k in ("oom", "oom_kill")), "recovery_cache_original_sdk_peak_or_oom")
+    entry = value.get("original_cgroup_entry", {})
+    require(entry.get("schema") == "motionwright.manim.resume.original-cgroup-entry/1"
+            and entry.get("context") == current and entry.get("origin") == origin and entry.get("label") == "build-sdk"
+            and type(entry.get("uid")) is int and entry["uid"] > 0
+            and type(entry.get("guard_pid")) is int and entry["guard_pid"] > 0
+            and entry["guard_pid"] == value.get("guard_pid")
+            and type(entry.get("controller_pid")) is int and entry["controller_pid"] > 0
+            and entry["controller_pid"] == value.get("child_pid")
+            and entry.get("cgroup_self_membership_observed") is True
+            and entry.get("privileges_dropped_before_exec") is True,
+            "recovery_cache_original_sdk_nonroot_entry_required")
+
+
+def admit_cache_save():
+    deadline = outer.load_deadline()
+    deadline.admit_work()
+    require(os.environ.get("MANIM_NATIVE_SCENARIO") == "recovery-runtime-cycle"
+            and os.environ.get("CACHE_ON_FAILURE") == "false"
+            and os.environ.get("CARGO_TARGET_DIR", "") == ""
+            and all(os.environ.get(k) == v for k, v in {"CARGO_BUILD_JOBS": "1", "CARGO_INCREMENTAL": "0",
+                "CARGO_PROFILE_DEV_DEBUG": "0", "CARGO_PROFILE_TEST_DEBUG": "0"}.items()),
+            "recovery_cache_original_profile_and_unenabled_post_required")
+    require(not members(admitted_group(deadline)), "recovery_cache_command_tree_must_be_quiescent")
+    raw = outer.original(deadline.root / "resources/build-sdk/terminal.json")
+    check_cache_sdk_guard(json.loads(raw), deadline.context, deadline.binding())
+    repo = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+    for path, expected in ((repo, deadline.context["source_sha"]),
+                           (repo / "_semwright", deadline.context["semwright_sha"])):
+        observed = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        require(observed.stdout.decode().strip() == expected, "recovery_cache_compiled_source_identity_changed")
+    result = {"schema": "motionwright.manim.recovery-runtime.cargo-cache-admission/1",
+              "context": deadline.context, "origin": deadline.binding(),
+              "sdk_guard_sha256": hashlib.sha256(raw).hexdigest(),
+              "shared_key": "source-contracts-manim-sdk-" + deadline.context["semwright_sha"],
+              "workspaces": [". -> target", "_semwright -> target"],
+              "cache_save_result": "NOT_OBSERVED", "final_executable_retention_claimed": False,
+              "post_cgroup_limit_claimed": False, "post_dynamic_deadline_claimed": False,
+              "native_result_claim": "NOT_ASSESSED", "automatic_retry": False}
+    outer.new_json(deadline.root / "work/cache-save-admission.json", result)
+    with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+        stream.write("CACHE_ON_FAILURE=true\n")
+    print(json.dumps({"status": "ORIGINAL_SDK_GUARD_ADMITS_CARGO_CACHE_POST",
+                      "cache_save_result": "NOT_OBSERVED", "native_result_claim": "NOT_ASSESSED"}))
 
 
 def expanded_argv(label, command):
@@ -336,6 +407,7 @@ def main():
     setup = sub.add_parser("initialize")
     setup.add_argument("--uid", type=int, required=True)
     setup.add_argument("--gid", type=int, required=True)
+    sub.add_parser("admit-cache-save")
     step = sub.add_parser("workflow-step")
     step.add_argument("--label", choices=tuple(outer.STEPS), required=True)
     step.add_argument("--script", type=Path, required=True)
@@ -351,6 +423,9 @@ def main():
     args = parser.parse_args()
     if args.command == "initialize":
         initialize(args.uid, args.gid)
+        return 0
+    if args.command == "admit-cache-save":
+        admit_cache_save()
         return 0
     if args.command == "workflow-step":
         signal.signal(signal.SIGTERM, outer.workflow_cancelled)

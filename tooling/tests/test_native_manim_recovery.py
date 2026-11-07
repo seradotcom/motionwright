@@ -23,6 +23,31 @@ NOW = datetime(2026, 11, 7, 9, 0, tzinfo=timezone.utc)
 
 
 class RetainedRuntimeSelectionTests(unittest.TestCase):
+    def test_cache_admission_requires_the_original_sdk_exit_peak_and_nonroot_entry(self):
+        raw = (Path(__file__).with_name("fixtures") / "manim-sdk-guard-42365799758.json").read_bytes()
+        self.assertEqual(engine.sha(raw), "ea350336388b893af0c5b73abec9b844c3d7308d75e4e553c4e456128ad06af9")
+        value = json.loads(raw)
+        current, origin = value["context"], value["origin"]
+        resources.check_cache_sdk_guard(value, current, origin)
+        changes = (
+            (("original_child_exit",), None), (("original_child_exit",), True), (("original_child_exit",), 1),
+            (("original_child_exit_known",), False), (("cgroup_quiescent",), False),
+            (("resource_after", "peak_bytes"), 1611550720), (("resource_after", "oom_kill"), 1),
+            (("resource_after", "limit_bytes"), resources.LIMIT),
+            (("minimum_physical_available_bytes",), resources.RESERVE - 1),
+            (("original_cgroup_entry", "uid"), 0),
+            (("original_cgroup_entry", "privileges_dropped_before_exec"), False),
+            (("original_cgroup_entry", "controller_pid"), 1), (("context", "source_sha"), "0" * 40),
+        )
+        for keys, changed in changes:
+            altered, owner = copy.deepcopy(value), None
+            owner = altered
+            for key in keys[:-1]:
+                owner = owner[key]
+            owner[keys[-1]] = changed
+            with self.subTest(keys=keys), self.assertRaisesRegex(ValueError, "recovery_cache"):
+                resources.check_cache_sdk_guard(altered, current, origin)
+
     def test_new_cgroup_headroom_is_required_without_changing_the_old_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -178,12 +203,29 @@ class RetainedRuntimeSelectionTests(unittest.TestCase):
             gate.validate_artifact(changed, CURRENT, "e" * 64)
 
     def test_two_reference_tests_require_the_actual_named_footer_and_no_ignored_case(self):
-        raw = ("\n".join("test " + name + " ... ok" for name in gate.REFERENCE)
+        raw = ("running 2 tests\n" + "\n".join("test " + name + " ... ok" for name in gate.REFERENCE)
                + "\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.01s\n").encode()
         self.assertEqual(gate.parse_reference_tests(raw)["selected_ids"], list(gate.REFERENCE))
         for changed in (raw.replace(b"2 passed", b"1 passed"), raw.replace(b"0 ignored", b"1 ignored"),
                         raw.replace(gate.REFERENCE[0].encode(), b"unselected_case")):
             with self.assertRaises(ValueError):
+                gate.parse_reference_tests(changed)
+
+    def test_reference_nocapture_form_rejects_unfinished_duplicate_or_failed_blocks(self):
+        # A parser shape control only: these bytes do not claim two executed Rust tests.
+        raw = ("running 2 tests\n" + "\n".join("test " + name + ' ... {"g0_parser_fixture":true}\nok'
+               for name in gate.REFERENCE) + "\ntest result: ok. 2 passed; 0 failed; 0 ignored; "
+               "0 measured; 37 filtered out; finished in 0.01s\n").encode()
+        self.assertEqual(gate.parse_reference_tests(raw)["selected_ids"], list(gate.REFERENCE))
+        for changed in (
+            raw.replace(b"\nok\n", b"\n", 1), raw.replace(b"\nok\n", b"\nFAILED\n", 1),
+            raw.replace(b"\nok\n", b"\nignored\n", 1), raw + b"ok\n", raw + raw,
+            raw.replace(gate.REFERENCE[0].encode(), gate.REFERENCE[1].encode(), 1),
+            raw.replace(gate.REFERENCE[0].encode(), b"unselected_case", 1),
+            raw.replace(b"running 2 tests", b"", 1), raw.replace(b"2 passed", b"1 passed", 1),
+            raw.replace(b"0 ignored", b"1 ignored", 1), raw.rsplit(b"\ntest result:", 1)[0],
+        ):
+            with self.subTest(sha=engine.sha(changed)), self.assertRaisesRegex(ValueError, "two_actual"):
                 gate.parse_reference_tests(changed)
 
     def test_native_adapter_refuses_an_unowned_new_cycle_before_any_native_input(self):
@@ -200,7 +242,13 @@ class RetainedRuntimeSelectionTests(unittest.TestCase):
         self.assertIn("inputs.scenario == 'recovery-runtime-cycle'", job)
         self.assertIn("MW_MANIM_RESUME_EXPECTED_SHA: ${{ inputs.resume_expected_sha }}", job)
         self.assertIn("CARGO_BUILD_JOBS: '1'", job)
-        self.assertIn("shared-key: source-contracts", job)
+        self.assertIn("format('source-contracts-manim-sdk-{0}', steps.pin.outputs.sha)", job)
+        self.assertIn("|| 'source-contracts'", job)
+        self.assertIn("          RUSTUP_HOME: ''", job)
+        self.assertIn("cmd-format: 'env RUSTUP_HOME=${{ runner.temp }}/manim-native-rustup-${{ github.run_id }}-${{ github.run_attempt }} {0}'", job)
+        self.assertIn("cache-on-failure: 'false'", job)
+        self.assertLess(job.index("native_manim_resume_resources.py admit-cache-save"),
+                        job.index("native_manim_recovery_gate.py test"))
         self.assertIn("      actions: read", job)
         self.assertLess(job.index("native_manim_frozen_runtime_restore.py restore"), job.index("Build exact Semwright Broker"))
         self.assertLess(job.index("native_manim_recovery_gate.py record-reuse"), job.index("native_manim_recovery_gate.py test"))
