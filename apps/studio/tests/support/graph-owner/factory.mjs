@@ -390,8 +390,11 @@ export class GraphCaseFactoryCore {
       await this.completeInitializer();
       const physical = this.initializerPhysical;
       this.configureSpec(await makeSpec(fixture.project,physical,this));
-      return await Service.create({ ...common, binaryPath:this.admission.nativeService.path,
-        processOwner:this, seedFixture:false });
+      // The fixed Graph recipe can use 5s + 5s + 30s; its existing Native CLI
+      // transport is bounded at 45s. Let that original result and custody return
+      // before the outer RPC expires, without changing the case or Host deadline.
+      return await Service.create({ ...common, timeoutMs:options.timeoutMs ?? 50_000,
+        binaryPath:this.admission.nativeService.path, processOwner:this, seedFixture:false });
     } catch(error) {
       this.taint(error);
       if(initializer) { try { await initializer.close(); } catch(cleanup) { this.taint(cleanup); } }

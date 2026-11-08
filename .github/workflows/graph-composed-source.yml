@@ -16,6 +16,8 @@ on:
       - 'tooling/tests/test_graph_r74_external_reviewer.py'
       - 'apps/studio/src/SemanticGraphWorkbench.tsx'
       - 'apps/studio/tests/semantic-graph-service.spec.ts'
+      - 'apps/studio/tests/support/graph-owner/factory.mjs'
+      - 'apps/studio/tooling/graph-owner/native_rpc_window.test.mjs'
       - 'apps/studio/tests/support/graph-owner/contracts.mjs'
       - 'apps/studio/tests/support/graph-owner/schemas/final.r2.json'
       - 'apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs'
@@ -53,3 +55,5 @@ jobs:
           -v
       - name: Check real inspection terminal and closed diagnostic source contracts
         run: node --test apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs
+      - name: Check Native RPC return window without retries or Native effects
+        run: node --test apps/studio/tooling/graph-owner/native_rpc_window.test.mjs
