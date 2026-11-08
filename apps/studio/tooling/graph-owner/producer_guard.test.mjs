@@ -207,6 +207,7 @@ const oldDigest = ref => ({ bytes: ref.size_bytes, sha256: ref.sha256 });
 const callgraph = [
   'apps/studio/tests/semantic-graph-service.spec.ts', 'apps/studio/tests/support/scopedChangeService.ts',
   'apps/studio/src/SemanticGraphWorkbench.tsx', 'apps/studio/src/semanticGraphService.ts', 'apps/studio/src/App.tsx',
+  'apps/studio/src/semanticGraphContextFailure.ts',
   'apps/studio/src/api.ts', 'apps/studio/src/projectMutation.ts', 'apps/studio/src/semanticGraphDraft.ts',
   'apps/studio/src/ProductionDesignWorkspace.tsx', 'crates/service/examples/studio_review_session.rs',
   'crates/native/examples/native-graph-review-session.rs', 'crates/native/src/production/transport_custody.rs',
