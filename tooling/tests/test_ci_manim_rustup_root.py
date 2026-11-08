@@ -44,7 +44,13 @@ class PrivateRustupRootTests(unittest.TestCase):
         if cls.bash is None:
             raise AssertionError("Bash is required to execute the actual workflow preparation")
         cls.text = WORKFLOW.read_text(encoding="utf-8")
-        cls.preparation = step(cls.text, PREPARE)
+        original = cls.text.split("  native-manim-roundtrip:\n", 1)
+        if len(original) != 2 or cls.text.count("  native-manim-roundtrip:\n") != 1:
+            raise AssertionError("Original Manim job identity is not unique")
+        cls.native = original[1].split("  affected-rust-diagnostics:\n", 1)[0]
+        cls.resume = cls.text.split("  native-manim-resume:\n", 1)[1].split(
+            "  native-manim-roundtrip:\n", 1)[0]
+        cls.preparation = step(cls.native, PREPARE)
         cls.script = shell(cls.preparation)
 
     def setUp(self):
@@ -132,7 +138,11 @@ class PrivateRustupRootTests(unittest.TestCase):
         self.assertLess(native.index("Start one editable outer clock before preparation"),
                         native.index(PREPARE))
         self.assertIn("timeout-minutes: 1\n", self.preparation)
-        admission = step(self.text, ADMIT)
+        resume_preparation = step(self.resume, PREPARE)
+        self.assertIn("timeout-minutes: 1\n", resume_preparation)
+        self.assertIn("RUSTUP_HOME", resume_preparation)
+        self.assertLess(self.resume.index(PREPARE), self.resume.index(ADMIT))
+        admission = step(self.native, ADMIT)
         self.assertIn("steps.editable_outer_origin.outcome == 'success'", admission)
         self.assertIn("native_manim_editable_outer.py admit-action --label toolchain", admission)
         action = native.split("- uses: " + ACTION + "\n", 1)[1].split("\n      - ", 1)[0]

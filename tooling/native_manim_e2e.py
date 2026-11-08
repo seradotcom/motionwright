@@ -896,19 +896,14 @@ def checked_static_originals(native, seeded, evidence):
 
 
 def stage_phase_binaries(binary_root, reuse, *, driver_source=None, runner_source=None):
-    """Stage original native binaries once and preserve them across phases.
-
-    The same live owner must retain the exact original source bytes. Neither
-    fresh staging nor subsequent reuse is permitted to overwrite an occupied
-    root or silently replace a previously admitted Driver/runner.
-    """
+    """Stage once in the owned root, then verify its unchanged pinned bytes."""
     driver = binary_root / "motionwright-manim-community-driver"
     runner = binary_root / "motionwright-manim-runner"
     pairs = ((MW_DRIVER if driver_source is None else driver_source, driver),
              (MW_RUNNER if runner_source is None else runner_source, runner))
     if reuse:
-        if any(not target.is_file() or target.is_symlink()
-               or digest(target) != digest(source) for source, target in pairs):
+        if any(not target.is_file() or target.is_symlink() or digest(target) != digest(source)
+               for source, target in pairs):
             raise ValueError("editable original admitted binaries changed")
     else:
         if any(target.exists() or target.is_symlink() for _, target in pairs):
@@ -921,9 +916,27 @@ def stage_phase_binaries(binary_root, reuse, *, driver_source=None, runner_sourc
     return driver, runner
 
 
-def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None):
+def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None, resume_cycle=None,
+                recovery_cycle=None):
     camera = args.scenario == "camera120"
-    editable = args.scenario == "editable-source-cycle"
+    recovery = args.scenario == "recovery-runtime-cycle"
+    if recovery != (recovery_cycle is not None) or (recovery and any(
+            value is not None for value in (editable_cycle, resume_cycle, source_cycle, graph_cycle))):
+        raise ValueError("recovery runtime phases require their explicit four-phase owner")
+    if recovery:
+        from native_manim_resume_transfer import hosted_context
+        if hosted_context() != recovery_cycle["current"] or recovery_cycle.get("recovery_runtime_only") is not True:
+            raise ValueError("recovery runtime phases require the admitted retained source context")
+        editable_cycle = recovery_cycle
+    resume = args.scenario == "editable-source-resume"
+    if resume != (resume_cycle is not None) or (resume and editable_cycle is not None):
+        raise ValueError("resumed phases require the explicit two-phase continuation owner")
+    if resume:
+        from native_manim_resume_transfer import hosted_context
+        if hosted_context() != resume_cycle["current"] or resume_cycle.get("resume_only") is not True:
+            raise ValueError("resumed phases require the admitted original input context")
+        editable_cycle = resume_cycle
+    editable = args.scenario in ("editable-source-cycle", "editable-source-resume", "recovery-runtime-cycle")
     graph = args.scenario == "graph-source-cycle"
     lifecycle = editable or graph
     lifecycle_context = graph_cycle if graph else editable_cycle
@@ -949,6 +962,10 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                           camera_options(args, camera=camera))
     if lifecycle and current != lifecycle_context["current"]:
         raise ValueError("editable cycle context changed between native phases")
+    reuse_lifecycle_binaries = lifecycle and bool(lifecycle_context["history"])
+    if recovery:
+        from native_manim_recovery_cycle import current_owner_has_phase
+        reuse_lifecycle_binaries = current_owner_has_phase(recovery_cycle)
     if source_cycle is not None and current != source_cycle["current"]:
         raise ValueError("camera cycle context changed between native phases")
     evidence = args.evidence_root
@@ -998,9 +1015,15 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                 "output",
                 "motionwright-data",
             ]:
-                if lifecycle and name in ("motionwright-data", "bin"):
+                if recovery and name == "motionwright-data":
+                    path = root / ("reference-data" if recovery_cycle["phase"] in
+                                   ("original-reference", "reopen-original-reference") else "motionwright-data")
+                    if (not path.is_dir() or path.is_symlink() or path.resolve(strict=True) != path
+                            or recovery_cycle["database"] != path / "motionwright.sqlite3"):
+                        raise ValueError("recovery runtime phase changed its rehydrated saved Store")
+                elif lifecycle and name in ("motionwright-data", "bin"):
                     path = root / name
-                    if lifecycle_context["history"]:
+                    if reuse_lifecycle_binaries:
                         if (not path.is_dir() or path.is_symlink()
                                 or path.resolve(strict=True) != path):
                             raise ValueError("editable shared store or pinned binary root changed")
@@ -1093,7 +1116,12 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     "independent_vendor_binary_authentication": False,
                 })
             elif editable:
-                from native_manim_editable_cycle import new_phase_inputs
+                if recovery:
+                    from native_manim_recovery_cycle import new_phase_inputs
+                elif resume:
+                    from native_manim_resume_cycle import new_phase_inputs
+                else:
+                    from native_manim_editable_cycle import new_phase_inputs
                 prepared_editable = new_phase_inputs(
                     editable_cycle, evidence, database, paths["output"], env,
                     capture=captured_json, source_binary=MW_EXAMPLE,
@@ -1121,9 +1149,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                 if seeded.get("primitive_count") != 3:
                     raise AssertionError(f"unexpected Manim seed: {seeded}")
 
-            driver, runner = stage_phase_binaries(
-                paths["bin"], lifecycle and bool(lifecycle_context["history"])
-            )
+            driver, runner = stage_phase_binaries(paths["bin"], reuse_lifecycle_binaries)
 
             manifest = {
                 "manifest_version": 1,
@@ -1388,9 +1414,13 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                         runtime=MANIM_RUNTIME, tooling=ROOT / "tooling", launch=launch,
                     )
                 elif editable:
-                    from native_manim_editable_cycle import (
-                        EVIDENCE_NAME as EDITABLE_EVIDENCE_NAME, finish_phase,
-                    )
+                    from native_manim_editable_cycle import EVIDENCE_NAME as EDITABLE_EVIDENCE_NAME
+                    if recovery:
+                        from native_manim_recovery_cycle import finish_phase
+                    elif resume:
+                        from native_manim_resume_cycle import finish_phase
+                    else:
+                        from native_manim_editable_cycle import finish_phase
                     request_id = (f"editable-{current['run_id']}-{current['run_attempt']}-"
                                   f"{GITHUB_SHA[:12]}-{editable_cycle['short_phase']}")
                     command = [str(MW_EXAMPLE),
