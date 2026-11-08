@@ -156,7 +156,7 @@ def preflight(root, executable, source, *, label="host"):
 
 def checked_run(value, current):
     require(value.get("id") == int(current["run_id"]) and value.get("head_sha") == current["source_sha"]
-            and value.get("head_branch") == transfer.REF.removeprefix("refs/heads/")
+            and value.get("head_branch") in transfer.ALLOWED_HEAD_BRANCHES
             and value.get("run_attempt") == 1 and value.get("event") == "workflow_dispatch"
             and value.get("path") == ".github/workflows/native-manim-e2e.yml"
             and value.get("status") == "in_progress" and value.get("conclusion") is None
@@ -187,7 +187,9 @@ def prepare(args):
     permission = preflight(root, args.gh, source)
     prefix = "/repos/" + transfer.REPOSITORY
     run_raw = get(root, "workflow-run", args.gh, prefix + "/actions/runs/" + run_id)
-    actor_id = checked_run(engine.strict(run_raw), current)
+    observed_run = engine.strict(run_raw)
+    actor_id = checked_run(observed_run, current)
+    source_ref = "refs/heads/" + observed_run["head_branch"]
     require(permission["actor_id"] == actor_id, "resume_host_actor_differs_from_original_run")
     jobs = engine.strict(get(root, "workflow-jobs", args.gh,
                               prefix + "/actions/runs/" + run_id + "/jobs?filter=all&per_page=100"))
@@ -253,7 +255,7 @@ def prepare(args):
                 == retained,
                 "recovery_runtime_host_observed_exact_retained_artifact")
     record = engine.strict(bounded(public / "recipient.json", 16384))
-    recipient = transfer.validate_recipient(record, current, actor_id, gate_sha)
+    recipient = transfer.validate_recipient(record, current, actor_id, gate_sha, expected_ref=source_ref)
     transfer.check_repository_identity(bounded(public / "repository-preflight.original.json", 128 * 1024),
                                        engine.strict(run_raw)["repository"]["id"])
     require(transfer.timestamp(engine.strict(run_raw)["created_at"]) <= transfer.timestamp(record["issued_at"]),
@@ -275,7 +277,7 @@ def prepare(args):
     for filename, (size, digest) in transfer.input_files().items():
         require(sha(bounded(originals / filename, size)) == digest, "resume_host_original_changed_after_seal")
     plan = {"schema": "motionwright.manim.resume.draft-publish-plan/1", "context": current,
-            "actor_id": actor_id, "recipient_artifact": {"id": artifact["id"], "sha256": sha(archive)},
+            "actor_id": actor_id, "source_ref": source_ref, "recipient_artifact": {"id": artifact["id"], "sha256": sha(archive)},
             "recipient_sha256": recipient["sha256"], "source_gate_sha256": gate_sha,
             "public_recipient_sha256": sha(bounded(public / "recipient.json", 16384)),
             "ciphertext": {"name": transfer.ASSET_NAME, "bytes": len(envelope), "sha256": sha(envelope)},
@@ -322,7 +324,8 @@ def publish(args):
     if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
         require(plan.get("runtime_binding") == gate["runtime"], "recovery_runtime_reviewed_binding_changed")
     record = engine.strict(bounded(public / "recipient.json", 16384))
-    transfer.validate_recipient(record, current, plan["actor_id"], gate_sha)
+    transfer.validate_recipient(record, current, plan["actor_id"], gate_sha,
+                                expected_ref=plan["source_ref"])
     require(sha(bounded(public / "recipient.json", 16384)) == plan["public_recipient_sha256"],
             "resume_host_recipient_changed_after_review")
     envelope = bounded(root / transfer.ASSET_NAME, transfer.MAX_CIPHERTEXT)
@@ -333,8 +336,11 @@ def publish(args):
     prefix = "/repos/" + transfer.REPOSITORY
     permission = preflight(root, args.gh, current["source_sha"], label="publish-host")
     require(permission["actor_id"] == plan["actor_id"], "resume_host_actor_changed_before_POST")
-    checked_run(engine.strict(get(root, "publish-live-run", args.gh,
-                                  prefix + "/actions/runs/" + current["run_id"])), current)
+    live_run = engine.strict(get(root, "publish-live-run", args.gh,
+                                prefix + "/actions/runs/" + current["run_id"]))
+    checked_run(live_run, current)
+    require("refs/heads/" + live_run["head_branch"] == plan["source_ref"],
+            "resume_host_live_run_branch_changed_before_POST")
     existing = get(root, "publish-prior-releases", args.gh,
                    prefix + "/releases?per_page=100&page=1", limit=2 * 1024 * 1024)
     require(transfer.find_draft(existing, record, current) is None, "resume_host_existing_draft_reconcile_no_POST")
@@ -350,7 +356,8 @@ def publish(args):
     readback = engine.strict(get(root, "draft-id-readback", args.gh, prefix + "/releases/" + str(release_id)))
     transfer.validate_release_header(readback, record, current)
     require(readback["id"] == release_id and readback.get("assets") == [], "resume_host_draft_id_readback_changed")
-    transfer.validate_recipient(record, current, plan["actor_id"], gate_sha)
+    transfer.validate_recipient(record, current, plan["actor_id"], gate_sha,
+                                expected_ref=plan["source_ref"])
     upload_url = "https://uploads.github.com" + prefix + "/releases/" + str(release_id) + "/assets?name=" + transfer.ASSET_NAME
     uploaded = gh(root, "upload-input-POST", args.gh,
                   ["--method", "POST", upload_url, "-H", "Content-Type: application/octet-stream",

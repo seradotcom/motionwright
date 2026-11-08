@@ -26,9 +26,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import ci_private_evidence as engine
+from native_manim_editable_outer import RESUME_ALLOWED_REFS
 
 REPOSITORY = "seradotcom/motionwright"
 REF = "refs/heads/fix/a4-manim-recovery-minimal-20261107"
+ALLOWED_HEAD_BRANCHES = frozenset(ref.removeprefix("refs/heads/") for ref in RESUME_ALLOWED_REFS)
 JOB = "native-manim-resume"
 RESUME_SCENARIO = "editable-source-resume"
 RECOVERY_SCENARIO = "recovery-runtime-cycle"
@@ -106,7 +108,7 @@ def hosted_context():
     from native_manim_editable_outer import current_context
     current = current_context()
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
-            and os.environ.get("GITHUB_REF") == REF
+            and os.environ.get("GITHUB_REF") in RESUME_ALLOWED_REFS
             and os.environ.get("GITHUB_JOB") == JOB
             and os.environ.get("MANIM_NATIVE_SCENARIO") in (RESUME_SCENARIO, RECOVERY_SCENARIO)
             and os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE") == "true"
@@ -158,7 +160,9 @@ def manifest(current, recipient_sha256):
     return value
 
 
-def recipient_record(recipient, current, actor_id, issued, expires, source_gate_sha256):
+def recipient_record(recipient, current, actor_id, issued, expires, source_gate_sha256, *, ref=None):
+    ref = os.environ.get("GITHUB_REF", REF) if ref is None else ref
+    require(ref in RESUME_ALLOWED_REFS, "resume_recipient_ref_not_allowed")
     engine.public_key(recipient)
     engine.validate_context(current)
     require(type(actor_id) is str and re.fullmatch(r"[1-9][0-9]*", actor_id), "resume_actor_id")
@@ -167,7 +171,7 @@ def recipient_record(recipient, current, actor_id, issued, expires, source_gate_
     require(timedelta(0) < timestamp(expires) - timestamp(issued) <= timedelta(seconds=2190),
             "resume_key_lifetime")
     value = {"schema": "motionwright.manim.resume.recipient/1", "context": current,
-            "repository": REPOSITORY, "ref": REF, "job": JOB, "actor_id": actor_id,
+            "repository": REPOSITORY, "ref": ref, "job": JOB, "actor_id": actor_id,
             "recipient": recipient, "issued_at": issued, "expires_at": expires,
             "source_gate_sha256": source_gate_sha256,
             "draft_discovery": "bounded-list-then-release-id",
@@ -187,10 +191,16 @@ def recipient_record(recipient, current, actor_id, issued, expires, source_gate_
     return value
 
 
-def validate_recipient(value, current, actor_id, source_gate_sha256, *, clock=None):
+def validate_recipient(value, current, actor_id, source_gate_sha256, *, clock=None, expected_ref=None):
     require(type(value) is dict, "resume_recipient_object")
+    bound_ref = value.get("ref") if expected_ref is None else expected_ref
+    require(bound_ref in RESUME_ALLOWED_REFS, "resume_recipient_ref_not_allowed")
+    # Runner and external custodian must independently agree on the original ref.
+    if os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_JOB") == JOB:
+        require(bound_ref == os.environ.get("GITHUB_REF"), "resume_recipient_job_ref_changed")
     expected = recipient_record(value.get("recipient"), current, actor_id,
-                                value.get("issued_at"), value.get("expires_at"), source_gate_sha256)
+                                value.get("issued_at"), value.get("expires_at"), source_gate_sha256,
+                                ref=bound_ref)
     require(engine.json_bytes(value) == engine.json_bytes(expected), "resume_recipient_exact_context")
     instant = clock or now()
     require(timestamp(value["issued_at"]) - timedelta(seconds=5) <= instant

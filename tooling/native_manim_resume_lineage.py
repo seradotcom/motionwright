@@ -31,7 +31,7 @@ from native_manim_resume_host import bounded, get, private_root, save
 from native_manim_resume_pixels import four_phase_pixels
 from native_manim_resume_runtime import compare as compare_runtime, check as check_runtime
 from native_manim_resume_transfer import (
-    INPUTS, JOB, ORIGIN, REF, REPOSITORY, SDK, SOURCE_RECOVERY, validate_release,
+    ALLOWED_HEAD_BRANCHES, INPUTS, JOB, ORIGIN, REPOSITORY, SDK, SOURCE_RECOVERY, validate_release,
 )
 
 RECIPIENT_SHA = "afbb08aa54131350d14601ccbb111f25e1eec829789818bc70e1e96accb3e4aa"
@@ -65,7 +65,7 @@ def context(source, run_id):
 def completed_run(value, current):
     require(type(value.get("id")) is int and value["id"] == int(current["run_id"])
             and value.get("head_sha") == current["source_sha"] and value.get("run_attempt") == 1
-            and value.get("head_branch") == REF.removeprefix("refs/heads/")
+            and value.get("head_branch") in ALLOWED_HEAD_BRANCHES
             and value.get("event") == "workflow_dispatch" and value.get("status") == "completed"
             and value.get("conclusion") == "success" and value.get("path") == ".github/workflows/native-manim-e2e.yml"
             and value.get("repository", {}).get("full_name") == REPOSITORY,

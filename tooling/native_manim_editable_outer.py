@@ -26,6 +26,12 @@ SEAL_SECONDS = 120
 UPLOAD_SECONDS = 180
 WORK_SECONDS = TOTAL_SECONDS - TERMINAL_SECONDS - SEAL_SECONDS - UPLOAD_SECONDS
 NANOSECOND = 1_000_000_000
+# Only the original development ref and the published integration ref.
+# Never accept main, PR refs, or a run that did not supply its exact SHA.
+RESUME_ALLOWED_REFS = frozenset((
+    "refs/heads/fix/a4-manim-recovery-minimal-20261107",
+    "refs/heads/integrate/phase1-final-composition-20261027",
+))
 BODY_MARKER = "# MANIM_EDITABLE_OUTER_ORIGINAL_BODY\n"
 STREAM_LIMIT = 4 * 1024 * 1024
 WRAPPER_TERM_GRACE = 20
@@ -185,7 +191,7 @@ def current_context():
     original_job = os.environ.get("GITHUB_JOB") == "native-manim-roundtrip"
     resume_job = (os.environ.get("GITHUB_JOB") == "native-manim-resume"
                   and os.environ.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
-                  and os.environ.get("GITHUB_REF") == "refs/heads/fix/a4-manim-recovery-minimal-20261107"
+                  and os.environ.get("GITHUB_REF") in RESUME_ALLOWED_REFS
                   and os.environ.get("MANIM_NATIVE_SCENARIO") in ("editable-source-resume", "recovery-runtime-cycle")
                   and os.environ.get("MW_MANIM_DEVELOPMENT_NATIVE") == "true"
                   and os.environ.get("MW_MANIM_RESUME_EXPECTED_SHA") == os.environ.get("GITHUB_SHA"))
