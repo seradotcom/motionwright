@@ -8461,32 +8461,37 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertNotIn("/private/", public)
 
     def test_graph_context_failure_second_line_is_atomic_closed_and_not_source_code(self):
-        admission = ("Error: GRAPH_SOURCE_ADMISSION_NOT_READY: "
-                     "GRAPH_CONTEXT_INSPECTION_REJECTED / GRAPH_SAVE_CONTEXT_UNAVAILABLE")
         prefix = "GRAPH_CONTEXT_FAILURE: "
         scenarios = (
-            (prefix + "NATIVE / Timeout", "GRAPH_CONTEXT_FAILURE:NATIVE:Timeout"),
-            (prefix + "ADMISSION / NONE", "GRAPH_CONTEXT_FAILURE:ADMISSION:NONE"),
-            (prefix + "CANARY_STAGE / Timeout", None),
-            (prefix + "NATIVE / CANARY_PRIVATE", None),
-            (prefix + "NATIVE / Timeout / CANARY_PRIVATE", None),
-            (prefix + "NATIVE / Timeout CANARY_PRIVATE", None),
-            ('  89 | throw new Error("GRAPH_CONTEXT_FAILURE: NATIVE / Timeout");', None),
+            (prefix + "NATIVE / Timeout", "GRAPH_CONTEXT_FAILURE:NATIVE:Timeout", "primary", "REJECTED"),
+            (prefix + "ADMISSION / NONE", "GRAPH_CONTEXT_FAILURE:ADMISSION:NONE", "primary", "REJECTED"),
+            (prefix + "CANARY_STAGE / Timeout", None, "primary", "REJECTED"),
+            (prefix + "NATIVE / CANARY_PRIVATE", None, "primary", "REJECTED"),
+            (prefix + "NATIVE / Timeout / CANARY_PRIVATE", None, "primary", "REJECTED"),
+            (prefix + "NATIVE / Timeout CANARY_PRIVATE", None, "primary", "REJECTED"),
+            ('  89 | throw new Error("GRAPH_CONTEXT_FAILURE: NATIVE / Timeout");', None, "primary", "REJECTED"),
+            (prefix + "NATIVE / Timeout", None, "cleanup", "REJECTED"),
+            (prefix + "NATIVE / Timeout", None, "primary", "RESOLVED"),
         )
-        for second_line, atomic in scenarios:
-            with self.subTest(second_line=second_line):
+        for second_line, atomic, placement, phase in scenarios:
+            with self.subTest(second_line=second_line, placement=placement, phase=phase):
                 repo, value = self.graph_diagnostic_fixture_report()
                 result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+                admission = ("Error: GRAPH_SOURCE_ADMISSION_NOT_READY: GRAPH_CONTEXT_INSPECTION_" + phase +
+                             " / GRAPH_SAVE_CONTEXT_UNAVAILABLE")
+                primary_message = admission + ("\n" + second_line if placement == "primary" else "")
+                cleanup_message = "Error: OWNER_ERROR:OWNER_CLOSE_FAILED" + (
+                    "\n" + second_line if placement == "cleanup" else "")
                 result["error"] = {
                     "message": "AggregateError: Graph case body and finalization both failed",
                     "errors": [
-                        {"message": admission + "\n" + second_line,
-                         "stack": admission + "\n" + second_line + "\n at " +
+                        {"message": primary_message,
+                         "stack": primary_message + "\n at " +
                                   str(repo / "apps/studio/tests/semantic-graph-service.spec.ts") +
                                   ":73:11\n at /private/CANARY_BODY_PATH:77:9"},
                         {"message": "AggregateError: Store finalization is incomplete",
-                         "errors": [{"message": "Error: OWNER_ERROR:OWNER_CLOSE_FAILED",
-                                     "stack": "Error: OWNER_ERROR:OWNER_CLOSE_FAILED"
+                         "errors": [{"message": cleanup_message,
+                                     "stack": cleanup_message +
                                               "\n at /private/CANARY_CLEANUP_PATH:88:2"}]},
                     ],
                 }
@@ -8494,7 +8499,7 @@ class GraphR74JoinTests(unittest.TestCase):
                      mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
                     observed = gate.graph_observed_playwright_failure(
                         repo, Path("report"), self.graph_failed_case_command())
-                expected = ["GRAPH_SOURCE_ADMISSION_NOT_READY", "GRAPH_CONTEXT_INSPECTION_REJECTED",
+                expected = ["GRAPH_SOURCE_ADMISSION_NOT_READY", "GRAPH_CONTEXT_INSPECTION_" + phase,
                             "GRAPH_SAVE_CONTEXT_UNAVAILABLE"]
                 if atomic is not None:
                     expected.append(atomic)

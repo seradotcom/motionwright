@@ -10445,6 +10445,7 @@ def graph_observed_playwright_failure(repo, report_path, command):
                         codes.append(code)
             # Playwright codeframes quote the throw expression too. Only an
             # actual error line can carry observed terminal and Save gate values.
+            rejected_context = False
             for match in re.finditer(r"(?m)^[ \t]*(?:Error: )?"
                                      + re.escape(admission_marker) + r"([^\r\n]*)", text):
                 fields = match[1].split(" / ") if 0 < len(match[1]) <= 512 else []
@@ -10454,14 +10455,17 @@ def graph_observed_playwright_failure(repo, report_path, command):
                 if (not gates or len(gates) > len(save_gate_codes) or len(gates) != len(set(gates))
                         or not all(gate in save_gate_codes for gate in gates)):
                     gates = ["GRAPH_SAVE_GATE_UNRECOGNIZED"]
+                if (terminal == "GRAPH_CONTEXT_INSPECTION_REJECTED" and len(fields) == 2
+                        and fields[1].split(",") == gates):
+                    rejected_context = True
                 for code in (terminal, *gates):
                     if code not in codes:
                         codes.append(code)
-            # Keep a validated stage/code pair atomic; a malformed second line
-            # cannot expose a known subset or become an observation from source.
+            # Only this same primary rejection may carry a closed stage/code.
+            # Cleanup, resolved contexts and malformed lines provide no pair.
             for match in re.finditer(r"(?m)^[ \t]*(?:Error: )?GRAPH_CONTEXT_FAILURE: ([^\r\n]*)", text):
                 fields = match[1].split(" / ") if 0 < len(match[1]) <= 128 else []
-                if (len(fields) == 2 and fields[0] in context_failure_stages
+                if (rejected_context and len(fields) == 2 and fields[0] in context_failure_stages
                         and fields[1] in context_failure_codes):
                     code = "GRAPH_CONTEXT_FAILURE:" + fields[0] + ":" + fields[1]
                     if code not in codes:
