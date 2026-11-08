@@ -10,7 +10,7 @@ export const FINAL_SCHEMA = JSON.parse(readFileSync(path.join(ROOT, 'schemas/fin
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const REQUEST_ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(0|[1-9][0-9]*)$/;
 export const ERROR_CODES = new Set(['SPEC_INVALID','SOURCE_MISMATCH','RUNTIME_INVALID','STORE_INVALID','BINARY_MISMATCH',
-  'OWNER_START_FAILED','CLIENT_LIMIT','REQUEST_INVALID','CLIENT_START_FAILED','SERVICE_BARRIER_INVALID','OWNER_CLOSE_FAILED',
+  'OWNER_START_FAILED','CLIENT_LIMIT','REQUEST_INVALID','CLIENT_START_FAILED','SERVICE_BARRIER_INVALID','PROVIDER_RELEASE_ORIGINAL_MISSING','OWNER_CLOSE_FAILED',
   'CUSTODY_FAILED','DEADLINE_EXCEEDED','CANCELLED','INTERNAL_ERROR']);
 // Closed source-only diagnostic labels. No private cause, child data or path
 // may be projected through the public Graph failure reporter.

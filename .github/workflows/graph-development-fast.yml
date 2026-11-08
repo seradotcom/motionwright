@@ -141,6 +141,7 @@ jobs:
             tooling.tests.test_ci_graph_dev_native_budget \
             tooling.tests.test_ci_graph_r74_singlecase \
             tooling.tests.test_graph_owner_native_quiescence \
+            tooling.tests.test_graph_owner_final_error_catalog \
             tooling.tests.test_graph_owner_session_ticket_custody \
             tooling.tests.test_graph_owner_release_lease_roster \
             tooling.tests.test_ci_graph_readonly_archive -v \
