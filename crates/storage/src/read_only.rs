@@ -418,6 +418,90 @@ mod tests {
         assert_eq!(writer.load_project(project.id).unwrap(), project);
     }
 
+    /// The independent Native/Studio reader must refuse physical history
+    /// corruption even when a paginated cursor would hide the bad row.
+    /// The full writer's history guard must remain active through the strict
+    /// read-only API on the very same SQLite/CAS source.
+    #[test]
+    fn reader_rejects_negative_history_hidden_by_page_and_cursor() {
+        use crate::{Change, RevisionStamp};
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let mut project = writer
+            .create_named_project("Original graph source")
+            .unwrap();
+        let unrelated = writer
+            .create_named_project("Independent healthy source")
+            .unwrap();
+
+        for n in 1..=2 {
+            let outcome = writer
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("graph-event-{n}"),
+                    &Change::RenameProject {
+                        title: format!("Graph source {n}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        let unrelated_outcome = writer
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "unrelated-healthy-event",
+                &Change::RenameProject {
+                    title: "Still healthy".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(unrelated_outcome.project.revision, 1);
+
+        // A CHECK constraint does not forbid a negative revision here;
+        // it is below the cursor and below the newest-first page limit.
+        assert_eq!(
+            writer
+                .conn
+                .execute(
+                    "UPDATE events SET revision=-1 WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        let original_identity = writer.database_file_identity().unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+
+        let original_inventory = inventory(directory.path());
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), original_identity);
+        assert_eq!(reader.project(project.id).unwrap(), project);
+        for cursor in [0, 1, 2, u64::MAX] {
+            for limit in [1, 100] {
+                assert!(
+                    matches!(
+                        reader.project_history(project.id, cursor, limit),
+                        Err(StorageError::InvalidBackup(ref message))
+                            if message.contains("negative event revision")
+                    ),
+                    "strict independent reader must refuse hidden original event, cursor={cursor}, limit={limit}"
+                );
+            }
+        }
+        assert_eq!(
+            reader.project_history(unrelated.id, 0, 1).unwrap().len(),
+            1,
+            "corrupt Graph source must not revoke an independent healthy project"
+        );
+        drop(reader);
+        assert_eq!(inventory(directory.path()), original_inventory);
+    }
+
     #[test]
     fn reader_does_not_create_missing_database_or_cas() {
         let directory = tempfile::tempdir().unwrap();
