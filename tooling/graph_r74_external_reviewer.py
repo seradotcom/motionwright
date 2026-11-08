@@ -346,7 +346,8 @@ def main(argv=None):
     receipt = review(args.artifact_path, args.private_key, args.trusted_product,
          args.trusted_semwright, args.source_sha, args.semwright_sha, args.run_id)
     data = seal.json_bytes(receipt)
-    seal.new_bytes(args.output, data, mode=0o600)
+    from review_original_io import new_bytes
+    new_bytes(args.output, data, mode=0o600)
     print(json.dumps({"decision": receipt["decision"], "receipt_sha256": sha(data),
        "index_sha256":receipt["index_sha256"],"case":"graph-flow",
        "G2":"NOT_GRANTED"},sort_keys=True))

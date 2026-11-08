@@ -48,6 +48,12 @@ exit receipts, and `transport-result.original.json` remain in the private output
 directory. A failure may leave diagnostic originals but produces no successful
 result; choose a fresh directory for another separately authorized observation.
 
+Windows original I/O keeps pathname and descriptor timestamps in their own
+metadata domains and checks the actual change time on the retained handle.
+The reader excludes shared writers and deletion. New originals close their
+exclusive writer before readback, then match the created file identity and
+exact bytes. POSIX I/O and the producer's original capture format are unchanged.
+
 Pass the retained ZIP to the separately supplied offline reviewer on its
 review host, using independently trusted product and SDK clones and
 platform-appropriate protected key custody:
