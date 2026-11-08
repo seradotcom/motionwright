@@ -44,6 +44,7 @@ jobs:
       - name: Check actual owner permissions and alias rejection
         run: python -B -m unittest tooling.tests.test_review_private_key -v
       - name: Prepare pinned original transport dependency
-        run: python -m pip install --only-binary=:all: 'cryptography==50.0.2'
+        run: |
+          python -m pip install --only-binary=:all: 'cryptography==50.0.2'
       - name: Check original GitHub artifact transport without live secrets
         run: python -B -m unittest tooling.tests.test_graph_review_artifact -v
