@@ -1626,19 +1626,29 @@ impl Store {
         Ok(outcome)
     }
 
-    /// Refuse damaged original event headers even when the selected LIMIT or
-    /// cursor hides them. All probes are project-scoped; nonpositive revisions
-    /// use the existing (project_id,revision) index; type and kind checks
-    /// scan only this project's events. No journal, locks, or CAS are changed.
+    /// Refuse damaged original event headers and syntactically invalid
+    /// original JSON payloads even when LIMIT or a cursor hides the row.
+    /// All probes are project-scoped; nonpositive revisions use the existing
+    /// (project_id,revision) index; other checks scan this project's events.
+    /// The payload probe checks JSON storage form, not full Change semantics.
+    /// No journal, locks, or CAS are changed.
     fn reject_hidden_corrupt_event_header(&self, id: Uuid) -> Result<()> {
-        let (bad_revision, untyped_revision, bad_kind): (i64, i64, i64) = self.conn.query_row(
-            "SELECT
+        let (bad_revision, untyped_revision, bad_kind, bad_payload): (i64, i64, i64, i64) =
+            self.conn.query_row(
+                "SELECT
                 EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND revision<=0),
                 EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND typeof(revision)<>'integer'),
-                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND kind<>'change')",
-            [id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND kind<>'change'),
+                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND
+                    CASE
+                        WHEN typeof(payload_json)<>'text' THEN 1
+                        WHEN json_valid(payload_json)<>1 THEN 1
+                        WHEN json_type(payload_json)<>'object' THEN 1
+                        ELSE 0
+                    END)",
+                [id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
         if bad_revision != 0 {
             return Err(StorageError::InvalidBackup(
                 "negative event revision or zero event revision in SQLite history".into(),
@@ -1652,6 +1662,11 @@ impl Store {
         if bad_kind != 0 {
             return Err(StorageError::InvalidBackup(
                 "non-change event kind in SQLite history".into(),
+            ));
+        }
+        if bad_payload != 0 {
+            return Err(StorageError::InvalidBackup(
+                "invalid original event payload JSON in SQLite history".into(),
             ));
         }
         // Every successful edit advances the project by exactly one event.
@@ -3648,6 +3663,70 @@ mod tests {
                 store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
                 1,
                 "unrelated history must remain readable"
+            );
+        }
+    }
+
+    /// A hidden original event whose JSON cannot represent a Change must not
+    /// be covered up by a valid later page. Count/revision/kind still match.
+    #[test]
+    fn history_rejects_hidden_invalid_original_payload() {
+        for malformed in ["{invalid json", "[]"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+            let mut project = store
+                .create_named_project("Two original Graph events")
+                .unwrap();
+            let unrelated = store.create_named_project("Unrelated history").unwrap();
+            for revision in 1..=2 {
+                project = store
+                    .apply(
+                        project.id,
+                        &RevisionStamp::from(&project),
+                        &format!("original-payload-{revision}"),
+                        &Change::RenameProject {
+                            title: format!("Original revision {revision}"),
+                        },
+                    )
+                    .unwrap()
+                    .project;
+            }
+            store
+                .apply(
+                    unrelated.id,
+                    &RevisionStamp::from(&unrelated),
+                    "unrelated-good",
+                    &Change::RenameProject {
+                        title: "Valid unrelated event".into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .conn
+                    .execute(
+                        "UPDATE events SET payload_json=?1 WHERE project_id=?2 AND revision=1",
+                        params![malformed, project.id.to_string()],
+                    )
+                    .unwrap(),
+                1
+            );
+            // Both pages show only the valid revision 2; the malformed
+            // original revision 1 is invisible to the requested cursor.
+            for result in [
+                store.event_records_through(project.id, project.revision, 1),
+                store.event_records_since(project.id, 1, 1),
+            ] {
+                assert!(
+                    matches!(result, Err(StorageError::InvalidBackup(ref reason))
+                        if reason.contains("event payload")),
+                    "hidden invalid original payload {malformed:?} must reject history: {result:?}"
+                );
+            }
+            assert_eq!(
+                store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
+                1,
+                "valid other project history remains readable"
             );
         }
     }
