@@ -4,10 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Source contracts, static scene, camera, or an original editable-source cycle
+        description: Source contracts, a build-only recovery tool, or an original Native scene/cycle
         type: choice
-        options: [source-contracts, static-scene, camera120, camera120-source-cycle, editable-source-cycle]
+        options: [source-contracts, source-recovery-tool-only, static-scene, camera120, camera120-source-cycle, editable-source-cycle, editable-source-resume, recovery-runtime-cycle]
         default: source-contracts
+      recovery_continuation:
+        description: Reuse the authenticated first reference and execute only the three unstarted phases
+        type: choice
+        options: [none, retained-n1-42369864661]
+        default: none
+      source_recovery_expected_sha:
+        description: Exact checkout SHA for source-recovery-tool-only; never authorizes Native work
+        type: string
+        required: false
+      resume_expected_sha:
+        description: Exact source SHA for the explicit retained-source continuation or new-runtime comparison
+        type: string
+        required: false
       development_native_diagnostics:
         description: Explicit editable Native diagnosis; defers historical acceptance only, never grants F/G2/G3 or release
         type: boolean
@@ -44,6 +57,17 @@ on:
       - 'crates/hyperframes-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_manim_resume*.py'
+      - 'tooling/native_manim_recovery*.py'
+      - 'tooling/native_manim_frozen_runtime.py'
+      - 'tooling/native_manim_frozen_runtime_restore.py'
+      - 'tooling/native_manim_frozen_runtime_host.py'
+      - 'tooling/requirements/manim-frozen-runtime-42361964881-*.json'
+      - 'tooling/requirements/manim-runtime-observed-42357390508.json'
+      - 'tooling/tests/test_native_manim_recovery.py'
+      - 'tooling/tests/test_native_manim_frozen_runtime.py'
+      - 'tooling/tests/test_native_manim_runtime_restore.py'
+      - 'tooling/tests/test_native_manim_resume.py'
       - 'tooling/native_manim_editable_cycle.py'
       - 'tooling/native_manim_editable_outer.py'
       - 'tooling/native_manim_editable_pixels.py'
@@ -76,7 +100,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle' || inputs.scenario == 'editable-source-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  group: ${{ (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle' || inputs.scenario == 'editable-source-cycle' || inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
   cancel-in-progress: false
 
 defaults:
@@ -93,6 +117,7 @@ env:
 
 jobs:
   source-contracts:
+    if: inputs.scenario != 'source-recovery-tool-only' && inputs.scenario != 'editable-source-resume' && inputs.scenario != 'recovery-runtime-cycle'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -106,11 +131,14 @@ jobs:
         env:
           WORKFLOW_EVENT: ${{ github.event_name }}
           MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
+          MW_MANIM_RECOVERY_CONTINUATION: ${{ inputs.recovery_continuation || 'none' }}
         run: |
           python3 -B - <<'PY'
           import os
           event = os.environ["WORKFLOW_EVENT"]
           scenario = os.environ["MANIM_REQUESTED_SCENARIO"]
+          if os.environ["MW_MANIM_RECOVERY_CONTINUATION"] != "none":
+              raise SystemExit("A retained reference requires recovery-runtime-cycle")
           if event == "workflow_dispatch":
               if scenario not in {"source-contracts", "static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle"}:
                   raise SystemExit("Unsupported Manim workflow scenario")
@@ -129,14 +157,14 @@ jobs:
           if [[ "${MW_MANIM_DEVELOPMENT_NATIVE-false}" != "false"
                 && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true"
                 && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-a1-211feef-20261101-a4:editable-source-cycle:1:true"
-                && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:editable-source-cycle:1:true" ]]; then
+                && "$selection" != "seradotcom/motionwright:workflow_dispatch:refs/heads/fix/a4-manim-recovery-minimal-20261107:editable-source-cycle:1:true" ]]; then
             printf '%s\n' 'Development Native diagnosis requires one explicit admitted editable-source-cycle attempt' >&2
             exit 2
           fi
           # Development preserves historical acceptance without renewing it.
           # Every causal source/runtime/Host/custody/pixel gate below still runs.
           case "$selection" in
-            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-a1-211feef-20261101-a4:editable-source-cycle:1:true|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:editable-source-cycle:1:true)
+            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/a4-manim-recovery-minimal-20261107:source-contracts:1:false|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:editable-source-cycle:1:true|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/native-production-a1-211feef-20261101-a4:editable-source-cycle:1:true|seradotcom/motionwright:workflow_dispatch:refs/heads/fix/a4-manim-recovery-minimal-20261107:editable-source-cycle:1:true)
               python3 -B - <<'PY'
           import json
           import os
@@ -683,7 +711,7 @@ jobs:
           import time
 
           # Replaced with exact nominal names from the reviewed source export.
-          RUST_CASES = {'example24': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_cycle::tests::source_edit_commit_accepts_real_saved_commit_metadata', 'editable_cycle::tests::source_edit_commit_rejects_a_non_text_change', 'editable_cycle::tests::source_edit_commit_rejects_different_text_and_generation', 'editable_cycle::tests::source_edit_commit_rejects_extra_revision_and_incorrect_branch_head', 'editable_cycle::tests::source_edit_commit_rejects_unrelated_content_or_source_assets', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_cycle::tests::pending_source_rejects_wrong_clock_extra_label_and_serialized_write_claims', 'graph_cycle::tests::rejected_source_destination_does_not_open_or_create_a_database', 'graph_cycle::tests::report_and_source_originals_keep_their_distinct_fixed_byte_budgets', 'graph_cycle::tests::source_seed_keeps_graph_absent_until_the_original_bound_provider_save', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
+          RUST_CASES = {'example24': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::recovery::tests::committed_edit_recovery_exports_saved_source_without_another_commit', 'editable_cycle::recovery::tests::committed_edit_recovery_missing_apply_stays_unresolved_without_a_retry', 'editable_cycle::recovery::tests::committed_edit_recovery_missing_receipt_never_becomes_known', 'editable_cycle::recovery::tests::committed_edit_recovery_never_overwrites_a_retained_report', 'editable_cycle::recovery::tests::committed_edit_recovery_rejects_changed_original_bundle', 'editable_cycle::recovery::tests::committed_source_resume_default_cas_reopens_in_fresh_store', 'editable_cycle::recovery::tests::committed_source_resume_existing_or_shared_root_is_not_reinitialized', 'editable_cycle::recovery::tests::committed_source_resume_readback_rejects_changed_committed_receipt', 'editable_cycle::reference::tests::retained_reference_readback_rejects_changed_source_shared_store_and_missing_native', 'editable_cycle::reference::tests::retained_reference_source_reopens_without_reapplying_events', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_cycle::tests::source_edit_commit_accepts_real_saved_commit_metadata', 'editable_cycle::tests::source_edit_commit_rejects_a_non_text_change', 'editable_cycle::tests::source_edit_commit_rejects_different_text_and_generation', 'editable_cycle::tests::source_edit_commit_rejects_extra_revision_and_incorrect_branch_head', 'editable_cycle::tests::source_edit_commit_rejects_unrelated_content_or_source_assets', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_cycle::tests::pending_source_rejects_wrong_clock_extra_label_and_serialized_write_claims', 'graph_cycle::tests::rejected_source_destination_does_not_open_or_create_a_database', 'graph_cycle::tests::report_and_source_originals_keep_their_distinct_fixed_byte_budgets', 'graph_cycle::tests::source_seed_keeps_graph_absent_until_the_original_bound_provider_save', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
 
 
           def rust_need(value, message):
@@ -843,7 +871,7 @@ jobs:
                   after = source_state()
                   record["source_after"] = after
                   rust_need(after == before, "Source changed while compiling/discovering/executing Rust contracts")
-                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=36)
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=46)
               except BaseException as exc:
                   if uncertain:
                       record["status"] = "UNKNOWN_NO_RETRY"
@@ -858,6 +886,25 @@ jobs:
 
           run_named_rust_contracts()
           PY
+
+      - name: Retain public source-recovery executable identity
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'source-contracts'
+        env:
+          MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python3 -B -m unittest discover -s tooling/tests -p 'test_manim_source_recovery_tool.py' -v
+          python3 -B tooling/retain_manim_source_recovery_tool.py
+
+      - name: Upload public source-recovery executable
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'source-contracts'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-source-recovery-tool-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-source-recovery-tool/native-manim-e2e
+            ${{ runner.temp }}/manim-source-recovery-tool/tool-identity.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Retain original source-contract reports
         if: always()
@@ -877,6 +924,781 @@ jobs:
             ${{ runner.temp }}/manim-scene-publication-g0/
             ${{ runner.temp }}/manim-source284-admission/
             ${{ runner.temp }}/manim-rust-source-contracts/
+          if-no-files-found: error
+          retention-days: 14
+
+  source-recovery-tool:
+    name: Build source recovery tool only (no tests or Native)
+    if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'source-recovery-tool-only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_TERM_COLOR: never
+      MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
+      MANIM_EXPECTED_SOURCE_SHA: ${{ inputs.source_recovery_expected_sha }}
+      MW_MANIM_RECOVERY_CONTINUATION: ${{ inputs.recovery_continuation || 'none' }}
+      MANIM_AFFECTED_RUST_DIAGNOSTICS: ${{ inputs.affected_rust_diagnostics && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind unchanged Rust inputs to the 41 original tests before building
+        run: |
+          test "$MW_MANIM_RECOVERY_CONTINUATION" = "none"
+          python3 -B tooling/retain_manim_source_recovery_tool.py --verify-reuse-only
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Restore the existing source-contracts dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-manim-1.98.1
+          shared-key: source-contracts
+          save-if: 'false'
+
+      - name: Build the one unchanged recovery executable
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-native --example native-manim-e2e 2>&1 \
+            | tee "$RUNNER_TEMP/manim-source-recovery-build.log"
+
+      - name: Retain the compiled original with bounded streaming readback
+        run: python3 -B tooling/retain_manim_source_recovery_tool.py
+
+      - name: Upload public source-recovery executable
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-source-recovery-tool-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-source-recovery-tool/native-manim-e2e
+            ${{ runner.temp }}/manim-source-recovery-tool/tool-identity.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain original build and per-predicate custody diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-source-recovery-build-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-source-recovery-reuse-check.json
+            ${{ runner.temp }}/manim-source-recovery-build.log
+            ${{ runner.temp }}/manim-source-recovery-tool-attempt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  native-manim-resume:
+    if: github.event_name == 'workflow_dispatch' && (inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Draft visibility requires repository push access. The token enters only
+    # the GET-only artifact/transport steps and never the Native owner environment.
+    permissions:
+      contents: write
+      actions: read
+    env:
+      MANIM_NATIVE_SCENARIO: ${{ inputs.scenario }}
+      MW_MANIM_RESUME_EXPECTED_SHA: ${{ inputs.resume_expected_sha }}
+      MW_MANIM_RECOVERY_CONTINUATION: ${{ inputs.recovery_continuation || 'none' }}
+      CARGO_BUILD_JOBS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Start the original resume clock before preparation
+        id: resume_outer_origin
+        timeout-minutes: 1
+        run: |
+          python3 -B - <<'PY'
+          import os
+          selected = os.environ["MW_MANIM_RECOVERY_CONTINUATION"]
+          if selected not in {"none", "retained-n1-42369864661"} or (
+                  selected != "none" and os.environ["MANIM_NATIVE_SCENARIO"] != "recovery-runtime-cycle"):
+              raise SystemExit("Retained reference continuation requires its exact recovery scenario")
+          PY
+          python3 -B tooling/native_manim_editable_outer.py initialize
+
+      - name: Configure the original 1536 MiB command-tree cap and 512 MiB reserve
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_editable_outer.py" \
+            workflow-step --label resume-resources --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          sudo -n -E /usr/bin/python3 -B tooling/native_manim_resume_resources.py initialize \
+            --uid "$(id -u)" --gid "$(id -g)"
+
+      - name: Observe actual nonroot entry before building or creating a key
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label resume-resource-probe --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          /usr/bin/python3 -B -c 'import os; assert os.getuid() == os.geteuid() != 0; print("NONROOT_CGROUP_ENTRY_PROBED")'
+
+      - name: Install pinned private-custody test dependencies outside the checkout
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label install-custody --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          python3 -m venv "$RUNNER_TEMP/manim-custody-venv"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -c \
+            'import PIL; assert PIL.__version__ == "10.2.0"'
+
+      - name: Validate one editable dispatch and public recovery key
+        if: github.event_name == 'workflow_dispatch' && (inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle')
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label validate-editable --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test ! -e "$RUNNER_TEMP/manim-resume-private-$GITHUB_SHA"
+          test ! -e "$RUNNER_TEMP/manim-resume-sealed-$GITHUB_SHA"
+          test ! -e "$RUNNER_TEMP/manim-recovery-private-$GITHUB_SHA"
+          test ! -e "$RUNNER_TEMP/manim-recovery-sealed-$GITHUB_SHA"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import public_key
+          public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+                      "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          PY
+
+      - name: Verify only the changed resume predicates and original outer regression controls
+        env:
+          MW_MANIM_RECOVERY_CONTINUATION: 'none'
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label resume-python --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          MANIM_NATIVE_SCENARIO=editable-source-resume "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+            -s tooling/tests -p test_native_manim_resume.py -v
+          MANIM_NATIVE_SCENARIO=editable-source-resume PYTHONPATH=tooling "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest \
+            test_native_manim_editable_cycle test_native_manim_editable_outer_custody -v
+          MANIM_NATIVE_SCENARIO=editable-source-resume "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+            -s tooling/tests -p test_native_manim_editable_workflow.py -v
+          if [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            MANIM_NATIVE_SCENARIO=editable-source-resume "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+              -s tooling/tests -p test_native_manim_recovery.py -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+              -s tooling/tests -p test_native_manim_frozen_runtime.py -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest \
+              tooling.tests.test_native_manim_runtime_restore -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+              -s tooling/tests -p test_native_manim_retained_reference.py -v
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover \
+              -s tooling/tests -p test_native_manim_recovery_lineage.py -v
+          fi
+
+      - name: Resolve exact Semwright source pin
+        id: pin
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label resolve-pin --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Admit sdk-checkout within the original editable deadline
+        id: editable_sdk_budget
+        if: (inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && steps.resume_outer_origin.outcome == 'success'
+        timeout-minutes: 1
+        run: |
+          python3 -B tooling/native_manim_editable_outer.py admit-action --label sdk-checkout
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: ${{ fromJSON((inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && steps.editable_sdk_budget.outputs.minutes || '45') }}
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _semwright
+          persist-credentials: false
+
+      - name: Verify immutable source identities
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label verify-sources --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+          python3 tooling/source_policy.py
+
+      - name: Prepare isolated Rust toolchain root
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test -n "$RUNNER_TEMP"
+          RUSTUP_HOME="$RUNNER_TEMP/manim-native-rustup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$RUSTUP_HOME"
+          mkdir -m 700 "$RUSTUP_HOME"
+          printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
+
+      - name: Admit toolchain within the original editable deadline
+        id: editable_toolchain_budget
+        if: (inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && steps.resume_outer_origin.outcome == 'success'
+        timeout-minutes: 1
+        run: |
+          python3 -B tooling/native_manim_editable_outer.py admit-action --label toolchain
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        timeout-minutes: ${{ fromJSON((inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && steps.editable_toolchain_budget.outputs.minutes || '45') }}
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Admit restoration of the existing source-contracts target cache
+        id: resume_cache_budget
+        timeout-minutes: 1
+        run: python3 -B tooling/native_manim_editable_outer.py admit-action --label resume-cache
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        timeout-minutes: ${{ fromJSON(steps.resume_cache_budget.outputs.minutes) }}
+        # RUSTUP_HOME is hashed by this action. Hide only its per-run path
+        # while its actual rustc/rustup/cargo commands keep the selected root.
+        env:
+          RUSTUP_HOME: ''
+        with:
+          key: motionwright-native-manim-1.98.1
+          shared-key: ${{ inputs.scenario == 'recovery-runtime-cycle' && format('source-contracts-manim-sdk-{0}', steps.pin.outputs.sha) || 'source-contracts' }}
+          workspaces: |
+            . -> target
+            ${{ inputs.scenario == 'recovery-runtime-cycle' && '_semwright -> target' || '' }}
+          cmd-format: 'env RUSTUP_HOME=${{ runner.temp }}/manim-native-rustup-${{ github.run_id }}-${{ github.run_attempt }} {0}'
+          cache-workspace-crates: ${{ inputs.scenario == 'recovery-runtime-cycle' }}
+          save-if: ${{ inputs.scenario == 'recovery-runtime-cycle' }}
+          cache-on-failure: 'false'
+
+      - name: Install sandbox and Manim Community build dependencies
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label install-system --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap ffmpeg fontconfig libcairo2-dev libpango1.0-dev pkg-config \
+            python3-pip python3-dev libpipewire-0.3-dev clang
+          bwrap --version
+          ffmpeg -version | head -1
+          python3 --version
+
+      - name: Provision exact Manim 0.21.0 and observed PyAV 15.0.0 runtime
+        if: inputs.scenario == 'editable-source-resume'
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label provision-runtime --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          set -euo pipefail
+          umask 077
+          runtime="$SEMWRIGHT_TEST_MANIM_RUNTIME"
+          private="$RUNNER_TEMP/manim-runtime-provision"
+          test ! -e "$runtime"
+          mkdir -m 700 "$runtime" "$private"
+          mkdir -m 700 "$runtime/site-packages" "$private/wheels"
+          python3 -m pip download --disable-pip-version-check --no-cache-dir \
+            --no-deps --only-binary=:all: --dest "$private/wheels" 'av==15.0.0' \
+            >"$private/download.stdout.log" 2>"$private/download.stderr.log"
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"])
+          private = Path(os.environ["RUNNER_TEMP"]) / "manim-runtime-provision"
+          wheels = list((private / "wheels").glob("av-15.0.0-*.whl"))
+          if len(wheels) != 1 or not wheels[0].is_file() or wheels[0].is_symlink():
+              raise SystemExit("Require exactly one observed platform PyAV wheel")
+          wheel = wheels[0]
+          original = {"filename": wheel.name, "bytes": wheel.stat().st_size,
+                      "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}
+          with (private / "install.stdout.log").open("xb") as stdout, \
+               (private / "install.stderr.log").open("xb") as stderr:
+              subprocess.run([
+                  sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+                  "--no-cache-dir", "--no-compile", "--target", str(root / "site-packages"),
+                  "--report", str(private / "pip-install.json"),
+                  "manim==0.21.0", "manimpango==0.6.1", str(wheel),
+              ], stdout=stdout, stderr=stderr, check=True, timeout=900)
+          if original["sha256"] != hashlib.sha256(wheel.read_bytes()).hexdigest():
+              raise SystemExit("PyAV wheel changed during installation")
+          with (private / "pyav-wheel.json").open("x", encoding="utf-8") as stream:
+              json.dump(original, stream, sort_keys=True)
+              stream.write("\n")
+          receipt = {
+              "schema": 2, "manim_version": "0.21.0", "pyav_version": "15.0.0",
+              "source_color_policy": "srgb-rgba8-opaque-v1",
+              "color_recipe": "srgb-to-rec709-full12-v2",
+          }
+          with (root / "runtime.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, sort_keys=True)
+              stream.write("\n")
+          PY
+          PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+            python3 - <<'PY'
+          import hashlib, json, os, platform, shutil, subprocess, sys, zipfile
+          from pathlib import Path
+          import av
+          import av._core
+          import av.filter
+          import av.logging
+          import manim
+          import manimpango
+          root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"]).resolve(strict=True)
+          packages = (root / "site-packages").resolve(strict=True)
+          private = Path(os.environ["RUNNER_TEMP"]) / "manim-runtime-provision"
+          if (manim.__version__ != "0.21.0" or manimpango.__version__ != "0.6.1"
+                  or av.__version__ != "15.0.0"):
+              raise SystemExit("Installed Manim/ManimPango/PyAV versions differ from runtime schema 2")
+          if not all(Path(module.__file__).resolve(strict=True).is_relative_to(packages)
+                     for module in (manim, manimpango, av, av._core)):
+              raise SystemExit("Runtime imports escaped the installed bundle")
+          if not {"buffer", "showinfo", "buffersink"} <= set(av.filter.filters_available):
+              raise SystemExit("PyAV native metadata filters are unavailable")
+          if not all(callable(getattr(av.logging, name, None)) for name in (
+                  "get_level", "set_level", "set_libav_level",
+                  "get_skip_repeated", "set_skip_repeated")):
+              raise SystemExit("PyAV native logging observation API is unavailable")
+
+          def file_identity(path):
+              path = path.resolve(strict=True)
+              h = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return {"path": str(path), "bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+          wheel_info = json.loads((private / "pyav-wheel.json").read_bytes())
+          wheel = private / "wheels" / wheel_info["filename"]
+          observed_wheel = file_identity(wheel)
+          if any(observed_wheel[key] != wheel_info[key] for key in ("bytes", "sha256")):
+              raise SystemExit("Observed PyAV wheel identity changed")
+          loaded = set()
+          for line in Path("/proc/self/maps").read_text(encoding="utf-8").splitlines():
+              fields = line.split(maxsplit=5)
+              if len(fields) == 6 and fields[5].startswith("/"):
+                  path = Path(fields[5])
+                  if path.is_file() and path.resolve(strict=True).is_relative_to(packages):
+                      loaded.add(path.resolve(strict=True))
+          native_files = []
+          with zipfile.ZipFile(wheel) as archive:
+              members = archive.namelist()
+              if len(members) != len(set(members)):
+                  raise SystemExit("PyAV wheel contains duplicate members")
+              for path in sorted(loaded):
+                  relative = path.relative_to(packages).as_posix()
+                  if relative not in members:
+                      continue
+                  with path.open("rb") as stream:
+                      if stream.read(4) != b"\x7fELF":
+                          continue
+                  row = file_identity(path)
+                  wheel_sha = hashlib.sha256(archive.read(relative)).hexdigest()
+                  if wheel_sha != row["sha256"]:
+                      raise SystemExit("Loaded PyAV native bytes differ from the observed wheel")
+                  native_files.append({"path": relative, "bytes": row["bytes"],
+                                       "sha256": row["sha256"], "wheel_sha256": wheel_sha})
+          core = Path(av._core.__file__).resolve(strict=True).relative_to(packages).as_posix()
+          if not native_files or core not in {row["path"] for row in native_files}:
+              raise SystemExit("No original wheel binding for the loaded PyAV core")
+          selected_python = Path(os.environ.get("SEMWRIGHT_TEST_PYTHON", sys.executable)).resolve(strict=True)
+          if selected_python != Path(sys.executable).resolve(strict=True):
+              raise SystemExit("Observed Python differs from the selected Driver Host interpreter")
+          binaries = {"python": file_identity(selected_python)}
+          versions = {"python": sys.version}
+          for name in ("ffmpeg", "ffprobe"):
+              selected = os.environ.get("SEMWRIGHT_TEST_" + name.upper()) or shutil.which(name)
+              if not selected:
+                  raise SystemExit("Missing selected native executable: " + name)
+              path = Path(selected).resolve(strict=True)
+              binaries[name] = file_identity(path)
+              versions[name] = subprocess.check_output(
+                  [str(path), "-version"], text=True, timeout=20).splitlines()[0]
+          rows = []
+          for path in sorted(packages.rglob("*")):
+              if path.is_file() and not path.is_symlink():
+                  identity = file_identity(path)
+                  rows.append((path.relative_to(root).as_posix(),
+                               identity["bytes"], identity["sha256"]))
+          payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          receipt = {
+              "schema": "motionwright.manim.runtime-inventory/2",
+              "context": {"source_sha": os.environ["GITHUB_SHA"], "semwright_sha": pin,
+                          "run_id": os.environ["GITHUB_RUN_ID"],
+                          "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]},
+              "manim_version": manim.__version__, "pyav_version": av.__version__,
+              "libav_versions": {name: list(version) for name, version in sorted(av.library_versions.items())},
+              "platform": {"system": platform.system(), "machine": platform.machine()},
+              "runtime_receipt_sha256": file_identity(root / "runtime.json")["sha256"],
+              "binaries": binaries, "binary_versions": versions,
+              "pyav_wheel": wheel_info, "pyav_native_files": native_files,
+              "files": len(rows), "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+              "native_render_performed": False,
+          }
+          destination = Path("verification/native-manim-e2e")
+          destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+          with (destination / "runtime-inventory.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          (destination / "runtime-inventory.json").chmod(0o600)
+          PY
+          PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+            python3 -B "$GITHUB_WORKSPACE/crates/manim-profile/tests/test_editable_text_style.py"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B \
+            "$GITHUB_WORKSPACE/tooling/native_manim_resume_runtime.py"
+
+      - name: Restore the retained comparison runtime without source builds
+        if: inputs.scenario == 'recovery-runtime-cycle'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label provision-runtime --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          set -euo pipefail
+          umask 077
+          runtime="$SEMWRIGHT_TEST_MANIM_RUNTIME"
+          test ! -e "$RUNNER_TEMP/manim-frozen-runtime-artifact"
+          mkdir -m 700 "$RUNNER_TEMP/manim-frozen-runtime-artifact"
+          context="$(python3 -B -c 'import os,json; print(json.dumps({"source_sha":os.environ["GITHUB_SHA"],"semwright_sha":json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"],"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"]}))')"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_frozen_runtime_restore.py restore \
+            --runtime "$runtime" --work "$RUNNER_TEMP/manim-frozen-runtime" \
+            --output "$RUNNER_TEMP/manim-frozen-runtime-artifact/runtime-wheels.tar" --context "$context"
+          unset GH_TOKEN
+          PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+            python3 - <<'PY'
+          import hashlib, json, os, platform, shutil, subprocess, sys, zipfile
+          from pathlib import Path
+          import av
+          import av._core
+          import av.filter
+          import av.logging
+          import manim
+          import manimpango
+          root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"]).resolve(strict=True)
+          packages = (root / "site-packages").resolve(strict=True)
+          private = Path(os.environ["RUNNER_TEMP"]) / "manim-frozen-runtime"
+          if (manim.__version__ != "0.21.0" or manimpango.__version__ != "0.6.1"
+                  or av.__version__ != "15.0.0"):
+              raise SystemExit("Installed Manim/ManimPango/PyAV versions differ from runtime schema 2")
+          if not all(Path(module.__file__).resolve(strict=True).is_relative_to(packages)
+                     for module in (manim, manimpango, av, av._core)):
+              raise SystemExit("Runtime imports escaped the installed bundle")
+          if not {"buffer", "showinfo", "buffersink"} <= set(av.filter.filters_available):
+              raise SystemExit("PyAV native metadata filters are unavailable")
+          if not all(callable(getattr(av.logging, name, None)) for name in (
+                  "get_level", "set_level", "set_libav_level",
+                  "get_skip_repeated", "set_skip_repeated")):
+              raise SystemExit("PyAV native logging observation API is unavailable")
+
+          def file_identity(path):
+              path = path.resolve(strict=True)
+              h = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return {"path": str(path), "bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+          wheel_lock = json.loads((private / "wheel-lock.json").read_bytes())
+          selected_wheels = [row for row in wheel_lock["wheels"] if row.get("name") == "av"]
+          if len(selected_wheels) != 1 or selected_wheels[0].get("version") != "15.0.0":
+              raise SystemExit("Frozen wheel lock must identify exactly the selected PyAV version")
+          wheel_info = {key: selected_wheels[0][key] for key in ("filename", "bytes", "sha256")}
+          wheel = private / "wheels" / wheel_info["filename"]
+          observed_wheel = file_identity(wheel)
+          if any(observed_wheel[key] != wheel_info[key] for key in ("bytes", "sha256")):
+              raise SystemExit("Observed PyAV wheel identity changed")
+          loaded = set()
+          for line in Path("/proc/self/maps").read_text(encoding="utf-8").splitlines():
+              fields = line.split(maxsplit=5)
+              if len(fields) == 6 and fields[5].startswith("/"):
+                  path = Path(fields[5])
+                  if path.is_file() and path.resolve(strict=True).is_relative_to(packages):
+                      loaded.add(path.resolve(strict=True))
+          native_files = []
+          with zipfile.ZipFile(wheel) as archive:
+              members = archive.namelist()
+              if len(members) != len(set(members)):
+                  raise SystemExit("PyAV wheel contains duplicate members")
+              for path in sorted(loaded):
+                  relative = path.relative_to(packages).as_posix()
+                  if relative not in members:
+                      continue
+                  with path.open("rb") as stream:
+                      if stream.read(4) != b"\x7fELF":
+                          continue
+                  row = file_identity(path)
+                  wheel_sha = hashlib.sha256(archive.read(relative)).hexdigest()
+                  if wheel_sha != row["sha256"]:
+                      raise SystemExit("Loaded PyAV native bytes differ from the observed wheel")
+                  native_files.append({"path": relative, "bytes": row["bytes"],
+                                       "sha256": row["sha256"], "wheel_sha256": wheel_sha})
+          core = Path(av._core.__file__).resolve(strict=True).relative_to(packages).as_posix()
+          if not native_files or core not in {row["path"] for row in native_files}:
+              raise SystemExit("No original wheel binding for the loaded PyAV core")
+          selected_python = Path(os.environ.get("SEMWRIGHT_TEST_PYTHON", sys.executable)).resolve(strict=True)
+          if selected_python != Path(sys.executable).resolve(strict=True):
+              raise SystemExit("Observed Python differs from the selected Driver Host interpreter")
+          binaries = {"python": file_identity(selected_python)}
+          versions = {"python": sys.version}
+          for name in ("ffmpeg", "ffprobe"):
+              selected = os.environ.get("SEMWRIGHT_TEST_" + name.upper()) or shutil.which(name)
+              if not selected:
+                  raise SystemExit("Missing selected native executable: " + name)
+              path = Path(selected).resolve(strict=True)
+              binaries[name] = file_identity(path)
+              versions[name] = subprocess.check_output(
+                  [str(path), "-version"], text=True, timeout=20).splitlines()[0]
+          rows = []
+          for path in sorted(packages.rglob("*")):
+              if path.is_file() and not path.is_symlink():
+                  identity = file_identity(path)
+                  rows.append((path.relative_to(root).as_posix(),
+                               identity["bytes"], identity["sha256"]))
+          payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          receipt = {
+              "schema": "motionwright.manim.runtime-inventory/2",
+              "context": {"source_sha": os.environ["GITHUB_SHA"], "semwright_sha": pin,
+                          "run_id": os.environ["GITHUB_RUN_ID"],
+                          "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]},
+              "manim_version": manim.__version__, "pyav_version": av.__version__,
+              "libav_versions": {name: list(version) for name, version in sorted(av.library_versions.items())},
+              "platform": {"system": platform.system(), "machine": platform.machine()},
+              "runtime_receipt_sha256": file_identity(root / "runtime.json")["sha256"],
+              "binaries": binaries, "binary_versions": versions,
+              "pyav_wheel": wheel_info, "pyav_native_files": native_files,
+              "files": len(rows), "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+              "native_render_performed": False,
+          }
+          destination = Path("verification/native-manim-e2e")
+          destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+          with (destination / "runtime-inventory.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          (destination / "runtime-inventory.json").chmod(0o600)
+          PY
+          PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+            python3 -B "$GITHUB_WORKSPACE/crates/manim-profile/tests/test_editable_text_style.py"
+
+      - name: Admit reuse of the original runtime artifact before compilation
+        if: inputs.scenario == 'recovery-runtime-cycle'
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label runtime-artifact-readback --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_recovery_gate.py record-reuse
+
+      - name: Configure disposable-runner Driver Host sandbox
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label sandbox-profile --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+            "$GITHUB_WORKSPACE/verification/native-manim-e2e/sandbox-profile.txt"
+
+      - name: Build exact Semwright Broker and sandbox
+        id: resume_sdk_build
+        working-directory: _semwright
+        run: |
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-resume" ] || [ "$MANIM_NATIVE_SCENARIO" = "recovery-runtime-cycle" ]; then
+            exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+              workflow-step --label build-sdk --script "$0"
+          fi
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox
+
+      - name: Build the existing Manim provider and example
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label build-product --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          cargo build --locked --jobs 1 -p motionwright-manim-community-driver --bins
+          cargo build --locked --jobs 1 -p motionwright-native --example native-manim-e2e
+
+      - name: Admit Cargo cache retention from the original successful SDK guard
+        if: always() && inputs.scenario == 'recovery-runtime-cycle' && steps.resume_sdk_build.outcome == 'success'
+        timeout-minutes: 1
+        # This enables the same action's post on a later failure. The post keeps
+        # Cargo dependencies/libraries, not final ELF files, and has no Native
+        # cgroup or dynamic outer deadline claim; the original job timeout stays.
+        run: python3 -B tooling/native_manim_resume_resources.py admit-cache-save
+
+      - name: Require eight real committed-source recovery regressions
+        if: inputs.scenario == 'editable-source-resume'
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_focals.py
+
+      - name: Require eight recovery and two reference Rust regressions
+        if: inputs.scenario == 'recovery-runtime-cycle'
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_recovery_gate.py test
+
+      - name: Create a recipient only after the original eight tests and executable pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label resume-recipient --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_transfer.py create-recipient
+
+      - name: Admit publication of the public recipient and eight-test originals
+        id: resume_recipient_budget
+        timeout-minutes: 1
+        run: python3 -B tooling/native_manim_editable_outer.py admit-action --label resume-recipient-upload
+
+      - name: Retain the public run-bound recipient without any private key or media
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: ${{ fromJSON(steps.resume_recipient_budget.outputs.minutes) }}
+        with:
+          name: manim-resume-recipient-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manim-resume-recipient-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Receive the one encrypted draft asset within the original deadline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label resume-transfer --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_transfer.py receive-inputs
+
+      - name: Execute only edited and reopen-edited through the official Native Host
+        if: inputs.scenario == 'editable-source-resume'
+        id: resume_native
+        env:
+          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_custody.py launch
+
+      - name: Execute the recovered references and edited sources through the official Native Host
+        if: inputs.scenario == 'recovery-runtime-cycle'
+        id: recovery_native
+        env:
+          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_custody.py launch
+
+      - name: Seal attempted resume originals and known failed owner without replay
+        if: always() && steps.resume_outer_origin.outcome == 'success'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_editable_outer.py" \
+            workflow-step --label seal-outer --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_custody.py seal
+
+      - name: Verify the selected original continuation without changing historical outcomes
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          exec python3 -B "$GITHUB_WORKSPACE/tooling/native_manim_resume_resources.py" \
+            workflow-step --label verify-cycle --script "$0"
+          # MANIM_EDITABLE_OUTER_ORIGINAL_BODY
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_resume_custody.py verify
+
+      - name: Admit the scoped resume summary upload
+        id: resume_public_budget
+        timeout-minutes: 1
+        run: python3 -B tooling/native_manim_editable_outer.py admit-action --label public-upload
+
+      - name: Retain the verified two-phase summary with lineage still pending
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        timeout-minutes: ${{ fromJSON(steps.resume_public_budget.outputs.minutes) }}
+        with:
+          name: ${{ inputs.scenario == 'recovery-runtime-cycle' && 'motionwright-manim-recovery' || 'motionwright-manim-resume' }}-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ inputs.scenario == 'recovery-runtime-cycle' && 'manim-recovery-public-' || 'manim-resume-public-' }}${{ github.sha }}/summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Admit original resume ciphertext retention after every outcome
+        id: resume_private_budget
+        if: always() && steps.resume_outer_origin.outcome == 'success'
+        timeout-minutes: 1
+        run: python3 -B tooling/native_manim_editable_outer.py admit-action --label private-upload
+
+      - name: Retain both attempted phases and the original outer envelope
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && inputs.scenario == 'editable-source-resume' && steps.resume_private_budget.outcome == 'success'
+        timeout-minutes: ${{ fromJSON(steps.resume_private_budget.outputs.minutes) }}
+        with:
+          name: motionwright-manim-resume-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-resume-sealed-${{ github.sha }}/edited.mwseal
+            ${{ runner.temp }}/manim-resume-sealed-${{ github.sha }}/reopen-edited.mwseal
+            ${{ runner.temp }}/manim-resume-sealed-${{ github.sha }}/resume-outer.mwseal
+            ${{ runner.temp }}/manim-resume-sealed-${{ github.sha }}/resume-outer.public.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain all four attempted new phases and their original outer envelope
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && inputs.scenario == 'recovery-runtime-cycle' && inputs.recovery_continuation != 'retained-n1-42369864661' && steps.resume_private_budget.outcome == 'success'
+        timeout-minutes: ${{ fromJSON(steps.resume_private_budget.outputs.minutes) }}
+        with:
+          name: motionwright-manim-recovery-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/original-reference.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-original-reference.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/edited.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-edited.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/resume-outer.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/resume-outer.public.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain the three attempted continuation phases and their original outer envelope
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && inputs.scenario == 'recovery-runtime-cycle' && inputs.recovery_continuation == 'retained-n1-42369864661' && steps.resume_private_budget.outcome == 'success'
+        timeout-minutes: ${{ fromJSON(steps.resume_private_budget.outputs.minutes) }}
+        with:
+          name: motionwright-manim-recovery-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-original-reference.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/edited.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/reopen-edited.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/resume-outer.mwseal
+            ${{ runner.temp }}/manim-recovery-sealed-${{ github.sha }}/resume-outer.public.json
           if-no-files-found: error
           retention-days: 14
 
@@ -1280,7 +2102,7 @@ jobs:
           import time
 
           # Replaced with exact nominal names from the reviewed source export.
-          RUST_CASES = {'example24': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_cycle::tests::source_edit_commit_accepts_real_saved_commit_metadata', 'editable_cycle::tests::source_edit_commit_rejects_a_non_text_change', 'editable_cycle::tests::source_edit_commit_rejects_different_text_and_generation', 'editable_cycle::tests::source_edit_commit_rejects_extra_revision_and_incorrect_branch_head', 'editable_cycle::tests::source_edit_commit_rejects_unrelated_content_or_source_assets', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_cycle::tests::pending_source_rejects_wrong_clock_extra_label_and_serialized_write_claims', 'graph_cycle::tests::rejected_source_destination_does_not_open_or_create_a_database', 'graph_cycle::tests::report_and_source_originals_keep_their_distinct_fixed_byte_budgets', 'graph_cycle::tests::source_seed_keeps_graph_absent_until_the_original_bound_provider_save', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
+          RUST_CASES = {'example24': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::recovery::tests::committed_edit_recovery_exports_saved_source_without_another_commit', 'editable_cycle::recovery::tests::committed_edit_recovery_missing_apply_stays_unresolved_without_a_retry', 'editable_cycle::recovery::tests::committed_edit_recovery_missing_receipt_never_becomes_known', 'editable_cycle::recovery::tests::committed_edit_recovery_never_overwrites_a_retained_report', 'editable_cycle::recovery::tests::committed_edit_recovery_rejects_changed_original_bundle', 'editable_cycle::recovery::tests::committed_source_resume_default_cas_reopens_in_fresh_store', 'editable_cycle::recovery::tests::committed_source_resume_existing_or_shared_root_is_not_reinitialized', 'editable_cycle::recovery::tests::committed_source_resume_readback_rejects_changed_committed_receipt', 'editable_cycle::reference::tests::retained_reference_readback_rejects_changed_source_shared_store_and_missing_native', 'editable_cycle::reference::tests::retained_reference_source_reopens_without_reapplying_events', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_cycle::tests::source_edit_commit_accepts_real_saved_commit_metadata', 'editable_cycle::tests::source_edit_commit_rejects_a_non_text_change', 'editable_cycle::tests::source_edit_commit_rejects_different_text_and_generation', 'editable_cycle::tests::source_edit_commit_rejects_extra_revision_and_incorrect_branch_head', 'editable_cycle::tests::source_edit_commit_rejects_unrelated_content_or_source_assets', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_cycle::tests::pending_source_rejects_wrong_clock_extra_label_and_serialized_write_claims', 'graph_cycle::tests::rejected_source_destination_does_not_open_or_create_a_database', 'graph_cycle::tests::report_and_source_originals_keep_their_distinct_fixed_byte_budgets', 'graph_cycle::tests::source_seed_keeps_graph_absent_until_the_original_bound_provider_save', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
 
 
           def rust_need(value, message):
@@ -1440,7 +2262,7 @@ jobs:
                   after = source_state()
                   record["source_after"] = after
                   rust_need(after == before, "Source changed while compiling/discovering/executing Rust contracts")
-                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=36)
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=46)
               except BaseException as exc:
                   if uncertain:
                       record["status"] = "UNKNOWN_NO_RETRY"
@@ -2244,6 +3066,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           inputs.affected_rust_diagnostics == true &&
+          (inputs.recovery_continuation == '' || inputs.recovery_continuation == 'none') &&
           inputs.scenario == 'source-contracts' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

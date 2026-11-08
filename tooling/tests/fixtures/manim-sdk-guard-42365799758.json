@@ -1,0 +1,83 @@
+{
+  "automatic_retry": false,
+  "cgroup_high_bytes": 1476395008,
+  "cgroup_max_bytes": 1543503872,
+  "cgroup_quiescent": true,
+  "child_pid": 5342,
+  "command": [
+    "/bin/bash",
+    "--noprofile",
+    "--norc",
+    "-e",
+    "-o",
+    "pipefail",
+    "/home/runner/work/_temp/manim-editable-clock-e819907abb2acb7c429b363059dad551e5c55ab5/scripts/build-sdk.sh"
+  ],
+  "context": {
+    "run_attempt": "1",
+    "run_id": "42365799758",
+    "semwright_sha": "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199",
+    "source_sha": "e819907abb2acb7c429b363059dad551e5c55ab5"
+  },
+  "first_error": null,
+  "guard_pid": 5341,
+  "label": "build-sdk",
+  "memory_limit_bytes": 1610612736,
+  "minimum_physical_available_bytes": 14590648320,
+  "native_result_interpreted": false,
+  "origin": {
+    "deadline_ns": 2579091694575,
+    "origin_monotonic_ns": 59091694575,
+    "origin_sha256": "f48e4651149ba57ee829ccf729545b8e8ba5b4ddda036edde632a1abe7bbb310",
+    "work_deadline_ns": 2249091694575
+  },
+  "original_cgroup_entry": {
+    "automatic_retry": false,
+    "cgroup_self_membership_observed": true,
+    "command_execution_started": false,
+    "context": {
+      "run_attempt": "1",
+      "run_id": "42365799758",
+      "semwright_sha": "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199",
+      "source_sha": "e819907abb2acb7c429b363059dad551e5c55ab5"
+    },
+    "controller_pid": 5342,
+    "gid": 1001,
+    "guard_pid": 5341,
+    "label": "build-sdk",
+    "origin": {
+      "deadline_ns": 2579091694575,
+      "origin_monotonic_ns": 59091694575,
+      "origin_sha256": "f48e4651149ba57ee829ccf729545b8e8ba5b4ddda036edde632a1abe7bbb310",
+      "work_deadline_ns": 2249091694575
+    },
+    "pid": 5343,
+    "privileges_dropped_before_exec": true,
+    "schema": "motionwright.manim.resume.original-cgroup-entry/1",
+    "uid": 1001
+  },
+  "original_child_exit": 0,
+  "original_child_exit_known": true,
+  "physical_peak_budget_bytes": 1610612736,
+  "physical_reserve_bytes": 536870912,
+  "reason": null,
+  "remaining_processes_before_owned_cleanup": [],
+  "resource_after": {
+    "current_bytes": 1161687040,
+    "high_bytes": 1476395008,
+    "limit_bytes": 1543503872,
+    "oom": 0,
+    "oom_kill": 0,
+    "peak_bytes": 1478393856
+  },
+  "resource_before": {
+    "current_bytes": 1310441472,
+    "high_bytes": 1476395008,
+    "limit_bytes": 1543503872,
+    "oom": 0,
+    "oom_kill": 0,
+    "peak_bytes": 1478328320
+  },
+  "schema": "motionwright.manim.resume.resource-command/1",
+  "status": "EXITED_WITHIN_LIMITS"
+}
