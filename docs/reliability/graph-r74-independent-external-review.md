@@ -75,7 +75,7 @@ python -B tooling/graph_r74_external_reviewer.py \
   --run-id "$RUN" --output /secure/graph-review/source-review.original.json
 ```
 
-On Windows, use absolute Windows paths and PowerShell line continuation or a single command line. The tool authenticates encryption context, source/run/recipient identities, complete snapshot members, producer index, retained binary copies and source bytes against both trusted Git trees. A successful result establishes carrier and source authenticity only. The independent reviewer must still examine the original callbacks and process authority substantively.
+On Windows, use absolute Windows paths and PowerShell line continuation or a single command line. The tool authenticates encryption context, source/run/recipient identities, complete snapshot members, producer index, retained binary copies and source bytes against both trusted Git trees. A successful result establishes carrier and source authenticity only. Each regular snapshot member must match its recorded SHA256, size, Linux producer path and stable before/after/namespace metadata. Nonregular ZIP members and partial producer snapshots are rejected. The independent reviewer must still examine the original callbacks and process authority substantively.
 
 ## Genuine admission
 

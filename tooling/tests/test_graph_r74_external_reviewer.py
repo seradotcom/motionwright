@@ -3,7 +3,8 @@ import base64
 import io
 import json
 import os
-from pathlib import Path
+import stat
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tarfile
@@ -81,6 +82,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                       missing_manifest=False):
         producer = self.root / ("producer-" + name)
         producer.mkdir()
+        producer_namespace = PurePosixPath("/home/runner/work/motionwright/motionwright/v/e/graph-producer")
         request_path = producer / "review-request.original.json"
         index_path = producer / "producer-index.original.json"
         copies = producer / "review-originals"
@@ -107,31 +109,36 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             retained.write_bytes(content)
             original = {"path": "/usr/bin/" + ("python3" if i == 0 else "ffmpeg"),
                         "sha256": reviewer.sha(content), "size_bytes": len(content)}
-            ref = {**original, "path": retained.as_posix()}
+            ref = {**original, "path": str(producer_namespace / "review-originals" / retained.name)}
             copy_refs.append({"original": original, "retained": ref})
         request = {
           "source": source, "execution": execution,
-          "index": {"path": index_path.as_posix(), "sha256": reviewer.sha(index_raw),
+          "index": {"path": str(producer_namespace / index_path.name), "sha256": reviewer.sha(index_raw),
                     "size_bytes": len(index_raw)},
           "contexts": ["mw-owner/phase1-native-graph/"+self.run_id+"/1/graph-flow"],
           "outside_original_copies": copy_refs,
         }
         request_path.write_bytes(seal.json_bytes(request))
         plaintext = seal.gather_snapshot({"producer": producer})
-        if missing_manifest:
-            # A trusted-but-partial source must not be relabeled as complete.
-            with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as tar:
-                rows = [(row.name, tar.extractfile(row).read()) for row in tar]
-            replacement = io.BytesIO()
-            with tarfile.open(fileobj=replacement, mode="w") as tar:
-                for member, raw in rows:
-                    if member == "snapshot-manifest.json":
-                        report = reviewer.json_original(raw)
+        # The reviewer can run on Windows, but these sealed fixtures model a
+        # Linux producer. Map its namespace before encryption while preserving
+        # captured bytes and stable metadata observations.
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as tar:
+            rows = [(row.name, tar.extractfile(row).read()) for row in tar]
+        replacement = io.BytesIO()
+        with tarfile.open(fileobj=replacement, mode="w") as tar:
+            for member, raw in rows:
+                if member == "snapshot-manifest.json":
+                    report = reviewer.json_original(raw)
+                    for row in report["roots"]["producer"]["files"]:
+                        row["observation"]["path"] = str(producer_namespace /
+                            row["archive_path"].removeprefix("producer/"))
+                    if missing_manifest:
                         report["selected_originals_complete"] = False
-                        raw = seal.json_bytes(report)
-                    info = tarfile.TarInfo(member); info.size = len(raw)
-                    tar.addfile(info, io.BytesIO(raw))
-            plaintext = replacement.getvalue()
+                    raw = seal.json_bytes(report)
+                info = tarfile.TarInfo(member); info.size = len(raw)
+                tar.addfile(info, io.BytesIO(raw))
+        plaintext = replacement.getvalue()
         context = {"source_sha": self.p_sha, "semwright_sha": self.s_sha,
                    "run_id": self.run_id, "run_attempt": "1"}
         envelope = seal.encrypt_snapshot(plaintext, self.recipient, context)
@@ -198,6 +205,58 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             alias.symlink_to(extracted, target_is_directory=True)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_CANONICAL_PATH"):
             reviewer.review(alias, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+
+    def test_authenticated_carrier_rejects_forged_original_manifest_digest(self):
+        """A public-key holder can reencrypt a snapshot: its own manifest must agree."""
+        artifact = self.make_artifact("forged-manifest-attestation")
+        with zipfile.ZipFile(artifact) as archive:
+            carrier = reviewer.json_original(archive.read("carrier.original.json"))
+            envelope = archive.read("producer-originals.mwseal")
+        plaintext, context = seal.decrypt_snapshot(envelope, self.key)
+        rows = []
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as archive:
+            for member in archive:
+                raw = archive.extractfile(member).read()
+                if member.name == "snapshot-manifest.json":
+                    manifest = reviewer.json_original(raw)
+                    captured = next(row for row in manifest["roots"]["producer"]["files"]
+                                    if row["archive_path"] == "producer/producer-index.original.json")
+                    captured["observation"]["sha256"] = "f" * 64
+                    raw = seal.json_bytes(manifest)
+                rows.append((member.name, raw))
+        new_tar = io.BytesIO()
+        with tarfile.open(fileobj=new_tar, mode="w") as archive:
+            for name, raw in rows:
+                info = tarfile.TarInfo(name)
+                info.mode, info.mtime, info.size = 0o600, 0, len(raw)
+                archive.addfile(info, io.BytesIO(raw))
+        encrypted = seal.encrypt_snapshot(new_tar.getvalue(), self.recipient, context)
+        carrier["envelope"]["sha256"] = reviewer.sha(encrypted)
+        carrier["envelope"]["size_bytes"] = len(encrypted)
+        with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("producer-originals.mwseal", encrypted)
+            archive.writestr("carrier.original.json", seal.json_bytes(carrier))
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "SNAPSHOT_ORIGINAL_OBSERVATION"):
+            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+
+    def test_raw_zip_rejects_nonregular_symlink_member_even_with_valid_bytes(self):
+        """ZIP member mode is original transport metadata, not an optional hint."""
+        artifact = self.make_artifact("symlink-member")
+        with zipfile.ZipFile(artifact) as archive:
+            rows = [(name, archive.read(name)) for name in
+                    ("producer-originals.mwseal", "carrier.original.json")]
+        with zipfile.ZipFile(artifact, "w") as archive:
+            for name, raw in rows:
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                mode = stat.S_IFLNK | 0o777 if name == "carrier.original.json" else stat.S_IFREG | 0o600
+                info.external_attr = mode << 16
+                archive.writestr(info, raw)
+        with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
+            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_wrong_source_run_recipient_and_insecure_key_are_denied(self):

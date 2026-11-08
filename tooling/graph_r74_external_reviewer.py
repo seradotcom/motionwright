@@ -162,6 +162,12 @@ def original_zip(path):
                 and all(not x.is_dir() and 0 < x.file_size <= MAX_ARCHIVE
                         and x.compress_size <= MAX_ARCHIVE for x in members),
                 "ARTIFACT_TWO_ORIGINAL_MEMBERS")
+        # A raw GitHub artifact ZIP is a transport of original *regular*
+        # files. zipfile.is_dir() only checks a trailing slash: it accepts
+        # Unix symlink/FIFO mode bits even when the payload is byte-identical.
+        require(all(x.create_system != 3 or
+                    stat.S_IFMT(x.external_attr >> 16) in (0, stat.S_IFREG)
+                    for x in members), "ARTIFACT_REGULAR_FILE")
         original = {x.filename: z.read(x) for x in members}
     return original
 
@@ -198,10 +204,34 @@ def tar_originals(plaintext):
         if "observation" in row:
             name = row["archive_path"]
             require(name in entries and name not in recorded, "MANIFEST_MEMBER")
+            observed = row["observation"]
+            require(type(observed) is dict and set(observed) == {
+                "path", "sha256", "size", "before", "after", "namespace_after"
+            }, "SNAPSHOT_ORIGINAL_OBSERVATION")
+            raw = entries[name]
+            identity = observed["before"]
+            require(type(observed["size"]) is int and
+                    observed["size"] == len(raw) and
+                    observed["sha256"] == sha(raw) and
+                    type(observed["path"]) is str and
+                    observed["path"].startswith("/") and
+                    observed["path"].endswith("/" + name.removeprefix("producer/")) and
+                    type(identity) is dict and
+                    set(identity) == {
+                        "device", "inode", "size", "mode", "uid", "gid",
+                        "mtime_ns", "ctime_ns"
+                    } and
+                    identity == observed["after"] == observed["namespace_after"] and
+                    type(identity["size"]) is int and
+                    type(identity["mode"]) is int and
+                    identity["size"] == len(raw) and
+                    stat.S_ISREG(identity["mode"]),
+                    "SNAPSHOT_ORIGINAL_OBSERVATION")
             recorded[name] = 1
         else:
-            require(row.get("kind", "").startswith("metadata-only-"),
-                    "MANIFEST_UNKNOWN_OR_PARTIAL")
+            # A producer snapshot cannot legitimately contain metadata-only
+            # specials; the original capture code grants those only to owner.
+            require(False, "MANIFEST_UNKNOWN_OR_PARTIAL")
     require(set(entries) == set(recorded) | {"snapshot-manifest.json"},
             "SNAPSHOT_ORIGINAL_ROSTER")
     return entries
