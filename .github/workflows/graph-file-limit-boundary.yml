@@ -7,6 +7,7 @@ on:
       - '.github/workflows/graph-file-limit-boundary.yml'
       - 'tooling/ci_canvas_service.py'
       - 'tooling/tests/test_ci_graph_file_limits.py'
+      - 'tooling/tests/test_ci_canvas_service.py'
       - 'apps/studio/tests/support/scopedChangeService.ts'
       - 'apps/studio/tests/support/graph-owner/factory.mjs'
       - 'apps/studio/tooling/graph-owner/owner_environment_layout.test.mjs'
@@ -35,7 +36,7 @@ jobs:
           node-version: '24'
       - name: Check verified staging allowance and actual kernel file limit
         run: |
-          python -B -m unittest tooling.tests.test_ci_graph_file_limits tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_real_inert_child_inherits_kernel_store_file_bound_before_writing -v
+          python -B -m unittest tooling.tests.test_ci_graph_file_limits tooling.tests.test_ci_canvas_service.GraphR74JoinTests -v
       - name: Check closed child environments and actual Linux limit observation
         run: |
           node --test apps/studio/tooling/graph-owner/owner_environment_layout.test.mjs

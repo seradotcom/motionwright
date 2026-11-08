@@ -8481,7 +8481,10 @@ class GraphR74JoinTests(unittest.TestCase):
         index = {"source": {"run_id": "123", "sdk_root": "/sdk"}, "source_original": {},
                  "contract": {"execution": {}},
                  "runtime": {"root": "/runtime"},
-                 "binaries": {role: {"path": "/inert/" + role} for role in ("ordinary_service", "python3", "ffmpeg")}}
+                 "binaries": {role: {"path": "/inert/" + role, "sha256": "a" * 64, "size_bytes": 1234}
+                              for role in ("ordinary_service", *gate.GRAPH_STAGED_EXECUTABLE_ROLES)}}
+        index["binaries"]["native_provider"]["size_bytes"] = 67032280
+        index_ref = {"path": "original", "sha256": "b" * 64}
         clock = mock.Mock(unknown=False); clock.phase.return_value = contextlib.nullcontext()
         commands = [{**self.graph_failed_case_command(), "exit_code": 0}, self.graph_failed_case_command()]
         if failure == "unknown":
@@ -8490,7 +8493,7 @@ class GraphR74JoinTests(unittest.TestCase):
             def patch(name, **kwargs):
                 return stack.enter_context(mock.patch.object(gate, name, **kwargs))
             patch("graph_layout", return_value=(repo, root)); patch("GraphOriginalClock", return_value=clock)
-            patch("graph_ref", return_value={"path": "original"})
+            patch("graph_ref", return_value=index_ref)
             read = patch("graph_read", side_effect=[gate.json.dumps(index).encode(), b'{"source_before":{}}'])
             patch("graph_verify_producer_index", return_value={}); patch("graph_source_view", return_value={})
             patch("graph_report", return_value={"listed": 6})
@@ -8502,7 +8505,7 @@ class GraphR74JoinTests(unittest.TestCase):
             receipt = patch("graph_put_json")
             stack.enter_context(mock.patch.object(gate.Path, "is_file", return_value=True))
             stack.enter_context(mock.patch.object(gate.Path, "exists", return_value=False))
-            original_wait = {"index": {"path": "original"},
+            original_wait = {"index": index_ref,
                              "statuses": {case: {"context": case} for case, _, _ in gate.GRAPH_CASES}}
             file_read = stack.enter_context(mock.patch.object(gate.Path, "read_bytes", side_effect=[
                 gate.json.dumps(original_wait).encode(), b'{}']))
@@ -8518,6 +8521,10 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertEqual(public["failure_diagnostic"], {"stage": "CASES_COMMAND", "cause": "CASES_EXIT_NONZERO", "exit_code": 1,
                          "playwright": {"report": "OBSERVED_FAILURE_DIAGNOSTIC_ONLY"}})
         self.assertEqual(execute.call_count, 2); details.assert_called_once()
+        budget = execute.call_args.kwargs["staging_file_budget"]
+        self.assertEqual(budget["maximum_file_bytes"], 67032280)
+        self.assertEqual(budget["store_file_bytes"], 4194304)
+        self.assertEqual(budget["producer_index_sha256"], "b" * 64)
         self.assertFalse(public["formal_acceptance"])
         self.assertNotIn("SECRET", gate.json.dumps(public))
 
