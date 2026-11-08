@@ -31,11 +31,21 @@ Use a local directory outside the repositories. Protect the directory before cre
 $reviewDirectory = 'C:\GraphReviewPrivate'
 $reviewSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 New-Item -ItemType Directory -Path $reviewDirectory -ErrorAction Stop
-icacls $reviewDirectory /setowner "*${reviewSid}"
-icacls $reviewDirectory /inheritance:r /grant:r "*${reviewSid}:(OI)(CI)F"
+$reviewUser = [System.Security.Principal.SecurityIdentifier]::new($reviewSid)
+$directoryAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+$directoryAcl.SetOwner($reviewUser)
+$directoryAcl.SetAccessRuleProtection($true, $false)
+$directoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+    $reviewUser, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+Set-Acl -LiteralPath $reviewDirectory -AclObject $directoryAcl -ErrorAction Stop
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -pkeyopt rsa_keygen_pubexp:65537 -out "$reviewDirectory\recipient.pem"
-icacls "$reviewDirectory\recipient.pem" /setowner "*${reviewSid}"
-icacls "$reviewDirectory\recipient.pem" /inheritance:r /grant:r "*${reviewSid}:F"
+if ($LASTEXITCODE -ne 0) { throw 'Key generation failed' }
+$fileAcl = [System.Security.AccessControl.FileSecurity]::new()
+$fileAcl.SetOwner($reviewUser)
+$fileAcl.SetAccessRuleProtection($true, $false)
+$fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+    $reviewUser, 'FullControl', 'Allow'))
+Set-Acl -LiteralPath "$reviewDirectory\recipient.pem" -AclObject $fileAcl -ErrorAction Stop
 ```
 
 Check every command's exit code before continuing. The file reader requires the owner to match the actual current token user, a protected DACL with one explicit current-user full-control or file-read grant, an ordinary file with exactly one link, and 1,025 through 16,384 bytes. It rejects inherited or foreign grants, reparse points, junction ancestors, UNC/device paths and alternate streams. It holds a file handle that denies sharing writes and deletion, reads security from that handle, and rechecks identity and security after reading. It never changes the key's ACL automatically.

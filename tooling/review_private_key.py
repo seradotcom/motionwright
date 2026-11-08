@@ -43,11 +43,11 @@ def _windows_security(fd):
             kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
     finally:
         kernel.CloseHandle(token)
-    descriptor = ctypes.c_void_p()
+    descriptor, owner, dacl = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
     advapi.GetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD,
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
     advapi.GetSecurityInfo.restype = wintypes.DWORD
-    require(advapi.GetSecurityInfo(msvcrt.get_osfhandle(fd), 1, 5, None, None, None, None,
+    require(advapi.GetSecurityInfo(msvcrt.get_osfhandle(fd), 1, 5, ctypes.byref(owner), None, ctypes.byref(dacl), None,
                                   ctypes.byref(descriptor)) == 0, 'SECURITY_INFO')
     advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [ctypes.c_void_p,
         wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
@@ -57,10 +57,48 @@ def _windows_security(fd):
         require(advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 5,
                     ctypes.byref(text), None), 'SECURITY_DESCRIPTOR')
         actual = text.value
-        # Exact SDDL excludes NULL, inherited, foreign, object and callback ACEs.
-        # Only the current user's explicit full-control or file-read grant is admitted.
-        require(actual in tuple('O:' + user + 'D:' + control + '(A;;' + rights + ';;;' + user + ')'
-                    for control in ('P', 'PAI') for rights in ('FA', 'FR')), 'USER_ONLY_DACL')
+        # Compare SID values rather than SDDL spelling: Windows may render the
+        # current administrator SID as LA while the token returns its full SID.
+        advapi.IsValidSid.argtypes = [ctypes.c_void_p]
+        advapi.IsValidSid.restype = wintypes.BOOL
+        advapi.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        advapi.EqualSid.restype = wintypes.BOOL
+        require(owner and advapi.IsValidSid(owner) and advapi.EqualSid(owner, sid), 'OWNER')
+        advapi.GetSecurityDescriptorControl.argtypes = [ctypes.c_void_p,
+            ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+        advapi.GetSecurityDescriptorControl.restype = wintypes.BOOL
+        control, revision = wintypes.WORD(), wintypes.DWORD()
+        require(advapi.GetSecurityDescriptorControl(descriptor, ctypes.byref(control),
+                    ctypes.byref(revision)), 'SECURITY_CONTROL')
+        require(control.value & 0x1004 == 0x1004 and dacl, 'PROTECTED_DACL')
+        class AclSize(ctypes.Structure):
+            _fields_ = [('count', wintypes.DWORD), ('used', wintypes.DWORD),
+                        ('free', wintypes.DWORD)]
+        advapi.GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.c_int]
+        advapi.GetAclInformation.restype = wintypes.BOOL
+        size = AclSize()
+        require(advapi.GetAclInformation(dacl, ctypes.byref(size), ctypes.sizeof(size), 2)
+                    and size.count == 1, 'USER_ONLY_DACL')
+        advapi.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+                                  ctypes.POINTER(ctypes.c_void_p)]
+        advapi.GetAce.restype = wintypes.BOOL
+        ace = ctypes.c_void_p()
+        require(advapi.GetAce(dacl, 0, ctypes.byref(ace)), 'ACE')
+        class AllowedAce(ctypes.Structure):
+            _fields_ = [('kind', wintypes.BYTE), ('flags', wintypes.BYTE),
+                        ('size', wintypes.WORD), ('mask', wintypes.DWORD)]
+        header = ctypes.cast(ace, ctypes.POINTER(AllowedAce)).contents
+        # Exactly one plain explicit allow ACE; object/callback and inheritance
+        # flags cannot be used to bypass the current-user-only contract.
+        require(header.kind == 0 and header.flags == 0 and header.size >= 16
+                    and header.mask in (0x1f01ff, 0x120089), 'USER_ONLY_ACE')
+        trustee = ace.value + ctypes.sizeof(AllowedAce)
+        advapi.GetLengthSid.argtypes = [ctypes.c_void_p]
+        advapi.GetLengthSid.restype = wintypes.DWORD
+        require(advapi.IsValidSid(trustee) and advapi.EqualSid(trustee, sid)
+                    and header.size == ctypes.sizeof(AllowedAce) + advapi.GetLengthSid(trustee),
+                    'USER_ONLY_SID')
         return actual
     finally:
         if text:

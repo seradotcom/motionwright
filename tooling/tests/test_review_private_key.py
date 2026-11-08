@@ -38,8 +38,20 @@ def protect_fixture(path):
     # Establish the actual user as owner instead of accepting a broader owner.
     owner = subprocess.run(['icacls', str(path), '/setowner', '*' + identity], capture_output=True)
     assert owner.returncode == 0, owner.stderr
-    result = subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', '*' + identity + ':F'], capture_output=True)
-    assert result.returncode == 0, result.stderr
+    # Replace the entire DACL: grant:r alone leaves other explicit principals.
+    descriptor = ctypes.c_void_p()
+    adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR,
+        wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    assert adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        'D:P(A;;FA;;;' + identity + ')', 1, ctypes.byref(descriptor), None)
+    adv.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    adv.SetFileSecurityW.restype = wintypes.BOOL
+    try:
+        assert adv.SetFileSecurityW(str(path), 0x80000004, descriptor), ctypes.get_last_error()
+    finally:
+        kernel.LocalFree(descriptor)
+
 
 
 class ProtectedKeyTests(unittest.TestCase):
