@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
+      - 'tooling/graph_r74_external_reviewer.py'
+      - 'tooling/tests/test_graph_r74_external_reviewer.py'
       - 'tooling/tests/test_review_private_key.py'
       - 'tooling/graph_review_artifact.py'
       - 'tooling/tests/test_graph_review_artifact.py'
@@ -17,6 +19,8 @@ on:
     paths:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
+      - 'tooling/graph_r74_external_reviewer.py'
+      - 'tooling/tests/test_graph_r74_external_reviewer.py'
       - 'tooling/tests/test_review_private_key.py'
       - 'tooling/graph_review_artifact.py'
       - 'tooling/tests/test_graph_review_artifact.py'
@@ -56,3 +60,5 @@ jobs:
         run: python -B -m unittest tooling.tests.test_review_original_io -v
       - name: Check original GitHub artifact transport without live secrets
         run: python -B -m unittest tooling.tests.test_graph_review_artifact -v
+      - name: Check inert carrier authentication without runner admission
+        run: python -B -m unittest tooling.tests.test_graph_r74_external_reviewer -v

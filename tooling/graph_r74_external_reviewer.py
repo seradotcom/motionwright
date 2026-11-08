@@ -237,10 +237,15 @@ def tar_originals(plaintext):
     return entries
 
 
-def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
+def _require_independent_environment():
+    """Reject producer and CI environments before inspecting any review input."""
     require(os.environ.get("GITHUB_ACTIONS") != "true"
             and not os.environ.get("MOTIONWRIGHT_GRAPH_PRODUCER_RUN"),
             "INDEPENDENT_ONLY_NEVER_RUNNER")
+
+
+def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
+    _require_independent_environment()
     key_real = Path(key_path).resolve(strict=True)
     for trusted in (product, semwright):
         require(not key_real.is_relative_to(Path(trusted).resolve(strict=True)),

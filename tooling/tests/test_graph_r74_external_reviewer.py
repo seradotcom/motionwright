@@ -34,7 +34,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory(prefix="graph-review-offline-")
         self.addCleanup(self.work.cleanup)
-        self.root = Path(self.work.name)
+        self.root = Path(self.work.name).resolve(strict=True)
         self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
             self.root / "trusted-product", self.PRODUCT)
         self.sdk, self.s_sha, self.s_tree, self.s_rows = self.git(
@@ -157,9 +157,14 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             z.writestr("carrier.original.json", seal.json_bytes(carrier))
         return path
 
+    def _review_fixture(self, *args, **kwargs):
+        """Authenticate inert originals without claiming review-host independence."""
+        with mock.patch.object(reviewer, "_require_independent_environment"):
+            return reviewer.review(*args, **kwargs)
+
     def check(self, name="original", **kwargs):
         path = self.make_artifact(name, **kwargs)
-        return reviewer.review(path,self.keyfile,self.product,self.sdk,
+        return self._review_fixture(path,self.keyfile,self.product,self.sdk,
                         self.p_sha,self.s_sha,self.run_id)
 
     def test_same_trusted_source_and_recipient_accept_pre_effect_only(self):
@@ -178,16 +183,16 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         with zipfile.ZipFile(original_zip) as archive:
             for name in ("producer-originals.mwseal", "carrier.original.json"):
                 (extracted / name).write_bytes(archive.read(name))
-        expected = reviewer.review(original_zip, self.keyfile, self.product, self.sdk,
+        expected = self._review_fixture(original_zip, self.keyfile, self.product, self.sdk,
                                    self.p_sha, self.s_sha, self.run_id)
-        actual = reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+        actual = self._review_fixture(extracted, self.keyfile, self.product, self.sdk,
                                  self.p_sha, self.s_sha, self.run_id)
         self.assertEqual(actual, expected)
         unexpected = extracted / ".hidden-extra"
         unexpected.write_bytes(b"foreign")
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "ARTIFACT_TWO_ORIGINAL_MEMBERS"):
-            reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+            self._review_fixture(extracted, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
         unexpected.unlink()
         carrier = extracted / "carrier.original.json"
@@ -197,7 +202,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         else:
             carrier.symlink_to(original_zip)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
-            reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+            self._review_fixture(extracted, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
         alias = self.root / "foreign-alias"
         if os.name == 'nt':
@@ -206,7 +211,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         else:
             alias.symlink_to(extracted, target_is_directory=True)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_CANONICAL_PATH"):
-            reviewer.review(alias, self.keyfile, self.product, self.sdk,
+            self._review_fixture(alias, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_authenticated_carrier_rejects_forged_original_manifest_digest(self):
@@ -241,7 +246,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             archive.writestr("carrier.original.json", seal.json_bytes(carrier))
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "SNAPSHOT_ORIGINAL_OBSERVATION"):
-            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
+            self._review_fixture(artifact, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_raw_zip_rejects_nonregular_symlink_member_even_with_valid_bytes(self):
@@ -258,21 +263,25 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                 info.external_attr = mode << 16
                 archive.writestr(info, raw)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
-            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
+            self._review_fixture(artifact, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_wrong_source_run_recipient_and_insecure_key_are_denied(self):
         path = self.make_artifact()
         for psha, rid in (("1"*40,self.run_id),(self.p_sha,"13")):
             with self.assertRaises(reviewer.ReviewRejected):
-                reviewer.review(path,self.keyfile,self.product,self.sdk,psha,self.s_sha,rid)
+                self._review_fixture(path,self.keyfile,self.product,self.sdk,psha,self.s_sha,rid)
         key2 = self.root / "other.pem"
         key2.write_bytes(rsa.generate_private_key(65537,3072).private_bytes(
                     serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                     serialization.NoEncryption()))
-        key2.chmod(0o600)
-        with self.assertRaises(reviewer.ReviewRejected):
-            reviewer.review(path,key2,self.product,self.sdk,
+        if os.name == "nt":
+            from tooling.tests.test_review_private_key import protect_fixture
+            protect_fixture(key2)
+        else:
+            key2.chmod(0o600)
+        with self.assertRaisesRegex(reviewer.ReviewRejected, "CARRIER_CONTEXT"):
+            self._review_fixture(path,key2,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
         if os.name == "nt":
             result = subprocess.run(["icacls", str(self.keyfile), "/grant", "*S-1-1-0:R"], capture_output=True)
@@ -280,22 +289,29 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         else:
             self.keyfile.chmod(0o644)
         with self.assertRaises(reviewer.ReviewRejected):
-            reviewer.review(path,self.keyfile,self.product,self.sdk,
+            self._review_fixture(path,self.keyfile,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
 
     def test_runner_and_owner_checkout_private_keys_are_forbidden(self):
         path = self.make_artifact()
-        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
-            with self.assertRaisesRegex(reviewer.ReviewRejected,
-                                        "INDEPENDENT_ONLY_NEVER_RUNNER"):
-                reviewer.review(path, self.keyfile, self.product, self.sdk,
-                                self.p_sha, self.s_sha, self.run_id)
+        with mock.patch.object(reviewer, "private_key_owner") as read_key, \
+                mock.patch.object(reviewer, "original_zip") as read_archive:
+            # Isolate both rejection branches; neither reaches key or ZIP reads.
+            for forbidden in ({"GITHUB_ACTIONS": "true"},
+                              {"GITHUB_ACTIONS": "false", "MOTIONWRIGHT_GRAPH_PRODUCER_RUN": "1"}):
+                with self.subTest(environment=forbidden), mock.patch.dict(os.environ, forbidden):
+                    with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                                "INDEPENDENT_ONLY_NEVER_RUNNER"):
+                        reviewer.review(path, self.keyfile, self.product, self.sdk,
+                                        self.p_sha, self.s_sha, self.run_id)
+            read_key.assert_not_called()
+            read_archive.assert_not_called()
         owner_key = self.product / "owner-key.pem"
         owner_key.write_bytes(self.keyfile.read_bytes())
         owner_key.chmod(0o600)
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "PRIVATE_KEY_INSIDE_OWNER_CHECKOUT"):
-            reviewer.review(path, owner_key, self.product, self.sdk,
+            self._review_fixture(path, owner_key, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_same_recipient_encrypted_git_digest_forgery_is_denied(self):
@@ -314,7 +330,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             z.writestr("other-source/unknown", b"unauthorized")
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "ARTIFACT_TWO_ORIGINAL_MEMBERS"):
-            reviewer.review(path,self.keyfile,self.product,self.sdk,
+            self._review_fixture(path,self.keyfile,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
 
     def test_source_path_traversal_and_duplicate_snapshot_are_denied(self):
