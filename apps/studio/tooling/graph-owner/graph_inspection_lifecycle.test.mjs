@@ -80,6 +80,24 @@ test('original case uses actual service with no invented Native DTO, delay or re
   assert.doesNotMatch(prepare, /\bsetTimeout\(/);
 });
 
+test('a rejected old Native inspection cannot claim current Project/source identity', () => {
+  const begin = ui.indexOf('async function inspectContext()');
+  const end = ui.indexOf('async function send(operation:', begin);
+  const inspection = ui.slice(begin, end);
+  const rejected = inspection.split('} catch {')[1]?.split('} finally {')[0];
+  assert.ok(rejected, 'the original closed-rejection handler is present');
+  // A remotely advanced project may have the same local edit epoch. Genuine
+  // Native rejection must be attributed only to its original snapshot.
+  for (const sourceGuard of [
+    'mounted.current', 'token === epoch.current',
+    'sequence === session.draft.sequence',
+    'graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))',
+    'profileId === session.draft.input.variant_profile_ref',
+  ]) assert.ok(rejected.includes(sourceGuard), 'missing rejection source guard: ' + sourceGuard);
+  assert.match(rejected, /terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
+  assert.doesNotMatch(rejected, /message\(reason\)|String\(reason\)|reason\.(?:message|stack)/);
+});
+
 test('a rejected real Graph context cannot render raw backend error through the inspection UI', () => {
   const begin = ui.indexOf('async function inspectContext()');
   const end = ui.indexOf('async function send(operation:', begin);
