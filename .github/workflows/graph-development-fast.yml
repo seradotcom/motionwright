@@ -19,6 +19,8 @@ on:
       - 'tooling/ci_canvas_service.py'
       - 'tooling/tests/test_ci_canvas_service.py'
       - 'tooling/tests/test_ci_graph_r74_singlecase.py'
+      - 'tooling/graph_r74_external_reviewer.py'
+      - 'tooling/tests/test_graph_r74_external_reviewer.py'
       - 'tooling/tests/test_graph_owner_native_quiescence.py'
       - 'tooling/tests/test_graph_owner_session_ticket_custody.py'
       - 'tooling/tests/test_graph_owner_release_lease_roster.py'
@@ -150,6 +152,29 @@ jobs:
               tooling.tests.test_graph_owner_control_replay -v \
               2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
           fi
+          # External R74 review must remain off GitHub runners; only the
+          # source syntax and the explicit runner-denial boundary run in G0.
+          "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B - <<'PY' 2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
+          import ast
+          import os
+          from pathlib import Path
+          import sys
+          for rel in ("tooling/graph_r74_external_reviewer.py",
+                      "tooling/tests/test_graph_r74_external_reviewer.py"):
+              ast.parse(Path(rel).read_text(encoding="utf-8"), filename=rel)
+          sys.path.insert(0, str(Path("tooling").resolve()))
+          import graph_r74_external_reviewer as reviewer
+          if os.environ.get("GITHUB_ACTIONS") != "true":
+              raise SystemExit("G0_REVIEWER_RUNNER_EXPECTED")
+          try:
+              reviewer.review(None, None, None, None, "", "", "")
+          except reviewer.ReviewRejected as error:
+              if str(error) != "A5_R74_INDEPENDENT_ONLY_NEVER_RUNNER":
+                  raise
+          else:
+              raise SystemExit("G0_REVIEWER_RUNNER_DENIAL_ABSENT")
+          print("PASS: R74 reviewer source syntax and GitHub-runner refusal only; independent review NOT_RUN")
+          PY
       - name: Verify original J1 Cargo reader and obsolete sandbox rejection on Linux
         shell: bash
         run: |
