@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import io
+import os
 from pathlib import Path
 import re
 import stat
@@ -41,6 +42,12 @@ def gh_json_or_bytes(route, name, directory):
             new_json(directory / (name + ".exit.json"),
                      {"exit_code": None, "timed_out": True, "automatic_retry": False})
             raise ValueError("graph_review_artifact_api_timeout") from failure
+        # Commit the original API streams before the strict handle-versus-path
+        # identity read. Windows can defer file timestamps until flush/close.
+        output.flush()
+        os.fsync(output.fileno())
+        error.flush()
+        os.fsync(error.fileno())
     new_json(directory / (name + ".exit.json"), {"exit_code": result.returncode})
     require(result.returncode == 0, "api_failed_no_retry")
     return regular(directory / (name + ".stdout"), MAX_FILE)[0]
