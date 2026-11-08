@@ -88,7 +88,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         return root, sha, tree, rows
 
     def make_artifact(self, name="original", *, fake_source_digest=False,
-                      missing_manifest=False):
+                      missing_manifest=False, forged_binary_binding=False):
         producer = self.root / ("producer-" + name)
         producer.mkdir()
         producer_namespace = PurePosixPath("/tmp/graph-review-inert/producer")
@@ -107,9 +107,15 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             product_rows[first] = {**product_rows[first], "sha256": "0"*64}
         index = {
           "schema": reviewer.INDEX_SCHEMA, "source": source,
+          "binaries": {role: {"path": "/usr/bin/" + role,
+                       "sha256": reviewer.sha(b"original-python-ELF" if role == "python3" else b"original-ffmpeg-ELF"),
+                       "size_bytes": len(b"original-python-ELF" if role == "python3" else b"original-ffmpeg-ELF")}
+                       for role in ("python3", "ffmpeg")},
           "contract": {"source_files": product_rows, "sdk_files": self.s_rows,
                        "sdk_tree": self.s_tree, "execution": execution},
         }
+        if forged_binary_binding:
+            index["binaries"]["python3"]["sha256"] = "f" * 64
         index_raw = seal.json_bytes(index)
         index_path.write_bytes(index_raw)
         copy_refs = []
@@ -183,6 +189,13 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         path = self.make_artifact(name, **kwargs)
         return self._review_fixture(path,self.keyfile,self.product,self.sdk,
                         self.p_sha,self.s_sha,self.run_id)
+
+    def test_indexed_runtime_binary_copy_is_bound_to_original_identity(self):
+        # Valid envelope/copy manifest must not relabel the indexed Python
+        # executable while still reporting its copied bytes as authentic.
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "REVIEW_BOUND_BINARY_python3"):
+            self.check("forged-index-binary", forged_binary_binding=True)
 
     def test_same_trusted_source_and_recipient_accept_pre_effect_only(self):
         result = self.check()

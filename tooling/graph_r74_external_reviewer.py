@@ -349,6 +349,24 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
     lock_proof = verify_semwright_pin(product, source_sha, sem_sha)
     copies = request["outside_original_copies"]
     require(type(copies) is list and len(copies) >= 2, "REVIEW_OUTSIDE_COPY_ROSTER")
+    # Every copied executable must match the original identity in the
+    # current source/run producer index. Self-consistent copied bytes
+    # alone cannot authenticate the indexed runtime binary.
+    binaries = index.get("binaries")
+    require(type(binaries) is dict, "REVIEW_BOUND_BINARY_ROSTER")
+    for role in ("python3", "ffmpeg"):
+        original_ref = binaries.get(role)
+        require(type(original_ref) is dict and
+                set(original_ref) == {"path", "sha256", "size_bytes"} and
+                type(original_ref["path"]) is str and
+                original_ref["path"].startswith("/") and
+                type(original_ref["sha256"]) is str and
+                HEX64.fullmatch(original_ref["sha256"]) and
+                type(original_ref["size_bytes"]) is int and
+                original_ref["size_bytes"] > 0 and
+                sum(type(row) is dict and row.get("original") == original_ref
+                    for row in copies) == 1,
+                "REVIEW_BOUND_BINARY_" + role)
     seen = set()
     for item in copies:
         retained, original = item["retained"], item["original"]

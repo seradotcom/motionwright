@@ -63,7 +63,10 @@ reviewer. The verifier binds RSA-OAEP-SHA256 plus AES-GCM authenticated
 context, run/source/recipient, complete regular snapshot members,
 producer index and carrier digests, one-case callback roster, external
 binary copies, and every recorded Motionwright/Semwright file against
-independently trusted Git bytes and trees. It rejects raw ZIP symlink
+independently trusted Git bytes and trees. The copied Python and FFmpeg
+executables must also each match exactly one original binary identity
+declared by that run/source producer index; a relabeled self-consistent
+copy is rejected. It rejects raw ZIP symlink
 entries and verifies each snapshot regular member's original manifest
 SHA256, length, and stable before/after/namespace file identity.
 An internally contradictory, re-encrypted carrier is **not** sufficient
