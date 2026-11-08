@@ -97,9 +97,10 @@ class GraphReviewArtifactTests(unittest.TestCase):
         directory.mkdir()
         route = "repos/seradotcom/motionwright/actions/artifacts/876/zip"
 
+        expected_timeout = 300
         def execute(argv, **kwargs):
             self.assertEqual(argv, [executable, "api", route])
-            self.assertEqual(kwargs["timeout"], 120)
+            self.assertEqual(kwargs["timeout"], expected_timeout)
             self.assertFalse(kwargs.get("shell", False))
             kwargs["stdout"].write(response)
             kwargs["stderr"].write(b"retained diagnostic")
@@ -120,6 +121,13 @@ class GraphReviewArtifactTests(unittest.TestCase):
             with self.assertRaises((ValueError, FileExistsError)):
                 self.transport.gh_json_or_bytes(route, "api-control", directory)
             run.assert_not_called()
+        # Only the immutable binary archive gets a larger transfer budget.
+        route = "repos/seradotcom/motionwright/actions/runs/42400011223"
+        expected_timeout = 120
+        with mock.patch("shutil.which", return_value=executable), \
+                mock.patch("subprocess.run", side_effect=execute):
+            self.assertEqual(self.transport.gh_json_or_bytes(route, "metadata-control", directory), response)
+        self.assertEqual(json.loads((directory / "metadata-control.intent.json").read_bytes())["timeout_seconds"], 120)
     def test_in_progress_retains_exact_raw_zip_and_api_originals(self):
         result = self.download()
         self.assertEqual((self.output / "artifact.original.zip").read_bytes(), self.archive)

@@ -33,12 +33,13 @@ def gh_json_or_bytes(route, name, directory):
     executable = shutil.which("gh")
     require(executable is not None, "github_cli_unavailable")
     command = [executable, "api", route]
-    new_json(directory / (name + ".intent.json"), {"argv": command, "automatic_retry": False})
+    timeout = 300 if re.fullmatch(re.escape(PREFIX) + r"artifacts/[1-9][0-9]*/zip", route) else 120
+    new_json(directory / (name + ".intent.json"), {"argv": command, "automatic_retry": False, "timeout_seconds": timeout})
     with (directory / (name + ".stdout")).open("xb") as output, \
             (directory / (name + ".stderr")).open("xb") as error:
         try:
             result = subprocess.run(command, stdout=output, stderr=error,
-                                    check=False, timeout=120)
+                                    check=False, timeout=timeout)
         except subprocess.TimeoutExpired as failure:
             new_json(directory / (name + ".exit.json"),
                      {"exit_code": None, "timed_out": True, "automatic_retry": False})

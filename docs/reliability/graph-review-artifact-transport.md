@@ -75,7 +75,9 @@ execution remain separate. Neither command grants owner admission by itself.
 
 The scope is deliberately bounded: a complete first page of at most 100 run
 artifacts, at most 256 MiB of ZIP bytes and declared expanded member bytes, and
-the API adapter's 120-second limit per request. Larger or incomplete
+120 seconds per metadata request and 300 seconds for the immutable raw ZIP
+transfer. The original intent records that bound; neither transfer retries nor
+the producer's live review window are extended automatically. Larger or incomplete
 listings and oversized archives are rejected instead of changing the selection.
 The adapter checks response size after recording its stdout; it does
 not impose a streaming disk quota. Filesystem access controls and available disk
