@@ -794,3 +794,85 @@ mod tests {
         assert_eq!(version, STORAGE_SCHEMA_VERSION - 1);
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_original_handoff_tests {
+    use super::*;
+    use crate::{Change, RevisionStamp};
+    use std::fs;
+
+    /// Windows has a different VFS and file-identity API from Linux. Verify
+    /// that Native/Studio can hand off the *same* physical SQLite and CAS
+    /// authority to the strictly read-only service on this platform too.
+    #[test]
+    fn windows_original_read_only_handoff_preserves_sqlite_and_cas() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("Windows original Graph")
+            .unwrap();
+        let outcome = writer
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "windows-original-change",
+                &Change::RenameProject {
+                    title: "Windows original updated".into(),
+                },
+            )
+            .unwrap();
+        let expected = outcome.project;
+        let original_identity = writer.database_file_identity().unwrap();
+
+        // A writer still in ordinary WAL mode may not be silently treated
+        // as a closed read-only service, even with an idle connection.
+        assert!(
+            StoreReader::open(&database).is_err(),
+            "reader must refuse the original writer before explicit handoff"
+        );
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+
+        let before_database = fs::read(&database).unwrap();
+        let catalog_path = cas_retention::test_metadata_root(&directory.path().join("blobs"))
+            .unwrap()
+            .join("catalog.json");
+        let before_catalog = fs::read(&catalog_path).unwrap();
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(
+            reader.database_file_identity().unwrap(),
+            original_identity,
+            "the second service must hold the original SQLite file"
+        );
+        assert_eq!(reader.project(expected.id).unwrap(), expected);
+        let history = reader.project_history(expected.id, 0, 100).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].revision, expected.revision);
+
+        let rejected = reader
+            .store
+            .conn
+            .execute("PRAGMA user_version=91", [])
+            .unwrap_err();
+        assert!(
+            matches!(&rejected, rusqlite::Error::SqliteFailure(code, _)
+                if code.code == rusqlite::ErrorCode::ReadOnly),
+            "the actual SQLite VFS must reject writes: {rejected}"
+        );
+        drop(reader);
+        assert_eq!(fs::read(&database).unwrap(), before_database);
+        assert_eq!(fs::read(&catalog_path).unwrap(), before_catalog);
+
+        // Returning to normal production restores the original writer's
+        // WAL policy and preserves the same project, rather than a copy.
+        let resumed = Store::open(&database).unwrap();
+        assert_eq!(resumed.database_file_identity().unwrap(), original_identity);
+        assert_eq!(resumed.load_project(expected.id).unwrap(), expected);
+        let mode: String = resumed
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+    }
+}
