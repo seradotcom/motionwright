@@ -249,14 +249,17 @@ class CandidateRetentionTests(unittest.TestCase):
                         "version": "1.0.0", "license_expression": "MIT OR Apache-2.0",
                         "files": records}),
             encoding="utf-8")
+        self.current["dependencies"]["semwright"]["verification"]["evidence"]["sha256"] = (
+            hashlib.sha256((self.root / "evidence.json").read_bytes()).hexdigest()
+        )
         self.before = {
             path.name: path.read_bytes() for path in self.root.iterdir() if path.is_file()
         }
         self.checks = [b"commit", *[self.original[p] for p in paths]]
 
-    def run_candidate(self, checks, *, ancestry_status=0):
+    def run_candidate(self, checks, *, ancestry_status=0, verify_callback=None):
         with patch.object(pins, "load_source_lock", return_value=self.current), \
-             patch.object(pins, "verify_source_lock", return_value=None), \
+             patch.object(pins, "verify_source_lock", side_effect=verify_callback), \
              patch.object(pins.subprocess, "check_output", side_effect=checks), \
              patch.object(
                  pins.subprocess, "run",
@@ -266,6 +269,35 @@ class CandidateRetentionTests(unittest.TestCase):
                  ),
              ):
             return pins.candidate_evidence(self.root, self.root, NEW)
+
+    def test_verified_evidence_cannot_be_reformatted_between_verify_and_candidate(self):
+        def replace_after_verification(_root, _source):
+            actual = (self.root / "evidence.json").read_bytes()
+            expected = self.current["dependencies"]["semwright"]["verification"][
+                "evidence"]["sha256"]
+            self.assertEqual(hashlib.sha256(actual).hexdigest(), expected)
+            (self.root / "evidence.json").write_bytes(actual + b" ")
+
+        with self.assertRaisesRegex(
+            pins.PinConsistencyError, "candidate_evidence_changed_after_verification"
+        ):
+            self.run_candidate(self.checks, verify_callback=replace_after_verification)
+
+    def test_verified_evidence_cannot_relabel_git_blob_after_verification(self):
+        def relabel_after_verification(_root, _source):
+            path = self.root / "evidence.json"
+            original = path.read_bytes()
+            expected = self.current["dependencies"]["semwright"]["verification"][
+                "evidence"]["sha256"]
+            self.assertEqual(hashlib.sha256(original).hexdigest(), expected)
+            envelope = json.loads(original)
+            envelope["files"][0]["git_blob_sha1"] = "0" * 40
+            path.write_text(json.dumps(envelope), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            pins.PinConsistencyError, "candidate_evidence_changed_after_verification"
+        ):
+            self.run_candidate(self.checks, verify_callback=relabel_after_verification)
 
     def test_candidate_with_identical_metadata_but_unrelated_git_history_is_denied(self):
         with self.assertRaisesRegex(

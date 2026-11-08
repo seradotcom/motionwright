@@ -233,9 +233,17 @@ def candidate_evidence(
     require(history.returncode == 0, "candidate_ancestry_unavailable")
     evidence_ref = current["dependencies"]["semwright"]["verification"]["evidence"]
     try:
-        retained = json.loads(_read(root, evidence_ref["path"], MAX_EVIDENCE_BYTES))
+        verified_bytes = _read(root, evidence_ref["path"], MAX_EVIDENCE_BYTES)
     except SourceAdmissionError as error:
         raise PinConsistencyError("semwright_atomic_pin_candidate_evidence_redirected") from error
+    # The source lock's evidence SHA is the immutable reviewed source. The
+    # re-read must match it even if the file was replaced between the earlier
+    # source-admission check and our own candidate blob comparisons.
+    require(
+        hashlib.sha256(verified_bytes).hexdigest() == evidence_ref["sha256"],
+        "candidate_evidence_changed_after_verification",
+    )
+    retained = json.loads(verified_bytes)
     files = retained["files"]
     require({entry["upstream_path"] for entry in files}
             == set(UPSTREAM_EVIDENCE_FILES), "candidate_evidence_roster")
