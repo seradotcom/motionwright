@@ -875,4 +875,103 @@ mod windows_original_handoff_tests {
             .unwrap();
         assert_eq!(mode, "wal");
     }
+
+    // Only a subprocess selected by the parent test has these inputs. Ordinary
+    // full-suite test discovery does not open or create any SQLite files here.
+    #[test]
+    fn windows_original_child_reader_entrypoint() {
+        let Some(database) = std::env::var_os("MOTIONWRIGHT_TEST_READER_CHILD_DB") else {
+            return;
+        };
+        let project_id =
+            Uuid::parse_str(&std::env::var("MOTIONWRIGHT_TEST_READER_CHILD_PROJECT").unwrap())
+                .unwrap();
+        let expected_identity = std::env::var("MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY").unwrap();
+        let reader = StoreReader::open(std::path::PathBuf::from(database)).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), expected_identity);
+        assert_eq!(
+            reader.project(project_id).unwrap().title,
+            "Independent reader source"
+        );
+        let history = reader.project_history(project_id, 0, 100).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].revision, 1);
+        let failure = reader
+            .store
+            .conn
+            .execute("PRAGMA user_version=99", [])
+            .unwrap_err();
+        assert!(
+            matches!(&failure, rusqlite::Error::SqliteFailure(code, _)
+                if code.code == rusqlite::ErrorCode::ReadOnly),
+            "physical reader child unexpectedly wrote SQLite: {failure}"
+        );
+        eprintln!("READ_ONLY_CHILD_ORIGINAL_OK pid={}", std::process::id());
+    }
+
+    /// In addition to in-process StoreReader custody, verify an actual second
+    /// Windows process reopens the original SQLite and managed CAS after the
+    /// first writer's WAL-to-DELETE handoff. No copied database or mock.
+    #[test]
+    fn windows_independent_process_reopens_original_sqlite_and_cas() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("Independent reader source")
+            .unwrap();
+        let outcome = writer
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "cross-process-original-change",
+                &Change::RenameProject {
+                    title: "Independent reader source".into(),
+                },
+            )
+            .unwrap();
+        let original_identity = writer.database_file_identity().unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+
+        let initial_sqlite = fs::read(&database).unwrap();
+        let catalog = cas_retention::test_metadata_root(&directory.path().join("blobs"))
+            .unwrap()
+            .join("catalog.json");
+        let initial_catalog = fs::read(&catalog).unwrap();
+        let response = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(
+                "read_only::windows_original_handoff_tests::windows_original_child_reader_entrypoint",
+            )
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env("MOTIONWRIGHT_TEST_READER_CHILD_DB", &database)
+            .env(
+                "MOTIONWRIGHT_TEST_READER_CHILD_PROJECT",
+                outcome.project.id.to_string(),
+            )
+            .env(
+                "MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY",
+                &original_identity,
+            )
+            .output()
+            .unwrap();
+        let child_output = String::from_utf8_lossy(&response.stderr);
+        assert!(
+            response.status.success() && child_output.contains("READ_ONLY_CHILD_ORIGINAL_OK"),
+            "independent Windows reader failed: {:?}; stderr={child_output}; stdout={}",
+            response.status,
+            String::from_utf8_lossy(&response.stdout)
+        );
+        assert!(
+            !child_output.contains(&format!("pid={}", std::process::id())),
+            "independent reader must not reuse the parent process"
+        );
+        assert_eq!(fs::read(&database).unwrap(), initial_sqlite);
+        assert_eq!(fs::read(&catalog).unwrap(), initial_catalog);
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), original_identity);
+        assert_eq!(reader.project(outcome.project.id).unwrap(), outcome.project);
+    }
 }
