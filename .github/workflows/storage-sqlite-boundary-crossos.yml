@@ -49,10 +49,16 @@ jobs:
       - name: Enforce public source and conformance policies
         run: |
           set -euo pipefail
-          python -B tooling/source_policy.py
-          python -B tooling/acceptance_policy.py
-          python -B tooling/creative_status_policy.py
-          python -B tooling/public_surface_policy.py
+          # Initialize the original evidence sink before any policy can fail.
+          work="$RUNNER_TEMP/mw-sqlite-g0-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$work"
+          echo "MW_SQLITE_EVIDENCE=$work" >> "$GITHUB_ENV"
+          {
+            python -B tooling/source_policy.py
+            python -B tooling/acceptance_policy.py
+            python -B tooling/creative_status_policy.py
+            python -B tooling/public_surface_policy.py
+          } 2>&1 | tee "$work/source-policies.original.log"
       - name: Authenticate selected sources and nine test definitions
         env:
           PYTHONDONTWRITEBYTECODE: '1'
@@ -151,7 +157,7 @@ jobs:
         if: always()
         with:
           name: sqlite-boundary-G0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.MW_SQLITE_EVIDENCE }}
+          path: ${{ env.MW_SQLITE_EVIDENCE || 'missing-sqlite-boundary-g0-originals' }}
           if-no-files-found: warn
           retention-days: 14
   real-sqlite-concurrency:
