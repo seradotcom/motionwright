@@ -1037,12 +1037,59 @@ impl TransportSession {
     }
 }
 
+/// Enforce the exact Graph Store file limit before any Store is opened.
+/// Ordinary sessions remain unchanged when the closed environment is absent;
+/// Native Graph sessions require it and fail if the platform cannot enforce it.
+pub fn enforce_graph_store_file_limit(required: bool) -> io::Result<()> {
+    match std::env::var_os("MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES") {
+        None if !required => return Ok(()),
+        Some(value) if value.to_str() == Some("4194304") => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Graph Store file limit must be exactly 4194304 bytes",
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        let expected = libc::rlimit {
+            rlim_cur: 4_194_304,
+            rlim_max: 4_194_304,
+        };
+        // SAFETY: expected is initialized and remains valid for the synchronous call.
+        if unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &expected) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut observed = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: observed is writable storage for the complete returned rlimit.
+        if unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut observed) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if observed.rlim_cur != expected.rlim_cur || observed.rlim_max != expected.rlim_max {
+            return Err(io::Error::other("Graph Store file limit was not enforced"));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Graph Store file limit requires enforceable process file limits",
+        ))
+    }
+}
+
 /// Reuse the exact CLI parser, private Session gates and bounded JSONL loop.
 /// Native owns the factory and asynchronous client/runtime; Service does not
 /// depend on Native. A standalone run has no injected Graph backend.
 pub fn run_with_graph_backend(
     factory: impl FnOnce(&Path, &StudioService) -> Result<Option<Box<dyn GraphBackend>>, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    enforce_graph_store_file_limit(false)?;
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some("--database") {
         return Err(

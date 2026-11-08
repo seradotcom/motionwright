@@ -12,6 +12,26 @@ import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.
 
 const MiB = 1024 * 1024;
 
+/** Validate controller limits from already authenticated staging inputs. */
+export function verifyGraphControllerFileLimit(binaries, kernelLimits) {
+  const roles = ['native_provider', 'manim_runner', 'python3', 'ffmpeg', 'semwright_sandbox'];
+  const sizes = roles.map(role => {
+    const ref = binaries?.[role];
+    need(ref && typeof ref.path === 'string' && path.isAbsolute(ref.path)
+      && typeof ref.sha256 === 'string' && /^[0-9a-f]{64}$/.test(ref.sha256)
+      && integer(ref.size_bytes, 1, 256 * MiB), 'CASE_CONTROLLER_STAGING_EXECUTABLE');
+    return ref.size_bytes;
+  });
+  const expected = Math.max(GRAPH_BUDGET.store_file_bytes, ...sizes);
+  need(typeof kernelLimits === 'string', 'CASE_CONTROLLER_KERNEL_FILE_BOUND');
+  const rows = kernelLimits.split('\n').filter(row => row.startsWith('Max file size'));
+  const row = rows.length === 1
+    ? /^Max file size[ \t]+([0-9]+|unlimited)[ \t]+([0-9]+|unlimited)[ \t]+bytes[ \t]*$/.exec(rows[0]) : null;
+  need(row && row[1] === String(expected) && row[2] === String(expected),
+    'CASE_CONTROLLER_KERNEL_FILE_BOUND');
+  return expected;
+}
+
 // A real Graph owner must never forward the CI process environment wholesale
 // to native children. Keep trusted source/run identities and approved client
 // capabilities, but not the runner's credentials, loader hooks, or aliases.
@@ -55,7 +75,7 @@ export function graphOwnedClientEnvironment(capability, paths) {
     HOME: paths.owner_home, XDG_RUNTIME_DIR: paths.owner_runtime,
     XDG_STATE_HOME: paths.owner_state, XDG_CONFIG_HOME: ownerConfig,
     XDG_CACHE_HOME: ownerWork, TMPDIR: ownerWork,
-    ...capability });
+    ...capability, MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES: '4194304' });
 }
 
 /** One vetted R74 Python owner, never runner-provided arbitrary environment. */
@@ -289,8 +309,9 @@ export class GraphCaseFactoryCore {
       need(options.privateRoot === expectedLayout.privateRoot && options.databasePath === expectedLayout.databasePath,
         'CASE_CANONICAL_LAYOUT_CHANGED');
       need(options.databasePath === path.join(options.privateRoot, 'store', 'motionwright.sqlite3'), 'CASE_STORE_LAYOUT');
-      const limit = fs.readFileSync('/proc/self/limits', 'utf8').split('\n').find(row => row.startsWith('Max file size'));
-      need(limit && /^Max file size\s+4194304\s+4194304\s+bytes\s*$/.test(limit), 'CASE_STORE_KERNEL_FILE_BOUND');
+      // The controller stages authenticated executables. Each actual Store
+      // process separately confirms its fixed 4 MiB soft and hard limits.
+      verifyGraphControllerFileLimit(admission.binaries, fs.readFileSync('/proc/self/limits', 'utf8'));
     }
     if (fs.existsSync(options.privateRoot)) {
       need(!this.originalProduction, 'CASE_CANONICAL_ROOT_ALREADY_EXISTS');
