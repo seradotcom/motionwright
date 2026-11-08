@@ -2,17 +2,21 @@ name: Review key filesystem portability
 
 on:
   push:
-    branches: ['codex/graph6-closure-*']
+    branches: ['codex/graph6-closure-*', 'integrate/phase1-final-composition-20261027']
     paths:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
       - 'tooling/tests/test_review_private_key.py'
+      - 'tooling/graph_review_artifact.py'
+      - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/nsis_owned_files.py'
   pull_request:
     paths:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
       - 'tooling/tests/test_review_private_key.py'
+      - 'tooling/graph_review_artifact.py'
+      - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/nsis_owned_files.py'
 
 permissions:
@@ -39,3 +43,5 @@ jobs:
           python-version: '3.13'
       - name: Check actual owner permissions and alias rejection
         run: python -B -m unittest tooling.tests.test_review_private_key -v
+      - name: Check original GitHub artifact transport without live secrets
+        run: python -B -m unittest tooling.tests.test_graph_review_artifact -v
