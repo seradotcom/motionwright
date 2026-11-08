@@ -1,122 +1,85 @@
-# Graph R74 — independent pre-effect reviewer (A5)
+# Independent Graph pre-effect review
 
-This is a **separate reviewer**, not the Graph producer, R74 owner, or release
-approver. The A5 tool at tooling/graph_r74_external_reviewer.py examines one
-encrypted, source-bound graph-flow producer carrier. It cannot run Native,
-emit GitHub statuses, or grant Graph6/G2/G3.
+The reviewer examines an encrypted, source-bound Graph producer carrier against independently fetched Git source. The tool does not execute Native, Host or Studio processes, publish commit statuses, or grant release acceptance.
 
-## Non-negotiable operating separation
+## Secret isolation
 
-Use a separately controlled Linux reviewer machine/user with its own read-only
-GitHub access. **Do not put the decryption private key on A1's Windows laptop,
-inside Motionwright/Semwright, in GitHub Actions, logs, inboxes, or messages.**
-The tool refuses runner and producer environments, unprotected private keys,
-and key paths inside either Git checkout. These checks do not prove separate
-OS account custody by themselves: the reviewer must establish that.
+Use a trusted Windows account or a POSIX account, including WSL with a genuine Linux filesystem. Physical machine separation is not required. The reviewer must control the decryption key and trusted source checkouts independently of the producer. Never expose the private key to the producer process, its runner, its checkout, logs, artifacts, or messages. Keep the key outside both trusted Git repositories.
 
-Before dispatch, the external reviewer must be online, able to download
-artifacts, and able to finish substantive review inside the runner's single
-original 1,200-second status window. An hourly automation is **not** a live
-reviewer. If no live independent reviewer exists, **do not dispatch**.
+The current tool rejects GitHub Actions and producer-tagged environments. A separate hosted reviewer would require an independently reviewed secret and approval isolation design; this implementation does not enable that route. Filesystem checks establish key access controls, not the substantive independence of an approval.
 
-## Provision independent RSA recipient — only on reviewer host
+The reviewer must be available to finish the original live review within the producer's 1,200-second admission window. A scheduled check that runs after that window cannot provide admission.
 
-~~~sh
+## POSIX key custody
+
+Use an owner-only directory on a genuine POSIX filesystem. A WSL path on a Windows-mounted volume must not rely on simulated mode bits. The reader requires the current effective user to own a regular file with one link and no group or other permissions. Symlink paths are rejected.
+
+```sh
 umask 077
-mkdir -p /secure/a5-r74
-chmod 700 /secure/a5-r74
-openssl genpkey -algorithm RSA \
-  -pkeyopt rsa_keygen_bits:3072 \
-  -pkeyopt rsa_keygen_pubexp:65537 \
-  -out /secure/a5-r74/recipient.pem
-chmod 600 /secure/a5-r74/recipient.pem
-openssl pkey -in /secure/a5-r74/recipient.pem \
-  -pubout -outform DER > /secure/a5-r74/recipient.spki.der
-base64 -w0 /secure/a5-r74/recipient.spki.der
-sha256sum /secure/a5-r74/recipient.spki.der
-~~~
+mkdir -p /secure/graph-review
+chmod 700 /secure/graph-review
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+  -pkeyopt rsa_keygen_pubexp:65537 -out /secure/graph-review/recipient.pem
+chmod 600 /secure/graph-review/recipient.pem
+```
 
-Disclose **only** the canonical SPKI DER base64 and lowercase SHA256.
-The producer's ci_private_evidence.public_key requires RSA-3072,
-exponent 65537, canonical DER and exact digest. Never reuse historical
-ciphertext, admission statuses, or another run's recipient.
+## Windows key custody
 
-## One source-bound reviewed run
+Use a local directory outside the repositories. Protect the directory before creating a key. The following PowerShell commands use the current Windows token's user SID; replace the example directory with the reviewer's private directory.
 
-A1/A6 selects phase1-native-graph and graph_case_mode=graph-flow on the
-exact reviewed commit, passing only A5's SPKI public input. The original
-runner must produce one artifact named
-graph-originals-review-$SOURCE-$RUN-1 with these two files at its root:
+```powershell
+$reviewDirectory = 'C:\GraphReviewPrivate'
+$reviewSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+New-Item -ItemType Directory -Path $reviewDirectory -ErrorAction Stop
+icacls $reviewDirectory /inheritance:r /grant:r "*${reviewSid}:(OI)(CI)F"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -pkeyopt rsa_keygen_pubexp:65537 -out "$reviewDirectory\recipient.pem"
+icacls "$reviewDirectory\recipient.pem" /inheritance:r /grant:r "*${reviewSid}:F"
+```
 
-- producer-originals.mwseal
-- carrier.original.json
+Check every command's exit code before continuing. The file reader requires the owner to match the actual current token user, a protected DACL with one explicit current-user full-control or file-read grant, an ordinary file with exactly one link, and 1,025 through 16,384 bytes. It rejects inherited or foreign grants, reparse points, junction ancestors, UNC/device paths and alternate streams. It holds a file handle that denies sharing writes and deletion, reads security from that handle, and rechecks identity and security after reading. It never changes the key's ACL automatically.
 
-There must be zero Native cases before external owner-status admission.
-No cross-run ZIP, historical ciphertext, local plaintext substitute,
-modified source, or run_attempt greater than 1 is admissible.
+Disclose only the RSA-3072/e65537 public key's canonical SPKI DER base64 and SHA256. Never send the private key or reuse another run's recipient or ciphertext.
 
-As soon as the current encrypted artifact appears, the independent A5
-identity downloads it. For example, on the external Linux reviewer:
+## Retain and authenticate the original carrier
 
-~~~sh
-gh run download "$RUN" -R seradotcom/motionwright \
-  -n "graph-originals-review-$SOURCE-$RUN-1" \
-  -D "/secure/a5-r74/$RUN"
-# gh run download extracts artifact ZIPs. Verify the exact two original
-# regular files, with no other file present, before creating the receipt.
-ls -la "/secure/a5-r74/$RUN"
+Select the exact reviewed commit and graph-flow case, passing only the public recipient. Before admission, the producer must execute zero Native cases. Retain the raw artifact ZIP with `tooling/graph_review_artifact.py`; use its `--help` for the source and run identity arguments. `gh run download` extracts artifacts and does not preserve the ZIP expected by the verifier.
 
-python3 -B tooling/graph_r74_external_reviewer.py \
-  --artifact-path "/secure/a5-r74/$RUN" \
-  --private-key /secure/a5-r74/recipient.pem \
-  --trusted-product /secure/a5-checkouts/motionwright \
-  --trusted-semwright /secure/a5-checkouts/semwright \
-  --source-sha "$SOURCE" \
-  --semwright-sha "$SEMWRIGHT_SOURCE" \
-  --run-id "$RUN" \
-  --output "/secure/a5-r74/$RUN/source-review.original.json"
-~~~
+The verifier also accepts an extracted directory containing exactly the same authenticated originals through its --artifact-path input; --artifact-zip remains a compatible alias. The raw ZIP transport additionally retains the GitHub artifact identity and digest.
 
-The two trusted Git repositories are **independently fetched** by A5.
-The verifier binds RSA-OAEP-SHA256 plus AES-GCM authenticated context,
-run/source/recipient, complete regular snapshot members, producer index
-and carrier digests, one-case callback roster, external binary copies,
-and every recorded Motionwright/Semwright file against independently
-trusted Git bytes and trees. The reviewer also rejects raw ZIP symlink
+The two trusted Git repositories are **independently fetched** by the
+reviewer. The verifier binds RSA-OAEP-SHA256 plus AES-GCM authenticated
+context, run/source/recipient, complete regular snapshot members,
+producer index and carrier digests, one-case callback roster, external
+binary copies, and every recorded Motionwright/Semwright file against
+independently trusted Git bytes and trees. It rejects raw ZIP symlink
 entries and verifies each snapshot regular member's original manifest
 SHA256, length, and stable before/after/namespace file identity.
 An internally contradictory, re-encrypted carrier is **not** sufficient
-evidence merely because RSA/AES decryption succeeds. A5 must still inspect
-important source callbacks and Native authorizations separately.
+evidence merely because RSA/AES decryption succeeds. The reviewer must
+still inspect important source callbacks and Native authorizations
+separately.
 
-A result of SOURCE_CARRIER_AUTHENTICATED_NO_OWNER_ADMISSION_NO_G2
-establishes only ciphertext/source authenticity, not A5's final review,
-a real Graph effect, or release acceptance.
+The original artifact contains exactly these two root members:
 
-## Original owner status — after genuine independent review only
+- `producer-originals.mwseal`
+- `carrier.original.json`
 
-Only the *original workflow run actor*, never the independent A5 reviewer,
-may publish the one exact source-bound owner admission. After A5's
-independent substantive review, with the current run ID and verified
-index digest, the owner may publish:
+Invoke the verifier with the retained ZIP, private key, independently fetched product and dependency repositories, exact source revisions and original run ID:
 
-~~~sh
-gh api -X POST "repos/seradotcom/motionwright/statuses/$SOURCE" \
-  -f state=success \
-  -f context="mw-owner/phase1-native-graph/$RUN/1/graph-flow" \
-  -f description="admission-sha256:$REVIEWED_INDEX_SHA256" \
-  -f target_url="https://github.com/seradotcom/motionwright/actions/runs/$RUN"
-~~~
+```sh
+python -B tooling/graph_r74_external_reviewer.py \
+  --artifact-zip /secure/graph-review/current.original.zip \
+  --private-key /secure/graph-review/recipient.pem \
+  --trusted-product /trusted/motionwright \
+  --trusted-semwright /trusted/semwright \
+  --source-sha "$SOURCE" --semwright-sha "$SEMWRIGHT_SOURCE" \
+  --run-id "$RUN" --output /secure/graph-review/source-review.original.json
+```
 
-The runner checks creator.id == run.actor.id, exact head_sha/run attempt
-1, context, target URL and index digest. This is **owner admission only**,
-not product or A5 acceptance. An A5-created status is deliberately
-foreign and cannot satisfy the owner context.
+On Windows, use absolute Windows paths and PowerShell line continuation or a single command line. The tool authenticates encryption context, source/run/recipient identities, complete snapshot members, producer index, retained binary copies and source bytes against both trusted Git trees. A successful result establishes carrier and source authenticity only. The independent reviewer must still examine the original callbacks and process authority substantively.
 
-If the reviewer cannot decrypt, source-verify, retain private-key
-independence, reach GitHub in time, or substantively review the original
-callback/Host authority, **do not post success**. Preserve HOLD and
-original error evidence; never fake a new key, ticket, status, or
-source manifest. After legitimate admission only graph-flow executes.
-All six Graph cases, original Native/Host/SQLite/CAS post-effect
-independent review, and formal G2/G3 remain separate obligations.
+## Genuine admission
+
+Only after genuine independent review may the original workflow run actor publish the exact source-bound owner admission. The independent reviewer does not publish it. The producer checks the actor, exact source/run attempt, case context, target URL and reviewed index digest.
+
+If decryption, source verification, custody, timing or substantive review fails, preserve the original failure evidence and withhold admission. Never synthesize an approval, ticket, key lineage, status or manifest. Actual Graph effects, process closure, original SQLite/CAS evidence and release acceptance remain separate verification obligations.

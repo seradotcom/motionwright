@@ -1,4 +1,4 @@
-"""Inert offline-only originals for A5 independent Graph R74 pre-effect review."""
+"""Inert offline-only originals for independent Graph R74 pre-effect review."""
 import base64
 import io
 import json
@@ -32,7 +32,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
     SDK = ("Cargo.lock", "Cargo.toml", "scripts/dev/ci-driver-bwrap-profile.sh")
 
     def setUp(self):
-        self.work = tempfile.TemporaryDirectory(prefix="a5-r74-offline-")
+        self.work = tempfile.TemporaryDirectory(prefix="graph-review-offline-")
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name)
         self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
@@ -45,7 +45,11 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                   serialization.NoEncryption())
         self.keyfile = self.root / "reviewer-only.pem"
         with self.keyfile.open("xb") as out: out.write(pem)
-        self.keyfile.chmod(0o600)
+        if os.name == "nt":
+            from tooling.tests.test_review_private_key import protect_fixture
+            protect_fixture(self.keyfile)
+        else:
+            self.keyfile.chmod(0o600)
         der = self.key.public_key().public_bytes(serialization.Encoding.DER,
                        serialization.PublicFormat.SubjectPublicKeyInfo)
         self.recipient = {"spki_der_base64": base64.b64encode(der).decode(),
@@ -59,17 +63,17 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             if r.returncode: raise AssertionError(r.stderr.decode(errors="replace"))
             return r.stdout.decode().strip()
         call("init", "-q")
-        call("config", "user.name", "A5 independent fixture")
-        call("config", "user.email", "a5-fixture@example.invalid")
+        call("config", "user.name", "Independent review fixture")
+        call("config", "user.email", "review-fixture@example.invalid")
         rows = {}
         for name in names:
             p = root / name
             p.parent.mkdir(parents=True, exist_ok=True)
-            data = ("A5 original source fixture " + name + "\n").encode()
+            data = ("Original source fixture " + name + "\n").encode()
             p.write_bytes(data)
             rows[name] = {"bytes": len(data), "sha256": reviewer.sha(data)}
         call("add", ".")
-        call("commit", "-q", "-m", "A5 independent inert original")
+        call("commit", "-q", "-m", "Independent inert original")
         sha = call("rev-parse", "HEAD")
         tree = call("rev-parse", "HEAD^{tree}")
         return root, sha, tree, rows
@@ -104,11 +108,11 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             retained.write_bytes(content)
             original = {"path": "/usr/bin/" + ("python3" if i == 0 else "ffmpeg"),
                         "sha256": reviewer.sha(content), "size_bytes": len(content)}
-            ref = {**original, "path": str(retained)}
+            ref = {**original, "path": retained.as_posix()}
             copy_refs.append({"original": original, "retained": ref})
         request = {
           "source": source, "execution": execution,
-          "index": {"path": str(index_path), "sha256": reviewer.sha(index_raw),
+          "index": {"path": index_path.as_posix(), "sha256": reviewer.sha(index_raw),
                     "size_bytes": len(index_raw)},
           "contexts": ["mw-owner/phase1-native-graph/"+self.run_id+"/1/graph-flow"],
           "outside_original_copies": copy_refs,
@@ -180,12 +184,19 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         unexpected.unlink()
         carrier = extracted / "carrier.original.json"
         carrier.unlink()
-        carrier.symlink_to(original_zip)
+        if os.name == 'nt':
+            os.link(original_zip, carrier)
+        else:
+            carrier.symlink_to(original_zip)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
             reviewer.review(extracted, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
         alias = self.root / "foreign-alias"
-        alias.symlink_to(extracted, target_is_directory=True)
+        if os.name == 'nt':
+            made = subprocess.run(['cmd', '/c', 'mklink', '/J', str(alias), str(extracted)], capture_output=True)
+            self.assertEqual(made.returncode, 0, made.stderr)
+        else:
+            alias.symlink_to(extracted, target_is_directory=True)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_CANONICAL_PATH"):
             reviewer.review(alias, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
@@ -255,7 +266,11 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         with self.assertRaises(reviewer.ReviewRejected):
             reviewer.review(path,key2,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
-        self.keyfile.chmod(0o644)
+        if os.name == "nt":
+            result = subprocess.run(["icacls", str(self.keyfile), "/grant", "*S-1-1-0:R"], capture_output=True)
+            self.assertEqual(result.returncode, 0)
+        else:
+            self.keyfile.chmod(0o644)
         with self.assertRaises(reviewer.ReviewRejected):
             reviewer.review(path,self.keyfile,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
