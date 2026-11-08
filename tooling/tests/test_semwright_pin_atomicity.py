@@ -112,6 +112,44 @@ class AtomicPinSourceTests(unittest.TestCase):
         result = pins.check_material(OLD, self.manifests, self.lock)
         self.assertEqual(result["direct_git_dependency_count"], 2)
 
+    def test_cargo_manifest_cannot_follow_redirected_parent_directory(self):
+        import os
+        with tempfile.TemporaryDirectory(prefix="mw-a2-pin-symlink-parent-") as name:
+            root = Path(name) / "repo"
+            external = Path(name) / "external"
+            (root / "crates").mkdir(parents=True)
+            external.mkdir()
+            (external / "Cargo.toml").write_text(
+                '[package]\nname="unreviewed"\nversion="1.0.0"\n',
+                encoding="utf-8",
+            )
+            try:
+                (root / "crates" / "driver").symlink_to(
+                    external, target_is_directory=True
+                )
+            except (OSError, NotImplementedError) as error:
+                self.skipTest("OS does not allow test directory symlinks: " + str(error))
+            with self.assertRaisesRegex(pins.PinConsistencyError, "cargo_file_redirected"):
+                pins.read_toml(root, "crates/driver/Cargo.toml")
+
+    def test_cargo_manifest_cannot_follow_hardlinked_leaf(self):
+        import os
+        with tempfile.TemporaryDirectory(prefix="mw-a2-pin-hardlink-") as name:
+            root = Path(name) / "repo"
+            (root / "crates").mkdir(parents=True)
+            external = Path(name) / "unreviewed-Cargo.toml"
+            external.write_text(
+                '[package]\nname="unreviewed"\nversion="1.0.0"\n',
+                encoding="utf-8",
+            )
+            target = root / "crates" / "Cargo.toml"
+            try:
+                os.link(external, target)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest("OS does not allow hardlinks in test volume: " + str(error))
+            with self.assertRaisesRegex(pins.PinConsistencyError, "cargo_file_redirected"):
+                pins.read_toml(root, "crates/Cargo.toml")
+
     def test_workspace_inheritance_requires_same_exact_git_pin(self):
         original = self.manifests["crates/driver/Cargo.toml"]["dependencies"].pop(
             "semwright-driver-sdk")
@@ -236,6 +274,30 @@ class CandidateRetentionTests(unittest.TestCase):
             path.name: path.read_bytes() for path in self.root.iterdir() if path.is_file()
         }
         self.assertEqual(self.before, after)
+
+    def test_candidate_cannot_follow_new_hardlinked_retained_source(self):
+        import os
+        outside = self.root / "external-Cargo.toml"
+        original = self.root / "retained-0"
+        outside.write_bytes(original.read_bytes())
+        original.unlink()
+        os.link(outside, original)
+        with self.assertRaisesRegex(
+            pins.PinConsistencyError, "candidate_evidence_redirected"
+        ):
+            self.run_candidate(self.checks)
+
+    def test_candidate_cannot_follow_new_hardlinked_evidence_envelope(self):
+        import os
+        outside = self.root / "external-evidence.json"
+        original = self.root / "evidence.json"
+        outside.write_bytes(original.read_bytes())
+        original.unlink()
+        os.link(outside, original)
+        with self.assertRaisesRegex(
+            pins.PinConsistencyError, "candidate_evidence_redirected"
+        ):
+            self.run_candidate(self.checks)
 
     def test_upstream_metadata_changed_requires_new_reviewed_retention(self):
         changed = [b"commit", b"unreviewed upstream Cargo metadata",

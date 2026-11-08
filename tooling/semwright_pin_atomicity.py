@@ -16,7 +16,10 @@ import re
 import subprocess
 import tomllib
 
-from source_lock_admission import load_source_lock, verify_source_lock
+from source_lock_admission import (
+    MAX_EVIDENCE_BYTES, MAX_SOURCE_BYTES, SourceAdmissionError,
+    _read, load_source_lock, verify_source_lock,
+)
 
 REPO = "https://github.com/seradotcom/semwright"
 LOCK_PREFIX = "git+" + REPO + "?rev="
@@ -36,11 +39,16 @@ def require(condition: bool, code: str) -> None:
 
 
 def read_toml(root: Path, relative: str) -> dict:
-    path = root / relative
-    require(path.is_file() and not path.is_symlink(), "cargo_file_missing")
-    require(0 < path.stat().st_size <= MAX_INPUT, "cargo_file_bounds")
+    # Reuse the bounded source-admission reader: lstat every parent, reject
+    # symlink/reparse ancestors and hardlinked leaves, then bind the opened fd
+    # to its path identity and byte contents before and after the read. A
+    # normal path.is_file() check alone follows redirected parent directories.
     try:
-        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+        encoded = _read(Path(root), relative, MAX_INPUT)
+    except SourceAdmissionError as error:
+        raise PinConsistencyError("semwright_atomic_pin_cargo_file_redirected") from error
+    try:
+        parsed = tomllib.loads(encoded.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as error:
         raise PinConsistencyError("semwright_atomic_pin_cargo_toml_invalid") from error
     require(type(parsed) is dict, "cargo_toml_shape")
@@ -206,7 +214,10 @@ def candidate_evidence(
     current = load_source_lock(root)
     verify_source_lock(root, current)
     evidence_ref = current["dependencies"]["semwright"]["verification"]["evidence"]
-    retained = json.loads((root / evidence_ref["path"]).read_bytes())
+    try:
+        retained = json.loads(_read(root, evidence_ref["path"], MAX_EVIDENCE_BYTES))
+    except SourceAdmissionError as error:
+        raise PinConsistencyError("semwright_atomic_pin_candidate_evidence_redirected") from error
     files = retained["files"]
     require({entry["upstream_path"] for entry in files}
             == set(UPSTREAM_EVIDENCE_FILES), "candidate_evidence_roster")
@@ -217,7 +228,10 @@ def candidate_evidence(
             ["git", "-C", str(upstream), "show", candidate + ":" + name],
             stderr=subprocess.DEVNULL, timeout=10,
         )
-        original = (root / entry["path"]).read_bytes()
+        try:
+            original = _read(root, entry["path"], MAX_SOURCE_BYTES)
+        except SourceAdmissionError as error:
+            raise PinConsistencyError("semwright_atomic_pin_candidate_evidence_redirected") from error
         require(upstream_bytes == original
                 and hashlib.sha256(upstream_bytes).hexdigest() == entry["sha256"],
                 "candidate_new_metadata_requires_review")
