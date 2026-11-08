@@ -82,7 +82,7 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use workflow_native::{WorkflowActionFailure, WorkflowActionRequest, WorkflowActionResponse};
 
-const SEMWRIGHT_REVISION: &str = "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199";
+const SEMWRIGHT_REVISION: &str = "0b2406bee57fc15280abbdf25f1b89527bd8987c";
 const SEMWRIGHT_VERSION: &str = "1.0.0";
 
 #[derive(Clone)]

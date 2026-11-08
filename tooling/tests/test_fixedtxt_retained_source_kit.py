@@ -392,12 +392,13 @@ class RetainedSourceTransportTests(unittest.TestCase):
                     kit.record_retained_upload()
         self.assertFalse((self.retained / "UPLOAD_BINDING.original.json").exists())
 
-    def test_workflow_has_eight_inputs_no_payload_export_and_no_native_route(self):
+    def test_workflow_has_nine_inputs_no_payload_export_and_no_native_route(self):
         inputs = self.workflow.split("    inputs:\n", 1)[1].split("  pull_request:\n", 1)[0]
-        self.assertEqual(len(re.findall(r"^      [a-z0-9_]+:", inputs, re.MULTILINE)), 8)
+        self.assertEqual(len(re.findall(r"^      [a-z0-9_]+:", inputs, re.MULTILINE)), 9)
+        self.assertIn("      fixedtxt_session_cases:\n", inputs)
         expressions = re.findall(r"\$\{\{(.*?)\}\}", self.workflow)
         payload_refs = [value for value in expressions if kit.RETAINED_INPUT in value]
-        self.assertEqual(len(payload_refs), 5)
+        self.assertEqual(len(payload_refs), 6)
         self.assertTrue(all(" == ''" in value or " != ''" in value for value in payload_refs))
         job = self.workflow.split("  fixedtxt-retained-source:\n", 1)[1].split("  source-contracts:\n", 1)[0]
         self.assertIn("inputs.fixedtxt_request == 'retained-source-kit' || inputs.retained_fixedtxt_source_zip_base85 != ''", job)
@@ -406,7 +407,8 @@ class RetainedSourceTransportTests(unittest.TestCase):
         self.assertIn("--retain-original-bundle", job)
         self.assertIn("--record-retained-upload", job)
         guard = "test '${{ inputs.retained_fixedtxt_source_zip_base85 == '' && inputs.fixedtxt_request != 'retained-source-kit' }}' = 'true'"
-        for name in ("source-contracts", "native-mlt-sequence", "fixedtxt-original-owner", "fixedtxt-r28-original-delivery"):
+        for name in ("source-contracts", "native-mlt-sequence", "fixedtxt-original-owner",
+                     "fixedtxt-session-owner", "fixedtxt-r28-original-delivery"):
             block = self.workflow.split("  " + name + ":\n", 1)[1]
             block = re.split(r"\n  [a-z][a-z0-9-]+:\n", block, maxsplit=1)[0]
             self.assertIn(guard, block, name)
