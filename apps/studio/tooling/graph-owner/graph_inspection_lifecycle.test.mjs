@@ -79,3 +79,20 @@ test('original case uses actual service with no invented Native DTO, delay or re
   const prepare = caseSource.split('async function prepare(', 2)[1].split('\ntest(', 1)[0];
   assert.doesNotMatch(prepare, /\bsetTimeout\(/);
 });
+
+test('a rejected real Graph context cannot render raw backend error through the inspection UI', () => {
+  const begin = ui.indexOf('async function inspectContext()');
+  const end = ui.indexOf('async function send(operation:', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const inspection = ui.slice(begin, end);
+  const rejection = inspection.split('} catch (reason) {')[1]?.split('} finally {')[0]
+    ?? inspection.split('} catch {')[1]?.split('} finally {')[0];
+  assert.ok(rejection, 'real readContext rejection handler exists');
+  // The Host/Service retains private original diagnostics; its arbitrary
+  // Error.message, path or DTO cannot be reflected into author-facing DOM.
+  assert.doesNotMatch(rejection, /message\(reason\)|String\(reason\)|reason\.(?:message|stack)/);
+  assert.match(rejection, /session\.error = "GRAPH_CONTEXT_INSPECTION_REJECTED:/);
+  assert.match(rejection, /terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
+  assert.match(ui, /GRAPH_SAVE_CONTEXT_UNAVAILABLE/);
+  assert.match(ui, /const canSave = saveGuards\.length === 0/);
+});

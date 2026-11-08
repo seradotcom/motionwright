@@ -3,6 +3,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::Cell,
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -747,6 +748,9 @@ pub struct Store {
     blob_root: PathBuf,
     cas_store_id: Uuid,
     cas_database_id: String,
+    // Last verified original history. data_version observes external writers;
+    // total_changes() observes writes from this connection.
+    verified_event_history: Cell<Option<(Uuid, i64, i64)>>,
 }
 
 impl Store {
@@ -973,6 +977,7 @@ impl Store {
             blob_root,
             cas_store_id,
             cas_database_id,
+            verified_event_history: Cell::new(None),
         };
         // Recover a bounded number of obsolete derived manifests after an
         // interrupted edit. Tombstones and misses remain authoritative even
@@ -1626,13 +1631,31 @@ impl Store {
         Ok(outcome)
     }
 
-    /// Refuse damaged original event headers and syntactically invalid
-    /// original JSON payloads even when LIMIT or a cursor hides the row.
-    /// All probes are project-scoped; nonpositive revisions use the existing
-    /// (project_id,revision) index; other checks scan this project's events.
-    /// The payload probe checks JSON storage form, not full Change semantics.
-    /// No journal, locks, or CAS are changed.
+    /// Observe both external SQLite commits and writes by this connection.
+    /// Together, these stamps invalidate the local optimization whenever
+    /// the retained database content has changed through SQLite.
+    fn event_history_change_stamp(&self) -> Result<(i64, i64)> {
+        // SQLite data_version detects other connections, not self commits.
+        // total_changes is monotonic for writes on this retained connection.
+        let data_version = self
+            .conn
+            .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?;
+        let total_changes = self
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))?;
+        Ok((data_version, total_changes))
+    }
+
+    /// Refuse damaged original event headers, undecodable Change payloads,
+    /// and unreadable timestamp fields even when a cursor hides the row.
+    /// Full project-scoped scans are reused only while both SQLite change
+    /// stamps remain equal; Graph pagination must not skip corrupt originals.
     fn reject_hidden_corrupt_event_header(&self, id: Uuid) -> Result<()> {
+        let before = self.event_history_change_stamp()?;
+        if self.verified_event_history.get() == Some((id, before.0, before.1)) {
+            return Ok(());
+        }
+        self.verified_event_history.set(None);
         let (bad_revision, untyped_revision, bad_kind, bad_payload): (i64, i64, i64, i64) =
             self.conn.query_row(
                 "SELECT
@@ -1700,6 +1723,35 @@ impl Store {
             return Err(StorageError::InvalidBackup(
                 "incomplete original event sequence in SQLite history".into(),
             ));
+        }
+        // SQLite JSON validity alone does not guarantee that an event can be
+        // decoded as an actual Change. Verify all original project events once
+        // per change stamp, including those hidden by a Graph page cursor.
+        // Stream rows instead of allocating an unbounded journal in memory.
+        let mut statement = self.conn.prepare(
+            "SELECT payload_json, created_at FROM events WHERE project_id=?1 ORDER BY revision",
+        )?;
+        let rows = statement.query_map([id.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            // A timestamp stored as BLOB or malformed UTF-8 is unreadable by
+            // ProjectEvent even if a cursor hides that original event.
+            let (payload, _created_at) = row.map_err(|_| {
+                StorageError::InvalidBackup(
+                    "invalid original event field encoding in SQLite history".into(),
+                )
+            })?;
+            serde_json::from_str::<Change>(&payload).map_err(|_| {
+                StorageError::InvalidBackup(
+                    "invalid original event payload Change in SQLite history".into(),
+                )
+            })?;
+        }
+        // A concurrent commit during the full probe must not enter the cache.
+        if self.event_history_change_stamp()? == before {
+            self.verified_event_history
+                .set(Some((id, before.0, before.1)));
         }
         Ok(())
     }
@@ -3237,6 +3289,94 @@ mod tests {
         );
     }
 
+    #[test]
+    fn event_history_cache_revalidates_after_external_sqlite_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let project = store
+            .create_named_project("External data-version guard")
+            .unwrap();
+        let changed = store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "external-cache-1",
+                &Change::RenameProject {
+                    title: "First edit".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.event_records_since(project.id, 0, 1).unwrap().len(),
+            1
+        );
+        let first_stamp = store.verified_event_history.get().unwrap();
+        assert_eq!(first_stamp.0, project.id);
+        assert_eq!(
+            store.event_records_since(project.id, 0, 1).unwrap().len(),
+            1
+        );
+
+        // The next reader call must never trust the cached healthy state after
+        // another SQLite connection alters a row hidden by its cursor.
+        let other = Connection::open(store.path()).unwrap();
+        root_operation_budget::register_writer_fence(&other).unwrap();
+        other
+            .execute(
+                "UPDATE events SET payload_json='[]' WHERE project_id=?1 AND revision=1",
+                [project.id.to_string()],
+            )
+            .unwrap();
+        drop(other);
+        assert!(matches!(
+            store.event_records_since(changed.project.id, 1, 1),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert!(store.verified_event_history.get().is_none());
+    }
+
+    #[test]
+    fn event_history_cache_revalidates_after_own_connection_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let project = store
+            .create_named_project("Same-connection total-changes guard")
+            .unwrap();
+        store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "self-cache-1",
+                &Change::RenameProject {
+                    title: "First edit".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .event_records_through(project.id, u64::MAX, 1)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store.verified_event_history.get().is_some());
+
+        // PRAGMA data_version does not change for writes made by this same
+        // connection; total_changes() must invalidate its prior verification.
+        store
+            .conn
+            .execute(
+                "UPDATE events SET payload_json='[]' WHERE project_id=?1 AND revision=1",
+                [project.id.to_string()],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.event_records_through(project.id, u64::MAX, 1),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert!(store.verified_event_history.get().is_none());
+    }
+
     /// Original SQLite databases are not STRICT: an INTEGER-affinity revision
     /// can physically hold TEXT. Such a damaged original row sorts above all
     /// numeric revision cursors and must not silently disappear from Graph.
@@ -3727,6 +3867,110 @@ mod tests {
                 store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
                 1,
                 "valid other project history remains readable"
+            );
+        }
+    }
+
+    /// A syntactically valid JSON object can still be impossible to decode as
+    /// a Change. Do not publish a later Graph page while such an earlier
+    /// original event is hidden by the cursor.
+    #[test]
+    fn history_rejects_hidden_semantically_invalid_change_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store
+            .create_named_project("Original semantic custody")
+            .unwrap();
+        let healthy = store
+            .create_named_project("Healthy separate project")
+            .unwrap();
+        for revision in 1..=2 {
+            project = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("original-semantic-{revision}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {revision}"),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        store
+            .apply(
+                healthy.id,
+                &RevisionStamp::from(&healthy),
+                "healthy-semantic",
+                &Change::RenameProject {
+                    title: "Healthy".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET payload_json='{}' WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        for page in [
+            store.event_records_since(project.id, 1, 1),
+            store.event_records_through(project.id, project.revision, 1),
+        ] {
+            assert!(
+                matches!(page, Err(StorageError::InvalidBackup(ref reason))
+                    if reason.contains("event payload")),
+                "a well-formed but invalid hidden Change must refuse Graph history: {page:?}"
+            );
+        }
+        assert_eq!(
+            store.event_records_since(healthy.id, 0, 1).unwrap().len(),
+            1,
+            "unrelated authentic history must remain available"
+        );
+    }
+
+    /// A corrupt original event timestamp can be invisible to a Graph cursor
+    /// even though a direct read of that row cannot decode its TEXT column.
+    #[test]
+    fn history_rejects_hidden_nontext_created_at() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store.create_named_project("Timestamp custody").unwrap();
+        for revision in 1..=2 {
+            project = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("timestamp-{revision}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {revision}"),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET created_at=x'FF' WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        for result in [
+            store.event_records_since(project.id, 1, 1),
+            store.event_records_through(project.id, project.revision, 1),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(_))),
+                "hidden non-TEXT event timestamp must reject Graph history: {result:?}"
             );
         }
     }

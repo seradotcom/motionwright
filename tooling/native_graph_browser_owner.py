@@ -2371,6 +2371,11 @@ def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="expli
             cohort, cohort_absent = close_complete_cohort()
         except BaseException:
             errors.append("OWNER_CLOSE_FAILED")
+    # An incomplete returned lifecycle receipt is still a failed owner close,
+    # even when the process observer saw a signal-free empty descendant tree.
+    # Preserve its original terminal and emit the existing typed failure.
+    if type(lifecycle_receipt) is not dict or lifecycle_receipt.get("status") != "CLOSED":
+        errors.append("OWNER_CLOSE_FAILED")
     # Releasing the ProviderLease is not evidence that the later full owner
     # shutdown was clean: a SIGTERM/SIGKILL subreaper cleanup may leave the
     # process tree empty with status PASS. Reject it before final CLOSED.

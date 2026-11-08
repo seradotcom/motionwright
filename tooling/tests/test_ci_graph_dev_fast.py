@@ -451,5 +451,28 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertFalse(any(fnmatchcase("docs/roadmap.md", glob) for glob in globs))
 
 
+    def test_graph_owner_incomplete_terminal_is_selected_in_fast_source_only(self):
+        """A4's inert INCOMPLETE original cannot escape the source-only CI lane."""
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split(
+            "  workflow_dispatch:", 1)[0]
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_incomplete_terminal.py'",
+            trigger)
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_final_error_catalog.py'",
+            trigger)
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_final_lifecycle_errors.py'",
+            trigger)
+        self.assertIn("tooling.tests.test_graph_owner_incomplete_terminal", gn1)
+        self.assertTrue(
+            (root / "tooling/tests/test_graph_owner_incomplete_terminal.py").is_file())
+        self.assertIn("tooling.tests.test_graph_owner_final_error_catalog", gn1)
+
 if __name__ == "__main__":
     unittest.main()

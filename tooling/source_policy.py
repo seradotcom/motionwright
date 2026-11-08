@@ -193,7 +193,7 @@ for path in iter_source_files(ROOT):
             # name, no shell or project-provided executable/arguments. Any
             # modification to that reviewed source invalidates this SHA gate.
             "crates/storage/src/read_only.rs":
-                "858772f8985a7160f934faf50d16bedb92e60a3f3708b7f644276530c7470020",
+                "201934b1f72f7a92862c35b96f5dde7557e614207453245acafee30954e7b0e1",
             # N83 acceptance CLI, not cfg(test): fixed Git identity reads and
             # the committed preview helper under the admitted runner's owned
             # process group/deadline; no shell or project-selected executable.
