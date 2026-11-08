@@ -35,10 +35,10 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory(prefix="graph-review-offline-")
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name).resolve(strict=True)
-        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
-            self.root / "trusted-product", self.PRODUCT)
         self.sdk, self.s_sha, self.s_tree, self.s_rows = self.git(
             self.root / "trusted-sem", self.SDK)
+        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+            self.root / "trusted-product", self.PRODUCT, pin_revision=self.s_sha)
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         pem = self.key.private_bytes(serialization.Encoding.PEM,
                   serialization.PrivateFormat.PKCS8,
@@ -56,7 +56,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                           "sha256": reviewer.sha(der)}
         self.run_id = "42400011223"
 
-    def git(self, root, names):
+    def git(self, root, names, *, pin_revision=None, cargo_revision=None):
         root.mkdir()
         def call(*args):
             r = subprocess.run(["git", "-C", str(root), *args],capture_output=True)
@@ -70,6 +70,15 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             p = root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             data = ("Original source fixture " + name + "\n").encode()
+            if pin_revision is not None and name == "SOURCE_LOCK.json":
+                data = (json.dumps({"dependencies": {"semwright": {
+                    "repository": "https://github.com/seradotcom/semwright",
+                    "revision": pin_revision}}}, sort_keys=True) + "\n").encode()
+            if pin_revision is not None and name == "Cargo.lock":
+                cargo_pin = cargo_revision if cargo_revision is not None else pin_revision
+                data = (f'[[package]]\nname = "semwright-native-sdk"\n'
+                        f'version = "1.0.0"\n'
+                        f'source = "git+https://github.com/seradotcom/semwright?rev={cargo_pin}#{cargo_pin}"\n').encode()
             p.write_bytes(data)
             rows[name] = {"bytes": len(data), "sha256": reviewer.sha(data)}
         call("add", ".")
@@ -326,6 +335,26 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "SOURCE_GIT_BYTES_SOURCE_LOCK.json"):
             self.check("forged-source",fake_source_digest=True)
+
+    def test_source_lock_semwright_revision_disagreement_is_denied(self):
+        # A fully self-consistent encrypted artifact must not relabel an SDK
+        # commit outside the product's original immutable SOURCE_LOCK.
+        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+            self.root / "product-pin-mismatch", self.PRODUCT,
+            pin_revision="f"*40, cargo_revision=self.s_sha)
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "SEMWRIGHT_SOURCE_LOCK_PIN"):
+            self.check("source-lock-mismatch")
+
+    def test_cargo_lock_semwright_revision_disagreement_is_denied(self):
+        # The source lock alone is insufficient: all Git-dependency rows in
+        # Cargo.lock must match the independently reviewed Semwright commit.
+        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+            self.root / "cargo-pin-mismatch", self.PRODUCT,
+            pin_revision=self.s_sha, cargo_revision="e"*40)
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "SEMWRIGHT_CARGO_LOCK_PIN"):
+            self.check("cargo-lock-mismatch")
 
     def test_valid_encryption_with_partial_original_manifest_is_denied(self):
         with self.assertRaisesRegex(reviewer.ReviewRejected,

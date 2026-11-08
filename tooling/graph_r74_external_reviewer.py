@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 
 from cryptography.hazmat.primitives import serialization
@@ -105,6 +106,44 @@ def verify_sources(repo, revision, listing, required):
                 "SOURCE_GIT_BYTES_" + name)
         result[name] = ref
     return tree, result
+
+
+def verify_semwright_pin(product, source_sha, sem_sha):
+    """Bind both original product source locks to the independently reviewed SDK.
+
+    An authenticated carrier that names two real Git commits is not enough:
+    the product's original SOURCE_LOCK and *every* Cargo Git dependency must
+    select the same Semwright commit, rather than a different revision.
+    """
+    lock = json_original(trusted_git(product, "show",
+                         source_sha + ":SOURCE_LOCK.json"))
+    dependencies = lock.get("dependencies")
+    sem = dependencies.get("semwright") if type(dependencies) is dict else None
+    require(type(sem) is dict and
+            sem.get("repository") == "https://github.com/seradotcom/semwright"
+            and sem.get("revision") == sem_sha,
+            "SEMWRIGHT_SOURCE_LOCK_PIN")
+    verification = sem.get("verification")
+    require(verification is None or
+            type(verification) is dict and
+            verification.get("repository") == sem["repository"] and
+            verification.get("revision") == sem_sha,
+            "SEMWRIGHT_VERIFICATION_PIN")
+    cargo_raw = trusted_git(product, "show", source_sha + ":Cargo.lock")
+    try:
+        cargo = tomllib.loads(cargo_raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as error:
+        raise ReviewRejected("GRAPH_REVIEW_SEMWRIGHT_CARGO_LOCK_PARSE") from error
+    rows = cargo.get("package")
+    require(type(rows) is list, "SEMWRIGHT_CARGO_LOCK_PACKAGE")
+    git_sources = [row["source"] for row in rows if type(row) is dict
+                   and type(row.get("source")) is str
+                   and "github.com/seradotcom/semwright" in row["source"]]
+    correct = ("git+https://github.com/seradotcom/semwright?rev="
+               + sem_sha + "#" + sem_sha)
+    require(len(git_sources) > 0 and all(source == correct for source in git_sources),
+            "SEMWRIGHT_CARGO_LOCK_PIN")
+    return {"revision": sem_sha, "cargo_package_references": len(git_sources)}
 
 
 def source_member(entries, name, expected):
@@ -307,6 +346,7 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
     require(source["tree"] == product_tree
             and index["contract"]["sdk_tree"] == sdk_tree,
             "TRUSTED_GIT_TREES")
+    lock_proof = verify_semwright_pin(product, source_sha, sem_sha)
     copies = request["outside_original_copies"]
     require(type(copies) is list and len(copies) >= 2, "REVIEW_OUTSIDE_COPY_ROSTER")
     seen = set()
@@ -328,6 +368,8 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
       "original_members": len(entries), "independent_product_sources": len(product_rows),
       "independent_semwright_sources": len(sdk_rows),
       "source_tree": product_tree, "semwright_tree": sdk_tree,
+      "source_lock_sdk_revision": lock_proof["revision"],
+      "cargo_lock_semwright_references": lock_proof["cargo_package_references"],
       "case": "graph-flow", "native_effects_observed": False,
       "github_status_written": False, "Graph6": "0/6",
       "G2": "NOT_GRANTED", "G3": "STOP",

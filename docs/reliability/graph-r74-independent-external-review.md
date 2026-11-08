@@ -90,6 +90,8 @@ python -B tooling/graph_r74_external_reviewer.py \
 
 On Windows, use absolute Windows paths and PowerShell line continuation or a single command line. The tool authenticates encryption context, source/run/recipient identities, complete snapshot members, producer index, retained binary copies and source bytes against both trusted Git trees. A successful result establishes carrier and source authenticity only. The independent reviewer must still examine the original callbacks and process authority substantively.
 
+The authenticated product source must select the independently reviewed SDK: `SOURCE_LOCK.json`, its optional verification record, and every Semwright Git dependency in the original `Cargo.lock` must bind the same immutable revision. The receipt records that revision and the number of matching Cargo references. Self-consistent encryption cannot authorize a mismatched SDK pin.
+
 ## Genuine admission
 
 Only after genuine independent review may the original workflow run actor publish the exact source-bound owner admission. The independent reviewer does not publish it. The producer checks the actor, exact source/run attempt, case context, target URL and reviewed index digest.
