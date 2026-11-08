@@ -463,6 +463,12 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn(
             "      - 'tooling/tests/test_graph_owner_incomplete_terminal.py'",
             trigger)
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_final_error_catalog.py'",
+            trigger)
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_final_lifecycle_errors.py'",
+            trigger)
         self.assertIn("tooling.tests.test_graph_owner_incomplete_terminal", gn1)
         self.assertTrue(
             (root / "tooling/tests/test_graph_owner_incomplete_terminal.py").is_file())
