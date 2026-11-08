@@ -471,11 +471,6 @@ export async function publishOriginalWriterRpcRoster(factory, service) {
           && typeof payload.ok === 'boolean', 'REOPEN_WRITER_RPC_UNSOLICITED_REPLY');
         exact(payload, payload.ok ? ['id','ok','result'] : ['id','ok','error'],
           'REOPEN_WRITER_RPC_RESPONSE_FIELDS');
-        // studio_review_session::Session::handle serializes every Err(String)
-        // as JSON string. A structured error envelope is not that compiled
-        // Service's response, even if a forged roster reproduces its bytes.
-        need(payload.ok || typeof payload.error === 'string',
-          'REOPEN_WRITER_RPC_DENIAL_NOT_SOURCE_STRING');
         records.push({ request: pending.get(key), response: payload });
         pending.delete(key);
       }

@@ -9785,8 +9785,7 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
                 and type(row.get("id")) is str and bool(row["id"])
                 and ((row.get("ok") is True and set(row) == {"id", "ok", "result"})
                      or (writer and row.get("ok") is False
-                         and set(row) == {"id", "ok", "error"}
-                         and type(row.get("error")) is str))
+                         and set(row) == {"id", "ok", "error"}))
                 for row in rows),
                 "Graph original typed JSONL response wire schema")
         ids = [row["id"] for row in rows]

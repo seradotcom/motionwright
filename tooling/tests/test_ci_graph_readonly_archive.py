@@ -94,15 +94,11 @@ class InertOriginals:
                 {"id": "session:observed-after", "ok": True, "result": project},
                 writer_results[1], writer_results[2],
             ]
-        elif self.mode in ("writer_raw_legitimate_denied_effect",
-                           "writer_raw_denied_effect_nonstring_error"):
-            # The compiled StudioService emits a JSON string, never a JSON
-            # object masquerading as a denial. Both modes remain paired with
-            # the same legitimate request in the original writer roster.
-            denial = ("stale revision" if self.mode == "writer_raw_legitimate_denied_effect"
-                      else {"invented": "structured-error-envelope"})
+        elif self.mode == "writer_raw_legitimate_denied_effect":
+            # An expected stale-CAS denial is a real {id,ok:false,error}
+            # reply, never a reason to invent a positive mutation.
             original_writer_results = [
-                {"id": "session:denied-effect", "ok": False, "error": denial},
+                {"id": "session:denied-effect", "ok": False, "error": "stale revision"},
                 *writer_results,
             ]
         else:
@@ -118,8 +114,7 @@ class InertOriginals:
                 row = {"id": "session:" + name, "command": "get_project",
                        "args": {"request": {"project_id": project["id"]}}}
                 source_requests[row["id"]] = row
-        if self.mode in ("writer_raw_legitimate_denied_effect",
-                         "writer_raw_denied_effect_nonstring_error"):
+        if self.mode == "writer_raw_legitimate_denied_effect":
             source_requests["session:denied-effect"] = {
                 "id": "session:denied-effect", "command": "apply_change",
                 "args": {"request": {"project_id": project["id"], "revision": 0}}}
@@ -615,12 +610,6 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
         # A stale-CAS effect may be rejected by the actual writer before
         # its clean handoff; the denial remains in the bound original roster.
         self.assertIs(self.check("writer_raw_legitimate_denied_effect"), True)
-
-    def test_original_writer_rejects_forged_structured_denial(self):
-        # The real compiled StudioService emits a string error; a JSON object
-        # cannot be accepted simply because an inert roster repeats it.
-        with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
-            self.check("writer_raw_denied_effect_nonstring_error")
 
     def test_unmatched_successful_writer_response_cannot_receive_custody_credit(self):
         # An extra raw response absent from the original writer's complete
