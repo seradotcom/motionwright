@@ -24,7 +24,10 @@ class GraphReviewArtifactTests(unittest.TestCase):
         self.transport = importlib.import_module("graph_review_artifact")
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.output = Path(self.temp.name) / "private-transport"
+        # Windows hosted runners may expose TEMP through a DOS 8.3 alias.
+        # Canonicalize this inert fixture, not the production custody guard.
+        self.output = Path(self.temp.name).resolve(strict=True) / "private-transport"
+        self.assertEqual(self.output.parent, self.output.parent.resolve(strict=True))
         self.source = "a" * 40
         self.run_id = "42400011223"
         self.name = "graph-originals-review-" + self.source + "-" + self.run_id + "-1"
