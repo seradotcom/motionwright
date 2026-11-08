@@ -9409,6 +9409,16 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
 
     case_root = reopen_path.parent.parent
     owner_root = case_root / "owner"
+    # The original producer allocates g1..g6 using the sorted, immutable
+    # semantic case IDs. g1 is a filesystem slot, NEVER a Graph case_id.
+    # Resolve the expected protocol IDs from our own admitted layout, not
+    # from the possibly forged final JSON or the leaf directory basename.
+    layout_matches = [
+        typed_id for typed_id, _, _ in GRAPH_CASES
+        if graph_case_layout(case_root.parent, typed_id)["private_root"] == case_root
+    ]
+    require(len(layout_matches) == 1, "Graph original R74 case root is not canonical g1-g6")
+    case_id = layout_matches[0]
     source = index["source"]
     original_store = reopen["physical_store_before"]
     provider_ref = handoff.get("native_provider_release")
@@ -9603,7 +9613,7 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
     # the parent Node protocol would have rejected duplicate/unsolicited replies.
     expected_ready = {
         "event": "READY", "schema": "motionwright.graph-browser-owner/6",
-        "case_id": case_root.name, "source_sha": source["sha"],
+        "case_id": case_id, "source_sha": source["sha"],
         "owner_pid": proof["owner_pid"], "private_root": str(owner_root),
         "native_authoring_approved": False,
     }
@@ -9651,15 +9661,15 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
     # closed/EOF/absent-cohort conjunction.
     final_ref = graph_ref(owner_root / "owner-final.original.json", 4 * GRAPH_BYTES)
     require(graph_json(retained(final_ref, 4 * GRAPH_BYTES)) == final
-            and final.get("case_id") == case_root.name
+            and final.get("case_id") == case_id
             and final.get("status") == "CLOSED"
             and final.get("owner_cohort_absent") is True
             and final.get("owner_streams_eof") is True
             and final.get("capture_permitted") is True,
             "Graph final owner original is not the same closed case")
     expected_final = {
-        "event": "FINAL_RECEIPT", "id": "close-" + case_root.name,
-        "case_id": case_root.name, "status": "CLOSED",
+        "event": "FINAL_RECEIPT", "id": "close-" + case_id,
+        "case_id": case_id, "status": "CLOSED",
         "receipt_path": final_ref["path"],
         "receipt_sha256": final_ref["sha256"],
         "owner_cohort_absent": True, "owner_streams_eof": True,
@@ -9668,7 +9678,7 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
     require(messages[-1] == expected_final,
             "Graph original parent final receipt differs from closed owner original")
     original_event = {
-        "event": "PROVIDER_RELEASED", "id": "release-" + case_root.name,
+        "event": "PROVIDER_RELEASED", "id": "release-" + case_id,
         "status": "RELEASED", "receipt_path": provider_ref["path"],
         "receipt_sha256": provider_ref["sha256"], "owner_pid": proof["owner_pid"],
         "lease_shutdown_completed": True, "native_process_closure_inferred": False,
@@ -9680,8 +9690,8 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
     # alone cannot prove these one-shot requests came from its real parent.
     controls = [{"op": "new-client", "id": row["id"]} for row in clients]
     controls += [
-        {"op": "quiesce", "id": "release-" + case_root.name},
-        {"op": "close", "id": "close-" + case_root.name, "service_barrier": {
+        {"op": "quiesce", "id": "release-" + case_id},
+        {"op": "close", "id": "close-" + case_id, "service_barrier": {
             "closed": True, "receipt_path": final["service_closure"]["path"],
             "receipt_sha256": final["service_closure"]["sha256"],
         }},

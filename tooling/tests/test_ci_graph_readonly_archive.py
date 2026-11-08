@@ -21,7 +21,7 @@ class InertOriginals:
         self.files = {}
         self.refs = {}
         self.source = {"sha": "a" * 40, "run_id": "12345678", "run_attempt": 1}
-        self.physical = {"path": str(self.root / ("other-source" if mode == "database_outside_case" else "graph-flow") / "store" / "motionwright.sqlite3"),
+        self.physical = {"path": str(self.root / ("other-source" if mode == "database_outside_case" else "g1") / "store" / "motionwright.sqlite3"),
                          "device": "2049", "inode": "98765"}
         dev, ino = int(self.physical["device"]), int(self.physical["inode"])
         major = ((dev >> 8) & 0xfff) | ((dev >> 32) & 0xfffff000)
@@ -106,9 +106,9 @@ class InertOriginals:
                    "context": context, "request_original": href, "response": writer_results[1],
                    "identity_request_original": iref, "identity_response": writer_results[2]}
         owner_pid = 777
-        owner_root = self.root / "graph-flow" / "owner"
+        owner_root = self.root / "g1" / "owner"
         client_id = "original-native-client"
-        session = self.put("graph-flow/owner/clients/" + client_id + ".session",
+        session = self.put("g1/owner/clients/" + client_id + ".session",
                            b"synthetic-inert-session-not-a-runtime-token")
         original_mount = {
             "provider": "driver:motionwright", "connection": "real-original-lease",
@@ -121,7 +121,7 @@ class InertOriginals:
             original_mount["mount"]["path"] = str(owner_root / "other-store")
         custody_mount = ({**original_mount, "provider": "other"}
                          if self.mode == "release_custody_changed" else original_mount)
-        self.put("graph-flow/owner/clients/" + client_id + ".custody.json",
+        self.put("g1/owner/clients/" + client_id + ".custody.json",
                  {"actual_mount_observation": custody_mount})
         fresh_mount = {**original_mount, "binding_ref": "source-bound-binding-one"}
         if self.mode == "release_fresh_foreign_connection":
@@ -145,7 +145,7 @@ class InertOriginals:
 
         def make_cli(label, command, args, expected):
             label_name = "native-provider-release-" + label
-            basename = "graph-flow/owner/" + label_name
+            basename = "g1/owner/" + label_name
             envelope = {"ok": True, "data": expected}
             if self.mode == "release_cli_false_ok" and label == "bound":
                 envelope["ok"] = False
@@ -233,7 +233,7 @@ class InertOriginals:
             provider["current_store"]["inode"] += 1
         provider_path = ("other-source/owner-provider-release.original.json"
                          if self.mode == "release_foreign_case" else
-                         "graph-flow/owner/owner-provider-release.original.json")
+                         "g1/owner/owner-provider-release.original.json")
         provider_ref = self.put(provider_path, provider)
         if self.mode == "release_old_quiescence_key":
             handoff["native_owner_quiescence"] = provider_ref
@@ -251,7 +251,7 @@ class InertOriginals:
         }
         if self.mode == "release_owner_event_changed":
             provider_event["receipt_sha256"] = "0" * 64
-        connection = self.put("graph-flow/owner/clients/" + client_id + ".connection.json",
+        connection = self.put("g1/owner/clients/" + client_id + ".connection.json",
                               {"schema": "motionwright-semwright-connection/1",
                                "session_file": session["path"]})
         ready_event = {"event": "READY", "schema": "motionwright.graph-browser-owner/6",
@@ -311,7 +311,7 @@ class InertOriginals:
         if self.mode == "release_owner_final_unknown":
             lifecycle["status"] = "UNKNOWN"
         self.owner_complete = self.put(
-            "graph-flow/owner/owner-complete-close.original.json", {
+            "g1/owner/owner-complete-close.original.json", {
                 "lifecycle": lifecycle, "cohort": cohort, "status": "CLOSED",
                 "owner_streams_eof": True, "source_validated_before_close": True,
             })
@@ -340,7 +340,7 @@ class InertOriginals:
                           case_id="graph-flow", status="CLOSED",
                           owner_cohort_absent=True, owner_streams_eof=True,
                           capture_permitted=True)
-        final_ref = self.put("graph-flow/owner/owner-final.original.json", self.final)
+        final_ref = self.put("g1/owner/owner-final.original.json", self.final)
         final_event = {
             "event": "FINAL_RECEIPT", "id": "close-graph-flow",
             "case_id": "graph-flow", "status": "CLOSED",
@@ -370,10 +370,10 @@ class InertOriginals:
                           if event["event"] == "FINAL_RECEIPT")
         responses[final_slot] = final_event
         owner_stdout = self.put(
-            "graph-flow/owner-parent.stdout.original",
+            "g1/owner-parent.stdout.original",
             b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n"
                      for row in responses))
-        owner_stderr = self.put("graph-flow/raw/python-owner.stderr.original", b"")
+        owner_stderr = self.put("g1/raw/python-owner.stderr.original", b"")
         stderr_ref = {**owner_stderr, "eof": self.mode != "release_parent_stderr_no_eof"}
         if self.mode == "release_parent_stderr_digest_changed":
             stderr_ref["sha256"] = "0" * 64
@@ -382,7 +382,7 @@ class InertOriginals:
         parent_raw = {"stdout": {**owner_stdout, "eof": True}}
         if self.mode != "release_parent_stderr_missing":
             parent_raw["stderr"] = stderr_ref
-        self.put("graph-flow/owner-parent-terminal.original.json", {
+        self.put("g1/owner-parent-terminal.original.json", {
             "exit": {"process_id": owner_pid, "code": 0, "signal": None},
             "raw": parent_raw,
         })
@@ -415,11 +415,11 @@ class InertOriginals:
                 continue
             raw = json.dumps(value, separators=(",", ":")).encode()
             if self.mode == "control_missing_newline" and index == 0:
-                self.put("graph-flow/control-0.original.jsonl", raw)
+                self.put("g1/control-0.original.jsonl", raw)
             elif self.mode == "control_repeated_raw_line" and index == 0:
-                self.put("graph-flow/control-0.original.jsonl", (raw + b"\n") * 2)
+                self.put("g1/control-0.original.jsonl", (raw + b"\n") * 2)
             else:
-                self.put(f"graph-flow/control-{index}.original.jsonl", raw + b"\n")
+                self.put(f"g1/control-{index}.original.jsonl", raw + b"\n")
         intent = {"schema": "motionwright.graph.same-original-store-reopen/1", "source": self.source,
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
                          self.physical["path"], *([] if self.mode == "writable_argv" else ["--read-only"])],
@@ -427,8 +427,8 @@ class InertOriginals:
                   "original_preseal_held_pager_witness": preseal_ref, "original_service_closure": closure_ref,
                   "allowed_commands": ["bootstrap", "get_project", "project_history",
                                        "opened_store_identity_witness"], "automatic_retry": False}
-        self.reopen_path = self.root / "graph-flow" / "independent-reopen" / "terminal.original.json"
-        self.put("graph-flow/independent-reopen/intent.original.json", intent)
+        self.reopen_path = self.root / "g1" / "independent-reopen" / "terminal.original.json"
+        self.put("g1/independent-reopen/intent.original.json", intent)
         reqs = [
             ("bootstrap", {"request": {"project_id": project["id"]}}, {
                 "read_only": self.mode != "bootstrap_writable", "test_transport": "service-test-jsonl",
@@ -458,8 +458,8 @@ class InertOriginals:
             reader_results[1]["error"] = "Hidden unauthorized failure alongside success."
         reader_raw = b"".join(json.dumps(x, separators=(",", ":")).encode() + b"\n"
                               for x in reader_results)
-        reader_stdout = self.put("graph-flow/independent-reopen/service.stdout.original", reader_raw)
-        reader_stderr = self.put("graph-flow/independent-reopen/service.stderr.original", b"")
+        reader_stdout = self.put("g1/independent-reopen/service.stdout.original", reader_raw)
+        reader_stderr = self.put("g1/independent-reopen/service.stderr.original", b"")
         desc_refs = []
         for i in range(2):
             obs = {"source": self.source, "binary": self.ordinary, "held_store_digest": self.held,
@@ -512,6 +512,27 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
             return gate.graph_verify_readonly_reopen_originals(
                 fixture.reopen, fixture.index, fixture.final,
                 fixture.reopen_path, fixture.retained)
+
+    def test_original_r74_slot_and_typed_graph_case_id_are_distinct(self):
+        fixture = InertOriginals()
+        slots = {typed: gate.graph_case_layout(fixture.root, typed)["private_root"]
+                 for typed, _, _ in gate.GRAPH_CASES}
+        self.assertEqual(len(set(slots.values())), 6)
+        self.assertEqual(slots["graph-flow"], fixture.root / "g1")
+        self.assertEqual(fixture.reopen_path.parent.parent, fixture.root / "g1")
+        self.assertEqual(fixture.final["case_id"], "graph-flow")
+        self.assertNotEqual(fixture.reopen_path.parent.parent.name,
+                            fixture.final["case_id"])
+        # The historical fixture's "graph-flow/" directory never existed
+        # in the real producer. It must be refused before reading any
+        # attacker-controlled original refs, despite its semantic ID.
+        handoff_ref = fixture.reopen["original_writer_read_only_handoff"]
+        handoff = json.loads(fixture.retained(handoff_ref))
+        legacy = fixture.root / "graph-flow" / "independent-reopen" / "terminal.original.json"
+        with self.assertRaisesRegex(ValueError, "not canonical g1-g6"):
+            gate.graph_verify_mounted_provider_release(
+                handoff, fixture.index, fixture.final, fixture.reopen,
+                legacy, fixture.retained)
 
     def test_original_handoff_and_distinct_read_only_reader_source_fixture(self):
         self.assertIs(self.check(), True)
