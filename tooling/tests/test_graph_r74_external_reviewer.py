@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -187,6 +188,58 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         alias.symlink_to(extracted, target_is_directory=True)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_CANONICAL_PATH"):
             reviewer.review(alias, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+
+    def test_authenticated_carrier_rejects_forged_original_manifest_digest(self):
+        """A public-key holder can reencrypt a snapshot: its own manifest must agree."""
+        artifact = self.make_artifact("forged-manifest-attestation")
+        with zipfile.ZipFile(artifact) as archive:
+            carrier = reviewer.json_original(archive.read("carrier.original.json"))
+            envelope = archive.read("producer-originals.mwseal")
+        plaintext, context = seal.decrypt_snapshot(envelope, self.key)
+        rows = []
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as archive:
+            for member in archive:
+                raw = archive.extractfile(member).read()
+                if member.name == "snapshot-manifest.json":
+                    manifest = reviewer.json_original(raw)
+                    captured = next(row for row in manifest["roots"]["producer"]["files"]
+                                    if row["archive_path"] == "producer/producer-index.original.json")
+                    captured["observation"]["sha256"] = "f" * 64
+                    raw = seal.json_bytes(manifest)
+                rows.append((member.name, raw))
+        new_tar = io.BytesIO()
+        with tarfile.open(fileobj=new_tar, mode="w") as archive:
+            for name, raw in rows:
+                info = tarfile.TarInfo(name)
+                info.mode, info.mtime, info.size = 0o600, 0, len(raw)
+                archive.addfile(info, io.BytesIO(raw))
+        encrypted = seal.encrypt_snapshot(new_tar.getvalue(), self.recipient, context)
+        carrier["envelope"]["sha256"] = reviewer.sha(encrypted)
+        carrier["envelope"]["size_bytes"] = len(encrypted)
+        with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("producer-originals.mwseal", encrypted)
+            archive.writestr("carrier.original.json", seal.json_bytes(carrier))
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "SNAPSHOT_ORIGINAL_OBSERVATION"):
+            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+
+    def test_raw_zip_rejects_nonregular_symlink_member_even_with_valid_bytes(self):
+        """ZIP member mode is original transport metadata, not an optional hint."""
+        artifact = self.make_artifact("symlink-member")
+        with zipfile.ZipFile(artifact) as archive:
+            rows = [(name, archive.read(name)) for name in
+                    ("producer-originals.mwseal", "carrier.original.json")]
+        with zipfile.ZipFile(artifact, "w") as archive:
+            for name, raw in rows:
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                mode = stat.S_IFLNK | 0o777 if name == "carrier.original.json" else stat.S_IFREG | 0o600
+                info.external_attr = mode << 16
+                archive.writestr(info, raw)
+        with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
+            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_wrong_source_run_recipient_and_insecure_key_are_denied(self):

@@ -82,8 +82,12 @@ The verifier binds RSA-OAEP-SHA256 plus AES-GCM authenticated context,
 run/source/recipient, complete regular snapshot members, producer index
 and carrier digests, one-case callback roster, external binary copies,
 and every recorded Motionwright/Semwright file against independently
-trusted Git bytes and trees. A5 must still inspect important source
-callbacks and Native authorizations separately.
+trusted Git bytes and trees. The reviewer also rejects raw ZIP symlink
+entries and verifies each snapshot regular member's original manifest
+SHA256, length, and stable before/after/namespace file identity.
+An internally contradictory, re-encrypted carrier is **not** sufficient
+evidence merely because RSA/AES decryption succeeds. A5 must still inspect
+important source callbacks and Native authorizations separately.
 
 A result of SOURCE_CARRIER_AUTHENTICATED_NO_OWNER_ADMISSION_NO_G2
 establishes only ciphertext/source authenticity, not A5's final review,
