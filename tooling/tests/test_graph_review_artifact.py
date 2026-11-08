@@ -93,7 +93,7 @@ class GraphReviewArtifactTests(unittest.TestCase):
         import subprocess
         executable = str(Path(self.temp.name) / "installed gh.exe")
         response = b"PK\x03\x04raw original response"
-        directory = Path(self.temp.name) / "api"
+        directory = self.output.parent / "api"
         directory.mkdir()
         route = "repos/seradotcom/motionwright/actions/artifacts/876/zip"
 
