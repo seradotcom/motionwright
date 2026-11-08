@@ -8307,6 +8307,39 @@ class GraphR74JoinTests(unittest.TestCase):
         reference.assert_called_once_with(Path("original.json"), gate.GRAPH_BUDGET["store_file_bytes"])
         read.assert_called_once_with({"path": "private-original"}, gate.GRAPH_BUDGET["store_file_bytes"])
 
+    def test_graph_primary_source_admission_and_cleanup_codes_survive_nested_aggregate(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        assertion = ("The actual service DTO and matching native consumer guards must admit this source; "
+                     "a synthetic context is not injected.")
+        result["error"] = {
+            "message": "AggregateError: Graph case body and finalization both failed",
+            "errors": [
+                {"message": assertion + " CANARY_PRIVATE_BODY",
+                 "stack": "Error: " + assertion + "\n at " +
+                          str(repo / "apps/studio/tests/semantic-graph-service.spec.ts") +
+                          ":41:176\n at /private/CANARY_BODY_PATH:77:9"},
+                {"message": "AggregateError: Store finalization is incomplete",
+                 "errors": [{"message": "Error: OWNER_ERROR:OWNER_CLOSE_FAILED CANARY_PRIVATE_CLEANUP",
+                             "stack": "Error: OWNER_ERROR:OWNER_CLOSE_FAILED\n at " +
+                                      str(repo / "apps/studio/tests/support/scopedChangeService.ts") +
+                                      ":1235:23\n at /private/CANARY_CLEANUP_PATH:88:2"}]},
+            ],
+        }
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(
+                repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(observed["report"], "OBSERVED_FAILURE_DIAGNOSTIC_ONLY")
+        self.assertEqual(set(observed), {"report", "counts", "cases", "locations", "error_codes"})
+        self.assertEqual(observed["error_codes"],
+                         ["GRAPH_SOURCE_ADMISSION_NOT_READY", "OWNER_ERROR:OWNER_CLOSE_FAILED"])
+        self.assertEqual(observed["cases"][0]["statuses"], ["failed"])
+        public = gate.json.dumps(observed)
+        self.assertNotIn(assertion, public)
+        self.assertNotIn("CANARY", public)
+        self.assertNotIn("/private/", public)
+
     def test_graph_owner_phase_literal_from_nested_playwright_aggregate_only(self):
         repo, value = self.graph_diagnostic_fixture_report()
         result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]

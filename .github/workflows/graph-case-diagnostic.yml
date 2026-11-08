@@ -1,0 +1,33 @@
+name: Graph failure diagnostic boundaries
+
+on:
+  push:
+    branches: ['codex/graph-source-admission-*']
+    paths:
+      - '.github/workflows/graph-case-diagnostic.yml'
+      - 'tooling/ci_canvas_service.py'
+      - 'tooling/tests/test_ci_canvas_service.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  failed-report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Check primary and cleanup classification without private error disclosure
+        run: >-
+          python -B -m unittest
+          tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_primary_source_admission_and_cleanup_codes_survive_nested_aggregate
+          tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_owner_phase_literal_from_nested_playwright_aggregate_only
+          tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_owner_runtime_stage_is_closed_source_only_and_never_leaks_private_details
+          tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_owner_phase_diagnostic_denies_unknown_and_suffix_codes
+          -v

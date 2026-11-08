@@ -10390,7 +10390,9 @@ def graph_observed_playwright_failure(repo, report_path, command):
             for code in GRAPH_CASE_DIAGNOSTIC_CODES:
                 if re.search(r"(?<![A-Za-z0-9_-])" + re.escape(code) + r"(?![A-Za-z0-9_-])", text) and code not in codes:
                     codes.append(code)
-            for phrase, code in (("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
+            for phrase, code in (("The actual service DTO and matching native consumer guards must admit this source; "
+                                  "a synthetic context is not injected.", "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 ("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
                                  ("browserType.launch: Executable doesn't exist", "PLAYWRIGHT_BROWSER_EXECUTABLE_MISSING"),
                                  ("Error: No tests found", "PLAYWRIGHT_NO_TESTS_FOUND"),
                                  ("Cannot find module", "MODULE_NOT_FOUND")):
