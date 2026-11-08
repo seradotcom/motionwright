@@ -50,7 +50,14 @@ Set-Acl -LiteralPath "$reviewDirectory\recipient.pem" -AclObject $fileAcl -Error
 
 Check every command's exit code before continuing. The file reader requires the owner to match the actual current token user, a protected DACL with one explicit current-user full-control or file-read grant, an ordinary file with exactly one link, and 1,025 through 16,384 bytes. It rejects inherited or foreign grants, reparse points, junction ancestors, UNC/device paths and alternate streams. It holds a file handle that denies sharing writes and deletion, reads security from that handle, and rechecks identity and security after reading. It never changes the key's ACL automatically.
 
-Disclose only the RSA-3072/e65537 public key's canonical SPKI DER base64 and SHA256. Never send the private key or reuse another run's recipient or ciphertext.
+Export only the public SPKI with an explicit output file so shell text encoding cannot alter its DER bytes. Replace the example names with the protected recipient paths:
+
+```sh
+openssl pkey -in "RECIPIENT.pem" -pubout -outform DER -out "RECIPIENT.spki.der"
+python -c "import base64,hashlib,json,sys; from pathlib import Path; raw=Path(sys.argv[1]).read_bytes(); print(json.dumps({'spki_der_base64':base64.b64encode(raw).decode('ascii'),'sha256':hashlib.sha256(raw).hexdigest()}))" "RECIPIENT.spki.der"
+```
+
+These commands work from PowerShell or a POSIX shell and emit only the canonical public SPKI base64 and SHA256. Never send the private key or reuse another run's recipient or ciphertext.
 
 ## Retain and authenticate the original carrier
 
