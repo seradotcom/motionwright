@@ -1626,6 +1626,27 @@ impl Store {
         Ok(outcome)
     }
 
+    /// A negative physical revision is invalid even when a cursor or a small
+    /// page size would hide it from the selected history. The existing
+    /// events(project_id, revision) index makes this an indexed EXISTS
+    /// preflight; no source data, lock, or SQLite journal is mutated.
+    fn reject_hidden_negative_event_revision(&self, id: Uuid) -> Result<()> {
+        let corrupt: i64 = self.conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM events
+                 WHERE project_id=?1 AND revision<0
+             )",
+            [id.to_string()],
+            |row| row.get(0),
+        )?;
+        if corrupt != 0 {
+            return Err(StorageError::InvalidBackup(
+                "negative event revision in SQLite history".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Newest-first, inclusive revision cursor. This does not replace the
     /// ascending after_revision API consumed by existing Native SDK clients.
     /// Pagination is keyset-based, without OFFSET or loading the full journal.
@@ -1636,6 +1657,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
+        self.reject_hidden_negative_event_revision(id)?;
         let through = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
             "SELECT revision,payload_json,created_at FROM events
@@ -1673,6 +1695,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
+        self.reject_hidden_negative_event_revision(id)?;
         // A valid SQLite revision is nonnegative signed i64. Casting a larger
         // user-supplied u64 directly would wrap to a negative cursor and
         // replay history already consumed by the caller.
@@ -3184,6 +3207,77 @@ mod tests {
                     if msg.contains("negative event revision")
             ),
             "negative SQLite event revision must fail closed rather than wrap"
+        );
+    }
+
+    /// A paginated history query must not report healthy events while a
+    /// negative physical revision remains hidden outside its LIMIT/cursor.
+    /// The SQLite event index permits this corrupt revision because its
+    /// schema has no nonnegative CHECK constraint.
+    #[test]
+    fn history_rejects_negative_revision_hidden_beyond_page_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store.create_named_project("History source").unwrap();
+        let unrelated = store
+            .create_named_project("Unrelated healthy history")
+            .unwrap();
+        for n in 1..=2 {
+            let outcome = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("original-event-{n}"),
+                    &Change::RenameProject {
+                        title: format!("History {n}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        let unrelated_after = store
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "unrelated-event",
+                &Change::RenameProject {
+                    title: "Still unrelated".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(unrelated_after.project.revision, 1);
+        // Corrupt only revision 1, so LIMIT 1 still returns the healthy
+        // revision 2 and excludes the negative row in both directions.
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET revision=-1 WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        for result in [
+            store.event_records_through(project.id, u64::MAX, 1),
+            store.event_records_since(project.id, 0, 1),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(StorageError::InvalidBackup(ref msg))
+                        if msg.contains("negative event revision")
+                ),
+                "hidden negative original event revision must refuse history"
+            );
+        }
+        assert_eq!(
+            store
+                .event_records_through(unrelated.id, u64::MAX, 1)
+                .unwrap()
+                .len(),
+            1,
+            "a corrupt other project must not revoke an unrelated timeline"
         );
     }
 }

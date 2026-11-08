@@ -9705,6 +9705,9 @@ def graph_verify_mounted_provider_release(handoff, index, final, reopen, reopen_
             and lifecycle.get("taints") == [] and lifecycle.get("start_failures") == []
             and type(cohort) is dict and cohort.get("status") == "PASS"
             and cohort.get("authority") == "process_custody_only_not_revocation"
+            # Empty descendants require an active subreaper: otherwise
+            # orphaned grandchildren may escape the original owner cohort.
+            and cohort.get("subreaper") is True
             and cohort.get("signals") == []
             and tree.get("root_observed") is True and tree.get("truncated") is False
             and type(tree.get("processes")) is list

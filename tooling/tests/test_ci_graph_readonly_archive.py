@@ -294,12 +294,17 @@ class InertOriginals:
                               "runtime_stage": "OWNER_CLOSE"})
         lifecycle = {"status": "CLOSED", "taints": [], "start_failures": []}
         cohort = {"status": "PASS", "authority": "process_custody_only_not_revocation",
+                  "subreaper": True,
                   "signals": ([] if self.mode != "release_emergency_signaled"
                               else [{"pid": 451, "signal": 9}]),
                   "complete_empty_descendant_tree": {
                       "root_observed": True, "truncated": False,
                       "processes": [{"pid": owner_pid, "ppid": 0}],
                   }}
+        if self.mode == "release_subreaper_missing":
+            cohort.pop("subreaper")
+        elif self.mode == "release_subreaper_false":
+            cohort["subreaper"] = False
         if self.mode == "release_cohort_extra_member":
             cohort["complete_empty_descendant_tree"]["processes"].append(
                 {"pid": 889, "ppid": owner_pid})
@@ -571,6 +576,12 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                      "release_owner_event_duplicate",
                      "release_emergency_signaled", "release_owner_final_unknown",
                      "release_cohort_extra_member"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_provider_release_needs_actual_subreaper_for_final_empty_tree(self):
+        for mode in ("release_subreaper_missing", "release_subreaper_false"):
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
