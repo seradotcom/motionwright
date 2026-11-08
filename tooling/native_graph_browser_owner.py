@@ -2241,6 +2241,20 @@ def graph_native_final_lifecycle_receipt(self, *, reason, native_quiescence):
     return self.lifecycle.close(reason=reason)
 
 
+def graph_final_cohort_signal_free(cohort, absent):
+    """Require authentic empty descendants without emergency subreaper signals.
+
+    A PASS from the cohort observer may follow SIGTERM/SIGKILL cleanup.
+    This is custody of absence, not proof of graceful Native provider closure.
+    The original terminal and source-bound lease release remain separately
+    required by graph_close_v6 and the independent R74 verifier.
+    """
+    return (type(cohort) is dict and cohort.get("status") == "PASS"
+            and cohort.get("authority") == "process_custody_only_not_revocation"
+            and type(cohort.get("signals")) is list and not cohort["signals"]
+            and absent is True)
+
+
 def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="explicit-close"):
     require(not self.closed, "graph-owner-close-replay")
     self.client_ledger.seal()
@@ -2290,6 +2304,11 @@ def graph_close_v6(self, *, service_barrier=None, request_id=None, reason="expli
             cohort, cohort_absent = close_complete_cohort()
         except BaseException:
             errors.append("OWNER_CLOSE_FAILED")
+    # Releasing the ProviderLease is not evidence that the later full owner
+    # shutdown was clean: a SIGTERM/SIGKILL subreaper cleanup may leave the
+    # process tree empty with status PASS. Reject it before final CLOSED.
+    if not graph_final_cohort_signal_free(cohort, cohort_absent):
+        errors.append("OWNER_CLOSE_FAILED")
     streams_eof = all(child.out.eof and child.err.eof and child.out.failure is None and child.err.failure is None
                       and child.out.closed and child.err.closed for child in self.lifecycle.children)
     current, same_database, database_final = None, False, None
