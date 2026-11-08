@@ -24,7 +24,9 @@ class GraphReviewArtifactTests(unittest.TestCase):
         self.transport = importlib.import_module("graph_review_artifact")
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.output = Path(self.temp.name) / "private-transport"
+        # Hosted Windows TEMP may use an 8.3 alias; model a canonical private parent.
+        self.root = Path(self.temp.name).resolve(strict=True)
+        self.output = self.root / "private-transport"
         self.source = "a" * 40
         self.run_id = "42400011223"
         self.name = "graph-originals-review-" + self.source + "-" + self.run_id + "-1"
@@ -88,9 +90,9 @@ class GraphReviewArtifactTests(unittest.TestCase):
 
     def test_api_uses_installed_gh_and_retains_exact_response(self):
         import subprocess
-        executable = str(Path(self.temp.name) / "installed gh.exe")
+        executable = str(self.root / "installed gh.exe")
         response = b"PK\x03\x04raw original response"
-        directory = Path(self.temp.name) / "api"
+        directory = self.root / "api"
         directory.mkdir()
         route = "repos/seradotcom/motionwright/actions/artifacts/876/zip"
 
@@ -139,7 +141,7 @@ class GraphReviewArtifactTests(unittest.TestCase):
             with self.subTest(field=field):
                 original = self.run[field]
                 self.run[field] = value
-                self.output = Path(self.temp.name) / field
+                self.output = self.root / field
                 self.assert_rejected(before_zip=True)
                 self.run[field] = original
 
@@ -160,7 +162,7 @@ class GraphReviewArtifactTests(unittest.TestCase):
                 if scenario == "repository": item["workflow_run"]["head_repository_id"] += 1
                 if scenario == "expired": item["expired"] = True
                 if scenario == "size": item["size_in_bytes"] = self.transport.MAX_ZIP + 1
-                self.output = Path(self.temp.name) / scenario
+                self.output = self.root / scenario
                 self.assert_rejected(before_zip=True)
 
     def test_duplicate_foreign_and_symlink_members_rejected(self):
@@ -171,7 +173,7 @@ class GraphReviewArtifactTests(unittest.TestCase):
                 self.archive = self.zip_bytes(names, symlink=link)
                 self.item["size_in_bytes"] = len(self.archive)
                 self.item["digest"] = "sha256:" + hashlib.sha256(self.archive).hexdigest()
-                self.output = Path(self.temp.name) / str(index)
+                self.output = self.root / str(index)
                 self.assert_rejected()
 
     def test_changed_attempt_or_artifact_identity_rejected_after_download(self):
@@ -179,7 +181,7 @@ class GraphReviewArtifactTests(unittest.TestCase):
         self.assert_rejected()
         self.changed_run = None
         self.calls = []
-        self.output = Path(self.temp.name) / "changed-artifact"
+        self.output = self.root / "changed-artifact"
         self.changed_item = {**self.item, "digest": "sha256:" + "f" * 64}
         self.assert_rejected()
 
