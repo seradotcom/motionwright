@@ -10436,7 +10436,10 @@ def graph_observed_playwright_failure(repo, report_path, command):
                     code = "GRAPH_SAVE_GATE:" + label.upper()
                     if code not in codes:
                         codes.append(code)
-            for match in re.finditer(re.escape(admission_marker) + r"([^\r\n]*)", text):
+            # Playwright codeframes quote the throw expression too. Only an
+            # actual error line can carry observed terminal and Save gate values.
+            for match in re.finditer(r"(?m)^[ \t]*(?:Error: )?"
+                                     + re.escape(admission_marker) + r"([^\r\n]*)", text):
                 fields = match[1].split(" / ") if 0 < len(match[1]) <= 512 else []
                 terminal = (fields[0] if len(fields) == 2 and fields[0] in inspection_terminals
                             else "GRAPH_CONTEXT_INSPECTION_UNRECOGNIZED")
