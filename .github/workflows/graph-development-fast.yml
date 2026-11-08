@@ -30,8 +30,17 @@ on:
       - 'tooling/tests/test_graph_build_transfer.py'
       - 'tooling/tests/test_graph_continuation.py'
       - '.github/workflows/studio-service-verification.yml'
+      # Keep source push admission aligned with the impact router. This lane
+      # runs inert checks only; it does not compile Rust or admit Native G2.
+      - 'crates/domain/**'
+      - 'crates/storage/**'
       - 'crates/storage/src/read_only.rs'
       - 'crates/storage/src/cas_retention.rs'
+      - 'crates/service/**'
+      - 'crates/native/**'
+      - 'apps/studio/src/**'
+      - 'apps/studio/tests/semantic-graph-*.spec.ts'
+      - 'rust-toolchain.toml'
       - 'crates/native/src/production/graph_authoring.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
       - 'crates/service/examples/studio_review_session.rs'
