@@ -95,6 +95,37 @@ def runtime_stage(value):
     _RUNTIME_STAGE = value
 
 
+def graph_restricted_startup_stderr_args(shared, evidence):
+    """Retain pinned semwrightd startup failure originals without new authority.
+
+    GN1 already uses the same first-party SDK observer. A failed restricted
+    Graph owner must retain its original stderr, not be rerun with relaxed
+    sandbox limits or report a fabricated native failure cause. This selection
+    creates a fresh 0700 sink once; no fallback or second daemon is allowed.
+    """
+    require(isinstance(evidence, Path) and evidence.is_absolute()
+            and evidence.is_dir() and not evidence.is_symlink()
+            and evidence.resolve(strict=True) == evidence,
+            "graph-restricted-stderr-owner-not-private")
+    args = shared.driver_startup_stderr_args(
+        evidence, "shared-state", selected=True)
+    destination = evidence / "startup-stderr" / "shared-state"
+    require(type(args) is list and args == [
+            "--driver-startup-stderr-dir", str(destination),
+            "--driver-startup-stderr-provider", "driver:motionwright"],
+            "graph-restricted-stderr-unreviewed-cli-flags")
+    for directory in (destination.parent, destination):
+        require(directory.is_dir() and not directory.is_symlink()
+                and directory.resolve(strict=True) == directory,
+                "graph-restricted-stderr-not-private-directory")
+        if os.name == "posix":
+            metadata = directory.stat()
+            require(stat.S_IMODE(metadata.st_mode) == 0o700
+                    and metadata.st_uid == os.getuid(),
+                    "graph-restricted-stderr-owner-mode")
+    return args
+
+
 def strict_json(raw):
     def unique_pairs(pairs):
         result = {}
@@ -1095,8 +1126,13 @@ class GraphBrowserOwner:
         new_bytes(config, graph_owner_config(self.shared, self.database, manifest_path, resource, project,
                     self.native_manifest_runtime, self.native_manifest_inputs, self.paths["work"]).encode("utf-8"))
         self.socket = self.socket_directory / "broker.sock"
+        # Capture the pinned SDK's original restricted-driver startup stderr
+        # inside this one owner-controlled private evidence tree. GN1 uses
+        # the same observer; do not lower the Graph process cap or retry.
+        startup_stderr_args = graph_restricted_startup_stderr_args(
+            self.shared, lifecycle.evidence)
         self.daemon = lifecycle.start("owner-restricted", [self.daemon_executable, "--config", str(config),
-                                      "--socket", str(self.socket)], self.env)
+                                      "--socket", str(self.socket), *startup_stderr_args], self.env)
         lifecycle.wait_socket(self.daemon, self.socket, deadline=time.monotonic() + 20)
         runtime_stage("OWNER_RECEIPT")
         self.descriptor_path = lifecycle.evidence / "owner-descriptor.json"

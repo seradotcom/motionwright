@@ -25,6 +25,7 @@ on:
       - 'tooling/tests/test_graph_owner_session_ticket_custody.py'
       - 'tooling/tests/test_graph_owner_release_lease_roster.py'
       - 'tooling/tests/test_graph_owner_control_replay.py'
+      - 'tooling/tests/test_graph_owner_restricted_startup_stderr.py'
       - 'tooling/tests/test_ci_graph_readonly_archive.py'
       - 'tooling/native_graph_build_reuse.py'
       - 'tooling/native_graph_build_transfer.py'
@@ -152,6 +153,13 @@ jobs:
               tooling.tests.test_graph_owner_control_replay -v \
               2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
           fi
+          # The selected restricted owner uses private first-party startup stderr.
+          # Its source/negative test is mandatory on this integrated branch:
+          # missing tests must fail G0 rather than silently skip coverage.
+          test -f tooling/tests/test_graph_owner_restricted_startup_stderr.py
+          "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
+            tooling.tests.test_graph_owner_restricted_startup_stderr -v \
+            2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
           # External R74 review must remain off GitHub runners; only the
           # source syntax and the explicit runner-denial boundary run in G0.
           "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B - <<'PY' 2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log

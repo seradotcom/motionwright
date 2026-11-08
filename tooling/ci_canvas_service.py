@@ -8783,17 +8783,51 @@ def graph_cargo_targets(metadata, roles, root):
     return result
 
 
-def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
-    roles = GRAPH_SDK_ROLES if sdk else tuple(role for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES)
-    source_root = root if sdk else repo
-    phase, label = ("sdk-build", "graph-sdk-build") if sdk else ("product-build", "graph-product-build")
+GRAPH_DAEMON_PRIVATE_STDERR_FEATURE = "private-driver-startup-stderr"
+
+
+def graph_cargo_build_argv(cargo, sdk, roles):
+    """Exact original build command, including the source-gated private CLI.
+
+    GN1 already selects this audited daemon feature. The Graph owner now uses
+    those same private startup arguments, so building the default=[] daemon
+    would produce a different executable that rejects its own reviewed argv.
+    """
+    require(type(cargo) is str and bool(cargo) and type(sdk) is bool,
+            "Graph Cargo build identity")
+    expected = (GRAPH_SDK_ROLES if sdk else
+                tuple(role for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES))
+    require(tuple(roles) == expected, "Graph fixed build role roster")
     arguments = [cargo, "build", "--locked", "--jobs", "1", "--message-format=json",
                  "--config", "profile.dev.debug=0", "--config", "profile.test.debug=0"]
     packages = list(dict.fromkeys(GRAPH_TARGETS[role][0] for role in roles))
     for package in packages:
         arguments += ["-p", package]
+    if sdk:
+        # Feature qualification selects only the real semwright-daemon package,
+        # not --all-features or a separate SDK/pin/uncustodied binary.
+        arguments += ["--features", "semwright-daemon/" + GRAPH_DAEMON_PRIVATE_STDERR_FEATURE]
     for role in roles:
         arguments += ["--" + GRAPH_TARGETS[role][2], GRAPH_TARGETS[role][1]]
+    return arguments
+
+
+def graph_require_daemon_compiler_features(role, artifact):
+    """Reconcile the compiled semwrightd artifact with the retained argv."""
+    if role != "semwrightd":
+        return
+    features = artifact.get("features") if type(artifact) is dict else None
+    require(type(features) is list and all(type(feature) is str for feature in features)
+            and len(features) == len(set(features))
+            and GRAPH_DAEMON_PRIVATE_STDERR_FEATURE in features,
+            "Graph original daemon artifact omitted private startup stderr feature")
+
+
+def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
+    roles = GRAPH_SDK_ROLES if sdk else tuple(role for role in GRAPH_RUST_ROLES if role not in GRAPH_SDK_ROLES)
+    source_root = root if sdk else repo
+    phase, label = ("sdk-build", "graph-sdk-build") if sdk else ("product-build", "graph-product-build")
+    arguments = graph_cargo_build_argv(cargo, sdk, roles)
     env = dict(env, CARGO_TARGET_DIR=str(root / "target" if sdk else repo.parent / "v/t"))
     require(not Path(env["CARGO_TARGET_DIR"]).exists(), "Graph fresh target required; cached binaries are not producers")
     with clock.phase(phase):
@@ -8809,6 +8843,7 @@ def graph_build_group(repo, root, producer, sdk, cargo, env, targets, clock):
                        and {"package_id": row.get("package_id"), **{key: row.get("target", {}).get(key) for key in ("name", "kind", "src_path")}} == target]
             require(len(matches) == 1 and matches[0].get("fresh") is False and matches[0].get("profile", {}).get("test") is False,
                     "Graph actual executable was not freshly built: " + role)
+            graph_require_daemon_compiler_features(role, matches[0])
             binary = Path(matches[0]["executable"])
             outputs[role] = graph_capture_cargo_executable(binary, Path(env["CARGO_TARGET_DIR"]), role)
             retained = graph_retain_compacted_cargo_executable(

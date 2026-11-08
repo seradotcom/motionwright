@@ -8196,6 +8196,38 @@ class Phase1Service47DeadlineTests(unittest.TestCase):
 
 
 
+class GraphR74DaemonPrivateStderrBuildTests(unittest.TestCase):
+    """Inert exact-command tests; successful source selection is not G2."""
+
+    def test_original_sdk_cargo_build_enables_only_pinned_daemon_stderr_feature(self):
+        argv = gate.graph_cargo_build_argv("cargo", True, gate.GRAPH_SDK_ROLES)
+        self.assertEqual(argv.count("--features"), 1)
+        feature = argv[argv.index("--features") + 1]
+        self.assertEqual(feature, "semwright-daemon/private-driver-startup-stderr")
+        self.assertNotIn("--all-features", argv)
+        self.assertEqual(argv.count("--bin"), 3)
+        self.assertIn("semwrightd", argv)
+
+    def test_original_product_cargo_build_does_not_inherit_sdk_feature(self):
+        roles = tuple(role for role in gate.GRAPH_RUST_ROLES
+                      if role not in gate.GRAPH_SDK_ROLES)
+        argv = gate.graph_cargo_build_argv("cargo", False, roles)
+        self.assertNotIn("--features", argv)
+        self.assertNotIn("--all-features", argv)
+        with self.assertRaises(ValueError):
+            gate.graph_cargo_build_argv("cargo", True, ("semwright", "semwright_sandbox"))
+
+    def test_original_compiler_artifact_must_attest_feature_selection(self):
+        good = {"features": ["private-driver-startup-stderr"]}
+        self.assertIsNone(gate.graph_require_daemon_compiler_features("semwrightd", good))
+        self.assertIsNone(gate.graph_require_daemon_compiler_features("semwright", {"features": []}))
+        for wrong in ({}, {"features": []}, {"features": ["private-host-stdin-custody"]},
+                      {"features": ["private-driver-startup-stderr", 1]}):
+            with self.subTest(wrong=wrong):
+                with self.assertRaises(ValueError):
+                    gate.graph_require_daemon_compiler_features("semwrightd", wrong)
+
+
 class GraphR74JoinTests(unittest.TestCase):
     """Local synthetic metadata/parser controls plus inert real process bounds; no G2."""
 
