@@ -1660,7 +1660,7 @@ impl Store {
         self.reject_hidden_negative_event_revision(id)?;
         let through = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
-            "SELECT revision,payload_json,created_at FROM events
+            "SELECT revision,kind,payload_json,created_at FROM events
              WHERE project_id=?1 AND revision<=?2
              ORDER BY revision DESC LIMIT ?3",
         )?;
@@ -1669,11 +1669,17 @@ impl Store {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?;
         let mut events = Vec::new();
         for row in rows {
-            let (revision, json, created_at) = row?;
+            let (revision, kind, json, created_at) = row?;
+            if kind != "change" {
+                return Err(StorageError::InvalidBackup(
+                    "non-change event kind in SQLite history".into(),
+                ));
+            }
             // The original SQLite event schema does not have CHECK(revision >= 0).
             // Never represent a damaged negative signed revision as u64::MAX.
             let revision = u64::try_from(revision).map_err(|_| {
@@ -1701,7 +1707,7 @@ impl Store {
         // replay history already consumed by the caller.
         let after_revision = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
-            "SELECT revision,payload_json,created_at FROM events
+            "SELECT revision,kind,payload_json,created_at FROM events
              WHERE project_id=?1 AND revision>?2
              ORDER BY revision ASC LIMIT ?3",
         )?;
@@ -1712,12 +1718,18 @@ impl Store {
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         )?;
         let mut events = Vec::new();
         for row in rows {
-            let (revision, json, created_at) = row?;
+            let (revision, kind, json, created_at) = row?;
+            if kind != "change" {
+                return Err(StorageError::InvalidBackup(
+                    "non-change event kind in SQLite history".into(),
+                ));
+            }
             // The original SQLite event schema does not have CHECK(revision >= 0).
             // Never represent a damaged negative signed revision as u64::MAX.
             let revision = u64::try_from(revision).map_err(|_| {
@@ -3278,6 +3290,63 @@ mod tests {
                 .len(),
             1,
             "a corrupt other project must not revoke an unrelated timeline"
+        );
+    }
+
+    /// A physically damaged event discriminator is not a committed Change,
+    /// even if the JSON payload and revision still deserialize successfully.
+    /// Both history directions must refuse to present it to Graph consumers.
+    #[test]
+    fn history_rejects_original_event_with_non_change_kind() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store.create_named_project("Kind custody").unwrap();
+        let other = store.create_named_project("Other history").unwrap();
+        let outcome = store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "kind-custody-original",
+                &Change::RenameProject {
+                    title: "Legitimate rename".into(),
+                },
+            )
+            .unwrap();
+        project = outcome.project;
+        let _ = store
+            .apply(
+                other.id,
+                &RevisionStamp::from(&other),
+                "other-original",
+                &Change::RenameProject {
+                    title: "Other legitimate rename".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET kind='not-a-change' WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1,
+        );
+        for result in [
+            store.event_records_through(project.id, project.revision, 1),
+            store.event_records_since(project.id, 0, 1),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(ref reason))
+                    if reason.contains("event kind")),
+                "history must refuse an original row with a non-change kind: {result:?}"
+            );
+        }
+        assert_eq!(
+            store.event_records_since(other.id, 0, 2).unwrap().len(),
+            1,
+            "a corrupted other project must not revoke healthy history"
         );
     }
 }
