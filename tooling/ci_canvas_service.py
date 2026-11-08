@@ -9773,17 +9773,21 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
                 "Graph handoff exact original request")
         return value
 
-    def raw_lines(raw):
+    def raw_lines(raw, *, writer=False):
         require(raw.endswith(b"\n") and len(raw) <= GRAPH_BYTES,
                 "Graph writer/reader original stdout EOF")
         rows = [graph_json(line) for line in raw.split(b"\n")[:-1]]
-        # The actual compiled studio_review_session::Session emits exactly
-        # {id, ok, result} on success. A claimed successful source read with
-        # hidden error/extra protocol fields is not its original wire reply.
-        require(rows and all(type(row) is dict and set(row) == {"id", "ok", "result"}
-                and type(row["id"]) is str and bool(row["id"])
-                and row["ok"] is True for row in rows),
-                "Graph original successful JSONL response wire schema")
+        # Source-built StudioService emits strictly typed JSONL envelopes:
+        # {id,ok,result} on success, {id,ok,error} on denied effects. Its
+        # final Native writer may contain legitimate earlier reads/denials;
+        # the separate read-only child may contain successful reads only.
+        require(rows and all(type(row) is dict
+                and type(row.get("id")) is str and bool(row["id"])
+                and ((row.get("ok") is True and set(row) == {"id", "ok", "result"})
+                     or (writer and row.get("ok") is False
+                         and set(row) == {"id", "ok", "error"}))
+                for row in rows),
+                "Graph original typed JSONL response wire schema")
         ids = [row["id"] for row in rows]
         require(len(ids) == len(set(ids)), "Graph original response replay")
         return {row["id"]: row for row in rows}
@@ -9847,13 +9851,57 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
 
     require(writer_ref["path"] == preseal["raw_stdout_path"], "Graph writer raw provenance")
     writer_raw = retained(writer_ref, GRAPH_BYTES)
-    writer_rows = raw_lines(writer_raw)
+    writer_rows = raw_lines(writer_raw, writer=True)
+    # Source-owned ScopedChangeService records *every* RPC of the final Native
+    # writer, including project/history reads performed by observeStoredProject
+    # before and after the real WAL-to-DELETE handoff. Do not accept arbitrary
+    # extra stdout rows, but do not mistake those actual replies for tampering.
+    roster_ref = reopen["original_writer_rpc_roster"]
+    require(type(roster_ref) is dict and set(roster_ref) == {"path", "sha256", "size_bytes"}
+            and roster_ref["path"] == str(reopen_path.parent.parent /
+                    "original-service-writer-rpc-roster.original.json"),
+            "Graph original writer RPC roster not in authenticated case")
+    roster = original(roster_ref, 4 * GRAPH_BYTES)
+    require(type(roster) is dict and set(roster) == {
+                "schema", "source", "binary", "database_path", "process_id",
+                "records", "automatic_retry", "gate_credit", "synthetic_adapter_only"}
+            and roster["schema"] == "motionwright.graph.original-writer-rpc-roster/1"
+            and roster["source"] == source
+            and roster["binary"] == index["binaries"]["native_graph_session"]
+            and roster["database_path"] == physical["path"]
+            and roster["process_id"] == writer_pid
+            and roster["automatic_retry"] is False
+            and roster["gate_credit"] is False
+            and roster["synthetic_adapter_only"] is False
+            and type(roster["records"]) is list
+            and 3 <= len(roster["records"]) <= 2048
+            and len(roster["records"]) == len(writer_rows),
+            "Graph original writer RPC roster source/process/length mismatch")
+    for original_id, entry in zip(writer_rows, roster["records"]):
+        require(type(entry) is dict and set(entry) == {"request", "response"}
+                and type(entry["request"]) is dict
+                and set(entry["request"]) == {"id", "command", "args_sha256"}
+                and entry["request"]["id"] == original_id
+                and type(entry["request"]["command"]) is str
+                and 1 <= len(entry["request"]["command"]) <= 128
+                and type(entry["request"]["args_sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", entry["request"]["args_sha256"])
+                and entry["response"] == writer_rows[original_id],
+                "Graph original writer RPC reply is unmatched, reordered or changed")
     preseal_request = one_request(preseal["request_original"], "opened_store_identity_witness")
     writer_requests = [preseal_request, one_request(handoff["request_original"], "prepare_read_only_handoff"),
                        one_request(handoff["identity_request_original"], "opened_store_identity_witness")]
+    original_controls = {row["request"]["id"]: row["request"]
+                         for row in roster["records"]}
+    def sealed_control(row):
+        return {"id": row["id"], "command": row["command"],
+                "args_sha256": hashlib.sha256(json.dumps(
+                    row["args"], separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
     require(len({row["id"] for row in writer_requests}) == 3
-            and set(writer_rows) == {row["id"] for row in writer_requests},
-            "Graph original writer stdout must contain exactly the three authorized RPC responses")
+            and all(original_controls.get(row["id"]) == sealed_control(row)
+                    for row in writer_requests)
+            and {row["id"] for row in writer_requests}.issubset(writer_rows),
+            "Graph three original control RPCs absent from the full authenticated writer roster")
     writer_responses = [preseal["response"], handoff["response"], handoff["identity_response"]]
     require(list(writer_rows).index(writer_requests[0]["id"]) <
             list(writer_rows).index(writer_requests[1]["id"]) <
@@ -9886,6 +9934,7 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             and intent.get("argv") == [expected_binary["path"], "--database", physical["path"], "--read-only"]
             and intent.get("read_only_child_required") is True
             and intent.get("original_writer_read_only_handoff") == handoff_ref
+            and intent.get("original_writer_rpc_roster") == roster_ref
             and intent.get("original_preseal_held_pager_witness") == preseal_ref
             and intent.get("original_service_closure") == closure_ref
             and intent.get("allowed_commands") ==

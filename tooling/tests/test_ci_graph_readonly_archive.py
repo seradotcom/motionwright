@@ -84,12 +84,54 @@ class InertOriginals:
             original_writer_results = [*writer_results,
                                        {"id": "unmatched-effect", "ok": True,
                                         "result": {"mutation": "unreviewed"}}]
+        elif self.mode == "writer_raw_legitimate_project_reads":
+            # Actual StudioService calls observeStoredProject() in the case
+            # body, preseal, and again after prepare_read_only_handoff. These
+            # source-owned read replies must not invalidate the three RPCs.
+            original_writer_results = [
+                {"id": "session:observed-before", "ok": True, "result": project},
+                writer_results[0],
+                {"id": "session:observed-after", "ok": True, "result": project},
+                writer_results[1], writer_results[2],
+            ]
+        elif self.mode == "writer_raw_legitimate_denied_effect":
+            # An expected stale-CAS denial is a real {id,ok:false,error}
+            # reply, never a reason to invent a positive mutation.
+            original_writer_results = [
+                {"id": "session:denied-effect", "ok": False, "error": "stale revision"},
+                *writer_results,
+            ]
         else:
             original_writer_results = writer_results
         writer_lines = [json.dumps(x, separators=(",", ":")).encode() + b"\n"
                         for x in original_writer_results]
         writer_raw = b"".join(writer_lines)
         stdout_ref = self.put("writer/stdout.original", writer_raw)
+        source_requests = {row["id"]: row for row in
+                           (preseal_request, handoff_request, identity_request)}
+        if self.mode == "writer_raw_legitimate_project_reads":
+            for name in ("observed-before", "observed-after"):
+                row = {"id": "session:" + name, "command": "get_project",
+                       "args": {"request": {"project_id": project["id"]}}}
+                source_requests[row["id"]] = row
+        if self.mode == "writer_raw_legitimate_denied_effect":
+            source_requests["session:denied-effect"] = {
+                "id": "session:denied-effect", "command": "apply_change",
+                "args": {"request": {"project_id": project["id"], "revision": 0}}}
+        authorized = [row for row in original_writer_results if row["id"] in source_requests]
+        self.writer_roster_ref = self.put("g1/original-service-writer-rpc-roster.original.json", {
+            "schema": "motionwright.graph.original-writer-rpc-roster/1",
+            "source": self.source, "binary": self.native,
+            "database_path": self.physical["path"], "process_id": 101,
+            "records": [{"request": {"id": source_requests[row["id"]]["id"],
+                                     "command": source_requests[row["id"]]["command"],
+                                     "args_sha256": hashlib.sha256(json.dumps(
+                                         source_requests[row["id"]]["args"],
+                                         separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()},
+                         "response": row} for row in authorized],
+            "automatic_retry": False, "gate_credit": False,
+            "synthetic_adapter_only": False,
+        })
         preseal = {"source": self.source, "physical_store": self.physical,
                    "binary": self.native, "context": context, "process": {"pid": 101},
                    "held_store_digest": self.held, "request_original": preref,
@@ -424,6 +466,7 @@ class InertOriginals:
                   "binary": self.ordinary, "argv": [self.ordinary["path"], "--database",
                          self.physical["path"], *([] if self.mode == "writable_argv" else ["--read-only"])],
                   "read_only_child_required": True, "original_writer_read_only_handoff": handoff_ref,
+                  "original_writer_rpc_roster": self.writer_roster_ref,
                   "original_preseal_held_pager_witness": preseal_ref, "original_service_closure": closure_ref,
                   "allowed_commands": ["bootstrap", "get_project", "project_history",
                                        "opened_store_identity_witness"], "automatic_retry": False}
@@ -476,14 +519,18 @@ class InertOriginals:
         observed_ref = self.put("reader/observed.original.json", {
             "project": project, "journal": journal,
             "journalComplete": True, "journalAfterRevisionExclusive": 0})
-        first_line = writer_lines[0]
+        first_index = next((i for i, row in enumerate(original_writer_results)
+                            if row["id"] == preseal_request["id"]), 0)
+        first_line = writer_lines[first_index]
+        first_offset = sum(map(len, writer_lines[:first_index]))
         self.reopen = {"physical_store_before": self.physical,
                        "original_writer_read_only_handoff": handoff_ref,
                        "original_writer_handoff_raw": stdout_ref,
+                       "original_writer_rpc_roster": self.writer_roster_ref,
                        "original_preseal_held_pager_witness": preseal_ref,
                        "original_service_closure": closure_ref,
                        "original_preseal_response_raw": {
-                           "stream": stdout_ref, "offset": 0, "size_bytes": len(first_line),
+                           "stream": stdout_ref, "offset": first_offset, "size_bytes": len(first_line),
                            "sha256": hashlib.sha256(first_line).hexdigest()},
                        "read_only_child_bootstrap_proved": self.mode != "bootstrap_flag_false",
                        "service_process": {"pid": 202, "code": 0, "signal": None},
@@ -553,10 +600,20 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)
 
+    def test_original_writer_legitimate_project_reads_are_fully_bound(self):
+        # A real StudioService executes observeStoredProject() during preseal
+        # and again after its handoff. Those read-only replies are authentic,
+        # not an excuse to accept an unpaired/unmatched native mutation.
+        self.assertIs(self.check("writer_raw_legitimate_project_reads"), True)
+
+    def test_original_writer_expected_denial_retains_strict_wire_envelope(self):
+        # A stale-CAS effect may be rejected by the actual writer before
+        # its clean handoff; the denial remains in the bound original roster.
+        self.assertIs(self.check("writer_raw_legitimate_denied_effect"), True)
+
     def test_unmatched_successful_writer_response_cannot_receive_custody_credit(self):
-        # The original writer may run only the three authenticated identity,
-        # read-only handoff and identity-readback requests; unrelated successful
-        # responses are NOT evidence for this same physical Store.
+        # An extra raw response absent from the original writer's complete
+        # source-owned request/response roster is never given closure credit.
         with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
             self.check("writer_raw_extra_unmatched")
 
