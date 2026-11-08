@@ -106,7 +106,19 @@ class GraphReviewArtifactTests(unittest.TestCase):
 
         with mock.patch("shutil.which", return_value=executable) as which, \
                 mock.patch("subprocess.run", side_effect=execute):
-            raw = self.transport.gh_json_or_bytes(route, "api-control", directory)
+            try:
+                raw = self.transport.gh_json_or_bytes(route, "api-control", directory)
+            except Exception as error:
+                failure = error.__traceback__
+                while failure and failure.tb_frame.f_code.co_name != "capture_regular":
+                    failure = failure.tb_next
+                if failure is None:
+                    raise
+                observed = failure.tb_frame.f_locals.get("observations", [])
+                changed = {name: [row[name] for row in observed]
+                           for name in observed[0]
+                           if any(row[name] != observed[0][name] for row in observed)} if observed else {}
+                self.fail(str(error) + "; original metadata differences: " + json.dumps(changed))
         which.assert_called_once_with("gh")
         self.assertEqual(raw, response)
         self.assertEqual((directory / "api-control.stdout").read_bytes(), response)
