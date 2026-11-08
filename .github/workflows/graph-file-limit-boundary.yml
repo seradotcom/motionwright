@@ -2,7 +2,7 @@ name: Graph file limit boundary
 
 on:
   push:
-    branches: ['codex/graph6-closure-*', 'integrate/phase1-final-composition-20261027']
+    branches: ['codex/graph6-closure-*', 'codex/graph-composed-source-rpc-20261108', 'integrate/phase1-final-composition-20261027']
     paths:
       - '.github/workflows/graph-file-limit-boundary.yml'
       - 'tooling/ci_canvas_service.py'
