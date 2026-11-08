@@ -78,6 +78,16 @@ on:
       - 'tooling/tests/test_native_manim_editable_workflow.py'
       - 'tooling/tests/test_ci_manim_source_selection.py'
       - 'tooling/tests/test_ci_manim_rustup_root.py'
+      - 'tooling/native_manim_retained_reference.py'
+      - 'tooling/retain_manim_source_recovery_tool.py'
+      - 'tooling/requirements/manim-retained-reference-*.json'
+      - 'tooling/tests/fixtures/manim-recovery-*.stdout.txt'
+      - 'tooling/tests/fixtures/manim-sdk-guard-*.json'
+      - 'tooling/tests/test_manim_source_recovery_tool.py'
+      - 'tooling/tests/test_native_manim_ntmode_context.py'
+      - 'tooling/tests/test_native_manim_recovery_lineage.py'
+      - 'tooling/tests/test_native_manim_retained_reference.py'
+      - 'tooling/tests/test_ci_manim_pr_trigger.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
@@ -210,6 +220,9 @@ jobs:
 
       - name: Verify private Rust toolchain preparation without installation
         run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_rustup_root.py' -v
+
+      - name: Verify Manim PR source recovery and custody path routing
+        run: python3 -B -m unittest tooling.tests.test_ci_manim_pr_trigger -v
 
       - name: Require 13 writer and 32 native-observer source contracts
         run: |
