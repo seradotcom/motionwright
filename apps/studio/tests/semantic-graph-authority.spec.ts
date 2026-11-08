@@ -10,6 +10,23 @@ async function valid(page: Page) {
 const requestCount = (page: Page) => page.evaluate(() => window.__GRAPH_AUTHORITY__.requests().length);
 async function saveFirst(page: Page) { await valid(page); await button(page, "Save semantic Graph").click(); await expect.poll(() => requestCount(page)).toBe(1); await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(1)); await expect(button(page, "Save Graph changes")).toBeVisible(); }
 
+test("Graph double activation in one event turn never dispatches a second original mutation", async ({ page }) => {
+  await open(page);
+  await valid(page);
+  await page.evaluate(() => {
+    const submit = [...document.querySelectorAll("button")].find(item => item.textContent?.trim() === "Save semantic Graph");
+    if (!submit || submit.disabled) throw new Error("Expected one enabled real editor submit button");
+    submit.click();
+    submit.click();
+  });
+  await expect.poll(() => requestCount(page)).toBe(1);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 25)));
+  expect(await requestCount(page)).toBe(1);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(1));
+  await expect(button(page, "Save Graph changes")).toBeVisible();
+  expect(await requestCount(page)).toBe(1);
+});
+
 test("Graph retains every incomplete geometry and rational byte across navigation and reload without sending", async ({ page }, testInfo) => {
   await open(page); await testInfo.attach("causal-editorial-component-fixture", { body: await page.screenshot(), contentType: "image/png" });
   await field(page, "Vertex 1 label").fill("Preserve my authored concept"); await field(page, "Vertex 1 box x").fill("1e"); await field(page, "Graph duration denominator").fill("");
