@@ -1627,20 +1627,26 @@ impl Store {
     }
 
     /// Refuse damaged original event headers even when the selected LIMIT or
-    /// cursor hides them. Both probes are project-scoped; nonpositive revisions
-    /// use the existing (project_id,revision) index, while the kind check
-    /// scans only this project's events. No journal, locks, or CAS are changed.
+    /// cursor hides them. All probes are project-scoped; nonpositive revisions
+    /// use the existing (project_id,revision) index; type and kind checks
+    /// scan only this project's events. No journal, locks, or CAS are changed.
     fn reject_hidden_corrupt_event_header(&self, id: Uuid) -> Result<()> {
-        let (bad_revision, bad_kind): (i64, i64) = self.conn.query_row(
+        let (bad_revision, untyped_revision, bad_kind): (i64, i64, i64) = self.conn.query_row(
             "SELECT
                 EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND revision<=0),
+                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND typeof(revision)<>'integer'),
                 EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND kind<>'change')",
             [id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         if bad_revision != 0 {
             return Err(StorageError::InvalidBackup(
                 "negative event revision or zero event revision in SQLite history".into(),
+            ));
+        }
+        if untyped_revision != 0 {
+            return Err(StorageError::InvalidBackup(
+                "non-integer event revision in SQLite history".into(),
             ));
         }
         if bad_kind != 0 {
@@ -3181,6 +3187,80 @@ mod tests {
                 .map(|entry| entry.revision)
                 .collect::<Vec<_>>(),
             vec![1, 2]
+        );
+    }
+
+    /// Original SQLite databases are not STRICT: an INTEGER-affinity revision
+    /// can physically hold TEXT. Such a damaged original row sorts above all
+    /// numeric revision cursors and must not silently disappear from Graph.
+    #[test]
+    fn history_rejects_text_revision_hidden_from_numeric_cursors() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store
+            .create_named_project("Untyped original event")
+            .unwrap();
+        let unrelated = store
+            .create_named_project("Independent healthy history")
+            .unwrap();
+        for number in 1..=2 {
+            let outcome = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("untyped-{number}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {number}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        store
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "unrelated-valid",
+                &Change::RenameProject {
+                    title: "Still valid".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET revision='original-invalid-text' \
+                     WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        let sql_type: String = store
+            .conn
+            .query_row(
+                "SELECT typeof(revision) FROM events \
+                 WHERE project_id=?1 AND revision='original-invalid-text'",
+                [project.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sql_type, "text", "must corrupt the original SQLite column");
+        for result in [
+            store.event_records_through(project.id, u64::MAX, 1),
+            store.event_records_since(project.id, 1, 1),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(ref reason))
+                    if reason.contains("non-integer event revision")),
+                "non-integer original event metadata must fail closed: {result:?}"
+            );
+        }
+        assert_eq!(
+            store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
+            1,
+            "a corrupt project must not invalidate another project's history"
         );
     }
 
