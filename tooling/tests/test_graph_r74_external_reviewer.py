@@ -4,7 +4,7 @@ import io
 import json
 import os
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tarfile
@@ -34,11 +34,11 @@ class IndependentR74ReviewerTests(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory(prefix="graph-review-offline-")
         self.addCleanup(self.work.cleanup)
-        self.root = Path(self.work.name)
-        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
-            self.root / "trusted-product", self.PRODUCT)
+        self.root = Path(self.work.name).resolve(strict=True)
         self.sdk, self.s_sha, self.s_tree, self.s_rows = self.git(
             self.root / "trusted-sem", self.SDK)
+        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+            self.root / "trusted-product", self.PRODUCT, pin_revision=self.s_sha)
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         pem = self.key.private_bytes(serialization.Encoding.PEM,
                   serialization.PrivateFormat.PKCS8,
@@ -56,7 +56,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                           "sha256": reviewer.sha(der)}
         self.run_id = "42400011223"
 
-    def git(self, root, names):
+    def git(self, root, names, *, pin_revision=None, cargo_revision=None):
         root.mkdir()
         def call(*args):
             r = subprocess.run(["git", "-C", str(root), *args],capture_output=True)
@@ -70,6 +70,15 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             p = root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             data = ("Original source fixture " + name + "\n").encode()
+            if pin_revision is not None and name == "SOURCE_LOCK.json":
+                data = (json.dumps({"dependencies": {"semwright": {
+                    "repository": "https://github.com/seradotcom/semwright",
+                    "revision": pin_revision}}}, sort_keys=True) + "\n").encode()
+            if pin_revision is not None and name == "Cargo.lock":
+                cargo_pin = cargo_revision if cargo_revision is not None else pin_revision
+                data = (f'[[package]]\nname = "semwright-native-sdk"\n'
+                        f'version = "1.0.0"\n'
+                        f'source = "git+https://github.com/seradotcom/semwright?rev={cargo_pin}#{cargo_pin}"\n').encode()
             p.write_bytes(data)
             rows[name] = {"bytes": len(data), "sha256": reviewer.sha(data)}
         call("add", ".")
@@ -82,6 +91,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                       missing_manifest=False):
         producer = self.root / ("producer-" + name)
         producer.mkdir()
+        producer_namespace = PurePosixPath("/tmp/graph-review-inert/producer")
         request_path = producer / "review-request.original.json"
         index_path = producer / "producer-index.original.json"
         copies = producer / "review-originals"
@@ -108,39 +118,46 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             retained.write_bytes(content)
             original = {"path": "/usr/bin/" + ("python3" if i == 0 else "ffmpeg"),
                         "sha256": reviewer.sha(content), "size_bytes": len(content)}
-            ref = {**original, "path": retained.as_posix()}
+            ref = {**original, "path": str(producer_namespace / "review-originals" / retained.name)}
             copy_refs.append({"original": original, "retained": ref})
         request = {
           "source": source, "execution": execution,
-          "index": {"path": index_path.as_posix(), "sha256": reviewer.sha(index_raw),
+          "index": {"path": str(producer_namespace / index_path.name), "sha256": reviewer.sha(index_raw),
                     "size_bytes": len(index_raw)},
           "contexts": ["mw-owner/phase1-native-graph/"+self.run_id+"/1/graph-flow"],
           "outside_original_copies": copy_refs,
         }
         request_path.write_bytes(seal.json_bytes(request))
-        plaintext = seal.gather_snapshot({"producer": producer})
-        if missing_manifest or os.name == "nt":
-            # Production captures originate on Linux. On Windows, this inert
-            # test fixture represents their POSIX absolute original paths
-            # without weakening the reviewer's production source-path guard.
-            with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as tar:
-                rows = [(row.name, tar.extractfile(row).read()) for row in tar]
-            replacement = io.BytesIO()
-            with tarfile.open(fileobj=replacement, mode="w") as tar:
-                for member, raw in rows:
-                    if member == "snapshot-manifest.json":
-                        report = reviewer.json_original(raw)
-                        if os.name == "nt":
-                            for entry in report["roots"]["producer"]["files"]:
-                                if "observation" in entry:
-                                    entry["observation"]["path"] = (
-                                        "/tmp/graph-review-inert/" + entry["archive_path"])
-                        if missing_manifest:
-                            report["selected_originals_complete"] = False
-                        raw = seal.json_bytes(report)
-                    info = tarfile.TarInfo(member); info.size = len(raw)
-                    tar.addfile(info, io.BytesIO(raw))
-            plaintext = replacement.getvalue()
+        # These are inert Linux-producer fixtures, not captured physical evidence.
+        # Explicit metadata avoids attributing Windows handle/path timestamps to
+        # Linux; encryption and all consumer checks still operate on real bytes.
+        entries, captured = [], []
+        files = sorted(path for path in producer.rglob("*") if path.is_file())
+        for number, path in enumerate(files, start=1):
+            relative = path.relative_to(producer).as_posix()
+            member, raw = "producer/" + relative, path.read_bytes()
+            identity = {"device": 1, "inode": number, "size": len(raw),
+                        "mode": stat.S_IFREG | 0o600, "uid": 1000, "gid": 1000,
+                        "mtime_ns": 1, "ctime_ns": 1}
+            captured.append({"archive_path": member, "observation": {
+                "path": str(producer_namespace / relative), "sha256": reviewer.sha(raw),
+                "size": len(raw), "before": identity, "after": identity,
+                "namespace_after": identity}})
+            entries.append((member, raw))
+        manifest = {"schema": "motionwright.ci.private-snapshot/1",
+                    "scope": "selected-original-files-at-read-time",
+                    "roots": {"producer": {"status": "CAPTURED", "files": captured}},
+                    "selected_originals_complete": not missing_manifest,
+                    "complete_owner_state_claimed": False}
+        entries.append(("snapshot-manifest.json", seal.json_bytes(manifest)))
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            for member, raw in entries:
+                info = tarfile.TarInfo(member)
+                info.mode, info.mtime, info.size = 0o600, 0, len(raw)
+                info.uid = info.gid = 1000
+                archive.addfile(info, io.BytesIO(raw))
+        plaintext = stream.getvalue()
         context = {"source_sha": self.p_sha, "semwright_sha": self.s_sha,
                    "run_id": self.run_id, "run_attempt": "1"}
         envelope = seal.encrypt_snapshot(plaintext, self.recipient, context)
@@ -157,9 +174,14 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             z.writestr("carrier.original.json", seal.json_bytes(carrier))
         return path
 
+    def _review_fixture(self, *args, **kwargs):
+        """Authenticate inert originals without claiming review-host independence."""
+        with mock.patch.object(reviewer, "_require_independent_environment"):
+            return reviewer.review(*args, **kwargs)
+
     def check(self, name="original", **kwargs):
         path = self.make_artifact(name, **kwargs)
-        return reviewer.review(path,self.keyfile,self.product,self.sdk,
+        return self._review_fixture(path,self.keyfile,self.product,self.sdk,
                         self.p_sha,self.s_sha,self.run_id)
 
     def test_same_trusted_source_and_recipient_accept_pre_effect_only(self):
@@ -178,16 +200,16 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         with zipfile.ZipFile(original_zip) as archive:
             for name in ("producer-originals.mwseal", "carrier.original.json"):
                 (extracted / name).write_bytes(archive.read(name))
-        expected = reviewer.review(original_zip, self.keyfile, self.product, self.sdk,
+        expected = self._review_fixture(original_zip, self.keyfile, self.product, self.sdk,
                                    self.p_sha, self.s_sha, self.run_id)
-        actual = reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+        actual = self._review_fixture(extracted, self.keyfile, self.product, self.sdk,
                                  self.p_sha, self.s_sha, self.run_id)
         self.assertEqual(actual, expected)
         unexpected = extracted / ".hidden-extra"
         unexpected.write_bytes(b"foreign")
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "ARTIFACT_TWO_ORIGINAL_MEMBERS"):
-            reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+            self._review_fixture(extracted, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
         unexpected.unlink()
         carrier = extracted / "carrier.original.json"
@@ -197,7 +219,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         else:
             carrier.symlink_to(original_zip)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
-            reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+            self._review_fixture(extracted, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
         alias = self.root / "foreign-alias"
         if os.name == 'nt':
@@ -206,7 +228,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         else:
             alias.symlink_to(extracted, target_is_directory=True)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_CANONICAL_PATH"):
-            reviewer.review(alias, self.keyfile, self.product, self.sdk,
+            self._review_fixture(alias, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_authenticated_carrier_rejects_forged_original_manifest_digest(self):
@@ -241,7 +263,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             archive.writestr("carrier.original.json", seal.json_bytes(carrier))
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "SNAPSHOT_ORIGINAL_OBSERVATION"):
-            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
+            self._review_fixture(artifact, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_raw_zip_rejects_nonregular_symlink_member_even_with_valid_bytes(self):
@@ -258,21 +280,25 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                 info.external_attr = mode << 16
                 archive.writestr(info, raw)
         with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
-            reviewer.review(artifact, self.keyfile, self.product, self.sdk,
+            self._review_fixture(artifact, self.keyfile, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_wrong_source_run_recipient_and_insecure_key_are_denied(self):
         path = self.make_artifact()
         for psha, rid in (("1"*40,self.run_id),(self.p_sha,"13")):
             with self.assertRaises(reviewer.ReviewRejected):
-                reviewer.review(path,self.keyfile,self.product,self.sdk,psha,self.s_sha,rid)
+                self._review_fixture(path,self.keyfile,self.product,self.sdk,psha,self.s_sha,rid)
         key2 = self.root / "other.pem"
         key2.write_bytes(rsa.generate_private_key(65537,3072).private_bytes(
                     serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                     serialization.NoEncryption()))
-        key2.chmod(0o600)
-        with self.assertRaises(reviewer.ReviewRejected):
-            reviewer.review(path,key2,self.product,self.sdk,
+        if os.name == "nt":
+            from tooling.tests.test_review_private_key import protect_fixture
+            protect_fixture(key2)
+        else:
+            key2.chmod(0o600)
+        with self.assertRaisesRegex(reviewer.ReviewRejected, "CARRIER_CONTEXT"):
+            self._review_fixture(path,key2,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
         if os.name == "nt":
             result = subprocess.run(["icacls", str(self.keyfile), "/grant", "*S-1-1-0:R"], capture_output=True)
@@ -280,28 +306,55 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         else:
             self.keyfile.chmod(0o644)
         with self.assertRaises(reviewer.ReviewRejected):
-            reviewer.review(path,self.keyfile,self.product,self.sdk,
+            self._review_fixture(path,self.keyfile,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
 
     def test_runner_and_owner_checkout_private_keys_are_forbidden(self):
         path = self.make_artifact()
-        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
-            with self.assertRaisesRegex(reviewer.ReviewRejected,
-                                        "INDEPENDENT_ONLY_NEVER_RUNNER"):
-                reviewer.review(path, self.keyfile, self.product, self.sdk,
-                                self.p_sha, self.s_sha, self.run_id)
+        with mock.patch.object(reviewer, "private_key_owner") as read_key, \
+                mock.patch.object(reviewer, "original_zip") as read_archive:
+            # Isolate both rejection branches; neither reaches key or ZIP reads.
+            for forbidden in ({"GITHUB_ACTIONS": "true"},
+                              {"GITHUB_ACTIONS": "false", "MOTIONWRIGHT_GRAPH_PRODUCER_RUN": "1"}):
+                with self.subTest(environment=forbidden), mock.patch.dict(os.environ, forbidden):
+                    with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                                "INDEPENDENT_ONLY_NEVER_RUNNER"):
+                        reviewer.review(path, self.keyfile, self.product, self.sdk,
+                                        self.p_sha, self.s_sha, self.run_id)
+            read_key.assert_not_called()
+            read_archive.assert_not_called()
         owner_key = self.product / "owner-key.pem"
         owner_key.write_bytes(self.keyfile.read_bytes())
         owner_key.chmod(0o600)
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "PRIVATE_KEY_INSIDE_OWNER_CHECKOUT"):
-            reviewer.review(path, owner_key, self.product, self.sdk,
+            self._review_fixture(path, owner_key, self.product, self.sdk,
                             self.p_sha, self.s_sha, self.run_id)
 
     def test_same_recipient_encrypted_git_digest_forgery_is_denied(self):
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "SOURCE_GIT_BYTES_SOURCE_LOCK.json"):
             self.check("forged-source",fake_source_digest=True)
+
+    def test_source_lock_semwright_revision_disagreement_is_denied(self):
+        # A fully self-consistent encrypted artifact must not relabel an SDK
+        # commit outside the product's original immutable SOURCE_LOCK.
+        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+            self.root / "product-pin-mismatch", self.PRODUCT,
+            pin_revision="f"*40, cargo_revision=self.s_sha)
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "SEMWRIGHT_SOURCE_LOCK_PIN"):
+            self.check("source-lock-mismatch")
+
+    def test_cargo_lock_semwright_revision_disagreement_is_denied(self):
+        # The source lock alone is insufficient: all Git-dependency rows in
+        # Cargo.lock must match the independently reviewed Semwright commit.
+        self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+            self.root / "cargo-pin-mismatch", self.PRODUCT,
+            pin_revision=self.s_sha, cargo_revision="e"*40)
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "SEMWRIGHT_CARGO_LOCK_PIN"):
+            self.check("cargo-lock-mismatch")
 
     def test_valid_encryption_with_partial_original_manifest_is_denied(self):
         with self.assertRaisesRegex(reviewer.ReviewRejected,
@@ -314,7 +367,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             z.writestr("other-source/unknown", b"unauthorized")
         with self.assertRaisesRegex(reviewer.ReviewRejected,
                                     "ARTIFACT_TWO_ORIGINAL_MEMBERS"):
-            reviewer.review(path,self.keyfile,self.product,self.sdk,
+            self._review_fixture(path,self.keyfile,self.product,self.sdk,
                             self.p_sha,self.s_sha,self.run_id)
 
     def test_source_path_traversal_and_duplicate_snapshot_are_denied(self):
