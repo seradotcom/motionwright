@@ -794,3 +794,292 @@ mod tests {
         assert_eq!(version, STORAGE_SCHEMA_VERSION - 1);
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_original_handoff_tests {
+    use super::*;
+    use crate::{Change, RevisionStamp};
+    use std::fs;
+
+    /// Windows has a different VFS and file-identity API from Linux. Verify
+    /// that Native/Studio can hand off the *same* physical SQLite and CAS
+    /// authority to the strictly read-only service on this platform too.
+    #[test]
+    fn windows_original_read_only_handoff_preserves_sqlite_and_cas() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("Windows original Graph")
+            .unwrap();
+        let outcome = writer
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "windows-original-change",
+                &Change::RenameProject {
+                    title: "Windows original updated".into(),
+                },
+            )
+            .unwrap();
+        let expected = outcome.project;
+        let original_identity = writer.database_file_identity().unwrap();
+
+        // A writer still in ordinary WAL mode may not be silently treated
+        // as a closed read-only service, even with an idle connection.
+        assert!(
+            StoreReader::open(&database).is_err(),
+            "reader must refuse the original writer before explicit handoff"
+        );
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+
+        let before_database = fs::read(&database).unwrap();
+        let catalog_path = cas_retention::test_metadata_root(&directory.path().join("blobs"))
+            .unwrap()
+            .join("catalog.json");
+        let before_catalog = fs::read(&catalog_path).unwrap();
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(
+            reader.database_file_identity().unwrap(),
+            original_identity,
+            "the second service must hold the original SQLite file"
+        );
+        assert_eq!(reader.project(expected.id).unwrap(), expected);
+        let history = reader.project_history(expected.id, 0, 100).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].revision, expected.revision);
+
+        let rejected = reader
+            .store
+            .conn
+            .execute("PRAGMA user_version=91", [])
+            .unwrap_err();
+        assert!(
+            matches!(&rejected, rusqlite::Error::SqliteFailure(code, _)
+                if code.code == rusqlite::ErrorCode::ReadOnly),
+            "the actual SQLite VFS must reject writes: {rejected}"
+        );
+        drop(reader);
+        assert_eq!(fs::read(&database).unwrap(), before_database);
+        assert_eq!(fs::read(&catalog_path).unwrap(), before_catalog);
+
+        // Returning to normal production restores the original writer's
+        // WAL policy and preserves the same project, rather than a copy.
+        let resumed = Store::open(&database).unwrap();
+        assert_eq!(resumed.database_file_identity().unwrap(), original_identity);
+        assert_eq!(resumed.load_project(expected.id).unwrap(), expected);
+        let mode: String = resumed
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+    }
+
+    // Only a subprocess selected by the parent test has these inputs. Ordinary
+    // full-suite test discovery does not open or create any SQLite files here.
+    #[test]
+    fn windows_original_child_reader_entrypoint() {
+        let Some(database) = std::env::var_os("MOTIONWRIGHT_TEST_READER_CHILD_DB") else {
+            return;
+        };
+        let project_id =
+            Uuid::parse_str(&std::env::var("MOTIONWRIGHT_TEST_READER_CHILD_PROJECT").unwrap())
+                .unwrap();
+        let expected_identity = std::env::var("MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY").unwrap();
+        let reader = StoreReader::open(std::path::PathBuf::from(database)).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), expected_identity);
+        assert_eq!(
+            reader.project(project_id).unwrap().title,
+            "Independent reader source"
+        );
+        if std::env::var_os("MOTIONWRIGHT_TEST_READER_EXPECT_ORIGINAL_GAP").is_some() {
+            let outcome = reader.project_history(project_id, 1, 1);
+            assert!(
+                matches!(&outcome, Err(StorageError::InvalidBackup(reason))
+                    if reason.contains("event sequence")),
+                "second Windows process must refuse the corrupted original history: {outcome:?}"
+            );
+            let unrelated = Uuid::parse_str(
+                &std::env::var("MOTIONWRIGHT_TEST_READER_UNRELATED_PROJECT").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(reader.project_history(unrelated, 0, 1).unwrap().len(), 1);
+            eprintln!("READ_ONLY_CHILD_GAP_REFUSED pid={}", std::process::id());
+            return;
+        }
+        let history = reader.project_history(project_id, 0, 100).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].revision, 1);
+        let failure = reader
+            .store
+            .conn
+            .execute("PRAGMA user_version=99", [])
+            .unwrap_err();
+        assert!(
+            matches!(&failure, rusqlite::Error::SqliteFailure(code, _)
+                if code.code == rusqlite::ErrorCode::ReadOnly),
+            "physical reader child unexpectedly wrote SQLite: {failure}"
+        );
+        eprintln!("READ_ONLY_CHILD_ORIGINAL_OK pid={}", std::process::id());
+    }
+
+    /// In addition to in-process StoreReader custody, verify an actual second
+    /// Windows process reopens the original SQLite and managed CAS after the
+    /// first writer's WAL-to-DELETE handoff. No copied database or mock.
+    #[test]
+    fn windows_independent_process_reopens_original_sqlite_and_cas() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let project = writer
+            .create_named_project("Independent reader source")
+            .unwrap();
+        let outcome = writer
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "cross-process-original-change",
+                &Change::RenameProject {
+                    title: "Independent reader source".into(),
+                },
+            )
+            .unwrap();
+        let original_identity = writer.database_file_identity().unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+
+        let initial_sqlite = fs::read(&database).unwrap();
+        let catalog = cas_retention::test_metadata_root(&directory.path().join("blobs"))
+            .unwrap()
+            .join("catalog.json");
+        let initial_catalog = fs::read(&catalog).unwrap();
+        let response = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(
+                "read_only::windows_original_handoff_tests::windows_original_child_reader_entrypoint",
+            )
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env("MOTIONWRIGHT_TEST_READER_CHILD_DB", &database)
+            .env(
+                "MOTIONWRIGHT_TEST_READER_CHILD_PROJECT",
+                outcome.project.id.to_string(),
+            )
+            .env(
+                "MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY",
+                &original_identity,
+            )
+            .output()
+            .unwrap();
+        let child_output = String::from_utf8_lossy(&response.stderr);
+        assert!(
+            response.status.success() && child_output.contains("READ_ONLY_CHILD_ORIGINAL_OK"),
+            "independent Windows reader failed: {:?}; stderr={child_output}; stdout={}",
+            response.status,
+            String::from_utf8_lossy(&response.stdout)
+        );
+        assert!(
+            !child_output.contains(&format!("pid={}", std::process::id())),
+            "independent reader must not reuse the parent process"
+        );
+        assert_eq!(fs::read(&database).unwrap(), initial_sqlite);
+        assert_eq!(fs::read(&catalog).unwrap(), initial_catalog);
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), original_identity);
+        assert_eq!(reader.project(outcome.project.id).unwrap(), outcome.project);
+    }
+
+    /// A second Windows process must not publish a plausible Graph history
+    /// if an earlier original event has been deleted or rebased outside its
+    /// cursor. Validate the original SQLite and CAS without an alternate DB.
+    #[test]
+    fn windows_independent_process_rejects_hidden_graph_history_gap() {
+        for mutation in ["delete", "renumber"] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = directory.path().join("state.sqlite3");
+            let mut writer = Store::open(&database).unwrap();
+            let mut project = writer
+                .create_named_project("Independent reader source")
+                .unwrap();
+            let unrelated = writer.create_named_project("Healthy source").unwrap();
+            for revision in 1..=2 {
+                project = writer
+                    .apply(
+                        project.id,
+                        &RevisionStamp::from(&project),
+                        &format!("original-{mutation}-{revision}"),
+                        &Change::RenameProject {
+                            title: "Independent reader source".into(),
+                        },
+                    )
+                    .unwrap()
+                    .project;
+            }
+            writer
+                .apply(
+                    unrelated.id,
+                    &RevisionStamp::from(&unrelated),
+                    "unrelated-original",
+                    &Change::RenameProject {
+                        title: "Healthy source".into(),
+                    },
+                )
+                .unwrap();
+
+            let sql = match mutation {
+                "delete" => "DELETE FROM events WHERE project_id=?1 AND revision=1",
+                "renumber" => "UPDATE events SET revision=99 WHERE project_id=?1 AND revision=1",
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                writer.conn.execute(sql, [project.id.to_string()]).unwrap(),
+                1
+            );
+            let original_identity = writer.database_file_identity().unwrap();
+            writer.prepare_read_only_handoff().unwrap();
+            drop(writer);
+
+            let original_sqlite = fs::read(&database).unwrap();
+            let catalog = cas_retention::test_metadata_root(&directory.path().join("blobs"))
+                .unwrap()
+                .join("catalog.json");
+            let original_catalog = fs::read(&catalog).unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(
+                    "read_only::windows_original_handoff_tests::windows_original_child_reader_entrypoint",
+                )
+                .arg("--nocapture")
+                .arg("--test-threads=1")
+                .env("MOTIONWRIGHT_TEST_READER_CHILD_DB", &database)
+                .env("MOTIONWRIGHT_TEST_READER_CHILD_PROJECT", project.id.to_string())
+                .env("MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY", &original_identity)
+                .env("MOTIONWRIGHT_TEST_READER_EXPECT_ORIGINAL_GAP", "1")
+                .env("MOTIONWRIGHT_TEST_READER_UNRELATED_PROJECT", unrelated.id.to_string())
+                .output()
+                .unwrap();
+            let child_error = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                result.status.success() && child_error.contains("READ_ONLY_CHILD_GAP_REFUSED pid="),
+                "real Windows child must refuse {mutation} original: {:?}; stdout={}; stderr={child_error}",
+                result.status,
+                String::from_utf8_lossy(&result.stdout),
+            );
+            assert!(
+                !child_error.contains(&format!("pid={}", std::process::id())),
+                "separate reader must have an independent OS process identity"
+            );
+            let reader = StoreReader::open(&database).unwrap();
+            assert_eq!(reader.database_file_identity().unwrap(), original_identity);
+            assert!(matches!(
+                reader.project_history(project.id, 1, 1),
+                Err(StorageError::InvalidBackup(ref reason)) if reason.contains("event sequence")
+            ));
+            assert_eq!(reader.project_history(unrelated.id, 0, 1).unwrap().len(), 1);
+            drop(reader);
+            assert_eq!(fs::read(&database).unwrap(), original_sqlite);
+            assert_eq!(fs::read(&catalog).unwrap(), original_catalog);
+        }
+    }
+}

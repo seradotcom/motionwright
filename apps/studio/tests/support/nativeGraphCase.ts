@@ -15,7 +15,8 @@ import { ScopedChangeService, type ScopedChangeServiceOptions } from "./scopedCh
 import { createGraphCaseFactory } from "./graph-owner/factory.mjs";
 import { inside } from "./graph-owner/custody.mjs";
 import { captureOriginalOpenedStoreWitness, prepareOriginalReadOnlyHandoff,
-  publishedOracleReference, runIndependentSameStoreReopen } from "./graph-owner/same_store_reopen.mjs";
+  publishedOracleReference, publishOriginalWriterRpcRoster,
+  runIndependentSameStoreReopen } from "./graph-owner/same_store_reopen.mjs";
 
 export type NativeGraphOperation = "authoring_context" | "upsert" | "remove" | "operation_recovery";
 export type NativeGraphCaseId = "graph-source-review" | "graph-flow" | "graph-lost-reply"
@@ -275,6 +276,11 @@ export async function finalizeGraphCase(service: ScopedChangeService,
     },
   ]);
   factory.assertClosed();
+  // After the original writer's final EOF, retain every genuine JSONL RPC
+  // request/response pair. Finalizer/preseal Project and journal queries are
+  // not foreign stdout: the independent verifier joins each raw reply to this
+  // original roster instead of assuming there were only three commands.
+  const originalWriterRpcRosterRef = await publishOriginalWriterRpcRoster(factory, service);
   // Reuse the finalizer's published oracle and the immutable observation from
   // the actual original Service; neither an internal restart nor a copy is
   // the independent reopen. Production remains closed at the existing J1 guard.
@@ -282,6 +288,7 @@ export async function finalizeGraphCase(service: ScopedChangeService,
     expectedOracleRef: publishedOracleReference(factory, destination, result),
     originalPresealWitnessRef,
     originalReadOnlyHandoffRef,
+    originalWriterRpcRosterRef,
   });
   return result;
 }

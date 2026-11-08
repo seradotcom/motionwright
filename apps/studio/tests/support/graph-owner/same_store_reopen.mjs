@@ -16,6 +16,7 @@ import { requireCoherentProcNamespace, captureLinuxProcessIdentity, expectedLinu
   requireHeldStoreWitness, requireSameOpenedProcessAndStore } from './opened_store_identity_join.mjs';
 
 const attempted = new WeakSet();
+const writerRpcRosterAttempted = new WeakSet();
 const presealAttempted = new WeakSet();
 const presealOriginals = new WeakMap();
 const handoffAttempted = new WeakSet();
@@ -428,6 +429,81 @@ function requireOriginalReadOnlyHandoff(factory, ref, preseal) {
   return { ref, held_store_digest: preseal.digest, raw: rawRef };
 }
 
+/** Record the complete source-owned final writer's original request/response
+ * sequence after EOF, not just its three read-only handoff control replies.
+ * Earlier real Project/journal reads must remain visible and authenticated.
+ * This is a one-shot case original, not an approval or another Service effect. */
+export async function publishOriginalWriterRpcRoster(factory, service) {
+  requireOriginalAdmission(factory);
+  need(factory && !writerRpcRosterAttempted.has(factory), 'REOPEN_WRITER_RPC_ROSTER_NO_REPLAY');
+  writerRpcRosterAttempted.add(factory);
+  try {
+    factory.assertClosed();
+    const captured = presealOriginals.get(factory);
+    const handoff = originalReadOnlyHandoffs.get(factory);
+    const record = captured?.record;
+    need(captured && !captured.synthetic && handoff?.record === record
+      && record?.rawComplete && record.raw?.stdout?.eof === true
+      && record.exit?.processId === record.pid && record.exit.code === 0
+      && record.exit.signal === null && !service.child && service.pending.size === 0,
+      'REOPEN_WRITER_RPC_ROSTER_REQUIRES_CLOSED_ORIGINAL');
+    const entries = service.transcript.filter(row => row.processId === record.pid);
+    const pending = new Map(), used = new Set(), records = [];
+    for (const entry of entries) {
+      const payload = entry?.payload;
+      need(payload && typeof payload === 'object' && !Array.isArray(payload)
+        && typeof payload.id === 'string' && payload.id.length > 0,
+        'REOPEN_WRITER_RPC_TRANSCRIPT_ENTRY');
+      const key = payload.id;
+      if (entry.direction === 'request') {
+        exact(payload, ['id','command','args'], 'REOPEN_WRITER_RPC_REQUEST_FIELDS');
+        need(typeof payload.command === 'string'
+          && payload.command.length > 0 && payload.command.length <= 128
+          && !used.has(key) && !pending.has(key),
+          'REOPEN_WRITER_RPC_REQUEST_REPLAY');
+        // Retain the real request identity and command, never the source RPC
+        // args: those can contain effect grants even after their short TTL.
+        pending.set(key, {id:key,command:payload.command,
+          args_sha256:createHash('sha256').update(JSON.stringify(payload.args)).digest('hex')});
+        used.add(key);
+      } else {
+        need(entry.direction === 'response' && pending.has(key)
+          && typeof payload.ok === 'boolean', 'REOPEN_WRITER_RPC_UNSOLICITED_REPLY');
+        exact(payload, payload.ok ? ['id','ok','result'] : ['id','ok','error'],
+          'REOPEN_WRITER_RPC_RESPONSE_FIELDS');
+        records.push({ request: pending.get(key), response: payload });
+        pending.delete(key);
+      }
+      need(records.length <= 2048 && pending.size <= 2048,
+        'REOPEN_WRITER_RPC_ROSTER_BOUND');
+    }
+    need(pending.size === 0 && records.length >= 3,
+      'REOPEN_WRITER_RPC_UNCLOSED_REQUESTS');
+    const original = record.raw.stdout;
+    const rawRef = {path:original.path,sha256:original.sha256,size_bytes:original.size_bytes};
+    const bytes = matchRef(original.path,rawRef,factory.options.maxStreamBytes ?? MiB).data;
+    need(bytes.length > 0 && bytes.at(-1) === 10,
+      'REOPEN_WRITER_RPC_RAW_NOT_COMPLETE');
+    const rows = bytes.subarray(0,bytes.length-1).toString('utf8').split('\n')
+      .map(line => strictJSON(Buffer.from(line,'utf8'), MiB));
+    same(rows, records.map(row => row.response),
+      'REOPEN_WRITER_RPC_ROSTER_DIFFERS_FROM_ORIGINAL_STDOUT');
+    const document = {
+      schema:'motionwright.graph.original-writer-rpc-roster/1',
+      source:factory.admission.source, binary:factory.admission.nativeService,
+      database_path:factory.options.databasePath,process_id:record.pid,
+      records,automatic_retry:false,gate_credit:false,synthetic_adapter_only:false,
+    };
+    const body = Buffer.from(JSON.stringify(document) + '\n');
+    need(body.length <= 4 * MiB,'REOPEN_WRITER_RPC_ROSTER_BYTES_BOUND');
+    const ref = await factory.publish(path.join(factory.root,
+      'original-service-writer-rpc-roster.original.json'),body);
+    same(strictJSON(matchRef(ref.path,ref,4*MiB).data,4*MiB),document,
+      'REOPEN_WRITER_RPC_ROSTER_ORIGINAL_CHANGED');
+    return Object.freeze({ ...ref });
+  } catch (error) { factory?.taint?.(error); throw error; }
+}
+
 /** Production entry point: no adapter/mock argument and no source fallback.
  * An actual factory must already have passed its unchanged producer guard.
  * A caller's CLOSED boolean, a copied database or an internal restart is not
@@ -442,6 +518,7 @@ export async function runIndependentSameStoreReopen(factory, options) {
  * the receipt states that fact and cannot be used as production admission. */
 export async function runSameStoreReopenCore(factory, {
   expectedOracleRef, originalPresealWitnessRef, originalReadOnlyHandoffRef,
+  originalWriterRpcRosterRef = null,
   relativeOutput = 'independent-reopen',
   maximumStreamBytes = MiB, timeoutMs = 20000,
 }, adapters) {
@@ -470,6 +547,31 @@ export async function runSameStoreReopenCore(factory, {
     const preseal = requirePresealOriginal(factory, originalPresealWitnessRef,
       oracle, adapters.synthetic === true);
     const handoff = requireOriginalReadOnlyHandoff(factory, originalReadOnlyHandoffRef, preseal);
+    if (adapters.synthetic !== true) {
+      need(originalWriterRpcRosterRef && typeof originalWriterRpcRosterRef.path === 'string',
+        'REOPEN_WRITER_RPC_ROSTER_MISSING');
+      need(originalWriterRpcRosterRef.path === path.join(factory.root,
+        'original-service-writer-rpc-roster.original.json'),
+        'REOPEN_WRITER_RPC_ROSTER_NOT_ORIGINAL_CASE');
+      const full = strictJSON(matchRef(originalWriterRpcRosterRef.path,
+        originalWriterRpcRosterRef, 4 * MiB).data, 4 * MiB);
+      need(full.schema === 'motionwright.graph.original-writer-rpc-roster/1'
+        && full.process_id === preseal.process.pid
+        && full.database_path === factory.options.databasePath
+        && full.automatic_retry === false && full.gate_credit === false
+        && full.synthetic_adapter_only === false && Array.isArray(full.records),
+        'REOPEN_WRITER_RPC_ROSTER_NOT_CLOSED');
+      same(full.source, factory.admission.source, 'REOPEN_WRITER_RPC_ROSTER_SOURCE');
+      same(full.binary, factory.admission.nativeService, 'REOPEN_WRITER_RPC_ROSTER_BINARY');
+      const retainedBytes = matchRef(handoff.raw.path, handoff.raw,
+        factory.options.maxStreamBytes ?? MiB).data;
+      need(retainedBytes.length > 0 && retainedBytes.at(-1) === 10,
+        'REOPEN_WRITER_RPC_ROSTER_RAW_EOF');
+      const lines = retainedBytes.subarray(0,retainedBytes.length-1).toString('utf8')
+        .split('\n').map(line => strictJSON(Buffer.from(line,'utf8'), MiB));
+      same(lines, full.records.map(row => row.response),
+        'REOPEN_WRITER_RPC_ROSTER_RAW_MISMATCH');
+    }
     inside(factory.root, factory.finalOriginal.path);
     matchRef(factory.finalOriginal.path, factory.finalOriginal, 4 * MiB);
     const requestLimit = Math.min(256, oracle.journal.length + 6);
@@ -521,6 +623,7 @@ export async function runSameStoreReopenCore(factory, {
       original_service_closure: preseal.service_closure,
       original_preseal_held_pager_witness_bound: true,
       original_writer_read_only_handoff: handoff.ref,
+      original_writer_rpc_roster: originalWriterRpcRosterRef,
       read_only_child_required: true,
     });
     factory.assertClosed(); // Recheck immediately before the only process spawn.
@@ -678,6 +781,7 @@ export async function runSameStoreReopenCore(factory, {
       original_preseal_held_pager_witness_bound:true,
       original_writer_read_only_handoff:handoff.ref,
       original_writer_handoff_raw:handoff.raw,
+      original_writer_rpc_roster:originalWriterRpcRosterRef,
       read_only_child_bootstrap_proved:true,
       source_bound_service_pager_query_identity_proved:false,
       identity_scope:'Original preseal Service observation and both new-child witnesses joined through raw EOF and owner-linked Service closure; owner FINAL does not attest the preseal witness hash; product acceptance remains pending',
