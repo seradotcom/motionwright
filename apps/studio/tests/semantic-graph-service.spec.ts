@@ -7,6 +7,7 @@ import { ScopedChangeService } from "./support/scopedChangeService";
 import type { Project } from "../src/types";
 import type { GraphProject, SemanticGraphChange } from "../src/semanticGraph";
 import type { DeliveryRecipe } from "../src/deliveryRecipe";
+import { decodeGraphContextFailure } from "../src/semanticGraphContextFailure";
 
 test.setTimeout(120_000);
 test.beforeAll(() => {
@@ -69,8 +70,25 @@ async function prepare(page: Page, kind: "causal_diagram" | "system_flow") {
   const parsedGates = observedGates?.split(",") ?? [];
   const safeGates = parsedGates.length > 0 && parsedGates.every(value => closedGates.has(value))
     ? parsedGates.join(",") : "GRAPH_SAVE_GATE_UNRECOGNIZED";
-  if (phase !== "GRAPH_CONTEXT_INSPECTION_RESOLVED" || safeGates !== "GRAPH_SAVE_READY")
-    throw new Error("GRAPH_SOURCE_ADMISSION_NOT_READY: " + phase + " / " + safeGates);
+  if (phase !== "GRAPH_CONTEXT_INSPECTION_RESOLVED" || safeGates !== "GRAPH_SAVE_READY") {
+    // Keep the 097e first line byte-compatible. An optional second line is
+    // diagnostic only, derived exclusively from the same inspection's closed
+    // stage/code attributes; never stringify an arbitrary backend rejection.
+    const denied = new Error("GRAPH_SOURCE_ADMISSION_NOT_READY: " + phase + " / " + safeGates);
+    if (phase === "GRAPH_CONTEXT_INSPECTION_REJECTED") {
+      const inspect = button(page, "Inspect current Graph support and sources");
+      const observedStage = await inspect.getAttribute("data-graph-context-failure-stage");
+      const observedCode = await inspect.getAttribute("data-graph-context-failure-code");
+      if (observedStage !== null && observedCode !== null) {
+        const verified = decodeGraphContextFailure({
+          schema: "motionwright.native.graph-context-failure/1",
+          stage: observedStage, error_code: observedCode === "NONE" ? null : observedCode,
+        });
+        if (verified) denied.message += "\nGRAPH_CONTEXT_FAILURE: " + verified.stage + " / " + (verified.error_code ?? "NONE");
+      }
+    }
+    throw denied;
+  }
   await expect(save, "A resolved original Native/Studio context must admit this Graph source.").toBeEnabled();
 }
 
