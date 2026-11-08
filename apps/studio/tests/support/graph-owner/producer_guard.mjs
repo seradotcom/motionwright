@@ -13,6 +13,20 @@ const EXPECTED_CASES = new Set([
   "graph-source-review", "graph-flow", "graph-lost-reply", "graph-removal",
   "graph-label-causal-diagram", "graph-label-system-flow",
 ]);
+// The original producer allocates physical g1..g6 in sorted semantic-ID
+// order. Resolve that layout from its reviewed cases_root, never from the
+// browser's provisional Playwright outputDir or a caller-selected path.
+const ORIGINAL_GRAPH_CASE_ORDER = Object.freeze([...EXPECTED_CASES].sort());
+export function originalGraphCaseLayout(casesRoot, caseId) {
+  canonical(casesRoot);
+  const ordinal = ORIGINAL_GRAPH_CASE_ORDER.indexOf(caseId);
+  need(ordinal >= 0, 'CASE_LAYOUT_UNDECLARED_ID');
+  const privateRoot = inside(casesRoot, path.join(casesRoot, 'g' + (ordinal + 1)));
+  const databasePath = path.join(privateRoot, 'store', 'motionwright.sqlite3');
+  const ownerSocket = path.join(privateRoot, 'owner', 'runtime', 'broker.sock');
+  need(Buffer.byteLength(ownerSocket, 'utf8') <= 100, 'CASE_OWNER_SOCKET_PATH_EXCEEDS_100_BYTES');
+  return Object.freeze({ privateRoot, databasePath, ownerSocket });
+}
 function diagnosticNeed(value, reason) { if (!value) throw new Error(reason); }
 function diagnosticExact(value, names, reason) {
   diagnosticNeed(value && typeof value === "object" && !Array.isArray(value), reason);
@@ -748,7 +762,10 @@ export async function admitOriginalProducers(options) {
   const observed = stableRead(options.producerOriginalPath, LIMIT), index = strictJSON(observed.data, LIMIT);
   const reviewed = contractReview(index, observed.ref.sha256);
   need(integer(options.deadlineUnixMs, Date.now() + 1) && typeof options.privateRoot === 'string', 'J1_CASE_ORIGINAL_DEADLINE');
-  inside(reviewed.execution.cases_root, options.privateRoot);
+  // Original, reviewed execution.case_id -> canonical g-slot. The provisional
+  // caller root is not an input to physical Store or Native owner admission.
+  const layout = originalGraphCaseLayout(reviewed.execution.cases_root, options.caseId);
+  inside(reviewed.execution.cases_root, layout.privateRoot);
   const once = index.source.run_id + '/1/' + options.caseId;
   need(!usedCases.has(once), 'J1_CASE_ADMISSION_ALREADY_CONSUMED'); usedCases.add(once);
   const approval = await authenticateR74(index, observed.ref, options.caseId, options.deadlineUnixMs);

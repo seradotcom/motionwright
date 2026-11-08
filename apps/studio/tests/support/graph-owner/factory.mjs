@@ -6,7 +6,8 @@ import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusi
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
   ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines } from './contracts.mjs';
-import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyMetadataCredential, GRAPH_BUDGET } from './producer_guard.mjs';
+import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyMetadataCredential,
+  originalGraphCaseLayout, GRAPH_BUDGET } from './producer_guard.mjs';
 import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.mjs';
 
 const MiB = 1024 * 1024;
@@ -160,16 +161,9 @@ export async function createGraphCaseFactory(options) {
 /** Pure layout calculation, never an admission. Production supplies only the
  * cases_root and case ID already bound by the original index/status. */
 export function graphCaseLayout(casesRoot, caseId) {
-  canonical(casesRoot);
-  const cases = ['graph-flow', 'graph-label-causal-diagram', 'graph-label-system-flow',
-    'graph-lost-reply', 'graph-removal', 'graph-source-review'];
-  const ordinal = cases.indexOf(caseId);
-  need(ordinal >= 0, 'CASE_LAYOUT_UNDECLARED_ID');
-  const privateRoot = inside(casesRoot, path.join(casesRoot, 'g' + (ordinal + 1)));
-  const databasePath = path.join(privateRoot, 'store', 'motionwright.sqlite3');
-  const ownerSocket = path.join(privateRoot, 'owner', 'runtime', 'broker.sock');
-  need(Buffer.byteLength(ownerSocket, 'utf8') <= 100, 'CASE_OWNER_SOCKET_PATH_EXCEEDS_100_BYTES');
-  return Object.freeze({ privateRoot, databasePath, ownerSocket });
+  // Use the same pure, closed case mapping as R74's original producer guard.
+  // This public helper is never authority to create a Native case.
+  return originalGraphCaseLayout(casesRoot, caseId);
 }
 
 // The six typed-Graph scenarios do not import media blobs. Bound the small
@@ -260,8 +254,11 @@ export class GraphCaseFactoryCore {
       assertOriginalProducerAdmission(admission);
       need(admission.approval.context === 'mw-owner/phase1-native-graph/' + admission.source.run_id + '/1/' + options.caseId,
         'CASE_LAYOUT_NOT_THE_ADMITTED_CASE');
-      inside(admission.execution.cases_root, options.privateRoot);
+      // The browser's outputDir is only a provisional, untrusted test path.
+      // Containment must be checked on the case root derived from the
+      // independently admitted producer (g1..g6), never on that placeholder.
       layout = graphCaseLayout(admission.execution.cases_root, options.caseId);
+      inside(admission.execution.cases_root, layout.privateRoot);
       need(!fs.existsSync(layout.privateRoot), 'CASE_CANONICAL_ROOT_ALREADY_EXISTS');
     }
     const selected = admission.binaries ? {
