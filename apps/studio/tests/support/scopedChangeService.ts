@@ -62,10 +62,11 @@ export async function requireGraphStoreFileLimit(child: ChildProcessWithoutNullS
   while (Date.now() < deadline) {
     if (!live()) throw new Error("Graph Store process exited before its file limits were confirmed");
     let limits: string;
+    const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
     try {
-      limits = await readFile(`/proc/${pid}/limits`, { encoding: "utf8",
-        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) });
-    } catch {
+      limits = await readFile(`/proc/${pid}/limits`, { encoding: "utf8", signal });
+    } catch (error) {
+      if (signal.aborted && Date.now() >= deadline && error instanceof Error && error.name === "AbortError") break;
       throw new Error("Graph Store process kernel file limits could not be observed");
     }
     if (!live()) throw new Error("Graph Store process exited during file-limit observation");
