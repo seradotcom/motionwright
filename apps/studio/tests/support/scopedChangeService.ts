@@ -16,6 +16,7 @@ import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
 import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError.ts";
+import { decodeGraphContextFailure, type GraphContextFailure } from "../../src/semanticGraphContextFailure.ts";
 import type { FileImportInput, FileImportReceipt, PreparedFileImport } from "../../src/fileImport";
 import type {
   StudioBootstrap, Change, EffectGrantReceipt, EffectKind, PortableBundleExport,
@@ -103,7 +104,7 @@ function projectionFailure(command: string, value: unknown): value is ServicePro
 
 export type ServiceRpcResponse<T = unknown> =
   | { id: RpcId; ok: true; result: T }
-  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure | GraphMutationError };
+  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure | GraphMutationError | GraphContextFailure };
 
 export interface ServiceStartup extends StudioBootstrap {
   test_transport: "service-test-jsonl";
@@ -533,10 +534,12 @@ export class ScopedChangeService {
       const key = JSON.stringify(response.id);
       const pending = this.pending.get(key);
       // Structured failures require the exact still-pending command. Graph
-      // failures additionally bind to the original serialized Graph key/type.
+      // mutations additionally bind to the original serialized key/type;
+      // context failures belong only to their correlated context read.
       // Legacy strings retain their behavior; unrecognized objects fail closed.
       if (response.ok ? !("result" in response)
         : !(typeof response.error === "string" || (pending && projectionFailure(pending.command, response.error))
+          || (pending?.command === "semantic_graph_authoring_context" && decodeGraphContextFailure(response.error))
           || (pending?.command === "apply_change" && pending.graphMutation
             && decodeGraphMutationError(response.error, pending.graphMutation.requestId)))) {
         throw new Error("Response lacks its declared result/error payload");
