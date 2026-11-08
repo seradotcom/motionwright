@@ -895,6 +895,32 @@ def checked_static_originals(native, seeded, evidence):
     }
 
 
+def stage_phase_binaries(binary_root, reuse, *, driver_source=None, runner_source=None):
+    """Stage original native binaries once and preserve them across phases.
+
+    The same live owner must retain the exact original source bytes. Neither
+    fresh staging nor subsequent reuse is permitted to overwrite an occupied
+    root or silently replace a previously admitted Driver/runner.
+    """
+    driver = binary_root / "motionwright-manim-community-driver"
+    runner = binary_root / "motionwright-manim-runner"
+    pairs = ((MW_DRIVER if driver_source is None else driver_source, driver),
+             (MW_RUNNER if runner_source is None else runner_source, runner))
+    if reuse:
+        if any(not target.is_file() or target.is_symlink()
+               or digest(target) != digest(source) for source, target in pairs):
+            raise ValueError("editable original admitted binaries changed")
+    else:
+        if any(target.exists() or target.is_symlink() for _, target in pairs):
+            raise ValueError("new native binary staging may not overwrite an existing file")
+        for source, target in pairs:
+            shutil.copyfile(source, target)
+            target.chmod(0o700)
+        if any(digest(target) != digest(source) for source, target in pairs):
+            raise ValueError("new native binary staging differs from its pinned source")
+    return driver, runner
+
+
 def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None):
     camera = args.scenario == "camera120"
     editable = args.scenario == "editable-source-cycle"
@@ -1095,16 +1121,9 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                 if seeded.get("primitive_count") != 3:
                     raise AssertionError(f"unexpected Manim seed: {seeded}")
 
-            driver = paths["bin"] / "motionwright-manim-community-driver"
-            runner = paths["bin"] / "motionwright-manim-runner"
-            if lifecycle and lifecycle_context["history"]:
-                if digest(driver) != digest(MW_DRIVER) or digest(runner) != digest(MW_RUNNER):
-                    raise ValueError("editable original admitted binaries changed")
-            else:
-                shutil.copyfile(MW_DRIVER, driver)
-                shutil.copyfile(MW_RUNNER, runner)
-                driver.chmod(0o700)
-                runner.chmod(0o700)
+            driver, runner = stage_phase_binaries(
+                paths["bin"], lifecycle and bool(lifecycle_context["history"])
+            )
 
             manifest = {
                 "manifest_version": 1,
