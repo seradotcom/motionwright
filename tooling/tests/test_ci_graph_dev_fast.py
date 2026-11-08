@@ -413,5 +413,43 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("R74_technical_admissions: true", text)
 
 
+    def test_graph_source_push_covers_rust_ui_and_toolchain_impact(self):
+        # The fast lane may remain inert, but must *start* when direct Graph
+        # consumers change; otherwise impact-mode coverage has a blind spot.
+        # This is source-only routing, never G1/G2 physical admission.
+        from fnmatch import fnmatchcase
+
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split(
+            "  workflow_dispatch:", 1)[0]
+        globs = [
+            line.strip().split("'", 2)[1]
+            for line in trigger.splitlines()
+            if line.strip().startswith("- '")
+        ]
+        cases = (
+            ("crates/domain/src/graph_domain.rs", "rust"),
+            ("crates/storage/src/read_only.rs", "rust"),
+            ("crates/storage/src/other_graph_store.rs", "rust"),
+            ("crates/service/src/graph_service.rs", "rust"),
+            ("crates/native/src/production/graph_authoring.rs", "rust"),
+            ("crates/native/src/production/graph_host.rs", "rust"),
+            ("apps/studio/src/semanticGraph.ts", "ui"),
+            ("apps/studio/src/semanticGraphRecovery.ts", "ui"),
+            ("apps/studio/tests/semantic-graph-service.spec.ts", "ui"),
+            ("rust-toolchain.toml", "rust"),
+        )
+        for path, impacted in cases:
+            with self.subTest(path=path):
+                self.assertTrue(
+                    gate.impacted_packages([path]) if impacted == "rust"
+                    else gate.impacted_ui([path]))
+                self.assertTrue(any(fnmatchcase(path, glob) for glob in globs),
+                                f"Graph consumer changed but no push source G0: {path}")
+        self.assertFalse(any(fnmatchcase("docs/roadmap.md", glob) for glob in globs))
+
+
 if __name__ == "__main__":
     unittest.main()
