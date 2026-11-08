@@ -62,35 +62,27 @@ jobs:
         run: |
           cargo check --locked -p motionwright-service --example studio_review_session
           cargo check --locked -p motionwright-native --example native-graph-review-session
-      - name: Check closed context failures in the compiled Native example
+      - name: Check the Native journal and callback lifecycle
         run: |
           set -euo pipefail
           cargo test --locked -p motionwright-native --example native-graph-review-session \
-            graph_context_public_ -- --nocapture \
-            | tee "$RUNNER_TEMP/graph-context-public.tests.original.log"
+            native_graph_adapter_tests:: -- --nocapture \
+            | tee "$RUNNER_TEMP/graph-native-adapter.tests.original.log"
           python3 - <<'PY'
           import os, re
           from pathlib import Path
-          raw = (Path(os.environ["RUNNER_TEMP"]) / "graph-context-public.tests.original.log").read_text()
-          assert len(re.findall(r"^test native_graph_adapter_tests::graph_context_public_[^\r\n]* \.\.\. ok$", raw, re.M)) == 2
-          assert re.search(r"^test result: ok\. 2 passed; 0 failed;", raw, re.M)
-          PY
-      - name: Check Native journal reservations within the parent custody slice
-        run: |
-          set -euo pipefail
-          cargo test --locked -p motionwright-native --example native-graph-review-session \
-            parent_journal_ -- --nocapture \
-            | tee "$RUNNER_TEMP/graph-parent-journal.tests.original.log"
-          python3 - <<'PY'
-          import os, re
-          from pathlib import Path
-          raw = (Path(os.environ["RUNNER_TEMP"]) / "graph-parent-journal.tests.original.log").read_text()
-          passed = re.findall(r"^test native_graph_adapter_tests::(parent_journal_[^\r\n ]*) \.\.\. ok$", raw, re.M)
+          raw = (Path(os.environ["RUNNER_TEMP"]) / "graph-native-adapter.tests.original.log").read_text()
+          passed = re.findall(r"^test native_graph_adapter_tests::([^\r\n ]*) \.\.\. ok$", raw, re.M)
           required = {
+              "graph_context_public_stage_and_pinned_error_code_rosters_are_closed",
+              "graph_context_public_error_projection_redacts_every_private_message",
               "parent_journal_file_slice_rejects_before_publishing_an_unreserved_request",
               "parent_journal_byte_slice_preserves_charges_and_existing_originals",
               "parent_journal_32mib_factory_then_context_reserves_result_before_dispatch",
               "parent_journal_32mib_denies_without_result_capacity_or_refund",
+              "exclusive_private_originals_do_not_replace_a_previous_request_or_resume_after_failure",
+              "failed_mutation_result_publication_preserves_originals_and_only_emits_unknown",
+              "failed_read_result_publication_is_an_ordinary_error_before_any_ready_or_decode",
           }
           assert required.issubset(passed)
           assert re.search(rf"^test result: ok\. {len(passed)} passed; 0 failed;", raw, re.M)
