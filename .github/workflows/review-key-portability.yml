@@ -10,6 +10,8 @@ on:
       - 'tooling/graph_review_artifact.py'
       - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/requirements/graph-review-fixtures.txt'
+      - 'tooling/review_original_io.py'
+      - 'tooling/tests/test_review_original_io.py'
       - 'tooling/nsis_owned_files.py'
   pull_request:
     paths:
@@ -19,6 +21,8 @@ on:
       - 'tooling/graph_review_artifact.py'
       - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/requirements/graph-review-fixtures.txt'
+      - 'tooling/review_original_io.py'
+      - 'tooling/tests/test_review_original_io.py'
       - 'tooling/nsis_owned_files.py'
 
 permissions:
@@ -48,5 +52,7 @@ jobs:
       - name: Install hash-pinned artifact fixture dependencies
         run: |
           python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r tooling/requirements/graph-review-fixtures.txt
+      - name: Check retained review originals across filesystem metadata domains
+        run: python -B -m unittest tooling.tests.test_review_original_io -v
       - name: Check original GitHub artifact transport without live secrets
         run: python -B -m unittest tooling.tests.test_graph_review_artifact -v

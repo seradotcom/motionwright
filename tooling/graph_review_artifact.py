@@ -10,7 +10,8 @@ import shutil
 import subprocess
 import zipfile
 
-from ci_private_evidence import MAX_FILE, new_bytes, new_json, regular, strict
+from ci_private_evidence import MAX_FILE, strict
+from review_original_io import new_bytes, new_json, read_bytes
 
 
 REPOSITORY = "seradotcom/motionwright"
@@ -43,7 +44,7 @@ def gh_json_or_bytes(route, name, directory):
             raise ValueError("graph_review_artifact_api_timeout") from failure
     new_json(directory / (name + ".exit.json"), {"exit_code": result.returncode})
     require(result.returncode == 0, "api_failed_no_retry")
-    return regular(directory / (name + ".stdout"), MAX_FILE)[0]
+    return read_bytes(directory / (name + ".stdout"), MAX_FILE)
 
 def checked_run(value, source, run_id):
     """Bind a live manual run to the expected repository and first attempt."""
