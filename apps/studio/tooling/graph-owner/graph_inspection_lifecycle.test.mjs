@@ -84,7 +84,8 @@ test('a rejected old Native inspection cannot claim current Project/source ident
   const begin = ui.indexOf('async function inspectContext()');
   const end = ui.indexOf('async function send(operation:', begin);
   const inspection = ui.slice(begin, end);
-  const rejected = inspection.split('} catch {')[1]?.split('} finally {')[0];
+  const rejected = inspection.split('} catch (reason) {')[1]?.split('} finally {')[0]
+    ?? inspection.split('} catch {')[1]?.split('} finally {')[0];
   assert.ok(rejected, 'the original closed-rejection handler is present');
   // A remotely advanced project may have the same local edit epoch. Genuine
   // Native rejection must be attributed only to its original snapshot.
@@ -96,6 +97,39 @@ test('a rejected old Native inspection cannot claim current Project/source ident
   ]) assert.ok(rejected.includes(sourceGuard), 'missing rejection source guard: ' + sourceGuard);
   assert.match(rejected, /terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
   assert.doesNotMatch(rejected, /message\(reason\)|String\(reason\)|reason\.(?:message|stack)/);
+});
+
+test('validated Native context failures expose only closed stage/code attributes on the original rejection', () => {
+  const begin = ui.indexOf('async function inspectContext()');
+  const end = ui.indexOf('async function send(operation:', begin);
+  const rejection = ui.slice(begin, end);
+  assert.match(ui, /import \{ decodeGraphContextFailure \} from "\.\/semanticGraphContextFailure"/);
+  assert.match(rejection, /decodeGraphContextFailure\(reason\)/);
+  assert.match(rejection, /setContextFailure\(decoded \?/);
+  assert.match(ui, /data-graph-context-failure-stage=\{currentContextFailure\?\.stage\}/);
+  assert.match(ui, /data-graph-context-failure-code=\{currentContextFailure \?/);
+  assert.match(ui, /inspectionPhase === "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
+  for (const guard of ['token === epoch.current', 'sequence === session.draft.sequence',
+    'profileId === session.draft.input.variant_profile_ref',
+    'graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))']) {
+    assert.ok(rejection.includes(guard), 'rejection not bound to original source: ' + guard);
+  }
+  assert.match(ui, /setContextFailure\(null\)/);
+  assert.doesNotMatch(rejection, /message\(reason\)|String\(reason\)|reason\.(?:message|stack)/);
+});
+
+test('Graph source rejection retains 097e first line and optional exact second line after decoder validation', () => {
+  const prepare = caseSource.split('async function prepare(', 2)[1].split('\ntest(', 1)[0];
+  assert.match(caseSource, /import \{ decodeGraphContextFailure \} from "\.\.\/src\/semanticGraphContextFailure"/);
+  assert.match(prepare, /new Error\("GRAPH_SOURCE_ADMISSION_NOT_READY: " \+ phase \+ " \/ " \+ safeGates\)/);
+  assert.match(prepare, /phase === "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
+  assert.match(prepare, /data-graph-context-failure-stage/);
+  assert.match(prepare, /data-graph-context-failure-code/);
+  assert.match(prepare, /decodeGraphContextFailure\(\{/);
+  assert.match(prepare, /GRAPH_CONTEXT_FAILURE: /);
+  assert.match(prepare, /verified\.error_code \?\? "NONE"/);
+  assert.doesNotMatch(prepare, /message\(reason\)|String\(reason\)|JSON\.stringify\(.*(?:context|failure)/);
+  assert.doesNotMatch(prepare, /setTimeout\(/);
 });
 
 test('a rejected real Graph context cannot render raw backend error through the inspection UI', () => {

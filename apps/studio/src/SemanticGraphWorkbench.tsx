@@ -11,6 +11,8 @@ import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, c
 import type { GraphCustody, GraphDraft, GraphOutcomeReview, GraphOutcomeTransport, GraphRecoveryEntry, GraphRecoveryObservation } from "./semanticGraphDraft";
 import { settleGraphMutation, unknownGraphMutationFailure } from "./semanticGraphMutationError";
 import type { GraphMutationFailure } from "./semanticGraphMutationError";
+import { decodeGraphContextFailure } from "./semanticGraphContextFailure";
+import type { GraphContextFailure } from "./semanticGraphContextFailure";
 
 export interface SemanticGraphWorkbenchProps {
   project: Project; scene: Scene | null; displayProfile: DeliverableProfile | null; busy: boolean;
@@ -29,6 +31,10 @@ interface GraphSession {
   observedAck: { id: string; receipt: Project } | null; notify?: () => void;
 }
 interface GraphIdentity { id: string; problem: string | null; pendingOriginal?: boolean; unavailableSavedRoot?: boolean }
+interface GraphContextFailureObservation {
+  failure: GraphContextFailure; source: ReturnType<typeof graphSourceSnapshot>;
+  sceneId: string; profileId: string; sequence: number; token: number;
+}
 const sessions = new Map<string, GraphSession>(), newIds = new Map<string, GraphIdentity>();
 // Only an observed original removal can enter this in-runtime recovery roster.
 const failedRetirements = new Map<string, string>();
@@ -407,6 +413,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   const [inspectionPhase, setInspectionPhase] = useState<"GRAPH_CONTEXT_INSPECTION_NOT_REQUESTED" |
     "GRAPH_CONTEXT_INSPECTION_PENDING" | "GRAPH_CONTEXT_INSPECTION_RESOLVED" |
     "GRAPH_CONTEXT_INSPECTION_REJECTED" | "GRAPH_CONTEXT_INSPECTION_OBSOLETE">("GRAPH_CONTEXT_INSPECTION_NOT_REQUESTED");
+  const [contextFailure, setContextFailure] = useState<GraphContextFailureObservation | null>(null);
   const [review, setReview] = useState<GraphOutcomeReview | null>(null), [reviewing, setReviewing] = useState(false), [choices, setChoices] = useState<Record<string, "current" | "input">>({});
   const [reviewResource, setReviewResource] = useState("graph:" + session.draft.graphId);
   const [previewMode, setPreviewMode] = useState<"complete" | "playhead">("complete");
@@ -447,6 +454,13 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   ].filter((gate): gate is string => gate !== null);
   const canSave = saveGuards.length === 0;
   const saveGate = canSave ? "GRAPH_SAVE_READY" : saveGuards.join(",");
+  // Diagnostic only: never infer admission from a decoded error or reuse it
+  // across a changed source, scene, profile, draft edit or inspection epoch.
+  const currentContextFailure = inspectionPhase === "GRAPH_CONTEXT_INSPECTION_REJECTED" && contextFailure
+    && contextFailure.token === epoch.current && contextFailure.sequence === draft.sequence
+    && contextFailure.sceneId === draft.sceneId && contextFailure.profileId === raw.variant_profile_ref
+    && graphSame(contextFailure.source, graphSourceSnapshot(props.project))
+      ? contextFailure.failure : null;
   const merge = changed && !pending ? mergeGraphDraft(draft, props.project) : null;
   useEffect(() => {
     mounted.current = true; const update = () => redraw(value => value + 1); session.notify = update;
@@ -457,6 +471,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   useEffect(() => {
     const next = reconcileGraphDraft(session.draft, props.project); if (next !== session.draft) { session.draft = next; backup(session); notify(session); }
     setContext(value => value && graphSame(value.source_snapshot, graphSourceSnapshot(props.project)) ? value : null);
+    setContextFailure(value => value && graphSame(value.source, graphSourceSnapshot(props.project)) ? value : null);
     setReview(value => graphOutcomeMatches(session.draft, props.project, value) ? value : null);
   }, [props.project, session]);
   function edit(mutator: (input: GraphRaw) => void, path: string) {
@@ -465,28 +480,29 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     if (!graphHasWork(session.draft)) session.custody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: session.custody.expectedPointer };
     session.draft = editGraphDraft(session.draft, next, [path]);
     if (session.recoveryProblem) session.editedWhileRecoveryBlocked = [...new Set([...session.editedWhileRecoveryBlocked, path])];
-    session.error = null; session.notice = null; epoch.current++; setReview(null); setChoices({}); backup(session); notify(session);
+    session.error = null; session.notice = null; epoch.current++; setContextFailure(null); setReview(null); setChoices({}); backup(session); notify(session);
   }
   async function inspectContext() {
     if (!current.current.readContext || inspecting || busy) return; const token = ++epoch.current, sequence = session.draft.sequence, before = clone(current.current.project), profileId = session.draft.input.variant_profile_ref;
-    setInspecting(true); setInspectionPhase("GRAPH_CONTEXT_INSPECTION_PENDING"); setContext(null); session.error = null;
+    setInspecting(true); setInspectionPhase("GRAPH_CONTEXT_INSPECTION_PENDING"); setContext(null); setContextFailure(null); session.error = null;
     let terminal: "GRAPH_CONTEXT_INSPECTION_RESOLVED" | "GRAPH_CONTEXT_INSPECTION_REJECTED" |
       "GRAPH_CONTEXT_INSPECTION_OBSOLETE" = "GRAPH_CONTEXT_INSPECTION_OBSOLETE";
     try { const value = await current.current.readContext(before, session.draft.sceneId, profileId);
       if (!mounted.current || token !== epoch.current || sequence !== session.draft.sequence || !graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project)) || profileId !== session.draft.input.variant_profile_ref) return;
       const issue = graphAdmissionIssue(current.current.project, session.draft.sceneId, profileId, value); setContext(value); if (issue) session.error = issue;
       terminal = "GRAPH_CONTEXT_INSPECTION_RESOLVED";
-    } catch {
-      // The native/session backend retains the actual failed result privately.
-      // No arbitrary RPC Error.message, host path, DTO or stack may reach the
-      // Graph workbench DOM; source-owned closed inspection codes remain intact.
+    } catch (reason) {
+      // Only the finite, source-bound typed Native failure may reach diagnostic
+      // attributes. Arbitrary RPC errors, stack/DTO/message never enter the DOM.
+      const decoded = decodeGraphContextFailure(reason);
       // A remote Project revision can invalidate the original inspection
-      // without incrementing this editor's epoch. The private failure must
-      // never be attributed to a different source, profile or later author edit.
+      // without incrementing this editor's epoch. Reject stale custody.
       if (mounted.current && token === epoch.current
         && sequence === session.draft.sequence
         && graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))
         && profileId === session.draft.input.variant_profile_ref) {
+        setContextFailure(decoded ? { failure: decoded, source: graphSourceSnapshot(before),
+          sceneId: session.draft.sceneId, profileId, sequence, token } : null);
         session.error = "GRAPH_CONTEXT_INSPECTION_REJECTED: current-source inspection failed; Save remains unavailable.";
         terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED";
       }
@@ -637,7 +653,10 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     <section className="production-inspector" aria-label="Semantic Graph controls">
       <h2>Semantic Graph</h2><p>{raw.content.kind === "causal_diagram" ? "Causal diagram · declared influence and basis" : "System flow · declared synthetic events"}</p>
       <p className="production-help">The saved Graph is the editable source. The vector study is editorial; native realization and its evidence use the matching provider profile.</p>
-      <button className="secondary-button" data-graph-inspection-phase={inspectionPhase} disabled={busy || inspecting || !props.readContext} onClick={() => void inspectContext()}>Inspect current Graph support and sources</button>
+      <button className="secondary-button" data-graph-inspection-phase={inspectionPhase}
+          data-graph-context-failure-stage={currentContextFailure?.stage}
+          data-graph-context-failure-code={currentContextFailure ? (currentContextFailure.error_code ?? "NONE") : undefined}
+          disabled={busy || inspecting || !props.readContext} onClick={() => void inspectContext()}>Inspect current Graph support and sources</button>
       {admission && <p role="status">{admission}</p>}
       {occupancyIssue && <p role="status">{occupancyIssue}</p>}
       <label className="production-field"><span>Graph Deliverable</span><select aria-label="Graph Deliverable" value={raw.variant_profile_ref} onChange={e => edit(next => { next.variant_profile_ref = e.target.value; }, "/variant_profile_ref")}>
