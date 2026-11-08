@@ -25,6 +25,7 @@ on:
       - 'tooling/tests/test_graph_owner_session_ticket_custody.py'
       - 'tooling/tests/test_graph_owner_release_lease_roster.py'
       - 'tooling/tests/test_graph_owner_control_replay.py'
+      - 'tooling/tests/test_graph_owner_restricted_startup_stderr.py'
       - 'tooling/tests/test_ci_graph_readonly_archive.py'
       - 'tooling/native_graph_build_reuse.py'
       - 'tooling/native_graph_build_transfer.py'
@@ -150,6 +151,14 @@ jobs:
           if [ -f tooling/tests/test_graph_owner_control_replay.py ]; then
             "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
               tooling.tests.test_graph_owner_control_replay -v \
+              2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
+          fi
+          # The restricted owner selects private first-party startup stderr.
+          # Run its inert source/negative contracts only on sources that have
+          # the selected test module, without starting Host or Graph effects.
+          if [ -f tooling/tests/test_graph_owner_restricted_startup_stderr.py ]; then
+            "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
+              tooling.tests.test_graph_owner_restricted_startup_stderr -v \
               2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
           fi
           # External R74 review must remain off GitHub runners; only the
