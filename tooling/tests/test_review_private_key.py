@@ -59,7 +59,18 @@ class ProtectedKeyTests(unittest.TestCase):
         return read_private_key_bytes(self.path)
 
     def test_protected_file_reads_exact_bytes(self):
-        self.assertEqual(self.read(), self.raw)
+        try:
+            actual = self.read()
+        except ValueError as error:
+            if os.name != 'nt':
+                raise
+            metadata = subprocess.run([
+                'powershell', '-NoProfile', '-NonInteractive', '-Command',
+                '(Get-Acl -LiteralPath $env:REVIEW_FIXTURE_PATH).Sddl'],
+                env=dict(os.environ, REVIEW_FIXTURE_PATH=str(self.path)),
+                capture_output=True, text=True, timeout=15)
+            self.fail(str(error) + '; fixture security descriptor: ' + metadata.stdout.strip())
+        self.assertEqual(actual, self.raw)
 
     def test_hardlink_is_rejected(self):
         os.link(self.path, self.path.with_suffix('.link'))
