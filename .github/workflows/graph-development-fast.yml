@@ -169,7 +169,7 @@ jobs:
           try:
               reviewer.review(None, None, None, None, "", "", "")
           except reviewer.ReviewRejected as error:
-              if str(error) != "A5_R74_INDEPENDENT_ONLY_NEVER_RUNNER":
+              if str(error) != "GRAPH_REVIEW_INDEPENDENT_ONLY_NEVER_RUNNER":
                   raise
           else:
               raise SystemExit("G0_REVIEWER_RUNNER_DENIAL_ABSENT")
