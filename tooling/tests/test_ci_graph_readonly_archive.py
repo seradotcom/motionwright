@@ -94,11 +94,29 @@ class InertOriginals:
                 {"id": "session:observed-after", "ok": True, "result": project},
                 writer_results[1], writer_results[2],
             ]
-        elif self.mode == "writer_raw_legitimate_denied_effect":
-            # An expected stale-CAS denial is a real {id,ok:false,error}
-            # reply, never a reason to invent a positive mutation.
+        elif self.mode in ("writer_raw_legitimate_denied_effect",
+                           "writer_raw_denied_effect_nonstring_error",
+                           "writer_raw_legitimate_typed_graph_denial",
+                           "writer_raw_legitimate_projection_denial",
+                           "writer_raw_wrong_graph_error_code"):
+            # Native Graph mutation errors and projection failures are typed
+            # JSON objects from the actual Rust source, not fabricated strings.
+            typed = {"schema": "motionwright.graph-mutation-error/1",
+                     "request_id": "ABCDEF12-3456-4789-aBcD-EF1234567890",
+                     "outcome_known": False, "code": "graph_mutation_failed"}
+            if self.mode == "writer_raw_legitimate_denied_effect":
+                denial = "stale revision"
+            elif self.mode == "writer_raw_legitimate_typed_graph_denial":
+                denial = typed
+            elif self.mode == "writer_raw_legitimate_projection_denial":
+                denial = {"code": "stale_revision", "expected": "revision:2",
+                          "actual": "revision:3"}
+            elif self.mode == "writer_raw_wrong_graph_error_code":
+                denial = {**typed, "code": "invented_error_code"}
+            else:
+                denial = {"invented": "structured-error-envelope"}
             original_writer_results = [
-                {"id": "session:denied-effect", "ok": False, "error": "stale revision"},
+                {"id": "session:denied-effect", "ok": False, "error": denial},
                 *writer_results,
             ]
         else:
@@ -114,10 +132,18 @@ class InertOriginals:
                 row = {"id": "session:" + name, "command": "get_project",
                        "args": {"request": {"project_id": project["id"]}}}
                 source_requests[row["id"]] = row
-        if self.mode == "writer_raw_legitimate_denied_effect":
+        if self.mode in ("writer_raw_legitimate_denied_effect",
+                         "writer_raw_denied_effect_nonstring_error",
+                         "writer_raw_legitimate_typed_graph_denial",
+                         "writer_raw_legitimate_projection_denial",
+                         "writer_raw_wrong_graph_error_code"):
             source_requests["session:denied-effect"] = {
-                "id": "session:denied-effect", "command": "apply_change",
-                "args": {"request": {"project_id": project["id"], "revision": 0}}}
+                "id": "session:denied-effect",
+                "command": ("project_scene_page"
+                            if self.mode == "writer_raw_legitimate_projection_denial"
+                            else "apply_change"),
+                "args": {"request": {"project_id": project["id"], "revision": 0,
+                                     "request_id": "ABCDEF12-3456-4789-aBcD-EF1234567890"}}}
         authorized = [row for row in original_writer_results if row["id"] in source_requests]
         self.writer_roster_ref = self.put("g1/original-service-writer-rpc-roster.original.json", {
             "schema": "motionwright.graph.original-writer-rpc-roster/1",
@@ -610,6 +636,25 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
         # A stale-CAS effect may be rejected by the actual writer before
         # its clean handoff; the denial remains in the bound original roster.
         self.assertIs(self.check("writer_raw_legitimate_denied_effect"), True)
+
+    def test_original_writer_accepts_actual_structured_native_mutation_error(self):
+        # GraphInvokeFailure::to_value is a closed object in the compiled
+        # Native backend, not an Error.message converted to a string.
+        self.assertIs(self.check("writer_raw_legitimate_typed_graph_denial"), True)
+
+    def test_original_writer_accepts_actual_typed_projection_failure(self):
+        # project_projection::ProjectionFailure is serde-serialized as a
+        # tagged JSON object, including its revision fields.
+        self.assertIs(self.check("writer_raw_legitimate_projection_denial"), True)
+
+    def test_original_writer_rejects_forged_structured_denial(self):
+        # A forged object with neither the native mutation schema nor the
+        # projection failure schema is not an arbitrary source-side rejection.
+        for mode in ("writer_raw_denied_effect_nonstring_error",
+                     "writer_raw_wrong_graph_error_code"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
 
     def test_unmatched_successful_writer_response_cannot_receive_custody_credit(self):
         # An extra raw response absent from the original writer's complete

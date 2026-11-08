@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   independentGraphReaderArgv,
   prepareOriginalReadOnlyHandoff,
+  sourceDeniedEnvelope,
 } from '../../tests/support/graph-owner/same_store_reopen.mjs';
 
 test('Graph independent second process uses exactly read-only original Store argv', () => {
@@ -56,4 +57,30 @@ test('Graph mounted provider lease must be released before writer WAL-to-DELETE 
   assert.match(owner, /"providers\.release_bound"/);
   assert.match(owner, /"provider_lease_shutdown_completed": True/);
   assert.match(owner, /"PROVIDER_RELEASE_ORIGINAL_MISSING"/);
+});
+
+test('Graph writer denial keeps original native and projection Value contracts closed', () => {
+  const id = 'ABCDEF12-3456-4789-aBcD-EF1234567890';
+  const graph = {
+    schema: 'motionwright.graph-mutation-error/1', request_id: id,
+    outcome_known: false, code: 'graph_mutation_failed',
+  };
+  assert.equal(sourceDeniedEnvelope('apply_change', 'stale revision', id), true);
+  assert.equal(sourceDeniedEnvelope('apply_change', graph, id), true);
+  assert.equal(sourceDeniedEnvelope('apply_change', graph, '00000000-0000-0000-0000-000000000001'), false);
+  assert.equal(sourceDeniedEnvelope('apply_change', {...graph, code: 'invented'}, id), false);
+  assert.equal(sourceDeniedEnvelope('apply_change', {...graph, private_diagnostic: 'secret'}, id), false);
+  assert.equal(sourceDeniedEnvelope('get_project', graph, id), false);
+  const projection = {code: 'stale_revision', expected: 'revision:2', actual: 'revision:3'};
+  for (const command of ['project_projection_head', 'project_scene_page', 'project_scene_nodes']) {
+    assert.equal(sourceDeniedEnvelope(command, projection, null), true);
+    assert.equal(sourceDeniedEnvelope(command, {code: 'not_found'}, null), true);
+    assert.equal(sourceDeniedEnvelope(command, {...projection, status: 'unreviewed'}, null), false);
+    assert.equal(sourceDeniedEnvelope(command, {code: 'too_large', limit: -1}, null), false);
+  }
+  // Source GraphBackend has a Result<Value, Value> context failure channel.
+  // No approval is derived from this pure wire-shape test.
+  assert.equal(sourceDeniedEnvelope('semantic_graph_authoring_context', {source_error: 'value'}, null), true);
+  assert.equal(sourceDeniedEnvelope('semantic_graph_operation_recovery', {invented: true}, null), false);
+  assert.equal(sourceDeniedEnvelope('get_project', {invented: true}, null), false);
 });

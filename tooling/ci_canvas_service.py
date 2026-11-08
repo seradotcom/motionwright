@@ -9792,6 +9792,39 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
         require(len(ids) == len(set(ids)), "Graph original response replay")
         return {row["id"]: row for row in rows}
 
+    def source_denial_shape(command, error):
+        # Session::dispatch_wire returns Result<Value,Value>. Match the actual
+        # command's typed failure, not a fictional global String-only contract.
+        if type(error) is str:
+            return True
+        if command == "semantic_graph_authoring_context":
+            # GraphBackend::authoring_context has a Value failure channel;
+            # original stdout/roster correlation remains independently bound.
+            return True
+        if type(error) is not dict:
+            return False
+        if command == "apply_change":
+            request_id = error.get("request_id")
+            return (set(error) == {"schema", "request_id", "outcome_known", "code"}
+                    and error["schema"] == "motionwright.graph-mutation-error/1"
+                    and error["code"] == "graph_mutation_failed"
+                    and type(error["outcome_known"]) is bool
+                    and type(request_id) is str
+                    and re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", request_id)
+                    and request_id.lower() != "00000000-0000-0000-0000-000000000000")
+        if command not in ("project_projection_head", "project_scene_page", "project_scene_nodes"):
+            return False
+        code = error.get("code")
+        if code in ("invalid_request_or_content", "not_found", "generation_changed", "unavailable"):
+            return set(error) == {"code"}
+        if code == "too_large":
+            return (set(error) == {"code", "limit"} and type(error["limit"]) is int
+                    and 0 <= error["limit"] <= (1 << 53) - 1)
+        if code == "stale_revision":
+            return (set(error) == {"code", "expected", "actual"}
+                    and type(error["expected"]) is str and type(error["actual"]) is str)
+        return False
+
     handoff_ref = reopen["original_writer_read_only_handoff"]
     writer_ref = reopen["original_writer_handoff_raw"]
     preseal_ref = reopen["original_preseal_held_pager_witness"]
@@ -9888,6 +9921,9 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
                 and re.fullmatch(r"[0-9a-f]{64}", entry["request"]["args_sha256"])
                 and entry["response"] == writer_rows[original_id],
                 "Graph original writer RPC reply is unmatched, reordered or changed")
+        if entry["response"]["ok"] is False:
+            require(source_denial_shape(entry["request"]["command"], entry["response"]["error"]),
+                    "Graph original writer denial differs from source command's error schema")
     preseal_request = one_request(preseal["request_original"], "opened_store_identity_witness")
     writer_requests = [preseal_request, one_request(handoff["request_original"], "prepare_read_only_handoff"),
                        one_request(handoff["identity_request_original"], "opened_store_identity_witness")]

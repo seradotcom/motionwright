@@ -429,6 +429,40 @@ function requireOriginalReadOnlyHandoff(factory, ref, preseal) {
   return { ref, held_store_digest: preseal.digest, raw: rawRef };
 }
 
+// StudioService::dispatch_wire returns Result<Value, Value>. Its native Graph
+// mutation and projection failures have closed source-authored object schemas;
+// an arbitrary object on an ordinary String-error command is not that wire.
+const GRAPH_PROJECTION_DENIALS = new Set([
+  'project_projection_head', 'project_scene_page', 'project_scene_nodes',
+]);
+const GRAPH_ERROR_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+export function sourceDeniedEnvelope(command, error, applicationRequestId) {
+  if (typeof error === 'string') return true;
+  // GraphBackend::authoring_context exposes a Value error; the real source
+  // transcript and raw tee must still match exactly, not a synthetic verdict.
+  if (command === 'semantic_graph_authoring_context') return true;
+  if (!error || typeof error !== 'object' || Array.isArray(error)) return false;
+  const keys = Object.keys(error).sort().join('|');
+  if (command === 'apply_change') {
+    return keys === 'code|outcome_known|request_id|schema'
+      && error.schema === 'motionwright.graph-mutation-error/1'
+      && error.code === 'graph_mutation_failed'
+      && typeof error.outcome_known === 'boolean'
+      && GRAPH_ERROR_UUID.test(error.request_id)
+      && error.request_id !== '00000000-0000-0000-0000-000000000000'
+      && error.request_id === applicationRequestId;
+  }
+  if (!GRAPH_PROJECTION_DENIALS.has(command) || typeof error.code !== 'string') return false;
+  if (['invalid_request_or_content', 'not_found', 'generation_changed', 'unavailable'].includes(error.code))
+    return keys === 'code';
+  if (error.code === 'too_large')
+    return keys === 'code|limit' && Number.isSafeInteger(error.limit) && error.limit >= 0;
+  if (error.code === 'stale_revision')
+    return keys === 'actual|code|expected'
+      && typeof error.expected === 'string' && typeof error.actual === 'string';
+  return false;
+}
+
 /** Record the complete source-owned final writer's original request/response
  * sequence after EOF, not just its three read-only handoff control replies.
  * Earlier real Project/journal reads must remain visible and authenticated.
@@ -463,15 +497,25 @@ export async function publishOriginalWriterRpcRoster(factory, service) {
           'REOPEN_WRITER_RPC_REQUEST_REPLAY');
         // Retain the real request identity and command, never the source RPC
         // args: those can contain effect grants even after their short TTL.
-        pending.set(key, {id:key,command:payload.command,
-          args_sha256:createHash('sha256').update(JSON.stringify(payload.args)).digest('hex')});
+        pending.set(key, {
+          request: {id:key,command:payload.command,
+            args_sha256:createHash('sha256').update(JSON.stringify(payload.args)).digest('hex')},
+          // Ephemeral validation only. Never write grants or raw arguments to
+          // the original roster; bind a typed Graph failure to its actual ID.
+          applicationRequestId: payload.command === 'apply_change'
+            ? payload.args?.request?.request_id : null,
+        });
         used.add(key);
       } else {
         need(entry.direction === 'response' && pending.has(key)
           && typeof payload.ok === 'boolean', 'REOPEN_WRITER_RPC_UNSOLICITED_REPLY');
         exact(payload, payload.ok ? ['id','ok','result'] : ['id','ok','error'],
           'REOPEN_WRITER_RPC_RESPONSE_FIELDS');
-        records.push({ request: pending.get(key), response: payload });
+        const pendingOriginal = pending.get(key);
+        need(payload.ok || sourceDeniedEnvelope(pendingOriginal.request.command,
+          payload.error, pendingOriginal.applicationRequestId),
+          'REOPEN_WRITER_RPC_DENIAL_NOT_SOURCE_SCHEMA');
+        records.push({ request: pendingOriginal.request, response: payload });
         pending.delete(key);
       }
       need(records.length <= 2048 && pending.size <= 2048,
