@@ -31,8 +31,10 @@ Use a local directory outside the repositories. Protect the directory before cre
 $reviewDirectory = 'C:\GraphReviewPrivate'
 $reviewSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 New-Item -ItemType Directory -Path $reviewDirectory -ErrorAction Stop
+icacls $reviewDirectory /setowner "*${reviewSid}"
 icacls $reviewDirectory /inheritance:r /grant:r "*${reviewSid}:(OI)(CI)F"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -pkeyopt rsa_keygen_pubexp:65537 -out "$reviewDirectory\recipient.pem"
+icacls "$reviewDirectory\recipient.pem" /setowner "*${reviewSid}"
 icacls "$reviewDirectory\recipient.pem" /inheritance:r /grant:r "*${reviewSid}:F"
 ```
 
