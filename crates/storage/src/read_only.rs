@@ -179,6 +179,7 @@ impl StoreReader {
                 blob_root,
                 cas_store_id,
                 cas_database_id: cas_retention::database_identity(&path)?,
+                verified_event_history: std::cell::Cell::new(None),
             },
             database_identity,
             root,
