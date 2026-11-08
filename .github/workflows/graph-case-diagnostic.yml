@@ -27,6 +27,7 @@ jobs:
         run: >-
           python -B -m unittest
           tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_primary_source_admission_and_cleanup_codes_survive_nested_aggregate
+          tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_inspection_messages_join_closed_primary_and_cleanup_diagnostics
           tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_owner_phase_literal_from_nested_playwright_aggregate_only
           tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_owner_runtime_stage_is_closed_source_only_and_never_leaks_private_details
           tooling.tests.test_ci_canvas_service.GraphR74JoinTests.test_graph_owner_phase_diagnostic_denies_unknown_and_suffix_codes

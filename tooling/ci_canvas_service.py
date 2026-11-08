@@ -10369,6 +10369,10 @@ def graph_observed_playwright_failure(repo, report_path, command):
         patterns = [(re.compile(r"(?:^|[\s(])" + re.escape(spelling) + r":([0-9]{1,7}):([0-9]{1,6})(?![0-9])"), source)
                     for spelling, source in aliases.items()]
         limits = {"suites": 0, "specs": 0, "results": 0, "errors": 0}
+        save_gate_prefix = "Graph current-source inspection settled; original Save is still denied by closed UI gate: "
+        save_gate_labels = frozenset(("busy", "pending", "context_unavailable", "context_blocked",
+            "context_invalid", "input", "backup", "recovery", "changed", "lock", "identity",
+            "occupied", "unavailable_saved_root", "unavailable"))
 
         def location(file, line, column):
             source = aliases.get(file.replace("\\", "/")) if type(file) is str else None
@@ -10392,12 +10396,31 @@ def graph_observed_playwright_failure(repo, report_path, command):
                     codes.append(code)
             for phrase, code in (("The actual service DTO and matching native consumer guards must admit this source; "
                                   "a synthetic context is not injected.", "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 (save_gate_prefix, "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 ("A settled service DTO and the actual native consumer must admit this Graph source.",
+                                  "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 ("The original Native/Studio Graph source inspection must settle.",
+                                  "GRAPH_INSPECTION_DID_NOT_SETTLE"),
                                  ("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
                                  ("browserType.launch: Executable doesn't exist", "PLAYWRIGHT_BROWSER_EXECUTABLE_MISSING"),
                                  ("Error: No tests found", "PLAYWRIGHT_NO_TESTS_FOUND"),
                                  ("Cannot find module", "MODULE_NOT_FOUND")):
                 if phrase in text and code not in codes:
                     codes.append(code)
+            # A malformed reason list cannot authenticate even its known subset.
+            # Only closed source labels leave this private original report.
+            for match in re.finditer(re.escape(save_gate_prefix) + r"([^\r\n]*)", text):
+                raw_labels = match[1]
+                if not 0 < len(raw_labels) <= 256:
+                    continue
+                labels = raw_labels.split(",")
+                if (len(labels) > len(save_gate_labels) or len(labels) != len(set(labels))
+                        or not all(label in save_gate_labels for label in labels)):
+                    continue
+                for label in labels:
+                    code = "GRAPH_SAVE_GATE:" + label.upper()
+                    if code not in codes:
+                        codes.append(code)
             for pattern, source in patterns:
                 for match in pattern.finditer(text):
                     location(source, int(match[1]), int(match[2]))

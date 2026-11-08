@@ -8340,6 +8340,49 @@ class GraphR74JoinTests(unittest.TestCase):
         self.assertNotIn("CANARY", public)
         self.assertNotIn("/private/", public)
 
+    def test_graph_inspection_messages_join_closed_primary_and_cleanup_diagnostics(self):
+        prefix = "Graph current-source inspection settled; original Save is still denied by closed UI gate: "
+        admission = "GRAPH_SOURCE_ADMISSION_NOT_READY"
+        cleanup = "OWNER_ERROR:OWNER_CLOSE_FAILED"
+        scenarios = (
+            (prefix + "context_unavailable,input",
+             [admission, "GRAPH_SAVE_GATE:CONTEXT_UNAVAILABLE", "GRAPH_SAVE_GATE:INPUT", cleanup]),
+            (prefix + "context_unavailable,CANARY_PRIVATE", [admission, cleanup]),
+            ("The original Native/Studio Graph source inspection must settle.",
+             ["GRAPH_INSPECTION_DID_NOT_SETTLE", cleanup]),
+            ("A settled service DTO and the actual native consumer must admit this Graph source.",
+             [admission, cleanup]),
+        )
+        for message, expected in scenarios:
+            with self.subTest(message=message):
+                repo, value = self.graph_diagnostic_fixture_report()
+                result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+                result["error"] = {
+                    "message": "AggregateError: Graph case body and finalization both failed",
+                    "errors": [
+                        {"message": message,
+                         "stack": "Error: " + message + "\n at " +
+                                  str(repo / "apps/studio/tests/semantic-graph-service.spec.ts") +
+                                  ":41:176\n at /private/CANARY_BODY_PATH:77:9"},
+                        {"message": "AggregateError: Store finalization is incomplete",
+                         "errors": [{"message": "Error: " + cleanup,
+                                     "stack": "Error: " + cleanup +
+                                              "\n at /private/CANARY_CLEANUP_PATH:88:2"}]},
+                    ],
+                }
+                with mock.patch.object(gate, "graph_ref", return_value={}), \
+                     mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+                    observed = gate.graph_observed_playwright_failure(
+                        repo, Path("report"), self.graph_failed_case_command())
+                self.assertEqual(observed["report"], "OBSERVED_FAILURE_DIAGNOSTIC_ONLY")
+                self.assertEqual(set(observed), {"report", "counts", "cases", "locations", "error_codes"})
+                self.assertEqual(observed["error_codes"], expected)
+                self.assertEqual(observed["cases"][0]["statuses"], ["failed"])
+                public = gate.json.dumps(observed)
+                self.assertNotIn(message, public)
+                self.assertNotIn("CANARY", public)
+                self.assertNotIn("/private/", public)
+
     def test_graph_owner_phase_literal_from_nested_playwright_aggregate_only(self):
         repo, value = self.graph_diagnostic_fixture_report()
         result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
