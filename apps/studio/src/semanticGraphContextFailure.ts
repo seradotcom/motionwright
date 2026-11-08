@@ -22,7 +22,7 @@ export function decodeGraphContextFailure(value: unknown): GraphContextFailure |
   try {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
     const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return null;
+    if (prototype !== Object.prototype) return null;
     const keys = Reflect.ownKeys(value);
     if (keys.length !== fields.length || fields.some(field => !Object.hasOwn(value, field))) return null;
     const descriptors = Object.getOwnPropertyDescriptors(value);
