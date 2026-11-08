@@ -145,7 +145,8 @@ def impacted_packages(paths: list[str]) -> list[str]:
 
 def impacted_ui(paths: list[str]) -> bool:
     return any(p.startswith("apps/studio/src/") or
-               p.startswith("apps/studio/tests/semantic-graph-") for p in paths)
+               p.startswith("apps/studio/tests/semantic-graph-") or
+               p == "apps/studio/tests/support/scopedChangeService.ts" for p in paths)
 
 
 def _function(tree: ast.Module, name: str) -> ast.FunctionDef:

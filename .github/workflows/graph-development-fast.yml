@@ -46,6 +46,7 @@ on:
       - 'crates/native/**'
       - 'apps/studio/src/**'
       - 'apps/studio/tests/semantic-graph-*.spec.ts'
+      - 'apps/studio/tests/support/scopedChangeService.ts'
       - 'rust-toolchain.toml'
       - 'crates/native/src/production/graph_authoring.rs'
       - 'crates/native/examples/native-graph-review-session.rs'

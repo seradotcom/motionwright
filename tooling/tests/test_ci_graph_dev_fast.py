@@ -439,6 +439,7 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
             ("apps/studio/src/semanticGraph.ts", "ui"),
             ("apps/studio/src/semanticGraphRecovery.ts", "ui"),
             ("apps/studio/tests/semantic-graph-service.spec.ts", "ui"),
+            ("apps/studio/tests/support/scopedChangeService.ts", "ui"),
             ("rust-toolchain.toml", "rust"),
         )
         for path, impacted in cases:
