@@ -308,5 +308,42 @@ class SourceOnlyReleaseTests(unittest.TestCase):
         self.assert_no_receipt()
         self.assertEqual(self.calls,[])
 
+    def test_final_cohort_refuses_subreaper_signals_even_after_lease_shutdown(self):
+        # Only source predicates are exercised. An empty synthetic process tree
+        # is not evidence that Semwright/Native Host shut down physically.
+        source = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        helpers = [node for node in source.body if isinstance(node,ast.FunctionDef)
+                   and node.name == "graph_final_cohort_signal_free"]
+        self.assertEqual(len(helpers), 1)
+        namespace = {}
+        exec(compile(ast.Module(body=helpers,type_ignores=[]),str(SOURCE),"exec"),
+             namespace)
+        predicate = namespace["graph_final_cohort_signal_free"]
+        original = {"status":"PASS",
+                    "authority":"process_custody_only_not_revocation",
+                    "signals":[]}
+        self.assertTrue(predicate(original, True))
+        self.assertFalse(predicate(original, False))
+        for changed in (
+            {**original, "signals":[{"pid":345,"signal":9}]},
+            {**original, "signals":[{"pid":345,"signal":15}]},
+            {**original, "signals":None},
+            {**original, "status":"UNKNOWN"},
+            {**original, "authority":"native-revoked"},
+        ):
+            with self.subTest(observed=changed):
+                self.assertFalse(predicate(changed, True))
+        self.assertFalse(predicate(None, True))
+        final = [node for node in source.body if isinstance(node, ast.FunctionDef)
+                 and node.name == "graph_close_v6"]
+        self.assertEqual(len(final), 1)
+        final_source = ast.get_source_segment(
+            SOURCE.read_text(encoding="utf-8"), final[0])
+        self.assertIn("if not graph_final_cohort_signal_free(cohort, cohort_absent):",
+                      final_source)
+        self.assertLess(final_source.index("cohort, cohort_absent = close_complete_cohort()"),
+                        final_source.index("if not graph_final_cohort_signal_free("))
+        self.assertIn('errors.append("OWNER_CLOSE_FAILED")', final_source)
+
 if __name__=="__main__":
     unittest.main()
