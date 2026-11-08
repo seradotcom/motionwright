@@ -1654,6 +1654,38 @@ impl Store {
                 "non-change event kind in SQLite history".into(),
             ));
         }
+        // Every successful edit advances the project by exactly one event.
+        // A deleted or renumbered original can otherwise be hidden by LIMIT
+        // or a cursor, yielding a believable but incomplete Graph history.
+        // The UNIQUE(project_id,revision) index plus a positive integer
+        // revision, COUNT, MIN and MAX prove a contiguous 1..=revision
+        // sequence without fetching the complete journal or another project.
+        let bad_sequence: i64 = self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM projects AS p
+                WHERE p.id=?1
+                  AND (
+                    p.revision != (
+                        SELECT COUNT(*) FROM events AS e WHERE e.project_id=p.id
+                    )
+                    OR (
+                        p.revision > 0 AND (
+                            (SELECT MIN(e.revision) FROM events AS e
+                             WHERE e.project_id=p.id) != 1
+                            OR (SELECT MAX(e.revision) FROM events AS e
+                                WHERE e.project_id=p.id) != p.revision
+                        )
+                    )
+                  )
+            )",
+            [id.to_string()],
+            |row| row.get(0),
+        )?;
+        if bad_sequence != 0 {
+            return Err(StorageError::InvalidBackup(
+                "incomplete original event sequence in SQLite history".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -3550,6 +3582,74 @@ mod tests {
             1,
             "unrelated project history remains readable"
         );
+    }
+
+    /// A deleted original event or a changed revision can leave later pages
+    /// looking legitimate. Graph must not publish a partial original timeline.
+    #[test]
+    fn history_rejects_original_event_gap_hidden_by_page_cursor() {
+        for alteration in ["delete", "renumber"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+            let mut project = store
+                .create_named_project("Original Graph timeline")
+                .unwrap();
+            let unrelated = store
+                .create_named_project("Independent good timeline")
+                .unwrap();
+            for revision in 1..=2 {
+                project = store
+                    .apply(
+                        project.id,
+                        &RevisionStamp::from(&project),
+                        &format!("original-{alteration}-{revision}"),
+                        &Change::RenameProject {
+                            title: format!("Revision {revision}"),
+                        },
+                    )
+                    .unwrap()
+                    .project;
+            }
+            store
+                .apply(
+                    unrelated.id,
+                    &RevisionStamp::from(&unrelated),
+                    "independent-good",
+                    &Change::RenameProject {
+                        title: "Still good".into(),
+                    },
+                )
+                .unwrap();
+            let command = match alteration {
+                "delete" => "DELETE FROM events WHERE project_id=?1 AND revision=1",
+                "renumber" => "UPDATE events SET revision=99 WHERE project_id=?1 AND revision=1",
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                store
+                    .conn
+                    .execute(command, [project.id.to_string()])
+                    .unwrap(),
+                1
+            );
+            // Both cursors otherwise return the intact revision 2 and conceal
+            // the damaged revision 1. The unrelated project is still valid.
+            for result in [
+                store.event_records_through(project.id, project.revision, 1),
+                store.event_records_since(project.id, 1, 1),
+            ] {
+                assert!(
+                    matches!(result, Err(StorageError::InvalidBackup(ref reason))
+                        if reason.contains("event sequence")),
+                    "original {alteration} corruption must invalidate Graph history: {result:?}"
+                );
+            }
+            assert_eq!(
+                store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
+                1,
+                "unrelated history must remain readable"
+            );
+        }
     }
 }
 
