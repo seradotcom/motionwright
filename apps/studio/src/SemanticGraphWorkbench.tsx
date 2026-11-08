@@ -480,7 +480,13 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       // The native/session backend retains the actual failed result privately.
       // No arbitrary RPC Error.message, host path, DTO or stack may reach the
       // Graph workbench DOM; source-owned closed inspection codes remain intact.
-      if (mounted.current && token === epoch.current) {
+      // A remote Project revision can invalidate the original inspection
+      // without incrementing this editor's epoch. The private failure must
+      // never be attributed to a different source, profile or later author edit.
+      if (mounted.current && token === epoch.current
+        && sequence === session.draft.sequence
+        && graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))
+        && profileId === session.draft.input.variant_profile_ref) {
         session.error = "GRAPH_CONTEXT_INSPECTION_REJECTED: current-source inspection failed; Save remains unavailable.";
         terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED";
       }
