@@ -64,12 +64,12 @@ class ProtectedKeyTests(unittest.TestCase):
         except ValueError as error:
             if os.name != 'nt':
                 raise
-            metadata = subprocess.run([
-                'powershell', '-NoProfile', '-NonInteractive', '-Command',
-                '(Get-Acl -LiteralPath $env:REVIEW_FIXTURE_PATH).Sddl'],
-                env=dict(os.environ, REVIEW_FIXTURE_PATH=str(self.path)),
-                capture_output=True, text=True, timeout=15)
-            self.fail(str(error) + '; fixture security descriptor: ' + metadata.stdout.strip())
+            failure = error.__traceback__
+            while failure and failure.tb_frame.f_code.co_name != '_windows_security':
+                failure = failure.tb_next
+            observed = {} if failure is None else failure.tb_frame.f_locals
+            self.fail(str(error) + '; expected fixture SID: ' + str(observed.get('user'))
+                      + '; held-handle descriptor: ' + str(observed.get('actual')))
         self.assertEqual(actual, self.raw)
 
     def test_hardlink_is_rejected(self):
