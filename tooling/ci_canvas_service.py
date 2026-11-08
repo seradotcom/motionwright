@@ -10385,6 +10385,12 @@ def graph_observed_playwright_failure(repo, report_path, command):
             "GRAPH_SAVE_IDENTITY_UNAVAILABLE", "GRAPH_SAVE_VARIANT_OCCUPIED",
             "GRAPH_SAVE_SAVED_IDENTITY_UNAVAILABLE", "GRAPH_SAVE_GATE_UNRECOGNIZED"))
 
+        context_failure_stages = frozenset(("ADMISSION", "BINDING", "CUSTODY", "LOCAL", "TRANSPORT", "NATIVE"))
+        context_failure_codes = frozenset(("NONE", "Unsupported", "Unavailable", "PermissionDenied",
+            "ConsentRequired", "PolicyDenied", "NotFound", "AmbiguousTarget", "StaleReference",
+            "BackendFailed", "Timeout", "InvalidArgument", "PluginProtocolError", "SandboxDenied",
+            "Conflict", "Cancelled", "Internal", "ProtocolMismatch", "ResourceExhausted"))
+
         def location(file, line, column):
             source = aliases.get(file.replace("\\", "/")) if type(file) is str else None
             if source and type(line) is int and 1 <= line <= 1000000 and type(column) is int and 1 <= column <= 100000:
@@ -10449,6 +10455,15 @@ def graph_observed_playwright_failure(repo, report_path, command):
                         or not all(gate in save_gate_codes for gate in gates)):
                     gates = ["GRAPH_SAVE_GATE_UNRECOGNIZED"]
                 for code in (terminal, *gates):
+                    if code not in codes:
+                        codes.append(code)
+            # Keep a validated stage/code pair atomic; a malformed second line
+            # cannot expose a known subset or become an observation from source.
+            for match in re.finditer(r"(?m)^[ \t]*(?:Error: )?GRAPH_CONTEXT_FAILURE: ([^\r\n]*)", text):
+                fields = match[1].split(" / ") if 0 < len(match[1]) <= 128 else []
+                if (len(fields) == 2 and fields[0] in context_failure_stages
+                        and fields[1] in context_failure_codes):
+                    code = "GRAPH_CONTEXT_FAILURE:" + fields[0] + ":" + fields[1]
                     if code not in codes:
                         codes.append(code)
             for pattern, source in patterns:

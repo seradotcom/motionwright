@@ -16,8 +16,6 @@ test('context failure decoder preserves every declared stage and error code with
     assert.deepEqual(decoded, original);
     assert.notEqual(decoded, original);
   }
-  const plain = Object.assign(Object.create(null), { schema, stage: 'LOCAL', error_code: null });
-  assert.deepEqual(decodeGraphContextFailure(plain), { schema, stage: 'LOCAL', error_code: null });
 });
 
 test('context failure decoder rejects malformed or private diagnostics without reading accessors', () => {
@@ -31,7 +29,7 @@ test('context failure decoder rejects malformed or private diagnostics without r
   const symbol = { ...valid, [Symbol(canary)]: canary };
   const diagnostics = Object.assign(new Error(canary), valid);
   const malformed = [null, undefined, false, 1, [], [valid], JSON.stringify(valid), canary,
-    {}, { schema, stage: 'NATIVE' }, { ...valid, schema: schema + '-foreign' },
+    {}, Object.assign(Object.create(null), valid), { schema, stage: 'NATIVE' }, { ...valid, schema: schema + '-foreign' },
     { ...valid, stage: 'native' }, { ...valid, stage: canary },
     { ...valid, error_code: 'timeout' }, { ...valid, error_code: canary },
     { ...valid, error_code: undefined }, { ...valid, error_code: {} },
