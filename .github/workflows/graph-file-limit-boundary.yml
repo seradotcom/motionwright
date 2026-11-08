@@ -62,3 +62,16 @@ jobs:
         run: |
           cargo check --locked -p motionwright-service --example studio_review_session
           cargo check --locked -p motionwright-native --example native-graph-review-session
+      - name: Check closed context failures in the compiled Native example
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-native --example native-graph-review-session \
+            graph_context_public_ -- --nocapture \
+            | tee "$RUNNER_TEMP/graph-context-public.tests.original.log"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          raw = (Path(os.environ["RUNNER_TEMP"]) / "graph-context-public.tests.original.log").read_text()
+          assert len(re.findall(r"^test native_graph_adapter_tests::graph_context_public_[^\r\n]* \.\.\. ok$", raw, re.M)) == 2
+          assert re.search(r"^test result: ok\. 2 passed; 0 failed;", raw, re.M)
+          PY
