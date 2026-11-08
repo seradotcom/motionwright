@@ -1644,7 +1644,7 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![id.to_string(), through, limit as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)? as u64,
+                row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
             ))
@@ -1652,6 +1652,11 @@ impl Store {
         let mut events = Vec::new();
         for row in rows {
             let (revision, json, created_at) = row?;
+            // The original SQLite event schema does not have CHECK(revision >= 0).
+            // Never represent a damaged negative signed revision as u64::MAX.
+            let revision = u64::try_from(revision).map_err(|_| {
+                StorageError::InvalidBackup("negative event revision in SQLite history".into())
+            })?;
             events.push(ProjectEvent {
                 revision,
                 change: serde_json::from_str(&json)?,
@@ -1681,7 +1686,7 @@ impl Store {
             params![id.to_string(), after_revision, limit as i64],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                 ))
@@ -1690,6 +1695,11 @@ impl Store {
         let mut events = Vec::new();
         for row in rows {
             let (revision, json, created_at) = row?;
+            // The original SQLite event schema does not have CHECK(revision >= 0).
+            // Never represent a damaged negative signed revision as u64::MAX.
+            let revision = u64::try_from(revision).map_err(|_| {
+                StorageError::InvalidBackup("negative event revision in SQLite history".into())
+            })?;
             events.push(ProjectEvent {
                 revision,
                 change: serde_json::from_str(&json)?,
@@ -3132,6 +3142,48 @@ mod tests {
                 .map(|entry| entry.revision)
                 .collect::<Vec<_>>(),
             vec![1, 2]
+        );
+    }
+
+    /// The events table does not constrain revisions to nonnegative values.
+    /// An imported or damaged SQLite file must not reinterpret a negative
+    /// physical revision as u64::MAX in the newest-first Graph timeline.
+    #[test]
+    fn history_rejects_negative_sqlite_revision_without_wraparound() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let project = store
+            .create_named_project("Original event custody")
+            .unwrap();
+        store
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "original-event",
+                &Change::RenameProject {
+                    title: "Committed original".into(),
+                },
+            )
+            .unwrap();
+        // Corrupt only the physical event metadata; the project and payload
+        // remain otherwise authentic to isolate the signed cast defect.
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET revision=-1 WHERE project_id=?1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        assert!(
+            matches!(
+                store.event_records_through(project.id, u64::MAX, 1),
+                Err(StorageError::InvalidBackup(ref msg))
+                    if msg.contains("negative event revision")
+            ),
+            "negative SQLite event revision must fail closed rather than wrap"
         );
     }
 }
