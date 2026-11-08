@@ -2,7 +2,7 @@ name: Review key filesystem portability
 
 on:
   push:
-    branches: ['codex/graph6-closure-*']
+    branches: ['codex/graph6-closure-*', 'integrate/phase1-final-composition-20261027']
     paths:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
