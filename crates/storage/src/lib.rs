@@ -1626,22 +1626,26 @@ impl Store {
         Ok(outcome)
     }
 
-    /// A negative physical revision is invalid even when a cursor or a small
-    /// page size would hide it from the selected history. The existing
-    /// events(project_id, revision) index makes this an indexed EXISTS
-    /// preflight; no source data, lock, or SQLite journal is mutated.
-    fn reject_hidden_negative_event_revision(&self, id: Uuid) -> Result<()> {
-        let corrupt: i64 = self.conn.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM events
-                 WHERE project_id=?1 AND revision<0
-             )",
+    /// Refuse damaged original event headers even when the selected LIMIT or
+    /// cursor hides them. Both probes are project-scoped; negative revisions
+    /// use the existing (project_id,revision) index, while the kind check
+    /// scans only this project's events. No journal, locks, or CAS are changed.
+    fn reject_hidden_corrupt_event_header(&self, id: Uuid) -> Result<()> {
+        let (bad_revision, bad_kind): (i64, i64) = self.conn.query_row(
+            "SELECT
+                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND revision<0),
+                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND kind<>'change')",
             [id.to_string()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if corrupt != 0 {
+        if bad_revision != 0 {
             return Err(StorageError::InvalidBackup(
                 "negative event revision in SQLite history".into(),
+            ));
+        }
+        if bad_kind != 0 {
+            return Err(StorageError::InvalidBackup(
+                "non-change event kind in SQLite history".into(),
             ));
         }
         Ok(())
@@ -1657,7 +1661,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
-        self.reject_hidden_negative_event_revision(id)?;
+        self.reject_hidden_corrupt_event_header(id)?;
         let through = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
             "SELECT revision,kind,payload_json,created_at FROM events
@@ -1701,7 +1705,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
-        self.reject_hidden_negative_event_revision(id)?;
+        self.reject_hidden_corrupt_event_header(id)?;
         // A valid SQLite revision is nonnegative signed i64. Casting a larger
         // user-supplied u64 directly would wrap to a negative cursor and
         // replay history already consumed by the caller.
@@ -3347,6 +3351,65 @@ mod tests {
             store.event_records_since(other.id, 0, 2).unwrap().len(),
             1,
             "a corrupted other project must not revoke healthy history"
+        );
+    }
+
+    /// A malformed earlier event must not be concealed by LIMIT or a forward
+    /// cursor. Graph history is project-scoped even when a visible page only
+    /// contains valid later events.
+    #[test]
+    fn history_rejects_non_change_kind_hidden_beyond_page_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store.create_named_project("Two real events").unwrap();
+        let unrelated = store.create_named_project("Healthy unrelated").unwrap();
+        for revision in 1..=2 {
+            let outcome = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("event-kind-{revision}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {revision}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        store
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "unrelated-good-event",
+                &Change::RenameProject {
+                    title: "Good".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET kind='invalid' WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        for result in [
+            store.event_records_through(project.id, project.revision, 1),
+            store.event_records_since(project.id, 1, 1),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(ref reason))
+                    if reason.contains("event kind")),
+                "hidden malformed original kind must invalidate history: {result:?}"
+            );
+        }
+        assert_eq!(
+            store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
+            1,
+            "unrelated project history remains readable"
         );
     }
 }
