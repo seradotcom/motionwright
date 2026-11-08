@@ -453,7 +453,8 @@ class InertOriginals:
             reader_results[1]["error"] = "Hidden unauthorized failure alongside success."
         reader_raw = b"".join(json.dumps(x, separators=(",", ":")).encode() + b"\n"
                               for x in reader_results)
-        reader_stdout = self.put("reader/stdout.original", reader_raw)
+        reader_stdout = self.put("graph-flow/independent-reopen/service.stdout.original", reader_raw)
+        reader_stderr = self.put("graph-flow/independent-reopen/service.stderr.original", b"")
         desc_refs = []
         for i in range(2):
             obs = {"source": self.source, "binary": self.ordinary, "held_store_digest": self.held,
@@ -481,10 +482,19 @@ class InertOriginals:
                            "sha256": hashlib.sha256(first_line).hexdigest()},
                        "read_only_child_bootstrap_proved": self.mode != "bootstrap_flag_false",
                        "service_process": {"pid": 202, "code": 0, "signal": None},
-                       "raw": {"stdout": {**reader_stdout, "eof": True}},
+                       "raw": {"stdout": {**reader_stdout, "eof": self.mode != "reader_stdout_no_eof"},
+                               "stderr": {**reader_stderr, "eof": self.mode != "reader_stderr_no_eof"}},
                        "requests": reader_refs, "expected_oracle": oracle_ref,
                        "observed_oracle": observed_ref,
                        "opened_descriptor_observations": desc_refs}
+        if self.mode == "reader_stderr_missing":
+            self.reopen["raw"].pop("stderr")
+        elif self.mode == "reader_stderr_bad_digest":
+            self.reopen["raw"]["stderr"]["sha256"] = "0" * 64
+        elif self.mode == "reader_stderr_foreign_path":
+            self.reopen["raw"]["stderr"]["path"] = str(self.root / "other-source" / "stderr.original")
+        elif self.mode == "reader_raw_unknown_stream":
+            self.reopen["raw"]["extra"] = {**reader_stderr, "eof": True}
         if self.mode.startswith("missing_"):
             self.reopen.pop(self.mode.removeprefix("missing_"), None)
 
@@ -620,6 +630,14 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
         # compatible with the original single-process Session transport.
         with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
             self.check("reader_raw_reordered")
+
+    def test_independent_reader_both_original_raw_streams_and_eof_are_required(self):
+        for mode in ("reader_stderr_missing", "reader_stderr_no_eof",
+                     "reader_stderr_bad_digest", "reader_stderr_foreign_path",
+                     "reader_stdout_no_eof", "reader_raw_unknown_stream"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
 
     def test_wrong_reader_store_journal_or_replayed_raw_is_rejected(self):
         for mode in ("descriptor_other_store", "descriptor_wrong_phase", "database_outside_case",

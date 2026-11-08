@@ -9876,8 +9876,23 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             and child_pid not in (writer_pid, verified_provider["owner_pid"],
                                   *verified_provider["release_cli_pids"]),
             "Graph owner/writer/read-only reader process identities must be independent")
-    reader_rows = raw_lines(retained({k: reopen["raw"]["stdout"][k]
-                            for k in ("path", "sha256", "size_bytes")}, GRAPH_BYTES))
+    # The real second Service child publishes TWO original streams through
+    # bindRawPair, only after each stream reached EOF. A reader stdout alone
+    # cannot prove clean child custody even if every JSONL reply matches.
+    raw_streams = reopen.get("raw")
+    require(type(raw_streams) is dict and set(raw_streams) == {"stdout", "stderr"},
+            "Graph independent reader original raw stream roster incomplete")
+    reader_originals = {}
+    for stream_name in ("stdout", "stderr"):
+        stream = raw_streams[stream_name]
+        require(type(stream) is dict
+                and set(stream) == {"path", "sha256", "size_bytes", "eof"}
+                and stream["eof"] is True
+                and stream["path"] == str(reopen_path.parent / ("service." + stream_name + ".original")),
+                "Graph independent reader original stream path/EOF not authenticated")
+        reader_originals[stream_name] = retained({key: stream[key]
+                             for key in ("path", "sha256", "size_bytes")}, GRAPH_BYTES)
+    reader_rows = raw_lines(reader_originals["stdout"])
     requests = [original(ref, 1024) for ref in reopen["requests"]]
     ids = [request["id"] for request in requests]
     commands = [request["command"] for request in requests]
