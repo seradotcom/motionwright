@@ -61,6 +61,13 @@ MEMORY_HELPER_SHA = "eca6aaf897a2845894f73ae3bac1483dd840b41a6c2b6ab2c2bbfd1e13d
 RUNTIME_FILES = ("runtime-receipt.json", "runtime-installed-files.json",
                  "runtime-wheel-lock.json", "runtime-artifact.original.json")
 
+# Immutable historical negative from run42361964881. Only the exact tagged,
+# runtime-metadata reader may use this context, never the current SDK route.
+NTMODE_CONTEXT = {"source_sha": "54c74f5366513a72f6f22d4f6641091362534a09",
+                  "semwright_sha": "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199",
+                  "run_id": "42361964881", "run_attempt": "1"}
+NTMODE_RECEIPT_SHA = "d54d3cc4e49fb0cda44d7da0106ad02532e06263b1e7a0f7083e18cafe8fe6dc"
+
 
 class Rejected(ValueError):
     pass
@@ -588,10 +595,9 @@ def checked_ntmode_continuation(prior, current, admission, originals, guard):
     general retry of a failed reader. Its original negative and directory stay
     intact; any download intent, spawn or output in that attempt denies it.
     """
-    need(current == {"source_sha": "54c74f5366513a72f6f22d4f6641091362534a09", "semwright_sha": SDK,
-                     "run_id": "42361964881", "run_attempt": "1"}
+    need(current == NTMODE_CONTEXT
          and admission["mode"] == "runtime-metadata"
-         and admission["runtime_receipt_sha256"] == "d54d3cc4e49fb0cda44d7da0106ad02532e06263b1e7a0f7083e18cafe8fe6dc"
+         and admission["runtime_receipt_sha256"] == NTMODE_RECEIPT_SHA
          and admission["runtime"]["retained_artifact"]["artifact_id"] == 13570292418,
          "ntmode_continuation_closed_original_context")
     namespace(prior, directory=True)
@@ -623,10 +629,28 @@ def checked_ntmode_continuation(prior, current, admission, originals, guard):
             "continuation_explicitly_authorized": True, "automatic_retry": False}
 
 
+def selected_context(args):
+    """Fixed historical continuation only; no user-supplied SDK selector.
+
+    Every other source-gate or runtime-metadata request uses the current SDK.
+    This never downloads the old artifact, launches a helper or grants G2.
+    """
+    if args.attempt_tag is not None:
+        need(args.attempt_tag == "causalntmode01"
+             and args.admission == "runtime-metadata"
+             and args.source_sha == NTMODE_CONTEXT["source_sha"]
+             and args.run_id == NTMODE_CONTEXT["run_id"]
+             and args.source_gate_sha256 is None
+             and args.runtime_receipt_sha256 == NTMODE_RECEIPT_SHA,
+             "ntmode_continuation_exact_context_only")
+        return dict(NTMODE_CONTEXT)
+    return {"source_sha": args.source_sha, "semwright_sha": SDK,
+            "run_id": args.run_id, "run_attempt": "1"}
+
+
 def run(args):
     os.environ["MANIM_NATIVE_SCENARIO"] = RECOVERY_SCENARIO
-    current = {"source_sha": args.source_sha, "semwright_sha": SDK,
-               "run_id": args.run_id, "run_attempt": "1"}
+    current = selected_context(args)
     engine.validate_context(current)
     need(args.private.is_absolute() and args.private.drive.upper() == "E:", "original_E_drive_destination")
     namespace(args.private, directory=True)
