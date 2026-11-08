@@ -111,7 +111,7 @@ jobs:
         with:
           name: ci-job-plan-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/job-plan-contracts
-          if-no-files-found: error
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
       - name: Verify workflow syntax and expression contexts
         if: ${{ !cancelled() }}

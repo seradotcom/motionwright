@@ -267,7 +267,7 @@ jobs:
         with:
           name: performance-acceptance-evidence
           path: verification/performance
-          if-no-files-found: error
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
 
   waveform-lazy:
     if: >-
@@ -346,7 +346,7 @@ jobs:
         with:
           name: waveform-performance-evidence
           path: verification/waveform
-          if-no-files-found: error
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
 
   responsiveness-service:
     if: >-
@@ -529,7 +529,7 @@ jobs:
         with:
           name: responsiveness-service-evidence
           path: verification/responsiveness
-          if-no-files-found: error
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
 
   ui-selection:
     if: >-
@@ -620,7 +620,7 @@ jobs:
         with:
           name: cache-source-g0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: cache-source-g0-evidence
-          if-no-files-found: error
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
 
   cache-consumer:
