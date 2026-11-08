@@ -1627,20 +1627,20 @@ impl Store {
     }
 
     /// Refuse damaged original event headers even when the selected LIMIT or
-    /// cursor hides them. Both probes are project-scoped; negative revisions
+    /// cursor hides them. Both probes are project-scoped; nonpositive revisions
     /// use the existing (project_id,revision) index, while the kind check
     /// scans only this project's events. No journal, locks, or CAS are changed.
     fn reject_hidden_corrupt_event_header(&self, id: Uuid) -> Result<()> {
         let (bad_revision, bad_kind): (i64, i64) = self.conn.query_row(
             "SELECT
-                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND revision<0),
+                EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND revision<=0),
                 EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND kind<>'change')",
             [id.to_string()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         if bad_revision != 0 {
             return Err(StorageError::InvalidBackup(
-                "negative event revision in SQLite history".into(),
+                "negative event revision or zero event revision in SQLite history".into(),
             ));
         }
         if bad_kind != 0 {
@@ -3294,6 +3294,65 @@ mod tests {
                 .len(),
             1,
             "a corrupt other project must not revoke an unrelated timeline"
+        );
+    }
+
+    /// A revision-zero row is not a committed Change. It must not disappear
+    /// silently behind the normal "after revision 0" Graph history cursor.
+    #[test]
+    fn history_rejects_zero_revision_hidden_by_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store.create_named_project("Zero-revision custody").unwrap();
+        let unrelated = store
+            .create_named_project("Unrelated healthy project")
+            .unwrap();
+        for n in 1..=2 {
+            project = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("zero-revision-event-{n}"),
+                    &Change::RenameProject {
+                        title: format!("Original {n}"),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        store
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "healthy-unrelated-event",
+                &Change::RenameProject {
+                    title: "Healthy".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET revision=0 WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        for result in [
+            store.event_records_since(project.id, 0, 1),
+            store.event_records_through(project.id, project.revision, 1),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(ref message))
+                    if message.contains("zero event revision")),
+                "hidden SQLite revision zero must not yield a healthy-looking Graph page: {result:?}"
+            );
+        }
+        assert_eq!(
+            store.event_records_since(unrelated.id, 0, 1).unwrap().len(),
+            1
         );
     }
 
