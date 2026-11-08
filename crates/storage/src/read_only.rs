@@ -502,6 +502,89 @@ mod tests {
         assert_eq!(inventory(directory.path()), original_inventory);
     }
 
+    /// The retained Native/Studio consumer must reject an earlier original
+    /// SQLite event with a forged kind even when its cursor only sees later,
+    /// valid revisions. This is independent of Store's writer-side oracle.
+    #[test]
+    fn reader_rejects_hidden_non_change_kind_on_original_sqlite() {
+        use crate::{Change, RevisionStamp};
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut writer = Store::open(&database).unwrap();
+        let mut project = writer.create_named_project("Original kind source").unwrap();
+        let unrelated = writer
+            .create_named_project("Unrelated kind source")
+            .unwrap();
+
+        for revision in 1..=2 {
+            let outcome = writer
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("original-kind-{revision}"),
+                    &Change::RenameProject {
+                        title: format!("Original revision {revision}"),
+                    },
+                )
+                .unwrap();
+            project = outcome.project;
+        }
+        let healthy = writer
+            .apply(
+                unrelated.id,
+                &RevisionStamp::from(&unrelated),
+                "healthy-kind-event",
+                &Change::RenameProject {
+                    title: "Independent original".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(healthy.project.revision, 1);
+        // The physical SQLite event type lacks a CHECK(kind='change').
+        // Retain a valid revision 2 and corrupt only an older original row.
+        assert_eq!(
+            writer
+                .conn
+                .execute(
+                    "UPDATE events SET kind='forged-non-change' WHERE project_id=?1 AND revision=1",
+                    [project.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        let identity = writer.database_file_identity().unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let before = inventory(directory.path());
+
+        let reader = StoreReader::open(&database).unwrap();
+        assert_eq!(reader.database_file_identity().unwrap(), identity);
+        assert_eq!(reader.project(project.id).unwrap(), project);
+        // Start with a cursor that hides the forged row. On the unfixed
+        // indexed Store implementation this falsely returned revision 2.
+        for cursor in [1, 2, u64::MAX, 0] {
+            for limit in [1, 100] {
+                let result = reader.project_history(project.id, cursor, limit);
+                assert!(
+                    matches!(
+                        result,
+                        Err(StorageError::InvalidBackup(ref message))
+                            if message.contains("event kind")
+                    ),
+                    "strict retained reader must reject hidden non-change kind, cursor={cursor}, limit={limit}: {result:?}"
+                );
+            }
+        }
+        assert_eq!(
+            reader.project_history(unrelated.id, 0, 1).unwrap().len(),
+            1,
+            "corrupt graph row must not deny an independent healthy project"
+        );
+        drop(reader);
+        assert_eq!(inventory(directory.path()), before);
+    }
+
     #[test]
     fn reader_does_not_create_missing_database_or_cas() {
         let directory = tempfile::tempdir().unwrap();
