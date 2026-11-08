@@ -699,7 +699,8 @@ impl shared_session::GraphBackend for NativeGraphBackend {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // A6's private restrictions must be valid BEFORE the shared runner opens
+    shared_session::enforce_graph_store_file_limit(true)?;
+    // Closed child restrictions must be valid BEFORE the shared runner opens
     // Service/SQLite, creates its parent or reaches the Native factory. Zero
     // keeps the existing Service available with no Graph callback admission.
     let restrictions = ClientRestrictions::from_parent_environment()?;

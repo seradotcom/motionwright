@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { graphOwnerSpawnEnvironment, graphOwnedClientEnvironment } from '../../tests/support/graph-owner/factory.mjs';
 
 // These paths mirror createGraphServiceCase's actual makeSpec, not the old
@@ -40,6 +41,7 @@ test('real Graph owner spec launches with one owner child root inside parent cus
   assert.equal(env.TMPDIR, parent);
   assert.notEqual(env.TMPDIR, paths.private_root);
   assert.equal(env.SEMWRIGHT_TEST_PYTHON, spec.binaries.python3.path);
+  assert.equal(env.MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES, undefined);
   assert.equal(env.GH_TOKEN, undefined);
   assert.equal(env.LD_PRELOAD, undefined);
   assert.throws(() => graphOwnerSpawnEnvironment({ ...spec, paths: { ...paths, private_root: parent } },
@@ -61,10 +63,85 @@ test('real Python owner connection under clients receives exactly bound client c
   assert.equal(env.XDG_CONFIG_HOME, path.join(owner, 'config'));
   assert.equal(env.TMPDIR, path.join(owner, 'work'));
   assert.equal(env.MOTIONWRIGHT_GRAPH_CALLBACK_CAP, '12');
+  assert.equal(env.MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES, '4194304');
+  assert.throws(() => graphOwnedClientEnvironment({ ...capability,
+    MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES: '67032280' }, paths), /GRAPH_CLIENT_ENV_FIELDS/);
   assert.throws(() => graphOwnedClientEnvironment({
     ...capability, MOTIONWRIGHT_GRAPH_CONNECTION: path.join(parent, 'clients', 'foreign.connection.json'),
   }, paths), /GRAPH_CLIENT_CONNECTION_UNBOUND/);
   assert.throws(() => graphOwnedClientEnvironment({
     ...capability, MOTIONWRIGHT_GRAPH_CONNECTION: path.join(owner, 'owner', 'clients', 'client-0001.connection.json'),
   }, paths), /GRAPH_CLIENT_CONNECTION_UNBOUND/);
+});
+
+test('Graph initializer selects a fixed Store bound without inherited overrides', () => {
+  const source = readFileSync(new URL('../../tests/support/scopedChangeService.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('function closedGraphInitializerEnvironment(');
+  const end = source.indexOf('\n/** Observe the actual Linux child', start);
+  const body = stripTypeScriptTypes(source.slice(start, end), { mode: 'strip' });
+  const environment = new Function('dirname', 'isAbsolute', body + '; return closedGraphInitializerEnvironment;')(
+    path.dirname, path.isAbsolute)(path.join(parent, 'store', 'motionwright.sqlite3'));
+  assert.equal(environment.MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES, '4194304');
+  assert.equal(environment.GH_TOKEN, undefined);
+});
+
+// This checks an inert Linux process's real limits, without opening a Store.
+test('Graph Store limit observer requires both actual kernel limits before continuing',
+  { skip: process.platform !== 'linux' }, async () => {
+    const { spawn } = await import('node:child_process');
+    const { once } = await import('node:events');
+    const { requireGraphStoreFileLimit } = await import('../../tests/support/scopedChangeService.ts');
+    const child = spawn('python3', ['-c',
+      'import resource,sys; resource.setrlimit(resource.RLIMIT_FSIZE,(4194304,4194304)); sys.stdin.read()'],
+      { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH } });
+    const exited = once(child, 'close');
+    try {
+      await once(child, 'spawn');
+      await requireGraphStoreFileLimit(child);
+    } finally {
+      child.stdin.end();
+      await exited;
+    }
+  });
+
+test('Graph Store limit observer refuses a process with only its soft limit lowered',
+  { skip: process.platform !== 'linux' }, async () => {
+    const { spawn } = await import('node:child_process');
+    const { once } = await import('node:events');
+    const { requireGraphStoreFileLimit } = await import('../../tests/support/scopedChangeService.ts');
+    const child = spawn('python3', ['-c',
+      'import resource,sys; resource.setrlimit(resource.RLIMIT_FSIZE,(4194304,8388608)); sys.stdin.read()'],
+      { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH } });
+    const exited = once(child, 'close');
+    try {
+      await once(child, 'spawn');
+      await assert.rejects(() => requireGraphStoreFileLimit(child), /both 4194304-byte/);
+    } finally {
+      child.stdin.end();
+      await exited;
+    }
+  });
+
+test('Graph Store limit observation fails closed without a live Linux child', async () => {
+  const { requireGraphStoreFileLimit } = await import('../../tests/support/scopedChangeService.ts');
+  await assert.rejects(() => requireGraphStoreFileLimit({ pid: undefined,
+    exitCode: null, signalCode: null, killed: false }), /Graph Store/);
+});
+
+test('controller kernel limits match the five authenticated staged executables, not Store limits', async () => {
+  const { verifyGraphControllerFileLimit } = await import('../../tests/support/graph-owner/factory.mjs');
+  const sizes = { native_provider: 67032280, manim_runner: 4092912,
+    python3: 8020928, ffmpeg: 342488, semwright_sandbox: 2182280 };
+  const binaries = Object.fromEntries(Object.entries(sizes).map(([role, size_bytes]) =>
+    [role, { path: path.join(parent, role), sha256: 'a'.repeat(64), size_bytes }]));
+  // Inert kernel-report text exercises validation; it is not a process observation.
+  const limits = (soft, hard) => `Limit                     Soft Limit           Hard Limit           Units\nMax file size             ${soft}             ${hard}             bytes\n`;
+  assert.equal(verifyGraphControllerFileLimit(binaries, limits(67032280, 67032280)), 67032280);
+  assert.throws(() => verifyGraphControllerFileLimit(binaries, limits(4194304, 4194304)), /CASE_CONTROLLER_KERNEL_FILE_BOUND/);
+  assert.throws(() => verifyGraphControllerFileLimit(binaries, limits(67032280, 'unlimited')), /CASE_CONTROLLER_KERNEL_FILE_BOUND/);
+  assert.throws(() => verifyGraphControllerFileLimit({ ...binaries, python3: undefined },
+    limits(67032280, 67032280)), /CASE_CONTROLLER_STAGING_EXECUTABLE/);
+  assert.throws(() => verifyGraphControllerFileLimit({ ...binaries,
+    native_provider: { ...binaries.native_provider, size_bytes: 256 * 1024 * 1024 + 1 } },
+    limits(67032280, 67032280)), /CASE_CONTROLLER_STAGING_EXECUTABLE/);
 });

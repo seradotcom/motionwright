@@ -48,8 +48,38 @@ function closedGraphInitializerEnvironment(databasePath: string): NodeJS.Process
     PYTHONNOUSERSITE: "1", HOME: root,
     XDG_RUNTIME_DIR: root, XDG_STATE_HOME: root,
     XDG_CONFIG_HOME: root, XDG_CACHE_HOME: root, TMPDIR: root,
-    RUST_BACKTRACE: "1",
+    RUST_BACKTRACE: "1", MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES: "4194304",
   };
+}
+
+/** Observe the actual Linux child lowering both file-size limits before any RPC. */
+export async function requireGraphStoreFileLimit(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const pid = child.pid;
+  if (process.platform !== "linux" || typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
+    throw new Error("Graph Store file limits require an actual Linux child process");
+  const deadline = Date.now() + 5_000;
+  const live = () => child.pid === pid && child.exitCode === null && child.signalCode === null && !child.killed;
+  while (Date.now() < deadline) {
+    if (!live()) throw new Error("Graph Store process exited before its file limits were confirmed");
+    let limits: string;
+    const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+    try {
+      limits = await readFile(`/proc/${pid}/limits`, { encoding: "utf8", signal });
+    } catch (error) {
+      if (signal.aborted && Date.now() >= deadline && error instanceof Error && error.name === "AbortError") break;
+      throw new Error("Graph Store process kernel file limits could not be observed");
+    }
+    if (!live()) throw new Error("Graph Store process exited during file-limit observation");
+    const rows = limits.split("\n").filter(line => line.startsWith("Max file size"));
+    const row = rows.length === 1 ? /^Max file size[ \t]+([0-9]+|unlimited)[ \t]+([0-9]+|unlimited)[ \t]+bytes[ \t]*$/.exec(rows[0]) : null;
+    if (!row) throw new Error("Graph Store process kernel file limits are unsupported");
+    if (Date.now() >= deadline) break;
+    if (row[1] === "4194304" && row[2] === "4194304") return;
+    // Only observe the same process settling its startup restriction. No RPC,
+    // process replacement or operation retry is permitted during this wait.
+    await new Promise(resolveWait => setTimeout(resolveWait, Math.min(25, deadline - Date.now())));
+  }
+  throw new Error("Graph Store process did not confirm both 4194304-byte file limits within five seconds");
 }
 
 const projectionCommands = new Set(["project_projection_head", "project_scene_page", "project_scene_nodes"]);
@@ -400,6 +430,7 @@ export class ScopedChangeService {
   private readonly rawStreamCapture: ServiceRawStreamCapture | undefined;
   private readonly evidenceCapture: ServiceEvidenceCapture | undefined;
   private readonly graphCustodyRequired: boolean;
+  private readonly graphStoreBoundChildren = new WeakSet<ChildProcessWithoutNullStreams>();
   private readonly rawCaptures: RawStreamCaptureState[] = [];
   private child: ChildProcessWithoutNullStreams | null = null;
   private writerPhysicalIdentity: ClosedStorePhysicalIdentity | null = null;
@@ -535,7 +566,11 @@ export class ScopedChangeService {
 
   private async launch(): Promise<this> {
     if (this.closing) await this.closing;
-    if (this.child) return this;
+    if (this.child) {
+      if (this.graphCustodyRequired && !this.graphStoreBoundChildren.has(this.child))
+        throw new Error("Graph Store process has no confirmed kernel file limit");
+      return this;
+    }
     await access(this.binaryPath);
     await mkdir(this.directory, { recursive: true });
     this.stderrText = "";
@@ -639,6 +674,15 @@ export class ScopedChangeService {
     });
     await spawned;
     if (bindingFailure) throw bindingFailure;
+    if (this.graphCustodyRequired) {
+      try {
+        await requireGraphStoreFileLimit(child);
+        this.graphStoreBoundChildren.add(child);
+      } catch (error) {
+        this.taint("transport_failure", String(error), child);
+        throw error;
+      }
+    }
     this.lastExit = "Process is running";
     return this;
   }
@@ -696,7 +740,7 @@ export class ScopedChangeService {
 
   async rawRequest<T = unknown>(request: ServiceRpcRequest): Promise<ServiceRpcResponse<T>> {
     const child = this.child;
-    if (!child || this.closing) {
+    if (!child || this.closing || this.graphCustodyRequired && !this.graphStoreBoundChildren.has(child)) {
       this.taint("transport_failure", `RPC ${request.command} was requested outside a running session`);
       throw this.failure(`StudioService is not running: ${this.lastExit}`);
     }
