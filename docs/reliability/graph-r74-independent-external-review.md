@@ -62,11 +62,12 @@ identity downloads it. For example, on the external Linux reviewer:
 gh run download "$RUN" -R seradotcom/motionwright \
   -n "graph-originals-review-$SOURCE-$RUN-1" \
   -D "/secure/a5-r74/$RUN"
-# Inspect actual ZIP filename; do not assume one.
+# gh run download extracts artifact ZIPs. Verify the exact two original
+# regular files, with no other file present, before creating the receipt.
 ls -la "/secure/a5-r74/$RUN"
 
 python3 -B tooling/graph_r74_external_reviewer.py \
-  --artifact-zip "/secure/a5-r74/$RUN/REPLACE_WITH_ACTUAL.zip" \
+  --artifact-path "/secure/a5-r74/$RUN" \
   --private-key /secure/a5-r74/recipient.pem \
   --trusted-product /secure/a5-checkouts/motionwright \
   --trusted-semwright /secure/a5-checkouts/semwright \

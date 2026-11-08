@@ -158,6 +158,37 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         self.assertFalse(result["github_status_written"])
         self.assertEqual(result["G2"], "NOT_GRANTED")
 
+    def test_gh_download_extracted_directory_preserves_identity_and_rejects_injection(self):
+        original_zip = self.make_artifact("extracted")
+        extracted = self.root / "gh-run-download"
+        extracted.mkdir()
+        with zipfile.ZipFile(original_zip) as archive:
+            for name in ("producer-originals.mwseal", "carrier.original.json"):
+                (extracted / name).write_bytes(archive.read(name))
+        expected = reviewer.review(original_zip, self.keyfile, self.product, self.sdk,
+                                   self.p_sha, self.s_sha, self.run_id)
+        actual = reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+                                 self.p_sha, self.s_sha, self.run_id)
+        self.assertEqual(actual, expected)
+        unexpected = extracted / ".hidden-extra"
+        unexpected.write_bytes(b"foreign")
+        with self.assertRaisesRegex(reviewer.ReviewRejected,
+                                    "ARTIFACT_TWO_ORIGINAL_MEMBERS"):
+            reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+        unexpected.unlink()
+        carrier = extracted / "carrier.original.json"
+        carrier.unlink()
+        carrier.symlink_to(original_zip)
+        with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_REGULAR_FILE"):
+            reviewer.review(extracted, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+        alias = self.root / "foreign-alias"
+        alias.symlink_to(extracted, target_is_directory=True)
+        with self.assertRaisesRegex(reviewer.ReviewRejected, "ARTIFACT_CANONICAL_PATH"):
+            reviewer.review(alias, self.keyfile, self.product, self.sdk,
+                            self.p_sha, self.s_sha, self.run_id)
+
     def test_wrong_source_run_recipient_and_insecure_key_are_denied(self):
         path = self.make_artifact()
         for psha, rid in (("1"*40,self.run_id),(self.p_sha,"13")):

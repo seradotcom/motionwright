@@ -130,13 +130,45 @@ def source_member(entries, name, expected):
 
 
 def original_zip(path):
+    """Read the exact two original files from a raw ZIP or gh-extracted directory.
+
+    gh run download extracts artifact ZIP contents, rather than leaving a ZIP.
+    Both transports retain the same authenticated envelope and carrier bytes.
+    """
     path = Path(path)
+    require(path.is_absolute() and not path.is_symlink()
+            and path.resolve(strict=True) == path, "ARTIFACT_CANONICAL_PATH")
+    required = {"producer-originals.mwseal", "carrier.original.json"}
+    if path.is_dir():
+        members = list(path.iterdir())
+        require(len(members) == 2 and {x.name for x in members} == required,
+                "ARTIFACT_TWO_ORIGINAL_MEMBERS")
+        original = {}
+        for member in members:
+            require(not member.is_symlink() and member.is_file(),
+                    "ARTIFACT_REGULAR_FILE")
+            fd = os.open(member, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                before = os.fstat(fd)
+                require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                        and 0 < before.st_size <= MAX_ARCHIVE,
+                        "ARTIFACT_REGULAR_FILE")
+                with os.fdopen(os.dup(fd), "rb") as stream:
+                    raw = stream.read(MAX_ARCHIVE + 1)
+                after = os.fstat(fd)
+                require(len(raw) == before.st_size
+                        and (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                        == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+                        "ARTIFACT_FILE_STABLE")
+                original[member.name] = raw
+            finally:
+                os.close(fd)
+        return original
     require(path.is_file() and path.stat().st_size <= MAX_ARCHIVE + (1 << 20),
             "ARTIFACT_ZIP_BYTES")
     with zipfile.ZipFile(path) as z:
         members = z.infolist()
-        require({x.filename for x in members} ==
-                {"producer-originals.mwseal", "carrier.original.json"}
+        require({x.filename for x in members} == required
                 and len(members) == 2
                 and all(not x.is_dir() and 0 < x.file_size <= MAX_ARCHIVE
                         and x.compress_size <= MAX_ARCHIVE for x in members),
@@ -280,7 +312,8 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact-zip", type=Path, required=True)
+    parser.add_argument("--artifact-path", "--artifact-zip", dest="artifact_path",
+                        type=Path, required=True)
     parser.add_argument("--private-key", type=Path, required=True)
     parser.add_argument("--trusted-product", type=Path, required=True)
     parser.add_argument("--trusted-semwright", type=Path, required=True)
@@ -291,7 +324,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     require(args.output.is_absolute() and args.output.parent.is_dir()
             and not args.output.exists(), "NEW_RECEIPT_ONLY")
-    receipt = review(args.artifact_zip, args.private_key, args.trusted_product,
+    receipt = review(args.artifact_path, args.private_key, args.trusted_product,
          args.trusted_semwright, args.source_sha, args.semwright_sha, args.run_id)
     data = seal.json_bytes(receipt)
     seal.new_bytes(args.output, data, mode=0o600)
