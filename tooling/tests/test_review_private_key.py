@@ -34,6 +34,10 @@ def protect_fixture(path):
         kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
     finally:
         kernel.CloseHandle(token)
+    # Elevated Windows accounts may create files owned by the Administrators group.
+    # Establish the actual user as owner instead of accepting a broader owner.
+    owner = subprocess.run(['icacls', str(path), '/setowner', '*' + identity], capture_output=True)
+    assert owner.returncode == 0, owner.stderr
     result = subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', '*' + identity + ':F'], capture_output=True)
     assert result.returncode == 0, result.stderr
 
