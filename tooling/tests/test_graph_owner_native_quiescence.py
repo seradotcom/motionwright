@@ -311,6 +311,7 @@ class SourceOnlyReleaseTests(unittest.TestCase):
         predicate = namespace["graph_final_cohort_signal_free"]
         original = {"status":"PASS",
                     "authority":"process_custody_only_not_revocation",
+                    "subreaper": True,
                     "signals":[]}
         self.assertTrue(predicate(original, True))
         self.assertFalse(predicate(original, False))
@@ -318,6 +319,8 @@ class SourceOnlyReleaseTests(unittest.TestCase):
             {**original, "signals":[{"pid":345,"signal":9}]},
             {**original, "signals":[{"pid":345,"signal":15}]},
             {**original, "signals":None},
+            {**original, "subreaper":False},
+            {**original, "subreaper":None},
             {**original, "status":"UNKNOWN"},
             {**original, "authority":"native-revoked"},
         ):

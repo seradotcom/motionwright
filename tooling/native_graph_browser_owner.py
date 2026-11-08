@@ -2251,6 +2251,7 @@ def graph_final_cohort_signal_free(cohort, absent):
     """
     return (type(cohort) is dict and cohort.get("status") == "PASS"
             and cohort.get("authority") == "process_custody_only_not_revocation"
+            and cohort.get("subreaper") is True
             and type(cohort.get("signals")) is list and not cohort["signals"]
             and absent is True)
 
