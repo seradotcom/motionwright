@@ -4,7 +4,7 @@ import io
 import json
 import os
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tarfile
@@ -82,6 +82,7 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                       missing_manifest=False):
         producer = self.root / ("producer-" + name)
         producer.mkdir()
+        producer_namespace = PurePosixPath("/tmp/graph-review-inert/producer")
         request_path = producer / "review-request.original.json"
         index_path = producer / "producer-index.original.json"
         copies = producer / "review-originals"
@@ -108,39 +109,46 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             retained.write_bytes(content)
             original = {"path": "/usr/bin/" + ("python3" if i == 0 else "ffmpeg"),
                         "sha256": reviewer.sha(content), "size_bytes": len(content)}
-            ref = {**original, "path": retained.as_posix()}
+            ref = {**original, "path": str(producer_namespace / "review-originals" / retained.name)}
             copy_refs.append({"original": original, "retained": ref})
         request = {
           "source": source, "execution": execution,
-          "index": {"path": index_path.as_posix(), "sha256": reviewer.sha(index_raw),
+          "index": {"path": str(producer_namespace / index_path.name), "sha256": reviewer.sha(index_raw),
                     "size_bytes": len(index_raw)},
           "contexts": ["mw-owner/phase1-native-graph/"+self.run_id+"/1/graph-flow"],
           "outside_original_copies": copy_refs,
         }
         request_path.write_bytes(seal.json_bytes(request))
-        plaintext = seal.gather_snapshot({"producer": producer})
-        if missing_manifest or os.name == "nt":
-            # Production captures originate on Linux. On Windows, this inert
-            # test fixture represents their POSIX absolute original paths
-            # without weakening the reviewer's production source-path guard.
-            with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as tar:
-                rows = [(row.name, tar.extractfile(row).read()) for row in tar]
-            replacement = io.BytesIO()
-            with tarfile.open(fileobj=replacement, mode="w") as tar:
-                for member, raw in rows:
-                    if member == "snapshot-manifest.json":
-                        report = reviewer.json_original(raw)
-                        if os.name == "nt":
-                            for entry in report["roots"]["producer"]["files"]:
-                                if "observation" in entry:
-                                    entry["observation"]["path"] = (
-                                        "/tmp/graph-review-inert/" + entry["archive_path"])
-                        if missing_manifest:
-                            report["selected_originals_complete"] = False
-                        raw = seal.json_bytes(report)
-                    info = tarfile.TarInfo(member); info.size = len(raw)
-                    tar.addfile(info, io.BytesIO(raw))
-            plaintext = replacement.getvalue()
+        # These are inert Linux-producer fixtures, not captured physical evidence.
+        # Explicit metadata avoids attributing Windows handle/path timestamps to
+        # Linux; encryption and all consumer checks still operate on real bytes.
+        entries, captured = [], []
+        files = sorted(path for path in producer.rglob("*") if path.is_file())
+        for number, path in enumerate(files, start=1):
+            relative = path.relative_to(producer).as_posix()
+            member, raw = "producer/" + relative, path.read_bytes()
+            identity = {"device": 1, "inode": number, "size": len(raw),
+                        "mode": stat.S_IFREG | 0o600, "uid": 1000, "gid": 1000,
+                        "mtime_ns": 1, "ctime_ns": 1}
+            captured.append({"archive_path": member, "observation": {
+                "path": str(producer_namespace / relative), "sha256": reviewer.sha(raw),
+                "size": len(raw), "before": identity, "after": identity,
+                "namespace_after": identity}})
+            entries.append((member, raw))
+        manifest = {"schema": "motionwright.ci.private-snapshot/1",
+                    "scope": "selected-original-files-at-read-time",
+                    "roots": {"producer": {"status": "CAPTURED", "files": captured}},
+                    "selected_originals_complete": not missing_manifest,
+                    "complete_owner_state_claimed": False}
+        entries.append(("snapshot-manifest.json", seal.json_bytes(manifest)))
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            for member, raw in entries:
+                info = tarfile.TarInfo(member)
+                info.mode, info.mtime, info.size = 0o600, 0, len(raw)
+                info.uid = info.gid = 1000
+                archive.addfile(info, io.BytesIO(raw))
+        plaintext = stream.getvalue()
         context = {"source_sha": self.p_sha, "semwright_sha": self.s_sha,
                    "run_id": self.run_id, "run_attempt": "1"}
         envelope = seal.encrypt_snapshot(plaintext, self.recipient, context)
