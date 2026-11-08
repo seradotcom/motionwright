@@ -1,6 +1,11 @@
 //! Source-only edit/import/readback for the existing native Manim fixture.
 //! The caller owns native dispatch; this module cannot start or retry a job.
 use super::*;
+
+#[path = "recovery.rs"]
+mod recovery;
+#[path = "reference.rs"]
+mod reference;
 use motionwright_domain::Project;
 use motionwright_manim_profile::{SOURCE_BUNDLE_MIME_V2, editable_scene as profile};
 use motionwright_native::manim_editable_projection::{
@@ -8,6 +13,8 @@ use motionwright_native::manim_editable_projection::{
     inspect_saved_manim_editable_source, prepare_saved_manim_editable_source,
     preview_saved_manim_editable_edit, verify_rendered_manim_editable_source,
 };
+pub(super) use recovery::{readback_recovered, recover_edit, recover_edit_default_cas};
+pub(super) use reference::{readback_reference, rehydrate_reference};
 use std::{collections::BTreeMap, fs, io::Read};
 
 type SourceResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
