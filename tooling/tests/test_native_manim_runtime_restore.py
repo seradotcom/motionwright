@@ -5,9 +5,11 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
+from unittest import mock
 import tempfile
 import unittest
 
@@ -80,6 +82,40 @@ class RuntimeRestoreFocals(unittest.TestCase):
                        {"semwright_sha": "b" * 40}, {"run_id": True}, {"source_sha": "a" * 39}):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 reuse.context({**current, **update})
+
+    def test_current_source_lock_allows_wheels_only_without_relabeling_origin(self):
+        historical = {**reuse.ORIGIN, "source_sha": "a" * 40, "run_id": "1"}
+        current = {**historical, "semwright_sha": reuse.CURRENT_SDK}
+        self.assertEqual(current, reuse.context(current))
+        relation = reuse.sdk_relation(current)
+        self.assertEqual("reviewed-current-sdk-python-wheel-runtime-only", relation["scope"])
+        self.assertEqual(reuse.ORIGIN["semwright_sha"], relation["origin_sdk_sha"])
+        self.assertEqual(reuse.CURRENT_SDK, relation["current_sdk_sha"])
+        self.assertEqual(reuse.CURRENT_SOURCE_LOCK_SHA, relation["source_lock_sha256"])
+        self.assertIs(relation["native_effects_attested"], False)
+        self.assertEqual("historical-python-wheel-runtime-only",
+                         reuse.sdk_relation(historical)["scope"])
+        with mock.patch.dict(os.environ, {"GITHUB_SHA": historical["source_sha"],
+                                          "GITHUB_RUN_ID": historical["run_id"],
+                                          "GITHUB_RUN_ATTEMPT": "1"}):
+            self.assertEqual(current, reuse.context(current, hosted=True))
+            with self.assertRaisesRegex(ValueError, "runtime_reuse_exact_hosted_context"):
+                reuse.context(historical, hosted=True)
+            with self.assertRaisesRegex(ValueError, "runtime_reuse_exact_hosted_context"):
+                reuse.context({**current, "source_sha": "b" * 40}, hosted=True)
+
+    def test_current_sdk_relation_rejects_modified_lock_and_unknown_revision(self):
+        current = {**reuse.ORIGIN, "source_sha": "a" * 40, "run_id": "1",
+                   "semwright_sha": reuse.CURRENT_SDK}
+        with self.assertRaisesRegex(ValueError, "runtime_reuse_unreviewed_sdk"):
+            reuse.context({**current, "semwright_sha": "c" * 40})
+        with tempfile.TemporaryDirectory() as directory:
+            altered = Path(directory) / "SOURCE_LOCK.json"
+            altered.write_bytes(reuse.SOURCE_LOCK_PATH.read_bytes() + b" ")
+            with mock.patch.object(reuse, "SOURCE_LOCK_PATH", altered):
+                with self.assertRaisesRegex(ValueError, "runtime_reuse_source_lock_changed"):
+                    reuse.context(current)
+        self.assertEqual(current, reuse.context(current))
 
     def test_linux_arguments_keep_posix_paths_for_host_metadata_validation(self):
         argv = reuse.install_argv("/usr/bin/python3", "/tmp/runtime", "/home/runner/work/_temp/frozen")

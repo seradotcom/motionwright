@@ -29,6 +29,11 @@ MAX_SECONDS = 900
 ORIGIN = {"source_sha": "54c74f5366513a72f6f22d4f6641091362534a09",
           "semwright_sha": "acc0a089e2f0e3e9936632fb2a4aa0c2fab56199",
           "run_id": "42361964881", "run_attempt": "1"}
+# This relation concerns only the retained Python wheels. It does not claim
+# that an original acc0 Native/Host execution is valid on the newer SDK.
+CURRENT_SDK = "0b2406bee57fc15280abbdf25f1b89527bd8987c"
+CURRENT_SOURCE_LOCK_SHA = "8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5"
+SOURCE_LOCK_PATH = Path(__file__).resolve().parents[1] / "SOURCE_LOCK.json"
 ORIGIN_RECEIPT_SHA = "d54d3cc4e49fb0cda44d7da0106ad02532e06263b1e7a0f7083e18cafe8fe6dc"
 ORIGIN_ARTIFACT_SHA = "3f6540d9fb32483277867df66e8113effba386890253c7e3656f805213c4ab88"
 OBSERVER_SHA = "709be28b4e451482c4e2bdd03f2faaa8c79d12ee29af229801b22d105d81ce42"
@@ -52,18 +57,55 @@ def absolute(value):
             and len(value) <= 4096)
 
 
+def sdk_relation(current):
+    """Pin an explicit new wheel-only reuse context without rewriting ORIGIN.
+
+    Original SDK custody is historical. Reuse on the reviewed current SDK
+    remains a Python wheel installation observation, NOT a current SDK binary
+    or Native renderer compatibility/acceptance certificate.
+    """
+    sdk = current["semwright_sha"]
+    if sdk == ORIGIN["semwright_sha"]:
+        return {"scope": "historical-python-wheel-runtime-only",
+                "origin_sdk_sha": ORIGIN["semwright_sha"],
+                "current_sdk_sha": sdk, "source_lock_sha256": None,
+                "native_effects_attested": False}
+    need(sdk == CURRENT_SDK, "runtime_reuse_unreviewed_sdk")
+    original = SOURCE_LOCK_PATH.read_bytes()
+    need(0 < len(original) <= frozen.MAX_METADATA
+         and hashlib.sha256(original).hexdigest() == CURRENT_SOURCE_LOCK_SHA,
+         "runtime_reuse_source_lock_changed")
+    locked = frozen.strict(original)
+    selected = locked["dependencies"]["semwright"]
+    need(locked["schema_version"] == 1
+         and selected["repository"] == "https://github.com/seradotcom/semwright"
+         and selected["revision"] == sdk
+         and selected["verification"]["status"] == "verified"
+         and selected["verification"]["revision"] == sdk
+         and selected["verification"]["repository"] == selected["repository"],
+         "runtime_reuse_current_sdk_source_verification")
+    return {"scope": "reviewed-current-sdk-python-wheel-runtime-only",
+            "origin_sdk_sha": ORIGIN["semwright_sha"], "current_sdk_sha": sdk,
+            "source_lock_sha256": CURRENT_SOURCE_LOCK_SHA,
+            "native_effects_attested": False}
+
+
 def context(current, *, hosted=False):
     need(type(current) is dict and set(current) == set(ORIGIN)
          and all(type(current[key]) is str and re.fullmatch(r"[0-9a-f]{40}", current[key])
                  for key in ("source_sha", "semwright_sha"))
-         and current["semwright_sha"] == ORIGIN["semwright_sha"]
          and type(current["run_id"]) is str and re.fullmatch(r"[1-9][0-9]*", current["run_id"])
          and current["run_id"] != ORIGIN["run_id"] and current["run_attempt"] == "1",
          "runtime_reuse_new_explicit_context")
+    relation = sdk_relation(current)
     if hosted:
-        need(current["source_sha"] == os.environ.get("GITHUB_SHA")
+        # A historical acc0 request cannot describe this current 0b job.
+        # GitHub source identity is checked independently from its SDK pin.
+        need(relation["current_sdk_sha"] == CURRENT_SDK
+             and current["source_sha"] == os.environ.get("GITHUB_SHA")
              and current["run_id"] == os.environ.get("GITHUB_RUN_ID")
-             and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "runtime_reuse_exact_hosted_context")
+             and os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
+             "runtime_reuse_exact_hosted_context")
     return current
 
 
@@ -171,6 +213,7 @@ def validate_reuse(receipt_path, manifest_path, wheel_lock_path, reuse_path, cur
     value = frozen.object_file(reuse_path)
     need(value.get("schema") == SCHEMA and value.get("status") == STATUS
          and value.get("context") == current and value.get("origin_context") == ORIGIN
+         and value.get("sdk_relation") == sdk_relation(current)
          and value.get("origin_receipt_sha256") == ORIGIN_RECEIPT_SHA
          and value.get("origin_artifact") == artifact and value.get("archive") == origin["archive"]
          and value.get("input_lock_sha256") == frozen.LOCK_SHA
@@ -236,7 +279,8 @@ def validate_reuse(receipt_path, manifest_path, wheel_lock_path, reuse_path, cur
     need(stdout["written_bytes"] == artifact["artifact_zip_bytes"]
          and stdout["sha256"] == artifact["artifact_zip_sha256"], "runtime_reuse_downloaded_original_zip")
     binding["reuse"] = {"receipt_sha256": frozen.regular(reuse_path, frozen.MAX_METADATA)["sha256"],
-        "context": current, "origin_context": ORIGIN, "origin_receipt_sha256": ORIGIN_RECEIPT_SHA,
+        "context": current, "origin_context": ORIGIN, "sdk_relation": sdk_relation(current),
+        "origin_receipt_sha256": ORIGIN_RECEIPT_SHA,
         "origin_artifact": artifact, "source_build_invocations": 0,
         "exact_installed_files_reused": True, "exact_imported_native_files_reused": True}
     return binding
@@ -336,6 +380,7 @@ def restore(runtime, work, output, current, gh):
     output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     guard = Watch((work, runtime, output.parent))
     frozen.json_new(work / "reuse-intent.json", {"context": current, "origin_context": ORIGIN,
+        "sdk_relation": sdk_relation(current),
         "origin_receipt_sha256": ORIGIN_RECEIPT_SHA, "origin_artifact": artifact,
         "source_build_invocations": 0, "dependency_download_invocations": 0,
         "native_effect_invocations": 0, "project_inputs_read": False, "automatic_retry": False})
@@ -392,6 +437,7 @@ def restore(runtime, work, output, current, gh):
     frozen.check(runtime, work / "receipt.json")
     guard()
     value = {"schema": SCHEMA, "status": STATUS, "context": current, "origin_context": ORIGIN,
+        "sdk_relation": sdk_relation(current),
         "origin_receipt_sha256": ORIGIN_RECEIPT_SHA, "origin_artifact": artifact,
         "input_lock_sha256": frozen.LOCK_SHA, "runtime_path": str(runtime), "work_path": str(work),
         "python_executable": python, "python": origin["python"], "python_version": sys.version,
