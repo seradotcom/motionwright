@@ -5,7 +5,7 @@
 //! binds it to the original Host summary and final provider guard. Unsupported
 //! identity queries reject before Graph dispatch; no UUID, pathname, JSON flag
 //! or cached Ready replaces the connection witness or current Host authority.
-//! This executable must run under A6's private owner/custody lifecycle.
+//! This executable requires the private owner/custody lifecycle.
 
 #[path = "../../service/examples/studio_review_session.rs"]
 #[allow(dead_code)] // The shared executable also has its own main and test helpers.
@@ -28,7 +28,7 @@ use semantic_graph_recovery::{
     GraphRecoveryReadError, GraphRecoveryRequest, PreparedGraphRecovery,
 };
 use semwright_native_sdk::{
-    Error, Result as NativeResult,
+    Error, ErrorCode, Result as NativeResult,
     cooperation::{RecoveryRecord, RequestIdentity},
 };
 use serde_json::{Value, json};
@@ -42,7 +42,7 @@ const CONNECTION_ENV: &str = "MOTIONWRIGHT_GRAPH_CONNECTION";
 const BINDING_UNAVAILABLE: &str =
     "Native Graph cannot bind the actual opened Store and owner connection.";
 // These are the existing selected-custody ceiling values, not another owner
-// allowance. A6's enclosing collector must include these files in the SAME
+// allowance. The enclosing collector must account for these files in the same
 // 512 MiB / 4096-file pool with all other private originals.
 const MAX_PRIVATE_FILES: usize = 4096;
 const MAX_PRIVATE_TOTAL_BYTES: usize = 512 * 1024 * 1024;
@@ -51,6 +51,82 @@ const CALLBACK_LIMIT_ENV: &str = "MOTIONWRIGHT_GRAPH_CALLBACK_CAP";
 const PRIVATE_BYTES_ENV: &str = "MOTIONWRIGHT_GRAPH_PRIVATE_MAX_BYTES";
 const PRIVATE_FILES_ENV: &str = "MOTIONWRIGHT_GRAPH_PRIVATE_MAX_FILES";
 const CALLBACK_UNAVAILABLE: &str = "Native Graph callback admission is unavailable.";
+
+/// Closed read-only context failure taxonomy. Every public value is a literal
+/// schema/stage and (only when present) a pinned Semwright ErrorCode variant.
+/// Actual messages, candidates, DTOs, raw envelopes and paths stay private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphContextStage {
+    Admission,
+    Binding,
+    Custody,
+    Local,
+    Transport,
+    Native,
+}
+
+impl GraphContextStage {
+    fn label(self) -> &'static str {
+        match self {
+            GraphContextStage::Admission => "ADMISSION",
+            GraphContextStage::Binding => "BINDING",
+            GraphContextStage::Custody => "CUSTODY",
+            GraphContextStage::Local => "LOCAL",
+            GraphContextStage::Transport => "TRANSPORT",
+            GraphContextStage::Native => "NATIVE",
+        }
+    }
+}
+
+/// An exhaustive SDK enum match deliberately fails compilation if the source
+/// pin adds a code before review. No Debug/display serialization.
+fn graph_context_code(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Unsupported => "Unsupported",
+        ErrorCode::Unavailable => "Unavailable",
+        ErrorCode::PermissionDenied => "PermissionDenied",
+        ErrorCode::ConsentRequired => "ConsentRequired",
+        ErrorCode::PolicyDenied => "PolicyDenied",
+        ErrorCode::NotFound => "NotFound",
+        ErrorCode::AmbiguousTarget => "AmbiguousTarget",
+        ErrorCode::StaleReference => "StaleReference",
+        ErrorCode::BackendFailed => "BackendFailed",
+        ErrorCode::Timeout => "Timeout",
+        ErrorCode::InvalidArgument => "InvalidArgument",
+        ErrorCode::PluginProtocolError => "PluginProtocolError",
+        ErrorCode::SandboxDenied => "SandboxDenied",
+        ErrorCode::Conflict => "Conflict",
+        ErrorCode::Cancelled => "Cancelled",
+        ErrorCode::Internal => "Internal",
+        ErrorCode::ProtocolMismatch => "ProtocolMismatch",
+        ErrorCode::ResourceExhausted => "ResourceExhausted",
+    }
+}
+
+fn graph_context_failure(stage: GraphContextStage, error: Option<&Error>) -> Value {
+    json!({
+        "schema":"motionwright.native.graph-context-failure/1",
+        "stage":stage.label(),
+        "error_code":error.map(|error| graph_context_code(error.code)),
+    })
+}
+
+/// Transport uncertainty outranks even an otherwise original Native error.
+/// Only the typed Core envelope can identify a genuine Native rejection.
+fn graph_context_report_failure(
+    error: &Error,
+    original_native: bool,
+    transport_failed: bool,
+) -> Value {
+    let stage = if transport_failed {
+        GraphContextStage::Transport
+    } else if original_native {
+        GraphContextStage::Native
+    } else {
+        GraphContextStage::Local
+    };
+    graph_context_failure(stage, Some(error))
+}
 
 /// Restrictions supplied by the existing parent allocation. No value here
 /// grants SDK authority or chooses a different connection/session file.
@@ -152,7 +228,7 @@ impl CallbackBudget {
     }
 }
 
-// A1 owns UUID validation and the closed public mutation DTO. This adapter
+// UUID validation and the public mutation DTO belong to the shared codec. This adapter
 // supplies only the actual phase and, when present, the original typed error;
 // it never parses diagnostics, raw envelopes, error codes or recipe progress.
 fn mutation_failure(failure: Result<GraphInvokeFailure, InvalidGraphRequestId>) -> Value {
@@ -365,7 +441,7 @@ impl PrivateOriginals {
         {
             self.stopped = true;
             self.unpublished = Some(result);
-            // A6 preserves this private stderr plus any partial original file.
+            // The enclosing collector retains private stderr and partial original files.
             // The private original remains unchanged; public projection fails.
             eprintln!(
                 "NATIVE_GRAPH_PRIVATE_CUSTODY_INCOMPLETE; original outcome preserved; no retry"
@@ -397,7 +473,7 @@ fn begin_recovery_read(
         .map_err(|_| recovery_read_error(GraphRecoveryReadError::InvalidRequest))?;
     let prepared = request.prepare().map_err(recovery_read_error)?;
     // Keep the exact Session Value and original key/source before a constructor
-    // or Native read. The pure A1 codec owns canonical identity preparation.
+    // or Native read. The pure recovery codec prepares canonical identity.
     // No current Project, branch, revision or Graph existence is substituted.
     let sequence = originals
         .begin(json!({
@@ -447,8 +523,8 @@ impl NativeGraphBackend {
         connection_file: &Path,
         restrictions: ClientRestrictions,
     ) -> Result<Self, String> {
-        // Parsed once by main before opening this actual Service/SQLite. A6
-        // precharges its declared per-client C_i in the existing SharedPool.
+        // Parsed once by main before opening this actual Service/SQLite. The
+        // enclosing controller precharges declared per-client C_i in SharedPool.
         let connection = ProductionConnection::load(connection_file)
             .map_err(|_| "Native Graph connection is unavailable or invalid")?;
         let mut originals = PrivateOriginals::create(connection_file, restrictions)?;
@@ -544,7 +620,8 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         _database: &Path,
         request: &SemanticGraphContextRequest,
     ) -> Result<GraphAuthoringContext, Value> {
-        self.reserve_callback().map_err(Value::String)?;
+        self.reserve_callback()
+            .map_err(|_| graph_context_failure(GraphContextStage::Admission, None))?;
         // One fresh bounded capture per explicit callback, using the same
         // original owner connection. No old capture is evicted or reset.
         let transport = ProductionTransportCustody::default();
@@ -557,24 +634,35 @@ impl shared_session::GraphBackend for NativeGraphBackend {
                 "original_context_request":request,
                 "automatic_retry":false,
             }))
-            .map_err(|_| Value::String("Native Graph original custody is unavailable".into()))?;
+            .map_err(|_| graph_context_failure(GraphContextStage::Custody, None))?;
         let client = match NativeGraphRecipeClient::new(self.connection.clone(), service) {
             Ok(client) => client.with_transport_custody(&transport),
             Err(error) => {
+                // The actual typed binding failure is privately retained first.
+                let public = graph_context_failure(GraphContextStage::Binding, Some(&error));
                 self.retain::<GraphAuthoringContext>(sequence, &Err(error), &transport)
-                    .map_err(Value::String)?;
-                return Err(Value::String(BINDING_UNAVAILABLE.into()));
+                    .map_err(|_| graph_context_failure(GraphContextStage::Custody, None))?;
+                return Err(public);
             }
         };
         let report = self.runtime.block_on(client.authoring_context(request));
+        // Keep original private outcome/error envelope and transport custody
+        // ahead of any public classification; failure here overrides it.
         self.retain(sequence, &report, &transport)
-            .map_err(Value::String)?;
+            .map_err(|_| graph_context_failure(GraphContextStage::Custody, None))?;
+        let transport_failed = transport.has_unconfirmed_or_failed_invocation();
         match report {
-            Ok(report) => report
-                .outcome()
-                .cloned()
-                .map_err(|_| Value::String("Native Graph context is unavailable".into())),
-            Err(_) => Err(Value::String("Native Graph context is unavailable".into())),
+            Ok(report) => {
+                let original_native = report.original_native_error().is_some();
+                report.outcome().cloned().map_err(|error| {
+                    graph_context_report_failure(error, original_native, transport_failed)
+                })
+            }
+            Err(error) => Err(graph_context_report_failure(
+                &error,
+                false,
+                transport_failed,
+            )),
         }
     }
 
@@ -603,7 +691,7 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             .runtime
             .block_on(client.operation_recovery(prepared.identity()));
         // Preserve every actual envelope, typed failure and binary transport
-        // observation BEFORE A1 validates the historical read DTO.
+        // observation before validating the historical read DTO.
         self.retain(sequence, &report, &transport)
             .map_err(|_| recovery_read_error(GraphRecoveryReadError::ReadFailed))?;
         let exchange =
@@ -727,6 +815,106 @@ mod native_graph_adapter_tests {
     use uuid::Uuid;
 
     const ORIGINAL_KEY: &str = "ABCDEF12-3456-4789-aBcD-EF1234567890";
+
+    #[test]
+    fn graph_context_public_stage_and_pinned_error_code_rosters_are_closed() {
+        assert_eq!(
+            [
+                GraphContextStage::Admission,
+                GraphContextStage::Binding,
+                GraphContextStage::Custody,
+                GraphContextStage::Local,
+                GraphContextStage::Transport,
+                GraphContextStage::Native,
+            ]
+            .map(GraphContextStage::label),
+            [
+                "ADMISSION",
+                "BINDING",
+                "CUSTODY",
+                "LOCAL",
+                "TRANSPORT",
+                "NATIVE"
+            ]
+        );
+        let exact = [
+            (ErrorCode::Unsupported, "Unsupported"),
+            (ErrorCode::Unavailable, "Unavailable"),
+            (ErrorCode::PermissionDenied, "PermissionDenied"),
+            (ErrorCode::ConsentRequired, "ConsentRequired"),
+            (ErrorCode::PolicyDenied, "PolicyDenied"),
+            (ErrorCode::NotFound, "NotFound"),
+            (ErrorCode::AmbiguousTarget, "AmbiguousTarget"),
+            (ErrorCode::StaleReference, "StaleReference"),
+            (ErrorCode::BackendFailed, "BackendFailed"),
+            (ErrorCode::Timeout, "Timeout"),
+            (ErrorCode::InvalidArgument, "InvalidArgument"),
+            (ErrorCode::PluginProtocolError, "PluginProtocolError"),
+            (ErrorCode::SandboxDenied, "SandboxDenied"),
+            (ErrorCode::Conflict, "Conflict"),
+            (ErrorCode::Cancelled, "Cancelled"),
+            (ErrorCode::Internal, "Internal"),
+            (ErrorCode::ProtocolMismatch, "ProtocolMismatch"),
+            (ErrorCode::ResourceExhausted, "ResourceExhausted"),
+        ];
+        for (code, name) in exact {
+            assert_eq!(graph_context_code(code), name);
+        }
+        assert_eq!(
+            graph_context_failure(GraphContextStage::Admission, None),
+            json!({"schema":"motionwright.native.graph-context-failure/1",
+                   "stage":"ADMISSION","error_code":null})
+        );
+        assert_eq!(
+            graph_context_failure(GraphContextStage::Custody, None),
+            json!({"schema":"motionwright.native.graph-context-failure/1",
+                   "stage":"CUSTODY","error_code":null})
+        );
+    }
+
+    #[test]
+    fn graph_context_public_error_projection_redacts_every_private_message() {
+        let mut original = Error::new(
+            ErrorCode::PolicyDenied,
+            "PRIVATE_MESSAGE_NEVER_PUBLIC: /synthetic/private/connection",
+        )
+        .recipe_progress(3, "PRIVATE_RECIPE_PROGRESS_NEVER_PUBLIC")
+        .uncertain();
+        original
+            .candidates
+            .push("PRIVATE_CANDIDATE_NEVER_PUBLIC".into());
+        let private_before = serde_json::to_value(&original).unwrap();
+        let cases = [
+            (true, false, "NATIVE"),
+            (false, false, "LOCAL"),
+            (false, true, "TRANSPORT"),
+            // An unconfirmed transport takes precedence over native origin.
+            (true, true, "TRANSPORT"),
+        ];
+        for (native_original, transport_failed, stage) in cases {
+            let public = graph_context_report_failure(&original, native_original, transport_failed);
+            assert_eq!(
+                public,
+                json!({"schema":"motionwright.native.graph-context-failure/1",
+                       "stage":stage,"error_code":"PolicyDenied"})
+            );
+            assert_eq!(public.as_object().unwrap().len(), 3);
+            let serialized = serde_json::to_string(&public).unwrap();
+            for private in [
+                "PRIVATE_MESSAGE_NEVER_PUBLIC",
+                "PRIVATE_RECIPE_PROGRESS_NEVER_PUBLIC",
+                "PRIVATE_CANDIDATE_NEVER_PUBLIC",
+                "/synthetic/private/connection",
+                "message",
+                "candidates",
+                "envelope",
+                "outcome_known",
+            ] {
+                assert!(!serialized.contains(private), "leaked {private}");
+            }
+        }
+        assert_eq!(serde_json::to_value(&original).unwrap(), private_before);
+    }
 
     // Private file controls do not dispatch a callback or select the real C_i.
     fn fixture_restrictions() -> ClientRestrictions {
@@ -1484,7 +1672,7 @@ mod native_graph_adapter_tests {
         let connection = directory.path().join("client.json");
         let mut originals = PrivateOriginals::create(&connection, fixture_restrictions()).unwrap();
         // Nine is this pure fixture's declared callback cap, not a default or
-        // the callback count of any real A6 launch.
+        // the callback count of any actual production launch.
         let mut callbacks = CallbackBudget::new(9);
         for index in 0..9 {
             assert_eq!(callbacks.reserve().unwrap(), index + 1);
