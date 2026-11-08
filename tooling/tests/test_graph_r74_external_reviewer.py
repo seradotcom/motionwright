@@ -1,5 +1,6 @@
 """Inert offline-only originals for independent Graph R74 pre-effect review."""
 import base64
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -23,6 +24,10 @@ import graph_r74_external_reviewer as reviewer
 
 
 class IndependentR74ReviewerTests(unittest.TestCase):
+    CASE_IDS = (
+        "graph-source-review", "graph-flow", "graph-lost-reply", "graph-removal",
+        "graph-label-causal-diagram", "graph-label-system-flow",
+    )
     PRODUCT = (
         "SOURCE_LOCK.json", "Cargo.lock", "tooling/ci_canvas_service.py",
         "tooling/ci_private_evidence.py", "tooling/native_graph_browser_owner.py",
@@ -56,7 +61,8 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                           "sha256": reviewer.sha(der)}
         self.run_id = "42400011223"
 
-    def git(self, root, names, *, pin_revision=None, cargo_revision=None):
+    def git(self, root, names, *, pin_revision=None, cargo_revision=None,
+            cohort_literal=True, cohort_suffix=""):
         root.mkdir()
         def call(*args):
             r = subprocess.run(["git", "-C", str(root), *args],capture_output=True)
@@ -79,6 +85,14 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                 data = (f'[[package]]\nname = "semwright-native-sdk"\n'
                         f'version = "1.0.0"\n'
                         f'source = "git+https://github.com/seradotcom/semwright?rev={cargo_pin}#{cargo_pin}"\n').encode()
+            if pin_revision is not None and name == "tooling/ci_canvas_service.py":
+                caps = ((5, 0), (2, 0), (5, 0), (2, 2, 0), (5, 2, 0), (5, 2, 0))
+                cohort = tuple((case, "Fixture " + case, limit)
+                               for case, limit in zip(self.CASE_IDS, caps))
+                declaration = repr(cohort) if cohort_literal else "tuple(" + repr(cohort) + ")"
+                # Trusted source is parsed, never imported or executed by review.
+                data = ("GRAPH_CASES = " + declaration + "\n" + cohort_suffix +
+                        "\nraise RuntimeError('fixture source must never execute')\n").encode()
             p.write_bytes(data)
             rows[name] = {"bytes": len(data), "sha256": reviewer.sha(data)}
         call("add", ".")
@@ -88,7 +102,8 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         return root, sha, tree, rows
 
     def make_artifact(self, name="original", *, fake_source_digest=False,
-                      missing_manifest=False, forged_binary_binding=False):
+                      missing_manifest=False, forged_binary_binding=False,
+                      case_mode="graph-flow", context_cases=None, contract_cases=None):
         producer = self.root / ("producer-" + name)
         producer.mkdir()
         producer_namespace = PurePosixPath("/tmp/graph-review-inert/producer")
@@ -99,8 +114,20 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         source = {"sha": self.p_sha, "sdk_sha": self.s_sha,
                   "tree": self.p_tree, "run_id": self.run_id,
                   "run_attempt": 1}
-        execution = {"scope": "phase1-native-graph", "job": "real-service",
-                     "selected_case": "graph-flow"}
+        execution = {"scope": "phase1-native-graph", "job": "real-service"}
+        if case_mode == "graph-flow":
+            execution["selected_case"] = "graph-flow"
+        if context_cases is None:
+            context_cases = self.CASE_IDS if case_mode == "all" else ("graph-flow",)
+        if contract_cases is None:
+            contract_cases = self.CASE_IDS
+        callback_caps = ((5, 0), (2, 0), (5, 0), (2, 2, 0), (5, 2, 0), (5, 2, 0))
+        caps_by_case = dict(zip(self.CASE_IDS, callback_caps))
+        declared_cases = {case: {"title": "Fixture " + case,
+                               "callback_caps": list(caps_by_case.get(case, (2, 0))),
+                               "roster_source_files": ["apps/studio/tests/semantic-graph-service.spec.ts",
+                                                       "crates/native/examples/native-graph-review-session.rs"]}
+                          for case in contract_cases}
         product_rows = dict(self.p_rows)
         if fake_source_digest:
             first = "SOURCE_LOCK.json"
@@ -112,7 +139,8 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                        "size_bytes": len(b"original-python-ELF" if role == "python3" else b"original-ffmpeg-ELF")}
                        for role in ("python3", "ffmpeg")},
           "contract": {"source_files": product_rows, "sdk_files": self.s_rows,
-                       "sdk_tree": self.s_tree, "execution": execution},
+                       "sdk_tree": self.s_tree, "execution": execution,
+                       "cases": declared_cases},
         }
         if forged_binary_binding:
             index["binaries"]["python3"]["sha256"] = "f" * 64
@@ -130,7 +158,8 @@ class IndependentR74ReviewerTests(unittest.TestCase):
           "source": source, "execution": execution,
           "index": {"path": str(producer_namespace / index_path.name), "sha256": reviewer.sha(index_raw),
                     "size_bytes": len(index_raw)},
-          "contexts": ["mw-owner/phase1-native-graph/"+self.run_id+"/1/graph-flow"],
+          "contexts": ["mw-owner/phase1-native-graph/" + self.run_id + "/1/" + case
+                       for case in context_cases],
           "outside_original_copies": copy_refs,
         }
         request_path.write_bytes(seal.json_bytes(request))
@@ -189,6 +218,71 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         path = self.make_artifact(name, **kwargs)
         return self._review_fixture(path,self.keyfile,self.product,self.sdk,
                         self.p_sha,self.s_sha,self.run_id)
+
+    def test_cli_all_authenticates_literal_source_cohort_without_owner_admission(self):
+        artifact = self.make_artifact("all-cli", case_mode="all")
+        output = self.root / "all-review.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        argv = ["--artifact-path", str(artifact), "--private-key", str(self.keyfile),
+                "--trusted-product", str(self.product), "--trusted-semwright", str(self.sdk),
+                "--source-sha", self.p_sha, "--semwright-sha", self.s_sha,
+                "--run-id", self.run_id, "--output", str(output), "--case-mode", "all"]
+        try:
+            with mock.patch.object(reviewer, "_require_independent_environment"), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                reviewer.main(argv)
+        except SystemExit as error:
+            self.fail(f"all-cohort CLI exited {error.code}: {stderr.getvalue()}")
+        receipt = reviewer.json_original(output.read_bytes())
+        contexts = ["mw-owner/phase1-native-graph/" + self.run_id + "/1/" + case
+                    for case in self.CASE_IDS]
+        self.assertEqual(receipt["schema"], "motionwright.graph-independent-pre-effect-review/2")
+        self.assertEqual(receipt["case_mode"], "all")
+        self.assertEqual(receipt["cases"], list(self.CASE_IDS))
+        self.assertEqual(receipt["contexts"], contexts)
+        self.assertNotIn("case", receipt)
+        self.assertEqual(receipt["decision"], "SOURCE_CARRIER_AUTHENTICATED_NO_OWNER_ADMISSION_NO_G2")
+        self.assertFalse(receipt["native_effects_observed"])
+        self.assertFalse(receipt["github_status_written"])
+        self.assertEqual(receipt["G2"], "NOT_GRANTED")
+        self.assertEqual(receipt["Graph6"], "0/6")
+        self.assertEqual(json.loads(stdout.getvalue())["receipt_sha256"],
+                         reviewer.sha(output.read_bytes()))
+
+    def test_all_rejects_cross_scope_and_nonexact_context_rosters(self):
+        scenarios = [
+            ("all-as-flow", "all", None, "graph-flow", None),
+            ("flow-as-all", "graph-flow", None, "all", None),
+            ("missing", "all", self.CASE_IDS[:-1], "all", None),
+            ("extra", "all", (*self.CASE_IDS, "foreign"), "all", None),
+            ("duplicate", "all", (*self.CASE_IDS[:-1], self.CASE_IDS[0]), "all", None),
+            ("reordered", "all", tuple(reversed(self.CASE_IDS)), "all", None),
+            ("contract-missing", "all", None, "all", self.CASE_IDS[:-1]),
+            ("contract-extra", "all", None, "all", (*self.CASE_IDS, "foreign")),
+        ]
+        for name, artifact_mode, contexts, review_mode, contract_cases in scenarios:
+            with self.subTest(scenario=name):
+                artifact = self.make_artifact(name, case_mode=artifact_mode, context_cases=contexts,
+                                              contract_cases=contract_cases)
+                with self.assertRaises(reviewer.ReviewRejected):
+                    self._review_fixture(artifact, self.keyfile, self.product, self.sdk,
+                                         self.p_sha, self.s_sha, self.run_id, case_mode=review_mode)
+
+    def test_all_rejects_trusted_source_without_literal_six_case_declaration(self):
+        variants = (
+            ("nonliteral", False, ""),
+            ("augmented", True, "GRAPH_CASES += (('foreign', 'Foreign', (0,)),)\n"),
+            ("conditional", True, "if True:\n    GRAPH_CASES = ()\n"),
+        )
+        for name, literal, suffix in variants:
+            with self.subTest(source=name):
+                self.product, self.p_sha, self.p_tree, self.p_rows = self.git(
+                    self.root / (name + "-cohort"), self.PRODUCT,
+                    pin_revision=self.s_sha, cohort_literal=literal, cohort_suffix=suffix)
+                artifact = self.make_artifact(name + "-all", case_mode="all")
+                with self.assertRaises(reviewer.ReviewRejected):
+                    self._review_fixture(artifact, self.keyfile, self.product, self.sdk,
+                                         self.p_sha, self.s_sha, self.run_id, case_mode="all")
 
     def test_indexed_runtime_binary_copy_is_bound_to_original_identity(self):
         # Valid envelope/copy manifest must not relabel the indexed Python
@@ -330,10 +424,11 @@ class IndependentR74ReviewerTests(unittest.TestCase):
             for forbidden in ({"GITHUB_ACTIONS": "true"},
                               {"GITHUB_ACTIONS": "false", "MOTIONWRIGHT_GRAPH_PRODUCER_RUN": "1"}):
                 with self.subTest(environment=forbidden), mock.patch.dict(os.environ, forbidden):
-                    with self.assertRaisesRegex(reviewer.ReviewRejected,
-                                                "INDEPENDENT_ONLY_NEVER_RUNNER"):
-                        reviewer.review(path, self.keyfile, self.product, self.sdk,
-                                        self.p_sha, self.s_sha, self.run_id)
+                    for scope in ({}, {"case_mode": "all"}):
+                        with self.subTest(scope=scope), self.assertRaisesRegex(
+                                reviewer.ReviewRejected, "INDEPENDENT_ONLY_NEVER_RUNNER"):
+                            reviewer.review(path, self.keyfile, self.product, self.sdk,
+                                            self.p_sha, self.s_sha, self.run_id, **scope)
             read_key.assert_not_called()
             read_archive.assert_not_called()
         owner_key = self.product / "owner-key.pem"
