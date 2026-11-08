@@ -33,6 +33,7 @@ use semwright_native_sdk::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -301,6 +302,9 @@ struct PrivateOriginals {
     next: usize,
     reserved_files: usize,
     reserved_bytes: usize,
+    // Outstanding result records hold their entire 16 MiB ceiling until
+    // durable finish. This is a reservation, never a refund of spent bytes.
+    pending_results: BTreeSet<usize>,
     maximum_files: usize,
     maximum_bytes: usize,
     stopped: bool,
@@ -356,6 +360,7 @@ impl PrivateOriginals {
             next: 0,
             reserved_files: 0,
             reserved_bytes: 0,
+            pending_results: BTreeSet::new(),
             maximum_files: restrictions.private_files,
             maximum_bytes: restrictions.private_bytes,
             stopped: false,
@@ -407,23 +412,43 @@ impl PrivateOriginals {
     }
 
     fn begin(&mut self, request: Value) -> Result<usize, String> {
-        // Reserve room for this request and its maximum possible result BEFORE
-        // dispatch. A later custody error preserves the private Native original
-        // but prevents publishing success, known rejection or read readiness.
-        if self.stopped
-            || self
-                .reserved_files
-                .checked_add(2)
+        // Reserve the complete serialized request plus one maximum-size
+        // result BEFORE dispatch. Do not charge two 16 MiB maxima: the
+        // production parent provides only 32 MiB and a prior factory record
+        // already spent positive bytes. All existing pending result maxima
+        // remain held while another begin is considered.
+        if self.stopped {
+            return Err("Native Graph original custody has no capacity for another request".into());
+        }
+        let request_encoded_len = serde_json::to_vec(&request)
+            .map_err(|_| "Native Graph private record encoding failed")?
+            .len();
+        let pending_file_slots = self.pending_results.len().checked_add(2);
+        let pending_result_bytes = self
+            .pending_results
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(MAX_PRIVATE_RECORD_BYTES));
+        let required_bytes = pending_result_bytes.and_then(|pending| {
+            self.reserved_bytes
+                .checked_add(request_encoded_len)?
+                .checked_add(pending)
+        });
+        if request_encoded_len > MAX_PRIVATE_RECORD_BYTES
+            || pending_file_slots
+                .and_then(|slots| self.reserved_files.checked_add(slots))
                 .is_none_or(|files| files > self.maximum_files)
-            || self
-                .reserved_bytes
-                .checked_add(2 * MAX_PRIVATE_RECORD_BYTES)
-                .is_none_or(|bytes| bytes > self.maximum_bytes)
+            || required_bytes.is_none_or(|bytes| bytes > self.maximum_bytes)
         {
             return Err("Native Graph original custody has no capacity for another request".into());
         }
         let sequence = self.next;
-        self.next += 1; // Latch before any write; never reuse an uncertain name.
+        self.next = self
+            .next
+            .checked_add(1)
+            .ok_or("Native Graph original sequence capacity exhausted")?;
+        // An uncertain/partial request write consumes actual charges and
+        // stops further admission; the name cannot be reused or refunded.
         if let Err(error) =
             self.write_new(&format!("{sequence:02}.request.original.json"), &request)
         {
@@ -431,10 +456,18 @@ impl PrivateOriginals {
             self.unpublished = Some(request);
             return Err(error);
         }
+        // Hold the result maximum until its original has been durably stored.
+        // A second begin cannot consume this reservation.
+        self.pending_results.insert(sequence);
         Ok(sequence)
     }
 
     fn finish(&mut self, sequence: usize, result: Value) -> Result<(), String> {
+        if !self.pending_results.contains(&sequence) {
+            self.stopped = true;
+            self.unpublished = Some(result);
+            return Err("Native Graph original result has no prior reserved request".into());
+        }
         if self
             .write_new(&format!("{sequence:02}.result.original.json"), &result)
             .is_err()
@@ -448,6 +481,9 @@ impl PrivateOriginals {
             );
             return Err("Native Graph original custody is unavailable".into());
         }
+        // Release only the virtual maximum-size hold, not the actual bytes or
+        // file count already charged by durable request/result originals.
+        self.pending_results.remove(&sequence);
         Ok(())
     }
 }
@@ -1147,6 +1183,143 @@ mod native_graph_adapter_tests {
         );
         assert_eq!(originals.reserved_files, 0);
         assert_eq!(fs::read_dir(&originals.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn parent_journal_32mib_factory_then_context_reserves_result_before_dispatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let restrictions = ClientRestrictions {
+            callbacks: 2,
+            private_bytes: 32 * 1024 * 1024,
+            private_files: 384,
+        };
+        let mut originals =
+            PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
+        let factory_request = json!({
+            "schema":"motionwright.native.graph-review-private-request/1",
+            "operation":"factory_bind_actual_service",
+            "native_dispatch_attempted":false,
+            "automatic_retry":false,
+        });
+        let factory_result = json!({
+            "schema":"motionwright.native.graph-review-private-result/1",
+            "result":{"constructor_result":"returned_typed_client",
+                      "native_dispatch_attempted":false},
+            "automatic_retry":false,
+        });
+        let first = originals.begin(factory_request.clone()).unwrap();
+        assert_eq!(first, 0);
+        assert!(originals.pending_results.contains(&first));
+        originals.finish(first, factory_result.clone()).unwrap();
+        assert!(originals.pending_results.is_empty());
+        let factory_bytes = serde_json::to_vec(&factory_request).unwrap().len()
+            + serde_json::to_vec(&factory_result).unwrap().len();
+        assert_eq!(originals.reserved_bytes, factory_bytes);
+        assert_eq!(originals.reserved_files, 2);
+
+        let context_request = json!({
+            "schema":"motionwright.native.graph-review-private-request/1",
+            "operation":"authoring_context",
+            "callback_restriction":{"maximum_callbacks":2,"refunds":0},
+            "original_context_request":{"source_snapshot":"synthetic-original"},
+            "automatic_retry":false,
+        });
+        let context_len = serde_json::to_vec(&context_request).unwrap().len();
+        let second = originals.begin(context_request.clone()).unwrap();
+        assert_eq!(second, 1);
+        // The full request was written BEFORE a client can dispatch Native.
+        assert_eq!(
+            fs::read(originals.root.join("01.request.original.json")).unwrap(),
+            serde_json::to_vec(&context_request).unwrap()
+        );
+        assert_eq!(originals.reserved_bytes, factory_bytes + context_len);
+        assert_eq!(originals.reserved_files, 3);
+        assert!(originals.pending_results.contains(&second));
+        let context_result = json!({
+            "schema":"motionwright.native.graph-review-private-result/1",
+            "result":{"outcome":"synthetic-source-only"},
+            "automatic_retry":false,
+        });
+        originals.finish(second, context_result.clone()).unwrap();
+        assert!(originals.pending_results.is_empty());
+        assert_eq!(originals.reserved_files, 4);
+        assert_eq!(
+            originals.reserved_bytes,
+            factory_bytes + context_len + serde_json::to_vec(&context_result).unwrap().len()
+        );
+        assert!(originals.reserved_bytes <= restrictions.private_bytes);
+        assert!(!originals.stopped);
+    }
+
+    #[test]
+    fn parent_journal_32mib_denies_without_result_capacity_or_refund() {
+        let directory = tempfile::tempdir().unwrap();
+        let restrictions = ClientRestrictions {
+            callbacks: 2,
+            private_bytes: 32 * 1024 * 1024,
+            private_files: 384,
+        };
+        let mut originals =
+            PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
+        let request = json!({"operation":"factory_bind_actual_service","synthetic":true});
+        let first = originals.begin(request.clone()).unwrap();
+        let original_charge = serde_json::to_vec(&request).unwrap().len();
+        assert_eq!(originals.reserved_bytes, original_charge);
+        assert_eq!(originals.reserved_files, 1);
+        assert!(originals.pending_results.contains(&first));
+        // The pending maximum result already occupies 16 MiB. A second begin
+        // would require another 16 MiB plus its positive encoded request.
+        assert!(
+            originals
+                .begin(json!({"operation":"authoring_context"}))
+                .is_err()
+        );
+        assert_eq!(originals.next, 1);
+        assert_eq!(originals.reserved_bytes, original_charge);
+        assert_eq!(originals.reserved_files, 1);
+        assert!(!originals.root.join("01.request.original.json").exists());
+        assert!(originals.pending_results.contains(&first));
+        let result = json!({"private_original":"completed-inert-factory"});
+        originals.finish(first, result.clone()).unwrap();
+        let completed_charge = original_charge + serde_json::to_vec(&result).unwrap().len();
+        assert_eq!(originals.reserved_bytes, completed_charge);
+        assert_eq!(originals.reserved_files, 2);
+        assert!(originals.pending_results.is_empty());
+
+        // Once the result is durably retained, the virtual 16 MiB hold can
+        // be released; the completed request/result bytes remain spent.
+        let second = originals
+            .begin(json!({"operation":"authoring_context"}))
+            .unwrap();
+        assert_eq!(second, 1);
+        assert!(originals.pending_results.contains(&second));
+        assert!(originals.reserved_bytes > completed_charge);
+        originals
+            .finish(second, json!({"synthetic":"result"}))
+            .unwrap();
+        assert!(originals.pending_results.is_empty());
+        assert_eq!(originals.reserved_files, 4);
+
+        let smaller = tempfile::tempdir().unwrap();
+        let mut denied = PrivateOriginals::create(
+            &smaller.path().join("client.json"),
+            ClientRestrictions {
+                callbacks: 1,
+                private_bytes: MAX_PRIVATE_RECORD_BYTES + 8,
+                private_files: 384,
+            },
+        )
+        .unwrap();
+        assert!(
+            denied
+                .begin(json!({"operation":"authoring_context"}))
+                .is_err()
+        );
+        assert_eq!(denied.next, 0);
+        assert_eq!(denied.reserved_bytes, 0);
+        assert_eq!(denied.reserved_files, 0);
+        assert!(denied.pending_results.is_empty());
+        assert_eq!(fs::read_dir(&denied.root).unwrap().count(), 0);
     }
 
     #[test]
