@@ -476,8 +476,14 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       if (!mounted.current || token !== epoch.current || sequence !== session.draft.sequence || !graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project)) || profileId !== session.draft.input.variant_profile_ref) return;
       const issue = graphAdmissionIssue(current.current.project, session.draft.sceneId, profileId, value); setContext(value); if (issue) session.error = issue;
       terminal = "GRAPH_CONTEXT_INSPECTION_RESOLVED";
-    } catch (reason) {
-      if (mounted.current && token === epoch.current) { session.error = message(reason); terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"; }
+    } catch {
+      // The native/session backend retains the actual failed result privately.
+      // No arbitrary RPC Error.message, host path, DTO or stack may reach the
+      // Graph workbench DOM; source-owned closed inspection codes remain intact.
+      if (mounted.current && token === epoch.current) {
+        session.error = "GRAPH_CONTEXT_INSPECTION_REJECTED: current-source inspection failed; Save remains unavailable.";
+        terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED";
+      }
     } finally {
       // A completed callback is a terminal observation, not proof of Ready.
       // Invalidated source/edits remain obsolete and require a fresh inspection.

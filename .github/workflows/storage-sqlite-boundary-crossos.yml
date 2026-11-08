@@ -74,7 +74,7 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
-          foundation_reviewed_source="4be2d903ae7502b81a9ddfcc833bf3d926fd6a15"
+          foundation_reviewed_source="0401f4365905df8d34535b4b237761f05d8aa8b5"
           desktop_workflow_lock_reviewed_source="2ee2b76d45229d8da4f9c22162ed2307797df377"
           pins={'crates/storage/src/portability.rs': 'f4e5337c5474cd280ca5e71534f4f238b28a63cd3330d9b44892cbc2f8b0de00', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'de58802a30c5e805116ae1b2feef237963366402224705f96a0cda2c44461f11', 'Cargo.lock': '716a898c2c59be185cf854e2f59b7a300f9c29a96dcfc7a973b97038b2e10746', 'SOURCE_LOCK.json': '8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
@@ -218,7 +218,7 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
-          foundation_reviewed_source="4be2d903ae7502b81a9ddfcc833bf3d926fd6a15"
+          foundation_reviewed_source="0401f4365905df8d34535b4b237761f05d8aa8b5"
           desktop_workflow_lock_reviewed_source="2ee2b76d45229d8da4f9c22162ed2307797df377"
           pins={'crates/storage/src/portability.rs': 'f4e5337c5474cd280ca5e71534f4f238b28a63cd3330d9b44892cbc2f8b0de00', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'de58802a30c5e805116ae1b2feef237963366402224705f96a0cda2c44461f11', 'Cargo.lock': '716a898c2c59be185cf854e2f59b7a300f9c29a96dcfc7a973b97038b2e10746', 'SOURCE_LOCK.json': '8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
