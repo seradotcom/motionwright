@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import signal
@@ -4727,7 +4727,7 @@ def require_observed_command(command):
             "owned process group exit was not observed; no closed execution credit")
 
 
-def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None):
+def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, deadline=None, maximum_file_bytes=None, maximum_stream_bytes=None, staging_file_budget=None):
     env = dict(env)
     env.pop(PHASE1_SERVICE47_TOKEN_ENV, None)
     env.pop(PHASE1_SERVICE47_DEADLINE_ENV, None)
@@ -4751,9 +4751,16 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
         require(os.name == "posix" and (label in ("graph-cases", "phase1-service-preflight") and maximum_file_bytes == 4 * 1024 * 1024
                 or label == "graph-runtime-download" and maximum_file_bytes == 128 * 1024 * 1024),
                 "Graph fixed actual Store file-size limit")
+        control_file_bytes = maximum_file_bytes
+        if staging_file_budget is not None:
+            require(label == "graph-cases" and maximum_file_bytes == GRAPH_BUDGET["store_file_bytes"],
+                    "Graph staging allowance is only for the reviewed case controller")
+            control_file_bytes = graph_checked_case_staging_budget(staging_file_budget)
         def child_limits():
             import resource
-            resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_file_bytes, maximum_file_bytes))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (control_file_bytes, control_file_bytes))
+    else:
+        require(staging_file_budget is None, "Graph staging allowance requires a bounded controller")
     owned_group = os.name == "posix"
     command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat(),
                "process_observation_schema": PROCESS_OBSERVATION_SCHEMA,
@@ -4761,6 +4768,12 @@ def execute(argv, cwd, env, output, label, timeout, *, stdin_original=None, dead
                "pid": None, "owned_group_after_wait": "NOT_OBSERVED", "escaped_descendants": "NOT_OBSERVED",
                "selected_environment": {key: env.get(key) for key in observed_environment},
                "cleanup_errors": []}
+    if staging_file_budget is not None:
+        command["file_size_limits"] = {
+            "controller_requested_soft_hard_bytes": control_file_bytes,
+            "required_store_writer_soft_hard_bytes": maximum_file_bytes,
+            "verified_staging_budget": staging_file_budget,
+            "store_enforcement": "SELF_LIMIT_AND_KERNEL_OBSERVATION_BEFORE_REQUESTS"}
     if deadline is not None:
         command["deadline_admission"] = admission
     if env.get("MOTIONWRIGHT_GRAPH_PRODUCER_RUN") == "1":
@@ -10436,6 +10449,52 @@ def graph_observed_playwright_failure(repo, report_path, command):
         return {"report": "INVALID_OR_UNAVAILABLE"}
 
 
+GRAPH_STAGED_EXECUTABLE_ROLES = ("native_provider", "manim_runner", "python3", "ffmpeg", "semwright_sandbox")
+
+
+def graph_checked_case_staging_budget(value):
+    """Check the controller allowance without enlarging Store or driver policy."""
+    require(type(value) is dict and set(value) == {"schema", "producer_index_sha256",
+            "store_file_bytes", "maximum_file_bytes", "executables"}
+            and value["schema"] == "motionwright.graph-controller-staging-budget/1"
+            and type(value["producer_index_sha256"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}", value["producer_index_sha256"])
+            and type(value["store_file_bytes"]) is int
+            and value["store_file_bytes"] == GRAPH_BUDGET["store_file_bytes"]
+            and type(value["executables"]) is dict
+            and set(value["executables"]) == set(GRAPH_STAGED_EXECUTABLE_ROLES),
+            "Graph controller staging budget binding")
+    for ref in value["executables"].values():
+        require(type(ref) is dict and set(ref) == {"path", "sha256", "size_bytes"}
+                and type(ref["path"]) is str and PurePosixPath(ref["path"]).is_absolute()
+                and type(ref["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", ref["sha256"])
+                and type(ref["size_bytes"]) is int and 0 < ref["size_bytes"] <= 256 * GRAPH_BYTES,
+                "Graph controller staging executable bound")
+    actual = max(value["store_file_bytes"], *(ref["size_bytes"] for ref in value["executables"].values()))
+    require(type(value["maximum_file_bytes"]) is int and value["maximum_file_bytes"] == actual,
+            "Graph controller staging allowance must equal verified executable sizes")
+    return actual
+
+
+def graph_case_staging_budget(index, index_ref):
+    """Derive a budget only after graph_verify_producer_index authenticates inputs."""
+    require(type(index) is dict and type(index.get("binaries")) is dict
+            and set(GRAPH_STAGED_EXECUTABLE_ROLES) <= set(index["binaries"])
+            and type(index_ref) is dict and type(index_ref.get("sha256")) is str,
+            "Graph controller staging inputs")
+    executables = {role: dict(index["binaries"][role]) for role in GRAPH_STAGED_EXECUTABLE_ROLES}
+    require(all(type(ref.get("size_bytes")) is int for ref in executables.values()),
+            "Graph controller staging input size")
+    value = {"schema": "motionwright.graph-controller-staging-budget/1",
+             "producer_index_sha256": index_ref["sha256"],
+             "store_file_bytes": GRAPH_BUDGET["store_file_bytes"],
+             "maximum_file_bytes": max(GRAPH_BUDGET["store_file_bytes"],
+                 *(ref["size_bytes"] for ref in executables.values())),
+             "executables": executables}
+    graph_checked_case_staging_budget(value)
+    return value
+
+
 def graph_run_cases(repo):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     output, producer = root / "e", root / "e/graph-producer"
@@ -10484,11 +10543,14 @@ def graph_run_cases(repo):
         with clock.phase("cases"):
             report["runtime_before"] = graph_runtime_unchanged(index, producer)
             case_env = dict(env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(output / "graph-execution.json"))
-            # Kernel file-size limits are installed before Playwright and inherited
-            # by its actual Service/owner/Native children. No launcher substitute.
+            # SDK startup must stage the authenticated executables, which can be
+            # larger than the Store allowance. Actual Store transports lower their
+            # own hard limit before opening SQLite; the sandbox driver stays at 4 MiB.
+            staging_budget = graph_case_staging_budget(index, index_ref)
             diagnostic.update(stage="CASES_COMMAND", exit_code=None)
             command = execute(argv, repo / "apps/studio", case_env, output, "graph-cases", 750, deadline=clock,
-                              maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES)
+                              maximum_file_bytes=GRAPH_BUDGET["store_file_bytes"], maximum_stream_bytes=GRAPH_BYTES,
+                              staging_file_budget=staging_budget)
             require_observed_command(command)
             diagnostic["exit_code"] = command["exit_code"] if type(command["exit_code"]) is int and -255 <= command["exit_code"] <= 255 else None
             if command["exit_code"] != 0:
