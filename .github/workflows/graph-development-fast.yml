@@ -21,6 +21,8 @@ on:
       - 'tooling/tests/test_ci_graph_r74_singlecase.py'
       - 'tooling/graph_r74_external_reviewer.py'
       - 'tooling/tests/test_graph_r74_external_reviewer.py'
+      - 'tooling/graph_review_artifact.py'
+      - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/tests/test_graph_owner_native_quiescence.py'
       - 'tooling/tests/test_graph_owner_session_ticket_custody.py'
       - 'tooling/tests/test_graph_owner_release_lease_roster.py'
@@ -150,6 +152,14 @@ jobs:
           if [ -f tooling/tests/test_graph_owner_control_replay.py ]; then
             "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
               tooling.tests.test_graph_owner_control_replay -v \
+              2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
+          fi
+          # A raw archive transport is not independent Graph review.
+          # Its local-only fixture tests may run on a CI runner, but only
+          # after the source pair has been integrated into this checkout.
+          if [ -f tooling/graph_review_artifact.py ] && [ -f tooling/tests/test_graph_review_artifact.py ]; then
+            "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
+              tooling.tests.test_graph_review_artifact -v \
               2>&1 | tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log
           fi
           # External R74 review must remain off GitHub runners; only the
