@@ -119,8 +119,10 @@ class IndependentR74ReviewerTests(unittest.TestCase):
         }
         request_path.write_bytes(seal.json_bytes(request))
         plaintext = seal.gather_snapshot({"producer": producer})
-        if missing_manifest:
-            # A trusted-but-partial source must not be relabeled as complete.
+        if missing_manifest or os.name == "nt":
+            # Production captures originate on Linux. On Windows, this inert
+            # test fixture represents their POSIX absolute original paths
+            # without weakening the reviewer's production source-path guard.
             with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as tar:
                 rows = [(row.name, tar.extractfile(row).read()) for row in tar]
             replacement = io.BytesIO()
@@ -128,7 +130,13 @@ class IndependentR74ReviewerTests(unittest.TestCase):
                 for member, raw in rows:
                     if member == "snapshot-manifest.json":
                         report = reviewer.json_original(raw)
-                        report["selected_originals_complete"] = False
+                        if os.name == "nt":
+                            for entry in report["roots"]["producer"]["files"]:
+                                if "observation" in entry:
+                                    entry["observation"]["path"] = (
+                                        "/tmp/graph-review-inert/" + entry["archive_path"])
+                        if missing_manifest:
+                            report["selected_originals_complete"] = False
                         raw = seal.json_bytes(report)
                     info = tarfile.TarInfo(member); info.size = len(raw)
                     tar.addfile(info, io.BytesIO(raw))
