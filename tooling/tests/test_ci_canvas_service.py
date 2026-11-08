@@ -8427,6 +8427,39 @@ class GraphR74JoinTests(unittest.TestCase):
                 self.assertNotIn("CANARY", public)
                 self.assertNotIn("/private/", public)
 
+    def test_graph_runtime_admission_ignores_quoted_throw_codeframes_in_nested_errors(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        runtime = ("Error: GRAPH_SOURCE_ADMISSION_NOT_READY: "
+                   "GRAPH_CONTEXT_INSPECTION_REJECTED / GRAPH_SAVE_CONTEXT_UNAVAILABLE")
+        codeframe = ('  73 | throw new Error("GRAPH_SOURCE_ADMISSION_NOT_READY: " '
+                     '+ phase + " / " + safeGates);')
+        result["error"] = {
+            "message": "AggregateError: Graph case body and finalization both failed",
+            "errors": [
+                {"message": runtime + "\n\n" + codeframe,
+                 "stack": runtime + "\n" + codeframe + "\n at " +
+                          str(repo / "apps/studio/tests/semantic-graph-service.spec.ts") +
+                          ":73:11\n at /private/CANARY_BODY_PATH:77:9"},
+                {"message": "AggregateError: Store finalization is incomplete\n" + codeframe,
+                 "stack": codeframe + "\n at /private/CANARY_CLEANUP_PATH:88:2"},
+            ],
+        }
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(
+                repo, Path("report"), self.graph_failed_case_command())
+        self.assertEqual(observed["report"], "OBSERVED_FAILURE_DIAGNOSTIC_ONLY")
+        self.assertEqual(set(observed), {"report", "counts", "cases", "locations", "error_codes"})
+        self.assertEqual(observed["error_codes"], ["GRAPH_SOURCE_ADMISSION_NOT_READY",
+                         "GRAPH_CONTEXT_INSPECTION_REJECTED", "GRAPH_SAVE_CONTEXT_UNAVAILABLE"])
+        self.assertEqual(observed["cases"][0]["statuses"], ["failed"])
+        public = gate.json.dumps(observed)
+        self.assertNotIn("UNRECOGNIZED", public)
+        self.assertNotIn("safeGates", public)
+        self.assertNotIn("CANARY", public)
+        self.assertNotIn("/private/", public)
+
     def test_graph_owner_phase_literal_from_nested_playwright_aggregate_only(self):
         repo, value = self.graph_diagnostic_fixture_report()
         result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
