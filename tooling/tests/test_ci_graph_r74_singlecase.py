@@ -61,8 +61,13 @@ class GraphFlowOriginalSelectionTests(unittest.TestCase):
         self.assertFalse(pattern.fullmatch("chromium " + FILE + " " + TITLE + " - malicious"))
         self.assertFalse(pattern.fullmatch("chromium " + FILE + " " + gate.GRAPH_CASES[0][1]))
         self.assertNotIn("--grep", whole)
+        # Production must override the Studio 30s default: otherwise real
+        # Native/Host startup, editable Graph UI and same-Store close all share
+        # an unreviewably short per-test deadline.
+        self.assertNotIn("--timeout=30000", whole)
         for flag in ("--workers=1", "--retries=0", "--repeat-each=1", "--max-failures=1",
-                     "--forbid-only", "--reporter=json", "--project=chromium"):
+                     "--forbid-only", "--reporter=json", "--project=chromium",
+                     "--timeout=120000"):
             self.assertEqual(whole.count(flag), 1)
             self.assertEqual(one.count(flag), 1)
 

@@ -7933,9 +7933,19 @@ def graph_selection_plan(selected_case=None):
     return plan
 
 def graph_playwright_argv(node, cli, cases_root, selected_case=None):
+    # The regular Studio config defaults to 30s per test. An authentic
+    # Graph case also starts its own Native Host/SDK owner, performs SQLite
+    # commits, then drains the provider and closes/reopens the same Store.
+    # Without this explicit bounded override the producer silently inherits
+    # 30s and expires before its contracted original close can finish.
+    # Six at most 120s cases fit inside the independently reserved 780s
+    # physical-cases phase, leaving 60s for runner coordination.
+    require(GRAPH_PHASES["cases"] >= len(GRAPH_CASES) * 120,
+            "Graph case phase cannot admit its bounded original tests")
     argv = [str(node), str(cli), "test", "semantic-graph-service.spec.ts", "--project=chromium",
             "--workers=1", "--retries=0", "--repeat-each=1", "--max-failures=1",
-            "--forbid-only", "--reporter=json", "--output=" + str(cases_root)]
+            "--timeout=120000", "--forbid-only", "--reporter=json",
+            "--output=" + str(cases_root)]
     if selected_case is not None:
         title = graph_case_rows(selected_case)[0][1]
         argv.extend(["--grep", "^" + re.escape("chromium semantic-graph-service.spec.ts " + title) + "$"])
