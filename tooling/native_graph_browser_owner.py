@@ -1094,9 +1094,13 @@ class GraphBrowserOwner:
         config = self.paths["config"] / "owner-restricted.toml"
         new_bytes(config, graph_owner_config(self.shared, self.database, manifest_path, resource, project,
                     self.native_manifest_runtime, self.native_manifest_inputs, self.paths["work"]).encode("utf-8"))
+        # Retain SDK startup stderr under the existing private native-output
+        # custody root, as GN1 does. This selects no grant, retry or PASS.
+        startup_stderr_args = self.shared.driver_startup_stderr_args(
+            self.paths["native-output"], "shared-state", selected=True)
         self.socket = self.socket_directory / "broker.sock"
         self.daemon = lifecycle.start("owner-restricted", [self.daemon_executable, "--config", str(config),
-                                      "--socket", str(self.socket)], self.env)
+                                      "--socket", str(self.socket), *startup_stderr_args], self.env)
         lifecycle.wait_socket(self.daemon, self.socket, deadline=time.monotonic() + 20)
         runtime_stage("OWNER_RECEIPT")
         self.descriptor_path = lifecycle.evidence / "owner-descriptor.json"
