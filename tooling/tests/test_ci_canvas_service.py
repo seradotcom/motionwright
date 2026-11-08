@@ -8467,6 +8467,7 @@ class GraphR74JoinTests(unittest.TestCase):
             (prefix + "ADMISSION / NONE", "GRAPH_CONTEXT_FAILURE:ADMISSION:NONE", "primary", "REJECTED"),
             (prefix + "CANARY_STAGE / Timeout", None, "primary", "REJECTED"),
             (prefix + "NATIVE / CANARY_PRIVATE", None, "primary", "REJECTED"),
+            (prefix + r"NATIVE \ Timeout", None, "primary", "REJECTED"),
             (prefix + "NATIVE / Timeout / CANARY_PRIVATE", None, "primary", "REJECTED"),
             (prefix + "NATIVE / Timeout CANARY_PRIVATE", None, "primary", "REJECTED"),
             ('  89 | throw new Error("GRAPH_CONTEXT_FAILURE: NATIVE / Timeout");', None, "primary", "REJECTED"),
