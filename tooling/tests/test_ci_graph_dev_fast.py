@@ -451,5 +451,23 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertFalse(any(fnmatchcase("docs/roadmap.md", glob) for glob in globs))
 
 
+    def test_raw_artifact_transport_change_triggers_only_source_fixture_checks(self):
+        # The transport is not an external reviewer, and the fixture contains no key.
+        root = Path(__file__).resolve().parents[2]
+        text = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = text.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        for rel in ("tooling/graph_review_artifact.py",
+                    "tooling/tests/test_graph_review_artifact.py"):
+            with self.subTest(path=rel):
+                self.assertIn("      - '" + rel + "'", trigger)
+        gn1 = text.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        self.assertIn("if [ -f tooling/graph_review_artifact.py ] &&", gn1)
+        self.assertIn("tooling.tests.test_graph_review_artifact -v", gn1)
+        self.assertIn("tee -a knowledge/runtime/graph-fast-gn1-unittest.original.log", gn1)
+        # Never run external review positives inside GitHub Actions.
+        self.assertNotIn("tooling.tests.test_graph_r74_external_reviewer -v", gn1)
+
 if __name__ == "__main__":
     unittest.main()
