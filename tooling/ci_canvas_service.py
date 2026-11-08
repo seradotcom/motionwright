@@ -10369,6 +10369,20 @@ def graph_observed_playwright_failure(repo, report_path, command):
         patterns = [(re.compile(r"(?:^|[\s(])" + re.escape(spelling) + r":([0-9]{1,7}):([0-9]{1,6})(?![0-9])"), source)
                     for spelling, source in aliases.items()]
         limits = {"suites": 0, "specs": 0, "results": 0, "errors": 0}
+        save_gate_prefix = "Graph current-source inspection settled; original Save is still denied by closed UI gate: "
+        save_gate_labels = frozenset(("busy", "pending", "context_unavailable", "context_blocked",
+            "context_invalid", "input", "backup", "recovery", "changed", "lock", "identity",
+            "occupied", "unavailable_saved_root", "unavailable"))
+        admission_marker = "GRAPH_SOURCE_ADMISSION_NOT_READY: "
+        inspection_terminals = frozenset(("GRAPH_CONTEXT_INSPECTION_RESOLVED",
+            "GRAPH_CONTEXT_INSPECTION_REJECTED", "GRAPH_CONTEXT_INSPECTION_OBSOLETE",
+            "GRAPH_CONTEXT_INSPECTION_UNRECOGNIZED"))
+        save_gate_codes = frozenset(("GRAPH_SAVE_READY", "GRAPH_SAVE_BUSY", "GRAPH_SAVE_PENDING",
+            "GRAPH_SAVE_CONTEXT_UNAVAILABLE", "GRAPH_SAVE_CONTEXT_BLOCKED", "GRAPH_SAVE_SOURCE_STALE",
+            "GRAPH_SAVE_CONTEXT_INVALID", "GRAPH_SAVE_INPUT_INVALID", "GRAPH_SAVE_BACKUP_UNCONFIRMED",
+            "GRAPH_SAVE_RECOVERY_UNCONFIRMED", "GRAPH_SAVE_PROJECT_CHANGED", "GRAPH_SAVE_LOCKED",
+            "GRAPH_SAVE_IDENTITY_UNAVAILABLE", "GRAPH_SAVE_VARIANT_OCCUPIED",
+            "GRAPH_SAVE_SAVED_IDENTITY_UNAVAILABLE", "GRAPH_SAVE_GATE_UNRECOGNIZED"))
 
         def location(file, line, column):
             source = aliases.get(file.replace("\\", "/")) if type(file) is str else None
@@ -10390,12 +10404,49 @@ def graph_observed_playwright_failure(repo, report_path, command):
             for code in GRAPH_CASE_DIAGNOSTIC_CODES:
                 if re.search(r"(?<![A-Za-z0-9_-])" + re.escape(code) + r"(?![A-Za-z0-9_-])", text) and code not in codes:
                     codes.append(code)
-            for phrase, code in (("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
+            for phrase, code in (("The actual service DTO and matching native consumer guards must admit this source; "
+                                  "a synthetic context is not injected.", "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 (save_gate_prefix, "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 (admission_marker, "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 ("A resolved original Native/Studio context must admit this Graph source.",
+                                  "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 ("The original Native/Studio Graph source inspection must reach a terminal phase.",
+                                  "GRAPH_INSPECTION_DID_NOT_SETTLE"),
+                                 ("A settled service DTO and the actual native consumer must admit this Graph source.",
+                                  "GRAPH_SOURCE_ADMISSION_NOT_READY"),
+                                 ("The original Native/Studio Graph source inspection must settle.",
+                                  "GRAPH_INSPECTION_DID_NOT_SETTLE"),
+                                 ("Process from config.webServer was not able to start", "PLAYWRIGHT_WEB_SERVER_START_FAILED"),
                                  ("browserType.launch: Executable doesn't exist", "PLAYWRIGHT_BROWSER_EXECUTABLE_MISSING"),
                                  ("Error: No tests found", "PLAYWRIGHT_NO_TESTS_FOUND"),
                                  ("Cannot find module", "MODULE_NOT_FOUND")):
                 if phrase in text and code not in codes:
                     codes.append(code)
+            # A malformed reason list cannot authenticate even its known subset.
+            # Only closed source labels leave this private original report.
+            for match in re.finditer(re.escape(save_gate_prefix) + r"([^\r\n]*)", text):
+                raw_labels = match[1]
+                if not 0 < len(raw_labels) <= 256:
+                    continue
+                labels = raw_labels.split(",")
+                if (len(labels) > len(save_gate_labels) or len(labels) != len(set(labels))
+                        or not all(label in save_gate_labels for label in labels)):
+                    continue
+                for label in labels:
+                    code = "GRAPH_SAVE_GATE:" + label.upper()
+                    if code not in codes:
+                        codes.append(code)
+            for match in re.finditer(re.escape(admission_marker) + r"([^\r\n]*)", text):
+                fields = match[1].split(" / ") if 0 < len(match[1]) <= 512 else []
+                terminal = (fields[0] if len(fields) == 2 and fields[0] in inspection_terminals
+                            else "GRAPH_CONTEXT_INSPECTION_UNRECOGNIZED")
+                gates = fields[1].split(",") if len(fields) == 2 else []
+                if (not gates or len(gates) > len(save_gate_codes) or len(gates) != len(set(gates))
+                        or not all(gate in save_gate_codes for gate in gates)):
+                    gates = ["GRAPH_SAVE_GATE_UNRECOGNIZED"]
+                for code in (terminal, *gates):
+                    if code not in codes:
+                        codes.append(code)
             for pattern, source in patterns:
                 for match in pattern.finditer(text):
                     location(source, int(match[1]), int(match[2]))

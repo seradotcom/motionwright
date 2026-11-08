@@ -1,0 +1,55 @@
+name: Graph composed source contracts
+
+on:
+  push:
+    branches: ['codex/graph-composed-source-*']
+    paths:
+      - '.github/workflows/graph-composed-source.yml'
+      - '.github/workflows/graph-development-fast.yml'
+      - '.github/workflows/graph-case-diagnostic.yml'
+      - 'tooling/ci_canvas_service.py'
+      - 'tooling/native_graph_browser_owner.py'
+      - 'tooling/graph_r74_external_reviewer.py'
+      - 'tooling/tests/test_ci_canvas_service.py'
+      - 'tooling/tests/test_graph_owner_final_error_catalog.py'
+      - 'tooling/tests/test_graph_owner_final_lifecycle_errors.py'
+      - 'tooling/tests/test_graph_r74_external_reviewer.py'
+      - 'apps/studio/src/SemanticGraphWorkbench.tsx'
+      - 'apps/studio/tests/semantic-graph-service.spec.ts'
+      - 'apps/studio/tests/support/graph-owner/contracts.mjs'
+      - 'apps/studio/tests/support/graph-owner/schemas/final.r2.json'
+      - 'apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Verify composed source and public surface policies
+        run: |
+          python -B tooling/source_policy.py
+          python -B tooling/public_surface_policy.py
+      - name: Check producer joins and truthful final failure retention
+        run: >-
+          python -B -m unittest
+          tooling.tests.test_ci_canvas_service.GraphR74JoinTests
+          tooling.tests.test_graph_owner_final_error_catalog
+          tooling.tests.test_graph_owner_final_lifecycle_errors
+          -v
+      - name: Check real inspection terminal and closed diagnostic source contracts
+        run: node --test apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs

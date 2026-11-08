@@ -390,7 +390,7 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
           <label className="production-field"><span>Vertex 1 label</span>
             <textarea aria-label="Vertex 1 label" value="" readOnly rows={2} />
           </label>
-          <button className="primary-button" disabled>Save semantic Graph</button>
+          <button className="primary-button" data-graph-save-gate="GRAPH_SAVE_SAVED_IDENTITY_UNAVAILABLE" disabled>Save semantic Graph</button>
         </section>
       : <GraphEditor {...props} initial={initial} identityProblem={identity.problem}
           onConfirmedRemoval={removedKind => { setSelection("new:" + removedKind); redrawIdentity(value => value + 1); }}
@@ -402,6 +402,11 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   onConfirmedRemoval: (kind: GraphContent["kind"]) => void }) {
   const [session] = useState(() => getSession(props.project, props.initial));
   const [, redraw] = useState(0), [context, setContext] = useState<GraphAuthoringContext | null>(null), [inspecting, setInspecting] = useState(false);
+  // A real Native context may require two sequential original Host font probes.
+  // Do not confuse an outstanding inspection with an admitted or denied Save.
+  const [inspectionPhase, setInspectionPhase] = useState<"GRAPH_CONTEXT_INSPECTION_NOT_REQUESTED" |
+    "GRAPH_CONTEXT_INSPECTION_PENDING" | "GRAPH_CONTEXT_INSPECTION_RESOLVED" |
+    "GRAPH_CONTEXT_INSPECTION_REJECTED" | "GRAPH_CONTEXT_INSPECTION_OBSOLETE">("GRAPH_CONTEXT_INSPECTION_NOT_REQUESTED");
   const [review, setReview] = useState<GraphOutcomeReview | null>(null), [reviewing, setReviewing] = useState(false), [choices, setChoices] = useState<Record<string, "current" | "input">>({});
   const [reviewResource, setReviewResource] = useState("graph:" + session.draft.graphId);
   const [previewMode, setPreviewMode] = useState<"complete" | "playhead">("complete");
@@ -422,7 +427,26 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   const occupied = semanticGraphs(props.project).find(graph => graph.scene_id === draft.sceneId
     && graph.variant_profile_ref === raw.variant_profile_ref && graph.id !== draft.graphId);
   const occupancyIssue = occupied ? "A saved Graph already owns this scene and Deliverable. Select its source or choose another Deliverable; no replacement is implied." : null;
-  const canSave = !busy && !pending && !admission && !inputIssue && !session.backupError && !session.recoveryProblem && !changed && !lock && !props.identityProblem && !occupancyIssue;
+  // Retain every actual failing predicate, never original Project text,
+  // private Native diagnostics or arbitrary DTO strings. The result is a
+  // finite, source-owned diagnostic; it cannot grant a Save or infer Ready.
+  const saveGuards = [
+    busy ? "GRAPH_SAVE_BUSY" : null, pending ? "GRAPH_SAVE_PENDING" : null,
+    admission ? !context ? "GRAPH_SAVE_CONTEXT_UNAVAILABLE" :
+      context.availability !== "ready" ? "GRAPH_SAVE_CONTEXT_BLOCKED" :
+      !graphSame(context.source_snapshot, graphSourceSnapshot(props.project)) ||
+      context.scene_id !== draft.sceneId || context.variant_profile_ref !== raw.variant_profile_ref
+        ? "GRAPH_SAVE_SOURCE_STALE" : "GRAPH_SAVE_CONTEXT_INVALID" : null,
+    inputIssue ? "GRAPH_SAVE_INPUT_INVALID" : null,
+    session.backupError ? "GRAPH_SAVE_BACKUP_UNCONFIRMED" : null,
+    session.recoveryProblem ? "GRAPH_SAVE_RECOVERY_UNCONFIRMED" : null,
+    changed ? "GRAPH_SAVE_PROJECT_CHANGED" : null,
+    lock ? "GRAPH_SAVE_LOCKED" : null,
+    props.identityProblem ? "GRAPH_SAVE_IDENTITY_UNAVAILABLE" : null,
+    occupancyIssue ? "GRAPH_SAVE_VARIANT_OCCUPIED" : null,
+  ].filter((gate): gate is string => gate !== null);
+  const canSave = saveGuards.length === 0;
+  const saveGate = canSave ? "GRAPH_SAVE_READY" : saveGuards.join(",");
   const merge = changed && !pending ? mergeGraphDraft(draft, props.project) : null;
   useEffect(() => {
     mounted.current = true; const update = () => redraw(value => value + 1); session.notify = update;
@@ -445,12 +469,20 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   }
   async function inspectContext() {
     if (!current.current.readContext || inspecting || busy) return; const token = ++epoch.current, sequence = session.draft.sequence, before = clone(current.current.project), profileId = session.draft.input.variant_profile_ref;
-    setInspecting(true); setContext(null); session.error = null;
+    setInspecting(true); setInspectionPhase("GRAPH_CONTEXT_INSPECTION_PENDING"); setContext(null); session.error = null;
+    let terminal: "GRAPH_CONTEXT_INSPECTION_RESOLVED" | "GRAPH_CONTEXT_INSPECTION_REJECTED" |
+      "GRAPH_CONTEXT_INSPECTION_OBSOLETE" = "GRAPH_CONTEXT_INSPECTION_OBSOLETE";
     try { const value = await current.current.readContext(before, session.draft.sceneId, profileId);
       if (!mounted.current || token !== epoch.current || sequence !== session.draft.sequence || !graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project)) || profileId !== session.draft.input.variant_profile_ref) return;
       const issue = graphAdmissionIssue(current.current.project, session.draft.sceneId, profileId, value); setContext(value); if (issue) session.error = issue;
-    } catch (reason) { if (mounted.current && token === epoch.current) session.error = message(reason); }
-    finally { if (mounted.current) setInspecting(false); notify(session); }
+      terminal = "GRAPH_CONTEXT_INSPECTION_RESOLVED";
+    } catch (reason) {
+      if (mounted.current && token === epoch.current) { session.error = message(reason); terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"; }
+    } finally {
+      // A completed callback is a terminal observation, not proof of Ready.
+      // Invalidated source/edits remain obsolete and require a fresh inspection.
+      if (mounted.current) { setInspecting(false); setInspectionPhase(terminal); notify(session); }
+    }
   }
   async function send(operation: "save" | "remove") {
     if (!canSave) return; const id = crypto.randomUUID(), source = clone(session.draft), project = clone(current.current.project), token = epoch.current;
@@ -593,7 +625,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     <section className="production-inspector" aria-label="Semantic Graph controls">
       <h2>Semantic Graph</h2><p>{raw.content.kind === "causal_diagram" ? "Causal diagram · declared influence and basis" : "System flow · declared synthetic events"}</p>
       <p className="production-help">The saved Graph is the editable source. The vector study is editorial; native realization and its evidence use the matching provider profile.</p>
-      <button className="secondary-button" disabled={busy || inspecting || !props.readContext} onClick={() => void inspectContext()}>Inspect current Graph support and sources</button>
+      <button className="secondary-button" data-graph-inspection-phase={inspectionPhase} disabled={busy || inspecting || !props.readContext} onClick={() => void inspectContext()}>Inspect current Graph support and sources</button>
       {admission && <p role="status">{admission}</p>}
       {occupancyIssue && <p role="status">{occupancyIssue}</p>}
       <label className="production-field"><span>Graph Deliverable</span><select aria-label="Graph Deliverable" value={raw.variant_profile_ref} onChange={e => edit(next => { next.variant_profile_ref = e.target.value; }, "/variant_profile_ref")}>
@@ -731,7 +763,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           onClick={() => download(session.recoveryObservation.raw!, "motionwright-graph-original-" + session.recoveryObservation.pointer + ".json")}>Download observed original Graph copy</button>}
       </section>}
       {session.error && <p role="alert" className="production-error">{session.error}</p>}{session.notice && <p role="status">{session.notice}</p>}
-      <div className="production-button-row"><button className="primary-button" disabled={!canSave} onClick={() => void send("save")}>{saved ? "Save Graph changes" : "Save semantic Graph"}</button>
+      <div className="production-button-row"><button className="primary-button" data-graph-save-gate={saveGate} disabled={!canSave} onClick={() => void send("save")}>{saved ? "Save Graph changes" : "Save semantic Graph"}</button>
         {saved && <button className="text-button" disabled={!canSave} onClick={() => void send("remove")}>Remove saved Graph</button>}
         <button className="secondary-button" onClick={() => download()}>Download complete Graph input</button></div>
       <details><summary>Recoverable Graph copies ({session.copies.length}{session.copiesLimited ? "+" : ""})</summary>

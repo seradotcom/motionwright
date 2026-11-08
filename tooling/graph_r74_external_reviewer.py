@@ -6,6 +6,7 @@ statuses, runs Native/Host/Studio or grants G2. The reviewer must independently
 hold the private key and trusted Git clones; neither belongs on the owner runner.
 """
 import argparse
+import ast
 import base64
 import hashlib
 import io
@@ -146,6 +147,50 @@ def verify_semwright_pin(product, source_sha, sem_sha):
     return {"revision": sem_sha, "cargo_package_references": len(git_sources)}
 
 
+def trusted_graph_cases(product, source_sha):
+    """Read the complete cohort as data from the independently verified Git source."""
+    raw = trusted_git(product, "show", source_sha + ":tooling/ci_canvas_service.py")
+    require(0 < len(raw) <= seal.MAX_FILE, "REVIEWED_COHORT_SOURCE")
+    try:
+        module = ast.parse(raw)
+        declarations = []
+        for node in module.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(part, ast.Name) and part.id == "GRAPH_CASES"
+                       for target in targets for part in ast.walk(target)):
+                    declarations.append(node)
+        require(len(declarations) == 1, "REVIEWED_COHORT_SOURCE")
+        declaration = declarations[0]
+        require(isinstance(declaration, ast.Assign) and len(declaration.targets) == 1
+                and isinstance(declaration.targets[0], ast.Name), "REVIEWED_COHORT_SOURCE")
+        target = declaration.targets[0]
+        require(all(node is target for node in ast.walk(module)
+                    if isinstance(node, ast.Name) and node.id == "GRAPH_CASES"
+                    and isinstance(node.ctx, (ast.Store, ast.Del))),
+                "REVIEWED_COHORT_SOURCE")
+        require(not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                        and node.name == "GRAPH_CASES"
+                        or isinstance(node, ast.alias)
+                        and (node.asname or node.name.split(".")[0]) == "GRAPH_CASES"
+                        for node in ast.walk(module)), "REVIEWED_COHORT_SOURCE")
+        rows = ast.literal_eval(declaration.value)
+    except (SyntaxError, ValueError, TypeError, RecursionError) as error:
+        raise ReviewRejected("GRAPH_REVIEW_REVIEWED_COHORT_SOURCE") from error
+    require(type(rows) is tuple and len(rows) == 6, "REVIEWED_COHORT_SOURCE")
+    cases = []
+    for row in rows:
+        require(type(row) is tuple and len(row) == 3
+                and type(row[0]) is str and re.fullmatch(r"graph-[a-z0-9]+(?:-[a-z0-9]+)*", row[0])
+                and type(row[1]) is str and bool(row[1])
+                and type(row[2]) is tuple and bool(row[2])
+                and all(type(cap) is int and cap >= 0 for cap in row[2]),
+                "REVIEWED_COHORT_SOURCE")
+        cases.append(row[0])
+    require(len(set(cases)) == 6 and "graph-flow" in cases, "REVIEWED_COHORT_SOURCE")
+    return cases
+
+
 def source_member(entries, name, expected):
     require(name in entries and type(expected) is dict
             and set(expected) == {"path", "sha256", "size_bytes"}
@@ -283,8 +328,11 @@ def _require_independent_environment():
             "INDEPENDENT_ONLY_NEVER_RUNNER")
 
 
-def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
+def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id,
+           *, case_mode="graph-flow"):
     _require_independent_environment()
+    require(type(case_mode) is str and case_mode in ("graph-flow", "all"),
+            "REVIEWED_CASE_MODE")
     key_real = Path(key_path).resolve(strict=True)
     for trusted in (product, semwright):
         require(not key_real.is_relative_to(Path(trusted).resolve(strict=True)),
@@ -322,16 +370,14 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
             "INDEX_CARRIER_DIGEST")
     request = json_original(entries["producer/review-request.original.json"])
     require(request["source"] == source
-            and request["execution"] == index["contract"]["execution"]
-            and request["contexts"] == [
-                "mw-owner/phase1-native-graph/" + run_id + "/1/graph-flow"],
+            and request["execution"] == index["contract"]["execution"],
             "REVIEW_REQUEST_SOURCE")
     source_member(entries, "producer/producer-index.original.json", request["index"])
     execution = index["contract"]["execution"]
     require(execution.get("scope") == "phase1-native-graph"
             and execution.get("job") == "real-service"
-            and execution.get("selected_case") == "graph-flow",
-            "REVIEWED_ONECASE_SCOPE")
+            and execution.get("selected_case") == ("graph-flow" if case_mode == "graph-flow" else None),
+            "REVIEWED_ONECASE_SCOPE" if case_mode == "graph-flow" else "REVIEWED_COHORT_SCOPE")
     req_product = {"SOURCE_LOCK.json", "Cargo.lock", "tooling/ci_canvas_service.py",
                    "tooling/ci_private_evidence.py",
                    "tooling/native_graph_browser_owner.py",
@@ -347,6 +393,12 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
             and index["contract"]["sdk_tree"] == sdk_tree,
             "TRUSTED_GIT_TREES")
     lock_proof = verify_semwright_pin(product, source_sha, sem_sha)
+    cases = trusted_graph_cases(product, source_sha) if case_mode == "all" else ["graph-flow"]
+    if case_mode == "all":
+        require(type(index["contract"].get("cases")) is dict
+                and set(index["contract"]["cases"]) == set(cases), "REVIEWED_COHORT_SCOPE")
+    contexts = ["mw-owner/phase1-native-graph/" + run_id + "/1/" + case for case in cases]
+    require(request["contexts"] == contexts, "REVIEW_REQUEST_SOURCE")
     copies = request["outside_original_copies"]
     require(type(copies) is list and len(copies) >= 2, "REVIEW_OUTSIDE_COPY_ROSTER")
     # Every copied executable must match the original identity in the
@@ -377,7 +429,7 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
                 "REVIEW_COPY_ORIGINAL")
         source_member(entries, name, retained)
         seen.add(name)
-    return {
+    receipt = {
       "schema": "motionwright.graph-independent-pre-effect-review/1",
       "decision": "SOURCE_CARRIER_AUTHENTICATED_NO_OWNER_ADMISSION_NO_G2",
       "run_id": run_id, "source_sha": source_sha, "semwright_sha": sem_sha,
@@ -392,6 +444,11 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
       "github_status_written": False, "Graph6": "0/6",
       "G2": "NOT_GRANTED", "G3": "STOP",
     }
+    if case_mode == "all":
+        receipt["schema"] = "motionwright.graph-independent-pre-effect-review/2"
+        del receipt["case"]
+        receipt.update(case_mode="all", cases=cases, contexts=contexts)
+    return receipt
 
 
 def main(argv=None):
@@ -404,18 +461,24 @@ def main(argv=None):
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--semwright-sha", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--case-mode", choices=("graph-flow", "all"), default="graph-flow")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     require(args.output.is_absolute() and args.output.parent.is_dir()
             and not args.output.exists(), "NEW_RECEIPT_ONLY")
     receipt = review(args.artifact_path, args.private_key, args.trusted_product,
-         args.trusted_semwright, args.source_sha, args.semwright_sha, args.run_id)
+         args.trusted_semwright, args.source_sha, args.semwright_sha, args.run_id,
+         case_mode=args.case_mode)
     data = seal.json_bytes(receipt)
     from review_original_io import new_bytes
     new_bytes(args.output, data, mode=0o600)
-    print(json.dumps({"decision": receipt["decision"], "receipt_sha256": sha(data),
-       "index_sha256":receipt["index_sha256"],"case":"graph-flow",
-       "G2":"NOT_GRANTED"},sort_keys=True))
+    summary = {"decision": receipt["decision"], "receipt_sha256": sha(data),
+               "index_sha256": receipt["index_sha256"], "G2": "NOT_GRANTED"}
+    if args.case_mode == "all":
+        summary.update(case_mode="all", cases=receipt["cases"])
+    else:
+        summary["case"] = "graph-flow"
+    print(json.dumps(summary, sort_keys=True))
 
 
 if __name__ == "__main__":
