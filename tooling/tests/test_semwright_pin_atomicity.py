@@ -254,15 +254,40 @@ class CandidateRetentionTests(unittest.TestCase):
         }
         self.checks = [b"commit", *[self.original[p] for p in paths]]
 
-    def run_candidate(self, checks):
+    def run_candidate(self, checks, *, ancestry_status=0):
         with patch.object(pins, "load_source_lock", return_value=self.current), \
              patch.object(pins, "verify_source_lock", return_value=None), \
-             patch.object(pins.subprocess, "check_output", side_effect=checks):
+             patch.object(pins.subprocess, "check_output", side_effect=checks), \
+             patch.object(
+                 pins.subprocess, "run",
+                 return_value=pins.subprocess.CompletedProcess(
+                     args=["git", "merge-base", "--is-ancestor"],
+                     returncode=ancestry_status,
+                 ),
+             ):
             return pins.candidate_evidence(self.root, self.root, NEW)
+
+    def test_candidate_with_identical_metadata_but_unrelated_git_history_is_denied(self):
+        with self.assertRaisesRegex(
+            pins.PinConsistencyError, "candidate_not_descendant"
+        ):
+            self.run_candidate(self.checks, ancestry_status=1)
+        self.assertEqual(
+            self.before,
+            {path.name: path.read_bytes() for path in self.root.iterdir()
+             if path.is_file()},
+        )
+
+    def test_cannot_claim_ancestry_when_git_history_is_unavailable(self):
+        with self.assertRaisesRegex(
+            pins.PinConsistencyError, "candidate_ancestry_unavailable"
+        ):
+            self.run_candidate(self.checks, ancestry_status=128)
 
     def test_unchanged_upstream_blobs_reuse_original_retained_bytes_without_writes(self):
         result = self.run_candidate(self.checks)
         self.assertEqual(result["candidate_sha"], NEW)
+        self.assertTrue(result["ancestor_of_candidate_confirmed_locally"])
         self.assertFalse(result["copy_source_metadata_required"])
         self.assertTrue(result["cargo_resolution_regeneration_required"])
         self.assertFalse(result["source_pin_promotion_authorized"])

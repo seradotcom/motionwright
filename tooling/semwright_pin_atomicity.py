@@ -213,6 +213,24 @@ def candidate_evidence(
     require(actual == b"commit", "candidate_not_commit")
     current = load_source_lock(root)
     verify_source_lock(root, current)
+    old_pin = current["dependencies"]["semwright"]["revision"]
+    # A candidate that only copies the current Cargo/license bytes but has
+    # unrelated commit history is not a forward revision of the reviewed
+    # Semwright source. This checks LOCAL Git ancestry, not remote trust.
+    try:
+        history = subprocess.run(
+            ["git", "-C", str(upstream), "merge-base", "--is-ancestor",
+             old_pin, candidate],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PinConsistencyError(
+            "semwright_atomic_pin_candidate_ancestry_unavailable"
+        ) from error
+    if history.returncode == 1:
+        raise PinConsistencyError("semwright_atomic_pin_candidate_not_descendant")
+    require(history.returncode == 0, "candidate_ancestry_unavailable")
     evidence_ref = current["dependencies"]["semwright"]["verification"]["evidence"]
     try:
         retained = json.loads(_read(root, evidence_ref["path"], MAX_EVIDENCE_BYTES))
@@ -251,6 +269,7 @@ def candidate_evidence(
         "source_lock_cargo_manifest_cargo_lock_update_required": True,
         "cargo_resolution_regeneration_required": True,
         "candidate_evidence_bytes_not_written": len(encoded),
+        "ancestor_of_candidate_confirmed_locally": True,
         "source_pin_promotion_authorized": False,
     }
 
