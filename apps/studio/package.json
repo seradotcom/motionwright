@@ -26,7 +26,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "typescript": "^5.9.2",
     "vite": "^7.3.7",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "optionalDependencies": {
     "@tauri-apps/cli-win32-x64-msvc": "2.12.1"
