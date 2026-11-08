@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline, independent pre-effect review of one authenticated Graph R74 carrier.
 
-This program is NOT part of a GitHub runner, and never writes GitHub commit
+This program does not run inside GitHub Actions, and never writes GitHub commit
 statuses, runs Native/Host/Studio or grants G2. The reviewer must independently
 hold the private key and trusted Git clones; neither belongs on the owner runner.
 """
@@ -34,7 +34,7 @@ class ReviewRejected(ValueError):
 
 def require(value, why):
     if not value:
-        raise ReviewRejected("A5_R74_" + why)
+        raise ReviewRejected("GRAPH_REVIEW_" + why)
 
 
 def sha(raw):
@@ -56,23 +56,12 @@ def json_original(raw, bound=1024 * 1024):
 
 
 def private_key_owner(path):
-    """Read one POSIX owner-protected key without copying it to the product."""
-    require(os.name == "posix" and hasattr(os, "geteuid"), "INDEPENDENT_POSIX_KEY_HOST")
-    path = Path(path)
-    require(path.is_absolute() and not path.is_symlink() and
-            path.parent.resolve(strict=True) == path.parent, "PRIVATE_KEY_PATH")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    """Read a platform-protected independent key without copying it to the product."""
+    from review_private_key import read_private_key_bytes
     try:
-        info = os.fstat(fd)
-        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                and info.st_uid == os.geteuid()
-                and (info.st_mode & 0o077) == 0
-                and 1024 < info.st_size <= 16384, "PRIVATE_KEY_CUSTODY")
-        with os.fdopen(os.dup(fd), "rb") as stream:
-            raw = stream.read(16385)
-        require(len(raw) == info.st_size, "PRIVATE_KEY_UNCHANGED")
-    finally:
-        os.close(fd)
+        raw = read_private_key_bytes(path)
+    except (ValueError, OSError) as error:
+        raise ReviewRejected("REVIEW_PRIVATE_KEY_CUSTODY") from error
     key = serialization.load_pem_private_key(raw, password=None)
     require(isinstance(key, rsa.RSAPrivateKey) and key.key_size == 3072
             and key.public_key().public_numbers().e == 65537,
@@ -296,7 +285,7 @@ def review(archive, key_path, product, semwright, source_sha, sem_sha, run_id):
         source_member(entries, name, retained)
         seen.add(name)
     return {
-      "schema": "motionwright.A5.Graph-R74-independent-pre-effect-review/1",
+      "schema": "motionwright.graph-independent-pre-effect-review/1",
       "decision": "SOURCE_CARRIER_AUTHENTICATED_NO_OWNER_ADMISSION_NO_G2",
       "run_id": run_id, "source_sha": source_sha, "semwright_sha": sem_sha,
       "index_sha256": sha(index_raw), "recipient_spki_sha256": spki_sha,
