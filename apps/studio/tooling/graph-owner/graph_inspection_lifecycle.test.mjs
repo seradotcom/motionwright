@@ -184,3 +184,24 @@ test('late rejected Graph preparation cannot write an error into a replaced sour
   ]) assert.ok(rejected.includes(guard), 'stale preparation rejection is not source-bound: ' + guard);
   assert.match(rejected, /failGraphSubmission\(session\.draft, id, message\(reason\), true\)/);
 });
+
+// A rejected refresh from the former Project must not overwrite the active
+// editor's error after an external Project update or a new author draft.
+test('a late rejected Project refresh cannot report its old error to a new source', () => {
+  const begin = ui.indexOf('async function refresh()');
+  const end = ui.indexOf('function retryBackup()', begin);
+  assert.ok(begin >= 0 && end > begin, 'the original Project refresh boundary exists');
+  const refresh = ui.slice(begin, end);
+  assert.match(refresh, /const originalProject = clone\(current\.current\.project\)/);
+  assert.match(refresh, /const originalDraft = clone\(session\.draft\)/);
+  assert.match(refresh, /const token = epoch\.current/);
+  assert.match(refresh, /await current\.current\.refreshProject\(\)/);
+  const rejection = refresh.split('catch (reason) {')[1];
+  assert.ok(rejection, 'refresh rejection handler exists');
+  for (const guard of [
+    'mounted.current', 'token === epoch.current',
+    'graphSame(current.current.project, originalProject)',
+    'graphSame(session.draft, originalDraft)',
+  ]) assert.ok(rejection.includes(guard), 'obsolete refresh error is not source-bound: ' + guard);
+  assert.match(rejection, /session\.error = message\(reason\)/);
+});

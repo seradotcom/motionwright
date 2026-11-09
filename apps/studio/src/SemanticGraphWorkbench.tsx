@@ -643,7 +643,21 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     if (busy || pending) return; try { fork(reviewGraphDraft(session.draft, current.current.project, choices), "Reviewed the current Graph source. Other authors' unrelated edits were preserved; save the new intention explicitly."); }
     catch (reason) { session.error = message(reason); notify(session); }
   }
-  async function refresh() { try { await current.current.refreshProject(); } catch (reason) { session.error = message(reason); notify(session); } }
+  async function refresh() {
+    // A failed transport read belongs only to the Project/editor that
+    // requested it. An external refresh may replace either while awaiting.
+    const token = epoch.current;
+    const originalProject = clone(current.current.project);
+    const originalDraft = clone(session.draft);
+    try { await current.current.refreshProject(); }
+    catch (reason) {
+      if (mounted.current && token === epoch.current
+        && graphSame(current.current.project, originalProject)
+        && graphSame(session.draft, originalDraft)) {
+        session.error = message(reason); notify(session);
+      }
+    }
+  }
   function retryBackup() {
     if (busy) return;
     try {
