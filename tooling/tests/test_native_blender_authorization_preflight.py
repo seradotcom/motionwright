@@ -183,5 +183,60 @@ class BlenderAuthorizationPreflightTests(unittest.TestCase):
         self.assertIn("stderr=subprocess.STDOUT if bounded_static else log_stream", source)
 
 
+    def test_foreground_save_open_never_expands_to_other_sensitive_capabilities(self):
+        # A real operator console is scoped only to the original editable
+        # save/reopen path. Additional destructive/code-execution operations
+        # still require their own separately reviewed authority and cannot
+        # be smuggled through the presence of a terminal.
+        owner = {"driver.blender.file.save", "driver.blender.file.open"}
+        originals = [
+            descriptor("blender.file.save", "destructive", True),
+            descriptor("blender.file.open", "destructive", True),
+        ]
+        for extra, risk in [
+            ("driver.blender.object.delete", "destructive"),
+            ("driver.blender.script.execute", "code_execution"),
+        ]:
+            required = owner | {extra}
+            rows = originals + [descriptor(extra.removeprefix("driver."), risk, True)]
+            with self.subTest(extra=extra):
+                with self.assertRaises(blender.BlenderOwnerApprovalRequired) as caught:
+                    blender.inspect_headless_blender_descriptors(
+                        required, rows, operator_console=True)
+                self.assertEqual(caught.exception.commands, (extra,))
+
+                live = [
+                    capability(name, "require_confirmation", "destructive")
+                    for name in owner
+                ] + [capability(extra, "require_confirmation", risk)]
+                with self.assertRaises(blender.BlenderOwnerApprovalRequired) as caught:
+                    blender.require_headless_blender_catalog(
+                        live, required, operator_console=True)
+                self.assertEqual(caught.exception.commands, (extra,))
+
+        # Neither pinned source descriptors nor the live catalog may
+        # downgrade save/reopen from destructive to ordinary mutating work.
+        for name in owner:
+            with self.subTest(file_operation=name):
+                for risk, interactive in [
+                    ("mutating", False), ("read_only", False),
+                    ("code_execution", True),
+                ]:
+                    with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+                        blender.inspect_headless_blender_descriptors(
+                            {name},
+                            [descriptor(name.removeprefix("driver."), risk, interactive)],
+                            operator_console=True)
+                for risk, state in [
+                    ("mutating", "allow"),
+                    ("mutating", "require_confirmation"),
+                    ("destructive", "allow"),
+                ]:
+                    with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+                        blender.require_headless_blender_catalog(
+                            [capability(name, state, risk)],
+                            {name}, operator_console=True)
+
+
 if __name__ == "__main__":
     unittest.main()

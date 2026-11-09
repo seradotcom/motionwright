@@ -52,6 +52,11 @@ BLENDER_DEFAULT_COMMANDS = frozenset({
 BLENDER_RISKS = frozenset({"read_only", "mutating_reversible", "mutating", "destructive",
                            "secret_access", "code_execution", "privilege_sensitive"})
 BLENDER_SENSITIVE_RISKS = BLENDER_RISKS - {"read_only", "mutating_reversible", "mutating"}
+# The foreground-operator feature is intentionally NOT a general-purpose
+# consent mode for every destructive or privileged Blender capability.
+BLENDER_FOREGROUND_CONSENT_ONLY = frozenset({
+    "driver.blender.file.save", "driver.blender.file.open",
+})
 
 
 class BlenderOwnerApprovalRequired(RuntimeError):
@@ -116,7 +121,7 @@ def foreground_operator_requested(required: set[str]) -> bool:
         return False
     if mode != "foreground":
         raise ValueError("Unsupported Blender operator console mode")
-    consented = {"driver.blender.file.save", "driver.blender.file.open"}
+    consented = BLENDER_FOREGROUND_CONSENT_ONLY
     if not consented <= required:
         raise ValueError("Foreground Blender verification must select save and reopen")
     if os.name != "posix" or not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -152,9 +157,15 @@ def inspect_headless_blender_descriptors(required: set[str], descriptors: object
             raise ValueError("Blender authorization source descriptor is ambiguous")
         curated[name] = descriptor
         command = "driver." + name
-        if command in required and (descriptor["risk"] in BLENDER_SENSITIVE_RISKS
-                                    or descriptor["interactive_consent"]):
-            if not (operator_console and descriptor["interactive_consent"]):
+        if command in required:
+            if command in BLENDER_FOREGROUND_CONSENT_ONLY:
+                # Pinned file.save/open must themselves be destructive and
+                # interactive. An operator terminal is never a risk downgrade.
+                if not (operator_console and descriptor["risk"] == "destructive"
+                        and descriptor["interactive_consent"]):
+                    blocked.add(command)
+            elif (descriptor["risk"] in BLENDER_SENSITIVE_RISKS
+                  or descriptor["interactive_consent"]):
                 blocked.add(command)
     if not curated:
         raise ValueError("Blender authorization source descriptors are absent")
@@ -189,13 +200,16 @@ def require_headless_blender_catalog(capabilities: list[dict], required: set[str
         if (type(preview) is not dict or preview.get("preview_only") is not True
                 or preview.get("execution_rechecks") is not True or row.get("risk") not in BLENDER_RISKS):
             raise ValueError("Blender authorization preview is unavailable or malformed")
-        if preview.get("state") == "require_confirmation":
-            # The actual Broker will present a fresh challenge at dispatch.
-            # A preview is never an approval, even with a real console.
-            if not operator_console or row.get("available") is not True:
+        if operator_console and row["id"] in BLENDER_FOREGROUND_CONSENT_ONLY:
+            # Only the two exact destructive file operations can request a
+            # foreground challenge. They MUST still be pending confirmation;
+            # an "allow" preview cannot stand in for operator consent.
+            if (row["risk"] != "destructive"
+                    or preview.get("state") != "require_confirmation"
+                    or row.get("available") is not True):
                 blocked.add(row["id"])
-        elif row["risk"] in BLENDER_SENSITIVE_RISKS:
-            # Even a malformed "allow" preview cannot silently grant risk.
+        elif (preview.get("state") == "require_confirmation"
+              or row["risk"] in BLENDER_SENSITIVE_RISKS):
             blocked.add(row["id"])
         elif preview.get("state") != "allow" or row.get("available") is not True:
             raise ValueError("Blender capability is unavailable under the original owner policy")
