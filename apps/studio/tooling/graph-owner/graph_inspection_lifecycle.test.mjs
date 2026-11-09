@@ -333,3 +333,17 @@ test('a same-render Save cannot restore a prior Graph draft over its current ori
   }
   assert.match(ui, /disabled=\{busy \|\| pending \|\| !copy\.value \|\| copy\.writerId === session\.custody\.writerId\}/);
 });
+
+test('a same-render Graph Save cannot fork a reconciled Graph draft over its original', () => {
+  const begin = ui.indexOf('function reconcile()');
+  const end = ui.indexOf('async function refresh()', begin);
+  assert.ok(begin > 0 && end > begin, 'live Graph reconciliation handler exists');
+  const handler = ui.slice(begin, end);
+  const reconcile = handler.indexOf('reviewGraphDraft(');
+  assert.ok(reconcile > 0, 'reconciliation still uses genuine source conflict review');
+  for (const gate of ['current.current.busy', 'session.preparing', 'session.inFlight', 'session.draft.pending']) {
+    assert.ok(handler.includes(gate), 'reconciliation must read live Save state: ' + gate);
+    assert.ok(handler.indexOf(gate) < reconcile, 'live guard must run before Graph reconciliation: ' + gate);
+  }
+  assert.match(ui, /onClick=\{reconcile\}/);
+});

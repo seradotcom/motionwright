@@ -672,7 +672,10 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } catch (reason) { session.error = message(reason); notify(session); }
   }
   function reconcile() {
-    if (busy || pending) return; try { fork(reviewGraphDraft(session.draft, current.current.project, choices), "Reviewed the current Graph source. Other authors' unrelated edits were preserved; save the new intention explicitly."); }
+    // A Save owns the original intention before React redraw disables review.
+    // Reconciliation must not fork its draft or recovery custody mid-flight.
+    if (current.current.busy || session.preparing || session.inFlight || session.draft.pending) return;
+    try { fork(reviewGraphDraft(session.draft, current.current.project, choices), "Reviewed the current Graph source. Other authors' unrelated edits were preserved; save the new intention explicitly."); }
     catch (reason) { session.error = message(reason); notify(session); }
   }
   async function refresh() {
