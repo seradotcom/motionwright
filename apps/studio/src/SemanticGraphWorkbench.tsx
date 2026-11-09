@@ -575,11 +575,23 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } finally { session.inFlight = false; notify(session); }
   }
   async function readOutcome() {
-    if (busy || reviewing || !session.draft.pending) return; const token = ++epoch.current; setReviewing(true); setReview(null); session.error = null;
-    try { const result = await inspectGraphOutcome(clone(session.draft), current.current.project, current.current.outcomeTransport);
-      if (mounted.current && token === epoch.current && graphOutcomeMatches(session.draft, current.current.project, result)) setReview(result);
-    } catch (reason) { if (mounted.current && token === epoch.current) session.error = message(reason); }
-    finally { if (mounted.current) setReviewing(false); notify(session); }
+    if (busy || reviewing || !session.draft.pending) return;
+    const token = ++epoch.current;
+    const inspectedDraft = clone(session.draft);
+    const inspectedProject = clone(current.current.project);
+    setReviewing(true); setReview(null); session.error = null;
+    try {
+      const result = await inspectGraphOutcome(inspectedDraft, inspectedProject, current.current.outcomeTransport);
+      if (mounted.current && token === epoch.current
+        && graphOutcomeMatches(session.draft, current.current.project, result)) setReview(result);
+    } catch (reason) {
+      // A late rejection from an earlier source cannot become the current
+      // draft's error. A changed Project/intent requires a new inspection.
+      if (mounted.current && token === epoch.current
+        && graphSame(session.draft, inspectedDraft)
+        && graphSame(current.current.project, inspectedProject))
+        session.error = message(reason);
+    } finally { if (mounted.current) setReviewing(false); notify(session); }
   }
   function fork(next: GraphDraft, notice: string) {
     if (!backup(session)) return; const custody = forkGraphCopy(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
