@@ -2114,13 +2114,27 @@ mod namespace_tests {
             let anchor_path = root.join(ROOT_ANCHOR);
             let mut anchor: RootAnchor = read_control(&anchor_path).unwrap();
             let parent = root.parent().unwrap();
+            // Preserve the malformed lexical components even on Windows
+            // verbatim paths, where PathBuf::join normalizes dot segments.
+            let malformed = |suffix: &str| {
+                let mut raw = parent.as_os_str().to_os_string();
+                raw.push(std::path::MAIN_SEPARATOR.to_string());
+                raw.push(suffix);
+                PathBuf::from(raw)
+            };
             anchor.canonical_root = match invalid_path {
                 "relative" => PathBuf::from("relative/blobs"),
-                "parent" => parent.join("child/../blobs"),
-                "current" => parent.join("./blobs"),
+                "parent" => malformed("child/../blobs"),
+                "current" => malformed("./blobs"),
                 "wrong-sibling" => root.clone(),
                 _ => unreachable!(),
             };
+            if matches!(invalid_path, "parent" | "current") {
+                assert!(
+                    !absolute_normalized_path(&anchor.canonical_root),
+                    "{invalid_path} fixture was normalized before the rejection test"
+                );
+            }
             anchor.control = control_path(anchor.canonical_root.parent().unwrap(), anchor.root_id);
             if invalid_path == "wrong-sibling" {
                 anchor.control = parent.join("unrelated-control");
