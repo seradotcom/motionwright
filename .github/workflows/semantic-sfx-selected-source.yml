@@ -1,0 +1,79 @@
+name: Selected semantic SFX source regression
+
+on:
+  push:
+    branches: ['integrate/phase1-final-composition-20261027']
+    paths:
+      - 'crates/native/src/sfx_mix.rs'
+      - 'crates/native/tests/semantic_sfx_mix.rs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semantic-sfx-selected-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  selected-sfx-source:
+    name: Verify one signed PCM16 native source regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Bind source and select only a present signed-floor regression
+        id: source_case
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/semantic-sfx-selected"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/semantic-sfx-selected/source-sha.original"
+          if grep -Fq 'fn semantic_sfx_admits_exact_negative_pcm16_floor_but_rejects_real_underflow()' crates/native/tests/semantic_sfx_mix.rs; then
+            printf 'selected=true\n' >> "$GITHUB_OUTPUT"
+            printf 'SELECTED: native source test exists; compiled evidence pending\n' > "$RUNNER_TEMP/semantic-sfx-selected/selection.original.txt"
+          else
+            printf 'selected=false\n' >> "$GITHUB_OUTPUT"
+            printf 'NOT_RUN: signed-floor regression fixture absent from this source\n' > "$RUNNER_TEMP/semantic-sfx-selected/selection.original.txt"
+          fi
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        if: steps.source_case.outputs.selected == 'true'
+        with:
+          toolchain: 1.98.1
+      - name: Run exactly one original signed-floor semantic SFX unit
+        if: steps.source_case.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-native --test semantic_sfx_mix semantic_sfx_admits_exact_negative_pcm16_floor_but_rejects_real_underflow -- --exact 2>&1 | tee "$RUNNER_TEMP/semantic-sfx-selected/roster.original.log"
+          python3 -B - "$RUNNER_TEMP/semantic-sfx-selected/roster.original.log" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          rows = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          selected = "test semantic_sfx_admits_exact_negative_pcm16_floor_but_rejects_real_underflow ... ok"
+          summary = re.compile(
+              r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; "
+          )
+          assert rows.count("running 1 test") == 1
+          assert rows.count(selected) == 1
+          assert sum(bool(summary.match(row)) for row in rows) == 1
+          PY
+          sha256sum "$RUNNER_TEMP/semantic-sfx-selected/roster.original.log" > "$RUNNER_TEMP/semantic-sfx-selected/roster.original.log.sha256"
+          printf 'PASS: exact signed-floor compiled source test (one original)\n' > "$RUNNER_TEMP/semantic-sfx-selected/selection.original.txt"
+      - name: Retain selected source and bounded original
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semantic-sfx-selected-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/semantic-sfx-selected/
+          retention-days: 7
+          if-no-files-found: warn
