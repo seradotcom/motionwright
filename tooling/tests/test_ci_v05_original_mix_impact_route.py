@@ -20,7 +20,7 @@ def job(text, name, next_name):
 
 
 class OriginalMixImpactRouteTests(unittest.TestCase):
-    def test_only_changed_native_mix_source_can_trigger_push(self):
+    def test_only_affected_native_mix_source_or_dependencies_can_trigger_push(self):
         text = workflow_text()
         event = text.split("  push:\n", 1)[1].split("  pull_request:\n", 1)[0]
         self.assertIn(
@@ -32,7 +32,13 @@ class OriginalMixImpactRouteTests(unittest.TestCase):
         self.assertEqual(source_paths, [
             "crates/native/src/original_mix.rs",
             "crates/native/src/original_mix/**",
-            "crates/native/tests/original_mix.rs"])
+            "crates/native/tests/original_mix.rs",
+            "Cargo.lock",
+            "Cargo.toml",
+            "crates/native/Cargo.toml",
+            ".github/workflows/v05-original-native-mix.yml"])
+        for unrelated in ("docs/readme.md", "crates/service/src/audio.rs"):
+            self.assertFalse(any(fnmatchcase(unrelated, glob) for glob in source_paths))
         self.assertIn("  workflow_dispatch:", text)
         self.assertIn("  pull_request:", text)
 

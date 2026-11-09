@@ -1,7 +1,7 @@
 name: V05 physical original 3-bus mix and audition
 
 on:
-  # Compile only the changed original-mix Rust suite on integration pushes.
+  # Compile the bounded original-mix Rust suite on affected source or lock pushes.
   # Full meter, renderer and audition gates remain PR or explicitly manual.
   push:
     branches: ['integrate/phase1-final-composition-20261027']
@@ -9,6 +9,10 @@ on:
       - 'crates/native/src/original_mix.rs'
       - 'crates/native/src/original_mix/**'
       - 'crates/native/tests/original_mix.rs'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/native/Cargo.toml'
+      - '.github/workflows/v05-original-native-mix.yml'
   pull_request:
     paths:
       - 'crates/native/src/original_mix.rs'
