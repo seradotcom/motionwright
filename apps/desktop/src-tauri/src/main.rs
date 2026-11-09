@@ -16,6 +16,7 @@ mod project_library;
 mod project_projection;
 mod runtime_doctor;
 mod runtime_setup;
+mod semantic_graph_context_failure;
 mod semantic_graph_custody;
 mod semantic_graph_mutation_error;
 mod semantic_graph_recovery;
@@ -70,6 +71,7 @@ use project_export::{
 };
 use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
+use semantic_graph_context_failure::{GraphContextFailure, GraphContextStage};
 use semantic_graph_custody::{GraphExchangeJournal, GraphExchangeRetention};
 use semantic_graph_mutation_error::GraphInvokeFailure;
 use semantic_graph_recovery::{GraphRecoveryRequest, GraphRecoveryResponse};
@@ -518,7 +520,10 @@ async fn semantic_graph_authoring_context(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: motionwright_service::SemanticGraphContextRequest,
-) -> Result<motionwright_domain::GraphAuthoringContext, String> {
+) -> Result<motionwright_domain::GraphAuthoringContext, Value> {
+    // The installed app must preserve the same closed error ABI as the
+    // source-bound JSONL Native callback. A rejection is diagnostic-only:
+    // it cannot grant Save/ProjectEdit authority or reveal raw SDK details.
     let service = state.service.clone();
     let connections = state.runtime_connections.clone();
     let source = request.source_snapshot.clone();
@@ -526,22 +531,38 @@ async fn semantic_graph_authoring_context(
         graph_client_for_source(&service, &connections, &source, true)
     })
     .await
-    .map_err(|_| "Graph source inspection is unavailable".to_owned())??;
+    .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Local))?
+    .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Binding))?;
 
-    owner.begin_phase()?;
-    let attempt = state.graph_exchange_custody.begin("context", None)?;
+    owner
+        .begin_phase()
+        .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Admission))?;
+    let attempt = state
+        .graph_exchange_custody
+        .begin("context", None)
+        .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Custody))?;
     let client = client.with_transport_custody(attempt.custody());
     let result = client.authoring_context(&request).await;
+    // Snapshot the finished transport BEFORE retain_result consumes the guard.
+    // Classification remains private until the actual result is durable.
+    let transport_failed = attempt.custody().has_unconfirmed_or_failed_invocation();
+    // The actual private result must be retained before public classification.
+    // A custody failure overrides any Native outcome, just as in the JSONL path.
     if !matches!(
         attempt.retain_result(&result),
         GraphExchangeRetention::Published
     ) {
-        return Err("Graph source inspection could not retain its original evidence".into());
+        return Err(GraphContextFailure::without_code(GraphContextStage::Custody));
     }
-    let report = result.map_err(|_| "Graph source inspection is unavailable".to_owned())?;
+    let report = result.map_err(|error| {
+        GraphContextFailure::from_report(&error, false, transport_failed)
+    })?;
+    let original_native = report.original_native_error().is_some();
     let context = report
         .outcome()
-        .map_err(|_| "Graph source inspection is unavailable".to_owned())?
+        .map_err(|error| {
+            GraphContextFailure::from_report(error, original_native, transport_failed)
+        })?
         .clone();
 
     // A completed read supplies no later phase or write authority. Re-admit
@@ -562,7 +583,8 @@ async fn semantic_graph_authoring_context(
         Ok(context)
     })
     .await
-    .map_err(|_| "Graph source inspection is unavailable".to_owned())?
+    .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Local))?
+    .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Local))
 }
 
 /// Resolve a connection provisioned or configured by the trusted backend and
