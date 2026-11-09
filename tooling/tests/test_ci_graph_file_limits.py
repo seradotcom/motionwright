@@ -64,4 +64,38 @@ class GraphStagingFileBudgetTests(unittest.TestCase):
                 ci.graph_case_staging_budget(invalid, ref)
 
 
+class GraphCompiledSourceTriggerTests(unittest.TestCase):
+    """Route directly affected Graph Rust source into the bounded compiled lane."""
+
+    def test_native_graph_and_semantic_graph_edits_trigger_bounded_compile(self):
+        from fnmatch import fnmatchcase
+
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-file-limit-boundary.yml").read_text(
+            encoding="utf-8")
+        push = workflow.split("\n  push:", 1)[1].split("\n  workflow_dispatch:", 1)[0]
+        globs = [line.strip()[3:-1] for line in push.splitlines()
+                 if line.strip().startswith("- '") and line.strip().endswith("'")]
+
+        # Each file affects the real Native adapter or StudioService Graph
+        # transports compiled in this workflow, not only source diagnostics.
+        for relative in (
+            "crates/native/src/production/graph_authoring.rs",
+            "crates/native/src/production/graph_authoring_tests.rs",
+            "crates/service/src/semantic_graph.rs",
+            "crates/service/src/semantic_graph_admission.rs",
+        ):
+            with self.subTest(source=relative):
+                self.assertTrue((root / relative).is_file())
+                self.assertTrue(any(fnmatchcase(relative, glob) for glob in globs),
+                                f"Bounded Graph compile not triggered by {relative}")
+        for unrelated in (
+            "docs/roadmap.md",
+            "crates/native/src/production/blender_render.rs",
+        ):
+            with self.subTest(unrelated=unrelated):
+                self.assertFalse(any(fnmatchcase(unrelated, glob) for glob in globs),
+                                 f"Do not broaden expensive Graph builds: {unrelated}")
+
+
 if __name__ == "__main__": unittest.main()
