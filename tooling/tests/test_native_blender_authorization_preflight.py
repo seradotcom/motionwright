@@ -86,5 +86,59 @@ class BlenderAuthorizationPreflightTests(unittest.TestCase):
             blender.require_headless_blender_catalog([allowed], required)
 
 
+    def test_foreground_operator_is_explicit_terminal_bound_and_cannot_approve(self):
+        # This validates only source admission. The physical Broker must
+        # still issue and verify a fresh human challenge for each action.
+        required = {"driver.blender.file.save", "driver.blender.file.open"}
+        with mock.patch.dict(blender.os.environ, {
+            "MOTIONWRIGHT_BLENDER_OPERATOR_CONSOLE": "headless",
+        }):
+            self.assertFalse(blender.foreground_operator_requested(required))
+        with mock.patch.dict(blender.os.environ, {
+            "MOTIONWRIGHT_BLENDER_OPERATOR_CONSOLE": "yes",
+        }):
+            with self.assertRaises(ValueError):
+                blender.foreground_operator_requested(required)
+        with mock.patch.dict(blender.os.environ, {
+            "MOTIONWRIGHT_BLENDER_OPERATOR_CONSOLE": "foreground",
+        }), mock.patch.object(blender.sys.stdin, "isatty", return_value=False):
+            with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+                blender.foreground_operator_requested(required)
+        with mock.patch.dict(blender.os.environ, {
+            "MOTIONWRIGHT_BLENDER_OPERATOR_CONSOLE": "foreground",
+        }), mock.patch.object(blender.os, "name", "posix"), \
+                mock.patch.object(blender.sys.stdin, "isatty", return_value=True), \
+                mock.patch.object(blender.sys.stdout, "isatty", return_value=True), \
+                mock.patch.object(blender.os, "open", return_value=13) as open_tty, \
+                mock.patch.object(blender.os, "close") as close_tty:
+            self.assertTrue(blender.foreground_operator_requested(required))
+            open_tty.assert_called_once()
+            self.assertEqual(open_tty.call_args.args[0], "/dev/tty")
+            close_tty.assert_called_once_with(13)
+            with self.assertRaises(ValueError):
+                blender.foreground_operator_requested({"driver.blender.render"})
+
+        rows = [descriptor("blender.file.save", "destructive", True),
+                descriptor("blender.file.open", "destructive", True)]
+        with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+            blender.inspect_headless_blender_descriptors(required, rows)
+        self.assertIsNone(blender.inspect_headless_blender_descriptors(
+            required, rows, operator_console=True))
+        rows[0]["interactive_consent"] = False
+        with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+            blender.inspect_headless_blender_descriptors(
+                required, rows, operator_console=True)
+        for name in required:
+            consent = capability(name, "require_confirmation", "destructive")
+            with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+                blender.require_headless_blender_catalog([consent], {name})
+            self.assertIsNone(blender.require_headless_blender_catalog(
+                [consent], {name}, operator_console=True))
+            consent["policy_preview"]["state"] = "allow"
+            with self.assertRaises(blender.BlenderOwnerApprovalRequired):
+                blender.require_headless_blender_catalog(
+                    [consent], {name}, operator_console=True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exact-SHA Motionwright -> Semwright -> Blender semantic round-trip acceptance.
 
-CI-only by design. The test creates application-owned Motionwright state, provisions
-Semwright's pinned Blender Driver through the real Broker/Driver Host sandbox,
-realizes the bounded typed contribution, and independently parses the exported GLB.
+CI is headless and never approves commands. Original-scene runs may explicitly
+use a real operator's attached terminal, while the pinned Semwright Broker
+still requires fresh foreground approval for each sensitive operation.
+The test provisions a source-bound driver and checks the actual artifacts.
 """
 from __future__ import annotations
 
@@ -61,13 +62,37 @@ class BlenderOwnerApprovalRequired(RuntimeError):
                          + ", ".join(self.commands))
 
 
-def inspect_headless_blender_descriptors(required: set[str], descriptors: object) -> None:
-    """Reject known SDK consent requirements before creating a Native owner.
+def foreground_operator_requested(required: set[str]) -> bool:
+    """Only an explicitly selected, physically attached Linux console can prompt.
 
-    semwrightd is deliberately launched below without --approval-console.
-    Source descriptors can reject that incompatible plan without a Blender
-    process. Later live discovery and every Broker execution still recheck
-    authority; this inspection cannot grant permission.
+    Environment state does not approve any operation; each sensitive command
+    still requires the pinned Broker's fresh, human-entered challenge.
+    """
+    mode = os.environ.get("MOTIONWRIGHT_BLENDER_OPERATOR_CONSOLE", "headless")
+    if mode == "headless":
+        return False
+    if mode != "foreground":
+        raise ValueError("Unsupported Blender operator console mode")
+    consented = {"driver.blender.file.save", "driver.blender.file.open"}
+    if not consented <= required:
+        raise ValueError("Foreground Blender verification must select save and reopen")
+    if os.name != "posix" or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise BlenderOwnerApprovalRequired(consented)
+    try:
+        tty = os.open("/dev/tty", os.O_RDWR | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        raise BlenderOwnerApprovalRequired(consented) from None
+    else:
+        os.close(tty)
+    return True
+
+
+def inspect_headless_blender_descriptors(required: set[str], descriptors: object,
+                                         *, operator_console: bool = False) -> None:
+    """Reject SDK risks unless the real foreground console can request consent.
+
+    Source preflight cannot grant authority. Later live Broker discovery and
+    execution recheck every operation independently of this inspection.
     """
     if (not required or not all(type(name) is str and name.startswith("driver.blender.") for name in required)
             or type(descriptors) is not list or len(descriptors) > 16384):
@@ -86,14 +111,16 @@ def inspect_headless_blender_descriptors(required: set[str], descriptors: object
         command = "driver." + name
         if command in required and (descriptor["risk"] in BLENDER_SENSITIVE_RISKS
                                     or descriptor["interactive_consent"]):
-            blocked.add(command)
+            if not (operator_console and descriptor["interactive_consent"]):
+                blocked.add(command)
     if not curated:
         raise ValueError("Blender authorization source descriptors are absent")
     if blocked:
         raise BlenderOwnerApprovalRequired(blocked)
 
 
-def require_headless_blender_source_authorization(required: set[str]) -> None:
+def require_headless_blender_source_authorization(required: set[str],
+                                                   *, operator_console: bool = False) -> None:
     # Read the exact existing SDK object, never fetch, checkout, or edit its
     # descriptors. Semantic capabilities absent from this curated table are
     # checked against the live source-bound catalog before publishing a client.
@@ -104,10 +131,12 @@ def require_headless_blender_source_authorization(required: set[str]) -> None:
     )
     if result.returncode != 0 or not 0 < len(result.stdout) <= STATIC_JSON_BYTES:
         raise ValueError("Pinned Blender authorization descriptors are unavailable")
-    inspect_headless_blender_descriptors(required, json.loads(result.stdout))
+    inspect_headless_blender_descriptors(
+        required, json.loads(result.stdout), operator_console=operator_console)
 
 
-def require_headless_blender_catalog(capabilities: list[dict], required: set[str]) -> None:
+def require_headless_blender_catalog(capabilities: list[dict], required: set[str],
+                                     *, operator_console: bool = False) -> None:
     selected = [row for row in capabilities if type(row) is dict and row.get("id") in required]
     if len(selected) != len(required) or {row["id"] for row in selected} != required:
         raise ValueError("Pinned Blender provider is missing or duplicates required capabilities")
@@ -117,7 +146,13 @@ def require_headless_blender_catalog(capabilities: list[dict], required: set[str
         if (type(preview) is not dict or preview.get("preview_only") is not True
                 or preview.get("execution_rechecks") is not True or row.get("risk") not in BLENDER_RISKS):
             raise ValueError("Blender authorization preview is unavailable or malformed")
-        if preview.get("state") == "require_confirmation" or row["risk"] in BLENDER_SENSITIVE_RISKS:
+        if preview.get("state") == "require_confirmation":
+            # The actual Broker will present a fresh challenge at dispatch.
+            # A preview is never an approval, even with a real console.
+            if not operator_console or row.get("available") is not True:
+                blocked.add(row["id"])
+        elif row["risk"] in BLENDER_SENSITIVE_RISKS:
+            # Even a malformed "allow" preview cannot silently grant risk.
             blocked.add(row["id"])
         elif preview.get("state") != "allow" or row.get("available") is not True:
             raise ValueError("Blender capability is unavailable under the original owner policy")
@@ -606,7 +641,11 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
     if socket.exists() or socket.is_symlink():
         raise FileExistsError("Existing Blender broker socket path cannot be adopted")
     required = set(BLENDER_DEFAULT_COMMANDS if required is None else required)
-    require_headless_blender_source_authorization(required)
+    operator_console = foreground_operator_requested(required)
+    if operator_console and bounded_static:
+        raise ValueError("Static Blender CI cannot request foreground operator consent")
+    require_headless_blender_source_authorization(
+        required, operator_console=operator_console)
     driver = paths["bin"] / "semwright-blender-driver"
     shutil.copyfile(SW_BINS / "semwright-blender-driver", driver)
     driver.chmod(0o700)
@@ -718,19 +757,22 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
     try:
         if bounded_static:
             static_original_budget().setup(45)
+        daemon_args = [
+            str(SW_BINS / "semwrightd"),
+            *(["--approval-console"] if operator_console else []),
+            "--config", str(config_path), "--socket", str(socket),
+        ]
+        # In foreground mode a child process group retains the user's
+        # controlling terminal. Cleanup still targets only that group.
+        daemon_group = ({"start_new_session": False, "process_group": 0}
+                        if operator_console else {"start_new_session": True})
         daemon = subprocess.Popen(
-            [
-                str(SW_BINS / "semwrightd"),
-                "--config",
-                str(config_path),
-                "--socket",
-                str(socket),
-            ],
+            daemon_args,
             env=env,
-            stdin=subprocess.DEVNULL,
+            stdin=None if operator_console else subprocess.DEVNULL,
             stdout=subprocess.PIPE if bounded_static else log_stream,
             stderr=subprocess.STDOUT if bounded_static else log_stream,
-            start_new_session=True,
+            **daemon_group,
         )
         if bounded_static:
             static_log = start_static_daemon_log(daemon, log_stream)
@@ -775,7 +817,8 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
             if not isinstance(next_offset, int) or next_offset <= offset:
                 raise AssertionError("Blender capability discovery returned an invalid cursor")
             offset = next_offset
-        require_headless_blender_catalog(capabilities, required)
+        require_headless_blender_catalog(
+            capabilities, required, operator_console=operator_console)
         if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
             raise AssertionError("Semwright did not create a private persistent session ticket")
 
