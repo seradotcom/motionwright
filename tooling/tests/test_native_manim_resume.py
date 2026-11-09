@@ -2,7 +2,7 @@
 from __future__ import annotations
 import base64
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -25,9 +25,11 @@ import native_manim_resume_focals as focals
 import native_manim_resume_resources as resources
 import native_manim_editable_outer as outer
 import native_manim_resume_runtime as runtime
+import native_manim_resume_host as host
 import native_manim_resume_lineage as lineage
 
 CURRENT = {"source_sha": "a" * 40, "semwright_sha": transfer.SDK, "run_id": "12345", "run_attempt": "1"}
+CANONICAL = "refs/heads/integrate/phase1-final-composition-20261027"
 INSTANT = datetime(2026, 11, 7, 12, 1, tzinfo=timezone.utc)
 
 
@@ -328,6 +330,76 @@ class GateAndResourcesTests(unittest.TestCase):
                     with self.subTest(key=key), mock.patch.dict(os.environ, {key: value}), self.assertRaises(ValueError):
                         outer.current_context()
 
+
+class CanonicalResumeSelection(unittest.TestCase):
+    def test_integrated_job_requires_same_source_and_exact_allowed_branch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "SOURCE_LOCK.json").write_text(json.dumps(
+                {"dependencies": {"semwright": {"revision": transfer.SDK}}}), encoding="utf-8")
+            env = {"GITHUB_WORKSPACE": str(root), "GITHUB_ACTIONS": "true",
+                   "GITHUB_EVENT_NAME": "workflow_dispatch",
+                   "GITHUB_JOB": transfer.JOB, "GITHUB_RUN_ATTEMPT": "1",
+                   "GITHUB_SHA": CURRENT["source_sha"], "GITHUB_RUN_ID": CURRENT["run_id"],
+                   "GITHUB_REPOSITORY": transfer.REPOSITORY, "GITHUB_REF": CANONICAL,
+                   "MANIM_NATIVE_SCENARIO": transfer.RESUME_SCENARIO,
+                   "MW_MANIM_DEVELOPMENT_NATIVE": "true",
+                   "MW_MANIM_RESUME_EXPECTED_SHA": CURRENT["source_sha"]}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(sys, "platform", "linux"), \
+                 mock.patch.object(transfer.os, "geteuid", return_value=1000, create=True):
+                self.assertEqual(outer.current_context(), CURRENT)
+                self.assertEqual(transfer.hosted_context(), CURRENT)
+                for key, value in (("GITHUB_REF", "refs/heads/main"),
+                                   ("GITHUB_REF", CANONICAL + "-evil"),
+                                   ("MW_MANIM_RESUME_EXPECTED_SHA", "b"*40),
+                                   ("GITHUB_RUN_ATTEMPT", "2")):
+                    with self.subTest(key=key, value=value), mock.patch.dict(os.environ, {key: value}):
+                        with self.assertRaises(ValueError):
+                            transfer.hosted_context()
+
+    def test_recipient_record_binds_integrated_ref_and_rejects_relabel(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        der = key.public_key().public_bytes(serialization.Encoding.DER,
+                                            serialization.PublicFormat.SubjectPublicKeyInfo)
+        recipient = {"spki_der_base64": base64.b64encode(der).decode(), "sha256": engine.sha(der)}
+        issued = datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc)
+        expiry = issued + timedelta(minutes=10)
+        with mock.patch.dict(os.environ, {"GITHUB_REF": CANONICAL}, clear=True):
+            row = transfer.recipient_record(recipient, CURRENT, "42",
+                issued.isoformat(), expiry.isoformat(), "b"*64)
+        self.assertEqual(row["ref"], CANONICAL)
+        # Offline host must validate the same explicit ref, not its own environment.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(transfer.validate_recipient(row, CURRENT, "42", "b"*64, clock=issued),
+                             recipient)
+            with self.assertRaises(ValueError):
+                # Both refs are permitted, but one received capsule cannot be
+                # relabelled as a different original run's branch.
+                transfer.validate_recipient(row, CURRENT, "42", "b"*64,
+                                            clock=issued, expected_ref=transfer.REF)
+            for value in ("refs/heads/main", CANONICAL+"-evil"):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    transfer.validate_recipient({**row, "ref": value}, CURRENT, "42",
+                                                "b"*64, clock=issued)
+
+    def test_live_and_completed_run_reject_foreign_branch(self):
+        common = {"id": 12345, "head_sha": CURRENT["source_sha"],
+                  "head_branch": CANONICAL.removeprefix("refs/heads/"),
+                  "run_attempt": 1, "event": "workflow_dispatch",
+                  "path": ".github/workflows/native-manim-e2e.yml",
+                  "repository": {"full_name": transfer.REPOSITORY},
+                  "actor": {"id": 42}, "triggering_actor": {"id": 42}}
+        self.assertEqual(host.checked_run({**common, "status": "in_progress",
+                                          "conclusion": None}, CURRENT), "42")
+        lineage.completed_run({**common, "status": "completed", "conclusion": "success"},
+                              CURRENT)
+        with self.assertRaises(ValueError):
+            host.checked_run({**common, "head_branch": "main", "status": "in_progress",
+                              "conclusion": None}, CURRENT)
+        with self.assertRaises(ValueError):
+            lineage.completed_run({**common, "head_branch": "main", "status": "completed",
+                                   "conclusion": "success"}, CURRENT)
 
 if __name__ == "__main__":
     unittest.main()

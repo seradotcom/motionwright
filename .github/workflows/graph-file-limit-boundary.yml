@@ -13,6 +13,12 @@ on:
       - 'apps/studio/tooling/graph-owner/owner_environment_layout.test.mjs'
       - 'crates/service/examples/studio_review_session.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
+      # Only source modules consumed by these bounded real Graph transports.
+      # Broader unrelated Native changes use their separate impact lanes.
+      - 'crates/native/src/production/graph_authoring.rs'
+      - 'crates/native/src/production/graph_authoring_tests.rs'
+      - 'crates/service/src/semantic_graph.rs'
+      - 'crates/service/src/semantic_graph_admission.rs'
       - 'crates/service/Cargo.toml'
       - 'Cargo.lock'
   workflow_dispatch:

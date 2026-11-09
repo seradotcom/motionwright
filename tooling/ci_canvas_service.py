@@ -10407,7 +10407,7 @@ def graph_observed_playwright_failure(repo, report_path, command):
             direct = error.get("location", {})
             if type(direct) is dict:
                 location(direct.get("file"), direct.get("line"), direct.get("column"))
-            text = "\n".join(error[key][:65536] for key in ("message", "stack") if type(error.get(key)) is str).replace("\\", "/")
+            text = "\n".join(error[key][:65536] for key in ("message", "stack") if type(error.get(key)) is str)
             for code in GRAPH_CASE_DIAGNOSTIC_CODES:
                 if re.search(r"(?<![A-Za-z0-9_-])" + re.escape(code) + r"(?![A-Za-z0-9_-])", text) and code not in codes:
                     codes.append(code)
@@ -10471,7 +10471,7 @@ def graph_observed_playwright_failure(repo, report_path, command):
                     if code not in codes:
                         codes.append(code)
             for pattern, source in patterns:
-                for match in pattern.finditer(text):
+                for match in pattern.finditer(text.replace("\\", "/")):
                     location(source, int(match[1]), int(match[2]))
             # Playwright also serializes AggregateError children inside
             # result.error.errors, not just its sibling result.errors array.

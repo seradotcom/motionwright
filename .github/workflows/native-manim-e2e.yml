@@ -77,7 +77,18 @@ on:
       - 'tooling/test_native_manim_outer_publication.py'
       - 'tooling/tests/test_native_manim_editable_workflow.py'
       - 'tooling/tests/test_ci_manim_source_selection.py'
+      - 'tooling/tests/test_ci_manim_resume_source_gate.py'
       - 'tooling/tests/test_ci_manim_rustup_root.py'
+      - 'tooling/native_manim_retained_reference.py'
+      - 'tooling/retain_manim_source_recovery_tool.py'
+      - 'tooling/requirements/manim-retained-reference-*.json'
+      - 'tooling/tests/fixtures/manim-recovery-*.stdout.txt'
+      - 'tooling/tests/fixtures/manim-sdk-guard-*.json'
+      - 'tooling/tests/test_manim_source_recovery_tool.py'
+      - 'tooling/tests/test_native_manim_ntmode_context.py'
+      - 'tooling/tests/test_native_manim_recovery_lineage.py'
+      - 'tooling/tests/test_native_manim_retained_reference.py'
+      - 'tooling/tests/test_ci_manim_pr_trigger.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
@@ -205,11 +216,23 @@ jobs:
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -c \
             'import PIL; assert PIL.__version__ == "10.2.0"'
 
+      - name: Admit source-only Manim resume regressions on pull requests
+        # Reuse the pinned custody venv; tests are synthetic and never create
+        # or authorize a native scene, source-resume run, or acceptance status.
+        run: |
+          set -euo pipefail
+          MW_MANIM_DEVELOPMENT_NATIVE=false python3 -B -m unittest \
+            tooling.tests.test_ci_manim_resume_source_gate -v
+          MANIM_NATIVE_SCENARIO=editable-source-resume "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest tooling.tests.test_native_manim_resume -v
+
       - name: Verify explicit development Native admission and non-acceptance projection
         run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_native_development_selection.py' -v
 
       - name: Verify private Rust toolchain preparation without installation
         run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_rustup_root.py' -v
+
+      - name: Verify Manim PR source recovery and custody path routing
+        run: python3 -B -m unittest tooling.tests.test_ci_manim_pr_trigger -v
 
       - name: Require 13 writer and 32 native-observer source contracts
         run: |

@@ -46,6 +46,7 @@ on:
       - 'crates/native/**'
       - 'apps/studio/src/**'
       - 'apps/studio/tests/semantic-graph-*.spec.ts'
+      - 'apps/studio/tests/support/scopedChangeService.ts'
       - 'rust-toolchain.toml'
       - 'crates/native/src/production/graph_authoring.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
@@ -188,12 +189,17 @@ jobs:
               raise SystemExit("G0_REVIEWER_RUNNER_DENIAL_ABSENT")
           print("PASS: R74 reviewer source syntax and GitHub-runner refusal only; independent review NOT_RUN")
           PY
-      - name: Verify original J1 Cargo reader and obsolete sandbox rejection on Linux
+      - name: Verify original J1 reader, closed context and inspection source on Linux
         shell: bash
         run: |
           set -euo pipefail
           # Inert source fixtures only: no R74 statuses, Native Host, Store or G2.
           node --test apps/studio/tooling/graph-owner/producer_guard.test.mjs
+          # Keep the existing Linux-only J1 original unchanged; these are the
+          # two actual closed-context/Save-guard contracts selected by this lane.
+          node --test \
+            apps/studio/tooling/graph-owner/context_failure_decode.test.mjs \
+            apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs
       - name: Retain bounded source-only result, even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

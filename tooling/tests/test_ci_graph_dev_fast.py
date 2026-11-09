@@ -439,6 +439,7 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
             ("apps/studio/src/semanticGraph.ts", "ui"),
             ("apps/studio/src/semanticGraphRecovery.ts", "ui"),
             ("apps/studio/tests/semantic-graph-service.spec.ts", "ui"),
+            ("apps/studio/tests/support/scopedChangeService.ts", "ui"),
             ("rust-toolchain.toml", "rust"),
         )
         for path, impacted in cases:
@@ -473,6 +474,30 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertTrue(
             (root / "tooling/tests/test_graph_owner_incomplete_terminal.py").is_file())
         self.assertIn("tooling.tests.test_graph_owner_final_error_catalog", gn1)
+
+    def test_context_and_inspection_node_contracts_are_selected_in_fast_g0(self):
+        # The fast source lane must actually execute the two focused Node
+        # contracts it watches; a path trigger alone is not verification.
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split(
+            "  workflow_dispatch:", 1)[0]
+        lane = workflow.split("      - name: Verify original J1", 1)[1].split(
+            "      - name: Retain bounded source-only result", 1)[0]
+        self.assertIn("- 'apps/studio/tooling/graph-owner/**'", trigger)
+        self.assertIn("- 'apps/studio/tests/support/graph-owner/**'", trigger)
+        for source in (
+            "apps/studio/tooling/graph-owner/context_failure_decode.test.mjs",
+            "apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs",
+        ):
+            with self.subTest(source=source):
+                self.assertTrue((root / source).is_file())
+                self.assertIn(source, lane)
+        self.assertIn("node --test", lane)
+        self.assertNotIn("semantic-graph-service.spec.ts", lane)
+
+
 
 if __name__ == "__main__":
     unittest.main()
