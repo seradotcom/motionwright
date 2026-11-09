@@ -8,6 +8,7 @@ on:
       - Cargo.lock
       - Cargo.toml
       - '.github/workflows/integration-lock-advisory.yml'
+      - 'tooling/glib_owner_chain.py'
       - 'crates/**/Cargo.toml'
       - 'apps/**/Cargo.toml'
 
