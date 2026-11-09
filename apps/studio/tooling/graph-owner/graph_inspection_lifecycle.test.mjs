@@ -386,3 +386,21 @@ test('same-render Save blocks a stale Project Refresh before dispatch', () => {
   assert.ok(!handler.includes('session.draft.pending) return'),
     'Refresh should remain available for recovering an idle UNKNOWN intent');
 });
+
+test('a repeated same-render Graph outcome continuation cannot fork its prior reviewed intent', () => {
+  const begin = ui.indexOf('function continueEditing()');
+  const end = ui.indexOf('function reconcile()', begin);
+  assert.ok(begin > 0 && end > begin, 'the original Graph outcome continuation exists');
+  const handler = ui.slice(begin, end);
+  const release = handler.indexOf('releaseGraphOutcome(');
+  const fork = handler.indexOf('fork(next,');
+  assert.ok(release > 0 && fork > release, 'original reviewed outcome and recovery fork still exist');
+  const guard = 'graphOutcomeMatches(session.draft, current.current.project, review)';
+  assert.ok(handler.includes(guard), 'continuation must be bound to a still-pending matching review');
+  assert.ok(handler.indexOf(guard) < release, 'review source/intent guard must precede recovery release');
+  for (const live of ['current.current.busy', 'session.preparing', 'session.inFlight']) {
+    assert.ok(handler.includes(live), 'continuation must check live Save state: ' + live);
+    assert.ok(handler.indexOf(live) < release, 'live Save guard must precede release: ' + live);
+  }
+  assert.match(ui, /onClick=\{continueEditing\}/);
+});

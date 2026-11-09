@@ -644,7 +644,10 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     session.custody = custody; session.draft = next; session.backupError = null; session.error = null; session.notice = notice; epoch.current++; setReview(null); setChoices({}); copies(session); notify(session);
   }
   function continueEditing() {
-    if (busy || !review) return;
+    // The previous rendered review may outlive a same-render continuation.
+    // Re-check its original pending intent and current source before forking.
+    if (current.current.busy || session.preparing || session.inFlight || !review
+      || !graphOutcomeMatches(session.draft, current.current.project, review)) return;
     try {
       const recordedRemoval = session.draft.pending?.outcome === "UNKNOWN"
         && session.draft.pending.submitted.type === "remove_semantic_graph"
