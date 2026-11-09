@@ -122,5 +122,33 @@ class OriginalMixImpactRouteTests(unittest.TestCase):
         self.assertIn("test -f crates/native/src/original_mix/semantic_bus.rs", block)
 
 
+    def test_unity_pcm16_regression_uses_existing_rust_source_run_once(self):
+        text = workflow_text()
+        block = job(text, "original-mix-rust-source-impact",
+                    "native-source-and-independent-meter")
+        # Source admission must reuse the original test target once, rather
+        # than initiating a second compiled run for a new PCM regression.
+        self.assertEqual(
+            block.count("cargo test --locked -p motionwright-native --test original_mix"),
+            1)
+        self.assertIn(
+            'cargo test --locked -p motionwright-native --test original_mix'
+            ' 2>&1 | tee "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log"',
+            block)
+        self.assertIn(
+            "fn unity_gain_original_pcm16_source_retains_exact_quantized_samples()",
+            block)
+        self.assertIn(
+            "if grep -Fq 'fn unity_gain_original_pcm16_source_retains_exact_quantized_samples()' crates/native/tests/original_mix.rs; then",
+            block)
+        self.assertIn(
+            "test \"$(grep -Fxc 'test unity_gain_original_pcm16_source_retains_exact_quantized_samples ... ok' \"$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log\")\" -eq 1",
+            block)
+        self.assertIn("NOT_RUN: unity PCM16 source test is absent", block)
+        self.assertIn('set -euo pipefail', block)
+        self.assertIn('if: always()', block)
+        self.assertIn('original-mix-rust-source-impact/', block)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -95,7 +95,17 @@ jobs:
           test "$GITHUB_REPOSITORY" = seradotcom/motionwright
           python3 -B -m unittest -q tooling.tests.test_ci_v05_original_mix_impact_route
           python3 -B tooling/source_policy.py
-          cargo test --locked -p motionwright-native --test original_mix
+          mkdir -p "$RUNNER_TEMP/original-mix-rust-source-impact"
+          cargo test --locked -p motionwright-native --test original_mix 2>&1 | tee "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log"
+          # Reuse the same original compiled integration suite. Once the
+          # source contains the PCM16 unity regression, require an actual
+          # passing test result, not merely the presence of a test name.
+          if grep -Fq 'fn unity_gain_original_pcm16_source_retains_exact_quantized_samples()' crates/native/tests/original_mix.rs; then
+            test "$(grep -Fxc 'test unity_gain_original_pcm16_source_retains_exact_quantized_samples ... ok' "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log")" -eq 1
+          else
+            printf '%s\n' 'NOT_RUN: unity PCM16 source test is absent; no selected regression G1 credit'
+          fi
+          sha256sum "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log" > "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.sha256"
           # The PCM floor unit resides in the library module, not the
           # external original_mix test target. Run it exactly once when
           # the corresponding source change has actually been admitted.
@@ -106,6 +116,14 @@ jobs:
           else
             printf '%s\n' 'NOT_RUN: semantic PCM floor unit absent from this source; no G1 credit'
           fi
+      - name: Retain original bounded Rust source unit roster
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: original-mix-rust-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/original-mix-rust-source-impact/
+          if-no-files-found: warn
+          retention-days: 7
 
   native-source-and-independent-meter:
     if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}
