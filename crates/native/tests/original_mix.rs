@@ -302,8 +302,8 @@ fn bounded_duck_scan_matches_full_window_reference_with_overlapping_releases() {
         .map(|(i, window)| domain::TranscriptSegment {
             id: id(1_000 + i as u128),
             voice_track_id: id(40),
-            start: time(window.start_sample as i64, 48_000),
-            end: time(window.end_exclusive as i64, 48_000),
+            start: domain::RationalTime::new(window.start_sample as i64, 48_000).unwrap(),
+            end: domain::RationalTime::new(window.end_exclusive as i64, 48_000).unwrap(),
             text: "Reviewed original voice activity".into(),
             speaker: None,
             alignment: domain::AlignmentEvidence::Manual,
