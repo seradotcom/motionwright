@@ -192,6 +192,38 @@ class ImpactRoutingTests(unittest.TestCase):
             with self.assertRaises(gate.GraphFastError):
                 gate.current_source(root, "1234567890" * 4)
 
+    def test_impact_mode_source_checks_never_admit_rust_or_browser_g1(self):
+        # An offline cargo check and local Vitest cannot prove hosted acceptance.
+        source = {"git_head": "a" * 40, "git_tree": "b" * 40,
+                  "base_commit": "c" * 40, "tracked_clean": True,
+                  "worktree_clean": True, "source_kind": "EXACT_HEAD"}
+        selected = {"check": "selected", "status": "PASS", "exit_code": 0}
+        ui = {"check": "graph_ui_changed", "status": "PASS", "exit_code": 0}
+        rust = {"check": "graph_rust_impact", "status": "PASS", "exit_code": 0}
+        with mock.patch.object(gate, "current_source", return_value=source), \
+             mock.patch.object(gate, "changed_files", return_value=[
+                 "apps/studio/src/SemanticGraphWorkbench.tsx",
+                 "crates/native/src/lib.rs"]), \
+             mock.patch.object(gate, "probe_capture_roster_source",
+                               return_value={"status": "PASS_INERT_ONLY"}), \
+             mock.patch.object(gate, "_check_node", return_value=[selected]), \
+             mock.patch.object(gate, "selected_python_cases",
+                               return_value=(["synthetic"], [])), \
+             mock.patch.object(gate, "_run", return_value=selected), \
+             mock.patch.object(gate, "_check_ui", return_value=ui), \
+             mock.patch.object(gate, "_check_cargo", return_value=rust):
+            report = gate.execute(Path(__file__).resolve().parents[2],
+                                  "HEAD^", "impact")
+        self.assertEqual(report["status"], "PASS_SOURCE_ONLY")
+        self.assertEqual(report["Graph6_cases_accepted"], 0)
+        self.assertFalse(report["formal_acceptance"])
+        self.assertIn(ui, report["checks"])
+        self.assertIn(rust, report["checks"])
+        for key in ("rust_G1", "studio_UI_G1"):
+            with self.subTest(gate=key):
+                self.assertEqual(report["impact"][key],
+                                 "SOURCE_CHECK_ONLY_NOT_G1")
+
     def test_impacted_rust_requires_existing_hot_target_without_creating_one(self):
         with tempfile.TemporaryDirectory(prefix="mw-fast-target-") as tmp:
             root = Path(tmp)
@@ -331,6 +363,25 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("contents: read", workflow)
         for blocked in ("graph produce", "graph wait", "graph run"):
             self.assertNotIn(blocked, workflow)
+
+    def test_original_final_lifecycle_oracles_are_selected_in_source_g0(self):
+        """A changed finalizer regression must be executed, not just trigger CI."""
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split(
+            "  workflow_dispatch:", 1)[0]
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_owner_final_lifecycle_errors.py'",
+            trigger)
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        selected = [line.strip().split()[0] for line in gn1.splitlines()
+                    if line.strip().startswith("tooling.tests.")]
+        self.assertIn("tooling.tests.test_graph_owner_final_lifecycle_errors",
+                      selected)
+        self.assertIn("tooling.tests.test_graph_owner_incomplete_terminal",
+                      selected)
 
     def test_original_provider_lease_roster_oracles_are_selected_in_source_fast(self):
         """New mixed-client negatives must be selected with the owner source."""
@@ -497,6 +548,26 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("node --test", lane)
         self.assertNotIn("semantic-graph-service.spec.ts", lane)
 
+
+
+    def test_exact_sdk_capture_and_private_child_env_source_oracles_are_selected(self):
+        """Changes in native SDK capture or child-env denial must run G0 tests."""
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split(
+            "  workflow_dispatch:", 1)[0]
+        self.assertIn(
+            "      - 'tooling/tests/test_graph_sdk_capture_layout.py'",
+            trigger)
+        self.assertIn(
+            "      - 'tooling/native_graph_browser_owner.py'", trigger)
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        selected = [line.strip().split()[0] for line in gn1.splitlines()
+                    if line.strip().startswith("tooling.tests.")]
+        self.assertIn("tooling.tests.test_graph_sdk_capture_layout", selected)
+        self.assertTrue((root / "tooling/tests/test_graph_sdk_capture_layout.py").is_file())
 
 
 if __name__ == "__main__":

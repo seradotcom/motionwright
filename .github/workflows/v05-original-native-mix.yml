@@ -1,9 +1,18 @@
 name: V05 physical original 3-bus mix and audition
 
 on:
+  # Compile only the changed original-mix Rust suite on integration pushes.
+  # Full meter, renderer and audition gates remain PR or explicitly manual.
+  push:
+    branches: ['integrate/phase1-final-composition-20261027']
+    paths:
+      - 'crates/native/src/original_mix.rs'
+      - 'crates/native/src/original_mix/**'
+      - 'crates/native/tests/original_mix.rs'
   pull_request:
     paths:
       - 'crates/native/src/original_mix.rs'
+      - 'crates/native/src/original_mix/**'
       - 'crates/native/src/lib.rs'
       - 'crates/native/tests/original_mix.rs'
       - 'crates/native/examples/native_mix_fixture.rs'
@@ -57,8 +66,49 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
 
 jobs:
+  original-mix-rust-source-impact:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: v05-original-first-party-source-mix-1.98.1
+          cache-on-failure: true
+      - name: Verify bounded source route and compile the changed original mix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          python3 -B -m unittest -q tooling.tests.test_ci_v05_original_mix_impact_route
+          python3 -B tooling/source_policy.py
+          cargo test --locked -p motionwright-native --test original_mix
+          # The PCM floor unit resides in the library module, not the
+          # external original_mix test target. Run it exactly once when
+          # the corresponding source change has actually been admitted.
+          if test -f crates/native/src/original_mix/semantic_bus.rs &&
+             grep -Fq 'fn additive_semantic_sfx_keeps_valid_negative_pcm16_endpoint_and_rejects_overflow()' crates/native/src/original_mix/semantic_bus.rs; then
+            cargo test --locked -p motionwright-native --lib original_mix::semantic_bus::tests::additive_semantic_sfx_keeps_valid_negative_pcm16_endpoint_and_rejects_overflow -- --exact 2>&1 | tee "$RUNNER_TEMP/original-mix-semantic-unit.original.log"
+            grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+([.][0-9]+)?s$' "$RUNNER_TEMP/original-mix-semantic-unit.original.log"
+          else
+            printf '%s\n' 'NOT_RUN: semantic PCM floor unit absent from this source; no G1 credit'
+          fi
+
   native-source-and-independent-meter:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
+    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -104,7 +154,7 @@ jobs:
           retention-days: 7
 
   studio-audition:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
+    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     defaults:
@@ -126,6 +176,7 @@ jobs:
       - run: npx playwright test tests/native-original-mix.spec.ts --project=chromium
 
   saved-mix-g0:
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:

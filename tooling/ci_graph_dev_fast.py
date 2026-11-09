@@ -458,10 +458,13 @@ def execute(repo: Path, base: str, mode: str, *, expected_source: str = "",
 
     report["status"] = ("PASS_SOURCE_ONLY" if source.get("worktree_clean", source["tracked_clean"])
                         else "PASS_DEV_WIP_SOURCE_ONLY")
-    report["impact"]["rust_G1"] = ("PASS_EXISTING_TARGET_REUSED" if mode == "impact" and pkgs
+    # A local Cargo check or Vitest is source impact evidence, not a hosted G1
+    # release test or original Native/Store acceptance. The concrete
+    # check results remain separately available in report["checks"].
+    report["impact"]["rust_G1"] = ("SOURCE_CHECK_ONLY_NOT_G1" if mode == "impact" and pkgs
                                     else "NOT_REQUIRED" if not pkgs
                                     else "NOT_EXECUTED_FAST_MODE")
-    report["impact"]["studio_UI_G1"] = ("PASS_SELECTED" if mode == "impact" and ui
+    report["impact"]["studio_UI_G1"] = ("SOURCE_CHECK_ONLY_NOT_G1" if mode == "impact" and ui
                                          else "NOT_REQUIRED" if not ui
                                          else "NOT_EXECUTED_FAST_MODE")
     return report
