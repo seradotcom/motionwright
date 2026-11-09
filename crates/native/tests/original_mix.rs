@@ -281,6 +281,87 @@ fn short_voice_envelopes_do_not_attenuate_voice_or_sfx_buses() {
 }
 
 #[test]
+fn unity_gain_original_pcm16_source_retains_exact_quantized_samples() {
+    // The source is already valid stereo s16le and does not require a DSP
+    // change. Quantization must not lose an LSB merely by passing through.
+    for source_sample in [-30_000_i16, 30_000_i16] {
+        let (mut project, mut plan, _) = fixture();
+        let frames = plan.sample_frames as usize;
+        let voice = pcm(source_sample, frames);
+        let music = pcm(0, frames);
+        let sfx = pcm(0, frames);
+
+        let voice_sha = hex(&voice);
+        project.assets[0].content_sha256 = Some(voice_sha.clone());
+        project.audio.voice_tracks[0].source_sha256 = voice_sha.clone();
+        plan.measured_voice.source_asset_sha256 = voice_sha.clone();
+        plan.measured_voice.decoded_pcm_sha256 = voice_sha;
+
+        let music_sha = hex(&music);
+        project.assets[1].content_sha256 = Some(music_sha.clone());
+        plan.original_music.source_asset_sha256 = music_sha.clone();
+        plan.original_music.decoded_pcm_sha256 = music_sha;
+
+        plan.duck_attenuation_db = 0.0;
+        let (rendered, evidence) =
+            render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+        assert_eq!(rendered, voice, "Unity PCM16 must not lose an LSB");
+        assert_eq!(evidence.rendered_pcm_sha256, hex(&voice));
+        assert_eq!(evidence.measured_music_duck_windows, 0);
+        assert!(!evidence.independently_verified_true_peak);
+        assert!(!evidence.owner_release_approved);
+    }
+}
+
+#[test]
+fn emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples() {
+    // A -80 dB gain makes a one-LSB source audible in the floating-point
+    // accumulator but silent after PCM16 quantization. The receipt must
+    // measure the emitted bytes, not claim unrendered sub-LSB energy.
+    // A -6 dB gain rounds one LSB back to one LSB; check both polarities.
+    for (input, gain_db, emitted_sample) in [
+        (1_i16, -80.0_f64, 0_i16),
+        (-1_i16, -80.0_f64, 0_i16),
+        (1_i16, -6.0_f64, 1_i16),
+        (-1_i16, -6.0_f64, -1_i16),
+    ] {
+        let (mut project, mut plan, [voice, _, sfx]) = fixture();
+        let music = pcm(input, plan.sample_frames as usize);
+        let digest = hex(&music);
+        project.assets[1].content_sha256 = Some(digest.clone());
+        plan.original_music.source_asset_sha256 = digest.clone();
+        plan.original_music.decoded_pcm_sha256 = digest;
+        project.audio.mix.music_gain_db = gain_db as f32;
+        plan.music_gain_db = gain_db;
+        plan.duck_attenuation_db = 0.0;
+
+        let (rendered, evidence) =
+            render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+        for frame in [0_usize, 24_000, 48_000, 95_999] {
+            assert_eq!(left_at(&rendered, frame), emitted_sample);
+            let right = i16::from_le_bytes([rendered[4 * frame + 2], rendered[4 * frame + 3]]);
+            assert_eq!(right, emitted_sample);
+        }
+        let expected_level = if emitted_sample == 0 {
+            -120.0
+        } else {
+            20.0 * (f64::from(emitted_sample).abs() / 32768.0).log10()
+        };
+        assert!(
+            (evidence.measured_pcm_sample_peak_dbfs - expected_level).abs() < 1e-6,
+            "PCM16 output peak must match the emitted samples for {input} at {gain_db} dB"
+        );
+        assert!(
+            (evidence.measured_pcm_rms_dbfs - expected_level).abs() < 1e-6,
+            "PCM16 output RMS must match the emitted samples for {input} at {gain_db} dB"
+        );
+        assert_eq!(evidence.rendered_pcm_sha256, hex(&rendered));
+        assert!(!evidence.independently_verified_true_peak);
+        assert!(!evidence.owner_release_approved);
+    }
+}
+
+#[test]
 fn rendered_wav_has_exact_pcm_bytes_and_cannot_claim_an_audio_master() {
     let (project, plan, [voice, music, sfx]) = fixture();
     let (pcm, receipt) = render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();

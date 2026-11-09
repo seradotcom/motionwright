@@ -483,9 +483,16 @@ pub fn render_original_source_mix_with_budget(
                 mixed.is_finite() && mixed.abs() < limit,
                 "Original PCM mix would clip or violate guard: review gains instead of silently applying a limiter",
             )?;
-            peak = peak.max(mixed.abs());
-            sum_squared += mixed * mixed;
-            let quantized = (mixed * 32767.0).round().clamp(-32768.0, 32767.0) as i16;
+            // PCM input uses sample / 32768.0 for both signs. Invert that
+            // exact scale when quantizing: 32767.0 introduces a one-LSB
+            // attenuation of otherwise unchanged original PCM16 samples.
+            let quantized = (mixed * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            // These receipt fields measure the actual emitted PCM, not the
+            // unquantized mixing accumulator (which may round to silence).
+            // Independent true-peak and LUFS verification are still required.
+            let emitted = f64::from(quantized) / 32768.0;
+            peak = peak.max(emitted.abs());
+            sum_squared += emitted * emitted;
             out.extend_from_slice(&quantized.to_le_bytes());
         }
     }
