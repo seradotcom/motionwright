@@ -303,3 +303,19 @@ test('a second same-render saved Project refresh cannot supersede the original r
     refresh.indexOf('await current.current.refreshProject()'), 'latch acquired synchronously');
   assert.match(refresh, /finally \{\s*if \(refreshToken\.current === token\) refreshToken\.current = null;/);
 });
+
+// An in-flight Save is protected by live session flags before React can
+// disable a previously visible recovery-copy discard button. A stale UI
+// handler must never delete original recovery bytes during preparation/commit.
+test('a same-render Graph Save blocks recovery-copy discard before removal', () => {
+  const start = ui.indexOf('function discard(copy: GraphRecoveryEntry)');
+  const end = ui.indexOf('const dependencies =', start);
+  assert.ok(start >= 0 && end > start, 'the original recovery copy discard handler exists');
+  const body = ui.slice(start, end);
+  const guard = 'if (current.current.busy || session.preparing || session.inFlight) return;';
+  assert.ok(body.includes(guard), 'discard must consult live Save state, not only rendered disabled attr');
+  assert.ok(body.indexOf(guard) < body.indexOf('discardGraphCopy('),
+    'the live Save guard must execute before irreversible local recovery removal');
+  assert.match(ui, /disabled=\{busy \|\| copy\.writerId === session\.custody\.writerId\}/,
+    'the UI still disables recovery discard while ordinary busy');
+});

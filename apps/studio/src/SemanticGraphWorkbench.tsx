@@ -721,6 +721,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } catch (reason) { session.error = message(reason); notify(session); }
   }
   function discard(copy: GraphRecoveryEntry) {
+    // The rendered disabled state may lag a Save that already owns its
+    // original preflight/commit. Never remove recovery bytes in that window.
+    if (current.current.busy || session.preparing || session.inFlight) return;
     try { discardGraphCopy(window.localStorage, window.sessionStorage, session.draft.scope, copy, session.custody.writerId); copies(session); session.notice = "Confirmed removal of the selected obsolete Graph copy."; notify(session); }
     catch (reason) { session.error = message(reason); notify(session); }
   }
