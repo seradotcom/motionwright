@@ -26,6 +26,7 @@ REQUIRED_PR_PATHS = (
     "tooling/tests/test_native_manim_recovery_lineage.py",
     "tooling/tests/test_native_manim_retained_reference.py",
     "tooling/tests/test_ci_manim_pr_trigger.py",
+    "tooling/ci_affected_rust_diagnostics.py",
     # Retain the original native entrypoints and current Rust/SDK source.
     "tooling/native_manim_e2e.py",
     "tooling/native_manim_resume_host.py",
@@ -62,6 +63,19 @@ class NativeManimPullRequestWatchTests(unittest.TestCase):
         uncovered = [p for p in REQUIRED_PR_PATHS
                      if not any(fnmatchcase(p, glob) for glob in patterns)]
         self.assertEqual(uncovered, [], "Manim PR source-gate blind spots")
+
+    def test_affected_rust_diagnostics_source_is_parsed_without_dispatch(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        marker = "      - name: Verify optional affected Rust diagnostics script has valid syntax, without executing it"
+        self.assertEqual(text.count(marker), 1)
+        source_step = text.split(marker, 1)[1].split(
+            "      - name: Quick source and conformance policies", 1
+        )[0]
+        self.assertIn("python3 -B - <<'PY'", source_step)
+        self.assertIn('ast.parse(source.read_text(encoding="utf-8"), filename=str(source))', source_step)
+        self.assertNotIn("cargo ", source_step)
+        self.assertNotIn("python3 -I -B tooling/ci_affected_rust_diagnostics.py", source_step)
+        self.assertNotIn("workflow_dispatch", source_step)
 
     def test_manim_selection_does_not_watch_unrelated_documents(self):
         patterns = pr_paths()

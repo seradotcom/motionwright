@@ -78,6 +78,7 @@ on:
       - 'tooling/tests/test_native_manim_editable_workflow.py'
       - 'tooling/tests/test_ci_manim_source_selection.py'
       - 'tooling/tests/test_ci_manim_resume_source_gate.py'
+      - 'tooling/ci_affected_rust_diagnostics.py'
       - 'tooling/tests/test_ci_manim_rustup_root.py'
       - 'tooling/native_manim_retained_reference.py'
       - 'tooling/retain_manim_source_recovery_tool.py'
@@ -157,6 +158,16 @@ jobs:
               raise SystemExit("Unsupported Manim workflow event")
           PY
 
+      - name: Verify optional affected Rust diagnostics script has valid syntax, without executing it
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import ast
+          from pathlib import Path
+          source = Path("tooling/ci_affected_rust_diagnostics.py")
+          ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+          print("PASS: inert diagnostics source syntax; Rust/Host NOT_RUN")
+          PY
       - name: Quick source and conformance policies
         env:
           MW_MANIM_SCENARIO: ${{ inputs.scenario }}
