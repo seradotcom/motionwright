@@ -347,3 +347,22 @@ test('a same-render Graph Save cannot fork a reconciled Graph draft over its ori
   }
   assert.match(ui, /onClick=\{reconcile\}/);
 });
+
+test('same-render Save cannot replace recovery custody through a stale Verify handler', () => {
+  const begin = ui.indexOf('function retryBackup()');
+  const end = ui.indexOf('function download(', begin);
+  assert.ok(begin > 0 && end > begin, 'the original recovery verification handler exists');
+  const handler = ui.slice(begin, end);
+  const write = handler.indexOf('session.custody =');
+  const verify = handler.indexOf('backup(session)');
+  assert.ok(write > 0 && verify > 0, 'custody verification and its original recovery path exist');
+  for (const live of ['current.current.busy', 'session.preparing', 'session.inFlight']) {
+    assert.ok(handler.includes(live), 'Verify must consult current Save state: ' + live);
+    assert.ok(handler.indexOf(live) < write, 'Verify must guard custody writes: ' + live);
+    assert.ok(handler.indexOf(live) < verify, 'Verify must guard original backup: ' + live);
+  }
+  assert.match(ui, /disabled=\{busy\} onClick=\{retryBackup\}/,
+    'rendered button remains disabled during ordinary busy');
+  assert.ok(!handler.includes('session.draft.pending) return'),
+    'an already-UNKNOWN recovery must remain verifiable while Save is idle');
+});

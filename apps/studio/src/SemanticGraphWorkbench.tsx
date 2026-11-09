@@ -700,7 +700,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     }
   }
   function retryBackup() {
-    if (busy) return;
+    // Verify recovery only while the original Save is idle. The rendered
+    // button may lag a preflight/commit that already owns draft custody.
+    if (current.current.busy || session.preparing || session.inFlight) return;
     try {
       if (session.recoveryProblem) {
         const restored = readGraphRecoverySource(window.localStorage, window.sessionStorage, session.draft.scope, session.recoveryObservation);
