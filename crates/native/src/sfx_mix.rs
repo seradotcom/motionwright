@@ -208,12 +208,17 @@ fn mix_source_bound_semantic_sfx_bounded(
     let mut peak = 0_u16;
     let mut output = Vec::with_capacity(mixed.len());
     for value in mixed {
-        if !value.is_finite() || value.round().abs() > 32767.0 {
+        // Signed PCM16 includes -32768. Reject only values outside its
+        // exact representable range after the existing nearest-sample
+        // quantization. An absolute 32767 bound incorrectly rejects the
+        // valid negative endpoint and can silence an original source.
+        let rounded = value.round();
+        if !rounded.is_finite() || !(-32768.0..=32767.0).contains(&rounded) {
             return Err(unsupported(
                 "SFX source mix would clip; reduce gain or overlap, no hidden limiter",
             ));
         }
-        let sample = value.round() as i16;
+        let sample = rounded as i16;
         peak = peak.max(sample.unsigned_abs());
         output.push(sample);
     }

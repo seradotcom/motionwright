@@ -132,6 +132,45 @@ fn rehashed_foreign_audio_wrong_riff_duration_and_duplicate_sources_fail_closed(
     assert!(mix_source_bound_semantic_sfx(&p, p.deliverables[0].id, &[], 180).is_err());
 }
 #[test]
+fn semantic_sfx_admits_exact_negative_pcm16_floor_but_rejects_real_underflow() {
+    let (mut project, mut source) = cross_cut_pcm();
+    // The authored cue has zero attack and starts at source sample 24_000.
+    // Keep one genuine -32768 sample and the positive +32767 counterpart.
+    source.bytes[44..46].copy_from_slice(&i16::MIN.to_le_bytes());
+    source.bytes[46..48].copy_from_slice(&i16::MAX.to_le_bytes());
+    source.source_sha256 = hex::encode(Sha256::digest(&source.bytes));
+    project
+        .assets
+        .iter_mut()
+        .find(|asset| asset.id == source.asset_id)
+        .unwrap()
+        .content_sha256 = Some(source.source_sha256.clone());
+    project.audio.sfx_cues[0].source_sha256 = source.source_sha256.clone();
+    project.validate().unwrap();
+    let profile_id = project.deliverables[0].id;
+    let mixed =
+        mix_source_bound_semantic_sfx(&project, profile_id, std::slice::from_ref(&source), 90)
+            .unwrap();
+    assert_eq!(sample(&mixed.wav_bytes, 24_000, 0), i16::MIN);
+    assert_eq!(sample(&mixed.wav_bytes, 24_000, 1), i16::MAX);
+    assert_eq!(mixed.sample_peak_pcm16, 32768);
+    assert_eq!(
+        hex::encode(Sha256::digest(&mixed.wav_bytes)),
+        mixed.output_sha256
+    );
+    // Two separately authored overlapping uses of that exact source are
+    // genuinely below -32768 at the same position, never wrapped or limited.
+    let mut overlap = project.audio.sfx_cues[0].clone();
+    overlap.id = Uuid::new_v4();
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: overlap })
+        .unwrap();
+    let error = mix_source_bound_semantic_sfx(&project, profile_id, &[source], 90).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(error.message.contains("clip"));
+}
+
+#[test]
 fn native_mix_rejects_clipping_instead_of_silent_mastering() {
     let (mut p, src) = project(30000, 0);
     let mut second = p.audio.sfx_cues[0].clone();
