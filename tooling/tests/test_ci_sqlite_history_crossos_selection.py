@@ -30,6 +30,7 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
             for name in SNAPSHOT:
                 self.assertEqual(definitions.count("fn " + name + "("), 1)
         self.assertEqual(source.count('"expected_total_invocations_per_OS":11'), 2)
+        self.assertEqual(source.count('"bound_SQLite_cases":11'), 2)
 
     def test_real_os_matrix_selects_two_history_cases(self):
         source = WORKFLOW.read_text(encoding="utf-8")

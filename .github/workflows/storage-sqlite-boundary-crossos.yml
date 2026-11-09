@@ -160,7 +160,7 @@ jobs:
           assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
           with (out/"source-snapshot.json").open("x") as stream:
            json.dump(receipt,stream,indent=2);stream.write("\n")
-          print(json.dumps({"source_check":"PASS","source":head,"bound_SQLite_cases":9}))
+          print(json.dumps({"source_check":"PASS","source":head,"bound_SQLite_cases":11}))
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -307,7 +307,7 @@ jobs:
           assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
           with (out/"source-snapshot.json").open("x") as stream:
            json.dump(receipt,stream,indent=2);stream.write("\n")
-          print(json.dumps({"source_check":"PASS","source":head,"bound_SQLite_cases":9}))
+          print(json.dumps({"source_check":"PASS","source":head,"bound_SQLite_cases":11}))
           PY
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
