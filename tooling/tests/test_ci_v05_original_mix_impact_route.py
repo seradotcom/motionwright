@@ -99,7 +99,7 @@ class OriginalMixImpactRouteTests(unittest.TestCase):
         self.assertNotIn("0 filtered out;'", block)
         match = re.search(
             r'(?m)^\s*grep -Eq \'([^\']+)\' "\$RUNNER_TEMP/'
-            r'original-mix-semantic-unit\.original\.log"$',
+            r'original-mix-rust-source-impact/semantic-unit\.original\.log"$',
             block)
         self.assertIsNotNone(match, "Selected semantic unit requires a strict summary oracle")
         oracle = re.compile(match.group(1))
@@ -167,6 +167,20 @@ class OriginalMixImpactRouteTests(unittest.TestCase):
         self.assertIn("NOT_RUN: emitted PCM16 meter source test is absent", block)
 
 
+
+    def test_semantic_unit_original_and_digest_are_retained_in_existing_artifact(self):
+        text = workflow_text()
+        block = job(text, "original-mix-rust-source-impact",
+                    "native-source-and-independent-meter")
+        original = '"$RUNNER_TEMP/original-mix-rust-source-impact/semantic-unit.original.log"'
+        digest = '"$RUNNER_TEMP/original-mix-rust-source-impact/semantic-unit.original.sha256"'
+        self.assertEqual(block.count("cargo test --locked -p motionwright-native --lib "), 1)
+        self.assertIn("2>&1 | tee " + original, block)
+        self.assertIn("grep -Eq ", block)
+        self.assertEqual(block.count(original), 3)
+        self.assertIn("sha256sum " + original + " > " + digest, block)
+        self.assertNotIn('"$RUNNER_TEMP/original-mix-semantic-unit.original.log"', block)
+        self.assertIn("path: $" + "{{ runner.temp }}/original-mix-rust-source-impact/", text)
 
 if __name__ == "__main__":
     unittest.main()

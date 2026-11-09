@@ -119,8 +119,9 @@ jobs:
           # the corresponding source change has actually been admitted.
           if test -f crates/native/src/original_mix/semantic_bus.rs &&
              grep -Fq 'fn additive_semantic_sfx_keeps_valid_negative_pcm16_endpoint_and_rejects_overflow()' crates/native/src/original_mix/semantic_bus.rs; then
-            cargo test --locked -p motionwright-native --lib original_mix::semantic_bus::tests::additive_semantic_sfx_keeps_valid_negative_pcm16_endpoint_and_rejects_overflow -- --exact 2>&1 | tee "$RUNNER_TEMP/original-mix-semantic-unit.original.log"
-            grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+([.][0-9]+)?s$' "$RUNNER_TEMP/original-mix-semantic-unit.original.log"
+            cargo test --locked -p motionwright-native --lib original_mix::semantic_bus::tests::additive_semantic_sfx_keeps_valid_negative_pcm16_endpoint_and_rejects_overflow -- --exact 2>&1 | tee "$RUNNER_TEMP/original-mix-rust-source-impact/semantic-unit.original.log"
+            grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+([.][0-9]+)?s$' "$RUNNER_TEMP/original-mix-rust-source-impact/semantic-unit.original.log"
+          sha256sum "$RUNNER_TEMP/original-mix-rust-source-impact/semantic-unit.original.log" > "$RUNNER_TEMP/original-mix-rust-source-impact/semantic-unit.original.sha256"
           else
             printf '%s\n' 'NOT_RUN: semantic PCM floor unit absent from this source; no G1 credit'
           fi
