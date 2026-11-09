@@ -2,6 +2,18 @@ name: Native Creative Runtime Doctor
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Select full creative doctor or the compiled Tauri Graph context ABI
+        type: choice
+        required: true
+        default: full
+        options: [full, graph-context-abi]
+      expected_source_sha:
+        description: Exact published source SHA required for Graph context G1
+        type: string
+        required: false
+        default: ""
   pull_request:
     paths:
       - "crates/native/src/creative_doctor.rs"
@@ -32,6 +44,7 @@ permissions:
 
 jobs:
   source-boundaries:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'full' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -105,3 +118,54 @@ jobs:
       - run: npm --prefix apps/studio ci --no-audit --no-fund
       - run: npm --prefix apps/studio run build
       - run: cargo check -p motionwright-desktop --bin motionwright-desktop
+
+  # Selected compiled Desktop source regression, never Native/Store physical G2.
+  graph-context-abi-g1:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'graph-context-abi' }}
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: "1.98.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Admit exact published clean source
+        shell: bash
+        env:
+          MW_EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$MW_EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          test "$MW_EXPECTED_SOURCE" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python -B tooling/source_policy.py
+      - name: Compile actual Desktop and three Graph context ABI tests
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/graph-context-abi-g1
+          printf '%s
+' "$GITHUB_SHA" > ci-evidence/graph-context-abi-g1/source-sha.txt
+          npm --prefix apps/studio ci --no-audit --no-fund
+          npm --prefix apps/studio run build
+          cargo check --locked -p motionwright-desktop --bin motionwright-desktop 2>&1 | tee ci-evidence/graph-context-abi-g1/desktop-check.original.log
+          cargo test --locked -p motionwright-desktop --bin motionwright-desktop semantic_graph_context_failure::tests:: -- --nocapture 2>&1 | tee ci-evidence/graph-context-abi-g1/graph-context-tests.original.log
+          grep -Eq '^test result: ok[.] 3 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' ci-evidence/graph-context-abi-g1/graph-context-tests.original.log
+          sha256sum ci-evidence/graph-context-abi-g1/*.original.log > ci-evidence/graph-context-abi-g1/originals.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: graph-context-abi-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/graph-context-abi-g1/
+          if-no-files-found: warn
+          retention-days: 7
