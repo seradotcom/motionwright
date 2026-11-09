@@ -1766,6 +1766,15 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
+        // Full-history admission and the selected page must observe one
+        // SQLite snapshot. Reuse an existing read/transaction snapshot (the
+        // independent read-only reader already holds one); otherwise begin
+        // a new snapshot for this call. No nested BEGIN is allowed.
+        let snapshot = if self.conn.is_autocommit() {
+            Some(self.conn.unchecked_transaction()?)
+        } else {
+            None
+        };
         self.reject_hidden_corrupt_event_header(id)?;
         let through = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
@@ -1800,6 +1809,10 @@ impl Store {
                 created_at,
             });
         }
+        drop(stmt);
+        if let Some(snapshot) = snapshot {
+            snapshot.commit()?;
+        }
         Ok(events)
     }
 
@@ -1810,6 +1823,15 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
+        // Full-history admission and the selected page must observe one
+        // SQLite snapshot. Reuse an existing read/transaction snapshot (the
+        // independent read-only reader already holds one); otherwise begin
+        // a new snapshot for this call. No nested BEGIN is allowed.
+        let snapshot = if self.conn.is_autocommit() {
+            Some(self.conn.unchecked_transaction()?)
+        } else {
+            None
+        };
         self.reject_hidden_corrupt_event_header(id)?;
         // A valid SQLite revision is nonnegative signed i64. Casting a larger
         // user-supplied u64 directly would wrap to a negative cursor and
@@ -1849,6 +1871,10 @@ impl Store {
                 change: serde_json::from_str(&json)?,
                 created_at,
             });
+        }
+        drop(stmt);
+        if let Some(snapshot) = snapshot {
+            snapshot.commit()?;
         }
         Ok(events)
     }
@@ -3333,6 +3359,92 @@ mod tests {
             Err(StorageError::InvalidBackup(_))
         ));
         assert!(store.verified_event_history.get().is_none());
+    }
+
+    fn check_history_snapshot_interleave(newest_first: bool) {
+        use rusqlite::functions::FunctionFlags;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let mut project = store
+            .create_named_project("Atomic history snapshot")
+            .unwrap();
+        for n in 1..=2 {
+            project = store
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("atomic-history-{n}"),
+                    &Change::RenameProject {
+                        title: format!("Revision {n}"),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        assert_eq!(project.revision, 2);
+        // Exact deterministic interleave: the second total_changes() call
+        // happens after the full header/payload scan but before the page query.
+        // An external WAL writer invalidates the original 1..=2 sequence.
+        // A correct read observes either the original complete snapshot (2)
+        // or rejects corrupted history; it can never return unvalidated 3.
+        let changes: i64 = store
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        let db = store.path().to_owned();
+        let id = project.id.to_string();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        store
+            .conn
+            .create_scalar_function("total_changes", 0, FunctionFlags::SQLITE_UTF8, move |_| {
+                if observed.fetch_add(1, Ordering::SeqCst) == 1 {
+                    let other = Connection::open(&db).unwrap();
+                    root_operation_budget::register_writer_fence(&other).unwrap();
+                    assert_eq!(
+                        other
+                            .execute(
+                                "UPDATE events SET revision=3 WHERE project_id=?1 AND revision=2",
+                                [&id],
+                            )
+                            .unwrap(),
+                        1
+                    );
+                }
+                Ok(changes)
+            })
+            .unwrap();
+        let page = if newest_first {
+            store.event_records_through(project.id, u64::MAX, 1)
+        } else {
+            store.event_records_since(project.id, 1, 1)
+        }
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(page.len(), 1);
+        assert_eq!(
+            page[0].revision, 2,
+            "history page must share the same validated SQLite read snapshot"
+        );
+        assert!(matches!(
+            store.event_records_through(project.id, u64::MAX, 1),
+            Err(StorageError::InvalidBackup(_))
+        ));
+    }
+
+    #[test]
+    fn history_snapshot_never_mixes_unvalidated_external_revision() {
+        check_history_snapshot_interleave(true);
+    }
+
+    #[test]
+    fn history_snapshot_forward_never_mixes_unvalidated_external_revision() {
+        check_history_snapshot_interleave(false);
     }
 
     #[test]

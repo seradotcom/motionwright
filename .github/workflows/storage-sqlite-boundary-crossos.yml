@@ -8,6 +8,7 @@ on:
       - 'crates/storage/src/portability.rs'
       - 'crates/storage/tests/foreign_sqlite_admission.rs'
       - 'crates/storage/tests/event_cursor_boundary.rs'
+      - 'tooling/tests/test_ci_sqlite_history_crossos_selection.py'
       - 'Cargo.lock'
       - 'SOURCE_LOCK.json'
   push:
@@ -18,6 +19,7 @@ on:
       - 'crates/storage/src/portability.rs'
       - 'crates/storage/tests/foreign_sqlite_admission.rs'
       - 'crates/storage/tests/event_cursor_boundary.rs'
+      - 'tooling/tests/test_ci_sqlite_history_crossos_selection.py'
       - 'Cargo.lock'
       - 'SOURCE_LOCK.json'
 permissions:
@@ -59,7 +61,11 @@ jobs:
             python -B tooling/creative_status_policy.py
             python -B tooling/public_surface_policy.py
           } 2>&1 | tee "$work/source-policies.original.log"
-      - name: Authenticate selected sources and nine test definitions
+      - name: Verify selected SQLite snapshot source coverage
+        run: |
+          set -euo pipefail
+          python -B -m unittest tooling.tests.test_ci_sqlite_history_crossos_selection -v             2>&1 | tee "$MW_SQLITE_EVIDENCE/selected-sqlite-history-ci.original.log"
+      - name: Authenticate selected sources and eleven test definitions
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
@@ -74,9 +80,9 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
-          foundation_reviewed_source="0401f4365905df8d34535b4b237761f05d8aa8b5"
+          foundation_reviewed_source="a51684fe5b8fb412fa6d7852c9df948a3c1db6da"
           desktop_workflow_lock_reviewed_source="2ee2b76d45229d8da4f9c22162ed2307797df377"
-          pins={'crates/storage/src/portability.rs': 'f4e5337c5474cd280ca5e71534f4f238b28a63cd3330d9b44892cbc2f8b0de00', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'de58802a30c5e805116ae1b2feef237963366402224705f96a0cda2c44461f11', 'Cargo.lock': '716a898c2c59be185cf854e2f59b7a300f9c29a96dcfc7a973b97038b2e10746', 'SOURCE_LOCK.json': '8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5'}
+          pins={'crates/storage/src/portability.rs': 'f4e5337c5474cd280ca5e71534f4f238b28a63cd3330d9b44892cbc2f8b0de00', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'a4e9b9b99c8a750f0e56b57b64122dd26df31ca48ac5eff2082412046927cb31', 'Cargo.lock': '716a898c2c59be185cf854e2f59b7a300f9c29a96dcfc7a973b97038b2e10746', 'SOURCE_LOCK.json': '8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -133,7 +139,10 @@ jobs:
            "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
            "real_v1_source_layout_still_upgrades_without_changing_project_identity"),
            "crates/storage/tests/event_cursor_boundary.rs":(
-           "unsigned_event_cursor_overflow_never_replays_consumed_history",)}
+           "unsigned_event_cursor_overflow_never_replays_consumed_history",),
+           "crates/storage/src/lib.rs":(
+            "history_snapshot_never_mixes_unvalidated_external_revision",
+            "history_snapshot_forward_never_mixes_unvalidated_external_revision")}
           for rel,cases in wanted.items():
            text=(root/rel).read_text(encoding="utf-8")
            for name in cases:
@@ -145,7 +154,7 @@ jobs:
           "desktop_workflow_lock_reviewed_source_sha":desktop_workflow_lock_reviewed_source,
           "source_pin_reviewed_sources":{rel:(desktop_workflow_lock_reviewed_source if rel=="Cargo.lock" else foundation_reviewed_source if rel=="crates/storage/src/lib.rs" else source_lock_reviewed_source if rel=="SOURCE_LOCK.json" else reviewed_source) for rel in pins},"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
           "job_key":os.environ["GITHUB_JOB"],"sources":identity,
-          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":9,
+          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":11,
           "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
           out=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"])
           assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
@@ -218,9 +227,9 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
-          foundation_reviewed_source="0401f4365905df8d34535b4b237761f05d8aa8b5"
+          foundation_reviewed_source="a51684fe5b8fb412fa6d7852c9df948a3c1db6da"
           desktop_workflow_lock_reviewed_source="2ee2b76d45229d8da4f9c22162ed2307797df377"
-          pins={'crates/storage/src/portability.rs': 'f4e5337c5474cd280ca5e71534f4f238b28a63cd3330d9b44892cbc2f8b0de00', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'de58802a30c5e805116ae1b2feef237963366402224705f96a0cda2c44461f11', 'Cargo.lock': '716a898c2c59be185cf854e2f59b7a300f9c29a96dcfc7a973b97038b2e10746', 'SOURCE_LOCK.json': '8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5'}
+          pins={'crates/storage/src/portability.rs': 'f4e5337c5474cd280ca5e71534f4f238b28a63cd3330d9b44892cbc2f8b0de00', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'a4e9b9b99c8a750f0e56b57b64122dd26df31ca48ac5eff2082412046927cb31', 'Cargo.lock': '716a898c2c59be185cf854e2f59b7a300f9c29a96dcfc7a973b97038b2e10746', 'SOURCE_LOCK.json': '8683f913816abee3fd0cea8123ca1972bdd704a6fba4d5b6750de652119d55a5'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -277,7 +286,10 @@ jobs:
            "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
            "real_v1_source_layout_still_upgrades_without_changing_project_identity"),
            "crates/storage/tests/event_cursor_boundary.rs":(
-           "unsigned_event_cursor_overflow_never_replays_consumed_history",)}
+           "unsigned_event_cursor_overflow_never_replays_consumed_history",),
+           "crates/storage/src/lib.rs":(
+            "history_snapshot_never_mixes_unvalidated_external_revision",
+            "history_snapshot_forward_never_mixes_unvalidated_external_revision")}
           for rel,cases in wanted.items():
            text=(root/rel).read_text(encoding="utf-8")
            for name in cases:
@@ -289,7 +301,7 @@ jobs:
           "desktop_workflow_lock_reviewed_source_sha":desktop_workflow_lock_reviewed_source,
           "source_pin_reviewed_sources":{rel:(desktop_workflow_lock_reviewed_source if rel=="Cargo.lock" else foundation_reviewed_source if rel=="crates/storage/src/lib.rs" else source_lock_reviewed_source if rel=="SOURCE_LOCK.json" else reviewed_source) for rel in pins},"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
           "job_key":os.environ["GITHUB_JOB"],"sources":identity,
-          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":9,
+          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":11,
           "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
           out=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"])
           assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
@@ -300,7 +312,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
-      - name: Execute nine real concurrent SQLite and boundary cases
+      - name: Execute eleven selected SQLite and boundary regression cases
         run: |
           set -euo pipefail
           python -B -I -S - <<'PY'
@@ -325,7 +337,10 @@ jobs:
             "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
             "real_v1_source_layout_still_upgrades_without_changing_project_identity")),
           ("event-cursor",["cargo","test","--locked","-p","motionwright-storage","--test","event_cursor_boundary","--","--test-threads=1"],
-           ("unsigned_event_cursor_overflow_never_replays_consumed_history",))]
+           ("unsigned_event_cursor_overflow_never_replays_consumed_history",)),
+          ("history-snapshot",["cargo","test","--locked","-p","motionwright-storage","--lib","history_snapshot_","--","--test-threads=1"],
+           ("tests::history_snapshot_never_mixes_unvalidated_external_revision",
+            "tests::history_snapshot_forward_never_mixes_unvalidated_external_revision"))]
           env=dict(os.environ,CARGO_INCREMENTAL="0",PYTHONDONTWRITEBYTECODE="1")
           report={"schema":"motionwright.sqlite-crossos-selected/1","source_sha":head,
           "run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
@@ -352,19 +367,19 @@ jobs:
            "status":"PASS" if passed else "FAIL_OR_OMISSION",
            "stdout":{"name":label+"-stdout.log","sha256":hashlib.sha256(result.stdout).hexdigest()},
            "stderr":{"name":label+"-stderr.log","sha256":hashlib.sha256(result.stderr).hexdigest()}})
-           print("REAL_SQLITE_G2",label,"PASS" if passed else "RED",result.returncode,len(observed),flush=True)
+           print("SQLITE_SELECTED_G1",label,"PASS" if passed else "RED",result.returncode,len(observed),flush=True)
            if not passed:
             ok=False
             break
           report["completed_suites"]=len(report["suites"])
           report["tests_executed"]=sum(len(item["observed"]) for item in report["suites"])
-          report["status"]="PASS_SELECTED_REAL_SQLITE_CONCURRENCY" if ok and len(report["suites"])==5 and report["tests_executed"]==9 else "FAIL_OR_INCOMPLETE"
+          report["status"]="PASS_SELECTED_REAL_SQLITE_CONCURRENCY" if ok and len(report["suites"])==6 and report["tests_executed"]==11 else "FAIL_OR_INCOMPLETE"
           report["at_utc"]=datetime.datetime.now(datetime.timezone.utc).isoformat()
           with (public/"real-SQLite-crossOS-receipt.json").open("x") as stream:
            json.dump(report,stream,indent=2);stream.write("\n")
           assert report["status"]=="PASS_SELECTED_REAL_SQLITE_CONCURRENCY",report["status"]
           assert not subprocess.check_output(["git","status","--porcelain","--untracked-files=all"],cwd=root).strip()
-          print(json.dumps({"source":head,"os":want,"G2_selected_tests":report["tests_executed"],
+          print(json.dumps({"source":head,"os":want,"selected_SQLite_cases":report["tests_executed"],
           "all_suites":report["completed_suites"],"physical_powerloss":"NOT_RUN"}))
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
