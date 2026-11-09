@@ -366,3 +366,23 @@ test('same-render Save cannot replace recovery custody through a stale Verify ha
   assert.ok(!handler.includes('session.draft.pending) return'),
     'an already-UNKNOWN recovery must remain verifiable while Save is idle');
 });
+
+// An original Save can enter preparation before React has rendered busy. The
+// prior Refresh button handler must not issue another readView and replace the
+// source that the pending original mutation is still validating/committing.
+test('same-render Save blocks a stale Project Refresh before dispatch', () => {
+  const begin = ui.indexOf('async function refresh()');
+  const end = ui.indexOf('function retryBackup()', begin);
+  assert.ok(begin > 0 && end > begin, 'the actual Graph Project refresh exists');
+  const handler = ui.slice(begin, end);
+  const effect = handler.indexOf('await current.current.refreshProject()');
+  assert.ok(effect > 0, 'Refresh still performs its genuine Project read');
+  for (const gate of ['current.current.busy', 'session.preparing', 'session.inFlight']) {
+    assert.ok(handler.includes(gate), 'Refresh must consult live Save status: ' + gate);
+    assert.ok(handler.indexOf(gate) < effect, 'Refresh must refuse an active Save before readView: ' + gate);
+  }
+  assert.match(ui, /disabled=\{busy\} onClick=\{\(\) => void refresh\(\)\}/,
+    'the ordinary UI disabled state remains present');
+  assert.ok(!handler.includes('session.draft.pending) return'),
+    'Refresh should remain available for recovering an idle UNKNOWN intent');
+});

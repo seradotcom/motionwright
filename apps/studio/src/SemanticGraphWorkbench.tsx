@@ -679,6 +679,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     catch (reason) { session.error = message(reason); notify(session); }
   }
   async function refresh() {
+    // The Save may own the live source before React disables Refresh. Do not
+    // replace its original Project view during preparation or commit.
+    if (current.current.busy || session.preparing || session.inFlight) return;
     // The saved-view coordinator supersedes its earlier read on a second
     // dispatch. React's disabled/busy state is not synchronous across clicks.
     if (refreshToken.current !== null) return;
