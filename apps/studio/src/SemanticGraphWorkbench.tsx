@@ -522,7 +522,21 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       session.draft = prepared.draft;
       if (!backup(session)) { session.draft = failGraphSubmission(session.draft, id, "Recovery custody was not confirmed before dispatch.", true); session.error = "NOT_SENT: confirm the exact recoverable Graph copy before another intention."; return; }
       assertGraphCustody(window.localStorage, window.sessionStorage, session.draft, session.custody);
-    } catch (reason) { session.error = message(reason); if (session.draft.pending?.id === id) session.draft = failGraphSubmission(session.draft, id, message(reason), true); return; }
+    } catch (reason) {
+      if (session.draft.pending?.id === id) {
+        // The exact original intent was prepared, but local recovery custody
+        // failed before dispatch. Preserve its NOT_SENT outcome for recovery.
+        session.error = message(reason);
+        session.draft = failGraphSubmission(session.draft, id, message(reason), true);
+      } else if (mounted.current && token === epoch.current
+        && graphSame(source, session.draft)
+        && graphSame(graphSourceSnapshot(project), graphSourceSnapshot(current.current.project))) {
+        // The async preflight may finish after a remote source replacement.
+        // Never attribute that earlier validation error to the new Project.
+        session.error = message(reason);
+      }
+      return;
+    }
     finally { session.preparing = false; notify(session); }
     session.inFlight = true; notify(session);
     const retainFailure = (failure: GraphMutationFailure) => {

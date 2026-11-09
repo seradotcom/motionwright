@@ -165,3 +165,22 @@ test('obsolete Graph outcome rejection does not report an error against a change
   ]) assert.ok(rejected.includes(guard), 'old outcome error not bound to original intent: ' + guard);
   assert.match(rejected, /session\.error = message\(reason\)/);
 });
+
+// Preparation includes an asynchronous BrandProfile digest. A rejection that
+// belongs to an old editor/source must not become the replacement Project's error.
+test('late rejected Graph preparation cannot write an error into a replaced source', () => {
+  const start = ui.indexOf('async function send(');
+  const end = ui.indexOf('session.inFlight = true', start);
+  assert.ok(start >= 0 && end > start, 'original Graph preparation boundary exists');
+  const preflight = ui.slice(start, end);
+  assert.match(preflight, /prepared = await prepareGraphSubmission\(/);
+  const rejected = preflight.split('} catch (reason) {').at(-1)?.split('} finally {')[0];
+  assert.ok(rejected, 'original asynchronous preparation catch exists');
+  assert.match(rejected, /session\.draft\.pending\?\.id === id/, 'original pending intent still receives NOT_SENT on custody failure');
+  for (const guard of [
+    'mounted.current', 'token === epoch.current',
+    'graphSame(source, session.draft)',
+    'graphSame(graphSourceSnapshot(project), graphSourceSnapshot(current.current.project))',
+  ]) assert.ok(rejected.includes(guard), 'stale preparation rejection is not source-bound: ' + guard);
+  assert.match(rejected, /failGraphSubmission\(session\.draft, id, message\(reason\), true\)/);
+});
