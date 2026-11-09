@@ -177,6 +177,7 @@ class StaticWriterBudgetTests(unittest.TestCase):
                      patch.object(wrapper, "BLENDER_ROOT", tools), \
                      patch.object(wrapper, "static_original_budget") as clock, \
                      patch.object(wrapper, "semwright_version", return_value="synthetic"), \
+                     patch.object(wrapper, "require_headless_blender_source_authorization", return_value=None), \
                      patch.object(wrapper.subprocess, "Popen", return_value=daemon) as popen, \
                      patch.object(wrapper, "wait_for_socket", side_effect=original), \
                      patch.object(wrapper, "start_static_daemon_log", return_value={}) as start, \
@@ -197,6 +198,27 @@ class StaticWriterBudgetTests(unittest.TestCase):
                         start.assert_not_called()
                         finish.assert_not_called()
                         self.assertNotEqual(popen.call_args.kwargs["stdout"], subprocess.PIPE)
+
+
+    def test_foreground_consent_regression_is_selected_by_pr_and_static_source_checks(self):
+        """Public source checks must select the explicit authorization preflight."""
+        source = (Path(__file__).resolve().parents[2]
+                  / ".github/workflows/native-blender-e2e.yml").read_text(
+                      encoding="utf-8")
+        pull_request = source.split("  pull_request:\n", 1)[1].split(
+            "\npermissions:", 1)[0]
+        self.assertIn(
+            "- tooling/tests/test_native_blender_authorization_preflight.py",
+            pull_request)
+        selected = source.split(
+            "    - name: Verify static GLB source, original preservation and sealed recovery contracts\n", 1
+        )[1].split("\n    - name:", 1)[0]
+        self.assertIn(
+            "--pattern test_native_blender_authorization_preflight.py", selected)
+        self.assertIn(
+            '"test_native_blender_authorization_preflight": 6', selected)
+        self.assertIn("--mode both --require-complete", selected)
+        self.assertIn('--expected-source "$GITHUB_SHA"', selected)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,87 @@ STATIC_DATABASE_BYTES = 32 * 1024 * 1024
 STATIC_SIDECAR_BYTES = 16 * 1024 * 1024
 STATIC_STREAM_BYTES = 4 * 1024 * 1024
 STATIC_JSON_BYTES = 8 * 1024 * 1024
+BLENDER_DEFAULT_COMMANDS = frozenset({
+    "driver.blender.collection.create", "driver.blender.object.create",
+    "driver.blender.object.transform", "driver.blender.collection.link",
+    "driver.blender.material.create", "driver.blender.material.assign",
+    "driver.blender.export.glb",
+})
+BLENDER_RISKS = frozenset({"read_only", "mutating_reversible", "mutating", "destructive",
+                           "secret_access", "code_execution", "privilege_sensitive"})
+BLENDER_SENSITIVE_RISKS = BLENDER_RISKS - {"read_only", "mutating_reversible", "mutating"}
+
+
+class BlenderOwnerApprovalRequired(RuntimeError):
+    """Known pre-dispatch denial; a workflow cannot impersonate the operator."""
+    def __init__(self, commands):
+        self.commands = tuple(sorted(commands))
+        super().__init__("Blender requires the trusted operator's foreground approval before native effects: "
+                         + ", ".join(self.commands))
+
+
+def inspect_headless_blender_descriptors(required: set[str], descriptors: object) -> None:
+    """Reject known SDK consent requirements before creating a Native owner.
+
+    semwrightd is deliberately launched below without --approval-console.
+    Source descriptors can reject that incompatible plan without a Blender
+    process. Later live discovery and every Broker execution still recheck
+    authority; this inspection cannot grant permission.
+    """
+    if (not required or not all(type(name) is str and name.startswith("driver.blender.") for name in required)
+            or type(descriptors) is not list or len(descriptors) > 16384):
+        raise ValueError("Blender authorization source roster is invalid")
+    curated, blocked = {}, set()
+    for descriptor in descriptors:
+        if type(descriptor) is not dict or type(descriptor.get("name")) is not str:
+            raise ValueError("Blender authorization source descriptor is invalid")
+        name = descriptor["name"]
+        if not name.startswith("blender."):
+            continue
+        if (name in curated or descriptor.get("risk") not in BLENDER_RISKS
+                or type(descriptor.get("interactive_consent")) is not bool):
+            raise ValueError("Blender authorization source descriptor is ambiguous")
+        curated[name] = descriptor
+        command = "driver." + name
+        if command in required and (descriptor["risk"] in BLENDER_SENSITIVE_RISKS
+                                    or descriptor["interactive_consent"]):
+            blocked.add(command)
+    if not curated:
+        raise ValueError("Blender authorization source descriptors are absent")
+    if blocked:
+        raise BlenderOwnerApprovalRequired(blocked)
+
+
+def require_headless_blender_source_authorization(required: set[str]) -> None:
+    # Read the exact existing SDK object, never fetch, checkout, or edit its
+    # descriptors. Semantic capabilities absent from this curated table are
+    # checked against the live source-bound catalog before publishing a client.
+    result = subprocess.run(
+        ["git", "--no-pager", "--no-replace-objects", "-C", str(SEMWRIGHT), "show",
+         PIN + ":schemas/commands.json"], capture_output=True, timeout=15, check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1"},
+    )
+    if result.returncode != 0 or not 0 < len(result.stdout) <= STATIC_JSON_BYTES:
+        raise ValueError("Pinned Blender authorization descriptors are unavailable")
+    inspect_headless_blender_descriptors(required, json.loads(result.stdout))
+
+
+def require_headless_blender_catalog(capabilities: list[dict], required: set[str]) -> None:
+    selected = [row for row in capabilities if type(row) is dict and row.get("id") in required]
+    if len(selected) != len(required) or {row["id"] for row in selected} != required:
+        raise ValueError("Pinned Blender provider is missing or duplicates required capabilities")
+    blocked = set()
+    for row in selected:
+        preview = row.get("policy_preview")
+        if (type(preview) is not dict or preview.get("preview_only") is not True
+                or preview.get("execution_rechecks") is not True or row.get("risk") not in BLENDER_RISKS):
+            raise ValueError("Blender authorization preview is unavailable or malformed")
+        if preview.get("state") == "require_confirmation" or row["risk"] in BLENDER_SENSITIVE_RISKS:
+            blocked.add(row["id"])
+        elif preview.get("state") != "allow" or row.get("available") is not True:
+            raise ValueError("Blender capability is unavailable under the original owner policy")
+    if blocked:
+        raise BlenderOwnerApprovalRequired(blocked)
 
 
 def static_original_budget():
@@ -524,6 +605,8 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
     socket = broker_socket_path(paths["runtime"])
     if socket.exists() or socket.is_symlink():
         raise FileExistsError("Existing Blender broker socket path cannot be adopted")
+    required = set(BLENDER_DEFAULT_COMMANDS if required is None else required)
+    require_headless_blender_source_authorization(required)
     driver = paths["bin"] / "semwright-blender-driver"
     shutil.copyfile(SW_BINS / "semwright-blender-driver", driver)
     driver.chmod(0o700)
@@ -692,20 +775,7 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
             if not isinstance(next_offset, int) or next_offset <= offset:
                 raise AssertionError("Blender capability discovery returned an invalid cursor")
             offset = next_offset
-        ids = {item.get("id") for item in capabilities}
-        required = required if required is not None else {
-            "driver.blender.collection.create",
-            "driver.blender.object.create",
-            "driver.blender.object.transform",
-            "driver.blender.collection.link",
-            "driver.blender.material.create",
-            "driver.blender.material.assign",
-            "driver.blender.export.glb",
-        }
-        if not required <= ids:
-            raise AssertionError(
-                f"pinned Blender provider is missing Motionwright capabilities: {sorted(required - ids)}"
-            )
+        require_headless_blender_catalog(capabilities, required)
         if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
             raise AssertionError("Semwright did not create a private persistent session ticket")
 

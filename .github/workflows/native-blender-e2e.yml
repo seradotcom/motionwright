@@ -54,6 +54,7 @@ name: Native Blender round-trip
     - tooling/tests/test_native_blender_glb_source_gate.py
     - tooling/tests/test_native_blender_static_custody_wiring.py
     - tooling/tests/test_native_blender_static_writer_budget.py
+    - tooling/tests/test_native_blender_authorization_preflight.py
     - tooling/tests/test_native_blender_static_deadline.py
     - tooling/native_blender_lit_still_e2e.py
     - tooling/native_blender_lit_still_oracle.py
@@ -533,6 +534,7 @@ jobs:
             "tooling/tests/test_native_blender_glb_source_gate.py",
             "tooling/tests/test_native_blender_static_custody_wiring.py",
             "tooling/tests/test_native_blender_static_writer_budget.py",
+            "tooling/tests/test_native_blender_authorization_preflight.py",
             "tooling/tests/test_native_blender_static_deadline.py",
             "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
             "tooling/ci_test_runner.py", "tooling/requirements/mlt-g2-custody.txt",
@@ -999,6 +1001,7 @@ jobs:
           --pattern test_native_blender_glb_source_gate.py \
           --pattern test_native_blender_static_custody_wiring.py \
           --pattern test_native_blender_static_writer_budget.py \
+          --pattern test_native_blender_authorization_preflight.py \
           --pattern test_native_blender_static_deadline.py \
           --mode both --require-complete --expected-source "$GITHUB_SHA" \
           --report "$RUNNER_TEMP/blender-static-source-tests.json"
@@ -1009,7 +1012,8 @@ jobs:
                   "test_native_blender_glb_framing": 12,
                   "test_native_blender_glb_source_gate": 14,
                   "test_native_blender_static_custody_wiring": 27,
-                  "test_native_blender_static_writer_budget": 5,
+                  "test_native_blender_static_writer_budget": 6,
+                  "test_native_blender_authorization_preflight": 6,
                   "test_native_blender_static_deadline": 20}
         expected = {label: count for name, count in counts.items()
                     for label in ("discovery:" + name + ".py", "dotted:tooling.tests." + name)}
