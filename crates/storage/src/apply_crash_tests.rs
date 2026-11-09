@@ -1314,7 +1314,7 @@ impl ConcurrentContender {
                         .busy_handler(Some(concurrent_busy_handler))
                         .unwrap();
                     let result = store.apply(id, &base, &request, &change());
-                    store.conn.busy_handler(None).unwrap();
+                    store.conn.busy_handler(None::<fn(i32) -> bool>).unwrap();
                     drop(context);
                     result
                 })

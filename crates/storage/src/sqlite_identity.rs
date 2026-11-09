@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(
             second
                 .query_row("SELECT COUNT(*) FROM witness", [], |row| row
-                    .get::<_, u64>(0))
+                    .get::<_, i64>(0))
                 .unwrap(),
             2
         );
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(
             second
                 .query_row("SELECT COUNT(*) FROM witness", [], |row| row
-                    .get::<_, u64>(0))
+                    .get::<_, i64>(0))
                 .unwrap(),
             2
         );

@@ -187,7 +187,7 @@ for path in iter_source_files(ROOT):
                 "898dbb96ea14e2a24698bd2a97442eaa61debb55b91e627fd40a3ecb9ff14d4c",
             # Retained SQLite identity uses a bounded child only in cfg(test).
             "crates/storage/src/sqlite_identity.rs":
-                "332d6b4789a2a9e00785030ceb965189a90f57f55857388014eeec763b00274c",
+                "7243dd93e28b4aa01e84ddbacea070625548f52f8c81800bd45a4cde1b72ea7e",
             # Windows-only cfg(test) StoreReader custody: both original-process
             # probes execute this same test binary with a fixed --exact child
             # name, no shell or project-provided executable/arguments. Any

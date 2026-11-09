@@ -1175,7 +1175,7 @@ pub(super) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
     {
         return Err(invalid("incompatible CAS control columns"));
     }
-    let foreign_keys: u64 = conn.query_row(
+    let foreign_keys: i64 = conn.query_row(
         "SELECT count(*) FROM pragma_foreign_key_list('cas_import_commits')",
         [],
         |row| row.get(0),
@@ -1245,7 +1245,7 @@ pub(super) fn migrate_schema(conn: &Connection, version: u32) -> Result<()> {
 }
 
 pub(super) fn load_store_id(conn: &Connection) -> Result<Uuid> {
-    let count: u64 = conn.query_row("SELECT count(*) FROM cas_store_identity", [], |row| {
+    let count: i64 = conn.query_row("SELECT count(*) FROM cas_store_identity", [], |row| {
         row.get(0)
     })?;
     if count != 1 {
