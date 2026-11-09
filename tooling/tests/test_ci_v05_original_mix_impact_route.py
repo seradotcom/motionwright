@@ -150,5 +150,23 @@ class OriginalMixImpactRouteTests(unittest.TestCase):
         self.assertIn('original-mix-rust-source-impact/', block)
 
 
+    def test_emitted_pcm16_meter_original_receipt_is_in_same_compiled_roster(self):
+        block = job(workflow_text(), "original-mix-rust-source-impact",
+                    "native-source-and-independent-meter")
+        # The source-gated integration suite already runs once; do not launch
+        # a second Cargo test to verify the original PCM16 meter receipt.
+        self.assertEqual(
+            block.count("cargo test --locked -p motionwright-native --test original_mix"),
+            1)
+        self.assertIn(
+            "if grep -Fq 'fn emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples()' crates/native/tests/original_mix.rs; then",
+            block)
+        self.assertIn(
+            """test "$(grep -Fxc 'test emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples ... ok' "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log")" -eq 1""",
+            block)
+        self.assertIn("NOT_RUN: emitted PCM16 meter source test is absent", block)
+
+
+
 if __name__ == "__main__":
     unittest.main()

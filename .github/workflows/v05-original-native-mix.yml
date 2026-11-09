@@ -105,6 +105,14 @@ jobs:
           else
             printf '%s\n' 'NOT_RUN: unity PCM16 source test is absent; no selected regression G1 credit'
           fi
+          # Source-bound emitted PCM16 peak/RMS receipts are checked against
+          # the actual compiled integration-test output, not a source label.
+          # Reuse the existing original_mix Cargo run and its retained log.
+          if grep -Fq 'fn emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples()' crates/native/tests/original_mix.rs; then
+            test "$(grep -Fxc 'test emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples ... ok' "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log")" -eq 1
+          else
+            printf '%s\n' 'NOT_RUN: emitted PCM16 meter source test is absent; no selected regression G1 credit'
+          fi
           sha256sum "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.log" > "$RUNNER_TEMP/original-mix-rust-source-impact/roster.original.sha256"
           # The PCM floor unit resides in the library module, not the
           # external original_mix test target. Run it exactly once when
