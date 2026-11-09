@@ -348,10 +348,16 @@ impl OriginalMixPlan {
 fn db_to_gain(value: f64) -> f64 {
     10.0_f64.powf(value / 20.0)
 }
-fn duck_gain(plan: &OriginalMixPlan, at: u64) -> f64 {
-    let low = db_to_gain(-plan.duck_attenuation_db);
+// The outer mixer supplies only already-started windows whose attack or
+// release can still affect this sample. The sample expression is unchanged.
+fn duck_gain(
+    plan: &OriginalMixPlan,
+    at: u64,
+    active: &[VoiceActivityWindow],
+    low: f64,
+) -> f64 {
     let mut result = 1.0_f64;
-    for interval in &plan.voice_windows {
+    for interval in active {
         let start = interval.start_sample;
         let end = interval.end_exclusive;
         let attack = u64::from(plan.duck_attack_samples);
@@ -466,9 +472,28 @@ pub fn render_original_source_mix_with_budget(
     let mut peak = 0.0_f64;
     let mut sum_squared = 0.0_f64;
     let mut lowest_duck = 1.0_f64;
+    let low = db_to_gain(-plan.duck_attenuation_db);
+    let release = u64::from(plan.duck_release_samples);
+    // A bounded forward scan avoids reevaluating future and expired voice
+    // windows on each PCM sample. At most one interval is speaking, while
+    // earlier short-voice releases may overlap; retain ALL live releases.
+    // No additional full-cut buffer is allocated (180 seconds is permitted).
+    let mut first_live = 0_usize;
+    let mut started = 0_usize;
     for index in 0..plan.sample_frames as usize {
+        let at = index as u64;
         let duck = if music_duck_active {
-            duck_gain(plan, index as u64)
+            while started < plan.voice_windows.len()
+                && plan.voice_windows[started].start_sample <= at
+            {
+                started += 1;
+            }
+            while first_live < started
+                && plan.voice_windows[first_live].end_exclusive + release <= at
+            {
+                first_live += 1;
+            }
+            duck_gain(plan, at, &plan.voice_windows[first_live..started], low)
         } else {
             1.0
         };

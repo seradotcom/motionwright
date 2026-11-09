@@ -281,6 +281,88 @@ fn short_voice_envelopes_do_not_attenuate_voice_or_sfx_buses() {
 }
 
 #[test]
+fn bounded_duck_scan_matches_full_window_reference_with_overlapping_releases() {
+    // The 64 source-bound voice intervals end before their 4,800-sample
+    // releases. Several releases overlap while a new attack begins.
+    // Compare every emitted stereo frame with the original full-scan
+    // expression; this is source-only PCM, never mastering/G2 authority.
+    let (mut project, mut plan, [voice, music, sfx]) = fixture();
+    plan.duck_attack_samples = 2_400;
+    plan.duck_release_samples = 4_800;
+    plan.voice_windows = (0_u64..64)
+        .map(|i| VoiceActivityWindow {
+            start_sample: 3_000 + i * 1_000,
+            end_exclusive: 3_500 + i * 1_000,
+        })
+        .collect();
+    project.audio.transcript = plan
+        .voice_windows
+        .iter()
+        .enumerate()
+        .map(|(i, window)| domain::TranscriptSegment {
+            id: id(1_000 + i as u128),
+            voice_track_id: id(40),
+            start: time(window.start_sample as i64, 48_000),
+            end: time(window.end_exclusive as i64, 48_000),
+            text: "Reviewed original voice activity".into(),
+            speaker: None,
+            alignment: domain::AlignmentEvidence::Manual,
+        })
+        .collect();
+
+    let (rendered, evidence) =
+        render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+    let low = 10.0_f64.powf(-plan.duck_attenuation_db / 20.0);
+    let music_gain = 10.0_f64.powf(plan.music_gain_db / 20.0);
+    let attack = u64::from(plan.duck_attack_samples);
+    let release = u64::from(plan.duck_release_samples);
+    let mut lowest_reference = 1.0_f64;
+    for at in 0..plan.sample_frames {
+        // This intentionally retains the old O(frames * windows) truth oracle,
+        // independent of the optimized Native source window cursor.
+        let mut reference = 1.0_f64;
+        for window in &plan.voice_windows {
+            let start = window.start_sample;
+            let end = window.end_exclusive;
+            let value = if at < start {
+                1.0
+            } else if at < end {
+                if at - start < attack {
+                    let progress = (at - start) as f64 / f64::from(plan.duck_attack_samples);
+                    1.0 + (low - 1.0) * progress
+                } else {
+                    low
+                }
+            } else if at - end < release {
+                let reached = if end - start < attack {
+                    let progress = (end - start) as f64 / f64::from(plan.duck_attack_samples);
+                    1.0 + (low - 1.0) * progress
+                } else {
+                    low
+                };
+                let progress = (at - end) as f64 / f64::from(plan.duck_release_samples);
+                reached + (1.0 - reached) * progress
+            } else {
+                1.0
+            };
+            reference = reference.min(value);
+        }
+        lowest_reference = lowest_reference.min(reference);
+        let mixed = (10_000.0_f64 / 32768.0) * music_gain * reference;
+        let expected = (mixed * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+        let frame = at as usize;
+        assert_eq!(left_at(&rendered, frame), expected, "left frame {at}");
+        let right = i16::from_le_bytes([rendered[4 * frame + 2], rendered[4 * frame + 3]]);
+        assert_eq!(right, expected, "right frame {at}");
+    }
+    assert_eq!(evidence.measured_music_duck_windows, 64);
+    assert_eq!(evidence.minimum_music_duck_gain, lowest_reference);
+    assert_eq!(evidence.rendered_pcm_sha256, hex(&rendered));
+    assert!(!evidence.independently_verified_true_peak);
+    assert!(!evidence.owner_release_approved);
+}
+
+#[test]
 fn unity_gain_original_pcm16_source_retains_exact_quantized_samples() {
     // The source is already valid stereo s16le and does not require a DSP
     // change. Quantization must not lose an LSB merely by passing through.
