@@ -7,8 +7,10 @@ on:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
       - 'tooling/graph_r74_external_reviewer.py'
+      - 'tooling/ci_private_evidence.py'
       - 'tooling/tests/test_graph_r74_external_reviewer.py'
       - 'tooling/tests/test_review_private_key.py'
+      - 'tooling/tests/test_ci_review_key_portability_sources.py'
       - 'tooling/graph_review_artifact.py'
       - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/requirements/graph-review-fixtures.txt'
@@ -20,8 +22,10 @@ on:
       - '.github/workflows/review-key-portability.yml'
       - 'tooling/review_private_key.py'
       - 'tooling/graph_r74_external_reviewer.py'
+      - 'tooling/ci_private_evidence.py'
       - 'tooling/tests/test_graph_r74_external_reviewer.py'
       - 'tooling/tests/test_review_private_key.py'
+      - 'tooling/tests/test_ci_review_key_portability_sources.py'
       - 'tooling/graph_review_artifact.py'
       - 'tooling/tests/test_graph_review_artifact.py'
       - 'tooling/requirements/graph-review-fixtures.txt'
@@ -53,6 +57,8 @@ jobs:
           python-version: '3.13'
       - name: Check actual owner permissions and alias rejection
         run: python -B -m unittest tooling.tests.test_review_private_key -v
+      - name: Verify review seal source triggers before installing fixtures
+        run: python -B -m unittest tooling.tests.test_ci_review_key_portability_sources -v
       - name: Install hash-pinned artifact fixture dependencies
         run: |
           python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r tooling/requirements/graph-review-fixtures.txt
