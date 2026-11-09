@@ -3,20 +3,25 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tooling"))
+from security_advisory_policy import verify_ttf_parser_review
 POLICY = ROOT / "tooling" / "security_advisory_policy.py"
 
 
 def audit_payload(*, changed_class=False, vulnerable=False,
                   path_crate_warning_reported=True, missing_unmaintained=False,
-                  new_unknown=False):
+                  new_unknown=False, missing_ttf_parser=False):
     warnings = {
         "unsound": ([{"advisory": {"id": "RUSTSEC-2024-0429"}}]
                     if path_crate_warning_reported else []),
         "unmaintained": ([] if missing_unmaintained
-                         else [{"advisory": {"id": "RUSTSEC-2024-0370"}}]),
+                         else [{"advisory": {"id": "RUSTSEC-2024-0370"}}])
+                        + ([] if missing_ttf_parser
+                           else [{"advisory": {"id": "RUSTSEC-2026-0192"}}]),
     }
     if new_unknown:
         warnings["unmaintained"].append({"advisory": {"id": "RUSTSEC-2099-9999"}})
@@ -66,7 +71,7 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
         self.assertEqual(evidence["vulnerabilities_allowed"], 0)
         self.assertEqual(
             evidence["actual_warning_ids"],
-            ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429"],
+            ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2026-0192"],
         )
         self.assertIn("remain OPEN", evidence["statement"])
         self.assertFalse(evidence["upstream_glib_advisory_resolved"])
@@ -91,16 +96,109 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
             audit_payload(path_crate_warning_reported=False)
         )
         self.assertEqual(process.returncode, 0, process.stderr)
-        self.assertEqual(evidence["actual_warning_ids"], ["RUSTSEC-2024-0370"])
+        self.assertEqual(evidence["actual_warning_ids"], ["RUSTSEC-2024-0370", "RUSTSEC-2026-0192"])
         self.assertEqual(evidence["open_advisories_absent_from_registry_audit"],
                          ["RUSTSEC-2024-0429"])
         self.assertEqual({row["id"] for row in evidence["known_warnings"]},
-                         {"RUSTSEC-2024-0370", "RUSTSEC-2024-0429"})
+                         {"RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2026-0192"})
         self.assertTrue(all(row["status"].startswith("OPEN_")
                             for row in evidence["known_warnings"]))
         self.assertFalse(evidence["glib_owner_chain"]["glib_vulnerability_fixed"])
         self.assertIn("path dependency", evidence["statement"])
         self.assertIn("glib_remediation=NOT_PROVEN", process.stdout)
+
+    def test_ttf_parser_warning_is_tracked_open_with_exact_reviewed_owners(self):
+        process, evidence = self.run_policy(
+            audit_payload(path_crate_warning_reported=False)
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        row = evidence["ttf_parser_unmaintained_source"]
+        self.assertEqual(row["advisory_id"], "RUSTSEC-2026-0192")
+        self.assertEqual(row["status"], "OPEN_UPSTREAM_UNMAINTAINED")
+        self.assertFalse(row["maintenance_risk_closed"])
+        self.assertFalse(row["native_runtime_or_distribution_certified"])
+        self.assertEqual(row["direct_owners"], [
+            "motionwright-manim-profile@0.1.0",
+            "semwright-driver-motion-canvas@1.0.0",
+        ])
+        self.assertEqual(len(row["transitive_owners"]), 6)
+
+    def test_ttf_parser_registry_checksum_drift_fails_closed(self):
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        policy = json.loads((ROOT / "docs/security/known-rustsec-advisories.json").read_text())
+        reviewed = next(row for row in policy["advisories"]
+                        if row["id"] == "RUSTSEC-2026-0192")
+        package = next(row for row in lock["package"]
+                       if row["name"] == "ttf-parser")
+        package["checksum"] = "0" * 64
+        with self.assertRaises(SystemExit):
+            verify_ttf_parser_review(lock, reviewed)
+
+    def test_ttf_parser_direct_owner_drift_fails_closed(self):
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        policy = json.loads((ROOT / "docs/security/known-rustsec-advisories.json").read_text())
+        reviewed = next(row for row in policy["advisories"]
+                        if row["id"] == "RUSTSEC-2026-0192")
+        native = next(row for row in lock["package"]
+                      if row["name"] == "motionwright-native")
+        native["dependencies"].append("ttf-parser")
+        with self.assertRaises(SystemExit):
+            verify_ttf_parser_review(lock, reviewed)
+
+    def test_ttf_parser_locked_version_drift_fails_closed(self):
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        policy = json.loads((ROOT / "docs/security/known-rustsec-advisories.json").read_text())
+        reviewed = next(row for row in policy["advisories"]
+                        if row["id"] == "RUSTSEC-2026-0192")
+        package = next(row for row in lock["package"] if row["name"] == "ttf-parser")
+        package["version"] = "0.25.2"
+        with self.assertRaises(SystemExit):
+            verify_ttf_parser_review(lock, reviewed)
+
+    def test_ttf_parser_pinned_semwright_revision_drift_fails_closed(self):
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        policy = json.loads((ROOT / "docs/security/known-rustsec-advisories.json").read_text())
+        reviewed = next(row for row in policy["advisories"]
+                        if row["id"] == "RUSTSEC-2026-0192")
+        driver = next(row for row in lock["package"]
+                      if row["name"] == "semwright-driver-motion-canvas")
+        driver["source"] = "git+https://github.com/seradotcom/semwright#changed"
+        with self.assertRaises(SystemExit):
+            verify_ttf_parser_review(lock, reviewed)
+
+    def test_ttf_parser_indirect_owner_drift_fails_closed(self):
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        policy = json.loads((ROOT / "docs/security/known-rustsec-advisories.json").read_text())
+        reviewed = next(row for row in policy["advisories"]
+                        if row["id"] == "RUSTSEC-2026-0192")
+        domain = next(row for row in lock["package"]
+                      if row["name"] == "motionwright-domain")
+        domain["dependencies"].append("motionwright-manim-profile")
+        with self.assertRaises(SystemExit):
+            verify_ttf_parser_review(lock, reviewed)
+
+    def test_ttf_parser_audit_class_drift_fails_closed(self):
+        payload = audit_payload(path_crate_warning_reported=False)
+        payload["warnings"]["unmaintained"] = [
+            entry for entry in payload["warnings"]["unmaintained"]
+            if entry["advisory"]["id"] != "RUSTSEC-2026-0192"
+        ]
+        payload["warnings"]["notice"] = [
+            {"advisory": {"id": "RUSTSEC-2026-0192"}}
+        ]
+        process, evidence = self.run_policy(payload)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIsNone(evidence)
+        self.assertIn("RUSTSEC-2026-0192 class changed", process.stderr)
+
+    def test_missing_reviewed_ttf_parser_warning_requires_new_review(self):
+        process, evidence = self.run_policy(
+            audit_payload(path_crate_warning_reported=False,
+                          missing_ttf_parser=True)
+        )
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIsNone(evidence)
+        self.assertIn("missing=['RUSTSEC-2026-0192']", process.stderr)
 
     def test_missing_other_reviewed_warning_still_fails(self):
         process, evidence = self.run_policy(

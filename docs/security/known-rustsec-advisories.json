@@ -2,7 +2,7 @@
   "schema": "motionwright.security-known-advisories.v1",
   "policy": {
     "mode": "exact-known-warning-set",
-    "statement": "Both known RustSec advisories remain OPEN. Exact-source local-path glib 0.18.5 may disappear from cargo-audit's registry warning output without proving remediation. The checked Cargo.lock override and complete backport source-custody verifier must pass; all other warnings must match exactly, and any vulnerability, new warning, missing other warning or dependency drift fails closed. No advisory is waived or marked fixed.",
+    "statement": "All reviewed RustSec advisories remain OPEN. Exact-source local-path glib 0.18.5 may disappear from cargo-audit's registry warning output without proving remediation. The checked Cargo.lock override and complete backport source-custody verifier must pass; all other warnings must match exactly, and any vulnerability, new warning, missing other warning or dependency drift fails closed. No advisory is waived or marked fixed.",
     "reviewed_against_cargo_audit": "0.22.2"
   },
   "advisories": [
@@ -74,6 +74,43 @@
         "the stable Tauri Linux stack supports a non-vulnerable glib line",
         "the advisory scope or severity changes",
         "first-party code begins using the affected API"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0192",
+      "class": "unmaintained",
+      "package": "ttf-parser",
+      "locked_version": "0.25.1",
+      "status": "OPEN_UPSTREAM_UNMAINTAINED",
+      "direct_dependency": true,
+      "registry_checksum": "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31",
+      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=0b2406bee57fc15280abbdf25f1b89527bd8987c#0b2406bee57fc15280abbdf25f1b89527bd8987c",
+      "required_lock_context": {
+        "ttf-parser": "0.25.1",
+        "motionwright-manim-profile": "0.1.0",
+        "semwright-driver-motion-canvas": "1.0.0",
+        "motionwright-service": "0.1.0"
+      },
+      "reviewed_direct_owners": [
+        "motionwright-manim-profile@0.1.0",
+        "semwright-driver-motion-canvas@1.0.0"
+      ],
+      "reviewed_transitive_owners": [
+        "motionwright-desktop@0.1.0",
+        "motionwright-manim-community-driver@0.1.0",
+        "motionwright-manim-profile@0.1.0",
+        "motionwright-native@0.1.0",
+        "motionwright-service@0.1.0",
+        "semwright-driver-motion-canvas@1.0.0"
+      ],
+      "forbidden_first_party_tokens": [],
+      "review_note": "New 2026-06-28 upstream maintenance warning, not a reported vulnerability or security fix. The exact registry bytes are locked, and Cargo.lock contains two declared dependency routes (Manim direct and Semwright Motion Canvas via the service); deployed runtime reachability remains unverified. This review tracks an OPEN risk, not a safety waiver, not replacement by skrifa, and not product G2/G3 clearance.",
+      "recheck_when": [
+        "ttf-parser registry source/checksum or locked version changes",
+        "direct or transitive Cargo.lock owner closure changes",
+        "the selected Semwright Motion Canvas driver source revision changes",
+        "the RustSec classification or reachable font parsing behavior changes",
+        "an actively maintained parser is adopted and verified in the affected producers"
       ]
     },
     {

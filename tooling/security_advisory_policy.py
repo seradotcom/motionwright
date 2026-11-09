@@ -14,7 +14,7 @@ import pathlib
 import sys
 import tomllib
 from typing import Any
-from glib_owner_chain import OwnerChainError, verify_glib_owner_chain
+from glib_owner_chain import OwnerChainError, verify_glib_owner_chain, lock_reverse_edges
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "docs/security/known-rustsec-advisories.json"
@@ -107,6 +107,72 @@ def ensure_zero_vulnerabilities(audit: dict[str, Any]) -> None:
         fail(f"cargo-audit reported security vulnerabilities{suffix}")
 
 
+def verify_ttf_parser_review(lock: dict[str, Any], advisory: dict[str, Any]) -> dict[str, Any]:
+    """Track an OPEN unmaintained parser only on exact bytes and reviewed owners."""
+    if (advisory.get("id") != "RUSTSEC-2026-0192"
+            or advisory.get("package") != "ttf-parser"
+            or advisory.get("locked_version") != "0.25.1"
+            or advisory.get("class") != "unmaintained"
+            or advisory.get("status") != "OPEN_UPSTREAM_UNMAINTAINED"):
+        fail("ttf-parser new maintenance-risk policy changed without review")
+    matching = [p for p in lock["package"] if p.get("name") == "ttf-parser"]
+    if (len(matching) != 1
+            or matching[0].get("version") != "0.25.1"
+            or matching[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index"
+            or matching[0].get("checksum") != advisory.get("registry_checksum")
+            or advisory.get("registry_checksum") !=
+            "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"):
+        fail("ttf-parser exact registry source or checksum changed; review required")
+    driver = [p for p in lock["package"] if p.get("name") == "semwright-driver-motion-canvas"]
+    if (len(driver) != 1
+            or driver[0].get("version") != "1.0.0"
+            or driver[0].get("source") != advisory.get("reviewed_motion_canvas_lock_source")
+            or advisory.get("reviewed_motion_canvas_lock_source") !=
+            "git+https://github.com/seradotcom/semwright?rev=0b2406bee57fc15280abbdf25f1b89527bd8987c#0b2406bee57fc15280abbdf25f1b89527bd8987c"):
+        fail("ttf-parser reviewed Semwright driver source changed; review required")
+    try:
+        reverse = lock_reverse_edges(lock)
+    except OwnerChainError as error:
+        fail("ttf-parser dependency graph is not uniquely resolved: " + str(error))
+    source = ("ttf-parser", "0.25.1")
+    if source not in reverse:
+        fail("ttf-parser reviewed package missing")
+    direct = sorted(f"{name}@{version}" for name, version in reverse[source])
+    expected_direct = [
+        "motionwright-manim-profile@0.1.0",
+        "semwright-driver-motion-canvas@1.0.0",
+    ]
+    if direct != expected_direct or advisory.get("reviewed_direct_owners") != expected_direct:
+        fail("ttf-parser direct owners changed; review required")
+    closure, stack = {source}, [source]
+    while stack:
+        for parent in reverse[stack.pop()]:
+            if parent not in closure:
+                closure.add(parent)
+                stack.append(parent)
+    actual = sorted(f"{name}@{version}" for name, version in closure if (name, version) != source)
+    expected = [
+        "motionwright-desktop@0.1.0",
+        "motionwright-manim-community-driver@0.1.0",
+        "motionwright-manim-profile@0.1.0",
+        "motionwright-native@0.1.0",
+        "motionwright-service@0.1.0",
+        "semwright-driver-motion-canvas@1.0.0",
+    ]
+    if actual != expected or advisory.get("reviewed_transitive_owners") != expected:
+        fail("ttf-parser transitive owners changed; review required")
+    return {
+        "advisory_id": "RUSTSEC-2026-0192",
+        "status": "OPEN_UPSTREAM_UNMAINTAINED",
+        "source": matching[0]["source"],
+        "locked_version": "0.25.1",
+        "direct_owners": direct,
+        "transitive_owners": actual,
+        "maintenance_risk_closed": False,
+        "native_runtime_or_distribution_certified": False,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--audit-json", type=pathlib.Path)
@@ -180,6 +246,8 @@ def main() -> None:
     except OwnerChainError as error:
         fail("RUSTSEC-2024-0429 owner chain requires independent review: " + str(error))
 
+    ttf_parser_review = verify_ttf_parser_review(lock, expected.get("RUSTSEC-2026-0192", {}))
+
     actual_warnings: dict[str, str] | None = None
     if args.audit_json is not None:
         audit = json.loads(args.audit_json.read_text())
@@ -220,6 +288,7 @@ def main() -> None:
         "audit_checked": actual_warnings is not None,
         "vulnerabilities_allowed": 0,
         "glib_owner_chain": glib_owner_chain,
+        "ttf_parser_unmaintained_source": ttf_parser_review,
         "known_warnings": [
             {
                 "id": advisory_id,
