@@ -148,3 +148,20 @@ test('a rejected real Graph context cannot render raw backend error through the 
   assert.match(ui, /GRAPH_SAVE_CONTEXT_UNAVAILABLE/);
   assert.match(ui, /const canSave = saveGuards\.length === 0/);
 });
+
+test('obsolete Graph outcome rejection does not report an error against a changed source', () => {
+  const begin = ui.indexOf('async function readOutcome()');
+  const end = ui.indexOf('function fork(', begin);
+  assert.ok(begin >= 0 && end > begin, 'the Graph outcome inspector exists');
+  const inspection = ui.slice(begin, end);
+  assert.match(inspection, /const inspectedDraft = clone\(session\.draft\)/);
+  assert.match(inspection, /const inspectedProject = clone\(current\.current\.project\)/);
+  const rejected = inspection.split('} catch (reason) {')[1]?.split('} finally {')[0];
+  assert.ok(rejected, 'the original rejected outcome reader exists');
+  for (const guard of [
+    'mounted.current', 'token === epoch.current',
+    'graphSame(session.draft, inspectedDraft)',
+    'graphSame(current.current.project, inspectedProject)',
+  ]) assert.ok(rejected.includes(guard), 'old outcome error not bound to original intent: ' + guard);
+  assert.match(rejected, /session\.error = message\(reason\)/);
+});
