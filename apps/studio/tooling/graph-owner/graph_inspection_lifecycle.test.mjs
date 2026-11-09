@@ -62,9 +62,9 @@ test('a second same-render Native context inspection cannot dispatch twice or ov
   assert.ok(begin >= 0 && end > begin, 'original Native inspection path exists');
   const inspection = ui.slice(begin, end);
   assert.match(ui, /const inspectionToken = useRef<number \| null>\(null\)/);
-  const guard = 'if (!current.current.readContext || inspecting || inspectionToken.current !== null || busy) return;';
-  assert.ok(inspection.includes(guard), 'live token guard must precede Native call');
-  assert.ok(inspection.indexOf(guard) < inspection.indexOf('const token = ++epoch.current'));
+  const guard = /if \(!current\.current\.readContext \|\| inspecting \|\| inspectionToken\.current !== null\s*\|\| busy \|\| session\.preparing \|\| session\.inFlight\) return;/;
+  assert.match(inspection, guard, 'live token and Save activity must precede Native call');
+  assert.ok(inspection.search(guard) < inspection.indexOf('const token = ++epoch.current'));
   assert.ok(inspection.indexOf('inspectionToken.current = token') <
     inspection.indexOf('await current.current.readContext('), 'latch must be set synchronously');
   assert.match(inspection, /if \(inspectionToken\.current === token\) \{\s*inspectionToken\.current = null;/);
@@ -164,6 +164,38 @@ test('a rejected real Graph context cannot render raw backend error through the 
   assert.match(ui, /const canSave = saveGuards\.length === 0/);
 });
 
+// The former completed context can still make canSave true in the original
+// render after a fresh inspect click. The inspect token must exclude Save
+// synchronously, without treating an in-flight Native probe as Ready.
+test('a pending Native inspection blocks stale ready Save in the same render', () => {
+  const begin = ui.indexOf('async function send(operation:');
+  const end = ui.indexOf('async function readOutcome()', begin);
+  assert.ok(begin >= 0 && end > begin, 'source-owned Graph mutation entrypoint');
+  const submission = ui.slice(begin, end);
+  const gates = ui.slice(ui.indexOf('const saveGuards'), ui.indexOf('const canSave'));
+  assert.match(gates, /\(busy \|\| inspecting \|\| inspectionToken\.current !== null\)\s*\? "GRAPH_SAVE_BUSY"/);
+  const guard = 'if (!canSave || inspectionToken.current !== null || session.preparing || session.inFlight || session.draft.pending) return;';
+  assert.ok(submission.includes(guard), 'pending Native inspection must block stale ready Save');
+  assert.ok(submission.indexOf(guard) < submission.indexOf('const id = crypto.randomUUID()'));
+  const inspect = ui.slice(ui.indexOf('async function inspectContext()'), begin);
+  assert.ok(inspect.indexOf('inspectionToken.current = token') <
+    inspect.indexOf('await current.current.readContext('), 'Native probe owns token before its first await');
+});
+
+// The opposite event order is also possible before React redraw: an initial
+// Save owns the live preparation flag, but the old rendered busy is still false.
+test('a pending Graph Save preflight blocks same-render Native inspection', () => {
+  const begin = ui.indexOf('async function inspectContext()');
+  const end = ui.indexOf('async function send(operation:', begin);
+  const inspect = ui.slice(begin, end);
+  assert.ok(inspect.includes('session.preparing || session.inFlight'),
+    'Native inspection must observe live submission state, not stale busy prop');
+  assert.ok(inspect.indexOf('session.preparing || session.inFlight') <
+    inspect.indexOf('const token = ++epoch.current'));
+  const submit = ui.slice(end, ui.indexOf('async function readOutcome()', end));
+  assert.ok(submit.indexOf('session.preparing = true') < submit.indexOf('await prepareGraphSubmission('));
+});
+
 // React's reviewing flag belongs to the last render. Two author actions in
 // that render must not launch two saved-outcome transport reads, and an older
 // finally must not clear the newer review's in-progress state.
@@ -226,7 +258,7 @@ test('a second Graph Save handler entry cannot start while its original intentio
   const end = ui.indexOf('async function readOutcome()', begin);
   assert.ok(begin >= 0 && end > begin, 'the actual Graph Save path exists');
   const save = ui.slice(begin, end);
-  const guard = 'if (!canSave || session.preparing || session.inFlight || session.draft.pending) return;';
+  const guard = 'if (!canSave || inspectionToken.current !== null || session.preparing || session.inFlight || session.draft.pending) return;';
   assert.ok(save.includes(guard), 'the live session must forbid duplicate Save before preflight');
   assert.ok(save.indexOf(guard) < save.indexOf('const id = crypto.randomUUID()'));
   assert.ok(save.indexOf(guard) < save.indexOf('session.preparing = true'));

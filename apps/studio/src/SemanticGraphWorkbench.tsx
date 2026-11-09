@@ -447,7 +447,8 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   // private Native diagnostics or arbitrary DTO strings. The result is a
   // finite, source-owned diagnostic; it cannot grant a Save or infer Ready.
   const saveGuards = [
-    busy ? "GRAPH_SAVE_BUSY" : null, pending ? "GRAPH_SAVE_PENDING" : null,
+    (busy || inspecting || inspectionToken.current !== null) ? "GRAPH_SAVE_BUSY" : null,
+    pending ? "GRAPH_SAVE_PENDING" : null,
     admission ? !context ? "GRAPH_SAVE_CONTEXT_UNAVAILABLE" :
       context.availability !== "ready" ? "GRAPH_SAVE_CONTEXT_BLOCKED" :
       !graphSame(context.source_snapshot, graphSourceSnapshot(props.project)) ||
@@ -492,7 +493,10 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     session.error = null; session.notice = null; epoch.current++; setContextFailure(null); setReview(null); setChoices({}); backup(session); notify(session);
   }
   async function inspectContext() {
-    if (!current.current.readContext || inspecting || inspectionToken.current !== null || busy) return;
+    // A prior Save can own preparation before React publishes its busy state.
+    // Never invalidate that original intent with a same-render Native probe.
+    if (!current.current.readContext || inspecting || inspectionToken.current !== null
+      || busy || session.preparing || session.inFlight) return;
     const token = ++epoch.current, sequence = session.draft.sequence, before = clone(current.current.project), profileId = session.draft.input.variant_profile_ref;
     inspectionToken.current = token;
     setInspecting(true); setInspectionPhase("GRAPH_CONTEXT_INSPECTION_PENDING"); setContext(null); setContextFailure(null); session.error = null;
@@ -530,7 +534,10 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     // canSave belongs to the last React render. A second handler invocation
     // before redraw must observe the live original session, not start another
     // preflight or generate an additional mutation intent.
-    if (!canSave || session.preparing || session.inFlight || session.draft.pending) return;
+    // The previously ready context may still be captured by this render when
+    // a fresh Native inspection has already started. Its live token wins over
+    // the stale canSave snapshot; no new mutation intent may be prepared.
+    if (!canSave || inspectionToken.current !== null || session.preparing || session.inFlight || session.draft.pending) return;
     const id = crypto.randomUUID(), source = clone(session.draft), project = clone(current.current.project), token = epoch.current;
     session.preparing = true; session.error = null; notify(session);
     let prepared: Awaited<ReturnType<typeof prepareGraphSubmission>>;
