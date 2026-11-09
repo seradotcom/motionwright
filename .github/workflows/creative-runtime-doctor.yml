@@ -154,8 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci-evidence/graph-context-abi-g1
-          printf '%s
-' "$GITHUB_SHA" > ci-evidence/graph-context-abi-g1/source-sha.txt
+          printf '%s\n' "$GITHUB_SHA" > ci-evidence/graph-context-abi-g1/source-sha.txt
           npm --prefix apps/studio ci --no-audit --no-fund
           npm --prefix apps/studio run build
           cargo check --locked -p motionwright-desktop --bin motionwright-desktop 2>&1 | tee ci-evidence/graph-context-abi-g1/desktop-check.original.log
