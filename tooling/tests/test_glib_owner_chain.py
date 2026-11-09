@@ -65,6 +65,26 @@ class GlibOwnerChainTests(unittest.TestCase):
                    side_effect=ValueError("tampered physical source")):
             self.assert_rejected("glib_backport_custody_unverified")
 
+    def test_local_tauri_patch_requires_exact_independent_source_admission(self):
+        with patch("glib_owner_chain.admit_patched_tauri",
+                   side_effect=ValueError("changed Tauri upstream source")):
+            self.assert_rejected("tauri_source_custody_unverified")
+
+    def test_tauri_source_override_cannot_replace_reviewed_local_patch(self):
+        tauri = self.package("tauri")
+        tauri["source"] = "registry+https://github.com/rust-lang/crates.io-index"
+        tauri["checksum"] = "a" * 64
+        self.assert_rejected("tauri_ancestor_source_changed")
+
+    def test_unverified_tauri_receipt_cannot_admit_local_owner(self):
+        with patch("glib_owner_chain.admit_patched_tauri",
+                   return_value={
+                       "selected_version": "2.12.1",
+                       "local_cargo_manifest_and_lock_selected": False,
+                       "all_other_files_identical_to_upstream": True,
+                   }):
+            self.assert_rejected("tauri_source_custody_unverified")
+
     def test_new_direct_rust_glib_client_is_refused(self):
         self.lock["package"].append({
             "name": "unknown-glib-consumer", "version": "0.1.0",

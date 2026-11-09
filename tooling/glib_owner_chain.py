@@ -12,6 +12,9 @@ from collections import defaultdict
 from pathlib import Path
 import re
 from v01_glib_product_admission import ProductBackportError, admit_patched_glib
+from v01_tauri_ipc_product_admission import (
+    TauriSourceAdmissionError, admit_patched_tauri,
+)
 from typing import Any
 
 SCHEMA = "motionwright.v01-glib-owner-chain/1"
@@ -138,6 +141,21 @@ def verify_glib_owner_chain(lock: dict[str, Any], glib_policy: dict) -> dict:
              and backport_receipt["all_other_files_identical_to_upstream"] is True,
              "glib_backport_source_not_verified")
 
+    # Tauri is also an explicitly reviewed local crates.io patch, not an
+    # arbitrary source substitution. Verify its exact upstream inventory,
+    # three-file patch, workspace manifest and lock before admitting its
+    # single local-path ancestor in the GTK dependency owner chain.
+    try:
+        tauri_receipt = admit_patched_tauri(Path(__file__).resolve().parents[1])
+    except (TauriSourceAdmissionError, OSError, ValueError) as exc:
+        raise OwnerChainError("tauri_source_custody_unverified") from exc
+    _require(
+        tauri_receipt["selected_version"] == "2.12.1"
+        and tauri_receipt["local_cargo_manifest_and_lock_selected"] is True
+        and tauri_receipt["all_other_files_identical_to_upstream"] is True,
+        "tauri_source_custody_unverified",
+    )
+
     # Every other reverse ancestor must retain exactly its original locked
     # crates.io source and checksum. A hostile git/path substitution fails.
     for row in lock["package"]:
@@ -147,6 +165,10 @@ def verify_glib_owner_chain(lock: dict[str, Any], glib_policy: dict) -> dict:
         if key == source:
             _require(row.get("source") is None and "checksum" not in row,
                      "glib_ancestor_source_changed")
+            continue
+        if key == ("tauri", "2.12.1"):
+            _require(row.get("source") is None and "checksum" not in row,
+                     "tauri_ancestor_source_changed")
             continue
         _require(row.get("source") ==
                  "registry+https://github.com/rust-lang/crates.io-index",
