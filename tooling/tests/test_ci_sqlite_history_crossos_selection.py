@@ -58,5 +58,23 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
         self.assertIn('"filesystem_SQLite_crash_atomicity":"NOT_ESTABLISHED"', source)
 
 
+    def test_incremental_sqlite_source_gate_does_not_restamp_formal_acceptance(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        g0 = workflow.split("  g0-source-policy:", 1)[1].split(
+            "\n  real-sqlite-concurrency:", 1)[0]
+        source_step = g0.split(
+            "- name: Enforce public source and conformance policies", 1)[1].split(
+            "\n      - name: Verify selected SQLite snapshot", 1)[0]
+        for policy in ("source_policy", "public_surface_policy"):
+            self.assertEqual(source_step.count("tooling/" + policy + ".py"), 1)
+        # Formal assessed ledgers are verified separately from incremental G0.
+        self.assertNotIn("tooling/acceptance_policy.py", source_step)
+        self.assertNotIn("tooling/creative_status_policy.py", source_step)
+        formal = (ROOT / ".github/workflows/package-candidate.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("tooling/acceptance_policy.py", formal)
+        self.assertIn("tooling/creative_status_policy.py", formal)
+
+
 if __name__ == "__main__":
     unittest.main()

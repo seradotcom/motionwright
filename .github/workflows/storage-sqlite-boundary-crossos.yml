@@ -57,8 +57,8 @@ jobs:
           echo "MW_SQLITE_EVIDENCE=$work" >> "$GITHUB_ENV"
           {
             python -B tooling/source_policy.py
-            python -B tooling/acceptance_policy.py
-            python -B tooling/creative_status_policy.py
+            # Assessed acceptance and creative ledgers are verified at
+            # formal release gates, not restamped for incremental source G0.
             python -B tooling/public_surface_policy.py
           } 2>&1 | tee "$work/source-policies.original.log"
       - name: Verify selected SQLite snapshot source coverage
