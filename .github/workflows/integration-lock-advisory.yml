@@ -9,6 +9,8 @@ on:
       - Cargo.toml
       - '.github/workflows/integration-lock-advisory.yml'
       - 'tooling/glib_owner_chain.py'
+      - 'tooling/security_advisory_policy.py'
+      - 'docs/security/known-rustsec-advisories.json'
       - 'crates/**/Cargo.toml'
       - 'apps/**/Cargo.toml'
 
