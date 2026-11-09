@@ -371,6 +371,6 @@ jobs:
         if: always()
         with:
           name: sqlite-real-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.MW_SQLITE_EVIDENCE }}
+          path: ${{ env.MW_SQLITE_EVIDENCE || 'missing-sqlite-real-originals' }}
           if-no-files-found: warn
           retention-days: 14
