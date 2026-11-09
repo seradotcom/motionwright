@@ -1,0 +1,54 @@
+name: Integration dependency lock advisory check
+
+on:
+  push:
+    branches:
+      - integrate/phase1-final-composition-20261027
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - '.github/workflows/integration-lock-advisory.yml'
+      - 'crates/**/Cargo.toml'
+      - 'apps/**/Cargo.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  rustsec-lock:
+    name: Audit changed Rust dependency lock only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: '1.98.1'
+      - name: Install pinned advisory analyzer
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Enforce current lock advisory policy without waivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          set +e
+          cargo audit --json > ci-evidence/cargo-audit.json
+          audit_status=$?
+          set -e
+          python3 tooling/security_advisory_policy.py \
+            --audit-json ci-evidence/cargo-audit.json \
+            --output ci-evidence/security-advisory-policy.json
+          if [ "$audit_status" -ne 0 ]; then
+            echo "RustSec audit failed on the published source lock; policy evidence is not a waiver."
+            exit "$audit_status"
+          fi
+      - name: Retain original security result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: integration-lock-advisory
+          path: ci-evidence/
+          if-no-files-found: warn
+          retention-days: 7
