@@ -319,3 +319,17 @@ test('a same-render Graph Save blocks recovery-copy discard before removal', () 
   assert.match(ui, /disabled=\{busy \|\| copy\.writerId === session\.custody\.writerId\}/,
     'the UI still disables recovery discard while ordinary busy');
 });
+
+test('a same-render Save cannot restore a prior Graph draft over its current original', () => {
+  const begin = ui.indexOf('function restore(copy: GraphRecoveryEntry)');
+  const end = ui.indexOf('function discard(copy: GraphRecoveryEntry)', begin);
+  assert.ok(begin > 0 && end > begin, 'the Graph recovery restore handler exists');
+  const handler = ui.slice(begin, end);
+  const restoration = handler.indexOf('fork(restored,');
+  assert.ok(restoration > 0, 'restoration still retains the original fork path');
+  for (const gate of ['current.current.busy', 'session.preparing', 'session.inFlight', 'session.draft.pending', '!copy.value']) {
+    assert.ok(handler.includes(gate), 'restoration must consult current live state: ' + gate);
+    assert.ok(handler.indexOf(gate) < restoration, 'live gate must precede recovery restore: ' + gate);
+  }
+  assert.match(ui, /disabled=\{busy \|\| pending \|\| !copy\.value \|\| copy\.writerId === session\.custody\.writerId\}/);
+});

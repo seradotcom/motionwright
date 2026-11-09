@@ -714,7 +714,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     const url = URL.createObjectURL(new Blob([raw], { type: "application/json" })), a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
   }
   function restore(copy: GraphRecoveryEntry) {
-    if (busy || pending || !copy.value) return;
+    // React's disabled state can lag a Save already in preparation or flight.
+    // Never replace its original intent or custody with an older Graph draft.
+    if (current.current.busy || session.preparing || session.inFlight || session.draft.pending || !copy.value) return;
     try { if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("The selected Graph copy changed; refresh the list first.");
       const restored = decodeGraphCopy(copy.raw, session.draft.scope, copy.writerId).draft;
       fork(restored, "Restored a separate Graph draft. Earlier copies were retained; no save was sent.");
