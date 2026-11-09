@@ -216,7 +216,7 @@ class StaticWriterBudgetTests(unittest.TestCase):
         self.assertIn(
             "--pattern test_native_blender_authorization_preflight.py", selected)
         self.assertIn(
-            '"test_native_blender_authorization_preflight": 7', selected)
+            '"test_native_blender_authorization_preflight": 8', selected)
         self.assertIn("--mode both --require-complete", selected)
         self.assertIn('--expected-source "$GITHUB_SHA"', selected)
 

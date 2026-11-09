@@ -1013,7 +1013,7 @@ jobs:
                   "test_native_blender_glb_source_gate": 14,
                   "test_native_blender_static_custody_wiring": 27,
                   "test_native_blender_static_writer_budget": 6,
-                  "test_native_blender_authorization_preflight": 7,
+                  "test_native_blender_authorization_preflight": 8,
                   "test_native_blender_static_deadline": 20}
         expected = {label: count for name, count in counts.items()
                     for label in ("discovery:" + name + ".py", "dotted:tooling.tests." + name)}

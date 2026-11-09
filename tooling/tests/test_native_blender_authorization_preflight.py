@@ -139,6 +139,49 @@ class BlenderAuthorizationPreflightTests(unittest.TestCase):
                 blender.require_headless_blender_catalog(
                     [consent], {name}, operator_console=True)
 
+    def test_real_foreground_daemon_group_owns_tty_then_restores_parent(self):
+        # Synthetic POSIX API calls verify the release logic only; neither an
+        # operator challenge nor a Native Blender effect is exercised here.
+        import inspect
+        daemon_pid, parent_pgid, fd = 71, 23, 17
+        with mock.patch.object(blender.os, "open", return_value=fd), \
+                mock.patch.object(blender.os, "close") as close, \
+                mock.patch.object(blender.os, "getpgrp", return_value=parent_pgid, create=True), \
+                mock.patch.object(blender.os, "getpgid", return_value=daemon_pid, create=True), \
+                mock.patch.object(blender.os, "tcgetpgrp",
+                                  side_effect=[parent_pgid, daemon_pid], create=True), \
+                mock.patch.object(blender.os, "tcsetpgrp", create=True) as set_foreground, \
+                mock.patch.object(blender.signal, "SIGTTOU", 22, create=True), \
+                mock.patch.object(blender.signal, "signal",
+                                  return_value=blender.signal.SIG_DFL) as set_handler:
+            lease = blender.acquire_foreground_daemon_terminal(daemon_pid)
+            self.assertEqual(lease, (fd, parent_pgid))
+            blender.restore_foreground_daemon_terminal(*lease, daemon_pid)
+            self.assertEqual(set_foreground.call_args_list,
+                             [mock.call(fd, daemon_pid), mock.call(fd, parent_pgid)])
+            self.assertEqual(set_handler.call_args_list,
+                             [mock.call(22, blender.signal.SIG_IGN),
+                              mock.call(22, blender.signal.SIG_DFL)])
+            close.assert_called_once_with(fd)
+
+        with mock.patch.object(blender.os, "open", return_value=fd), \
+                mock.patch.object(blender.os, "close") as close, \
+                mock.patch.object(blender.os, "getpgrp", return_value=parent_pgid, create=True), \
+                mock.patch.object(blender.os, "getpgid", return_value=99, create=True), \
+                mock.patch.object(blender.os, "tcsetpgrp", create=True) as changed:
+            with self.assertRaisesRegex(RuntimeError, "owned process group"):
+                blender.acquire_foreground_daemon_terminal(daemon_pid)
+            changed.assert_not_called()
+            close.assert_called_once_with(fd)
+
+        source = inspect.getsource(blender.blender_context)
+        self.assertIn("foreground_terminal = acquire_foreground_daemon_terminal(daemon.pid)",
+                      source)
+        self.assertIn("restore_foreground_daemon_terminal(", source)
+        self.assertIn("stdin=subprocess.DEVNULL", source)
+        self.assertIn("stdout=subprocess.PIPE if bounded_static else log_stream", source)
+        self.assertIn("stderr=subprocess.STDOUT if bounded_static else log_stream", source)
+
 
 if __name__ == "__main__":
     unittest.main()

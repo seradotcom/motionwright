@@ -62,6 +62,49 @@ class BlenderOwnerApprovalRequired(RuntimeError):
                          + ", ".join(self.commands))
 
 
+def acquire_foreground_daemon_terminal(daemon_pid: int) -> tuple[int, int]:
+    """Make an owned daemon process group the genuine foreground TTY reader.
+
+    Popen(process_group=0) alone would leave it in a background process
+    group, whose reads receive SIGTTIN rather than accepting human approval.
+    This transfers real terminal foreground ownership, never challenge bytes.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Blender operator terminal requires the main thread")
+    fd = os.open("/dev/tty", os.O_RDWR | getattr(os, "O_NOCTTY", 0))
+    try:
+        previous = os.getpgrp()
+        # A distinct, live child process group is necessary. Moving any
+        # unrelated group into the foreground would breach owner custody.
+        if daemon_pid <= 0 or os.getpgid(daemon_pid) != daemon_pid:
+            raise RuntimeError("Blender operator daemon has no owned process group")
+        if os.tcgetpgrp(fd) != previous:
+            raise BlenderOwnerApprovalRequired({"driver.blender.file.save",
+                                                "driver.blender.file.open"})
+        os.tcsetpgrp(fd, daemon_pid)
+        return fd, previous
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def restore_foreground_daemon_terminal(fd: int, previous: int, daemon_pid: int) -> None:
+    """Return this terminal to its original group before exiting the owner."""
+    try:
+        if os.tcgetpgrp(fd) != daemon_pid:
+            raise RuntimeError("Blender operator terminal foreground group changed")
+        # tcsetpgrp from the (now background) parent would send SIGTTOU.
+        # Ignore it for only this main-thread restoration, then restore the
+        # original handler. No signal handlers are changed during approval.
+        prior_handler = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        try:
+            os.tcsetpgrp(fd, previous)
+        finally:
+            signal.signal(signal.SIGTTOU, prior_handler)
+    finally:
+        os.close(fd)
+
+
 def foreground_operator_requested(required: set[str]) -> bool:
     """Only an explicitly selected, physically attached Linux console can prompt.
 
@@ -753,6 +796,7 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
     daemon_log.chmod(0o600)
     daemon = None
     static_log = None
+    foreground_terminal: tuple[int, int] | None = None
     state = {"cleanup_errors": []}
     try:
         if bounded_static:
@@ -762,18 +806,23 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
             *(["--approval-console"] if operator_console else []),
             "--config", str(config_path), "--socket", str(socket),
         ]
-        # In foreground mode a child process group retains the user's
-        # controlling terminal. Cleanup still targets only that group.
+        # Keep the child in a distinct group in the SAME session, then
+        # transfer the genuine foreground terminal before any Broker call.
+        # Pinned Semwright Console opens /dev/tty directly for its challenge;
+        # stdin is never an agent-controlled approval channel and all daemon
+        # stdout/stderr remain in private evidence, not on the operator TTY.
         daemon_group = ({"start_new_session": False, "process_group": 0}
                         if operator_console else {"start_new_session": True})
         daemon = subprocess.Popen(
             daemon_args,
             env=env,
-            stdin=None if operator_console else subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE if bounded_static else log_stream,
             stderr=subprocess.STDOUT if bounded_static else log_stream,
             **daemon_group,
         )
+        if operator_console:
+            foreground_terminal = acquire_foreground_daemon_terminal(daemon.pid)
         if bounded_static:
             static_log = start_static_daemon_log(daemon, log_stream)
         wait_for_socket(daemon, socket, daemon_log)
@@ -869,6 +918,13 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
                 state["daemon_returncode"] = daemon.returncode
             except BaseException as error:
                 failures.append("daemon:" + type(error).__name__ + ":" + str(error))
+        if foreground_terminal is not None:
+            try:
+                restore_foreground_daemon_terminal(
+                    foreground_terminal[0], foreground_terminal[1], daemon.pid
+                )
+            except BaseException as error:
+                failures.append("foreground-terminal:" + type(error).__name__ + ":" + str(error))
         if static_log is not None:
             try:
                 finish_static_daemon_log(static_log, daemon, log_stream, daemon_log, evidence)
