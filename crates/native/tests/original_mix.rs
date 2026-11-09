@@ -362,6 +362,39 @@ fn emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples() {
 }
 
 #[test]
+fn emitted_pcm16_sample_peak_guard_rejects_rounding_above_authorized_limit() {
+    // This source sample is fully owned and exactly at the signed PCM16 floor.
+    // A gain just below -6 dB passes the pre-quantized floating-point guard,
+    // but rounds to -16423 PCM16, whose emitted amplitude exceeds -6 dBFS.
+    for (gain, expected_rejection) in [(-6.0001_f32, true), (-6.01_f32, false)] {
+        let (mut project, mut plan, [_, music, sfx]) = fixture();
+        let voice = pcm(i16::MIN, plan.sample_frames as usize);
+        let digest = hex(&voice);
+        project.assets[0].content_sha256 = Some(digest.clone());
+        project.audio.voice_tracks[0].source_sha256 = digest.clone();
+        plan.measured_voice.source_asset_sha256 = digest.clone();
+        plan.measured_voice.decoded_pcm_sha256 = digest;
+
+        project.audio.mix.voice_gain_db = gain;
+        plan.voice_gain_db = f64::from(gain);
+        plan.music_envelope.muted = true;
+        plan.sample_peak_guard_dbfs = -6.0;
+        let result = render_original_source_mix(&plan, &project, &voice, &music, &sfx);
+        if expected_rejection {
+            assert!(
+                result.is_err(),
+                "The emitted PCM16 sample must not exceed the exact -6 dBFS guard"
+            );
+        } else {
+            let (_, receipt) = result.unwrap();
+            assert!(receipt.measured_pcm_sample_peak_dbfs < -6.0);
+            assert!(!receipt.independently_verified_true_peak);
+            assert!(!receipt.owner_release_approved);
+        }
+    }
+}
+
+#[test]
 fn rendered_wav_has_exact_pcm_bytes_and_cannot_claim_an_audio_master() {
     let (project, plan, [voice, music, sfx]) = fixture();
     let (pcm, receipt) = render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();

@@ -491,6 +491,10 @@ pub fn render_original_source_mix_with_budget(
             // unquantized mixing accumulator (which may round to silence).
             // Independent true-peak and LUFS verification are still required.
             let emitted = f64::from(quantized) / 32768.0;
+            check(
+                emitted.abs() < limit,
+                "Emitted PCM16 exceeds the source sample-peak guard after quantization; lower gains explicitly",
+            )?;
             peak = peak.max(emitted.abs());
             sum_squared += emitted * emitted;
             out.extend_from_slice(&quantized.to_le_bytes());
