@@ -215,6 +215,18 @@ fn selected_cut_identity(project: &Project, profile_id: Uuid) -> Result<(Vec<Uui
     Ok((ids, canonical_digest(&cut)?))
 }
 
+/// Preserve the full signed PCM16 range, including -32768. That sample is
+/// representable and must not be mistaken for clipping when the exact imported
+/// SFX base is added to the rendered semantic bus. Any actual overflow is
+/// rejected without wrapping, limiting or silently discarding a source.
+fn add_pcm16_without_clipping(semantic: i16, imported: i16) -> Result<i16> {
+    i16::try_from(i32::from(semantic) + i32::from(imported)).map_err(|_| {
+        mix_unsupported(
+            "Imported SFX base plus semantic cues would clip; no hidden limiter or dropped source",
+        )
+    })
+}
+
 /// The optional imported base is already decoded by the existing service under
 /// its explicit budget and full RevisionStamp. Semantic files use the canonical
 /// CAS read API; the same existing mixer schedules and renders them.
@@ -297,13 +309,11 @@ pub(super) fn prepare_sfx_source(
             .iter_mut()
             .zip(original.as_chunks::<2>().0.iter())
         {
-            let combined = i32::from(i16::from_le_bytes([out[0], out[1]]))
-                + i32::from(i16::from_le_bytes([input[0], input[1]]));
-            check(
-                (-32_767..=32_767).contains(&combined),
-                "Imported SFX base plus semantic cues would clip; no hidden limiter or dropped source",
+            let combined = add_pcm16_without_clipping(
+                i16::from_le_bytes([out[0], out[1]]),
+                i16::from_le_bytes([input[0], input[1]]),
             )?;
-            out.copy_from_slice(&(combined as i16).to_le_bytes());
+            out.copy_from_slice(&combined.to_le_bytes());
         }
         Some(receipt)
     } else {
@@ -337,6 +347,24 @@ mod tests {
     use super::*;
     use motionwright_domain::{Change, SFX_CUE_SCHEMA, SfxAnchor, SfxEvent};
     use std::fs;
+
+    #[test]
+    fn additive_semantic_sfx_keeps_valid_negative_pcm16_endpoint_and_rejects_overflow() {
+        // -32768 is a valid source sample, not underflow. Imported base
+        // must not be lost before final sample-peak validation applies gain.
+        assert_eq!(add_pcm16_without_clipping(i16::MIN, 0).unwrap(), i16::MIN);
+        assert_eq!(add_pcm16_without_clipping(0, i16::MIN).unwrap(), i16::MIN);
+        assert_eq!(add_pcm16_without_clipping(i16::MIN, 1).unwrap(), -32767);
+        assert_eq!(add_pcm16_without_clipping(i16::MAX, 0).unwrap(), i16::MAX);
+        assert!(matches!(
+            add_pcm16_without_clipping(i16::MIN, -1),
+            Err(MixError::Unsupported(_))
+        ));
+        assert!(matches!(
+            add_pcm16_without_clipping(i16::MAX, 1),
+            Err(MixError::Unsupported(_))
+        ));
+    }
 
     fn source_wav(level: i16) -> Vec<u8> {
         let data_bytes = 48_000_u32 * 4;

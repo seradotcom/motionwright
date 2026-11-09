@@ -219,7 +219,10 @@ impl OriginalMixPlan {
         check(
             profile.audio_sample_rate_hz == self.sample_rate
                 && profile.language == self.language
-                && matches!(self.language.as_str(), "en" | "es" | "de"),
+                && matches!(
+                    self.language.as_str(),
+                    "en" | "es" | "de" | "en-US" | "es-MX" | "es-ES" | "de-DE"
+                ),
             "Localized mix must use the exact existing delivery profile/language",
         )?;
         project
@@ -249,12 +252,10 @@ impl OriginalMixPlan {
                 }),
             "Mix must retain the exact imported measured voice asset identity",
         )?;
-        if let Some(voice) = profile.voice_track_id {
-            check(
-                voice == track.id,
-                "Localized delivery profile refers to another voice take",
-            )?;
-        }
+        check(
+            profile.voice_track_id == Some(track.id),
+            "Localized delivery profile must bind the exact active voice take",
+        )?;
         for envelope in [self.voice_envelope, self.music_envelope, self.sfx_envelope] {
             envelope
                 .validate_for_sample_frames(self.sample_frames)
@@ -455,12 +456,22 @@ pub fn render_original_source_mix_with_budget(
         .verify_pcm(sfx, (limit_samples * 4) as usize)?;
     let gains = [plan.voice_gain_db, plan.music_gain_db, plan.sfx_gain_db].map(db_to_gain);
     let limit = db_to_gain(plan.sample_peak_guard_dbfs);
+    // A muted narration bus cannot trigger audible music ducking. A muted
+    // music bus or zero attenuation likewise has no measured duck effect.
+    // Retain the reviewed speech windows for source custody regardless.
+    let music_duck_active = !plan.voice_envelope.muted
+        && !plan.music_envelope.muted
+        && plan.duck_attenuation_db > 0.0;
     let mut out = Vec::with_capacity(plan.sample_frames as usize * 4);
     let mut peak = 0.0_f64;
     let mut sum_squared = 0.0_f64;
     let mut lowest_duck = 1.0_f64;
     for index in 0..plan.sample_frames as usize {
-        let duck = duck_gain(plan, index as u64);
+        let duck = if music_duck_active {
+            duck_gain(plan, index as u64)
+        } else {
+            1.0
+        };
         lowest_duck = lowest_duck.min(duck);
         let envelopes = [plan.voice_envelope, plan.music_envelope, plan.sfx_envelope]
             .map(|envelope| bus_envelope_gain(&envelope, index as u64, plan.sample_frames));
@@ -491,7 +502,11 @@ pub fn render_original_source_mix_with_budget(
         measured_pcm_sample_peak_dbfs: level(peak),
         measured_pcm_rms_dbfs: level(rms),
         minimum_music_duck_gain: lowest_duck,
-        measured_music_duck_windows: plan.voice_windows.len() as u32,
+        measured_music_duck_windows: if music_duck_active {
+            plan.voice_windows.len() as u32
+        } else {
+            0
+        },
         input_source_checks: if plan.original_sfx.semantic_bus().is_some() {
             "VOICE_MUSIC_AND_SELECTED_SFX_BUS_ALL_SOURCE_PCM_SHA256_VERIFIED"
         } else {

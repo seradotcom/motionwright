@@ -146,6 +146,35 @@ fn true_native_music_ducking_is_sample_accurate_and_does_not_change_voice_source
 }
 
 #[test]
+fn mute_or_zero_attenuation_cannot_claim_or_apply_music_ducking() {
+    for mode in ["voice-muted", "music-muted", "zero-attenuation"] {
+        let (project, mut plan, [voice, music, sfx]) = fixture();
+        match mode {
+            "voice-muted" => plan.voice_envelope.muted = true,
+            "music-muted" => plan.music_envelope.muted = true,
+            "zero-attenuation" => plan.duck_attenuation_db = 0.0,
+            _ => unreachable!(),
+        }
+        // The reviewed source transcript stays intact even when this output
+        // has no audible voice, no music, or no requested sidechain effect.
+        assert_eq!(plan.voice_windows.len(), 1);
+        let (mixed, evidence) =
+            render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+        assert_eq!(left_at(&mixed, 1_000), left_at(&mixed, 36_000), "{mode}");
+        assert_eq!(evidence.minimum_music_duck_gain, 1.0, "{mode}");
+        assert_eq!(evidence.measured_music_duck_windows, 0, "{mode}");
+        assert_eq!(evidence.rendered_pcm_sha256, hex(&mixed), "{mode}");
+        assert!(!evidence.owner_release_approved);
+    }
+    let (project, plan, [voice, music, sfx]) = fixture();
+    let (mixed, evidence) =
+        render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+    assert!(left_at(&mixed, 1_000) > left_at(&mixed, 36_000));
+    assert_eq!(evidence.measured_music_duck_windows, 1);
+    assert!(evidence.minimum_music_duck_gain < 1.0);
+}
+
+#[test]
 fn short_voice_releases_from_the_reached_gain_without_a_pcm_discontinuity() {
     for (duration, attack, release) in [
         (1_u64, 4_800_u32, 4_800_u32),
@@ -312,7 +341,47 @@ fn locales_require_explicit_profile_and_correct_voice_take() {
     assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_ok());
     project.deliverables[0].voice_track_id = Some(id(88));
     assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err());
+    project.deliverables[0].voice_track_id = None;
+    assert!(
+        render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err(),
+        "A source mix cannot borrow an active voice absent from its delivery profile"
+    );
+    project.deliverables[0].voice_track_id = Some(id(40));
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_ok());
 }
+#[test]
+fn existing_delivery_profile_regional_locales_keep_source_voice_binding() {
+    for language in ["en-US", "es-MX", "es-ES", "de-DE"] {
+        let (mut project, mut plan, [voice, music, sfx]) = fixture();
+        project.deliverables[0].language = language.into();
+        plan.language = language.into();
+        let (_, receipt) =
+            render_original_source_mix(&plan, &project, &voice, &music, &sfx).unwrap();
+        assert_eq!(receipt.language, language);
+        assert!(!receipt.listening_intelligibility_approved);
+        assert!(!receipt.owner_release_approved);
+    }
+}
+
+#[test]
+fn regional_language_allowlist_never_infers_voice_rights_or_unknown_locales() {
+    for language in ["fr-FR", "es-mx", "en_US", "de-XX"] {
+        let (mut project, mut plan, [voice, music, sfx]) = fixture();
+        project.deliverables[0].language = language.into();
+        plan.language = language.into();
+        assert!(
+            render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err(),
+            "Unsupported source mix locale must not be silently relabeled: {language}"
+        );
+    }
+    let (project, mut plan, [voice, music, sfx]) = fixture();
+    plan.language = "es-MX".into();
+    assert!(
+        render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err(),
+        "Source mix language may not differ from the saved delivery profile"
+    );
+}
+
 #[test]
 fn low_confidence_asr_never_drives_mixer_ducking_automation() {
     let (mut project, plan, [voice, music, sfx]) = fixture();
