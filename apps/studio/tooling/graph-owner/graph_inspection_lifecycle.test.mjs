@@ -56,6 +56,21 @@ test('terminal and Save guard identifiers are closed and match UI and case sourc
   assert.doesNotMatch(ui, /setContext\(\{[^\n]*availability: ["']ready["']/);
 });
 
+test('a second same-render Native context inspection cannot dispatch twice or overwrite its phase', () => {
+  const begin = ui.indexOf('async function inspectContext()');
+  const end = ui.indexOf('async function send(operation:', begin);
+  assert.ok(begin >= 0 && end > begin, 'original Native inspection path exists');
+  const inspection = ui.slice(begin, end);
+  assert.match(ui, /const inspectionToken = useRef<number \| null>\(null\)/);
+  const guard = 'if (!current.current.readContext || inspecting || inspectionToken.current !== null || busy) return;';
+  assert.ok(inspection.includes(guard), 'live token guard must precede Native call');
+  assert.ok(inspection.indexOf(guard) < inspection.indexOf('const token = ++epoch.current'));
+  assert.ok(inspection.indexOf('inspectionToken.current = token') <
+    inspection.indexOf('await current.current.readContext('), 'latch must be set synchronously');
+  assert.match(inspection, /if \(inspectionToken\.current === token\) \{\s*inspectionToken\.current = null;/);
+  assert.match(inspection, /setInspectionPhase\(terminal\)/);
+});
+
 test('readContext rejection or stale source never changes the Save guard itself', () => {
   assert.match(ui, /terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
   assert.match(ui, /token !== epoch\.current \|\| sequence !== session\.draft\.sequence/);
@@ -149,6 +164,24 @@ test('a rejected real Graph context cannot render raw backend error through the 
   assert.match(ui, /const canSave = saveGuards\.length === 0/);
 });
 
+// React's reviewing flag belongs to the last render. Two author actions in
+// that render must not launch two saved-outcome transport reads, and an older
+// finally must not clear the newer review's in-progress state.
+test('a second same-render saved Graph outcome review cannot dispatch a duplicate request', () => {
+  const begin = ui.indexOf('async function readOutcome()');
+  const end = ui.indexOf('function fork(', begin);
+  assert.ok(begin >= 0 && end > begin, 'the original saved-outcome reader exists');
+  const reader = ui.slice(begin, end);
+  assert.match(ui, /const outcomeReviewToken = useRef<number \| null>\(null\)/);
+  const guard = 'if (busy || reviewing || outcomeReviewToken.current !== null || !session.draft.pending) return;';
+  assert.ok(reader.includes(guard), 'a synchronous live review latch must block same-render reentry');
+  assert.ok(reader.indexOf(guard) < reader.indexOf('const token = ++epoch.current'));
+  assert.ok(reader.indexOf('outcomeReviewToken.current = token') <
+    reader.indexOf('await inspectGraphOutcome('), 'latch must be owned before the original transport');
+  assert.match(reader, /if \(outcomeReviewToken\.current === token\) \{\s*outcomeReviewToken\.current = null;/);
+  assert.match(reader, /setReviewing\(false\)/);
+});
+
 test('obsolete Graph outcome rejection does not report an error against a changed source', () => {
   const begin = ui.indexOf('async function readOutcome()');
   const end = ui.indexOf('function fork(', begin);
@@ -164,4 +197,77 @@ test('obsolete Graph outcome rejection does not report an error against a change
     'graphSame(current.current.project, inspectedProject)',
   ]) assert.ok(rejected.includes(guard), 'old outcome error not bound to original intent: ' + guard);
   assert.match(rejected, /session\.error = message\(reason\)/);
+});
+
+// Preparation includes an asynchronous BrandProfile digest. A rejection that
+// belongs to an old editor/source must not become the replacement Project's error.
+test('late rejected Graph preparation cannot write an error into a replaced source', () => {
+  const start = ui.indexOf('async function send(');
+  const end = ui.indexOf('session.inFlight = true', start);
+  assert.ok(start >= 0 && end > start, 'original Graph preparation boundary exists');
+  const preflight = ui.slice(start, end);
+  assert.match(preflight, /prepared = await prepareGraphSubmission\(/);
+  const rejected = preflight.split('} catch (reason) {').at(-1)?.split('} finally {')[0];
+  assert.ok(rejected, 'original asynchronous preparation catch exists');
+  assert.match(rejected, /session\.draft\.pending\?\.id === id/, 'original pending intent still receives NOT_SENT on custody failure');
+  for (const guard of [
+    'mounted.current', 'token === epoch.current',
+    'graphSame(source, session.draft)',
+    'graphSame(graphSourceSnapshot(project), graphSourceSnapshot(current.current.project))',
+  ]) assert.ok(rejected.includes(guard), 'stale preparation rejection is not source-bound: ' + guard);
+  assert.match(rejected, /failGraphSubmission\(session\.draft, id, message\(reason\), true\)/);
+});
+
+// React state and the render-time canSave snapshot can lag a second local
+// handler entry. The current mutable session, not only last-rendered guards,
+// must reject duplicate preparation and commit for the same original Graph.
+test('a second Graph Save handler entry cannot start while its original intention is active', () => {
+  const begin = ui.indexOf('async function send(operation:');
+  const end = ui.indexOf('async function readOutcome()', begin);
+  assert.ok(begin >= 0 && end > begin, 'the actual Graph Save path exists');
+  const save = ui.slice(begin, end);
+  const guard = 'if (!canSave || session.preparing || session.inFlight || session.draft.pending) return;';
+  assert.ok(save.includes(guard), 'the live session must forbid duplicate Save before preflight');
+  assert.ok(save.indexOf(guard) < save.indexOf('const id = crypto.randomUUID()'));
+  assert.ok(save.indexOf(guard) < save.indexOf('session.preparing = true'));
+  assert.match(save, /session\.inFlight = true/);
+  assert.match(save, /finally \{ session\.inFlight = false; notify\(session\); \}/);
+});
+
+// A rejected refresh from the former Project must not overwrite the active
+// editor's error after an external Project update or a new author draft.
+test('a late rejected Project refresh cannot report its old error to a new source', () => {
+  const begin = ui.indexOf('async function refresh()');
+  const end = ui.indexOf('function retryBackup()', begin);
+  assert.ok(begin >= 0 && end > begin, 'the original Project refresh boundary exists');
+  const refresh = ui.slice(begin, end);
+  assert.match(refresh, /const originalProject = clone\(current\.current\.project\)/);
+  assert.match(refresh, /const originalDraft = clone\(session\.draft\)/);
+  assert.match(refresh, /const token = epoch\.current/);
+  assert.match(refresh, /await current\.current\.refreshProject\(\)/);
+  const rejection = refresh.split('catch (reason) {')[1];
+  assert.ok(rejection, 'refresh rejection handler exists');
+  for (const guard of [
+    'mounted.current', 'token === epoch.current',
+    'graphSame(current.current.project, originalProject)',
+    'graphSame(session.draft, originalDraft)',
+  ]) assert.ok(rejection.includes(guard), 'obsolete refresh error is not source-bound: ' + guard);
+  assert.match(rejection, /session\.error = message\(reason\)/);
+});
+
+// The saved-view coordinator rejects an older read when a second readView
+// starts. React's busy prop can lag both click handlers in the same render,
+// so the Graph editor must not supersede its own still-pending refresh.
+test('a second same-render saved Project refresh cannot supersede the original read', () => {
+  const begin = ui.indexOf('async function refresh()');
+  const end = ui.indexOf('function retryBackup()', begin);
+  assert.ok(begin >= 0 && end > begin, 'the original saved Project refresh exists');
+  const refresh = ui.slice(begin, end);
+  assert.match(ui, /const refreshToken = useRef<number \| null>\(null\)/);
+  const guard = 'if (refreshToken.current !== null) return;';
+  assert.ok(refresh.includes(guard), 'must reject reentry before a second readView');
+  assert.ok(refresh.indexOf(guard) < refresh.indexOf('const token = epoch.current'));
+  assert.ok(refresh.indexOf('refreshToken.current = token') <
+    refresh.indexOf('await current.current.refreshProject()'), 'latch acquired synchronously');
+  assert.match(refresh, /finally \{\s*if \(refreshToken\.current === token\) refreshToken\.current = null;/);
 });

@@ -418,6 +418,15 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   const [reviewResource, setReviewResource] = useState("graph:" + session.draft.graphId);
   const [previewMode, setPreviewMode] = useState<"complete" | "playhead">("complete");
   const current = useRef(props), mounted = useRef(true), epoch = useRef(0); current.current = props;
+  // React's inspecting state is render-scoped. A live ref blocks a second
+  // same-render readContext dispatch until its original Promise settles.
+  const inspectionToken = useRef<number | null>(null);
+  // A saved-outcome read likewise owns its original pending intent across
+  // same-render handler entries; React reviewing state is not a live lock.
+  const outcomeReviewToken = useRef<number | null>(null);
+  // The saved-view coordinator supersedes an older read when another starts.
+  // Block same-render Refresh reentry before it can replace its own request.
+  const refreshToken = useRef<number | null>(null);
   const draft = session.draft, raw = draft.input, pending = !!draft.pending, busy = props.busy || session.inFlight || session.preparing;
   const profile = props.project.deliverables.find(item => item.id === raw.variant_profile_ref);
   const admission = graphAdmissionIssue(props.project, draft.sceneId, raw.variant_profile_ref, context);
@@ -483,7 +492,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     session.error = null; session.notice = null; epoch.current++; setContextFailure(null); setReview(null); setChoices({}); backup(session); notify(session);
   }
   async function inspectContext() {
-    if (!current.current.readContext || inspecting || busy) return; const token = ++epoch.current, sequence = session.draft.sequence, before = clone(current.current.project), profileId = session.draft.input.variant_profile_ref;
+    if (!current.current.readContext || inspecting || inspectionToken.current !== null || busy) return;
+    const token = ++epoch.current, sequence = session.draft.sequence, before = clone(current.current.project), profileId = session.draft.input.variant_profile_ref;
+    inspectionToken.current = token;
     setInspecting(true); setInspectionPhase("GRAPH_CONTEXT_INSPECTION_PENDING"); setContext(null); setContextFailure(null); session.error = null;
     let terminal: "GRAPH_CONTEXT_INSPECTION_RESOLVED" | "GRAPH_CONTEXT_INSPECTION_REJECTED" |
       "GRAPH_CONTEXT_INSPECTION_OBSOLETE" = "GRAPH_CONTEXT_INSPECTION_OBSOLETE";
@@ -509,11 +520,18 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } finally {
       // A completed callback is a terminal observation, not proof of Ready.
       // Invalidated source/edits remain obsolete and require a fresh inspection.
-      if (mounted.current) { setInspecting(false); setInspectionPhase(terminal); notify(session); }
+      if (inspectionToken.current === token) {
+        inspectionToken.current = null;
+        if (mounted.current) { setInspecting(false); setInspectionPhase(terminal); notify(session); }
+      }
     }
   }
   async function send(operation: "save" | "remove") {
-    if (!canSave) return; const id = crypto.randomUUID(), source = clone(session.draft), project = clone(current.current.project), token = epoch.current;
+    // canSave belongs to the last React render. A second handler invocation
+    // before redraw must observe the live original session, not start another
+    // preflight or generate an additional mutation intent.
+    if (!canSave || session.preparing || session.inFlight || session.draft.pending) return;
+    const id = crypto.randomUUID(), source = clone(session.draft), project = clone(current.current.project), token = epoch.current;
     session.preparing = true; session.error = null; notify(session);
     let prepared: Awaited<ReturnType<typeof prepareGraphSubmission>>;
     try {
@@ -522,7 +540,21 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       session.draft = prepared.draft;
       if (!backup(session)) { session.draft = failGraphSubmission(session.draft, id, "Recovery custody was not confirmed before dispatch.", true); session.error = "NOT_SENT: confirm the exact recoverable Graph copy before another intention."; return; }
       assertGraphCustody(window.localStorage, window.sessionStorage, session.draft, session.custody);
-    } catch (reason) { session.error = message(reason); if (session.draft.pending?.id === id) session.draft = failGraphSubmission(session.draft, id, message(reason), true); return; }
+    } catch (reason) {
+      if (session.draft.pending?.id === id) {
+        // The exact original intent was prepared, but local recovery custody
+        // failed before dispatch. Preserve its NOT_SENT outcome for recovery.
+        session.error = message(reason);
+        session.draft = failGraphSubmission(session.draft, id, message(reason), true);
+      } else if (mounted.current && token === epoch.current
+        && graphSame(source, session.draft)
+        && graphSame(graphSourceSnapshot(project), graphSourceSnapshot(current.current.project))) {
+        // The async preflight may finish after a remote source replacement.
+        // Never attribute that earlier validation error to the new Project.
+        session.error = message(reason);
+      }
+      return;
+    }
     finally { session.preparing = false; notify(session); }
     session.inFlight = true; notify(session);
     const retainFailure = (failure: GraphMutationFailure) => {
@@ -575,10 +607,11 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } finally { session.inFlight = false; notify(session); }
   }
   async function readOutcome() {
-    if (busy || reviewing || !session.draft.pending) return;
+    if (busy || reviewing || outcomeReviewToken.current !== null || !session.draft.pending) return;
     const token = ++epoch.current;
     const inspectedDraft = clone(session.draft);
     const inspectedProject = clone(current.current.project);
+    outcomeReviewToken.current = token;
     setReviewing(true); setReview(null); session.error = null;
     try {
       const result = await inspectGraphOutcome(inspectedDraft, inspectedProject, current.current.outcomeTransport);
@@ -591,7 +624,13 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
         && graphSame(session.draft, inspectedDraft)
         && graphSame(current.current.project, inspectedProject))
         session.error = message(reason);
-    } finally { if (mounted.current) setReviewing(false); notify(session); }
+    } finally {
+      if (outcomeReviewToken.current === token) {
+        outcomeReviewToken.current = null;
+        if (mounted.current) setReviewing(false);
+        notify(session);
+      }
+    }
   }
   function fork(next: GraphDraft, notice: string) {
     if (!backup(session)) return; const custody = forkGraphCopy(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
@@ -629,7 +668,27 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     if (busy || pending) return; try { fork(reviewGraphDraft(session.draft, current.current.project, choices), "Reviewed the current Graph source. Other authors' unrelated edits were preserved; save the new intention explicitly."); }
     catch (reason) { session.error = message(reason); notify(session); }
   }
-  async function refresh() { try { await current.current.refreshProject(); } catch (reason) { session.error = message(reason); notify(session); } }
+  async function refresh() {
+    // The saved-view coordinator supersedes its earlier read on a second
+    // dispatch. React's disabled/busy state is not synchronous across clicks.
+    if (refreshToken.current !== null) return;
+    // A failed transport read belongs only to the Project/editor that
+    // requested it. An external refresh may replace either while awaiting.
+    const token = epoch.current;
+    const originalProject = clone(current.current.project);
+    const originalDraft = clone(session.draft);
+    refreshToken.current = token;
+    try { await current.current.refreshProject(); }
+    catch (reason) {
+      if (mounted.current && token === epoch.current
+        && graphSame(current.current.project, originalProject)
+        && graphSame(session.draft, originalDraft)) {
+        session.error = message(reason); notify(session);
+      }
+    } finally {
+      if (refreshToken.current === token) refreshToken.current = null;
+    }
+  }
   function retryBackup() {
     if (busy) return;
     try {
