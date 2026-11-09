@@ -614,7 +614,10 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     } finally { session.inFlight = false; notify(session); }
   }
   async function readOutcome() {
-    if (busy || reviewing || outcomeReviewToken.current !== null || !session.draft.pending) return;
+    // A Save may acquire the live session before React redraws the outcome
+    // button. Never inspect an unsettled original commit as if it were lost.
+    if (busy || current.current.busy || session.preparing || session.inFlight
+      || reviewing || outcomeReviewToken.current !== null || !session.draft.pending) return;
     const token = ++epoch.current;
     const inspectedDraft = clone(session.draft);
     const inspectedProject = clone(current.current.project);

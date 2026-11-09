@@ -205,13 +205,34 @@ test('a second same-render saved Graph outcome review cannot dispatch a duplicat
   assert.ok(begin >= 0 && end > begin, 'the original saved-outcome reader exists');
   const reader = ui.slice(begin, end);
   assert.match(ui, /const outcomeReviewToken = useRef<number \| null>\(null\)/);
-  const guard = 'if (busy || reviewing || outcomeReviewToken.current !== null || !session.draft.pending) return;';
+  const guard = 'if (busy || current.current.busy || session.preparing || session.inFlight\n      || reviewing || outcomeReviewToken.current !== null || !session.draft.pending) return;';
   assert.ok(reader.includes(guard), 'a synchronous live review latch must block same-render reentry');
   assert.ok(reader.indexOf(guard) < reader.indexOf('const token = ++epoch.current'));
   assert.ok(reader.indexOf('outcomeReviewToken.current = token') <
     reader.indexOf('await inspectGraphOutcome('), 'latch must be owned before the original transport');
   assert.match(reader, /if \(outcomeReviewToken\.current === token\) \{\s*outcomeReviewToken\.current = null;/);
   assert.match(reader, /setReviewing\(false\)/);
+});
+
+// An outcome inquiry is meaningful only after the original mutation ceases
+// preparation/commit. A handler from the previous React render may see a new
+// pending draft before React's busy button is redrawn, so it must not launch a
+// premature Project outcome transport against the still-running Save.
+test('a same-render Save blocks saved Graph outcome inquiry until the original settles', () => {
+  const begin = ui.indexOf('async function readOutcome()');
+  const end = ui.indexOf('function fork(', begin);
+  assert.ok(begin > 0 && end > begin, 'the existing reviewed-outcome transport exists');
+  const handler = ui.slice(begin, end);
+  const dispatch = handler.indexOf('await inspectGraphOutcome(');
+  assert.ok(dispatch > 0, 'outcome review still uses the original transport');
+  const before = handler.slice(0, dispatch);
+  for (const live of ['current.current.busy', 'session.preparing', 'session.inFlight']) {
+    assert.ok(before.includes(live), 'must reject live Save before saved-outcome inspection: ' + live);
+  }
+  assert.ok(before.includes('outcomeReviewToken.current !== null'),
+    'the existing live one-shot outcome review latch remains enforced');
+  assert.ok(before.includes('!session.draft.pending'),
+    'idle source without a pending original cannot be inspected');
 });
 
 test('obsolete Graph outcome rejection does not report an error against a changed source', () => {
