@@ -908,6 +908,18 @@ impl Session {
 }
 
 /// Reader transport has no writer service, grants, fixture seed or Graph factory.
+/// No paths, grants or mutation authority: the existing Storage API hashes
+/// only assets of the exact expected Project generation and revision.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadOnlyAssetIntegrityRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    offset: Option<usize>,
+    limit: usize,
+}
+
 /// Reopen retains this same restricted authority and the held database identity.
 struct ReadOnlySession {
     database: PathBuf,
@@ -1006,6 +1018,27 @@ impl ReadOnlySession {
                 Ok(Value::String(hex::encode(sha2::Sha256::digest(
                     identity.as_bytes(),
                 ))))
+            }
+            "asset_integrity_page" => {
+                let bound: ReadOnlyAssetIntegrityRequest = request(args)?;
+                let project = self
+                    .service
+                    .project(bound.project_id)
+                    .map_err(|error| error.to_string())?;
+                if project.generation != bound.generation || project.revision != bound.revision {
+                    return Err("Read-only asset integrity requires the original Project stamp".into());
+                }
+                let expected = RevisionStamp::from(&project);
+                encoded(
+                    self.service
+                        .asset_integrity_page(
+                            bound.project_id,
+                            &expected,
+                            bound.offset,
+                            bound.limit,
+                        )
+                        .map_err(|error| error.to_string())?,
+                )
             }
             _ => Err("Command is not admitted by the read-only session".into()),
         }

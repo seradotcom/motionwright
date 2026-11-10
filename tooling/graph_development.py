@@ -72,7 +72,7 @@ def checked_independent_reader(reader, writer_oracle, initializer, source, datab
     expected_fields = {
         "schema", "source", "process_id", "process", "opened_before",
         "opened_after", "physical_store", "held_sqlite_pager_witness",
-        "writer_oracle", "full_project", "journal",
+        "writer_oracle", "full_project", "journal", "asset_integrity_page",
         "journal_after_revision_exclusive", "journal_complete",
         "native_callbacks_allowed", "automatic_retry", "returned_live",
         "formal_release_acceptance",
@@ -101,6 +101,33 @@ def checked_independent_reader(reader, writer_oracle, initializer, source, datab
             and all(type(row) is dict and row.get("revision") == index + 1
                     for index, row in enumerate(history)),
             "DEV_READER_HISTORY_REVISIONS_NOT_CONTIGUOUS")
+    # Physical CAS bytes are independently SHA-256 verified by the retained
+    # read-only Store and bounded to its original project's one imported SVG.
+    assets, page = project.get("assets"), reader["asset_integrity_page"]
+    require(type(assets) is list and len(assets) == 1 and type(assets[0]) is dict
+            and assets[0].get("media_type") == "image/svg+xml"
+            and type(assets[0].get("content_sha256")) is str
+            and re.fullmatch(r"[0-9a-f]{64}", assets[0]["content_sha256"])
+            and type(page) is dict and set(page) == {
+                "project_id", "generation", "revision", "total_assets",
+                "items", "next", "complete", "checked_bytes"}
+            and page["project_id"] == project.get("id")
+            and page["generation"] == project.get("generation")
+            and page["revision"] == project["revision"]
+            and type(page["total_assets"]) is int and page["total_assets"] == 1
+            and type(page["items"]) is list and len(page["items"]) == 1
+            and page["next"] is None and page["complete"] is True
+            and type(page["checked_bytes"]) is int,
+            "DEV_READER_ORIGINAL_CAS_INTEGRITY_PAGE_INVALID")
+    asset_result = page["items"][0]
+    require(type(asset_result) is dict
+            and set(asset_result) == {"asset_id", "size_bytes", "status"}
+            and asset_result["asset_id"] == assets[0].get("id")
+            and asset_result["status"] == "verified"
+            and type(asset_result["size_bytes"]) is int
+            and 0 < asset_result["size_bytes"] <= 4 * 1024 * 1024
+            and page["checked_bytes"] == asset_result["size_bytes"],
+            "DEV_READER_CAS_BLOB_BYTES_NOT_HASH_VERIFIED")
     require(reader["physical_store"] == initializer
             and initializer.get("path") == database_path
             and type(initializer.get("device")) is str
@@ -109,6 +136,7 @@ def checked_independent_reader(reader, writer_oracle, initializer, source, datab
             "DEV_READER_ORIGINAL_SQLITE_INODE_MISMATCH")
     return {"project_id": project.get("id"), "revision": project["revision"],
             "full_journal_events": len(history), "independent_read_only": True,
+            "independent_cas_asset_bytes_hashed": True,
             "formal_acceptance": False}
 
 
@@ -241,7 +269,8 @@ def run(repo, ci):
                     and observation.get("studio_saved_graph_ui_reopen_verified") is True
                     and observation.get("independent_same_store_reopen") is True
                     and observation.get("opened_sqlite_identity_witness_match") is True
-                    and observation.get("read_only_bootstrap_verified") is True,
+                    and observation.get("read_only_bootstrap_verified") is True
+                    and observation.get("independent_cas_asset_hash_verified") is True,
                     "DEV_ORIGINAL_SAVE_AND_REOPEN_NOT_PROVEN")
             saved = readback_value["full_project"]
             graphs = saved.get("production_design", {}).get("semantic_graphs", [])
