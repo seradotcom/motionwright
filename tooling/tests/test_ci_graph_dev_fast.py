@@ -337,6 +337,11 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(encoding="utf-8")
         trigger = workflow.split("    paths:", 1)[1].split("  workflow_dispatch:", 1)[0]
         required = (
+            "tooling/graph_development.py",
+            "tooling/tests/test_graph_development.py",
+            "apps/studio/tooling/graph_dev_native_owner_port.ts",
+            "apps/studio/tooling/graph_dev_first_save.spec.ts",
+            "apps/studio/tooling/graph_dev_first_save.config.ts",
             "tooling/tests/test_ci_graph_r74_singlecase.py",
             "tooling/tests/test_ci_graph_readonly_archive.py",
             "tooling/native_graph_build_reuse.py",
@@ -358,10 +363,18 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
             "      - name: Verify original J1", 1)[0]
         self.assertIn("tooling.tests.test_ci_graph_readonly_archive -v", gn1)
+        selected = [line.strip().split()[0] for line in gn1.splitlines()
+                    if line.strip().startswith("tooling.tests.")]
+        for module in ("tooling.tests.test_ci_canvas_service.GraphR74JoinTests",
+                       "tooling.tests.test_graph_development"):
+            self.assertEqual(selected.count(module), 1, module)
         self.assertIn("tee knowledge/runtime/graph-fast-gn1-unittest.original.log", gn1)
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertIn("contents: read", workflow)
-        for blocked in ("graph produce", "graph wait", "graph run"):
+        for blocked in ("graph produce", "graph wait", "graph run",
+                        "graph development-run", "graph development-seal",
+                        "MOTIONWRIGHT_GRAPH_METADATA_TOKEN",
+                        "MOTIONWRIGHT_GRAPH_REVIEW_SPKI"):
             self.assertNotIn(blocked, workflow)
 
     def test_original_final_lifecycle_oracles_are_selected_in_source_g0(self):
