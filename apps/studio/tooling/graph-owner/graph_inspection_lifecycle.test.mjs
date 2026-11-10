@@ -57,7 +57,7 @@ test('terminal and Save guard identifiers are closed and match UI and case sourc
 });
 
 test('a second same-render Native context inspection cannot dispatch twice or overwrite its phase', () => {
-  const begin = ui.indexOf('async function inspectContext()');
+  const begin = ui.indexOf('async function inspectContext(savedForRemoval = false)');
   const end = ui.indexOf('async function send(operation:', begin);
   assert.ok(begin >= 0 && end > begin, 'original Native inspection path exists');
   const inspection = ui.slice(begin, end);
@@ -96,26 +96,31 @@ test('original case uses actual service with no invented Native DTO, delay or re
 });
 
 test('a rejected old Native inspection cannot claim current Project/source identity', () => {
-  const begin = ui.indexOf('async function inspectContext()');
+  const begin = ui.indexOf('async function inspectContext(savedForRemoval = false)');
   const end = ui.indexOf('async function send(operation:', begin);
   const inspection = ui.slice(begin, end);
   const rejected = inspection.split('} catch (reason) {')[1]?.split('} finally {')[0]
     ?? inspection.split('} catch {')[1]?.split('} finally {')[0];
   assert.ok(rejected, 'the original closed-rejection handler is present');
+  // Saved removal must compare the captured stored profile while normal
+  // editor inspection must remain bound to its unsent profile choice.
+  assert.match(inspection, /const targetUnchanged = \(\) => savedForRemoval/);
+  assert.match(inspection, /graphSame\(selected, semanticGraphs\(current\.current\.project\)/);
+  assert.match(inspection, /profileId === session\.draft\.input\.variant_profile_ref/);
   // A remotely advanced project may have the same local edit epoch. Genuine
   // Native rejection must be attributed only to its original snapshot.
   for (const sourceGuard of [
     'mounted.current', 'token === epoch.current',
     'sequence === session.draft.sequence',
     'graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))',
-    'profileId === session.draft.input.variant_profile_ref',
+    'targetUnchanged()',
   ]) assert.ok(rejected.includes(sourceGuard), 'missing rejection source guard: ' + sourceGuard);
   assert.match(rejected, /terminal = "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
   assert.doesNotMatch(rejected, /message\(reason\)|String\(reason\)|reason\.(?:message|stack)/);
 });
 
 test('validated Native context failures expose only closed stage/code attributes on the original rejection', () => {
-  const begin = ui.indexOf('async function inspectContext()');
+  const begin = ui.indexOf('async function inspectContext(savedForRemoval = false)');
   const end = ui.indexOf('async function send(operation:', begin);
   const rejection = ui.slice(begin, end);
   assert.match(ui, /import \{ decodeGraphContextFailure \} from "\.\/semanticGraphContextFailure"/);
@@ -125,7 +130,7 @@ test('validated Native context failures expose only closed stage/code attributes
   assert.match(ui, /data-graph-context-failure-code=\{currentContextFailure \?/);
   assert.match(ui, /inspectionPhase === "GRAPH_CONTEXT_INSPECTION_REJECTED"/);
   for (const guard of ['token === epoch.current', 'sequence === session.draft.sequence',
-    'profileId === session.draft.input.variant_profile_ref',
+    'targetUnchanged()',
     'graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))']) {
     assert.ok(rejection.includes(guard), 'rejection not bound to original source: ' + guard);
   }
@@ -148,7 +153,7 @@ test('Graph source rejection retains 097e first line and optional exact second l
 });
 
 test('a rejected real Graph context cannot render raw backend error through the inspection UI', () => {
-  const begin = ui.indexOf('async function inspectContext()');
+  const begin = ui.indexOf('async function inspectContext(savedForRemoval = false)');
   const end = ui.indexOf('async function send(operation:', begin);
   assert.ok(begin >= 0 && end > begin);
   const inspection = ui.slice(begin, end);
@@ -177,7 +182,7 @@ test('a pending Native inspection blocks stale ready Save in the same render', (
   const guard = 'if ((operation === "save" ? !canSave : !canRemove) || inspectionToken.current !== null\n      || session.preparing || session.inFlight || session.draft.pending) return;';
   assert.ok(submission.includes(guard), 'pending Native inspection must block stale ready Save');
   assert.ok(submission.indexOf(guard) < submission.indexOf('const id = crypto.randomUUID()'));
-  const inspect = ui.slice(ui.indexOf('async function inspectContext()'), begin);
+  const inspect = ui.slice(ui.indexOf('async function inspectContext(savedForRemoval = false)'), begin);
   assert.ok(inspect.indexOf('inspectionToken.current = token') <
     inspect.indexOf('await current.current.readContext('), 'Native probe owns token before its first await');
 });
@@ -185,7 +190,7 @@ test('a pending Native inspection blocks stale ready Save in the same render', (
 // The opposite event order is also possible before React redraw: an initial
 // Save owns the live preparation flag, but the old rendered busy is still false.
 test('a pending Graph Save preflight blocks same-render Native inspection', () => {
-  const begin = ui.indexOf('async function inspectContext()');
+  const begin = ui.indexOf('async function inspectContext(savedForRemoval = false)');
   const end = ui.indexOf('async function send(operation:', begin);
   const inspect = ui.slice(begin, end);
   assert.ok(inspect.includes('session.preparing || session.inFlight'),
