@@ -34,7 +34,8 @@ def fixture_archive():
     return lock, archive, package, entry
 
 class Fixture:
-    def __init__(self, root):
+    def __init__(self, root, project_path="."):
+        self.prefix = "" if project_path == "." else project_path + "/"
         self.root, self.repo = root, root / "repo"
         self.repo.mkdir()
         self.out, self.archive_root = self.repo / "dist", root / "archives"
@@ -43,11 +44,13 @@ class Fixture:
         (self.repo / "receipts").mkdir()
         self.lock, archive, package, entry = fixture_archive()
         (self.archive_root / "fixture.tgz").write_bytes(archive)
-        inputs = {"main.js": LOCAL, "package-lock.json": self.lock,
-                  "package.json": encoded({"name": "fixture-app", "private": True}),
+        inputs = {self.prefix + "main.js": LOCAL, self.prefix + "package-lock.json": self.lock,
+                  self.prefix + "package.json": encoded({"name": "fixture-app", "private": True}),
                   ".gitignore": b"dist/\nreceipts/\n"}
         for name, raw in inputs.items():
-            (self.repo / name).write_bytes(raw)
+            target = self.repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
         self.git("init", "-q")
         for key, value in (("user.name", "Fixture"), ("user.email", "fixture@example.invalid"),
                            ("core.autocrlf", "false"), ("commit.gpgsign", "false"),
@@ -64,12 +67,12 @@ class Fixture:
         self.local_id, self.virtual_id = local_id, virtual_id
         component_id = "npm:fixture@1.0.0#fixture"
         modules = [
-            {"module_id_sha256": local_id, "kind": "local", "path": "main.js",
+            {"module_id_sha256": local_id, "kind": "local", "path": self.prefix + "main.js",
              "component_id": None, "source_path_in_package": None,
-             "raw_source": {k: records["main.js"][k] for k in ("bytes", "sha256", "git_blob")},
+             "raw_source": {k: records[self.prefix + "main.js"][k] for k in ("bytes", "sha256", "git_blob")},
              "rollup_transformed_code": descriptor(LOCAL), "npm_license_evidence": False,
              "virtual_origin": None},
-            {"module_id_sha256": npm_id, "kind": "npm", "path": "node_modules/fixture/index.js",
+            {"module_id_sha256": npm_id, "kind": "npm", "path": self.prefix + "node_modules/fixture/index.js",
              "component_id": component_id, "source_path_in_package": "index.js",
              "raw_source": descriptor(NPM), "rollup_transformed_code": descriptor(NPM),
              "npm_license_evidence": True, "virtual_origin": None},
@@ -88,9 +91,10 @@ class Fixture:
             "non_chunk_asset_dependency_closure": "NOT_VERIFIED",
             "redistribution_permission": "NOT_VERIFIED",
             "source_binding": {"mode": "EXACT_HEAD_AND_TRACKED_BLOBS", "source_sha": self.head,
+                "project_path": project_path,
                 "tracked_inputs": [{k: row[k] for k in ("path", "bytes", "sha256", "git_blob")}
                                    for row in self.before["files"]]},
-            "package_lock": {"path": "package-lock.json", **descriptor(self.lock)},
+            "package_lock": {"path": self.prefix + "package-lock.json", **descriptor(self.lock)},
             "modules": modules,
             "original_outputs": [
                 {"path": "assets/app.js", "kind": "chunk", **descriptor(self.assets["assets/app.js"]),
@@ -100,7 +104,7 @@ class Fixture:
             "components": [{"id": component_id, "name": "fixture", "version": "1.0.0",
                 "role": "frontend-emitted", "lock_key": "node_modules/fixture",
                 "source": {"resolved": entry["resolved"], "integrity": entry["integrity"]},
-                "package_metadata": {"path": "node_modules/fixture/package.json",
+                "package_metadata": {"path": self.prefix + "node_modules/fixture/package.json",
                                      **descriptor(package), "license_declaration": "MIT"},
                 "notices": [{"source_path_in_package": "LICENSE", "asset": notice_path,
                              **descriptor(NOTICE), "evidence_kind": "license-text"}]}],
@@ -129,6 +133,32 @@ class Fixture:
 
     def local(self):
         return next(row for row in self.index["modules"] if row["kind"] == "local")
+
+    def add_public_copy(self, output="desktop-bootstrap.html"):
+        raw = b"<!doctype html><title>tracked fixture bootstrap</title>\n"
+        source = self.prefix + "public/" + output
+        target = self.repo / source
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        self.git("add", "--", source)
+        self.git("commit", "-qm", "private tracked public input")
+        self.head = self.git("rev-parse", "HEAD").decode().strip()
+        self.before = capture.source_snapshot(self.repo, self.head)
+        records = {row["path"]: row for row in self.before["files"]}
+        self.index["source_binding"].update(
+            source_sha=self.head,
+            tracked_inputs=[{key: row[key] for key in ("path", "bytes", "sha256", "git_blob")}
+                            for row in self.before["files"]])
+        row = {"path": output, "kind": "asset", **descriptor(raw),
+               "origin": "vite-public-copy", "source_path": source,
+               "git_blob": records[source]["git_blob"]}
+        self.index["original_outputs"].append(row)
+        self.assets[output] = raw
+        written = self.out / output
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_bytes(raw)
+        self.write_index()
+        return row
 
     def run(self, receipt="receipt.json"):
         return auth.authenticate_build(repo=self.repo, expected_source=self.head,
@@ -160,6 +190,112 @@ class FrontendAdapterTests(unittest.TestCase):
 
     def source_unchanged(self):
         self.assertEqual(capture.source_snapshot(self.f.repo, self.f.head), self.f.before)
+
+    def test_public_copy_source_is_authenticated_in_root_and_studio_layouts(self):
+        for project in (".", "apps/studio"):
+            with self.subTest(project=project):
+                if project != ".":
+                    nested = Path(self.temp.name) / "nested-project"
+                    nested.mkdir()
+                    self.f = Fixture(nested, project_path=project)
+                row = self.f.add_public_copy("nested/desktop-bootstrap.html")
+                pure = self.f.pure()
+                self.assertEqual(pure["public_copy_source_authentication"],
+                                 "WRAPPER_VALIDATION_REQUIRED")
+                report = self.f.run()
+                self.assertEqual(report["public_copy_source_authentication"],
+                                 "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED")
+                self.assertEqual(report["public_copies"], [{
+                    key: row[key] for key in ("path", "source_path", "bytes", "sha256", "git_blob")}])
+                self.assertEqual(report["full_package_inventory"], "NOT_VERIFIED")
+                self.assertEqual(report["non_chunk_asset_dependency_closure"], "NOT_VERIFIED")
+                self.source_unchanged()
+
+    def test_public_copy_must_be_in_the_captured_tracked_input_set(self):
+        row = self.f.add_public_copy()
+        self.f.index["source_binding"]["tracked_inputs"] = [
+            item for item in self.f.index["source_binding"]["tracked_inputs"]
+            if item["path"] != row["source_path"]]
+        self.f.write_index()
+        self.rejected("public_copy_tracked_input_required", self.f.run)
+        self.source_unchanged()
+
+    def test_public_copy_digest_matching_output_but_not_git_is_rejected(self):
+        row = self.f.add_public_copy()
+        forged = self.f.assets[row["path"]].replace(b"tracked", b"changed")
+        self.f.assets[row["path"]] = forged
+        (self.f.out / row["path"]).write_bytes(forged)
+        row.update(descriptor(forged))
+        self.f.write_index()
+        self.rejected("public_copy_source_mismatch", self.f.run)
+        self.source_unchanged()
+
+    def test_public_copy_blob_must_match_the_same_tracked_source(self):
+        row = self.f.add_public_copy()
+        row["git_blob"] = "0" * 40
+        self.f.write_index()
+        self.rejected("public_copy_source_mismatch", self.f.run)
+        self.source_unchanged()
+
+    def test_public_copy_source_path_must_join_public_directory_and_output(self):
+        row = self.f.add_public_copy()
+        for name in ("main.js", "public/other.html", "else/public/desktop-bootstrap.html",
+                     "public/../desktop-bootstrap.html", None):
+            with self.subTest(source_path=name):
+                row["source_path"] = name
+                self.f.write_index()
+                self.rejected("public_copy_source_path_mismatch", self.f.run)
+        self.source_unchanged()
+
+    def test_public_copy_project_path_must_match_the_locked_project(self):
+        self.f.add_public_copy()
+        self.f.index["source_binding"]["project_path"] = "other"
+        self.f.write_index()
+        self.rejected("public_copy_project_path_mismatch", self.f.run)
+        self.source_unchanged()
+
+    def test_public_copy_origin_kind_and_blob_format_are_closed(self):
+        row = self.f.add_public_copy()
+        original = copy.deepcopy(row)
+        changes = (
+            ({"origin": None}, "output_origin_invalid"),
+            ({"origin": "rollup"}, "output_origin_invalid"),
+            ({"kind": "chunk"}, "public_copy_output_kind_invalid"),
+            ({"modules": []}, "public_copy_output_kind_invalid"),
+            ({"git_blob": None}, "public_copy_blob_invalid"),
+            ({"git_blob": "G" * 40}, "public_copy_blob_invalid"),
+        )
+        for delta, code in changes:
+            with self.subTest(delta=delta):
+                row.clear()
+                row.update(copy.deepcopy(original))
+                row.update(delta)
+                self.f.write_index()
+                self.rejected(code, self.f.run)
+        self.source_unchanged()
+
+    def test_public_copy_metadata_without_origin_is_rejected(self):
+        row = self.f.add_public_copy()
+        row.pop("origin")
+        self.f.write_index()
+        self.rejected("output_origin_required", self.f.run)
+        self.source_unchanged()
+
+    def test_rollup_chunk_cannot_claim_public_copy_origin(self):
+        row = self.f.index["original_outputs"][0]
+        row.update(origin="vite-public-copy", source_path="public/" + row["path"],
+                   git_blob="0" * 40)
+        self.f.write_index()
+        self.rejected("public_copy_output_kind_invalid", self.f.run)
+        self.source_unchanged()
+
+    def test_generated_notice_cannot_claim_public_copy_origin(self):
+        row = self.f.index["generated_notice_assets"][0]
+        row.update(origin="vite-public-copy", source_path="public/" + row["path"],
+                   git_blob="0" * 40)
+        self.f.write_index()
+        self.rejected("notice_origin_invalid", self.f.run)
+        self.source_unchanged()
 
     def test_local_module_omitted_from_tracked_inputs_is_rejected(self):
         self.f.index["source_binding"]["tracked_inputs"] = [
@@ -224,6 +360,8 @@ class FrontendAdapterTests(unittest.TestCase):
         self.assertEqual(report["components"][0]["source_authentication"]["status"],
                          "LOCKED_ARCHIVE_AND_OBSERVED_SOURCE_BYTES_VERIFIED")
         self.assertEqual(report["full_package_inventory"], "NOT_VERIFIED")
+        self.assertEqual(report["public_copy_source_authentication"], "NO_OBSERVED_PUBLIC_COPIES")
+        self.assertEqual(report["public_copies"], [])
         self.assertEqual(report["redistribution_permission"], "NOT_INFERRED")
         self.source_unchanged()
 

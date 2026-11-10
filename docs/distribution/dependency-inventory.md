@@ -135,6 +135,16 @@ notices. It binds observed local modules to the exact tracked Git bytes and
 revalidates the entire emitted file/directory set. The receipt must be outside
 the frontend output directory and is created exclusively.
 
+For the default Vite public directory, the consumer also joins each
+`vite-public-copy` asset to `<locked-project>/public/<output-path>`, an
+observed tracked input, and the exact Git blob, size and SHA-256. Only assets
+without module records can claim that origin; chunks and generated notices
+cannot. The pure verifier reports `WRAPPER_VALIDATION_REQUIRED` for those
+source claims. The wrapper grants byte authentication only after the Git and
+output revalidations complete. A custom public directory is not supported by
+this consumer, and these byte checks do not establish a dependency or license
+closure for copied assets.
+
 Archive retrieval belongs to the controlled candidate build. These verifiers
 do not download archives. A lockfile declaration or an installed
 `node_modules` directory by itself is insufficient archive authentication.
@@ -490,11 +500,11 @@ node --test --test-reporter=tap apps/studio/tooling/frontend_dependency_notices.
 | Cargo original notices | 47 | Git/registry source authentication, native metadata paths, checkout transformations, original bytes, redirection and coverage failures |
 | Cargo capture | 41 | Exact source/build scope, captured root executable identity, all-bin selection, bounded streams, subprocess completion and no replay |
 | NPM archive authentication | 17 | Locked archive integrity, safe members and exact package/source/notice identities |
-| Frontend authentication | 12 | Git-bound local modules, original package archives, exact output files/directories and detached receipt |
+| Frontend authentication | 22 | Git-bound local modules and public copies, original package archives, exact output files/directories and detached receipt |
 | Frontend plugin | 75 including 37 nested cases | Rendered module closure, original notices, tracked public copies, output/source mutation and production binding |
 
-The five inventory Python suites total 172 cases. The five receipt and package
-suites below add 77 cases, for 249 Python cases in this selection. A
+The five inventory Python suites total 182 cases. The five receipt and package
+suites below add 77 cases, for 259 Python cases in this selection. A
 capability-dependent skip remains a skip. In
 particular, Windows accounts without symbolic-link creation permission do not
 prove physical symlink rejection; the relevant cases must execute on a capable

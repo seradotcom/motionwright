@@ -1,7 +1,8 @@
 """Bind one emitted frontend index to original locked package archives and files.
 
 The pure verifier authenticates observed NPM modules and notices. The build wrapper
-also binds observed local source bytes to Git. Virtual origins, CSS/native closure,
+also binds observed local modules and default Vite public copies to Git.
+Virtual origins, CSS/native closure,
 platform signing and redistribution permission remain unverified. Archive access is local.
 """
 from __future__ import annotations
@@ -75,9 +76,27 @@ def authenticate_frontend(index_bytes, lock_bytes, archives, assets):
         raw = assets[name]
         require(isinstance(raw, bytes) and row_digest(row, "output_digest_invalid") ==
                 {"bytes": len(raw), "sha256": sha(raw)}, "emitted_asset_bytes_mismatch:"+name)
+    for text in texts.values():
+        require(not {"origin", "source_path", "git_blob"} & text.keys(),
+                "notice_origin_invalid")
     selected = set()
+    public_copies = []
     for output in outputs.values():
         require(output.get("kind") in ("chunk", "asset"), "output_kind_invalid")
+        if "origin" in output:
+            require(output["origin"] == "vite-public-copy", "output_origin_invalid")
+            require(output["kind"] == "asset" and "modules" not in output,
+                    "public_copy_output_kind_invalid")
+            project = posixpath.dirname(lock_path)
+            require(binding.get("project_path") == (project or "."),
+                    "public_copy_project_path_mismatch")
+            require(output.get("source_path") == posixpath.join(project, "public", output["path"]),
+                    "public_copy_source_path_mismatch")
+            require(isinstance(output.get("git_blob"), str) and
+                    re.fullmatch(r"[0-9a-f]{40}", output["git_blob"]), "public_copy_blob_invalid")
+            public_copies.append(output)
+        else:
+            require(not {"source_path", "git_blob"} & output.keys(), "output_origin_required")
         if output["kind"] == "chunk":
             chunk = checked_rows(output.get("modules"), "module_id_sha256", "chunk_modules_invalid")
             for key, item in chunk.items():
@@ -164,6 +183,8 @@ def authenticate_frontend(index_bytes, lock_bytes, archives, assets):
             "components": reports, "emitted_assets": [row for _, row in sorted({**outputs, **texts}.items())],
             "observed_npm_source_and_notice_authentication": "VERIFIED",
             "local_module_source_authentication": "WRAPPER_VALIDATION_REQUIRED",
+            "public_copy_source_authentication": ("WRAPPER_VALIDATION_REQUIRED" if public_copies
+                                                  else "NO_OBSERVED_PUBLIC_COPIES"),
             "virtual_module_origin_authentication": "NOT_VERIFIED",
             "virtual_module_ids": sorted(k for k, m in modules.items() if m["kind"] == "virtual"),
             "source_binding": "CALLER_MUST_REVALIDATE_EXACT_GIT_SOURCE_AND_TRACKED_INPUTS",
@@ -247,6 +268,18 @@ def authenticate_build(*, repo, expected_source, output_directory, archive_root,
     archives = {relative_path(key): stable_read(archive_root, relative_path(path), 32*1024*1024)
                 for key, path in archive_map.items()}
     report = authenticate_frontend(index_raw, lock, archives, assets)
+    public_copies = []
+    for output in sorted(index["original_outputs"], key=lambda row: row["path"]):
+        if output.get("origin") != "vite-public-copy":
+            continue
+        name = output["source_path"]
+        require(name in captures and name in tracked, "public_copy_tracked_input_required")
+        descriptor = row_digest(output, "public_copy_digest_invalid")
+        require(descriptor == row_digest(tracked[name], "tracked_source_digest_invalid")
+                and output["git_blob"] == tracked[name]["git_blob"],
+                "public_copy_source_mismatch")
+        public_copies.append({"path": output["path"], "source_path": name,
+                              **descriptor, "git_blob": tracked[name]["git_blob"]})
     admitted(repo, out, directory=True)
     final_entries, final_files = emitted_snapshot(out, index_name)
     require(final_files.get(index_name) == index_raw, "index_changed_during_authentication")
@@ -257,6 +290,10 @@ def authenticate_build(*, repo, expected_source, output_directory, archive_root,
         "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED" if local_modules
         else "NO_OBSERVED_LOCAL_MODULES")
     report["local_modules"] = local_modules
+    report["public_copy_source_authentication"] = (
+        "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED" if public_copies
+        else "NO_OBSERVED_PUBLIC_COPIES")
+    report["public_copies"] = public_copies
     report["source_binding"] = "EXACT_HEAD_TREE_INDEX_AND_TRACKED_BYTES_REVALIDATED"
     report["source_tree"] = before["tree"]
     report["limitations"] = ["Readback at bounded phases is not a filesystem lock against concurrent ABA mutation.",
