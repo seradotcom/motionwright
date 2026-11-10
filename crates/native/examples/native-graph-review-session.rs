@@ -424,11 +424,17 @@ impl PrivateOriginals {
             .map_err(|_| "Native Graph private record encoding failed")?
             .len();
         let pending_file_slots = self.pending_results.len().checked_add(2);
+        // Reserve the entire result size this parent can actually retain,
+        // never a larger implicit 16 MiB allowance. Small owners remain
+        // bounded by their original parent budget rather than being unable
+        // to admit even the first callback. The same cap is enforced at
+        // finish, before any result can be published or admitted as complete.
+        let result_ceiling = MAX_PRIVATE_RECORD_BYTES.min(self.maximum_bytes / 2);
         let pending_result_bytes = self
             .pending_results
             .len()
             .checked_add(1)
-            .and_then(|count| count.checked_mul(MAX_PRIVATE_RECORD_BYTES));
+            .and_then(|count| count.checked_mul(result_ceiling));
         let required_bytes = pending_result_bytes.and_then(|pending| {
             self.reserved_bytes
                 .checked_add(request_encoded_len)?
@@ -468,9 +474,17 @@ impl PrivateOriginals {
             self.unpublished = Some(result);
             return Err("Native Graph original result has no prior reserved request".into());
         }
-        if self
-            .write_new(&format!("{sequence:02}.result.original.json"), &result)
-            .is_err()
+        // The virtual reservation and the actual permissible result must
+        // have the SAME ceiling. Never admit a result larger than the hold
+        // made before effect dispatch, even if total bytes happen to remain.
+        let result_ceiling = MAX_PRIVATE_RECORD_BYTES.min(self.maximum_bytes / 2);
+        let within_hold = serde_json::to_vec(&result)
+            .ok()
+            .is_some_and(|encoded| encoded.len() <= result_ceiling);
+        if !within_hold
+            || self
+                .write_new(&format!("{sequence:02}.result.original.json"), &result)
+                .is_err()
         {
             self.stopped = true;
             self.unpublished = Some(result);
@@ -1183,6 +1197,60 @@ mod native_graph_adapter_tests {
         );
         assert_eq!(originals.reserved_files, 0);
         assert_eq!(fs::read_dir(&originals.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn smaller_parent_retains_two_sequential_originals_without_expanding_eight_mib() {
+        let directory = tempfile::tempdir().unwrap();
+        let restrictions = ClientRestrictions {
+            callbacks: 2,
+            private_bytes: 8 * 1024 * 1024,
+            private_files: 128,
+        };
+        let mut originals =
+            PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
+        for sequence in 0..2 {
+            let request = json!({"operation":"synthetic-sequential","index":sequence});
+            let result = json!({"result":"inert-small","index":sequence});
+            let admitted = originals.begin(request.clone()).unwrap();
+            assert_eq!(admitted, sequence);
+            assert!(originals.pending_results.contains(&admitted));
+            assert!(originals
+                .begin(json!({"operation":"must-not-dispatch-concurrently"}))
+                .is_err());
+            originals.finish(admitted, result.clone()).unwrap();
+            assert_eq!(
+                fs::read(originals.root.join(format!("{sequence:02}.result.original.json")))
+                    .unwrap(),
+                serde_json::to_vec(&result).unwrap()
+            );
+        }
+        assert_eq!(originals.reserved_files, 4);
+        assert!(originals.reserved_bytes < restrictions.private_bytes);
+        assert!(originals.pending_results.is_empty());
+        assert!(!originals.stopped);
+    }
+
+    #[test]
+    fn smaller_parent_refuses_unreserved_oversized_result_without_publishing() {
+        let directory = tempfile::tempdir().unwrap();
+        let restrictions = ClientRestrictions {
+            callbacks: 1,
+            private_bytes: 8 * 1024 * 1024,
+            private_files: 128,
+        };
+        let mut originals =
+            PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
+        let admitted = originals.begin(json!({"operation":"one-original-only"})).unwrap();
+        let oversized = json!({"payload":"x".repeat(4 * 1024 * 1024)});
+        assert!(originals.finish(admitted, oversized.clone()).is_err());
+        assert!(originals.stopped);
+        assert_eq!(originals.unpublished, Some(oversized));
+        assert!(originals.root.join("00.request.original.json").exists());
+        assert!(!originals.root.join("00.result.original.json").exists());
+        assert!(originals.begin(json!({"operation":"no-retry"})).is_err());
+        assert_eq!(originals.reserved_files, 1);
+        assert!(originals.reserved_bytes < restrictions.private_bytes);
     }
 
     #[test]

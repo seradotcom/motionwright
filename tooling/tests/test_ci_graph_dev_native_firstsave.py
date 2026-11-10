@@ -1,0 +1,305 @@
+"""GN1 real-Graph first-Save selection checks, without Native execution or G2."""
+from __future__ import annotations
+
+from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from tooling import ci_graph_dev_native_firstsave as save
+
+
+def source():
+    pid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    gen = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    branch = "11111111-1111-4111-8111-111111111111"
+    scene = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    profile = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    project = {"id": pid, "generation": gen, "active_branch": branch, "revision": 2,
+               "scenes": [{"id": scene}], "deliverables": [{"id": profile}]}
+    graph = {"id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+             "scene_id": scene, "variant_profile_ref": profile,
+             "authorship": {"source_snapshot": {
+                 "project_id": pid, "generation": gen,
+                 "branch_id": branch, "revision": 2}}}
+    return {"schema": "motionwright.graph-owner-fixture-source/1",
+            "native_authority": False, "graph_persisted": False,
+            "resource": "project:" + pid, "project": project, "graph": graph}
+
+
+class SourceGuardTests(unittest.TestCase):
+    def test_exact_explicit_second_grant_and_closed_denial(self):
+        self.assertFalse(save.selected("deny"))
+        self.assertTrue(save.selected("allow-one-original-save"))
+        for value in ("", None, 1, "allow", "allow-one-original",
+                      "allow-one-original-save ", "true"):
+            with self.subTest(value=value), self.assertRaises(save.FirstSaveFailure):
+                save.selected(value)
+
+    def test_only_authored_unpersisted_graph_fixture_is_admitted(self):
+        fixture = source()
+        self.assertEqual(save.checked_source_fixture(fixture)["id"], fixture["project"]["id"])
+        for changed in (
+            {**fixture, "native_authority": True},
+            {**fixture, "graph_persisted": True},
+            {**fixture, "resource": "project:foreign"},
+            {**fixture, "graph": {**fixture["graph"], "authorship": {}}},
+            {**fixture, "project": {**fixture["project"], "revision": 3}},
+            {**fixture, "project": {**fixture["project"], "active_branch": "foreign-branch"}},
+            {**fixture, "graph": {**fixture["graph"], "scene_id": "foreign-scene"}},
+            {**fixture, "graph": {**fixture["graph"], "variant_profile_ref": "foreign-profile"}},
+            {**fixture, "graph": {**fixture["graph"], "authorship": {
+                "source_snapshot": {**fixture["graph"]["authorship"]["source_snapshot"],
+                                    "revision": 1}}}},
+            {**fixture, "graph": {**fixture["graph"], "authorship": {
+                "source_snapshot": {**fixture["graph"]["authorship"]["source_snapshot"],
+                                    "unrecognized": "never accepted"}}}},
+        ):
+            with self.assertRaises(save.FirstSaveFailure):
+                save.checked_source_fixture(changed)
+
+    def test_existing_workflow_defaults_to_no_save_and_no_auto_event(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-native-startup-dev.yml").read_text()
+        runner = (root / "tooling/ci_graph_dev_native_startup.py").read_text()
+        self.assertIn("one_original_save:", workflow)
+        self.assertIn("options: [deny, allow-one-original-save]", workflow)
+        self.assertIn("GN1_FIRST_SAVE: " + chr(36) + "{{ inputs.one_original_save }}", workflow)
+        self.assertIn("GN1_ONE_ORIGINAL_OWNER: " + chr(36) + "{{ inputs.one_original_owner }}", workflow)
+        self.assertIn("if: inputs.one_original_save == 'allow-one-original-save'", workflow)
+        self.assertIn("one_original_save = first_save_selected(", runner)
+        self.assertIn("GN1_EXPLICIT_OWNER_SELECTION_REQUIRED", runner)
+        self.assertIn('mark("FIRST_GRAPH_SAVE")', runner)
+        self.assertIn('output = mkdir(private, "gn1-first-save-output")', runner)
+        self.assertIn("GN1_REAL_FIRST_SAVE_REOPENED", runner)
+        self.assertIn('public["formal_G2_granted"] = False', runner)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertNotIn("\n  push:", workflow)
+        self.assertNotIn("\n  pull_request:", workflow)
+
+    def test_provider_only_release_precedes_sqlite_handoff_and_independent_reader(self):
+        base = Path(__file__).resolve().parents[1]
+        native = (base / "ci_graph_dev_native_firstsave.py").read_text()
+        runner = (base / "ci_graph_dev_native_startup.py").read_text()
+        self.assertEqual(save.PRIVATE_BYTES, 8 * 1024 * 1024)
+        self.assertLess(save.PRIVATE_BYTES, 16 * 1024 * 1024)
+        self.assertLess(save.PRIVATE_BYTES, 32 * 1024 * 1024)
+        native_rust = (base.parent / "crates/native/examples/native-graph-review-session.rs").read_text()
+        self.assertEqual(native_rust.count(
+            "MAX_PRIVATE_RECORD_BYTES.min(self.maximum_bytes / 2)"), 2)
+        self.assertIn("let within_hold =", native_rust)
+        self.assertIn("smaller_parent_refuses_unreserved_oversized_result_without_publishing",
+                      native_rust)
+        self.assertLess(native.index("released = release_provider()"),
+                        native.index('"writer-handoff", "prepare_read_only_handoff"'))
+        self.assertIn('"providers.release_bound"', runner)
+        self.assertIn('fresh.get("connection") == mounted["connection"]', runner)
+        self.assertIn('fresh.get("provider_generation") == mounted["provider_generation"]', runner)
+        self.assertIn('not release_used', runner)
+        self.assertIn('read_only=True', runner)
+        self.assertLess(runner.index('mark("OWNER_CLOSE")'),
+                        runner.index('read_only=True'))
+        self.assertIn('native_authoring_in_reader": False', runner)
+        self.assertIn('"formal_G2_granted": False', runner)
+
+    def test_only_one_real_save_mutation_and_originals_remain_private(self):
+        text = (Path(__file__).resolve().parents[1] /
+                "ci_graph_dev_native_firstsave.py").read_text()
+        self.assertIn('MOTIONWRIGHT_GRAPH_CALLBACK_CAP="0" if read_only else "2"', text)
+        self.assertIn("MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES", text)
+        self.assertIn('None if command == "prepare_read_only_handoff"', text)
+        self.assertEqual(text.count('"first-graph-save", "apply_change"'), 1)
+        self.assertIn('"reopen", "reopen"', text)
+        self.assertIn('"writer-handoff", "prepare_read_only_handoff"', text)
+        self.assertIn('"formal_G2_granted": False', text)
+
+
+class OneSaveLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        directory = os.environ.get("MOTIONWRIGHT_TEST_ROOT") or None
+        self.temp = tempfile.TemporaryDirectory(dir=directory, prefix="gn1-first-save-source-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.private = self.root / "private"
+        self.output = self.root / "output"
+        self.private.mkdir()
+        self.output.mkdir()
+        self.database = self.root / "inert.sqlite3"
+        self.database.write_bytes(b"NOT_A_SQLITE_DATABASE")
+        self.session = self.root / "inert.session"
+        self.session.write_bytes(b"INERT")
+        self.src = save.checked_source_fixture(source())
+        self.trace = []
+
+    def inert_terminal_session(self, *, read_only=False):
+        # Simulate the source-owned pipe after the child has exited. Windows
+        # select() cannot inspect os.pipe; intercept the exact read boundary.
+        session = save.NativeSession(
+            self.root / "no-native-binary", self.database,
+            self.root / "no-real-connection", self.private, {}, read_only=read_only)
+        session.stderr = (self.private / (session.label + ".stderr.original")).open("xb")
+        output = SimpleNamespace(fileno=lambda: 8, close=lambda: None)
+        session.child = SimpleNamespace(
+            stdin=None, stdout=output, wait=lambda timeout: 0)
+        return session, output
+
+    def test_native_terminal_requires_actual_stdout_eof_even_after_last_reply(self):
+        session, output = self.inert_terminal_session(read_only=True)
+        with patch.object(save.select, "select", return_value=([output], [], [])), \
+             patch.object(save.os, "read", return_value=b""):
+            self.assertFalse(session.__exit__(None, None, None))
+        terminal = json.loads(
+            (self.private / "independent-readonly-session.terminal.original.json").read_text())
+        self.assertEqual(terminal["exit_code"], 0)
+        self.assertTrue(terminal["stdout_eof_observed"])
+        self.assertTrue(terminal["original_reply_complete"])
+        self.assertIsNone(terminal["trailing_stdout"])
+
+    def test_native_terminal_retains_unexpected_stdout_and_refuses_success(self):
+        session, output = self.inert_terminal_session()
+        with patch.object(save.select, "select", return_value=([output], [], [])), \
+             patch.object(save.os, "read", side_effect=[b"unexpected-private-jsonl\\n", b""]):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as result:
+                session.__exit__(None, None, None)
+        self.assertTrue(result.exception.unknown)
+        trailing = self.private / "graph-native-session.trailing-stdout.original"
+        self.assertEqual(trailing.read_bytes(), b"unexpected-private-jsonl\\n")
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertFalse(terminal["original_reply_complete"])
+        self.assertTrue(terminal["stdout_eof_observed"])
+        self.assertEqual(terminal["trailing_stdout"]["bytes"], len(trailing.read_bytes()))
+
+    def test_inherited_stdout_writer_cannot_fake_complete_terminal(self):
+        session, output = self.inert_terminal_session()
+        with patch.object(save.select, "select", return_value=([], [], [])), \
+             patch.object(save.os, "read", side_effect=AssertionError("pipe not readable")):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as result:
+                session.__exit__(None, None, None)
+        self.assertTrue(result.exception.unknown)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertFalse(terminal["stdout_eof_observed"])
+        self.assertFalse(terminal["original_reply_complete"])
+
+    @contextmanager
+    def fake_session(self, replies, *args, **kwargs):
+        owner = self
+        class Fake:
+            def request(self, label, command, payload):
+                owner.trace.append(command)
+                expected, response = replies.pop(0)
+                owner.assertEqual(command, expected)
+                return response
+        yield Fake()
+
+    def execute(self, *, context_ready=True, save_ok=True, release_ok=True):
+        project = self.src["project"]
+        saved = {**project, "revision": 3}
+        replies = [
+            ("get_project", {"ok": True, "result": project}),
+            ("semantic_graph_authoring_context", {"ok": True, "result": {
+                "availability": "ready" if context_ready else "blocked"}}),
+            ("issue_effect_grant", {"ok": True, "result": {"token": str(
+                "ffffffff-ffff-4fff-8fff-ffffffffffff")}}),
+            ("apply_change", {"ok": save_ok, "result": saved if save_ok else None}),
+            ("reopen", {"ok": True, "result": saved}),
+            ("prepare_read_only_handoff", {"ok": True, "result": {
+                "read_only_handoff": True}}),
+        ]
+        @contextmanager
+        def factory(*args, **kwargs):
+            with self.fake_session(replies, *args, **kwargs) as instance:
+                yield instance
+        mounted = {"provider": "driver:motionwright",
+                   "connection": "original-host-lease", "provider_generation": 7}
+        def release_original():
+            self.trace.append("release_bound")
+            return {**mounted, "lease_shutdown_completed": release_ok,
+                    "native_process_closure_inferred": False}
+        with patch.object(save, "authenticated_connection", return_value={"test": "inert"}), \
+             patch.object(save, "NativeSession", factory):
+            return save.real_first_save(
+                fixture=self.root / "never-dispatched",
+                native_session=self.root / "never-started",
+                source=self.src, store_path=self.database,
+                client={"session_file": self.session}, mounted=mounted, binaries={},
+                private=self.private, output=self.output, env={},
+                release_provider=release_original)
+
+    def test_native_connection_is_bound_to_exact_disposable_store_mount(self):
+        mounted = {
+            "provider": "driver:motionwright", "provider_generation": 1,
+            "connection": "observed-actual", "binding_ref": "observed-binding",
+            "mount": {"root": "motionwright-data",
+                      "path": str(self.root), "read": True,
+                      "write": True, "execute": False},
+        }
+        client = {"session_file": self.session, "socket": self.root / "broker.sock"}
+        binaries = {"semwright": {"path": str(self.root / "semwright"),
+                                  "sha256": "f" * 64}}
+        with patch.object(Path, "is_socket", return_value=True):
+            actual = save.authenticated_connection(
+                client=client, mounted=mounted, resource=self.src["resource"],
+                binaries=binaries, output=self.output,
+                expected_store_parent=self.root)
+            self.assertEqual(actual["session_file"], str(self.session))
+            self.assertEqual(actual["resource"], self.src["resource"])
+            foreign = {**mounted, "mount": {**mounted["mount"], "path": str(self.private)}}
+            with self.assertRaisesRegex(save.FirstSaveFailure, "REAL_MOUNT_NOT_READY"):
+                save.authenticated_connection(
+                    client=client, mounted=foreign, resource=self.src["resource"],
+                    binaries=binaries, output=self.output,
+                    expected_store_parent=self.root)
+
+    def test_one_save_after_grant_followed_by_reopen_and_close(self):
+        result = self.execute()
+        self.assertEqual(self.trace, [
+            "get_project", "semantic_graph_authoring_context",
+            "issue_effect_grant", "apply_change", "reopen",
+            "release_bound", "prepare_read_only_handoff"])
+        self.assertTrue(result["one_native_graph_save_and_reopen"])
+        self.assertEqual(result["Graph6_accepted"], 0)
+        self.assertFalse(result["formal_G2_granted"])
+        self.assertTrue((self.private / "first-save-intent.original.json").is_file())
+
+    def test_unconfirmed_provider_lease_blocks_wal_handoff_after_save(self):
+        with self.assertRaisesRegex(save.FirstSaveFailure, "PROVIDER_LEASE_NOT_QUIESCENT") as failure:
+            self.execute(release_ok=False)
+        self.assertTrue(failure.exception.unknown)
+        self.assertEqual(self.trace.count("apply_change"), 1)
+        self.assertEqual(self.trace[-1], "release_bound")
+        self.assertNotIn("prepare_read_only_handoff", self.trace)
+
+    def test_readonly_subprocess_has_zero_native_callbacks_and_separate_custody(self):
+        conn = self.private / "connection.json"
+        conn.write_text("{}")
+        reader = save.NativeSession(self.root / "never-dispatched",
+                                    self.database, conn, self.private, {},
+                                    read_only=True)
+        self.assertEqual(reader.command[-1], "--read-only")
+        self.assertEqual(reader.env["MOTIONWRIGHT_GRAPH_CALLBACK_CAP"], "0")
+        self.assertEqual(reader.label, "independent-readonly-session")
+        self.assertTrue((self.private / (reader.label + ".intent.original.json")).exists())
+
+    def test_blocked_context_cannot_request_grant_or_save(self):
+        with self.assertRaisesRegex(save.FirstSaveFailure, "CONTEXT_NOT_READY"):
+            self.execute(context_ready=False)
+        self.assertEqual(self.trace, ["get_project", "semantic_graph_authoring_context"])
+
+    def test_unknown_save_has_one_call_and_no_reopen_or_retry(self):
+        with self.assertRaisesRegex(save.FirstSaveFailure, "SAVE_REJECTED_OR_UNKNOWN") as outcome:
+            self.execute(save_ok=False)
+        self.assertTrue(outcome.exception.unknown)
+        self.assertEqual(self.trace.count("apply_change"), 1)
+        self.assertNotIn("reopen", self.trace)
+
+
+if __name__ == "__main__":
+    unittest.main()

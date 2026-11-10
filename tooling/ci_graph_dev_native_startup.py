@@ -28,7 +28,7 @@ SCHEMA = "motionwright.graph-native-dev-startup/1"
 STAGES = ("SOURCE_BIND", "BUILD_INPUTS", "STORE_INIT", "PROFILE_PATHS",
           "BOOTSTRAP_SOCKET", "BOOTSTRAP_PROJECT", "BOOTSTRAP_CLOSE",
           "RESTRICTED_MANIFEST", "RESTRICTED_SOCKET", "PROVIDER_HANDSHAKE",
-          "OWNER_CLOSE", "PRIVATE_SEAL")
+          "FIRST_GRAPH_SAVE", "OWNER_CLOSE", "PRIVATE_SEAL")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 PROJECT = re.compile(r"prj_[0-9a-f]{32}\Z")
@@ -140,7 +140,7 @@ def file_identity(path: Path):
     return {"path": str(path), "sha256": sha, "bytes": info.st_size}
 
 
-def signed_binaries(repo: Path, sdk: Path):
+def signed_binaries(repo: Path, sdk: Path, *, first_save=False):
     """Actual same-run locked Cargo products; no copied R74 source receipts."""
     sw = sdk / "target" / "debug"
     mw = repo / "target" / "debug"
@@ -152,6 +152,13 @@ def signed_binaries(repo: Path, sdk: Path):
         "shared_state_actor": mw / "examples" / "shared-state-actor",
         "manim_runner": mw / "motionwright-manim-runner",
     }
+    if first_save:
+        # These are genuine compiled Rust examples for the optional single
+        # Graph Store seed and Native JSONL Save, never invented authorities.
+        paths.update({
+            "graph_fixture": mw / "examples" / "native-graph-owner-fixture",
+            "native_graph_session": mw / "examples" / "native-graph-review-session",
+        })
     identities = {}
     for name, path in paths.items():
         need(not path.is_symlink() and path.resolve(strict=True) == path,
@@ -527,13 +534,14 @@ def _env(root: Path, runtime: Path, state: Path, home: Path, sdk: Path):
 
 
 def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
-                   private: Path, marks: list[dict], staging: dict):
+                   private: Path, marks: list[dict], staging: dict,
+                   *, one_original_save=False):
     # Graph's original source owns the manifest/config rules. GN1 does not
     # invent a new broker policy, grant or fake project identity.
     sys.path.insert(0, str(repo / "tooling"))
     import native_graph_browser_owner as graph
     import native_host_shared_state as shared
-    binaries = signed_binaries(repo, sdk)
+    binaries = signed_binaries(repo, sdk, first_save=one_original_save)
     need(all(binaries[name] == staging["inputs"][name]
              for name in ("native_provider", "manim_runner")),
          "GN1_STAGING_SOURCE_CHANGED")
@@ -557,7 +565,17 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
     store_path = locations["motionwright-data"] / "motionwright.sqlite3"
 
     mark("STORE_INIT")
-    seeded = shared.actor(owner_env, store_path, "init", "GN1 isolated actual Store")
+    if one_original_save:
+        # The actual Native fixture writes a real edited scene to a fresh
+        # SQLite Store. It retains the authored Graph as UNSAVED source.
+        from ci_graph_dev_native_firstsave import FirstSaveFailure, seed_original
+        try:
+            seeded = seed_original(Path(binaries["graph_fixture"]["path"]),
+                                   store_path, private, owner_env)
+        except FirstSaveFailure as error:
+            raise GN1Failure(error.code, unknown=error.unknown) from None
+    else:
+        seeded = shared.actor(owner_env, store_path, "init", "GN1 isolated actual Store")
     need(type(seeded) is dict and type(seeded.get("id")) is str
          and type(seeded.get("resource")) is str
          and seeded["resource"].startswith("project:")
@@ -647,7 +665,119 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
              and mounted.get("provider") == "driver:motionwright"
              and mounted.get("mount", {}).get("root") == "motionwright-data",
              "GN1_RESTRICTED_REAL_PROVIDER_HANDSHAKE_FAILED")
+        if one_original_save:
+            # One real scoped service grant and one actual Native Graph Save.
+            # No R74, no Graph6 G2; the original Store is disposable.
+            from ci_graph_dev_native_firstsave import FirstSaveFailure, real_first_save
+            mark("FIRST_GRAPH_SAVE")
+            # Seal any Native output together with the private operation
+            # originals, not as a separate uncollected runner directory.
+            output = mkdir(private, "gn1-first-save-output")
+            session_file = locations["clients"] / "restricted.session"
+            release_used = False
+
+            def release_one_bound_provider():
+                nonlocal release_used
+                need(not release_used, "GN1_FIRST_SAVE_PROVIDER_RELEASE_REPLAY")
+                release_used = True  # Even an UNKNOWN CLI call cannot be retried.
+                need(session_file.is_file() and restricted_socket.is_socket(),
+                     "GN1_FIRST_SAVE_SESSION_OR_BROKER_CLOSED")
+                fresh_entry = shared.invoke_cli(
+                    owner_env, restricted_socket, session_file,
+                    "providers.mount.observe",
+                    {"provider": mounted["provider"], "root": "motionwright-data"},
+                    calls, evidence_root=private)
+                fresh = fresh_entry["envelope"]["data"]
+                need(type(fresh) is dict
+                     and type(fresh.get("binding_ref")) is str
+                     and bool(fresh["binding_ref"])
+                     and fresh.get("provider") == mounted["provider"]
+                     and fresh.get("connection") == mounted["connection"]
+                     and fresh.get("provider_generation") == mounted["provider_generation"]
+                     and fresh.get("mount") == mounted["mount"],
+                     "GN1_FIRST_SAVE_PROVIDER_GENERATION_OR_MOUNT_CHANGED")
+                release_entry = shared.invoke_cli(
+                    owner_env, restricted_socket, session_file,
+                    "providers.release_bound",
+                    {"provider": fresh["provider"], "root": "motionwright-data",
+                     "binding_ref": fresh["binding_ref"]},
+                    calls, evidence_root=private)
+                released = release_entry["envelope"]["data"]
+                need(type(released) is dict
+                     and released.get("provider") == mounted["provider"]
+                     and released.get("connection") == mounted["connection"]
+                     and released.get("provider_generation") == mounted["provider_generation"]
+                     and released.get("binding_ref") == fresh["binding_ref"]
+                     and released.get("lease_shutdown_completed") is True
+                     and released.get("native_process_closure_inferred") is False
+                     and restricted_socket.is_socket(),
+                     "GN1_FIRST_SAVE_PROVIDER_RELEASE_NOT_DRAINED")
+                new_json(private / "first-save-provider-release.original.json",
+                         {"schema": "motionwright.gn1-provider-release/1",
+                          "original_provider": mounted["provider"],
+                          "connection_generation_unchanged": True,
+                          "same_original_mount": True,
+                          "lease_shutdown_completed": True,
+                          "native_process_closure_inferred": False,
+                          "broker_remained_live": True,
+                          "automatic_retry": False})
+                return released
+
+            try:
+                observed_save = real_first_save(
+                    fixture=Path(binaries["graph_fixture"]["path"]),
+                    native_session=Path(binaries["native_graph_session"]["path"]),
+                    source=seeded, store_path=store_path,
+                    client={"session_file": session_file, "socket": restricted_socket},
+                    mounted=mounted, binaries=binaries,
+                    private=private, output=output, env=owner_env,
+                    release_provider=release_one_bound_provider)
+            except FirstSaveFailure as error:
+                raise GN1Failure(error.code, unknown=error.unknown) from None
+            new_json(private / "first-save-result.original.json", observed_save)
     mark("OWNER_CLOSE")
+    if one_original_save:
+        # Independent read-only process opens the same SQLite after the
+        # writer's WAL->DELETE and the restricted broker have closed. The
+        # Native graph factory is never invoked in this read-only branch.
+        from ci_graph_dev_native_firstsave import NativeSession, digest
+        need(observed_save["provider_lease_shutdown_completed"] is True
+             and observed_save["one_native_graph_save_and_reopen"] is True,
+             "GN1_FIRST_SAVE_NO_AUTHENTIC_WRITER_CLOSURE")
+        before_reader = graph.file_identity(store_path)
+        with NativeSession(
+                Path(binaries["native_graph_session"]["path"]),
+                store_path, private / "graph-connection.original.json",
+                private, owner_env, read_only=True) as reader:
+            reopened = reader.request(
+                "independent-readonly-project", "get_project",
+                {"project_id": observed_save["saved_project_id"]})
+            need(type(reopened) is dict and reopened.get("ok") is True
+                 and type(reopened.get("result")) is dict,
+                 "GN1_FIRST_SAVE_INDEPENDENT_READONLY_NOT_READY")
+            read_project = reopened["result"]
+            if not (
+                    read_project.get("id") == observed_save["saved_project_id"]
+                    and read_project.get("revision") == observed_save["saved_revision"]
+                    and digest(json.dumps(read_project, sort_keys=True,
+                                          separators=(",", ":"), allow_nan=False).encode())
+                        == observed_save["saved_project_sha256"]):
+                raise GN1Failure("GN1_FIRST_SAVE_INDEPENDENT_READONLY_CHANGED",
+                                 unknown=True)
+        after_reader = graph.file_identity(store_path)
+        need((before_reader["device"], before_reader["inode"])
+             == (after_reader["device"], after_reader["inode"]),
+             "GN1_FIRST_SAVE_READONLY_PHYSICAL_STORE_CHANGED")
+        new_json(private / "independent-readonly-reopen.original.json",
+                 {"schema": "motionwright.gn1-independent-readonly/1",
+                  "source_built_executable_sha256": binaries["native_graph_session"]["sha256"],
+                  "original_store": before_reader,
+                  "after_readonly": after_reader,
+                  "saved_project_sha256": observed_save["saved_project_sha256"],
+                  "same_store": True, "read_only_process_exit_zero": True,
+                  "native_authoring_in_reader": False,
+                  "Graph6_accepted": 0, "formal_G2_granted": False,
+                  "automatic_retry": False})
     observed_source = source_identity(repo, sdk, first["source_sha"])
     need(observed_source == first, "GN1_SOURCE_CHANGED_AFTER_REAL_OWNER")
     updated = graph.file_identity(store_path)
@@ -659,7 +789,9 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
               "project": core_project,
               "real_native_daemon": True, "Graph6_accepted": 0,
               "R74_statuses_issued": 0, "automatic_retry": False})
-    return {"real_store_original": original, "private_call_count": len(calls)}
+    return {"real_store_original": original, "private_call_count": len(calls),
+            "one_native_graph_save": one_original_save,
+            "Graph6_accepted": 0, "formal_G2_granted": False}
 
 
 def private_snapshot(root: Path, *, preserve_partial=False):
@@ -855,7 +987,13 @@ def run_once(args):
     need(0 < len(raw_recipient) <= 4096, "GN1_RECIPIENT_REQUIRED")
     recipient = json.loads(raw_recipient)
     custody.public_key(recipient)
-    binaries = signed_binaries(repo, sdk)
+    from ci_graph_dev_native_firstsave import selected as first_save_selected
+    # A second explicit permit is required. Existing GN1 workflows default to
+    # startup-only, and a Save cannot piggyback on their owner approval.
+    need(os.environ.get("GN1_ONE_ORIGINAL_OWNER") == "allow-one-original",
+         "GN1_EXPLICIT_OWNER_SELECTION_REQUIRED")
+    one_original_save = first_save_selected(os.environ.get("GN1_FIRST_SAVE", "deny"))
+    binaries = signed_binaries(repo, sdk, first_save=one_original_save)
     staging = daemon_staging_plan(binaries)  # Before Store/daemon/owner effects.
 
     root.mkdir(mode=0o700)
@@ -871,8 +1009,11 @@ def run_once(args):
         marks.append({"stage": "SOURCE_BIND", "source": first["source_sha"]})
         new_json(private / "source-binding.original.json", first)
         new_json(private / "daemon-staging-budget.original.json", staging)
-        actual_startup(repo, sdk, root, first, private, marks, staging)
-        status, code = "PASS_DEV_NATIVE_STARTUP_ONLY", "GN1_REAL_OWNER_READY_CLOSED"
+        actual_startup(repo, sdk, root, first, private, marks, staging,
+                       one_original_save=one_original_save)
+        status, code = (("PASS_DEV_NATIVE_FIRST_SAVE_ONLY", "GN1_REAL_FIRST_SAVE_REOPENED")
+                        if one_original_save else
+                        ("PASS_DEV_NATIVE_STARTUP_ONLY", "GN1_REAL_OWNER_READY_CLOSED"))
     except GN1Failure as e:
         status, code = ("UNKNOWN" if e.unknown else "FAIL"), e.code
         new_json(private / "failure.original.json",
@@ -886,7 +1027,8 @@ def run_once(args):
                   "raw_error": str(e), "automatic_retry": False})
 
     launch = original_owner_start_observation(private, marks)
-    if status == "PASS_DEV_NATIVE_STARTUP_ONLY" and (
+    if status in ("PASS_DEV_NATIVE_STARTUP_ONLY",
+                   "PASS_DEV_NATIVE_FIRST_SAVE_ONLY") and (
             launch["original_start_receipts"] != 2
             or launch["unobserved_launch_possible"]):
         status, code = "UNKNOWN", "GN1_OWNER_START_ORIGINAL_INCOMPLETE"
@@ -896,6 +1038,9 @@ def run_once(args):
     public.update(launch)
     public["private_originals_published"] = False
     public["Graph6_cases_accepted"] = 0
+    public["one_graph_save_development_only"] = (
+        status == "PASS_DEV_NATIVE_FIRST_SAVE_ONLY")
+    public["formal_G2_granted"] = False
 
     # The public safe stage alone never establishes first private causal error.
     marks.append({"stage": "PRIVATE_SEAL"})
@@ -924,7 +1069,8 @@ def run_once(args):
 
     # Never expose private owner logs, native envelope, paths or stdout/stderr.
     print(json.dumps(public, sort_keys=True, separators=(",", ":")))
-    return 0 if status == "PASS_DEV_NATIVE_STARTUP_ONLY" else 1
+    return 0 if status in ("PASS_DEV_NATIVE_STARTUP_ONLY",
+                           "PASS_DEV_NATIVE_FIRST_SAVE_ONLY") else 1
 
 
 def main(argv=None):

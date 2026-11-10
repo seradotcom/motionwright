@@ -17,6 +17,12 @@ on:
         options: [deny, allow-one-original]
         default: deny
         required: true
+      one_original_save:
+        description: Separate consent for one actual Graph Save on a disposable Store, not G2
+        type: choice
+        options: [deny, allow-one-original-save]
+        default: deny
+        required: true
   # The existing registered Studio workflow can call this branch-local job.
   # No push event or automatic native effect is introduced.
   workflow_call:
@@ -30,6 +36,10 @@ on:
       one_original_owner:
         type: string
         required: true
+      one_original_save:
+        type: string
+        default: deny
+        required: false
 
 permissions:
   contents: read
@@ -57,6 +67,8 @@ jobs:
       SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
       GN1_RECIPIENT_JSON: ${{ inputs.recipient_json }}
       GN1_EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+      GN1_ONE_ORIGINAL_OWNER: ${{ inputs.one_original_owner }}
+      GN1_FIRST_SAVE: ${{ inputs.one_original_save }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -102,7 +114,8 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/gn1-custody-venv/bin/python" -B -m unittest \
             tooling.tests.test_ci_graph_dev_native_startup \
-            tooling.tests.test_ci_graph_dev_native_budget -q
+            tooling.tests.test_ci_graph_dev_native_budget \
+            tooling.tests.test_ci_graph_dev_native_firstsave -q
           python3 -B tooling/source_policy.py
           python3 -B tooling/public_surface_policy.py
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
@@ -142,6 +155,13 @@ jobs:
             --bin motionwright-native-provider --example shared-state-actor
           cargo build --locked -p motionwright-manim-community-driver \
             --bin motionwright-manim-runner
+      - name: Build exact optional one-Save Native JSONL and Store source examples
+        if: inputs.one_original_save == 'allow-one-original-save'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This additional real Native mutation needs its own consent.
+          cargo build --locked -p motionwright-native --example native-graph-review-session --example native-graph-owner-fixture
       - name: Execute exactly one real isolated Native owner startup
         shell: bash
         run: |
