@@ -51,7 +51,8 @@ impl StudioServiceReader {
         offset: Option<usize>,
         limit: usize,
     ) -> Result<AssetIntegrityPage> {
-        self.store.asset_integrity_page(project_id, expected, offset, limit)
+        self.store
+            .asset_integrity_page(project_id, expected, offset, limit)
     }
 
     pub fn database_file_identity(&self) -> Result<String> {
