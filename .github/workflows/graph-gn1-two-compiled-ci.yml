@@ -8,6 +8,10 @@ on:
     paths:
       - '.github/workflows/graph-gn1-two-compiled-ci.yml'
       - 'crates/native/examples/native-graph-review-session.rs'
+      - 'crates/service/examples/studio_review_session.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_recovery.rs'
+      - 'crates/domain/tests/support/semantic_graph_source.rs'
       - '.github/workflows/graph-native-startup-dev.yml'
       - 'tooling/ci_graph_dev_native_firstsave.py'
       - 'tooling/ci_graph_dev_native_startup.py'
