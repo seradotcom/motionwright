@@ -440,9 +440,14 @@ def seal(repo, ci):
         "source_carrier": carrier_ref, "provenance_error": provenance_error,
         "selected_roots": {key: str(value) for key, value in roots.items()},
         "formal_acceptance": False, "automatic_retry": False})
-    # Existing 512 MiB / 4096 member / 256 MiB file limits remain unchanged.
-    # Missing/changed/oversize originals make capture partial, never successful.
-    plaintext, complete = custody.gather_snapshot(roots, preserve_partial=True)
+    # Keep the unchanged 256MiB individual ciphertext limit. The source-owned
+    # capture must reserve sufficient space for TAR roster and AEAD envelope
+    # BEFORE encryption. On over-budget originals it records explicit omitted
+    # members and returns UNKNOWN; bytes remain at their original paths.
+    bound = custody.MAX_FILE - 16384
+    plaintext, complete = custody.gather_snapshot(
+        roots, preserve_partial=True, max_archive_bytes=bound)
+    require(len(plaintext) <= bound, "DEV_SELECTED_PARTIAL_ORIGINALS_ENVELOPE_BOUND")
     encrypted = custody.encrypt_snapshot(plaintext, recipient, context)
     require(len(encrypted) <= custody.MAX_FILE, "DEV_EXISTING_ENCRYPTED_FILE_BOUND")
     custody.new_bytes(destination / "development-originals.mwseal", encrypted)

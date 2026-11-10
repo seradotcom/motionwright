@@ -135,13 +135,26 @@ def snapshot_member(value):
     return value
 
 
-def gather_snapshot(roots, *, preserve_partial=False):
+def gather_snapshot(roots, *, preserve_partial=False, max_archive_bytes=None):
     """Capture originals once; failed observations are retained, never retried.
 
-    The default strict mode is useful for gates. Sealing uses preserve_partial
-    to recover every independently readable original after an unknown outcome.
-    A partial capture cannot establish the scoped verification result.
+    The default strict mode is useful for gates. With preserve_partial only,
+    an optional bound selects files that fit one existing ciphertext envelope;
+    omitted originals stay at their source location and are named as failed
+    captures in the encrypted manifest. Such a partial record is UNKNOWN,
+    never a successful scope or a retry of any original process.
     """
+    # Optional envelope capacity is exclusively for partial-failure recovery.
+    # Formal/full captures retain their unchanged 512MiB/4096-member contract.
+    if max_archive_bytes is not None:
+        require(preserve_partial and type(max_archive_bytes) is int
+                and 16 * 1024 <= max_archive_bytes <= MAX_FILE - 8192,
+                "snapshot_partial_envelope_budget_invalid")
+    # Reserve a bounded share for TAR headers, the full failed-file roster and
+    # the immutable manifest. Excess bytes remain in their ORIGINAL location.
+    selected_budget = (max_archive_bytes - min(16 * 1024 * 1024,
+                       max_archive_bytes // 4) if max_archive_bytes is not None
+                       else MAX_TOTAL)
     listing, entries, total, complete = {}, [], 0, True
     def failed(error):
         return {"error_type": type(error).__name__, "error": str(error),
@@ -221,13 +234,17 @@ def gather_snapshot(roots, *, preserve_partial=False):
                                              "automatic_retry": False})
                         continue
                     require(len(entries) < MAX_FILES, "snapshot_file_count")
+                    if max_archive_bytes is not None:
+                        require(observed.st_size <= selected_budget - total,
+                                "snapshot_original_retained_exceeds_envelope_budget")
                     data, observation = regular(path, file_limit)
                     if startup_stderr:
                         final = path.lstat()
                         require(final.st_nlink == 1
                                 and metadata_identity(final) == metadata_identity(observed),
                                 "snapshot_startup_stderr_changed")
-                    require(total + len(data) <= MAX_TOTAL, "snapshot_total_size")
+                    require(total + len(data) <= min(MAX_TOTAL, selected_budget),
+                            "snapshot_total_size_or_partial_envelope_budget")
                     total += len(data)
                     entries.append((name, data))
                     captured.append({"archive_path": name, "observation": observation})
@@ -246,18 +263,41 @@ def gather_snapshot(roots, *, preserve_partial=False):
                 raise
             complete = False
             listing[label] = {"status": "PARTIAL", "files": captured, **failed(error)}
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w") as archive:
-        for name, data in entries + [("snapshot-manifest.json", json_bytes({
-                "schema": "motionwright.ci.private-snapshot/1",
-                "scope": "selected-original-files-at-read-time", "roots": listing,
-                "selected_originals_complete": complete,
-                "complete_owner_state_claimed": False}))]:
-            member = tarfile.TarInfo(name)
-            member.mode, member.mtime = 0o600, 0
-            member.size = len(data)
-            archive.addfile(member, io.BytesIO(data))
-    raw = stream.getvalue()
+    def archive_bytes():
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            for name, data in entries + [("snapshot-manifest.json", json_bytes({
+                    "schema": "motionwright.ci.private-snapshot/1",
+                    "scope": "selected-original-files-at-read-time", "roots": listing,
+                    "selected_originals_complete": complete,
+                    "complete_owner_state_claimed": False}))]:
+                member = tarfile.TarInfo(name)
+                member.mode, member.mtime = 0o600, 0
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+        return stream.getvalue()
+
+    raw = archive_bytes()
+    if max_archive_bytes is not None and len(raw) > max_archive_bytes:
+        # A large failed-original roster can exceed the reserved TAR allowance.
+        # Remove only in-memory selected bytes, never the physical originals;
+        # publish the exact omitted names in the encrypted manifest as FAIL.
+        records = {item["archive_path"]: item
+                   for group in listing.values() for item in group.get("files", [])
+                   if "observation" in item}
+        while len(raw) > max_archive_bytes and entries:
+            excess, dropped = len(raw) - max_archive_bytes, 0
+            while entries and dropped <= excess + 4096:
+                name, data = entries.pop()
+                item = records[name]
+                item.pop("observation")
+                item.update(status="CAPTURE_FAILED",
+                            **failed(CustodyRejected("snapshot_archive_envelope_budget")))
+                complete = False
+                dropped += len(data) + 512
+            raw = archive_bytes()
+        require(len(raw) <= max_archive_bytes,
+                "snapshot_manifest_exceeds_existing_envelope_bound")
     require(len(raw) <= MAX_TOTAL + MAX_FILES * 4096, "snapshot_archive_size")
     return (raw, complete) if preserve_partial else raw
 
