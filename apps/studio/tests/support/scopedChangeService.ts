@@ -426,6 +426,8 @@ export class ScopedChangeService {
   private readonly timeoutMs: number;
   private readonly seedFixture: boolean;
   private readonly desktopInvokeFixture: boolean;
+  /** Source-built --read-only process, never a normal test writer. */
+  private readonly readOnly: boolean;
   private readonly ownsDirectory: boolean;
   private readonly processOwner: ServiceProcessOwner | undefined;
   private readonly rawStreamCapture: ServiceRawStreamCapture | undefined;
@@ -447,7 +449,8 @@ export class ScopedChangeService {
   private readonly usedIds = new Set<string>();
   private readonly timedOutIds = new Set<string>();
 
-  private constructor(binaryPath: string, databasePath: string, ownsDirectory: boolean, options: ScopedChangeServiceOptions) {
+  private constructor(binaryPath: string, databasePath: string, ownsDirectory: boolean,
+    options: ScopedChangeServiceOptions, readOnly = false) {
     this.binaryPath = binaryPath;
     this.databasePath = databasePath;
     this.directory = dirname(databasePath);
@@ -459,6 +462,7 @@ export class ScopedChangeService {
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.seedFixture = options.seedFixture ?? true;
     this.desktopInvokeFixture = options.desktopInvokeFixture ?? false;
+    this.readOnly = readOnly;
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new Error("Service RPC timeoutMs must be a positive finite number");
     }
@@ -498,6 +502,43 @@ export class ScopedChangeService {
       throw error;
     }
   }
+
+  /** Source-built independent reader of the same original SQLite. A sealed
+   * writer admission remains sealed; this mode cannot seed or mutate.
+   * The external owner must still attest physical identity and custody. */
+  static async createReadOnly(options: ScopedChangeServiceOptions): Promise<ScopedChangeService> {
+    validateCustodyOptions(options);
+    if (!options.binaryPath || !isAbsolute(options.binaryPath)
+      || !options.databasePath || !isAbsolute(options.databasePath)) {
+      throw new Error("Read-only StudioService requires an explicit absolute source-built binary and existing SQLite path");
+    }
+    if (options.seedFixture !== false || options.desktopInvokeFixture === true) {
+      throw new Error("Read-only StudioService cannot seed a fixture or enable desktop invoke routes");
+    }
+    const reader = new ScopedChangeService(options.binaryPath, options.databasePath, false,
+      { ...options, seedFixture: false, desktopInvokeFixture: false }, true);
+    try {
+      await reader.start();
+      const startup = await reader.invoke<{
+        test_transport?: string; read_only?: boolean; evidence_scope?: string;
+        native_sdk?: { mode?: string };
+      }>("bootstrap", { request: { project_id: null } });
+      if (startup.test_transport !== "service-test-jsonl" || startup.read_only !== true
+        || startup.native_sdk?.mode !== "browser-demo"
+        || startup.evidence_scope !== "real_service_sqlite_cas_read_only; excludes_tauri_installer_native_render") {
+        reader.taint("transport_failure", "Read-only StudioService did not prove the exact native reader mode");
+        throw new Error("Read-only StudioService original transport admission was not proven");
+      }
+      return reader;
+    } catch (error) {
+      const closed = await Promise.allSettled([reader.close()]);
+      if (closed[0].status === "rejected")
+        throw new AggregateError([error, closed[0].reason], "Read-only service opening and cleanup both failed");
+      throw error;
+    }
+  }
+
+  get isReadOnly(): boolean { return this.readOnly; }
 
   /** Stable process-helper identity, including a closed ordinary initializer. */
   get helperId(): string { return this.sessionId; }
@@ -559,7 +600,7 @@ export class ScopedChangeService {
   }
 
   async start(): Promise<this> {
-    if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
+    if (!this.readOnly && ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
       throw new Error("Service client admissions are sealed for this store");
     if (this.starting) return this.starting;
     this.starting = this.launch();
@@ -575,13 +616,15 @@ export class ScopedChangeService {
       return this;
     }
     await access(this.binaryPath);
-    await mkdir(this.directory, { recursive: true });
+    if (this.readOnly) await access(this.databasePath);
+    else await mkdir(this.directory, { recursive: true });
     this.stderrText = "";
     this.usedIds.clear();
     this.timedOutIds.clear();
     const args = ["--database", this.databasePath];
-    if (this.seedFixture) args.push("--synthetic-fixture");
-    if (this.desktopInvokeFixture) args.push("--desktop-invoke-fixture");
+    if (this.readOnly) args.push("--read-only");
+    else if (this.seedFixture) args.push("--synthetic-fixture");
+    if (this.desktopInvokeFixture && !this.readOnly) args.push("--desktop-invoke-fixture");
     // A restarted session and each peer need a fresh authenticated client.
     // Never mutate the worker's global environment or reuse a bootstrap binding.
     const launchContext: Readonly<ServiceLaunchContext> = Object.freeze({
@@ -600,7 +643,11 @@ export class ScopedChangeService {
       const environment = this.processOwner
         ? await this.processOwner.environmentForNewClient(launchContext)
         : this.graphCustodyRequired ? closedGraphInitializerEnvironment(this.databasePath) : undefined;
-      if (ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
+      // A sealed writer cannot admit any new editing client. A separate,
+      // explicitly read-only process may inspect the already closed Store;
+      // it still requires source-owned reader and physical custody checks.
+      if (!this.readOnly
+        && ScopedChangeService.sealedDirectories.has(ScopedChangeService.directoryIdentity(this.directory)))
         throw new Error("Service client admissions were sealed before the process launch");
       if (launchContext.launch_index !== this.processStreams.length)
         throw new Error("Service client launch identity changed before the process launch");
@@ -938,10 +985,13 @@ export class ScopedChangeService {
 
   /** An independent process and grant registry, sharing only the SQLite/CAS. */
   peer(): Promise<ScopedChangeService> {
-    return ScopedChangeService.create({ binaryPath: this.binaryPath, databasePath: this.databasePath, timeoutMs: this.timeoutMs,
-      seedFixture: false, desktopInvokeFixture: this.desktopInvokeFixture, processOwner: this.processOwner,
-      rawStreamCapture: this.rawStreamCapture, evidenceCapture: this.evidenceCapture,
-      graphCustodyRequired: this.graphCustodyRequired });
+    const options: ScopedChangeServiceOptions = {
+      binaryPath: this.binaryPath, databasePath: this.databasePath, timeoutMs: this.timeoutMs,
+      seedFixture: false, desktopInvokeFixture: this.readOnly ? false : this.desktopInvokeFixture,
+      processOwner: this.processOwner, rawStreamCapture: this.rawStreamCapture,
+      evidenceCapture: this.evidenceCapture, graphCustodyRequired: this.graphCustodyRequired,
+    };
+    return this.readOnly ? ScopedChangeService.createReadOnly(options) : ScopedChangeService.create(options);
   }
 
   /** Install before page.goto; every invoke crosses into the real process. */
