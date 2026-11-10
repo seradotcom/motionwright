@@ -27,6 +27,9 @@ const READ_ENV = Object.freeze({
   PATH:'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
   LANG:'C.UTF-8', LC_ALL:'C.UTF-8', TZ:'UTC',
   PYTHONNOUSERSITE:'1', RUST_BACKTRACE:'1',
+  // The source-built ordinary reader lowers both kernel limits before opening
+  // SQLite. ScopedChangeService independently observes /proc/<pid>/limits.
+  MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES:'4194304',
 });
 const same = (a,b,code) => need(isDeepStrictEqual(a,b),code);
 const immutable = object => Object.freeze({ ...object });
