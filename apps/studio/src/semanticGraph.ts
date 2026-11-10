@@ -313,6 +313,30 @@ export function graphSuggestedFlowEventAt(
   }
 }
 
+/** A new synthetic transfer must fit entirely inside the authored Graph.
+ * Check all edges, rather than creating an unsaveable event on a full edge.
+ * This selects an editor default only; the domain still validates on Save. */
+export function graphSuggestedFlowEventSlot(
+  flow: {
+    edges: readonly Pick<GraphFlowEdge, "id" | "appearance">[];
+    events: readonly Pick<GraphFlowEvent, "edge_id" | "at" | "duration">[];
+  },
+  duration: RationalTime,
+  rate: RationalTime,
+): { edge_id: string; at: RationalTime } | null {
+  const frame = graphFrameTime(1, rate);
+  for (const edge of flow.edges) {
+    const at = graphSuggestedFlowEventAt(edge, flow.events, rate);
+    try {
+      if (graphCompareTime(graphAddTime(at, frame), duration) <= 0)
+        return { edge_id: edge.id, at };
+    } catch {
+      // Invalid existing authored time is not a permission to invent space.
+    }
+  }
+  return null;
+}
+
 /** Editorial timing against the shared project clock; never changes authored times. */
 export function graphPreviewClock(
   graph: Pick<SemanticGraph, "time_range" | "motion">,

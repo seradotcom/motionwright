@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DeliverableProfile, Project, RationalTime, ReviewAnchor, Scene } from "./types";
 import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
 import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphPreviewClock, graphReviewAnchor,
-  graphSame, graphSourceSnapshot, graphSuggestedFlowEventAt, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
+  graphSame, graphSourceSnapshot, graphSuggestedFlowEventSlot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
   forkGraphCopy, graphDraftScope, graphDownload, graphHasWork, graphOutcomeMatches, graphUnconfirmed, rejectGraphSubmission,
@@ -448,6 +448,8 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   const occupied = semanticGraphs(props.project).find(graph => graph.scene_id === draft.sceneId
     && graph.variant_profile_ref === raw.variant_profile_ref && graph.id !== draft.graphId);
   const occupancyIssue = occupied ? "A saved Graph already owns this scene and Deliverable. Select its source or choose another Deliverable; no replacement is implied." : null;
+  const flowEventSlot = raw.content.kind === "system_flow" && profile && raw.content.events.length < 64
+    ? graphSuggestedFlowEventSlot(raw.content, raw.time_range.duration, profile.frame_rate) : null;
   // Retain every actual failing predicate, never original Project text,
   // private Native diagnostics or arbitrary DTO strings. The result is a
   // finite, source-owned diagnostic; it cannot grant a Save or infer Ready.
@@ -503,18 +505,32 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     if (session.recoveryProblem) session.editedWhileRecoveryBlocked = [...new Set([...session.editedWhileRecoveryBlocked, path])];
     session.error = null; session.notice = null; epoch.current++; setContextFailure(null); setReview(null); setChoices({}); backup(session); notify(session);
   }
-  async function inspectContext() {
+  async function inspectContext(savedForRemoval = false) {
     // A prior Save can own preparation before React publishes its busy state.
     // Never invalidate that original intent with a same-render Native probe.
     if (!current.current.readContext || inspecting || inspectionToken.current !== null
       || busy || session.preparing || session.inFlight) return;
-    const token = ++epoch.current, sequence = session.draft.sequence, before = clone(current.current.project), profileId = session.draft.input.variant_profile_ref;
+    const sequence = session.draft.sequence, before = clone(current.current.project);
+    // The saved original can have a different Deliverable from an unsent
+    // editor choice. This explicit removal probe never changes the author
+    // buffer and cannot authorize saving it under the stored profile.
+    const selected = savedForRemoval ? semanticGraphs(before)
+      .find(item => item.id === session.draft.graphId && item.scene_id === session.draft.sceneId) : null;
+    const profileId = savedForRemoval ? selected?.variant_profile_ref : session.draft.input.variant_profile_ref;
+    if (!profileId) return;
+    const targetUnchanged = () => savedForRemoval
+      ? graphSame(selected, semanticGraphs(current.current.project)
+        .find(item => item.id === session.draft.graphId && item.scene_id === session.draft.sceneId))
+      : profileId === session.draft.input.variant_profile_ref;
+    const token = ++epoch.current;
     inspectionToken.current = token;
     setInspecting(true); setInspectionPhase("GRAPH_CONTEXT_INSPECTION_PENDING"); setContext(null); setContextFailure(null); session.error = null;
     let terminal: "GRAPH_CONTEXT_INSPECTION_RESOLVED" | "GRAPH_CONTEXT_INSPECTION_REJECTED" |
       "GRAPH_CONTEXT_INSPECTION_OBSOLETE" = "GRAPH_CONTEXT_INSPECTION_OBSOLETE";
     try { const value = await current.current.readContext(before, session.draft.sceneId, profileId);
-      if (!mounted.current || token !== epoch.current || sequence !== session.draft.sequence || !graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project)) || profileId !== session.draft.input.variant_profile_ref) return;
+      if (!mounted.current || token !== epoch.current || sequence !== session.draft.sequence
+        || !graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))
+        || !targetUnchanged()) return;
       const issue = graphAdmissionIssue(current.current.project, session.draft.sceneId, profileId, value); setContext(value); if (issue) session.error = issue;
       terminal = "GRAPH_CONTEXT_INSPECTION_RESOLVED";
     } catch (reason) {
@@ -526,7 +542,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       if (mounted.current && token === epoch.current
         && sequence === session.draft.sequence
         && graphSame(graphSourceSnapshot(before), graphSourceSnapshot(current.current.project))
-        && profileId === session.draft.input.variant_profile_ref) {
+        && targetUnchanged()) {
         setContextFailure(decoded ? { failure: decoded, source: graphSourceSnapshot(before),
           sceneId: session.draft.sceneId, profileId, sequence, token } : null);
         session.error = "GRAPH_CONTEXT_INSPECTION_REJECTED: current-source inspection failed; Save remains unavailable.";
@@ -768,6 +784,9 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           data-graph-context-failure-stage={currentContextFailure?.stage}
           data-graph-context-failure-code={currentContextFailure ? (currentContextFailure.error_code ?? "NONE") : undefined}
           disabled={busy || inspecting || !props.readContext} onClick={() => void inspectContext()}>Inspect current Graph support and sources</button>
+      {savedSource && savedSource.variant_profile_ref !== raw.variant_profile_ref &&
+        <button className="secondary-button" disabled={busy || inspecting || !props.readContext}
+          onClick={() => void inspectContext(true)}>Inspect saved Graph support for removal</button>}
       {admission && <p role="status">{admission}</p>}
       {occupancyIssue && <p role="status">{occupancyIssue}</p>}
       <label className="production-field"><span>Graph Deliverable</span><select aria-label="Graph Deliverable" value={raw.variant_profile_ref} onChange={e => edit(next => { next.variant_profile_ref = e.target.value; }, "/variant_profile_ref")}>
@@ -879,15 +898,20 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
             <button className="text-button" onClick={() => edit(next => { if (next.content.kind === "system_flow") next.content.events = next.content.events.filter(item => item.id !== event.id); }, path)}>Remove {prefix.toLowerCase()}</button>
           </details>;
         })}
-        <button className="secondary-button" disabled={!profile || !raw.content.edges.length || raw.content.events.length >= 64} onClick={() => {
-          if (!profile) return; const id = crypto.randomUUID(); edit(next => {
-            if (next.content.kind !== "system_flow") return;
-            const edge = next.content.edges[0];
-            next.content.events.push({ id, edge_id: edge.id, label: "Synthetic transfer",
-              at: graphSuggestedFlowEventAt(edge, next.content.events, profile.frame_rate),
-              duration: graphFrameTime(1, profile.frame_rate) });
-          }, "/content/events/" + id);
+        <button className="secondary-button" disabled={!flowEventSlot} onClick={() => {
+          const currentDraft = session.draft.input, currentProfile = current.current.project.deliverables
+            .find(item => item.id === currentDraft.variant_profile_ref);
+          if (currentDraft.content.kind !== "system_flow" || !currentProfile) return;
+          const slot = graphSuggestedFlowEventSlot(currentDraft.content, currentDraft.time_range.duration, currentProfile.frame_rate);
+          if (!slot) return;
+          const id = crypto.randomUUID();
+          edit(next => { if (next.content.kind === "system_flow") next.content.events.push({
+            id, edge_id: slot.edge_id, label: "Synthetic transfer", at: slot.at,
+            duration: graphFrameTime(1, currentProfile.frame_rate),
+          }); }, "/content/events/" + id);
         }}>Add synthetic event</button>
+        {!flowEventSlot && raw.content.edges.length > 0 && raw.content.events.length < 64 && profile &&
+          <p role="status">No one-frame synthetic event fits inside the authored Graph interval. Edit its timing, events or edges to make room.</p>}
       </>}
       {changed && !pending && <section aria-label="Graph source reconciliation"><h3>Saved Graph changed</h3><p>Your raw input remains retained. Review this revision before saving.</p>
         {merge?.conflicts.map(conflict => <label className="production-field" key={conflict.path}><span>{conflict.path || "Graph identity"}</span><select aria-label={"Resolve Graph " + (conflict.path || "identity")} value={choices[conflict.path] ?? ""} onChange={e => setChoices(old => ({ ...old, [conflict.path]: e.target.value as "current" | "input" }))}><option value="">Choose explicitly</option><option value="input">Keep my input</option><option value="current">Use current saved value</option></select><small>Saved: {JSON.stringify(conflict.current)} · Input: {JSON.stringify(conflict.input)}</small></label>)}

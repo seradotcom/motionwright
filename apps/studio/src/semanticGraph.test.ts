@@ -3,7 +3,7 @@ import { fixtureBootstrap } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
 import { stepEditorialFrame } from "./timecode";
 import { graphAddTime, graphAdmissionIssue, graphAuthoredNumber, graphEdgeLabelBox, graphEdgePoints, graphExactFrame, graphFraction, graphFrameTime,
-  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphSuggestedFlowEventAt, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
+  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphSuggestedFlowEventAt, graphSuggestedFlowEventSlot, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphProject, SemanticGraph } from "./semanticGraph";
 
 function source(kind: "causal_diagram" | "system_flow" = "causal_diagram") {
@@ -86,6 +86,28 @@ describe("closed semantic Graph editorial contract", () => {
     const malformed = { ...event, at: { num: "1e", den: "1" } };
     expect(graphSuggestedFlowEventAt(edge, [malformed], rate)).toEqual(first);
     expect(malformed.at.num).toBe("1e");
+  });
+  it("uses the next edge when the first edge is full and refuses unbounded event defaults", () => {
+    const { graph, profile } = source("system_flow");
+    if (graph.content.kind !== "system_flow") throw new Error("Expected a typed synthetic flow.");
+    const rate = profile.frame_rate, edge = graph.content.edges[0], other = { ...edge, id: crypto.randomUUID() };
+    const frame = graphFrameTime(1, rate), first = graphFrameTime(2, rate);
+    const end = graphFrameTime(4, rate);
+    const initial = { id: crypto.randomUUID(), edge_id: edge.id, label: "First", at: first, duration: frame };
+    const second = { ...initial, id: crypto.randomUUID(), at: graphFrameTime(3, rate) };
+    const flow = { edges: [edge, other], events: [initial, second] };
+    expect(graphSuggestedFlowEventSlot(flow, end, rate)).toEqual({ edge_id: other.id, at: first });
+    const full = { ...flow, events: [...flow.events,
+      { ...initial, id: crypto.randomUUID(), edge_id: other.id },
+      { ...second, id: crypto.randomUUID(), edge_id: other.id }] };
+    expect(graphSuggestedFlowEventSlot(full, end, rate)).toBeNull();
+    expect(graphSuggestedFlowEventSlot({ edges: [other], events: [] }, first, rate)).toBeNull();
+    const fractional = { num: "24000", den: "1001" };
+    const fractionalEdge = { ...edge, appearance: {
+      at: graphFrameTime(1, fractional), duration: graphFrameTime(1, fractional) } };
+    expect(graphSuggestedFlowEventSlot({ edges: [fractionalEdge], events: [] }, graphFrameTime(3, fractional), fractional))
+      .toEqual({ edge_id: edge.id, at: graphFrameTime(2, fractional) });
+    expect(graph.content.events).toEqual([]);
   });
   it.each([
     { num: "0", den: "2" }, { num: "2", den: "4" }, { num: "+1", den: "1" }, { num: "01", den: "1" }, { num: "-0", den: "1" },

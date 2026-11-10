@@ -52,6 +52,28 @@ test("Graph flow adds sequential exact-frame events without creating a default o
   expect(await requestCount(page)).toBe(1);
 });
 
+test("Graph flow refuses out-of-interval defaults but can use another free edge", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph source").selectOption("new:system_flow");
+  // Four exact 30-fps frames admit events at frames 2 and 3 only.
+  await field(page, "Graph duration numerator").fill("2");
+  await field(page, "Graph duration denominator").fill("15");
+  await button(page, "Add synthetic event").click();
+  await button(page, "Add synthetic event").click();
+  await expect(button(page, "Add synthetic event")).toBeDisabled();
+  await expect(page.getByRole("status").filter({ hasText: "No one-frame synthetic event fits" })).toBeVisible();
+  await button(page, "Add edge").click();
+  const secondEdge = await page.locator("[data-graph-edge]").nth(1).getAttribute("data-graph-edge");
+  expect(secondEdge).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(button(page, "Add synthetic event")).toBeEnabled();
+  await button(page, "Add synthetic event").click();
+  await page.locator("[data-graph-event] summary").nth(2).click();
+  await expect(field(page, "Event 3 edge")).toHaveValue(secondEdge!);
+  await expect(field(page, "Event 3 start numerator")).toHaveValue("1");
+  await expect(field(page, "Event 3 start denominator")).toHaveValue("15");
+  expect(await requestCount(page)).toBe(0);
+});
+
 test("Graph retains every incomplete geometry and rational byte across navigation and reload without sending", async ({ page }, testInfo) => {
   await open(page); await testInfo.attach("causal-editorial-component-fixture", { body: await page.screenshot(), contentType: "image/png" });
   await field(page, "Vertex 1 label").fill("Preserve my authored concept"); await field(page, "Vertex 1 box x").fill("1e"); await field(page, "Graph duration denominator").fill("");
@@ -171,6 +193,37 @@ test("Graph removal uses the saved source even with incomplete unsent editor fie
   expect(pendingCopy).toBe(true);
   await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
   expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs).toHaveLength(0);
+  expect(await requestCount(page)).toBe(2);
+});
+
+test("Graph removal inspects its saved Deliverable after an unsent profile retarget", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const before = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const savedGraph = before.production_design!.semantic_graphs![0];
+  const otherProfile = await page.evaluate(async () => {
+    const next = window.__GRAPH_AUTHORITY__.project();
+    const alternate = { ...structuredClone(next.deliverables[0]), id: crypto.randomUUID() };
+    next.deliverables.push(alternate); next.revision++;
+    await window.__GRAPH_AUTHORITY__.publish(next);
+    return alternate.id;
+  });
+  await page.reload();
+  await field(page, "Graph source").selectOption(savedGraph.id);
+  await field(page, "Graph Deliverable").selectOption(otherProfile);
+  await expect(field(page, "Graph Deliverable")).toHaveValue(otherProfile);
+  await expect(button(page, "Save Graph changes")).toBeDisabled();
+  await button(page, "Inspect saved Graph support for removal").click();
+  await expect(button(page, "Remove saved Graph")).toBeEnabled();
+  await expect(button(page, "Save Graph changes")).toBeDisabled();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  const submitted = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[1]);
+  expect(submitted.change).toMatchObject({
+    type: "remove_semantic_graph", graph_id: savedGraph.id, scene_id: savedGraph.scene_id,
+  });
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
+  const after = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  expect(after.production_design!.semantic_graphs).toHaveLength(0);
   expect(await requestCount(page)).toBe(2);
 });
 
