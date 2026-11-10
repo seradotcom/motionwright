@@ -563,7 +563,7 @@ impl Store {
 
         let events = {
             let mut stmt = tx.prepare(
-                "SELECT revision,payload_json,created_at FROM events
+                "SELECT revision,kind,payload_json,created_at FROM events
                  WHERE project_id=?1
                  ORDER BY revision ASC",
             )?;
@@ -572,11 +572,17 @@ impl Store {
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })?;
             let mut events = Vec::new();
             for row in mapped {
-                let (revision, payload, created_at) = row?;
+                let (revision, kind, payload, created_at) = row?;
+                if kind != "change" {
+                    return Err(StorageError::InvalidBackup(
+                        "export source contains an original event with non-change kind".into(),
+                    ));
+                }
                 events.push(ProjectEvent {
                     revision: u64::try_from(revision).map_err(|_| {
                         StorageError::InvalidBackup("event revision is negative".into())
@@ -1655,6 +1661,58 @@ mod tests {
         assert_eq!(target.conn.total_changes(), changes);
         assert_eq!(fs::read(bundle.join("manifest.json")).unwrap(), bytes);
         assert_eq!(cas_control_bytes(&target), cas_before);
+    }
+
+    #[test]
+    fn export_rejects_foreign_event_kind_before_publishing_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("source.sqlite3")).unwrap();
+        let original = store.create_named_project("Typed original").unwrap();
+        let project = store
+            .apply(
+                original.id,
+                &original.stamp(),
+                "typed-original-event",
+                &Change::RenameProject {
+                    title: "Valid Change bytes".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        // External SQLite may change a discriminator without changing the
+        // valid JSON Change payload, revision, timestamp or project columns.
+        store
+            .conn
+            .execute(
+                "UPDATE events SET kind='foreign_effect'
+                 WHERE project_id=?1 AND revision=1",
+                [project.id.to_string()],
+            )
+            .unwrap();
+        let observed: String = store
+            .conn
+            .query_row(
+                "SELECT kind FROM events WHERE project_id=?1 AND revision=1",
+                [project.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(observed, "foreign_effect");
+        let destination = directory.path().join("should-not-publish");
+        for result in [
+            store.export_project_at(project.id, &project.stamp()),
+            store.export_project(project.id),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(_))),
+                "foreign event kind must not become an apparently valid backup: {result:?}"
+            );
+        }
+        assert!(matches!(
+            store.export_project_bundle_at(project.id, &project.stamp(), &destination),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert!(!destination.exists());
     }
 
     #[test]
