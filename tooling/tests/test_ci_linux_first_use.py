@@ -558,11 +558,22 @@ class WorkflowContextTests(unittest.TestCase):
             self.assertIn(mode, workflow)
 
     def test_every_closed_first_use_source_input_triggers_candidate_pr_and_push(self):
+        import ast
         from fnmatch import fnmatchcase
 
-        workflow = (Path(__file__).resolve().parents[2] /
-                    ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
-        required = set(gate.PATHS) | {"tooling/native_host_installed_shared_state.py"}
+        repo = Path(__file__).resolve().parents[2]
+        workflow = (repo / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        producer = ast.parse((repo / "tooling/native_host_installed_shared_state.py").read_text(encoding="utf-8"))
+        declarations = [node.value for node in producer.body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "SOURCE_PATHS"
+                                for target in node.targets)]
+        self.assertEqual(len(declarations), 1, "one installed Native source roster is required")
+        native_source_paths = ast.literal_eval(declarations[0])
+        self.assertIsInstance(native_source_paths, (tuple, list))
+        self.assertTrue(native_source_paths)
+        self.assertTrue(all(isinstance(path, str) and path for path in native_source_paths))
+        self.assertEqual(len(native_source_paths), len(set(native_source_paths)))
+        required = set(gate.PATHS) | set(native_source_paths)
         self.assertEqual(len(gate.PATHS), len(set(gate.PATHS)))
         for event, terminal in (("pull_request", "\n  push:\n"),
                                 ("push", "\npermissions:\n")):
