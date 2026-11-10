@@ -8,6 +8,12 @@ spec.loader.exec_module(capture)
 
 class CaptureContracts(unittest.TestCase):
     def setUp(self):
+        # A fixture observes its local Git policy, independent of CI's injected
+        # checkout configuration. Tests can still inject a rejected policy below.
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_TERMINAL_PROMPT="0")
+        self.enterContext(mock.patch.dict(os.environ, environment, clear=True))
         self.temp = tempfile.TemporaryDirectory(prefix="a2-notice-capture-", dir=os.environ.get("TEMP"))
         self.root = pathlib.Path(self.temp.name).resolve()
     def tearDown(self):
@@ -118,6 +124,11 @@ class CaptureContracts(unittest.TestCase):
         self.assertEqual(crlf["files"][0]["git_blob"], exact["files"][0]["git_blob"])
         self.assertNotEqual(crlf["files"][0]["sha256"], exact["files"][0]["sha256"])
         self.assertEqual(crlf["files"][0]["checkout_transform"], "EXACT_LF_TO_CRLF")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1",
+                             "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": "true"}):
+            with self.assertRaisesRegex(capture.CaptureError, "tracked_bytes_differ") as refused:
+                capture.source_snapshot(self.root, head)
+        self.assertEqual(refused.exception.__cause__.code, "git_crlf_context_unverified")
     def test_mixed_newlines_are_not_silently_normalized(self):
         head = self.repo()
         (self.root/"tracked.txt").write_bytes(b"first\r\nsecond\n")

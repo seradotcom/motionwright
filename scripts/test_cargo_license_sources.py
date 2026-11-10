@@ -197,9 +197,16 @@ class Fixture:
 @unittest.skipUnless(shutil.which("git"), "real Git fixture capability is unavailable")
 class CargoLicenseSourcesTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Exercise the disposable repository's own checkout policy. Inherited CI
+        # Git config injection must not replace the specific negative under test.
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_TERMINAL_PROMPT="0")
+        self.enterContext(mock.patch.dict(os.environ, environment, clear=True))
         self.temp = tempfile.TemporaryDirectory(prefix="mw-cargo-license-")
         self.addCleanup(self.temp.cleanup)
-        self.fixture = Fixture(Path(self.temp.name))
+        # The physical target spelling must precede the separately admitted alias.
+        self.fixture = Fixture(Path(self.temp.name).resolve(strict=True))
 
     def codes(self, result: dict) -> set[str]:
         return {issue["code"] for issue in result["issues"]}
