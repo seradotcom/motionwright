@@ -105,6 +105,11 @@ class SourceGuardTests(unittest.TestCase):
         self.assertLess(runner.index('mark("OWNER_CLOSE")'),
                         runner.index('read_only=True'))
         self.assertIn('native_authoring_in_reader": False', runner)
+        self.assertIn('require_same_opened_sqlite_witness(', runner)
+        self.assertIn('"independent-opened-sqlite"', runner)
+        self.assertIn('"opened_sqlite_identity_witness_match": True', runner)
+        self.assertLess(runner.index('"independent-opened-sqlite"'),
+                        runner.index('new_json(private / "independent-readonly-reopen.original.json"'))
         self.assertIn('"formal_G2_granted": False', runner)
 
     def test_only_one_real_save_mutation_and_originals_remain_private(self):
@@ -112,11 +117,32 @@ class SourceGuardTests(unittest.TestCase):
                 "ci_graph_dev_native_firstsave.py").read_text()
         self.assertIn('MOTIONWRIGHT_GRAPH_CALLBACK_CAP="0" if read_only else "2"', text)
         self.assertIn("MOTIONWRIGHT_GRAPH_STORE_FILE_BYTES", text)
-        self.assertIn('None if command == "prepare_read_only_handoff"', text)
+        self.assertIn('exact_null = command in (', text)
+        self.assertIn('"opened_store_identity_witness"', text)
         self.assertEqual(text.count('"first-graph-save", "apply_change"'), 1)
         self.assertIn('"reopen", "reopen"', text)
         self.assertIn('"writer-handoff", "prepare_read_only_handoff"', text)
         self.assertIn('"formal_G2_granted": False', text)
+
+    def test_writer_and_independent_opened_pager_witness_are_exact_and_unforgeable(self):
+        source_witness = "a" * 64
+        self.assertTrue(save.require_same_opened_sqlite_witness(
+            source_witness, {"ok": True, "result": source_witness}))
+        for value in ("A" * 64, "a" * 63, "a" * 64 + " ", None,
+                      {"identity": source_witness}):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    save.FirstSaveFailure, "OPENED_SQLITE_WITNESS_INVALID"):
+                save.closed_opened_sqlite_witness({"ok": True, "result": value})
+        with self.assertRaisesRegex(
+                save.FirstSaveFailure,
+                "GN1_FIRST_SAVE_INDEPENDENT_OPENED_SQLITE_IDENTITY_CHANGED") as observed:
+            save.require_same_opened_sqlite_witness(
+                source_witness, {"ok": True, "result": "b" * 64})
+        self.assertTrue(observed.exception.unknown)
+        with self.assertRaisesRegex(
+                save.FirstSaveFailure, "WRITER_OPENED_SQLITE_WITNESS_MISSING"):
+            save.require_same_opened_sqlite_witness(
+                "A" * 64, {"ok": True, "result": source_witness})
 
 
 class BoundedOriginalChildTests(unittest.TestCase):
@@ -293,7 +319,8 @@ class OneSaveLifecycleTests(unittest.TestCase):
                 return response
         yield Fake()
 
-    def execute(self, *, context_ready=True, save_ok=True, release_ok=True):
+    def execute(self, *, context_ready=True, save_ok=True, release_ok=True,
+                writer_witness="a" * 64):
         project = self.src["project"]
         saved = {**project, "revision": 3}
         replies = [
@@ -303,6 +330,7 @@ class OneSaveLifecycleTests(unittest.TestCase):
             ("issue_effect_grant", {"ok": True, "result": {"token": str(
                 "ffffffff-ffff-4fff-8fff-ffffffffffff")}}),
             ("apply_change", {"ok": save_ok, "result": saved if save_ok else None}),
+            ("opened_store_identity_witness", {"ok": True, "result": writer_witness}),
             ("reopen", {"ok": True, "result": saved}),
             ("prepare_read_only_handoff", {"ok": True, "result": {
                 "read_only_handoff": True}}),
@@ -356,12 +384,24 @@ class OneSaveLifecycleTests(unittest.TestCase):
         result = self.execute()
         self.assertEqual(self.trace, [
             "get_project", "semantic_graph_authoring_context",
-            "issue_effect_grant", "apply_change", "reopen",
+            "issue_effect_grant", "apply_change",
+            "opened_store_identity_witness", "reopen",
             "release_bound", "prepare_read_only_handoff"])
         self.assertTrue(result["one_native_graph_save_and_reopen"])
+        self.assertEqual(result["writer_opened_store_identity_witness"], "a" * 64)
         self.assertEqual(result["Graph6_accepted"], 0)
         self.assertFalse(result["formal_G2_granted"])
         self.assertTrue((self.private / "first-save-intent.original.json").is_file())
+
+    def test_invalid_writer_opened_pager_identity_never_reopens_or_retries(self):
+        with self.assertRaisesRegex(
+                save.FirstSaveFailure, "OPENED_SQLITE_WITNESS_INVALID") as observed:
+            self.execute(writer_witness="A" * 64)
+        self.assertTrue(observed.exception.unknown)
+        self.assertEqual(self.trace.count("apply_change"), 1)
+        self.assertEqual(self.trace[-1], "opened_store_identity_witness")
+        self.assertNotIn("reopen", self.trace)
+        self.assertNotIn("release_bound", self.trace)
 
     def test_unconfirmed_provider_lease_blocks_wal_handoff_after_save(self):
         with self.assertRaisesRegex(save.FirstSaveFailure, "PROVIDER_LEASE_NOT_QUIESCENT") as failure:

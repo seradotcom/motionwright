@@ -77,13 +77,13 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         self.assertIn("github.run_attempt == 1", self.workflow)
         self.assertIn("permissions:\n  contents: read", self.workflow)
 
-    def test_inert_python18_and_exact_rust2_without_native_launch(self):
+    def test_inert_source_bound_python_roster_and_exact_rust2_without_native_launch(self):
         roster = re.findall(
             r"(?m)^\s+def (test_[A-Za-z0-9_]+)\s*\(",
             PYTHON.read_text(encoding="utf-8"),
         )
         self.assertEqual(len(roster), len(set(roster)))
-        self.assertEqual(len(roster), 18)
+        self.assertGreaterEqual(len(roster), 18)
         for name in EXPECTED_NEW_PYTHON:
             self.assertEqual(roster.count(name), 1)
         rust = RUST.read_text(encoding="utf-8")
@@ -98,11 +98,26 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         )
         self.assertIn("--example native-graph-review-session", self.workflow)
         self.assertIn("smaller_parent_ -- --test-threads=1", self.workflow)
-        self.assertIn("Ran 18 tests in [0-9.]+s", self.workflow)
+        self.assertIn("GN1_SOURCE_TEST_COUNT=", self.workflow)
+        self.assertIn('len(observed) == 1 and observed[0] == selected[0]', self.workflow)
+        self.assertNotIn("GN1_PYTHON_18_NOT_RUN", self.workflow)
         self.assertNotIn("providers.mount", self.workflow)
         self.assertNotIn("one_original_save:", self.workflow)
         self.assertNotIn("GH_TOKEN", self.workflow)
 
+
+    def test_added_sqlite_witness_cases_do_not_trip_stale_fixed_source_count(self):
+        self.assertNotIn("GN1_EXPECTED_18_SOURCE_TESTS", self.workflow)
+        self.assertNotIn("GN1_PYTHON_18_NOT_RUN", self.workflow)
+        self.assertIn("GN1_SOURCE_TEST_COUNT=", self.workflow)
+        self.assertIn("test_writer_and_independent_opened_pager_witness_are_exact_and_unforgeable", self.workflow)
+        self.assertIn("test_invalid_writer_opened_pager_identity_never_reopens_or_retries", self.workflow)
+
+    def test_exact_original_source_roster_is_checked_without_any_skip(self):
+        self.assertIn("source-contract.original.stdout", self.workflow)
+        self.assertIn("GN1_PYTHON_ROSTER_MISMATCH", self.workflow)
+        self.assertIn("GN1_PYTHON_FAILURE_OR_SKIP", self.workflow)
+        self.assertIn("len(observed) == 1", self.workflow)
 
     def test_compiled_target_is_outside_retained_original_artifacts(self):
         assignments = re.findall(
@@ -121,7 +136,7 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         block = self.workflow.split(
             "- name: Bind exact source, preserve Native-owner manual-only invariant",
             1,
-        )[1].split("- name: Run exact 18 GN1 source and custody denial tests", 1)[0]
+        )[1].split("- name: Run exact GN1 source and custody denial tests", 1)[0]
         evidence = block.index('echo "GN1_TWO_EVIDENCE=$evidence" >> "$GITHUB_ENV"')
         policy = block.index("python3 -B tooling/source_policy.py")
         selector = block.index("python3 -B -m unittest -q tooling.tests.test_ci_graph_gn1_selected")

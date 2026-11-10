@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   gn1-source-and-rust-two:
-    name: Exact 18 Python source checks and two compiled Native reservation tests
+    name: Source-bound GN1 Python denial roster and two compiled Native reservation tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027' && github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -82,7 +82,7 @@ jobs:
               assert len(re.findall(r"(?m)^\s*fn\s+" + test + r"\s*\(", rust)) == 1, test
           source = Path("tooling/tests/test_ci_graph_dev_native_firstsave.py").read_text()
           found = re.findall(r"(?m)^\s+def (test_[A-Za-z0-9_]+)\s*\(", source)
-          assert len(found) == len(set(found)) == 18, "GN1_EXPECTED_18_SOURCE_TESTS"
+          assert len(found) == len(set(found)) and len(found) >= 18, "GN1_SOURCE_TEST_ROSTER_INVALID"
           for required in (
               "test_large_stdout_is_bounded_unknown_and_never_replayed",
               "test_large_stderr_does_not_mask_unknown_as_custody_admission",
@@ -90,9 +90,19 @@ jobs:
               "test_returned_json_is_bound_and_empty_stderr_is_not_fabricated",
           ):
               assert found.count(required) == 1, required
+          # A source-built opened-pager witness has two additional safety cases.
+          # Admission requires both as soon as the original Native writer supports it.
+          runner = Path("tooling/ci_graph_dev_native_firstsave.py").read_text()
+          if "require_same_opened_sqlite_witness(" in runner:
+              for required in (
+                  "test_writer_and_independent_opened_pager_witness_are_exact_and_unforgeable",
+                  "test_invalid_writer_opened_pager_identity_never_reopens_or_retries",
+              ):
+                  assert found.count(required) == 1, required
+          print(f"GN1_SOURCE_TEST_COUNT={len(found)}")
           PY
 
-      - name: Run exact 18 GN1 source and custody denial tests
+      - name: Run exact GN1 source and custody denial tests
         shell: bash
         run: |
           set -euo pipefail
@@ -101,9 +111,13 @@ jobs:
           python3 -B - <<'PY'
           from pathlib import Path
           import os, re
-          raw = (Path(os.environ["GN1_TWO_EVIDENCE"]) /
-                 "python.original.log").read_text(encoding="utf-8")
-          assert re.search(r"(?m)^Ran 18 tests in [0-9.]+s$", raw), "GN1_PYTHON_18_NOT_RUN"
+          folder = Path(os.environ["GN1_TWO_EVIDENCE"])
+          raw = (folder / "python.original.log").read_text(encoding="utf-8")
+          contract = (folder / "source-contract.original.stdout").read_text(encoding="utf-8")
+          selected = re.findall(r"(?m)^GN1_SOURCE_TEST_COUNT=([0-9]+)$", contract)
+          assert len(selected) == 1 and int(selected[0]) >= 18, "GN1_SOURCE_COUNT_UNBOUND"
+          observed = re.findall(r"(?m)^Ran ([0-9]+) tests? in [0-9.]+s$", raw)
+          assert len(observed) == 1 and observed[0] == selected[0], "GN1_PYTHON_ROSTER_MISMATCH"
           assert re.search(r"(?m)^OK$", raw), "GN1_PYTHON_NOT_ALL_PASS"
           assert not re.search(r"(?m)^FAILED|^OK \(skipped", raw), "GN1_PYTHON_FAILURE_OR_SKIP"
           PY

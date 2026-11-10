@@ -740,7 +740,10 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
         # Independent read-only process opens the same SQLite after the
         # writer's WAL->DELETE and the restricted broker have closed. The
         # Native graph factory is never invoked in this read-only branch.
-        from ci_graph_dev_native_firstsave import NativeSession, digest
+        from ci_graph_dev_native_firstsave import (
+            FirstSaveFailure, NativeSession, digest,
+            require_same_opened_sqlite_witness,
+        )
         need(observed_save["provider_lease_shutdown_completed"] is True
              and observed_save["one_native_graph_save_and_reopen"] is True,
              "GN1_FIRST_SAVE_NO_AUTHENTIC_WRITER_CLOSURE")
@@ -764,6 +767,18 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
                         == observed_save["saved_project_sha256"]):
                 raise GN1Failure("GN1_FIRST_SAVE_INDEPENDENT_READONLY_CHANGED",
                                  unknown=True)
+            # This is a SECOND process with a distinct held SQLite pager,
+            # not a path/inode string supplied by the original writer. Both
+            # responses must originate from their own real JSONL processes.
+            read_pager = reader.request(
+                "independent-opened-sqlite",
+                "opened_store_identity_witness", None)
+            try:
+                require_same_opened_sqlite_witness(
+                    observed_save.get("writer_opened_store_identity_witness"),
+                    read_pager)
+            except FirstSaveFailure as error:
+                raise GN1Failure(error.code, unknown=error.unknown) from None
         after_reader = graph.file_identity(store_path)
         need((before_reader["device"], before_reader["inode"])
              == (after_reader["device"], after_reader["inode"]),
@@ -774,7 +789,9 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
                   "original_store": before_reader,
                   "after_readonly": after_reader,
                   "saved_project_sha256": observed_save["saved_project_sha256"],
-                  "same_store": True, "read_only_process_exit_zero": True,
+                  "same_store": True,
+                  "opened_sqlite_identity_witness_match": True,
+                  "read_only_process_exit_zero": True,
                   "native_authoring_in_reader": False,
                   "Graph6_accepted": 0, "formal_G2_granted": False,
                   "automatic_retry": False})

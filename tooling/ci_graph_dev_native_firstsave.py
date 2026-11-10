@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import subprocess
@@ -74,6 +75,30 @@ def private_json(path, payload):
     return private_bytes(
         path, (json.dumps(payload, sort_keys=True, separators=(",", ":"),
                           allow_nan=False) + "\n").encode("utf-8"))
+
+
+def closed_opened_sqlite_witness(response):
+    """Accept only a real correlated JSONL result already retained privately.
+
+    The Rust service hashes the identity from its held SQLite pager. Caller
+    paths, source fixture IDs and objects cannot replace this live observation.
+    """
+    require(type(response) is dict and response.get("ok") is True
+            and type(response.get("result")) is str
+            and re.fullmatch(r"[0-9a-f]{64}", response["result"]) is not None,
+            "GN1_FIRST_SAVE_OPENED_SQLITE_WITNESS_INVALID", unknown=True)
+    return response["result"]
+
+
+def require_same_opened_sqlite_witness(writer, reader_response):
+    require(type(writer) is str
+            and re.fullmatch(r"[0-9a-f]{64}", writer) is not None,
+            "GN1_FIRST_SAVE_WRITER_OPENED_SQLITE_WITNESS_MISSING", unknown=True)
+    reader = closed_opened_sqlite_witness(reader_response)
+    require(reader == writer,
+            "GN1_FIRST_SAVE_INDEPENDENT_OPENED_SQLITE_IDENTITY_CHANGED",
+            unknown=True)
+    return True
 
 
 def checked_source_fixture(source):
@@ -362,9 +387,14 @@ class NativeSession:
                 and self.child.poll() is None and not self.pending,
                 "GN1_FIRST_SAVE_NATIVE_SESSION_NOT_READY", unknown=True)
         request_id = str(uuid.uuid4())
-        # Read-only handoff expects literal JSON null, not an invoke payload.
-        args = (None if command == "prepare_read_only_handoff"
-                else {"request": payload})
+        # These two read-only SQLite/owner observations require literal JSON
+        # null. No caller value may fabricate an opened-pager identity.
+        exact_null = command in (
+            "prepare_read_only_handoff", "opened_store_identity_witness")
+        if exact_null:
+            require(payload is None,
+                    "GN1_FIRST_SAVE_NO_ARGUMENT_COMMAND_REJECTED")
+        args = None if exact_null else {"request": payload}
         body = json.dumps({"id": request_id, "command": command,
                            "args": args},
                           separators=(",", ":"), allow_nan=False).encode() + b"\n"
@@ -540,6 +570,10 @@ def real_first_save(*, fixture, native_session, source, store_path, client,
                 and type(saved.get("revision")) is int
                 and saved["revision"] == project["revision"] + 1,
                 "GN1_FIRST_SAVE_TYPED_RECEIPT_MISMATCH", unknown=True)
+        # Writer witness comes from Rust's actual held SQLite pager immediately
+        # AFTER the one successful Native Save, BEFORE reopen and WAL handoff.
+        writer_opened_witness = closed_opened_sqlite_witness(rpc.request(
+            "writer-opened-sqlite", "opened_store_identity_witness", None))
         reopened = rpc.request("reopen", "reopen",
                                {"project_id": source["id"]})
         require(reopened["ok"] and reopened.get("result") == saved,
@@ -567,12 +601,14 @@ def real_first_save(*, fixture, native_session, source, store_path, client,
                   "save_revision": saved["revision"],
                   "native_graph_write_replied": True,
                   "same_store_reopened": True, "writer_handoff": True,
+                  "opened_writer_sqlite_pager_witness_sha256": writer_opened_witness,
                   "provider_lease_shutdown_completed": True,
                   "Graph6_accepted": 0, "R74_statuses_issued": 0,
                   "formal_G2_granted": False, "automatic_retry": False})
     return {"one_native_graph_save_and_reopen": True,
             "saved_project_id": saved["id"],
             "saved_revision": saved["revision"],
+            "writer_opened_store_identity_witness": writer_opened_witness,
             "saved_project_sha256": digest(json.dumps(
                 saved, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()),
             "provider_lease_shutdown_completed": True,
