@@ -97,6 +97,7 @@ FIRST_USE_G0_CASES = frozenset((
 PATHS = (
     ".github/workflows/package-candidate.yml",
     "tooling/ci_linux_first_use.py", "tooling/tests/test_ci_linux_first_use.py",
+    "tooling/native_host_installed_shared_state.py",
     "tooling/runtime_first_use_audit.py", FIRST_USE_ATOMIC_PATH,
     "tooling/ci_test_runner.py", "tooling/linux_first_use_accessible.py", TEST_PATH,
     "tooling/linux_cold_start.py", "tooling/linux_gui_probe.py",

@@ -54,6 +54,10 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         expected_paths = (
             ".github/workflows/graph-gn1-two-compiled-ci.yml",
             "crates/native/examples/native-graph-review-session.rs",
+            "crates/service/examples/studio_review_session.rs",
+            "apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs",
+            "apps/desktop/src-tauri/src/semantic_graph_recovery.rs",
+            "crates/domain/tests/support/semantic_graph_source.rs",
             ".github/workflows/graph-native-startup-dev.yml",
             "tooling/ci_graph_dev_native_firstsave.py",
             "tooling/ci_graph_dev_native_startup.py",
@@ -76,6 +80,43 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         self.assertEqual(actual_paths, expected_paths)
         self.assertIn("github.run_attempt == 1", self.workflow)
         self.assertIn("permissions:\n  contents: read", self.workflow)
+
+    def test_direct_rust_example_module_inputs_are_all_source_watched(self):
+        """An imported #[path] module is a compiled input even under cfg(test)."""
+        rust = RUST.read_text(encoding="utf-8")
+        imports = re.findall(
+            r'(?m)^[ \t]*#\[path = "([^"\n]+)"\]\n'
+            r'(?:[ \t]*#\[allow\([^)]+\)\][^\n]*\n)?'
+            r'[ \t]*mod ([A-Za-z_][A-Za-z0-9_]*);$',
+            rust,
+        )
+        resolved = {
+            module: (RUST.parent / relative).resolve().relative_to(ROOT.resolve()).as_posix()
+            for relative, module in imports
+        }
+        self.assertEqual(
+            resolved,
+            {
+                "shared_session": "crates/service/examples/studio_review_session.rs",
+                "semantic_graph_mutation_error": "apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs",
+                "semantic_graph_recovery": "apps/desktop/src-tauri/src/semantic_graph_recovery.rs",
+                "graph_source_fixture": "crates/domain/tests/support/semantic_graph_source.rs",
+            },
+            "Every direct Rust #[path] import must be accounted for, including test modules",
+        )
+        trigger = self.workflow.split("    paths:\n", 1)[1].split("\n\npermissions:", 1)[0]
+        watched = tuple(
+            line.strip()[2:].strip("'\"")
+            for line in trigger.splitlines() if line.startswith("      - ")
+        )
+        self.assertEqual(len(watched), len(set(watched)))
+        for relative in resolved.values():
+            with self.subTest(path=relative):
+                self.assertTrue((ROOT / relative).is_file())
+                self.assertIn(relative, watched)
+        for unrelated in ("docs/roadmap.md", "apps/studio/src/styles.css"):
+            with self.subTest(unrelated=unrelated):
+                self.assertNotIn(unrelated, watched)
 
     def test_inert_source_bound_python_roster_and_exact_rust2_without_native_launch(self):
         roster = re.findall(
