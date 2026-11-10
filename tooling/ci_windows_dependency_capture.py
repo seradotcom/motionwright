@@ -25,6 +25,7 @@ TARGET = "x86_64-pc-windows-msvc"
 BASE = Path("ci-evidence/internal-windows-cargo")
 BINARY = Path("target/windows-captured") / TARGET / "release/motionwright-desktop.exe"
 FRONTEND = Path("apps/studio/dist")
+BOOTSTRAP_SOURCE = "apps/studio/public/desktop-bootstrap.html"
 INVENTORY = BASE / "application-inventory.json"
 INSTALL_DIRECTORY = "motionwright-nsis-current-user"
 MAX_ARCHIVE = 32 * 1024 * 1024
@@ -173,6 +174,12 @@ def authenticate_frontend(repo, source, *, recheck=False):
     )
     require(report.get("frontend_index_sha256") == capture.sha(index_raw),
             "frontend_authenticated_index_differs_from_retained_original")
+    bootstrap = [row for row in report.get("public_copies", [])
+                 if row.get("path") == "desktop-bootstrap.html"]
+    require(report.get("public_copy_source_authentication") ==
+            "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED"
+            and len(bootstrap) == 1 and bootstrap[0].get("source_path") == BOOTSTRAP_SOURCE,
+            "windows_bootstrap_source_authentication_required")
     if recheck:
         before = read_json(repo, directory / "before-build.json")
         require(report == before, "frontend_changed_between_capture_and_bundle")

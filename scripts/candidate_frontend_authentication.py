@@ -38,6 +38,42 @@ def checked_rows(rows, key, code, maximum=100000):
         result[row[key]] = row
     return result
 
+def public_copy_records(index, outputs):
+    binding = index.get("source_binding")
+    require(isinstance(binding, dict), "public_copy_binding_invalid")
+    directory = binding.get("public_directory")
+    if directory is not None:
+        directory = relative_path(directory)
+    copies = []
+    for name, output in sorted(outputs.items()):
+        claimed = any(key in output for key in ("origin", "source_path", "git_blob"))
+        if not claimed:
+            continue
+        require(output.get("origin") == "vite-public-copy"
+                and output.get("kind") == "asset" and "modules" not in output,
+                "public_copy_shape_invalid")
+        require(directory is not None, "public_directory_required")
+        source_path = relative_path(output.get("source_path"))
+        require(source_path == directory + "/" + relative_path(name), "public_copy_path_mismatch")
+        blob = output.get("git_blob")
+        require(isinstance(blob, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", blob),
+                "public_copy_blob_invalid")
+        copies.append({"path": name, "source_path": source_path, "git_blob": blob,
+                       **row_digest(output, "public_copy_digest_invalid")})
+    if directory is not None:
+        captures = checked_rows(binding.get("tracked_inputs"), "path", "tracked_inputs_invalid")
+        expected = {name for name in captures if name.startswith(directory + "/")}
+        require({row["source_path"] for row in copies} == expected,
+                "public_captured_source_set_mismatch")
+        for row in copies:
+            source = captures[row["source_path"]]
+            require(row_digest(row, "public_copy_digest_invalid") ==
+                    row_digest(source, "public_source_digest_invalid")
+                    and row["git_blob"] == source.get("git_blob"),
+                    "public_copy_source_input_mismatch")
+    return directory, copies
+
+
 def authenticate_frontend(index_bytes, lock_bytes, archives, assets):
     require(isinstance(index_bytes, bytes) and len(index_bytes) <= 16*1024*1024,
             "index_budget")
@@ -75,6 +111,7 @@ def authenticate_frontend(index_bytes, lock_bytes, archives, assets):
         raw = assets[name]
         require(isinstance(raw, bytes) and row_digest(row, "output_digest_invalid") ==
                 {"bytes": len(raw), "sha256": sha(raw)}, "emitted_asset_bytes_mismatch:"+name)
+    public_directory, public_copies = public_copy_records(index, outputs)
     selected = set()
     for output in outputs.values():
         require(output.get("kind") in ("chunk", "asset"), "output_kind_invalid")
@@ -164,6 +201,10 @@ def authenticate_frontend(index_bytes, lock_bytes, archives, assets):
             "components": reports, "emitted_assets": [row for _, row in sorted({**outputs, **texts}.items())],
             "observed_npm_source_and_notice_authentication": "VERIFIED",
             "local_module_source_authentication": "WRAPPER_VALIDATION_REQUIRED",
+            "public_copy_directory": public_directory, "public_copies": public_copies,
+            "public_copy_source_authentication": (
+                "WRAPPER_VALIDATION_REQUIRED" if public_directory is not None
+                else "NO_OBSERVED_PUBLIC_COPIES"),
             "virtual_module_origin_authentication": "NOT_VERIFIED",
             "virtual_module_ids": sorted(k for k, m in modules.items() if m["kind"] == "virtual"),
             "source_binding": "CALLER_MUST_REVALIDATE_EXACT_GIT_SOURCE_AND_TRACKED_INPUTS",
@@ -236,6 +277,12 @@ def authenticate_build(*, repo, expected_source, output_directory, archive_root,
                 "local_module_source_mismatch")
         local_modules.append({"module_id_sha256": key, "path": name,
                               **descriptor, "git_blob": tracked[name]["git_blob"]})
+    public_directory, public_copies = public_copy_records(
+        index, checked_rows(index.get("original_outputs"), "path", "output_set_invalid"))
+    if public_directory is not None:
+        expected_public = {name for name in tracked if name.startswith(public_directory + "/")}
+        require({row["source_path"] for row in public_copies} == expected_public,
+                "public_head_source_set_mismatch")
     lock_path = relative_path(index["package_lock"]["path"])
     require(lock_path in captures, "tracked_lock_required")
     lock = stable_read(repo, lock_path, 16*1024*1024)
@@ -257,6 +304,9 @@ def authenticate_build(*, repo, expected_source, output_directory, archive_root,
         "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED" if local_modules
         else "NO_OBSERVED_LOCAL_MODULES")
     report["local_modules"] = local_modules
+    report["public_copy_source_authentication"] = (
+        "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED" if public_copies else
+        "NO_TRACKED_PUBLIC_FILES" if public_directory is not None else "NO_OBSERVED_PUBLIC_COPIES")
     report["source_binding"] = "EXACT_HEAD_TREE_INDEX_AND_TRACKED_BYTES_REVALIDATED"
     report["source_tree"] = before["tree"]
     report["limitations"] = ["Readback at bounded phases is not a filesystem lock against concurrent ABA mutation.",

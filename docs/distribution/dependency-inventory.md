@@ -135,6 +135,22 @@ notices. It binds observed local modules to the exact tracked Git bytes and
 revalidates the entire emitted file/directory set. The receipt must be outside
 the frontend output directory and is created exclusively.
 
+For copied public assets, the producer records the resolved repository-relative
+source directory in the source binding. The consumer checks each complete copy
+declaration against its tracked source path, byte length, SHA-256 and Git blob,
+then compares the declared roster with the actual HEAD roster under that
+directory, including when the declared set is empty. Partial claims, chunk
+claims, omitted sources and coordinated index/output changes that disagree with
+Git fail. The pure verifier requires wrapper validation for this source credit;
+the wrapper reports exact tracked raw-source authentication. This proves source
+byte equality, not which process performed the copy.
+
+A legacy index without public declarations receives no public-source credit.
+The isolated Windows gate additionally requires the independently authenticated
+bootstrap from `apps/studio/public/desktop-bootstrap.html`; removing all copy
+markers cannot satisfy that gate. Its existing source preflight executes the
+focused public-copy consumer cases, and both change filters include their file.
+
 Archive retrieval belongs to the controlled candidate build. These verifiers
 do not download archives. A lockfile declaration or an installed
 `node_modules` directory by itself is insufficient archive authentication.
@@ -490,11 +506,11 @@ node --test --test-reporter=tap apps/studio/tooling/frontend_dependency_notices.
 | Cargo original notices | 47 | Git/registry source authentication, native metadata paths, checkout transformations, original bytes, redirection and coverage failures |
 | Cargo capture | 41 | Exact source/build scope, captured root executable identity, all-bin selection, bounded streams, subprocess completion and no replay |
 | NPM archive authentication | 17 | Locked archive integrity, safe members and exact package/source/notice identities |
-| Frontend authentication | 12 | Git-bound local modules, original package archives, exact output files/directories and detached receipt |
+| Frontend authentication | 18 | Git-bound local modules and public copies, original package archives, exact output files/directories and detached receipt |
 | Frontend plugin | 75 including 37 nested cases | Rendered module closure, original notices, tracked public copies, output/source mutation and production binding |
 
-The five inventory Python suites total 172 cases. The five receipt and package
-suites below add 77 cases, for 249 Python cases in this selection. A
+The five inventory Python suites total 178 cases. The five receipt and package
+suites below add 77 cases, for 255 Python cases in this selection. A
 capability-dependent skip remains a skip. In
 particular, Windows accounts without symbolic-link creation permission do not
 prove physical symlink rejection; the relevant cases must execute on a capable

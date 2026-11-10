@@ -660,6 +660,7 @@ export function candidateFrontendNotices(options = {}) {
         mode: fixture ? "EXPLICIT_SYNTHETIC_FIXTURE_NOT_GIT_ATTESTED" : "EXACT_HEAD_AND_TRACKED_BLOBS",
         source_sha: state.sourceSha,
         project_path: relativeTo(state.root, state.project, true),
+        public_directory: state.publicDirectory === null ? null : relativeTo(state.root, state.publicDirectory),
         tracked_inputs: [...state.tracked.values()].map(({ snapshot: item, gitBlob }) => ({
           path: item.publicPath, bytes: item.size, sha256: item.sha256, git_blob: gitBlob,
         })).sort((a, b) => a.path.localeCompare(b.path, "en")),

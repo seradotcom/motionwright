@@ -442,6 +442,7 @@ test("public copy: tracked bootstrap is indexed and read back outside the Rollup
     origin: "vite-public-copy", source_path: "apps/studio/public/desktop-bootstrap.html",
     git_blob: null,
   });
+  assert.equal(index.source_binding.public_directory, "apps/studio/public");
   assert.ok(index.source_binding.tracked_inputs.some((row) =>
     row.path === "apps/studio/public/desktop-bootstrap.html" && row.sha256 === hash(raw)));
   assert.equal(Object.hasOwn(output.bundle, "desktop-bootstrap.html"), false);
@@ -466,6 +467,7 @@ test("public copy: absent, empty and explicitly disabled sources do not invent o
       build.observe(pkg.module);
       const { index } = build.generate([pkg.module]);
       assert.ok(index.original_outputs.every((row) => row.origin !== "vite-public-copy"));
+      assert.equal(index.source_binding.public_directory, mode.startsWith("disabled") ? null : "apps/studio/public");
       assert.ok(index.source_binding.tracked_inputs.every((row) => !row.path.includes("/public/")));
     });
   }
@@ -480,6 +482,7 @@ test("public copy: the resolved custom public directory is the admitted source",
   write(path.join(output.options.dir, "nested/bootstrap.html"), fs.readFileSync(source));
   assert.doesNotThrow(() => build.plugin.writeBundle.handler.call(build.context, output.options, output.bundle));
   const index = JSON.parse(output.bundle[INDEX].source);
+  assert.equal(index.source_binding.public_directory, "apps/studio/static");
   assert.equal(index.original_outputs.find((row) => row.origin === "vite-public-copy").source_path,
     "apps/studio/static/nested/bootstrap.html");
 });

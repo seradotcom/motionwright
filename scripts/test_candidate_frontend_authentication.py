@@ -127,6 +127,33 @@ class Fixture:
     def write_index(self):
         (self.out / INDEX_NAME).write_bytes(encoded(self.index))
 
+    def public_copy(self, directory="public"):
+        name = "desktop-bootstrap.html"
+        source_path = directory + "/" + name
+        source = self.repo / source_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        raw = b"<!doctype html><title>Tracked public source fixture</title>\n"
+        source.write_bytes(raw)
+        self.git("add", "--", source_path)
+        self.git("commit", "-qm", "tracked public fixture")
+        self.head = self.git("rev-parse", "HEAD").decode().strip()
+        self.before = capture.source_snapshot(self.repo, self.head)
+        records = {row["path"]: row for row in self.before["files"]}
+        self.index["source_binding"] = {
+            "mode": "EXACT_HEAD_AND_TRACKED_BLOBS", "source_sha": self.head,
+            "public_directory": directory,
+            "tracked_inputs": [{key: row[key] for key in ("path", "bytes", "sha256", "git_blob")}
+                               for row in self.before["files"]],
+        }
+        row = {"path": name, "kind": "asset", **descriptor(raw),
+               "origin": "vite-public-copy", "source_path": source_path,
+               "git_blob": records[source_path]["git_blob"]}
+        self.index["original_outputs"].append(row)
+        self.assets[name] = raw
+        (self.out / name).write_bytes(raw)
+        self.write_index()
+        return row
+
     def local(self):
         return next(row for row in self.index["modules"] if row["kind"] == "local")
 
@@ -312,6 +339,108 @@ class FrontendAdapterTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.f.run("existing.json")
         self.assertEqual(target.read_bytes(), b"original")
+
+
+class PublicCopySourceTests(unittest.TestCase):
+    setUp = FrontendAdapterTests.setUp
+    rejected = FrontendAdapterTests.rejected
+
+    def test_custom_public_directory_is_bound_to_real_tracked_source_bytes(self):
+        row = self.f.public_copy("static/custom")
+        self.assertEqual(self.f.pure()["public_copy_source_authentication"], "WRAPPER_VALIDATION_REQUIRED")
+        report = self.f.run()
+        self.assertEqual(report["public_copy_directory"], "static/custom")
+        self.assertEqual(report["public_copy_source_authentication"],
+                         "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED")
+        self.assertEqual(report["public_copies"], [
+            {key: row[key] for key in ("path", "source_path", "git_blob", "bytes", "sha256")}])
+        self.assertEqual(report["non_chunk_asset_dependency_closure"], "NOT_VERIFIED")
+
+    def test_partial_claims_wrong_paths_chunk_claims_and_changed_blob_are_rejected(self):
+        self.f.public_copy()
+        baseline = copy.deepcopy(self.f.index)
+        cases = (
+            ("missing-origin", "public_copy_shape_invalid"),
+            ("missing-directory", "public_directory_required"),
+            ("ambiguous-prefix", "public_copy_path_mismatch"),
+            ("foreign-source", "public_copy_path_mismatch"),
+            ("chunk", "public_copy_shape_invalid"),
+            ("modules", "public_copy_shape_invalid"),
+            ("missing-blob", "public_copy_blob_invalid"),
+            ("changed-blob", "public_copy_source_input_mismatch"),
+            ("unknown-origin", "public_copy_shape_invalid"),
+        )
+        for mode, code in cases:
+            with self.subTest(mode=mode):
+                self.f.index = copy.deepcopy(baseline)
+                row = self.f.index["original_outputs"][-1]
+                if mode == "missing-origin":
+                    row.pop("origin")
+                elif mode == "missing-directory":
+                    self.f.index["source_binding"].pop("public_directory")
+                elif mode == "ambiguous-prefix":
+                    self.f.index["source_binding"]["public_directory"] = "pub"
+                elif mode == "foreign-source":
+                    row["source_path"] = "other/desktop-bootstrap.html"
+                elif mode == "chunk":
+                    row["kind"] = "chunk"
+                elif mode == "modules":
+                    row["modules"] = []
+                elif mode == "missing-blob":
+                    row.pop("git_blob")
+                elif mode == "changed-blob":
+                    row["git_blob"] = "0" * 40
+                else:
+                    row["origin"] = "unverified-rollup"
+                with self.assertRaisesRegex(auth.FrontendEvidenceError, code):
+                    self.f.pure()
+
+    def test_zero_declared_copies_cannot_omit_a_public_file_from_head(self):
+        row = self.f.public_copy()
+        self.f.index["original_outputs"].remove(row)
+        binding = self.f.index["source_binding"]
+        binding["tracked_inputs"] = [item for item in binding["tracked_inputs"]
+                                    if item["path"] != row["source_path"]]
+        self.f.assets.pop(row["path"])
+        (self.f.out / row["path"]).unlink()
+        self.f.write_index()
+        self.rejected("public_head_source_set_mismatch", self.f.run)
+
+    def test_additional_head_public_file_cannot_hide_outside_captured_inputs(self):
+        self.f.public_copy()
+        (self.f.repo / "public/omitted.txt").write_bytes(b"Tracked but omitted from the index.\n")
+        self.f.git("add", "--", "public/omitted.txt")
+        self.f.git("commit", "-qm", "omitted public source")
+        self.f.head = self.f.git("rev-parse", "HEAD").decode().strip()
+        self.f.index["source_binding"]["source_sha"] = self.f.head
+        self.f.write_index()
+        self.rejected("public_head_source_set_mismatch", self.f.run)
+
+    def test_coordinated_output_and_input_forgery_still_fails_against_actual_git(self):
+        row = self.f.public_copy()
+        forged = b"X" + self.f.assets[row["path"]][1:]
+        identities = {**descriptor(forged), "git_blob": capture.blob(forged)}
+        row.update(identities)
+        captured = next(item for item in self.f.index["source_binding"]["tracked_inputs"]
+                        if item["path"] == row["source_path"])
+        captured.update(identities)
+        self.f.assets[row["path"]] = forged
+        (self.f.out / row["path"]).write_bytes(forged)
+        self.f.write_index()
+        self.assertEqual(self.f.pure()["public_copy_source_authentication"], "WRAPPER_VALIDATION_REQUIRED")
+        self.rejected("tracked_input_bytes_mismatch", self.f.run)
+
+    def test_removing_all_copy_declarations_is_legacy_without_public_source_credit(self):
+        row = self.f.public_copy()
+        self.f.index["source_binding"].pop("public_directory")
+        for key in ("origin", "source_path", "git_blob"):
+            row.pop(key)
+        self.f.write_index()
+        report = self.f.run()
+        self.assertEqual(report["public_copy_source_authentication"], "NO_OBSERVED_PUBLIC_COPIES")
+        self.assertEqual(report["public_copies"], [])
+        self.assertEqual(report["full_package_inventory"], "NOT_VERIFIED")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

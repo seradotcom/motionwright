@@ -302,7 +302,8 @@ class FrontendInputCustodyTests(unittest.TestCase):
     def setUp(self):
         from test_candidate_frontend_authentication import FrontendAdapterTests
         FrontendAdapterTests.setUp(self)
-        for name, value in (("BASE", Path("receipts/windows-capture")), ("FRONTEND", Path("dist"))):
+        for name, value in (("BASE", Path("receipts/windows-capture")), ("FRONTEND", Path("dist")),
+                            ("BOOTSTRAP_SOURCE", "public/desktop-bootstrap.html")):
             patch = mock.patch.object(gate, name, value)
             patch.start()
             self.addCleanup(patch.stop)
@@ -331,26 +332,9 @@ class FrontendInputCustodyTests(unittest.TestCase):
         return record
 
     def test_declared_public_copy_authenticates_and_each_phase_is_create_only(self):
-        source = self.f.repo / "public/desktop-bootstrap.html"
-        source.parent.mkdir()
-        raw_copy = b"<!doctype html><title>Tracked public fixture</title>\n"
-        source.write_bytes(raw_copy)
-        self.f.git("add", "--", "public/desktop-bootstrap.html")
-        self.f.git("commit", "-qm", "tracked public fixture")
-        self.f.head = self.f.git("rev-parse", "HEAD").decode().strip()
-        before = gate.capture.source_snapshot(self.f.repo, self.f.head)
-        self.f.index["source_binding"] = {
-            "mode": "EXACT_HEAD_AND_TRACKED_BLOBS", "source_sha": self.f.head,
-            "tracked_inputs": [{key: row[key] for key in ("path", "bytes", "sha256", "git_blob")}
-                               for row in before["files"]],
-        }
-        self.f.index["original_outputs"].append({
-            "path": "desktop-bootstrap.html", "kind": "asset",
-            "bytes": len(raw_copy), "sha256": gate.capture.sha(raw_copy),
-            "origin": "vite-public-copy", "source_path": "public/desktop-bootstrap.html",
-        })
-        (self.f.out / "desktop-bootstrap.html").write_bytes(raw_copy)
-        self.f.write_index()
+        self.f.public_copy()
+        raw_copy = self.f.assets["desktop-bootstrap.html"]
+        before = self.f.before
         original = (self.f.out / "assets/licenses/frontend/index.json").read_bytes()
         prior = self.prepare_recheck()
         gate.retain_frontend_inputs(self.f.repo, before, self.directory, "pre-archive")
@@ -365,6 +349,25 @@ class FrontendInputCustodyTests(unittest.TestCase):
             gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
         self.assertEqual({path.name: path.read_bytes() for path in self.directory.iterdir() if path.is_file()},
                          retained)
+
+    def test_windows_gate_refuses_legacy_index_after_all_copy_markers_are_removed(self):
+        row = self.f.public_copy()
+        self.f.index["source_binding"].pop("public_directory")
+        for key in ("origin", "source_path", "git_blob"):
+            row.pop(key)
+        self.f.write_index()
+        prior = self.prepare_recheck()
+        self.assertEqual(prior["public_copy_source_authentication"], "NO_OBSERVED_PUBLIC_COPIES")
+        with self.assertRaisesRegex(ValueError, "windows_bootstrap_source_authentication_required"):
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+
+    def test_windows_bootstrap_requires_expected_source_even_when_other_source_authenticates(self):
+        self.f.public_copy("other-public")
+        prior = self.prepare_recheck()
+        self.assertEqual(prior["public_copy_source_authentication"],
+                         "EXACT_TRACKED_GIT_RAW_SOURCE_BYTES_VERIFIED")
+        with self.assertRaisesRegex(ValueError, "windows_bootstrap_source_authentication_required"):
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
 
     def test_unexpected_physical_member_is_retained_while_real_authentication_rejects_it(self):
         self.prepare_recheck()

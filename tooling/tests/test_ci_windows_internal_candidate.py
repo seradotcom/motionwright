@@ -118,6 +118,9 @@ class InternalWindowsCandidateTests(unittest.TestCase):
     def test_internal_route_does_not_export_payload_admission_or_target_cache(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         windows = text.split("\n  windows:\n", 1)[1].split("\n  windows-update:\n", 1)[0]
+        self.assertEqual(text.count('- "scripts/test_candidate_frontend_authentication.py"'), 2)
+        self.assertIn("test_cargo_license_sources test_candidate_dependency_capture "
+                      "test_candidate_frontend_authentication.PublicCopySourceTests -v", text)
         external = "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'"
         self.assertIn("save-if: " + "${{ " + external + " }}", windows)
         self.assertIn("tauri bundle --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bundles nsis", windows)

@@ -45,6 +45,7 @@ on:
       - "scripts/npm_archive_authentication.py"
       - "scripts/test_cargo_license_sources.py"
       - "scripts/test_candidate_dependency_capture.py"
+      - "scripts/test_candidate_frontend_authentication.py"
       - "tooling/source_lock_admission.py"
       - "tooling/tests/test_source_lock_admission.py"
       - "tooling/public_surface_policy.py"
@@ -129,6 +130,7 @@ on:
       - "scripts/npm_archive_authentication.py"
       - "scripts/test_cargo_license_sources.py"
       - "scripts/test_candidate_dependency_capture.py"
+      - "scripts/test_candidate_frontend_authentication.py"
       - "tooling/source_lock_admission.py"
       - "tooling/tests/test_source_lock_admission.py"
       - "tooling/public_surface_policy.py"
@@ -992,7 +994,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows capture integration contracts failed' }
           Push-Location scripts
           try {
-            python -B -m unittest test_cargo_license_sources test_candidate_dependency_capture -v
+            python -B -m unittest test_cargo_license_sources test_candidate_dependency_capture test_candidate_frontend_authentication.PublicCopySourceTests -v
             if ($LASTEXITCODE -ne 0) { throw 'Cargo source capture contracts failed' }
           } finally {
             Pop-Location
