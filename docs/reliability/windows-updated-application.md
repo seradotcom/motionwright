@@ -136,7 +136,7 @@ Explicit semantic observations use **motionwright.updated-application-sqlite/2**
 
 ### Storage 5 layout and admission
 
-Storage 5 keeps the six-field receipt representation. The read-only inspection copy must also contain the canonical CAS table definitions, operation indexes and one valid store identity; missing, replaced or foreign CAS objects fail before a project snapshot is admitted. Inspection never repairs these objects, rewrites a retained original or treats an integer user_version as source authority. A future schema 6 is not supported by this observer.
+Storage 5 keeps the six-field receipt representation. The read-only inspection copy must also contain the canonical CAS table definitions, operation indexes and one valid store identity; missing, replaced or foreign CAS objects fail before a project snapshot is admitted. Inspection never repairs these objects, rewrites a retained original or treats an integer user_version as source authority. Schema 6 uses the separate source-selected successor below, with its additional budget layout, writer fences and independently retained module.
 
 Both modern physical selections remain closed until their exact product and oracle source pairs are reviewed and frozen. The producer requires its internal compiled-storage admission for storage 4 and 5; a dictionary, caller-supplied cohort or unpinned oracle commit cannot substitute for that admission. Supporting a database representation does not authorize an installer or application run.
 
@@ -206,8 +206,8 @@ database.
 The existing source-cohort /1 record still binds storage/src/lib.rs. Schema 6
 also requires the separately retained root_operation_budget.rs observation and
 original bytes from the same source/tree, with exact Git or admitted LF-to-CRLF
-encoding. The reviewed module is 27,365 Git bytes with SHA-256
-a09bf76a6c80fdc08cf0304c9127b5b67b0c3f5b8af0dba1f658486a79cec3b6.
+encoding. The reviewed module is 32,788 Git bytes with SHA-256
+08045e15fbab94c9e092fe096760d6e05327ca75d2bd1c3a14bd929b05e8c02c.
 The compiler's source closure retains that module independently; an observation
 digest without its matching original is insufficient.
 
