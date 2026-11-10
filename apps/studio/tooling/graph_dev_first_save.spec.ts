@@ -284,6 +284,10 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     expect((await service.history(source.id, source.revision)).map(item => item.change.type))
       .toEqual(["upsert_semantic_graph"]);
 
+    const casInspections = service.transcript.filter(item =>
+      item.direction === "request" && "command" in item.payload
+      && item.payload.command === "asset_integrity_page");
+    expect(casInspections).toHaveLength(1);
     const witness = {
       schema: "motionwright.graph-dev-first-save-observation/1",
       scope: "one original Native development Studio Save and separate same-Store source-built read-only Project verification",
@@ -298,6 +302,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
       independent_same_store_reopen: true,
       opened_sqlite_identity_witness_match: true,
       read_only_bootstrap_verified: true,
+      independent_cas_asset_hash_verified: true,
       full_editor_reopened: false,
     };
     const evidence = info.outputPath("native-development-first-save.json");

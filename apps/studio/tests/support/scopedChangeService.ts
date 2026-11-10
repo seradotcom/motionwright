@@ -400,6 +400,7 @@ function databasePhysicalWitness(entry: PhysicalStoreEntry): string {
  * or writing to the child; the Rust reader independently rejects mutations. */
 const READ_ONLY_SERVICE_COMMANDS = new Set([
   "bootstrap", "get_project", "reopen", "project_history", "opened_store_identity_witness",
+  "asset_integrity_page",
 ]);
 export function readOnlyServiceCommandAllowed(command: string): boolean {
   return READ_ONLY_SERVICE_COMMANDS.has(command);

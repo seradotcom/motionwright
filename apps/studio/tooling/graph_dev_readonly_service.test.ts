@@ -50,9 +50,9 @@ describe("independent Graph development read-only service admission", () => {
         .toThrow("GRAPH_DEV_INDEPENDENT_READONLY_BOOTSTRAP_NOT_PROVEN");
     }
   });
-  it("permits only the exact source-built reader's five original read commands", () => {
+  it("permits only the six exact source-built read commands, including bounded CAS hashing", () => {
     for (const command of ["bootstrap", "get_project", "reopen", "project_history",
-      "opened_store_identity_witness"]) {
+      "opened_store_identity_witness", "asset_integrity_page"]) {
       expect(readOnlyServiceCommandAllowed(command)).toBe(true);
     }
     // No caller-created mutation, grant, provider or projection command can

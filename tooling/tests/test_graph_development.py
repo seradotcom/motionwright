@@ -219,7 +219,11 @@ class IndependentOriginalJoinTests(unittest.TestCase):
         source = {"sha": "a" * 40, "run_id": "123", "run_attempt": 1}
         db = "/private/g3/store/motionwright.sqlite3"
         physical = {"path": db, "device": "24", "inode": "171"}
-        project = {"id": "project-original", "revision": 1,
+        asset = {"id": "asset-original", "name": "Original imported SVG",
+                 "media_type": "image/svg+xml", "content_sha256": "f" * 64,
+                 "source_revision": None}
+        project = {"id": "project-original", "generation": "gen-original",
+                   "revision": 1, "assets": [asset],
                    "production_design": {"semantic_graphs": []}}
         event = {"revision": 1, "change": {"type": "upsert_semantic_graph"}}
         oracle = {"schemaVersion": 1, "project": project, "journal": [event],
@@ -229,6 +233,11 @@ class IndependentOriginalJoinTests(unittest.TestCase):
                   "opened_before": {}, "opened_after": {},
                   "physical_store": physical, "held_sqlite_pager_witness": {},
                   "writer_oracle": {}, "full_project": project, "journal": [event],
+                  "asset_integrity_page": {
+                      "project_id": project["id"], "generation": project["generation"],
+                      "revision": 1, "total_assets": 1, "items": [
+                          {"asset_id": asset["id"], "status": "verified", "size_bytes": 137}],
+                      "next": None, "complete": True, "checked_bytes": 137},
                   "journal_after_revision_exclusive": 0, "journal_complete": True,
                   "native_callbacks_allowed": False, "automatic_retry": False,
                   "returned_live": True, "formal_release_acceptance": False}
@@ -239,11 +248,13 @@ class IndependentOriginalJoinTests(unittest.TestCase):
         self.assertEqual(development.checked_independent_reader(*args), {
             "project_id": "project-original", "revision": 1,
             "full_journal_events": 1, "independent_read_only": True,
+            "independent_cas_asset_bytes_hashed": True,
             "formal_acceptance": False})
 
     def test_reader_rejects_forged_original_scope_missing_history_and_replaced_inode(self):
         for mutation in ("scope", "replay", "extra", "journal", "revision",
-                         "store", "source", "reader-writable"):
+                         "store", "source", "reader-writable", "cas-corrupt",
+                         "cas-partial-hash", "cas-missing", "cas-foreign-asset"):
             args = list(copy.deepcopy(self.records()))
             if mutation == "scope":
                 args[0]["formal_release_acceptance"] = True
@@ -259,6 +270,14 @@ class IndependentOriginalJoinTests(unittest.TestCase):
                 args[0]["physical_store"] = dict(args[2], inode="999")
             elif mutation == "source":
                 args[0]["source"] = {"sha": "b" * 40}
+            elif mutation == "cas-corrupt":
+                args[0]["asset_integrity_page"]["items"][0]["status"] = "corrupt"
+            elif mutation == "cas-partial-hash":
+                args[0]["asset_integrity_page"]["checked_bytes"] = 0
+            elif mutation == "cas-missing":
+                args[0]["asset_integrity_page"]["items"] = []
+            elif mutation == "cas-foreign-asset":
+                args[0]["asset_integrity_page"]["items"][0]["asset_id"] = "not-in-project"
             else:
                 args[0]["native_callbacks_allowed"] = True
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
