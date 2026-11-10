@@ -95,10 +95,10 @@ export function assertOriginalGraphReadOnlyBootstrap(reply: unknown, expected: P
  */
 type AdmittedGraphCaseFactory = Awaited<ReturnType<typeof createGraphCaseFactory>>;
 
-/** Missing on the current source-owned R74 factory. A first-party source
- * implementation must seal the original Writer, close its Host and return a
- * NEW authenticated live read-only Service with original stream evidence.
- * Merely returning an oracle or a SQLite file copy is not this capability. */
+/** Authenticated first-party factory capability to close the original
+ * Writer and Host and return a NEW live read-only Service with its own
+ * original streams. A stored oracle or copied SQLite file cannot provide
+ * this capability. It still requires a genuine original producer admission. */
 type LiveIndependentReaderPort = {
   openIndependentlyCustodiedReadOnlyService?: (
     writer: ScopedChangeService,
@@ -139,15 +139,17 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
       desktopInvokeFixture: true as const,
       timeoutMs: 50_000,
     });
+    // Pre-charge a single source-owned live reader BEFORE the initializer or
+    // any Native grant can be consumed. Failure here is a safe no-effect DENY.
+    factory.reserveDevelopmentReadOnlyOriginals();
   }
 
   async openOriginalWriter(): Promise<OriginalGraphDevelopmentWriter> {
-    // Current GraphCaseFactoryCore's independent reopen is a *completed*
-    // private run, not a live ScopedChangeService returned to Studio. Do not
-    // begin an irreversible Native Save with no authenticated way to deliver
-    // the required independently observed read-only process afterward.
-    // This missing first-party factory port must be implemented and reviewed
-    // before the real source-authorized writer may be admitted.
+    // First-party source now exports a LIVE independent reader port, instead
+    // of returning only a completed private reopen receipt. Its reservation
+    // is owned by the same authenticated factory and was precharged before
+    // initializer/Native effects; never substitute an uncustodied reader.
+    // An older factory lacking this port still denies BEFORE any Save.
     const readerPort = this.factory as LiveIndependentReaderPort;
     if (typeof readerPort.openIndependentlyCustodiedReadOnlyService !== "function") {
       throw new Error("GRAPH_DEV_LIVE_INDEPENDENT_READONLY_OWNER_CONTRACT_UNAVAILABLE");
@@ -205,26 +207,32 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
         },
       );
       if (!selected.project) throw new Error("GRAPH_DEV_ORIGINAL_PROJECT_NOT_ISSUED");
-      const source = selected.project;
+      // Do not narrow a mutable outer variable through the asynchronous
+      // initializer. The exact real Native service must have returned first.
+      if (!started) throw new Error("GRAPH_DEV_ORIGINAL_NATIVE_WRITER_NOT_STARTED");
+      const source: Project = selected.project;
+      const nativeWriter: ScopedChangeService = started;
       // Native must read precisely the initializer's original Store. Neither
       // URI equality nor a previously parsed fixture can replace this read.
-      const current = await started.project(source.id);
+      const current = await nativeWriter.project(source.id);
       if (!isDeepStrictEqual(current, source)
-        || started.binaryPath !== this.writerOptions.binaryPath
-        || started.databasePath !== this.writerOptions.databasePath
-        || started.processStreams.length !== 1
-        || started.processExits.length !== 0
-        || started.lifecycleTaints.length !== 0
-        || !started.processStreams[0].process_id) {
+        || current.scenes?.[0]?.renderer !== "manim-community"
+        || nativeWriter.binaryPath !== this.writerOptions.binaryPath
+        || nativeWriter.databasePath !== this.writerOptions.databasePath
+        || nativeWriter.processStreams.length !== 1
+        || nativeWriter.processExits.length !== 0
+        || nativeWriter.lifecycleTaints.length !== 0
+        || !nativeWriter.processStreams[0].process_id) {
         throw new Error("GRAPH_DEV_ORIGINAL_NATIVE_WRITER_SOURCE_NOT_PROVEN");
       }
-      this.original = Object.freeze({
-        service: started,
+      const originalWriter: OriginalGraphDevelopmentWriter = Object.freeze({
+        service: nativeWriter,
         projectId: current.id,
         sceneId: current.scenes[0].id,
         profileId: current.deliverables[0].id,
       });
-      return this.original;
+      this.original = originalWriter;
+      return originalWriter;
     } catch (error) {
       // An uncertain launch remains consumed. Keep the source-owned original
       // evidence and first failure; never re-open this Store as a substitute.
@@ -263,7 +271,7 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
       && original.processExits.every(exit => exit.code === 0 && exit.signal === null)
       && original.lifecycleTaints.length === 0;
     const sourceReader = reader !== original && reader.isReadOnly
-      && reader.binaryPath === this.writerOptions.binaryPath
+      && reader.binaryPath === this.factory.admission.ordinaryService.path
       && reader.databasePath === this.writerOptions.databasePath
       && reader.processStreams.length === 1
       && reader.processStreams[0].process_id !== null
@@ -289,7 +297,7 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
       await this.reader.close();
       // A source-owner-supplied live reader is valid only if its real parent
       // completed the original custody before returning this reader.
-      this.factory.assertClosed();
+      this.factory.assertDevelopmentReadOnlyClosed();
       return;
     }
     if (this.original) {
