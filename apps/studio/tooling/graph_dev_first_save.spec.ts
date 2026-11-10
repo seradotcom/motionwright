@@ -17,6 +17,7 @@ const CLOSED_FIRST_CAUSES = new Set([
   "GRAPH_DEV_REAL_SCENE_NOT_CREATED", "GRAPH_DEV_REAL_PROFILE_MISSING",
   "GRAPH_DEV_NATIVE_GRAPH_NOT_PERSISTED",
   "GRAPH_DEV_INDEPENDENT_STORE_REOPEN_NOT_PROVEN",
+  "GRAPH_DEV_INDEPENDENT_STORE_PHYSICAL_IDENTITY_CHANGED",
   "GRAPH_DEV_ORIGINAL_OWNER_PORTS_UNAVAILABLE",
   "GRAPH_DEV_ORIGINAL_OWNER_NOT_E_ONLY",
   "GRAPH_DEV_ORIGINAL_WRITER_IDENTITY_UNAVAILABLE",
@@ -148,6 +149,10 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     });
     const events = await service.history(source.id, source.revision);
     expect(events.map(item => item.change.type)).toEqual(["upsert_semantic_graph"]);
+    // Capture a witness from the actual live writer's open SQLite pager AFTER
+    // its one acknowledged Save, BEFORE writer handoff/EOF. No file path or
+    // owner-supplied string is used as a replacement for this observation.
+    const writerStoreIdentity = await service.openedStoreIdentityWitness();
     const mutations = service.transcript.filter(item => item.direction === "request"
       && "command" in item.payload && item.payload.command === "apply_change"
       && (item.payload.args?.request as { change?: { type?: string } } | undefined)?.change?.type === "upsert_semantic_graph");
@@ -192,6 +197,12 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     const readerBootstrap = await service.invoke<unknown>("bootstrap",
       { request: { project_id: source.id } });
     assertOriginalGraphReadOnlyBootstrap(readerBootstrap, saved);
+    const readerStoreIdentity = await service.openedStoreIdentityWitness();
+    if (readerStoreIdentity !== writerStoreIdentity) {
+      // Same lexical path is insufficient: a replacement file or remounted
+      // SQLite Store must not turn a fresh read into physical reopen evidence.
+      throw new Error("GRAPH_DEV_INDEPENDENT_STORE_PHYSICAL_IDENTITY_CHANGED");
+    }
     const reopened = await service.project(source.id) as GraphProject;
     expect(reopened).toEqual(saved);
     expect((await service.history(source.id, source.revision)).map(item => item.change.type))
@@ -206,6 +217,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
       event_ids: graph.content.events.map(item => item.id),
       graph_mutations: mutations.length, journal: events.map(item => item.change.type),
       independent_same_store_reopen: true,
+      opened_sqlite_identity_witness_match: true,
       read_only_bootstrap_verified: true,
       full_editor_reopened: false,
     };

@@ -1,6 +1,6 @@
 /** Selected negative admission tests; no process is spawned or mocked. */
 import { describe, expect, it } from "vitest";
-import { ScopedChangeService, readOnlyServiceCommandAllowed } from "../tests/support/scopedChangeService";
+import { ScopedChangeService, readOnlyServiceCommandAllowed, checkedOpenedStoreIdentityWitness } from "../tests/support/scopedChangeService";
 import { assertOriginalGraphReadOnlyBootstrap } from "./graph_dev_native_owner_port";
 import type { Project } from "../src/types";
 
@@ -8,6 +8,19 @@ const binaryPath = "E:/source-built/native-graph-review-session.exe";
 const databasePath = "E:/original-owner/store/motionwright.sqlite3";
 
 describe("independent Graph development read-only service admission", () => {
+  it("requires a canonical held-SQLite witness rather than a path or untrusted response", () => {
+    const witness = "a".repeat(64);
+    expect(checkedOpenedStoreIdentityWitness(witness)).toBe(witness);
+    for (const untrusted of [
+      null, undefined, false, 0, {}, { sha256: witness },
+      "", "a".repeat(63), "a".repeat(65), "A".repeat(64),
+      " " + witness, witness + "\n", "E:/Projects/motionwright/original.sqlite3",
+    ]) {
+      expect(() => checkedOpenedStoreIdentityWitness(untrusted))
+        .toThrow("Opened SQLite Store identity witness is invalid");
+    }
+  });
+
   it("checks the exact real read-only bootstrap shape without granting desktop or mutation authority", () => {
     // Pure parser fixture, NOT a Native owner, credential, Store or physical
     // success. The actual test receives these values only from the reader.

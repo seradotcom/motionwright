@@ -378,6 +378,15 @@ async function physicalStoreTree(directory: string): Promise<PhysicalStoreEntry[
   return entries;
 }
 
+/** Validate the closed syntax of a SQLite pager identity response. This
+ * parser alone cannot establish provenance: callers must obtain the value
+ * from the actual source-bound live writer or independent read-only child. */
+export function checkedOpenedStoreIdentityWitness(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))
+    throw new Error("Opened SQLite Store identity witness is invalid");
+  return value;
+}
+
 function databasePhysicalWitness(entry: PhysicalStoreEntry): string {
   const dev = BigInt(entry.dev);
   // Linux gnu_dev_major/minor split a dev_t; match SQLite's held mapping witness.
@@ -845,6 +854,17 @@ export class ScopedChangeService {
         pending.reject(this.failure(`Could not write StudioService ${request.command} (id ${key}): ${error.message}`));
       });
     });
+  }
+
+  /** Read the identity from the SQLite pager held by this actual process.
+   * The Rust owner accepts exactly null args, not the ordinary {} default.
+   * This is a read-only observation with no grant or recovery side effect. */
+  async openedStoreIdentityWitness(): Promise<string> {
+    const reply = await this.rawRequest<unknown>({
+      command: "opened_store_identity_witness", args: null,
+    });
+    if (!reply.ok) throw new Error("Opened SQLite Store identity witness was not admitted");
+    return checkedOpenedStoreIdentityWitness(reply.result);
   }
 
   async invoke<T = unknown>(command: string, args: InvokeArgs = {}): Promise<T> {
