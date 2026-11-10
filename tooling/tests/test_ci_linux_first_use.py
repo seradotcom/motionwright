@@ -496,6 +496,35 @@ class EffectBoundaryTests(unittest.TestCase):
 
 
 class WorkflowContextTests(unittest.TestCase):
+    def test_direct_candidate_policies_trigger_pr_and_push_on_source_changes(self):
+        from fnmatch import fnmatchcase
+
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/package-candidate.yml").read_text(
+                        encoding="utf-8")
+        directly_invoked = (
+            "tooling/source_policy.py",
+            "tooling/acceptance_policy.py",
+            "tooling/creative_status_policy.py",
+        )
+        for path in directly_invoked:
+            self.assertIn("python3 " + path, workflow)
+        for event, boundary in (("pull_request", "\n  push:\n"),
+                                ("push", "\npermissions:\n")):
+            selected = workflow.split("\n  " + event + ":\n", 1)[1].split(
+                boundary, 1)[0]
+            patterns = [
+                line.strip()[3:-1] for line in selected.splitlines()
+                if line.startswith('      - "') and line.endswith('"')
+            ]
+            self.assertEqual(len(patterns), len(set(patterns)), event)
+            self.assertNotIn("tooling/**", patterns)
+            omitted = [
+                path for path in directly_invoked
+                if not any(fnmatchcase(path, pattern) for pattern in patterns)
+            ]
+            self.assertEqual(omitted, [], event + " omits executed CI policies")
+
     def test_selected_linux_source_dispatch_has_only_explicit_development_ledger_exception(self):
         workflow = (Path(__file__).resolve().parents[2] /
                     ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
