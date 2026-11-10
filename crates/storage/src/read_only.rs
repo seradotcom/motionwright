@@ -1,8 +1,9 @@
 //! An existing managed Store opened without writer, migration or CAS maintenance authority.
 use super::{
-    Project, ProjectEvent, Result, STORAGE_SCHEMA_VERSION, StorageError, Store, cas_retention,
+    AssetIntegrityPage, Project, ProjectEvent, Result, STORAGE_SCHEMA_VERSION, StorageError, Store, cas_retention,
     checked_sqlite_storage_path, sqlite_identity, validate_existing_project_store_layout,
 };
+use motionwright_domain::RevisionStamp;
 use rusqlite::{Connection, OpenFlags, ffi};
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -208,6 +209,20 @@ impl StoreReader {
         let result = read(&self.store)?;
         self.validate()?;
         Ok(result)
+    }
+
+    /// Bounded content hashing of assets referenced by the exact retained
+    /// Project snapshot. A read-only Store cannot create a blob or grant.
+    pub fn asset_integrity_page(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        offset: Option<usize>,
+        limit: usize,
+    ) -> Result<AssetIntegrityPage> {
+        self.observe(|store| {
+            store.inspect_asset_integrity_page(project_id, expected, offset, limit)
+        })
     }
 
     pub fn database_file_identity(&self) -> Result<String> {

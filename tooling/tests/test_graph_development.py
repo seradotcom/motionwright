@@ -1,13 +1,59 @@
 """Inert report/selector boundaries; no Host, fake Ready or native execution."""
+import ast
 import copy
+import hashlib
 import importlib.util
+import io
+import json
+import os
 from pathlib import Path
+import re
+import stat
+import tarfile
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("graph_development_under_test", ROOT / "tooling/graph_development.py")
 development = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(development)
+
+
+def original_snapshot_mechanism():
+    """Compile exactly the source collector, omitting only unused crypto imports.
+
+    Source-only control: uses the actual stable file reader. It neither
+    generates a key nor encrypts, opens a Native Host or alters GitHub.
+    """
+    source = ROOT / "tooling/ci_private_evidence.py"
+    parsed = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    selected_names = {"CustodyRejected", "require", "json_bytes",
+                      "regular", "metadata_identity", "snapshot_member",
+                      "gather_snapshot"}
+    constants = {"MAX_FILE", "MAX_TOTAL", "MAX_FILES",
+                 "STARTUP_STDERR_PHASES", "STARTUP_STDERR_LIMITS"}
+    selected = []
+    for node in parsed.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in selected_names:
+            selected.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in constants
+            for target in node.targets
+        ):
+            selected.append(node)
+    declared = {node.name for node in selected
+                if isinstance(node, (ast.ClassDef, ast.FunctionDef))}
+    if declared != selected_names:
+        raise ValueError("Graph bounded capture no longer matches the source collector")
+    intake_spec = importlib.util.spec_from_file_location(
+        "source_only_graph_capture", ROOT / "tooling/mlt_official_runtime_intake.py")
+    intake = importlib.util.module_from_spec(intake_spec)
+    intake_spec.loader.exec_module(intake)
+    namespace = {"Path": Path, "os": os, "io": io, "json": json, "re": re,
+                 "stat": stat, "tarfile": tarfile,
+                 "capture_regular": intake.capture_regular}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
+    return namespace["gather_snapshot"]
 
 
 def report(*, listing=False):
@@ -219,7 +265,11 @@ class IndependentOriginalJoinTests(unittest.TestCase):
         source = {"sha": "a" * 40, "run_id": "123", "run_attempt": 1}
         db = "/private/g3/store/motionwright.sqlite3"
         physical = {"path": db, "device": "24", "inode": "171"}
-        project = {"id": "project-original", "revision": 1,
+        asset = {"id": "asset-original", "name": "Original imported SVG",
+                 "media_type": "image/svg+xml", "content_sha256": "f" * 64,
+                 "source_revision": None}
+        project = {"id": "project-original", "generation": "gen-original",
+                   "revision": 1, "assets": [asset],
                    "production_design": {"semantic_graphs": []}}
         event = {"revision": 1, "change": {"type": "upsert_semantic_graph"}}
         oracle = {"schemaVersion": 1, "project": project, "journal": [event],
@@ -229,6 +279,11 @@ class IndependentOriginalJoinTests(unittest.TestCase):
                   "opened_before": {}, "opened_after": {},
                   "physical_store": physical, "held_sqlite_pager_witness": {},
                   "writer_oracle": {}, "full_project": project, "journal": [event],
+                  "asset_integrity_page": {
+                      "project_id": project["id"], "generation": project["generation"],
+                      "revision": 1, "total_assets": 1, "items": [
+                          {"asset_id": asset["id"], "status": "verified", "size_bytes": 137}],
+                      "next": None, "complete": True, "checked_bytes": 137},
                   "journal_after_revision_exclusive": 0, "journal_complete": True,
                   "native_callbacks_allowed": False, "automatic_retry": False,
                   "returned_live": True, "formal_release_acceptance": False}
@@ -239,11 +294,13 @@ class IndependentOriginalJoinTests(unittest.TestCase):
         self.assertEqual(development.checked_independent_reader(*args), {
             "project_id": "project-original", "revision": 1,
             "full_journal_events": 1, "independent_read_only": True,
+            "independent_cas_asset_bytes_hashed": True,
             "formal_acceptance": False})
 
     def test_reader_rejects_forged_original_scope_missing_history_and_replaced_inode(self):
         for mutation in ("scope", "replay", "extra", "journal", "revision",
-                         "store", "source", "reader-writable"):
+                         "store", "source", "reader-writable", "cas-corrupt",
+                         "cas-partial-hash", "cas-missing", "cas-foreign-asset"):
             args = list(copy.deepcopy(self.records()))
             if mutation == "scope":
                 args[0]["formal_release_acceptance"] = True
@@ -259,10 +316,106 @@ class IndependentOriginalJoinTests(unittest.TestCase):
                 args[0]["physical_store"] = dict(args[2], inode="999")
             elif mutation == "source":
                 args[0]["source"] = {"sha": "b" * 40}
+            elif mutation == "cas-corrupt":
+                args[0]["asset_integrity_page"]["items"][0]["status"] = "corrupt"
+            elif mutation == "cas-partial-hash":
+                args[0]["asset_integrity_page"]["checked_bytes"] = 0
+            elif mutation == "cas-missing":
+                args[0]["asset_integrity_page"]["items"] = []
+            elif mutation == "cas-foreign-asset":
+                args[0]["asset_integrity_page"]["items"][0]["asset_id"] = "not-in-project"
             else:
                 args[0]["native_callbacks_allowed"] = True
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 development.checked_independent_reader(*args)
+
+
+class OriginalEnvelopeBudgetTests(unittest.TestCase):
+    """Source-owned capture budget: actual E-only files, no crypto or Host."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory(
+            prefix="mw-dev-original-bound-", dir=ROOT.parent)
+        self.addCleanup(self.scratch.cleanup)
+        self.original = Path(self.scratch.name) / "original"
+        self.original.mkdir()
+        self.capture = original_snapshot_mechanism()
+
+    @staticmethod
+    def archived(raw):
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            names = archive.getnames()
+            manifest = json.load(archive.extractfile("snapshot-manifest.json"))
+            return names, manifest
+
+    def test_small_originals_remain_complete_without_extra_envelope_credit(self):
+        original = b"original-graph-metadata-" * 400
+        (self.original / "a.original").write_bytes(original)
+        archive, complete = self.capture({"owner": self.original},
+                                         preserve_partial=True, max_archive_bytes=65536)
+        names, manifest = self.archived(archive)
+        self.assertLessEqual(len(archive), 65536)
+        self.assertTrue(complete)
+        self.assertTrue(manifest["selected_originals_complete"])
+        self.assertIn("owner/a.original", names)
+        self.assertFalse(manifest["complete_owner_state_claimed"])
+        self.assertEqual(hashlib.sha256(original).hexdigest(),
+                         hashlib.sha256((self.original / "a.original").read_bytes()).hexdigest())
+
+    def test_two_valid_originals_exceed_one_envelope_and_remain_in_place(self):
+        content_a, content_z = b"A" * 36_000, b"Z" * 36_000
+        (self.original / "a.original").write_bytes(content_a)
+        (self.original / "z.original").write_bytes(content_z)
+        archive, complete = self.capture({"owner": self.original},
+                                         preserve_partial=True, max_archive_bytes=65536)
+        names, manifest = self.archived(archive)
+        self.assertLessEqual(len(archive), 65536)
+        self.assertFalse(complete)
+        self.assertFalse(manifest["selected_originals_complete"])
+        self.assertIn("owner/a.original", names)
+        self.assertNotIn("owner/z.original", names)
+        rows = manifest["roots"]["owner"]["files"]
+        excluded = next(row for row in rows if row["archive_path"] == "owner/z.original")
+        self.assertEqual(excluded["status"], "CAPTURE_FAILED")
+        self.assertIn("snapshot_original_retained_exceeds_envelope_budget", excluded["error"])
+        self.assertTrue(excluded["original_retained_in_place"])
+        self.assertFalse(excluded["automatic_retry"])
+        self.assertEqual((self.original / "a.original").read_bytes(), content_a)
+        self.assertEqual((self.original / "z.original").read_bytes(), content_z)
+        self.assertEqual(development.sealing_status(
+            producer_complete=True, capture_complete=complete, receipt={}, expected_source={}),
+            "UNKNOWN")
+
+    def test_manifest_overflow_prunes_only_in_memory_copies_and_records_failures(self):
+        for index in range(64):
+            (self.original / f"{index:03d}.original").write_bytes(bytes([index]) * 700)
+        archive, complete = self.capture({"owner": self.original},
+                                         preserve_partial=True, max_archive_bytes=65536)
+        names, manifest = self.archived(archive)
+        failures = [row for row in manifest["roots"]["owner"]["files"]
+                    if row.get("status") == "CAPTURE_FAILED"]
+        self.assertLessEqual(len(archive), 65536)
+        self.assertFalse(complete)
+        self.assertGreater(len(failures), 0)
+        self.assertTrue(any("snapshot_archive_envelope_budget" in row["error"]
+                            for row in failures))
+        self.assertLess(len(names), 65)
+        for index in range(64):
+            self.assertEqual((self.original / f"{index:03d}.original").read_bytes(),
+                             bytes([index]) * 700)
+
+    def test_full_capture_default_and_unapproved_budget_override(self):
+        for label in ("a", "b"):
+            (self.original / f"{label}.original").write_bytes(label.encode() * 36_000)
+        raw, complete = self.capture({"owner": self.original}, preserve_partial=True)
+        names, manifest = self.archived(raw)
+        self.assertTrue(complete)
+        self.assertTrue(manifest["selected_originals_complete"])
+        self.assertIn("owner/a.original", names)
+        self.assertIn("owner/b.original", names)
+        with self.assertRaisesRegex(ValueError, "snapshot_partial_envelope_budget_invalid"):
+            self.capture({"owner": self.original}, preserve_partial=False,
+                         max_archive_bytes=65536)
 
 
 if __name__ == "__main__":
