@@ -496,6 +496,58 @@ class EffectBoundaryTests(unittest.TestCase):
 
 
 class WorkflowContextTests(unittest.TestCase):
+    def test_selected_linux_source_dispatch_has_only_explicit_development_ledger_exception(self):
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        marker = (
+            '          case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:'
+            '${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in\n'
+            '            '
+        )
+        admitted = workflow.split(marker, 1)[1].split(')\n', 1)[0]
+        prefix = ("seradotcom/motionwright:workflow_dispatch:"
+                  "refs/heads/integrate/phase1-final-composition-20261027:")
+        expected = {
+            prefix + mode + ":1" for mode in (
+                "nsis_lifecycle", "windows_contracts", "windows_installed",
+                "linux_first_use_source",
+            )
+        }
+        self.assertEqual(set(admitted.split("|")), expected)
+        self.assertIn('"linux_first_use_source": "dev-linux-first-use-source"', workflow)
+        guarded = workflow.split(marker, 1)[1].split("              ;;\n", 1)[0]
+        for closed in (
+            'len(required) != 208',
+            'row["current_contract_verdict"] != "open"',
+            'row["technical_assessment"]["contract_acceptance"]["status"] != "open"',
+            'row["status"] != "NOT_RUN"',
+            'row["independent"] is not False',
+            'creative["v05_release_ready"] is not False',
+            'row["complete_requirement_acceptance"] != "NOT_COMPLETED"',
+            "historical-assessment=STALE_NOT_PROMOTED F-G0=NOT_RUN G3=STOP",
+        ):
+            self.assertIn(closed, guarded)
+
+    def test_installed_and_release_scopes_keep_full_strict_acceptance(self):
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "            *)\n"
+            "              python3 tooling/acceptance_policy.py\n"
+            "              python3 tooling/creative_status_policy.py\n"
+            "              ;;\n", workflow)
+        self.assertIn(
+            "    if: github.event_name == 'workflow_dispatch' && "
+            "inputs.verification_scope == 'linux_first_use'\n",
+            workflow,
+        )
+        self.assertIn(
+            "    if: github.event_name == 'workflow_dispatch' && "
+            "(inputs.verification_scope == 'linux_first_use_source' || "
+            "inputs.verification_scope == 'linux_first_use')\n",
+            workflow,
+        )
+
     def test_installed_native_producer_is_source_bound_and_not_an_untracked_effect(self):
         producer = "tooling/native_host_installed_shared_state.py"
         self.assertIn(producer, gate.PATHS)
