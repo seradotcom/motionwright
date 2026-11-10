@@ -56,6 +56,50 @@ def original_snapshot_mechanism():
     return namespace["gather_snapshot"]
 
 
+def original_header_encoding():
+    """Run the original header-encoding stage, stopping before actual AEAD.
+
+    The source statements are preserved. No key, cipher or replacement
+    cryptographic implementation is loaded or called.
+    """
+    source = ROOT / "tooling/ci_private_evidence.py"
+    parsed = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    functions = {"CustodyRejected", "require", "json_bytes", "validate_context"}
+    constants = {"SOURCE", "CONTEXT_KEYS"}
+    selected = [node for node in parsed.body
+                if (isinstance(node, (ast.ClassDef, ast.FunctionDef))
+                    and node.name in functions)
+                or (isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id in constants
+                            for target in node.targets))]
+    encrypt = next(node for node in parsed.body
+                   if isinstance(node, ast.FunctionDef) and node.name == "encrypt_snapshot")
+    def assignment_index(name):
+        matches = [index for index, node in enumerate(encrypt.body)
+                   if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == name
+                           for target in node.targets)]
+        if len(matches) != 1:
+            raise ValueError("Source header stage no longer has one boundary")
+        return matches[0]
+    start, stop = assignment_index("aad"), assignment_index("ciphertext")
+    if not start < stop:
+        raise ValueError("Source header encoding must precede AEAD")
+    stage = copy.deepcopy(encrypt.body[start:stop])
+    for node in stage:
+        for call in (value for value in ast.walk(node) if isinstance(value, ast.Call)):
+            if not isinstance(call.func, ast.Name) or call.func.id not in {
+                    "json_bytes", "require", "len"}:
+                raise ValueError("Source header stage contains a non-encoding operation")
+    function = ast.parse("def encode_header_from_producer(header):\n    pass\n").body[0]
+    function.body = stage + [ast.Return(value=ast.Name(id="aad", ctx=ast.Load()))]
+    namespace = {"json": json, "re": re}
+    compiled = ast.fix_missing_locations(ast.Module(
+        body=selected + [function], type_ignores=[]))
+    exec(compile(compiled, str(source), "exec"), namespace)
+    return namespace["encode_header_from_producer"], namespace["validate_context"]
+
+
 def report(*, listing=False):
     return {
         "errors": [],
@@ -416,6 +460,36 @@ class OriginalEnvelopeBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "snapshot_partial_envelope_budget_invalid"):
             self.capture({"owner": self.original}, preserve_partial=False,
                          max_archive_bytes=65536)
+
+
+class OriginalEnvelopeHeaderTests(unittest.TestCase):
+    """Actual producer serialization boundary; no crypto or recipient effects."""
+
+    def header_at(self, size):
+        encode, validate = original_header_encoding()
+        header = {
+            "schema": "motionwright.ci.private-evidence-seal/1",
+            "algorithm": "RSA-OAEP-SHA256+AES-256-GCM",
+            "recipient_spki_sha256": "c" * 64,
+            "context": {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
+                        "run_id": "1", "run_attempt": "1"},
+            "nonce": "A" * 16, "wrapped_key": "A" * 512,
+            "plaintext_sha256": "d" * 64, "plaintext_bytes": 1,
+        }
+        header["context"]["run_id"] = "1" * (1 + size - len(encode(header)))
+        self.assertEqual(validate(header["context"]), header["context"])
+        return encode, header
+
+    def test_recoverable_header_boundary_preserves_original_encoding(self):
+        encode, header = self.header_at(8192)
+        raw = encode(header)
+        self.assertEqual(len(raw), 8192)
+        self.assertEqual(json.loads(raw), header)
+
+    def test_oversized_admitted_context_is_rejected_before_aead(self):
+        encode, header = self.header_at(8193)
+        with self.assertRaisesRegex(ValueError, "seal_header_size"):
+            encode(header)
 
 
 if __name__ == "__main__":
