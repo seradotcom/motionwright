@@ -51,14 +51,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          evidence="$RUNNER_TEMP/gn1-two-rust-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$evidence"
+          mkdir -m 700 "$evidence"
+          echo "GN1_TWO_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/gn1-two-compiled-target-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          printf '%s\n' "$GITHUB_SHA" > "$evidence/source-sha.original.txt"
+          printf '%s\n' "GN1_INERT_SOURCE_AND_RUST_ONLY_NO_NATIVE_OWNER_NO_GRAPH_SAVE" \
+            > "$evidence/scope.original.txt"
           test "$GITHUB_REPOSITORY" = seradotcom/motionwright
           test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-          python3 -B tooling/source_policy.py
-          python3 -B -m unittest -q tooling.tests.test_ci_graph_gn1_selected
-          python3 -B - <<'PY'
+          python3 -B tooling/source_policy.py > "$evidence/source-policy.original.stdout" 2> "$evidence/source-policy.original.stderr"
+          python3 -B -m unittest -q tooling.tests.test_ci_graph_gn1_selected > "$evidence/source-selector.original.stdout" 2> "$evidence/source-selector.original.stderr"
+          python3 -B - <<'PY' > "$evidence/source-contract.original.stdout" 2> "$evidence/source-contract.original.stderr"
           from pathlib import Path
           import re
           gn1 = Path(".github/workflows/graph-native-startup-dev.yml").read_text()
@@ -83,14 +91,7 @@ jobs:
           ):
               assert found.count(required) == 1, required
           PY
-          evidence="$RUNNER_TEMP/gn1-two-rust-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          test ! -e "$evidence"
-          mkdir -m 700 "$evidence"
-          echo "GN1_TWO_EVIDENCE=$evidence" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/gn1-two-compiled-target-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-          printf '%s\n' "$GITHUB_SHA" > "$evidence/source-sha.original.txt"
-          printf '%s\n' "GN1_INERT_SOURCE_AND_RUST_ONLY_NO_NATIVE_OWNER_NO_GRAPH_SAVE" \
-            > "$evidence/scope.original.txt"
+
       - name: Run exact 18 GN1 source and custody denial tests
         shell: bash
         run: |

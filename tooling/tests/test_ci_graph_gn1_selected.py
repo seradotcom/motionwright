@@ -116,6 +116,31 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         self.assertNotIn("$GN1_TWO_EVIDENCE/", target)
         self.assertIn("GN1_TWO_EVIDENCE ||", self.workflow)
 
+    def test_source_admission_failures_retain_original_outputs_before_exit(self):
+        # An admission error must not erase its own first-causal source logs.
+        block = self.workflow.split(
+            "- name: Bind exact source, preserve Native-owner manual-only invariant",
+            1,
+        )[1].split("- name: Run exact 18 GN1 source and custody denial tests", 1)[0]
+        evidence = block.index('echo "GN1_TWO_EVIDENCE=$evidence" >> "$GITHUB_ENV"')
+        policy = block.index("python3 -B tooling/source_policy.py")
+        selector = block.index("python3 -B -m unittest -q tooling.tests.test_ci_graph_gn1_selected")
+        contract = block.index("python3 -B - <<'PY'")
+        self.assertLess(evidence, policy)
+        self.assertLess(policy, selector)
+        self.assertLess(selector, contract)
+        for name in (
+            "source-policy.original.stdout",
+            "source-policy.original.stderr",
+            "source-selector.original.stdout",
+            "source-selector.original.stderr",
+            "source-contract.original.stdout",
+            "source-contract.original.stderr",
+        ):
+            self.assertIn('"$evidence/' + name + '"', block)
+        self.assertIn('if: always()', self.workflow)
+        self.assertIn("GN1_TWO_EVIDENCE ||", self.workflow)
+
     def test_originals_have_portable_sha_and_no_self_hash(self):
         self.assertEqual(
             self.workflow.count(
