@@ -1,0 +1,184 @@
+name: A6 One Graph first-Save development diagnostic
+
+# One fresh development-branch push; NEVER phase1-native-graph/R74/G2.
+# This authentic case exercises Studio -> source-built StudioService -> SQLite.
+# It does NOT certify Native Host, a production render, or formal F.
+on:
+  push:
+    branches: ['verify/graph-firstsave-dev-a6-20261109-01']
+    paths: ['.github/workflows/graph-firstsave-development.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firstsave-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  one-graph-flow-save:
+    if: ${{ github.event_name == 'push' && github.event.created && github.run_attempt == 1 && github.event.before == '0000000000000000000000000000000000000000' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+      CI: '1'
+      NO_COLOR: '1'
+      CARGO_TERM_COLOR: never
+      A6_PRODUCT_BASE: aef9c7f9af01480703629423464b3935d32f7386
+      MOTIONWRIGHT_CANDIDATE_BUILD: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Admit one exact branch creation with CI-only delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          test "$GITHUB_REF" = refs/heads/verify/graph-firstsave-dev-a6-20261109-01
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          test "$A6_PRODUCT_BASE" = "$(git rev-parse HEAD^)"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD)" = \
+            .github/workflows/graph-firstsave-development.yml
+          python3 -B tooling/source_policy.py
+          mkdir -p verification/graph-firstsave-dev
+          printf '%s\n' "$GITHUB_SHA" > verification/graph-firstsave-dev/source-sha.original.txt
+          printf '%s\n' "$A6_PRODUCT_BASE" > verification/graph-firstsave-dev/product-base-sha.original.txt
+          python3 -B - <<'PY'
+          import json
+          from pathlib import Path
+          Path("verification/graph-firstsave-dev/scope.original.json").write_text(
+              json.dumps({
+                  "schema": "motionwright.graph-firstsave-dev/1",
+                  "case": "graph-flow",
+                  "scope": "REAL_STUDIO_STUDIOSERVICE_SQLITE_ONLY",
+                  "native_host": "NOT_RUN",
+                  "R74": "NOT_RUN_FORMAL",
+                  "Graph6": "0/6",
+                  "G2": "NOT_GRANTED",
+                  "F": "HOLD",
+                  "automatic_retry": False,
+              }, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: '1.98.1'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Build one source-exact real Rust StudioService
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/graph-firstsave-dev-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          export CARGO_TARGET_DIR="$root/target"
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+          cargo build --locked --jobs 1 -p motionwright-service \
+            --example studio_review_session --message-format=json \
+            > verification/graph-firstsave-dev/cargo-build.original.jsonl \
+            2> verification/graph-firstsave-dev/cargo-build.original.stderr.log
+          python3 -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          e = Path("verification/graph-firstsave-dev")
+          rows = [json.loads(line) for line in
+                  (e/"cargo-build.original.jsonl").read_bytes().splitlines() if line.strip()]
+          assert any(x.get("reason") == "build-finished" and x.get("success") is True
+                     for x in rows), "RUST_SERVICE_BUILD_NOT_FINISHED"
+          matches = [x for x in rows if x.get("reason") == "compiler-artifact"
+                     and x.get("target", {}).get("name") == "studio_review_session"
+                     and "example" in x.get("target", {}).get("kind", [])
+                     and x.get("executable")]
+          assert len(matches) == 1, "REAL_SERVICE_BINARY_AMBIGUOUS"
+          binary = Path(matches[0]["executable"]).resolve(strict=True)
+          expected = (Path(os.environ["CARGO_TARGET_DIR"]) /
+                      "debug/examples/studio_review_session").resolve(strict=True)
+          assert binary == expected and binary.is_file() and not binary.is_symlink()
+          assert 0 < binary.stat().st_size <= 256 * 1024 * 1024
+          record = {"source_sha": os.environ["GITHUB_SHA"],
+                    "product_base_sha": os.environ["A6_PRODUCT_BASE"],
+                    "service_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    "real_sqlite": True, "native_host": "NOT_RUN", "G2": "NOT_GRANTED"}
+          (e/"real-service-binding.original.json").write_text(
+              json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("MOTIONWRIGHT_SERVICE_TEST_BIN=" + str(binary) + "\n")
+              env.write("MOTIONWRIGHT_SERVICE_TEST_TMPDIR=" +
+                        str(Path(os.environ["CARGO_TARGET_DIR"]).parent) + "\n")
+          PY
+
+      - name: Install locked Studio and isolated Chromium
+        working-directory: apps/studio
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Exactly one real StudioService SQLite Graph flow Save
+        working-directory: apps/studio
+        shell: bash
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/verification/graph-firstsave-dev/playwright.original.json
+        run: |
+          set -euo pipefail
+          test -x "$MOTIONWRIGHT_SERVICE_TEST_BIN"
+          test -z "${MOTIONWRIGHT_GRAPH_NATIVE_CASE:-}"
+          test -z "${MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL:-}"
+          ./node_modules/.bin/playwright test \
+            tests/semantic-graph-service.spec.ts \
+            --project=chromium --workers=1 --retries=0 --repeat-each=1 \
+            --max-failures=1 --forbid-only --timeout=120000 \
+            --grep '^Synthetic flow stores exact event times and rejects a real stale CAS without a new event$' \
+            --reporter=json 2>&1 | tee ../../verification/graph-firstsave-dev/playwright-console.original.log
+          python3 -B - <<'PY'
+          import json
+          from pathlib import Path
+          report = Path("../../verification/graph-firstsave-dev/playwright.original.json")
+          data = json.loads(report.read_text(encoding="utf-8"))
+          stats = data["stats"]
+          assert stats.get("expected") == 1
+          assert stats.get("unexpected") == stats.get("skipped") == stats.get("flaky") == 0
+          def specs(groups):
+              for group in groups:
+                  yield from group.get("specs", [])
+                  yield from specs(group.get("suites", []))
+          entries = list(specs(data.get("suites", [])))
+          assert len(entries) == 1
+          assert entries[0].get("title") == "Synthetic flow stores exact event times and rejects a real stale CAS without a new event"
+          rows = entries[0].get("tests", [])
+          assert len(rows) == 1 and rows[0].get("status") == "expected"
+          Path("../../verification/graph-firstsave-dev/firstsave.result.original.json").write_text(
+              json.dumps({"case": "graph-flow", "one_real_service_sqlite_save": "PASS",
+                          "stale_CAS_rejected": True, "native_host": "NOT_RUN",
+                          "Graph6": "0/6", "G2": "NOT_GRANTED"},
+                         sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Hash original evidence without granting G2
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verification/graph-firstsave-dev
+          find verification/graph-firstsave-dev -maxdepth 1 -type f -name '*.original.*' -print0 |
+            sort -z | xargs -0 -r sha256sum \
+            > verification/graph-firstsave-dev/originals.sha256
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: graph-firstsave-dev-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/graph-firstsave-dev/
+          if-no-files-found: warn
+          retention-days: 7
