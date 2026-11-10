@@ -75,12 +75,23 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     const source = structuredClone(project);
     await service.attachPage(page, project.id);
     await page.goto("/");
+    // The Graph's original reference frame is minted from Studio's selected
+    // display profile at the moment its editor is created. Retargeting only
+    // "Graph Deliverable" afterwards keeps the previous frame and makes
+    // the first native Save fail its exact profile-dimension admission.
+    // Select the A4-owned profile BEFORE creating the source (no rescaling,
+    // new project write or fabricated Native context).
+    await field(page, "Editor preview timebase").selectOption(profile.id);
+    await expect(field(page, "Editor preview timebase")).toHaveValue(profile.id);
     await button(page, "Production").click();
     await field(page, "Production working scene").selectOption(scene.id);
     await button(page, "Graph").click();
     await expect(page.getByRole("heading", { name: "Semantic Graph", exact: true })).toBeVisible();
     await field(page, "Graph source").selectOption("new:system_flow");
-    await field(page, "Graph Deliverable").selectOption(profile.id);
+    await expect(field(page, "Graph Deliverable")).toHaveValue(profile.id);
+    await expect(page.getByText(new RegExp(
+      "Authored frame: " + profile.width + " × " + profile.height + "\\. Geometry is retained",
+    ))).toBeVisible();
     await field(page, "Graph author label").fill("Native development test author");
     await field(page, "Graph rationale").fill("One real Native Save and independent Store reopen; not release acceptance.");
     await field(page, "Graph motion").selectOption("off");
