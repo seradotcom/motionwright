@@ -29,6 +29,8 @@ REQUIRED_PR_PATHS = (
     "tooling/ci_affected_rust_diagnostics.py",
     # Retain the original native entrypoints and current Rust/SDK source.
     "tooling/native_manim_e2e.py",
+    "tooling/native_manim_artifact_original.py",
+    "tooling/tests/test_native_manim_artifact_zip_original.py",
     "tooling/native_manim_resume_host.py",
     "tooling/native_manim_frozen_runtime_host.py",
     "tooling/tests/test_native_manim_resume.py",
@@ -63,6 +65,30 @@ class NativeManimPullRequestWatchTests(unittest.TestCase):
         uncovered = [p for p in REQUIRED_PR_PATHS
                      if not any(fnmatchcase(p, glob) for glob in patterns)]
         self.assertEqual(uncovered, [], "Manim PR source-gate blind spots")
+
+    def test_original_zip_regressions_run_in_source_only_pr_step(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        marker = "      - name: Verify Manim PR source recovery and custody path routing"
+        self.assertEqual(workflow.count(marker), 1)
+        source_step = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
+        command = ("python3 -B -m unittest "
+                   "tooling.tests.test_native_manim_artifact_zip_original -v")
+        self.assertEqual(source_step.count(command), 1)
+        self.assertNotIn("workflow_dispatch", source_step)
+        self.assertNotIn("cargo ", source_step)
+
+    def test_original_zip_source_ci_requires_ten_executed_no_skips_and_retained_originals(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        marker = "      - name: Verify Manim PR source recovery and custody path routing"
+        source_step = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("tooling.tests.test_native_manim_artifact_zip_original -v", source_step)
+        self.assertIn("Ran 10 tests in", source_step)
+        self.assertIn("ZIP_SOURCE_TEN_EXACT_UNSKIPPED", source_step)
+        self.assertIn("test_native_manim_artifact_zip_original.py", source_step)
+        self.assertIn("unittest.stdout.original.log", source_step)
+        self.assertIn("unittest.stderr.original.log", source_step)
+        self.assertIn("manim-zip-original-source", source_step)
+        self.assertIn("${{ runner.temp }}/manim-zip-original-source/", workflow)
 
     def test_affected_rust_diagnostics_source_is_parsed_without_dispatch(self):
         text = WORKFLOW.read_text(encoding="utf-8")

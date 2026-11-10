@@ -67,6 +67,12 @@ on:
       - 'third_party/semwright-source-evidence/**'
   workflow_dispatch:
     inputs:
+      verification_scope:
+        description: Source-only Graph fast lane or precisely eight Studio regressions
+        type: choice
+        required: true
+        default: source
+        options: [source, studio-selected]
       expected_source_sha:
         description: Exact published Graph development source SHA
         type: string
@@ -87,6 +93,7 @@ concurrency:
 
 jobs:
   graph-source-intake:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source' }}
     name: Graph first-case source intake (not Native G2)
     runs-on: ubuntu-24.04
     timeout-minutes: 8
@@ -214,3 +221,163 @@ jobs:
             knowledge/runtime/graph-fast-sem-pin-audit.original.json
           if-no-files-found: warn
           retention-days: 7
+
+  # Manual only; eight selected Studio source/editor tests. No native Graph effects.
+  studio-graph-selected:
+    # No native Graph effects; source/component tests only, never physical G2.
+    name: Eight reviewed Studio Graph source regressions (not physical G2)
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'studio-selected') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CI: '1'
+      NO_COLOR: '1'
+      FORCE_COLOR: '0'
+      EXPECTED_GRAPH_SHA: ${{ github.event_name == 'push' && github.sha || inputs.expected_source_sha }}
+      GRAPH_SELECTED_BASE: ${{ github.event_name == 'push' && github.event.before || inputs.base_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 100
+      - name: Select exact changed Studio sources, not a repeated full Graph run
+        id: source_case
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_GRAPH_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GRAPH_SELECTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_GRAPH_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git cat-file -e "$GRAPH_SELECTED_BASE^{commit}"
+          mkdir -p ci-evidence/graph-studio-selected
+          printf '%s\n' "$GITHUB_SHA" > ci-evidence/graph-studio-selected/source-sha.original.txt
+          python3 -B - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          selected_titles = {
+              "apps/studio/src/semanticGraphDraft.test.ts": (
+                  "removes the original saved UUID",
+                  "still denies removal without the original source admission",
+              ),
+              "apps/studio/src/semanticGraph.test.ts": (
+                  "suggests the earliest non-overlapping authored frame",
+                  "uses the next edge when the first edge is full",
+              ),
+              "apps/studio/tests/semantic-graph-authority.spec.ts": (
+                  "Graph removal uses the saved source",
+                  "Graph flow adds sequential exact-frame events",
+                  "Graph stale waypoint typing after removal cannot overwrite its successor",
+                  "Vertex removal cannot silently remove edges, and flow exposes actual synthetic event controls",
+              ),
+          }
+          impact = {
+              ".github/workflows/graph-development-fast.yml",
+              "tooling/tests/test_ci_graph_studio_selected.py",
+              "apps/studio/src/SemanticGraphWorkbench.tsx",
+              "apps/studio/src/semanticGraph.ts",
+              "apps/studio/src/semanticGraphDraft.ts",
+              "apps/studio/src/semanticGraph.test.ts",
+              "apps/studio/src/semanticGraphDraft.test.ts",
+              "apps/studio/tests/semantic-graph-authority.spec.ts",
+          }
+          changed = set(subprocess.check_output(
+              ["git", "diff", "--name-only", os.environ["GRAPH_SELECTED_BASE"], "HEAD"],
+              text=True).splitlines())
+          assert sum(map(len, selected_titles.values())) == 8
+          ready = all(Path(path).is_file() and all(
+              Path(path).read_text(encoding="utf-8").count(title) == 1
+              for title in titles) for path, titles in selected_titles.items())
+          affected = bool(changed & impact)
+          selected = ready and (affected or os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch")
+          state = "SELECTED_8_STUDIO_TESTS" if selected else "NOT_RUN_SOURCE_ROSTER_OR_IMPACT"
+          Path("ci-evidence/graph-studio-selected/selection.original.json").write_text(
+              json.dumps({"source_sha": os.environ["GITHUB_SHA"],
+                          "base_sha": os.environ["GRAPH_SELECTED_BASE"],
+                          "selection": state, "roster_present": ready,
+                          "affected": affected}, sort_keys=True) + "\n",
+              encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("selected=" + ("true" if selected else "false") + "\n")
+          if selected:
+              subprocess.run(["python3", "-B", "tooling/source_policy.py"], check=True)
+          PY
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.source_case.outputs.selected == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Install locked Studio test tools and verify editor security probe
+        if: steps.source_case.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix apps/studio --no-audit --no-fund
+          node tooling/vite_editor_security_probe.mjs
+      - name: Test exactly four changed Graph Vitest cases
+        if: steps.source_case.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd apps/studio
+            ./node_modules/.bin/vitest run \
+              src/semanticGraphDraft.test.ts src/semanticGraph.test.ts \
+              --testNamePattern 'removes the original saved UUID|still denies removal without the original source admission|suggests the earliest non-overlapping authored frame|uses the next edge when the first edge is full'
+          ) 2>&1 | tee ci-evidence/graph-studio-selected/vitest.original.log
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import re
+          raw = Path("ci-evidence/graph-studio-selected/vitest.original.log").read_text()
+          plain = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+          assert re.search(r"\bTests\s+4 passed\b", plain), "EXPECTED_EXACT_4_VITEST"
+          assert not re.search(r"\bTests\s+\d+ failed\b", plain), "VITEST_FAILED"
+          PY
+      - name: Prepare isolated Chromium browser
+        if: steps.source_case.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd apps/studio
+            ./node_modules/.bin/playwright install --with-deps chromium
+          )
+      - name: Test exactly four changed Graph source-component UI cases
+        if: steps.source_case.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd apps/studio
+            ./node_modules/.bin/playwright test \
+              tests/semantic-graph-authority.spec.ts \
+              --project=chromium --workers=1 \
+              --grep 'Graph removal uses the saved source|Graph flow adds sequential exact-frame events|Graph stale waypoint typing after removal cannot overwrite its successor|Vertex removal cannot silently remove edges, and flow exposes actual synthetic event controls'
+          ) 2>&1 | tee ci-evidence/graph-studio-selected/playwright.original.log
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import re
+          raw = Path("ci-evidence/graph-studio-selected/playwright.original.log").read_text()
+          plain = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+          assert re.search(r"(?m)^\s*4 passed\s*\(", plain), "EXPECTED_EXACT_4_PLAYWRIGHT"
+          assert not re.search(r"(?m)^\s*[1-9]\d* failed\s*\(", plain), "PLAYWRIGHT_FAILED"
+          PY
+      - name: Hash retained original logs without writing status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/graph-studio-selected
+          find ci-evidence/graph-studio-selected -name '*.original.log' -type f -print0 |
+            sort -z | xargs -0 -r sha256sum \
+              > ci-evidence/graph-studio-selected/originals.sha256
+      - name: Retain exact selected source, Vitest and Playwright evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: graph-studio-selected-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/graph-studio-selected/
+          retention-days: 7
+          if-no-files-found: warn

@@ -57,6 +57,8 @@ on:
       - 'crates/hyperframes-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_manim_artifact_original.py'
+      - 'tooling/tests/test_native_manim_artifact_zip_original.py'
       - 'tooling/native_manim_resume*.py'
       - 'tooling/native_manim_recovery*.py'
       - 'tooling/native_manim_frozen_runtime.py'
@@ -243,7 +245,64 @@ jobs:
         run: python3 -B -m unittest discover -s tooling/tests -p 'test_ci_manim_rustup_root.py' -v
 
       - name: Verify Manim PR source recovery and custody path routing
-        run: python3 -B -m unittest tooling.tests.test_ci_manim_pr_trigger -v
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest tooling.tests.test_ci_manim_pr_trigger -v
+          zip_dir="$RUNNER_TEMP/manim-zip-original-source"
+          test ! -e "$zip_dir"
+          mkdir -m 700 "$zip_dir"
+          python3 -B -m unittest tooling.tests.test_native_manim_artifact_zip_original -v \
+            > "$zip_dir/unittest.stdout.original.log" \
+            2> "$zip_dir/unittest.stderr.original.log"
+          python3 -B - <<'PY'
+          import ast
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          path = Path("tooling/tests/test_native_manim_artifact_zip_original.py")
+          tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+          names = [
+              method.name
+              for node in tree.body if isinstance(node, ast.ClassDef)
+              for method in node.body
+              if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and method.name.startswith("test_")
+          ]
+          if len(names) != len(set(names)) or len(names) != 10:
+              raise SystemExit("ZIP_SOURCE_TEST_ROSTER_NOT_EXACT_TEN")
+          original = Path(os.environ["RUNNER_TEMP"]) / "manim-zip-original-source"
+          out = (original / "unittest.stdout.original.log").read_bytes()
+          err = (original / "unittest.stderr.original.log").read_bytes()
+          plain = re.sub(r"\x1b\[[0-9;]*m", "",
+                         (out + b"\n" + err).decode("utf-8", "replace"))
+          if (not re.search(r"(?m)^Ran 10 tests in [0-9.]+s\r?$", plain)
+                  or not re.search(r"(?m)^OK\r?$", plain)
+                  or re.search(r"(?m)^OK \(|skipped=|expected failures|unexpected successes|FAILED", plain)):
+              raise SystemExit("ZIP_SOURCE_TEN_EXACT_UNSKIPPED_NOT_PROVEN")
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                         text=True).strip()
+          if head != os.environ["GITHUB_SHA"]:
+              raise SystemExit("ZIP_SOURCE_GIT_SHA_CHANGED")
+          receipt = {
+              "schema": "motionwright.manim-zip-source-ten-G0/1",
+              "result": "ZIP_SOURCE_TEN_EXACT_UNSKIPPED",
+              "source_sha": head,
+              "case_names": sorted(names),
+              "executed": 10,
+              "skipped": 0,
+              "stdout_sha256": hashlib.sha256(out).hexdigest(),
+              "stderr_sha256": hashlib.sha256(err).hexdigest(),
+              "Native": "NOT_RUN",
+              "G2": "NOT_GRANTED",
+          }
+          (original / "result.original.json").write_text(
+              json.dumps(receipt, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8")
+          PY
 
       - name: Require 13 writer and 32 native-observer source contracts
         run: |
@@ -957,6 +1016,7 @@ jobs:
             ${{ runner.temp }}/manim-editable-workflow-g0/
             ${{ runner.temp }}/manim-scene-publication-g0/
             ${{ runner.temp }}/manim-source284-admission/
+            ${{ runner.temp }}/manim-zip-original-source/
             ${{ runner.temp }}/manim-rust-source-contracts/
           if-no-files-found: error
           retention-days: 14

@@ -23,6 +23,8 @@ const CLOSED_FIRST_CAUSES = new Set([
   "GRAPH_DEV_ORIGINAL_WRITER_IDENTITY_UNAVAILABLE",
   "GRAPH_DEV_ORIGINAL_PROJECT_OR_EMPTY_GRAPH_SOURCE_MISMATCH",
   "GRAPH_DEV_ORIGINAL_SCENE_OR_PROFILE_MISSING",
+  "GRAPH_DEV_ORIGINAL_CONTEXT_REQUEST_NOT_PROVEN",
+  "GRAPH_DEV_STUDIO_ORIGINAL_ACK_UNCONFIRMED",
 ]);
 
 test("Graph6 dev: original Native Host flow Save and independent same-Store read-only verification", async ({ page }, info) => {
@@ -131,8 +133,40 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
           + " / " + (decoded.error_code ?? "NONE") : "");
       throw new Error(firstFailure);
     }
+    // One actual context request must cross the source-bound Native client
+    // with the same source/Scene/Deliverable the author is about to Save.
+    // A browser phase label alone cannot prove what was sent to the Host.
+    const originalContextReads = service.transcript.filter(item =>
+      item.direction === "request" && "command" in item.payload
+      && item.payload.command === "semantic_graph_authoring_context");
+    expect(originalContextReads).toHaveLength(1);
+    const exactContextRequest = originalContextReads[0].payload;
+    if (!("command" in exactContextRequest))
+      throw new Error("GRAPH_DEV_ORIGINAL_CONTEXT_REQUEST_NOT_PROVEN");
+    expect(exactContextRequest.args?.request).toEqual({
+      source_snapshot: graphSourceSnapshot(source),
+      scene_id: scene.id,
+      variant_profile_ref: profile.id,
+    });
     await expect(save).toBeEnabled();
     await save.click();
+    // A changed SQLite revision is not an ACK of this original UI request.
+    // Require Studio itself to observe and acknowledge the original Promise
+    // and to retire its pending intent BEFORE consulting saved Project data.
+    // A persisted write with a lost reply must fail this development case,
+    // retaining UNKNOWN for the original owner rather than inventing success.
+    try {
+      await expect(page.getByRole("status").filter({
+        hasText: "Saved Graph at r" + (source.revision + 1) + ".",
+      })).toBeVisible({ timeout: 30_000 });
+      await expect(button(page, "Save Graph changes")).toBeVisible();
+      await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" }))
+        .toHaveCount(0);
+    } catch {
+      // There may be a completed SQLite write whose original Promise was
+      // lost. Do not read back a matching value as proof of its UI ACK.
+      throw new Error("GRAPH_DEV_STUDIO_ORIGINAL_ACK_UNCONFIRMED");
+    }
     await expect.poll(async () => (await service!.project(source.id)).revision,
       { timeout: 30_000 }).toBe(source.revision + 1);
     const saved = await service.project(source.id) as GraphProject;
@@ -216,6 +250,8 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
       saved_revision: saved.revision, saved_graph_id: graph.id,
       event_ids: graph.content.events.map(item => item.id),
       graph_mutations: mutations.length, journal: events.map(item => item.change.type),
+      original_native_context_request_verified: true,
+      studio_original_ack_observed: true,
       independent_same_store_reopen: true,
       opened_sqlite_identity_witness_match: true,
       read_only_bootstrap_verified: true,
