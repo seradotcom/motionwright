@@ -580,7 +580,7 @@ async fn semantic_graph_authoring_context(
             .source_snapshot
             .require_current(&current)
             .map_err(sanitized)?;
-        Ok(context)
+        Ok::<_, String>(context)
     })
     .await
     .map_err(|_| GraphContextFailure::without_code(GraphContextStage::Local))?
