@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DeliverableProfile, Project, RationalTime, ReviewAnchor, Scene } from "./types";
 import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
-import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphPreviewClock, graphReviewAnchor,
+import { GRAPH_LIMITS, graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphPreviewClock, graphReviewAnchor,
   graphSame, graphSourceSnapshot, graphSuggestedFlowEventSlot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
@@ -839,7 +839,13 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           {raw.content.edges.some(edge => edge.from_vertex_id === v.id || edge.to_vertex_id === v.id) && <p>Remove or reconnect its edges before removing this vertex.</p>}
         </details>;
       })}
-      <button className="secondary-button" disabled={raw.content.vertices.length >= 32} onClick={() => { const id = crypto.randomUUID(); edit(next => { const vertex = clone(next.content.vertices[0]); vertex.id = id; vertex.label = "New concept"; vertex.meaning = "Describe this concept."; vertex.target = null; next.content.vertices.push(vertex); }, "/content/vertices/" + id); }}>Add vertex</button>
+      <button className="secondary-button" disabled={raw.content.vertices.length >= GRAPH_LIMITS.vertices} onClick={() => {
+        // React may not publish the disabled state until after a same-tick
+        // burst. The live author session, not the rendered count, is binding.
+        if (session.draft.input.content.vertices.length >= GRAPH_LIMITS.vertices) return;
+        const id = crypto.randomUUID();
+        edit(next => { const vertex = clone(next.content.vertices[0]); vertex.id = id; vertex.label = "New concept"; vertex.meaning = "Describe this concept."; vertex.target = null; next.content.vertices.push(vertex); }, "/content/vertices/" + id);
+      }}>Add vertex</button>
       <h3>Edges</h3>
       {raw.content.edges.map((e, index) => {
         const prefix = "Edge " + (index + 1), path = "/content/edges/" + e.id;
@@ -875,14 +881,20 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           </>}
           <BoxFields label={prefix + " label box"} value={e.label_box} onChange={(key, value) => change(edge => { edge.label_box[key] = value; }, "/label_box/" + key)} />
           {e.waypoints.map((point, i) => <fieldset key={i}><legend>{prefix} waypoint {i + 1}</legend>{(["x", "y"] as const).map(key => <TextField key={key} label={prefix + " waypoint " + (i + 1) + " " + key} value={point[key]} onChange={value => change(edge => { edge.waypoints[i][key] = value; }, "/waypoints")} />)}<button className="text-button" onClick={() => change(edge => { edge.waypoints.splice(i, 1); }, "/waypoints")}>Remove {prefix.toLowerCase()} waypoint {i + 1}</button></fieldset>)}
-          <button className="secondary-button" disabled={e.waypoints.length >= 8} onClick={() => change(edge => { edge.waypoints.push({ x: "0", y: "0" }); }, "/waypoints")}>Add {prefix.toLowerCase()} waypoint</button>
+          <button className="secondary-button" disabled={e.waypoints.length >= GRAPH_LIMITS.waypoints} onClick={() => {
+            const live = session.draft.input.content.edges.find(edge => edge.id === e.id);
+            if (!live || live.waypoints.length >= GRAPH_LIMITS.waypoints) return;
+            change(edge => { edge.waypoints.push({ x: "0", y: "0" }); }, "/waypoints");
+          }}>Add {prefix.toLowerCase()} waypoint</button>
           <RationalFields label={prefix + " appearance start"} value={e.appearance.at} onChange={(value, part) => change(edge => { edge.appearance.at = value; }, "/appearance/at/" + part)} />
           <RationalFields label={prefix + " appearance duration"} value={e.appearance.duration} onChange={(value, part) => change(edge => { edge.appearance.duration = value; }, "/appearance/duration/" + part)} />
           <button className="text-button" disabled={raw.content.kind === "system_flow" && raw.content.events.some(event => event.edge_id === e.id)} onClick={() => edit(next => { if (next.content.kind === "causal_diagram") next.content.edges = next.content.edges.filter(edge => edge.id !== e.id); else next.content.edges = next.content.edges.filter(edge => edge.id !== e.id); }, path)}>Remove {prefix.toLowerCase()}</button>
         </details>;
       })}
-      <button className="secondary-button" disabled={raw.content.vertices.length < 2 || raw.content.edges.length >= 64 || !profile} onClick={() => {
-        if (!profile) return; const base = graphToRaw(newSemanticGraph(props.project, props.scene!, profile, raw.content.kind)).content.edges[0], id = crypto.randomUUID();
+      <button className="secondary-button" disabled={raw.content.vertices.length < 2 || raw.content.edges.length >= GRAPH_LIMITS.edges || !profile} onClick={() => {
+        const live = session.draft.input;
+        if (!profile || live.content.vertices.length < 2 || live.content.edges.length >= GRAPH_LIMITS.edges) return;
+        const base = graphToRaw(newSemanticGraph(props.project, props.scene!, profile, live.content.kind)).content.edges[0], id = crypto.randomUUID();
         edit(next => { const edge = { ...base, id, from_vertex_id: next.content.vertices[0].id, to_vertex_id: next.content.vertices[1].id };
           if (next.content.kind === "causal_diagram" && "basis" in edge) next.content.edges.push(edge); else if (next.content.kind === "system_flow" && "channel" in edge) next.content.edges.push(edge); }, "/content/edges/" + id);
       }}>Add edge</button>

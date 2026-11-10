@@ -109,6 +109,23 @@ describe("closed semantic Graph editorial contract", () => {
       .toEqual({ edge_id: edge.id, at: graphFrameTime(2, fractional) });
     expect(graph.content.events).toEqual([]);
   });
+  it("does not offer a 65th synthetic event even when more frames are free", () => {
+    const { graph, profile } = source("system_flow");
+    if (graph.content.kind !== "system_flow") throw new Error("Expected system flow");
+    const edge = graph.content.edges[0], rate = profile.frame_rate;
+    const frame = graphFrameTime(1, rate);
+    const events = Array.from({ length: 64 }, (_, index) => ({
+      edge_id: edge.id,
+      at: graphFrameTime(index + 2, rate),
+      duration: frame,
+    }));
+    const before = structuredClone(events);
+    expect(graphSuggestedFlowEventSlot({ edges: [edge], events: events.slice(0, 63) },
+      graph.time_range.duration, rate)).toEqual({ edge_id: edge.id, at: graphFrameTime(65, rate) });
+    expect(graphSuggestedFlowEventSlot({ edges: [edge], events },
+      graph.time_range.duration, rate)).toBeNull();
+    expect(events).toEqual(before);
+  });
   it("does not advertise a new flow event on an edge whose existing time is incomplete", () => {
     const { graph, profile } = source("system_flow");
     if (graph.content.kind !== "system_flow") throw new Error("Expected system flow.");

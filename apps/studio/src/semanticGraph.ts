@@ -324,6 +324,10 @@ export function graphSuggestedFlowEventSlot(
   duration: RationalTime,
   rate: RationalTime,
 ): { edge_id: string; at: RationalTime } | null {
+  // This helper is called again by the live event handler, not only when
+  // React renders the disabled button. Same-tick click bursts must never
+  // create a 65th event while its previous disabled state is still stale.
+  if (flow.events.length >= GRAPH_LIMITS.events) return null;
   const frame = graphFrameTime(1, rate);
   for (const edge of flow.edges) {
     try {

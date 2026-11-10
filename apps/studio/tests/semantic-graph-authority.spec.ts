@@ -52,6 +52,52 @@ test("Graph flow adds sequential exact-frame events without creating a default o
   expect(await requestCount(page)).toBe(1);
 });
 
+test("Graph flow same-render burst cannot exceed the 64-event author budget", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph source").selectOption("new:system_flow");
+  await page.evaluate(() => {
+    // All clicks arrive before React can publish the disabled button state.
+    // Each edit reaches the live author session synchronously.
+    const add = Array.from(document.querySelectorAll("button"))
+      .find(button => button.textContent?.trim() === "Add synthetic event");
+    if (!(add instanceof HTMLButtonElement) || add.disabled)
+      throw new Error("Expected the active flow event author control");
+    for (let i = 0; i < 70; i++) add.click();
+  });
+  await expect(page.locator("[data-graph-event]")).toHaveCount(64);
+  await expect(button(page, "Add synthetic event")).toBeDisabled();
+  expect(await requestCount(page)).toBe(0);
+});
+
+test("Graph same-render bursts honor vertex, edge and waypoint author budgets", async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    const activate = (label: string, count: number) => {
+      const add = [...document.querySelectorAll("button")]
+        .find(button => button.textContent?.trim() === label);
+      if (!(add instanceof HTMLButtonElement) || add.disabled)
+        throw new Error("Missing live Graph author control: " + label);
+      for (let i = 0; i < count; i++) add.click();
+    };
+    // No React rerender between these 122 activations. Only live author
+    // session limits, not captured disabled props, can preserve the domain.
+    activate("Add vertex", 40);
+    activate("Add edge", 70);
+    activate("Add edge 1 waypoint", 12);
+  });
+  await expect(page.locator("[data-graph-vertex]")).toHaveCount(32);
+  await expect(page.locator("[data-graph-edge]")).toHaveCount(64);
+  // The first edge details are collapsed. CSS reads the authored waypoint
+  // controls without interpreting their hidden accessibility state.
+  await expect(page.locator("[data-graph-edge]").first().locator("button.text-button")
+    .filter({ hasText: /^Remove edge 1 waypoint / })).toHaveCount(8);
+  await expect(button(page, "Add vertex")).toBeDisabled();
+  await expect(button(page, "Add edge")).toBeDisabled();
+  await expect(page.locator("[data-graph-edge]").first().locator("button.secondary-button")
+    .filter({ hasText: /^Add edge 1 waypoint$/ })).toBeDisabled();
+  expect(await requestCount(page)).toBe(0);
+});
+
 test("Graph flow refuses out-of-interval defaults but can use another free edge", async ({ page }) => {
   await open(page);
   await field(page, "Graph source").selectOption("new:system_flow");
