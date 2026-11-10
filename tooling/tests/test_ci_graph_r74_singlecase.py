@@ -162,7 +162,17 @@ class GraphFlowOriginalSelectionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
         self.assertIn("graph_case_mode:", workflow)
-        self.assertIn("options: [all, graph-flow]", workflow)
+        mode = workflow.split("      graph_case_mode:\n", 1)[1].split(
+            "      graph_review_spki_der_base64:\n", 1)[0]
+        self.assertIn("options: [all, graph-flow, development-first-save]", mode)
+        steps = workflow.split("\n      - name:")
+        for action in ("wait", "run"):
+            selected = [step for step in steps if "graph " + action + " --repo ." in step]
+            self.assertEqual(len(selected), 1, action)
+            self.assertIn("inputs.graph_case_mode != 'development-first-save'", selected[0])
+        development = [step for step in steps if "graph development-run --repo ." in step]
+        self.assertEqual(len(development), 1)
+        self.assertIn("inputs.graph_case_mode == 'development-first-save'", development[0])
         self.assertEqual(workflow.count("MOTIONWRIGHT_GRAPH_CASE_MODE:"), 1)
         self.assertIn("MOTIONWRIGHT_GRAPH_CASE_MODE: ${{ inputs.graph_case_mode }}", workflow)
         self.assertIn("graph produce --repo .", workflow)

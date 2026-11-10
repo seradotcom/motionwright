@@ -7906,6 +7906,17 @@ GRAPH_WORKFLOW = ".github/workflows/studio-service-verification.yml"
 GRAPH_DEADLINE_ENV = "MOTIONWRIGHT_GRAPH_DEADLINE_SHA256"
 GRAPH_TOKEN_ENV = "MOTIONWRIGHT_GRAPH_METADATA_TOKEN"
 GRAPH_INDEX_SCHEMA = "motionwright.private.graph-producer-reference-index/0"
+GRAPH_DEVELOPMENT_INDEX_SCHEMA = "motionwright.private.graph-development-producer-reference-index/1"
+GRAPH_DEVELOPMENT_SCOPE = "phase1-native-graph-development"
+GRAPH_DEVELOPMENT_CASES = (("graph-flow",
+    "Graph6 dev: original Native Host flow Save and independent same-Store read-only verification", (2,)),)
+GRAPH_DEVELOPMENT_SOURCES = (
+    "tooling/graph_development.py",
+    "apps/studio/tooling/graph_dev_native_owner_port.ts",
+    "apps/studio/tooling/graph_dev_first_save.spec.ts",
+    "apps/studio/tooling/graph_dev_first_save.config.ts",
+    "apps/studio/tests/support/graph-owner/dev_live_reader.mjs",
+)
 GRAPH_BYTES = 1024 * 1024
 GRAPH_BUDGET = {
     "producer_bytes": 384 * GRAPH_BYTES, "producer_members": 768,
@@ -7999,7 +8010,7 @@ GRAPH_AUTHORITY = (*GRAPH_IMPORTS, *GRAPH_CALLGRAPH,
     "apps/studio/tests/support/nativeGraphCase.ts", "apps/studio/playwright.config.ts",
     *("apps/studio/tests/support/graph-owner/" + name for name in (
         "producer_guard.mjs", "factory.mjs", "sdk_ticket_prewrite.mjs", "custody.mjs", "contracts.mjs",
-        "same_store_reopen.mjs", "opened_store_descriptor.mjs", "opened_store_identity_join.mjs",
+        "same_store_reopen.mjs", "opened_store_descriptor.mjs", "opened_store_identity_join.mjs", "dev_live_reader.mjs",
         "schemas/spec.r2.json", "schemas/final.r2.json")))
 GRAPH_CONTRACT_FIELDS = {"source_files", "sdk_tree", "sdk_files", "builds", "ordinary_preflight",
     "runtime", "callback_roster", "native_enforcement", "native_enforcing_source", "native_executable_inputs",
@@ -8247,8 +8258,10 @@ def graph_process_original(value, expected, remember):
     return command, remember(value["stdout"], 64 * GRAPH_BYTES)
 
 
-def graph_verify_producer_index(index_ref, case_id):
-    """Original byte/causality checks. The caller must separately authenticate R74.
+def graph_verify_producer_index(index_ref, case_id, *, development=False):
+    """Original byte/causality checks, never formal or development authority.
+
+    The caller must separately authenticate R74 or the explicit development run.
 
     This function never turns a reference map into authority. The owner invokes
     it only after independently observing the exact external status and binding
@@ -8269,7 +8282,8 @@ def graph_verify_producer_index(index_ref, case_id):
     require(set(index) == {"schema", "source", "binaries", "runtime", "source_original", "sdk_original", "builds",
                            "ordinary_preflight", "runtime_originals", "callback_roster", "native_enforcement",
                            "native_executable_inputs", "contract"}
-            and index["schema"] == GRAPH_INDEX_SCHEMA and set(index["contract"]) == GRAPH_CONTRACT_FIELDS,
+            and index["schema"] == (GRAPH_DEVELOPMENT_INDEX_SCHEMA if development else GRAPH_INDEX_SCHEMA)
+            and set(index["contract"]) == GRAPH_CONTRACT_FIELDS,
             "Graph acyclic index contract fields")
     contract, source, binaries = index["contract"], index["source"], index["binaries"]
     require(set(binaries) == set(GRAPH_ROLES) and len({ref["path"] for ref in binaries.values()}) == 10,
@@ -8277,13 +8291,26 @@ def graph_verify_producer_index(index_ref, case_id):
     execution = contract["execution"]
     base_execution = {"scope", "job", "job_id", "deadline_original", "deadline_unix_ms", "producer_root", "cases_root", "budget"}
     selected_case = execution.get("selected_case")
-    selected_rows = graph_case_rows(selected_case)
-    require(set(execution) == (base_execution if selected_case is None else base_execution | {"selected_case"})
-            and execution["scope"] == GRAPH_SCOPE and execution["job"] == "real-service"
+    case_roster = GRAPH_DEVELOPMENT_CASES if development else GRAPH_CASES
+    selected_rows = case_roster if development else graph_case_rows(selected_case)
+    expected_execution = base_execution if selected_case is None else base_execution | {"selected_case"}
+    if development:
+        require(selected_case == "graph-flow", "Graph development admits one original case")
+        expected_execution |= {"development_request"}
+        request_ref = execution["development_request"]
+        require(request_ref["path"] == str(Path(execution["producer_root"]) / "development-dispatch.original.json"),
+                "Graph development original dispatch location")
+        dispatch = graph_json(remember(request_ref, GRAPH_BYTES))
+        require(dispatch.get("inputs", {}).get("selection") == GRAPH_SCOPE
+                and dispatch["inputs"].get("graph_case_mode") == "development-first-save",
+                "Graph development explicit original selection")
+    require(set(execution) == expected_execution
+            and execution["scope"] == (GRAPH_DEVELOPMENT_SCOPE if development else GRAPH_SCOPE)
+            and execution["job"] == "real-service"
             and execution["budget"] == GRAPH_BUDGET, "Graph finite original allocation")
-    require(set(contract["cases"]) == {row[0] for row in GRAPH_CASES}
+    require(set(contract["cases"]) == {row[0] for row in case_roster}
             and case_id in {row[0] for row in selected_rows}, "Graph closed reviewed-case roster")
-    for name in GRAPH_AUTHORITY:
+    for name in (*GRAPH_AUTHORITY, *(GRAPH_DEVELOPMENT_SOURCES if development else ())):
         require(name in contract["source_files"], "Graph authority source omitted: " + name)
     for ref_name, root_name, expected_sha, expected_tree, files in (
         ("source_original", "repository_root", source["sha"], source["tree"], contract["source_files"]),
@@ -8410,8 +8437,8 @@ def graph_verify_producer_index(index_ref, case_id):
     require(roster == contract["callback_roster"] and native == contract["native_enforcement"]
             and contract["native_enforcing_source"] == contract["source_files"]["crates/native/examples/native-graph-review-session.rs"]
             and contract["native_enforcing_source"]["sha256"] != "f0cc2efc496f1ab13458395c10b09f502a5cbdc12f906827378c5e40b1716dd9", "Graph reviewed Native cumulative enforcement source")
-    require(roster["cases"] == [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in GRAPH_CASES], "Graph callback source roster")
-    for case, title, caps in GRAPH_CASES:
+    require(roster["cases"] == [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in case_roster], "Graph callback source roster")
+    for case, title, caps in case_roster:
         row = contract["cases"][case]
         require(set(row) == {"title", "callback_caps", "roster_source_files"} and row["title"] == title
                 and row["callback_caps"] == list(caps) and set(GRAPH_CALLGRAPH) <= set(row["roster_source_files"])
@@ -9081,14 +9108,26 @@ def graph_produce(repo, recipient):
     repo, root = graph_layout(repo); clock = GraphOriginalClock(root)
     output, producer, runtime, sdk = root / "e", root / "e/graph-producer", root / "runtime", root / "sdk"
     case_mode = os.environ.get(GRAPH_CASE_MODE_ENV, "all")
-    require(case_mode in ("all", "graph-flow"), "Graph explicit reviewed selection must be all or graph-flow")
-    selected_case = None if case_mode == "all" else case_mode
-    selected_rows = graph_case_rows(selected_case)
+    require(case_mode in ("all", "graph-flow", "development-first-save"), "Graph closed execution selection")
+    development = case_mode == "development-first-save"
+    selected_case = "graph-flow" if development else None if case_mode == "all" else case_mode
+    case_roster = GRAPH_DEVELOPMENT_CASES if development else GRAPH_CASES
+    selected_rows = case_roster if development else graph_case_rows(selected_case)
     for case, _, _ in selected_rows:
         graph_case_layout(output / "graph-cases", case)
     require(not output.exists() and not sdk.exists() and not runtime.exists(), "Graph once-only fresh production roots")
     output.mkdir(mode=0o700); producer.mkdir(mode=0o700); (producer / "consumption").mkdir(mode=0o700)
     source_sha = os.environ["GITHUB_SHA"]
+    development_request = None
+    if development:
+        event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+        raw_event = graph_read(graph_ref(event_path, GRAPH_BYTES), GRAPH_BYTES)
+        event = graph_json(raw_event)
+        require(event.get("inputs", {}).get("selection") == GRAPH_SCOPE
+                and event["inputs"].get("graph_case_mode") == "development-first-save"
+                and event.get("repository", {}).get("full_name") == GRAPH_REPOSITORY,
+                "Graph development requires the explicit original workflow dispatch")
+        development_request = graph_put(producer / "development-dispatch.original.json", raw_event)
     runtime_python = graph_runtime_python()
     env = dict(os.environ, CARGO_INCREMENTAL="0", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
         MOTIONWRIGHT_GRAPH_PRODUCER_RUN="1", SEMWRIGHT_CHECKOUT=str(sdk),
@@ -9146,6 +9185,8 @@ def graph_produce(repo, recipient):
             import native_manim_graph_runtime_intake as intake
             _, _, intake_rows = intake._inputs(repo)
             source_paths = graph_source_paths(repo, product_targets, intake_rows)
+            if development:
+                source_paths = tuple(sorted(set((*source_paths, *GRAPH_DEVELOPMENT_SOURCES))))
             sdk_paths = tuple(sorted(set(("Cargo.toml", "Cargo.lock", "scripts/dev/ci-driver-bwrap-profile.sh",
                 *(Path(value["src_path"]).relative_to(sdk).as_posix() for value in sdk_targets.values()),
                 *(Path(row["manifest_path"]).relative_to(sdk).as_posix() for row in metadata["sdk"]["packages"]
@@ -9209,7 +9250,7 @@ def graph_produce(repo, recipient):
             native_record = native_inputs.prepare(root / "graph-native-inputs", binaries, source,
                 lambda value: graph_put_json(producer / "native-executable-inputs.intent.original.json", value))
             native_record_ref = graph_put_json(producer / "native-executable-inputs.original.json", native_record)
-            roster = {"cases": [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in GRAPH_CASES],
+            roster = {"cases": [{"case_id": case, "title": title, "callback_caps": list(caps)} for case, title, caps in case_roster],
                 "meaning": "SOURCE_DERIVED_DECLARATION_REQUIRES_INDEPENDENT_CODE_REVIEW"}
             native = {"source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],
                 "source_path": "crates/native/examples/native-graph-review-session.rs",
@@ -9217,11 +9258,14 @@ def graph_produce(repo, recipient):
             roster_ref = graph_put_json(producer / "callback-roster.original.json", roster)
             native_ref = graph_put_json(producer / "native-enforcement-source.original.json", native)
             job = next(row for row in clock.original["jobs"]["jobs"] if row["name"] == "Real SQLite and Studio / " + GRAPH_SCOPE)
-            execution = {"scope": GRAPH_SCOPE, "job": "real-service", "job_id": job["id"], "deadline_original": clock.original_ref,
+            execution = {"scope": GRAPH_DEVELOPMENT_SCOPE if development else GRAPH_SCOPE,
+                "job": "real-service", "job_id": job["id"], "deadline_original": clock.original_ref,
                 "deadline_unix_ms": clock.original["deadline_unix_ms"], "producer_root": str(producer),
                 "cases_root": str(output / "graph-cases"), "budget": GRAPH_BUDGET}
             if selected_case is not None:
                 execution["selected_case"] = selected_case
+            if development:
+                execution["development_request"] = development_request
             contract = {"source_files": source_view["files"], "sdk_tree": sdk_view["tree"], "sdk_files": sdk_view["files"],
                 "builds": {**sdk_contracts, **product_contracts},
                 "ordinary_preflight": {key: preflight["command"][key] for key in ("argv", "cwd", "selected_environment")},
@@ -9229,12 +9273,15 @@ def graph_produce(repo, recipient):
                             "inventory": inventory, "intake": runtime_intake, "profile_files": profiles},
                 "callback_roster": roster, "native_enforcement": native, "native_executable_inputs": native_record,
                 "native_enforcing_source": source_view["files"]["crates/native/examples/native-graph-review-session.rs"],
-                "cases": {case: {"title": title, "callback_caps": list(caps), "roster_source_files": list(GRAPH_CALLGRAPH)} for case, title, caps in GRAPH_CASES},
+                "cases": {case: {"title": title, "callback_caps": list(caps),
+                    "roster_source_files": list((*GRAPH_CALLGRAPH, *(GRAPH_DEVELOPMENT_SOURCES if development else ())))}
+                    for case, title, caps in case_roster},
                 "writer_sources": {role: ["tooling/ci_canvas_service.py", GRAPH_WORKFLOW,
                     "tooling/native_graph_executable_inputs.py", "tooling/ci_graph_dev_native_startup.py"]
                     for role in (*GRAPH_RUST_ROLES, "source_observation", "sdk_observation", "ordinary_preflight", "runtime", "native_executable_inputs")},
                 "execution": execution}
-            index = {"schema": GRAPH_INDEX_SCHEMA, "source": source, "binaries": binaries,
+            index = {"schema": GRAPH_DEVELOPMENT_INDEX_SCHEMA if development else GRAPH_INDEX_SCHEMA,
+                "source": source, "binaries": binaries,
                 "runtime": {"root": str(runtime), "fontconfig_root": str(Path("/etc/fonts").resolve()),
                     "manifest": inventory_ref["path"], "manifest_sha256": inventory_ref["sha256"],
                     "intake_receipt": intake_ref["path"], "intake_receipt_sha256": intake_ref["sha256"]},
@@ -9248,12 +9295,13 @@ def graph_produce(repo, recipient):
             index_ref = graph_put(producer / "producer-index.original.json", encoded)
             # Acyclic originals validation precedes the external decision. It is
             # not an approval and cannot launch an owner or a Service case.
-            graph_verify_producer_index(index_ref, selected_rows[0][0])
+            graph_verify_producer_index(index_ref, selected_rows[0][0], development=development)
             graph_runtime_unchanged(index, producer)
             graph_put_json(producer / "review-request.original.json", {"index": index_ref,
                 "source": source, "execution": execution, "outside_original_copies": review_copies,
-                "contexts": ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in selected_rows],
-                "meaning": "REQUIRES_INDEPENDENT_REVIEW_AND_EXTERNAL_STATUS_NO_NATIVE_CASE_EXECUTED"})
+                "contexts": [] if development else ["mw-owner/" + GRAPH_SCOPE + "/" + source["run_id"] + "/1/" + row[0] for row in selected_rows],
+                "meaning": ("DEVELOPMENT_ORIGINALS_ONLY_REQUIRES_LIVE_DISPATCH_AUTHENTICATION" if development else
+                            "REQUIRES_INDEPENDENT_REVIEW_AND_EXTERNAL_STATUS_NO_NATIVE_CASE_EXECUTED")})
             native_inputs.validate_live(native_record, binaries, source, root / "graph-native-inputs")
             graph_tree_allocation(producer, GRAPH_BUDGET["producer_bytes"] - native_copy_bytes,
                                   GRAPH_BUDGET["producer_members"] - 4)
@@ -9272,7 +9320,8 @@ def graph_produce(repo, recipient):
                 "recipient_spki_sha256": recipient["sha256"],
                 "meaning": "ENCRYPTED_REVIEW_CARRIER_ONLY_NO_OWNER_ADMISSION"})
             graph_put_json(output / "source-before.json", source_view)
-        print(json.dumps({"status": "AWAITING_EXTERNAL_R74_REVIEW", "index_sha256": index_ref["sha256"],
+        print(json.dumps({"status": "DEVELOPMENT_PRODUCERS_READY" if development else "AWAITING_EXTERNAL_R74_REVIEW",
+                          "index_sha256": index_ref["sha256"],
                           "source": source_sha, "native_cases_executed": 0}))
         return 0
     except BaseException as error:
@@ -10789,13 +10838,19 @@ def graph_budget_main(arguments):
 
 def graph_main(arguments):
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("produce", "wait", "run"))
+    parser.add_argument("phase", choices=("produce", "wait", "run", "development-run", "development-seal"))
     parser.add_argument("--repo", type=Path, required=True)
     args = parser.parse_args(arguments)
     if args.phase == "produce":
         recipient = {"spki_der_base64": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64", ""),
                      "sha256": os.environ.get("MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256", "")}
         return graph_produce(args.repo, recipient)
+    if args.phase.startswith("development-"):
+        import importlib.util
+        module_path = args.repo.resolve() / "tooling/graph_development.py"
+        spec = importlib.util.spec_from_file_location("motionwright_graph_development", module_path)
+        development = importlib.util.module_from_spec(spec); spec.loader.exec_module(development)
+        return development.run(args.repo, sys.modules[__name__]) if args.phase == "development-run" else development.seal(args.repo, sys.modules[__name__])
     return graph_wait_for_external_review(args.repo) if args.phase == "wait" else graph_run_cases(args.repo)
 
 

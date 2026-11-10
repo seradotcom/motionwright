@@ -134,6 +134,16 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const SOURCE = /^[0-9a-f]{40}$/;
 const UNAVAILABLE = 'SOURCE_PRODUCER_ORIGINALS_AND_REVIEWED_CONTRACT_UNAVAILABLE';
 const admittedObjects = new WeakMap();
+const developmentObjects = new WeakMap();
+export const DEVELOPMENT_INDEX_SCHEMA = 'motionwright.private.graph-development-producer-reference-index/1';
+export const DEVELOPMENT_SCOPE = 'phase1-native-graph-development';
+export const DEVELOPMENT_SOURCE_PATHS = Object.freeze([
+  'tooling/graph_development.py',
+  'apps/studio/tooling/graph_dev_native_owner_port.ts',
+  'apps/studio/tooling/graph_dev_first_save.spec.ts',
+  'apps/studio/tooling/graph_dev_first_save.config.ts',
+  'apps/studio/tests/support/graph-owner/dev_live_reader.mjs',
+]);
 export const AUTHORITY_SOURCE_PATHS = Object.freeze([
   'tooling/native_graph_browser_owner.py', 'tooling/native_host_shared_state.py',
   'tooling/native_graph_executable_inputs.py', 'tooling/ci_graph_dev_native_startup.py',
@@ -143,7 +153,7 @@ export const AUTHORITY_SOURCE_PATHS = Object.freeze([
   'apps/studio/tests/support/nativeGraphCase.ts',
   ...['producer_guard.mjs', 'factory.mjs', 'sdk_ticket_prewrite.mjs', 'custody.mjs',
     'contracts.mjs', 'schemas/spec.r2.json', 'schemas/final.r2.json', 'same_store_reopen.mjs',
-    'opened_store_descriptor.mjs', 'opened_store_identity_join.mjs']
+    'opened_store_descriptor.mjs', 'opened_store_identity_join.mjs', 'dev_live_reader.mjs']
     .map(name => 'apps/studio/tests/support/graph-owner/' + name),
   ...['native_host_installed_shared_state', 'native_av_failure_guard', 'candidate_smoke',
     'linux_first_use_custody', 'linux_cold_start', 'linux_first_use_accessible',
@@ -536,7 +546,14 @@ function verifyIndex(indexPath, reviewed, caseId) {
     'builds', 'ordinary_preflight', 'runtime_originals', 'callback_roster', 'native_enforcement',
     'native_executable_inputs', 'contract'], 'J1_INDEX_FIELDS');
   same(index.contract, reviewedContract(reviewed), 'J1_REVIEWED_FIELDS_NOT_IN_INDEX');
-  need(index.schema === PRODUCER_INDEX_SCHEMA, 'J1_INDEX_SCHEMA');
+  const development = reviewed.execution.scope === DEVELOPMENT_SCOPE;
+  need(index.schema === (development ? DEVELOPMENT_INDEX_SCHEMA : PRODUCER_INDEX_SCHEMA), 'J1_INDEX_SCHEMA');
+  if (development) {
+    for (const name of DEVELOPMENT_SOURCE_PATHS) need(Object.hasOwn(reviewed.source_files, name), 'DEV_AUTHORITY_SOURCE_MISSING:' + name);
+    const request = reviewed.execution.development_request;
+    inside(reviewed.execution.producer_root, request.path);
+    originals.json(request, LIMIT);
+  }
   schema(index.source, SPEC_SCHEMA.properties.source); schema(index.binaries, SPEC_SCHEMA.properties.binaries);
   ownMap(index.binaries, BINARY_ROLES, 'J1_TEN_CLOSED_BINARY_ROLES'); schema(index.runtime, SPEC_SCHEMA.properties.runtime);
   same(index.source, reviewed.source, 'J1_REVIEWED_SOURCE_CONTEXT');
@@ -631,7 +648,8 @@ let readOnlyMetadataToken;
 function reviewedContract(reviewed) {
   return Object.fromEntries(CONTRACT_FIELDS.map(name => [name, reviewed[name]]));
 }
-function contractReview(index, indexSha) {
+function contractReview(index, indexSha, development = false) {
+  need(index.schema === (development ? DEVELOPMENT_INDEX_SCHEMA : PRODUCER_INDEX_SCHEMA), 'J1_INDEX_SCOPE_SELECTION');
   exact(index.contract, CONTRACT_FIELDS, 'J1_ACYCLIC_CONTRACT_FIELDS');
   need(!Object.hasOwn(index.contract, 'index_sha256') && !Object.hasOwn(index.contract, 'source'),
     'J1_CONTRACT_SELF_REFERENCE');
@@ -639,13 +657,19 @@ function contractReview(index, indexSha) {
   const selected = Object.hasOwn(execution, 'selected_case');
   if (selected) need(execution.selected_case === 'graph-flow', 'J1_ONE_CASE_SELECTION_UNREVIEWED');
   exact(execution, ['scope', 'job', 'job_id', 'deadline_original', 'deadline_unix_ms',
-    'producer_root', 'cases_root', 'budget', ...(selected ? ['selected_case'] : [])], 'J1_EXECUTION_FIELDS');
-  need(execution.scope === GRAPH_SCOPE && execution.job === 'real-service'
+    'producer_root', 'cases_root', 'budget', ...(selected ? ['selected_case'] : []),
+    ...(development ? ['development_request'] : [])], 'J1_EXECUTION_FIELDS');
+  need(execution.scope === (development ? DEVELOPMENT_SCOPE : GRAPH_SCOPE) && execution.job === 'real-service'
     && integer(execution.job_id, 1) && integer(execution.deadline_unix_ms, 1), 'J1_EXECUTION_CONTEXT');
   reference(execution.deadline_original, 8 * LIMIT + 65536);
   canonical(execution.producer_root); canonical(execution.cases_root);
   same(execution.budget, GRAPH_BUDGET, 'J1_AGGREGATE_ALLOCATION');
-  exact(index.contract.cases, [...EXPECTED_CASES], 'J1_SIX_CASE_CONTRACT');
+  exact(index.contract.cases, development ? ['graph-flow'] : [...EXPECTED_CASES], 'J1_CLOSED_CASE_CONTRACT');
+  if (development) {
+    need(selected && execution.selected_case === 'graph-flow', 'DEV_ONE_ORIGINAL_CASE_REQUIRED');
+    same(index.contract.cases['graph-flow'].callback_caps, [2], 'DEV_EXACT_CONTEXT_AND_SAVE_BUDGET');
+    reference(execution.development_request, LIMIT);
+  }
   return { index_sha256: indexSha, source: index.source, ...index.contract };
 }
 
@@ -758,10 +782,83 @@ async function authenticateR74(index, indexRef, caseId, requestedDeadline) {
   return { ...inspectR74StatusCore(run, rows, binding), index: indexRef, observations };
 }
 
+/** Formal admission remains status-authenticated. Development cannot enter it. */
+
+/** Negative-control surface only. Actual admission supplies live HTTPS bytes
+ * plus the immutable original dispatch, not a caller-provided approval. */
+export function inspectDevelopmentRunCore(run, event, binding) {
+  exact(binding, ['source_sha','run_id','case_id','index_sha256','request_sha256'], 'DEV_BINDING_FIELDS');
+  need(SOURCE.test(binding.source_sha) && /^[1-9][0-9]*$/.test(binding.run_id)
+    && binding.case_id === 'graph-flow' && DIGEST.test(binding.index_sha256)
+    && DIGEST.test(binding.request_sha256), 'DEV_ORIGINAL_BINDING');
+  need(run && integer(run.id,1) && String(run.id) === binding.run_id
+    && run.run_attempt === 1 && run.head_sha === binding.source_sha
+    && run.repository?.full_name === GITHUB_REPOSITORY
+    && run.head_repository?.full_name === GITHUB_REPOSITORY
+    && run.event === 'workflow_dispatch' && run.status === 'in_progress'
+    && run.path?.split('@',1)[0] === WORKFLOW_PATH && integer(run.workflow_id,1)
+    && run.actor?.type === 'User' && integer(run.actor.id,1), 'DEV_ACTUAL_RUN_REQUIRED');
+  need(event && event.repository?.full_name === GITHUB_REPOSITORY
+    && event.sender?.type === 'User' && event.sender.id === run.actor.id
+    && typeof run.head_branch === 'string' && run.head_branch.length > 0
+    && (event.ref === run.head_branch || event.ref === 'refs/heads/' + run.head_branch)
+    && event.inputs?.selection === GRAPH_SCOPE
+    && event.inputs?.graph_case_mode === 'development-first-save', 'DEV_EXPLICIT_DISPATCH_REQUIRED');
+  return freeze({
+    kind:'EXPLICIT_DEVELOPMENT_ORIGINAL',
+    context:'mw-development/' + binding.run_id + '/1/graph-flow',
+    actor_id:run.actor.id, source_sha:binding.source_sha,
+    run_id:binding.run_id, run_attempt:1, index_sha256:binding.index_sha256,
+    request_sha256:binding.request_sha256,
+    formal_acceptance:false, automatic_retry:false,
+  });
+}
+
+async function authenticateDevelopment(index, indexRef, caseId, requestedDeadline) {
+  need(index.schema === DEVELOPMENT_INDEX_SCHEMA && index.contract.execution.scope === DEVELOPMENT_SCOPE
+    && process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true'
+    && process.env.GITHUB_API_URL === 'https://api.github.com'
+    && process.env.GITHUB_REPOSITORY === GITHUB_REPOSITORY
+    && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch'
+    && process.env.GITHUB_SHA === index.source.sha && process.env.GITHUB_WORKFLOW_SHA === index.source.sha
+    && process.env.GITHUB_RUN_ID === index.source.run_id && process.env.GITHUB_RUN_ATTEMPT === '1'
+    && index.source.run_attempt === 1 && process.env.GITHUB_JOB === 'real-service'
+    && process.env.GITHUB_WORKFLOW_REF?.startsWith(GITHUB_REPOSITORY + '/' + WORKFLOW_PATH + '@'),
+  'DEV_ACTUAL_ACTIONS_CONTEXT');
+  readOnlyMetadataToken ??= process.env.MOTIONWRIGHT_GRAPH_METADATA_TOKEN;
+  delete process.env.MOTIONWRIGHT_GRAPH_METADATA_TOKEN;
+  need(typeof readOnlyMetadataToken === 'string' && readOnlyMetadataToken.length > 0, 'DEV_READ_ONLY_TOKEN_REQUIRED');
+  const requestRef=index.contract.execution.development_request;
+  reference(requestRef,LIMIT);
+  inside(index.contract.execution.producer_root,requestRef.path);
+  const original=stableRead(requestRef.path,LIMIT);
+  same(original.ref,requestRef,'DEV_ORIGINAL_DISPATCH_CHANGED');
+  const event=strictJSON(original.data,LIMIT);
+  const observations=[];
+  const deadline=Math.min(requestedDeadline,index.contract.execution.deadline_unix_ms,Date.now()+API_MS);
+  const run=(await actualGitHubGet('https://api.github.com/repos/' + GITHUB_REPOSITORY
+    + '/actions/runs/' + index.source.run_id,readOnlyMetadataToken,deadline,observations)).value;
+  const authorization=inspectDevelopmentRunCore(run,event,{
+    source_sha:index.source.sha, run_id:index.source.run_id, case_id:caseId,
+    index_sha256:indexRef.sha256, request_sha256:requestRef.sha256,
+  });
+  same(stableRead(requestRef.path,LIMIT).ref,requestRef,'DEV_DISPATCH_CHANGED_DURING_AUTHENTICATION');
+  return {...authorization,index:indexRef,observations};
+}
+
 export async function admitOriginalProducers(options) {
+  return admitVerifiedProducer(options, false);
+}
+
+/** Separate, branded development admission: one real Studio Save, no R74/G2. */
+export async function admitOriginalDevelopmentProducers(options) {
+  return admitVerifiedProducer(options, true);
+}
+
+async function admitVerifiedProducer(options, development) {
   need(options && typeof options.producerOriginalPath === 'string', UNAVAILABLE);
   const observed = stableRead(options.producerOriginalPath, LIMIT), index = strictJSON(observed.data, LIMIT);
-  const reviewed = contractReview(index, observed.ref.sha256);
+  const reviewed = contractReview(index, observed.ref.sha256, development);
   need(integer(options.deadlineUnixMs, Date.now() + 1) && typeof options.privateRoot === 'string', 'J1_CASE_ORIGINAL_DEADLINE');
   // Original, reviewed execution.case_id -> canonical g-slot. The provisional
   // caller root is not an input to physical Store or Native owner admission.
@@ -769,7 +866,9 @@ export async function admitOriginalProducers(options) {
   inside(reviewed.execution.cases_root, layout.privateRoot);
   const once = index.source.run_id + '/1/' + options.caseId;
   need(!usedCases.has(once), 'J1_CASE_ADMISSION_ALREADY_CONSUMED'); usedCases.add(once);
-  const approval = await authenticateR74(index, observed.ref, options.caseId, options.deadlineUnixMs);
+  const authorization = development
+    ? await authenticateDevelopment(index, observed.ref, options.caseId, options.deadlineUnixMs)
+    : await authenticateR74(index, observed.ref, options.caseId, options.deadlineUnixMs);
   const result = verifyIndex(options.producerOriginalPath, reviewed, options.caseId);
   const deadline = result.originals.json(reviewed.execution.deadline_original, 8 * LIMIT + 65536);
   need(deadline.schema === 'motionwright.graph-job-deadline/1' && deadline.job_seconds === 10800
@@ -793,8 +892,9 @@ export async function admitOriginalProducers(options) {
   }
   need(Date.now() + 120000 + 1200000 < reviewed.execution.deadline_unix_ms, 'J1_CASE_AND_FINAL_CUSTODY_BUDGET');
   result.originals.end();
-  const admission = freeze({ ...result.admission, approval });
-  admittedObjects.set(admission, result.originals);
+  const admission = freeze({ ...result.admission,
+    ...(development ? { development: authorization } : { approval: authorization }) });
+  (development ? developmentObjects : admittedObjects).set(admission, result.originals);
   return admission;
 }
 
@@ -804,8 +904,17 @@ export function assertOriginalProducerAdmission(admission) {
   originals.end(); return admission;
 }
 
+/** Real custody can consume either separately authenticated entry point.
+ * This does not permit development objects at the formal admission boundary. */
+export function assertGraphProducerAdmission(admission) {
+  const originals = admittedObjects.get(admission) ?? developmentObjects.get(admission);
+  need(originals && Object.isFrozen(admission), 'J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION');
+  need(Boolean(admission.approval) !== Boolean(admission.development), 'J1_AMBIGUOUS_AUTHORIZATION_SCOPE');
+  originals.end(); return admission;
+}
+
 export function ownerReadOnlyMetadataCredential(admission) {
-  assertOriginalProducerAdmission(admission);
+  assertGraphProducerAdmission(admission);
   need(typeof readOnlyMetadataToken === 'string' && readOnlyMetadataToken.length > 0, 'J1_R74_READ_ONLY_TOKEN_REQUIRED');
   return readOnlyMetadataToken;
 }

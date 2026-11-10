@@ -6,9 +6,12 @@ import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusi
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
   ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines } from './contracts.mjs';
-import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyMetadataCredential,
+import { admitOriginalProducers, admitOriginalDevelopmentProducers, assertOriginalProducerAdmission,
+  assertGraphProducerAdmission, ownerReadOnlyMetadataCredential,
   originalGraphCaseLayout, GRAPH_BUDGET } from './producer_guard.mjs';
 import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.mjs';
+import { reserveOriginalDevelopmentReader, openOriginalDevelopmentReadOnly,
+  assertOriginalDevelopmentReaderClosed } from './dev_live_reader.mjs';
 
 const MiB = 1024 * 1024;
 
@@ -178,6 +181,21 @@ export async function createGraphCaseFactory(options) {
   return GraphCaseFactoryCore.create(options, production);
 }
 
+const development = Object.freeze({spawn, admitSource: async options => {
+  const admitted = await admitOriginalDevelopmentProducers(options);
+  assertGraphProducerAdmission(admitted);
+  need(admitted.development && !admitted.approval
+    && !Object.hasOwn(admitted,'synthetic_adapter_only'), 'DEV_FORMAL_OR_SYNTHETIC_ADMISSION_FORBIDDEN');
+  schema(admitted.source,SPEC_SCHEMA.properties.source);
+  schema(admitted.binaries,SPEC_SCHEMA.properties.binaries);
+  schema(admitted.runtime,SPEC_SCHEMA.properties.runtime);
+  for (const role of ['ordinaryService','nativeService']) schema(admitted[role],SPEC_SCHEMA.properties.binaries.properties.semwright);
+  return admitted;
+}});
+export async function createGraphDevelopmentCaseFactory(options) {
+  return GraphCaseFactoryCore.create(options, development);
+}
+
 /** Pure layout calculation, never an admission. Production supplies only the
  * cases_root and case ID already bound by the original index/status. */
 export function graphCaseLayout(casesRoot, caseId) {
@@ -271,8 +289,12 @@ export class GraphCaseFactoryCore {
       'SOURCE_ADMISSION_MISSING');
     let layout = {};
     if (admission.binaries && !admission.synthetic_adapter_only) {
-      assertOriginalProducerAdmission(admission);
-      need(admission.approval.context === 'mw-owner/phase1-native-graph/' + admission.source.run_id + '/1/' + options.caseId,
+      assertGraphProducerAdmission(admission);
+      const context = admission.development?.context ?? admission.approval?.context;
+      const expected = admission.development
+        ? 'mw-development/' + admission.source.run_id + '/1/' + options.caseId
+        : 'mw-owner/phase1-native-graph/' + admission.source.run_id + '/1/' + options.caseId;
+      need(context === expected,
         'CASE_LAYOUT_NOT_THE_ADMITTED_CASE');
       // The browser's outputDir is only a provisional, untrusted test path.
       // Containment must be checked on the case root derived from the
@@ -302,7 +324,7 @@ export class GraphCaseFactoryCore {
     const ticketPlan = snapshotSdkTicketPlan(admission);
     this.originalProduction = !admission.synthetic_adapter_only;
     if (this.originalProduction) {
-      assertOriginalProducerAdmission(admission);
+      assertGraphProducerAdmission(admission);
       same(admission.execution.budget, GRAPH_BUDGET, 'CASE_ALLOCATION_NOT_ADMITTED');
       inside(admission.execution.cases_root, options.privateRoot);
       const expectedLayout = graphCaseLayout(admission.execution.cases_root, options.caseId);
@@ -358,7 +380,12 @@ export class GraphCaseFactoryCore {
       const writer = new OriginalWriter(admission.execution.producer_root, this.pool.counter(allocation));
       writer.json(path.join(admission.execution.producer_root, 'consumption', options.caseId + '.original.json'), {
         case_id: options.caseId, private_root: this.root, index: admission.producer_originals.index,
-        status_id: admission.approval.status_id, source: admission.source,
+        ...(admission.development ? {development_authorization: {
+          kind:admission.development.kind, index_sha256:admission.development.index_sha256,
+          request_sha256:admission.development.request_sha256,
+          actor_id:admission.development.actor_id,
+        }} : {status_id: admission.approval.status_id}),
+        source: admission.source,
         meaning: 'IRREVOCABLY_CONSUMED_BEFORE_INITIALIZER', automatic_retry: false,
       });
     }
@@ -377,8 +404,39 @@ export class GraphCaseFactoryCore {
     const entries = await this.copyEvidence(source,snapshotDirectory,captureRoot);
     return { snapshotDirectory, entries };
   }
+  /**
+   * Reserve one post-close, source-built LIVE reader BEFORE creating any
+   * initializer/Native writer. The already authenticated R74 original factory
+   * owns the only SharedPool; this reservation does not grant callbacks or
+   * alter the original Source/R74 authorization rules.
+   */
+  reserveDevelopmentReadOnlyOriginals() {
+    return reserveOriginalDevelopmentReader(this);
+  }
+  /**
+   * Source-owned writer closure and independent read-only process. The
+   * returned ScopedChangeService is an actual live read-only child with its
+   * own bounded raw stdout/stderr originals. No stored oracle or copied DB
+   * masquerades as a live process.
+   */
+  async openIndependentlyCustodiedReadOnlyService(writer, project, history) {
+    need(this.developmentOriginalService
+      && typeof this.developmentOriginalService.createReadOnly === 'function'
+      && this.developmentReaderReservation,
+      'GRAPH_DEV_LIVE_READER_ORIGINAL_WRITER_FACTORY_MISSING');
+    return openOriginalDevelopmentReadOnly(this,writer,project,history,
+      this.developmentOriginalService);
+  }
+  assertDevelopmentReadOnlyClosed() {
+    return assertOriginalDevelopmentReaderClosed(this);
+  }
   async createNativeService(Service, options, makeSpec) {
     this.checkOpen();
+    if (this.developmentReaderReservation) {
+      need(!this.developmentOriginalService,
+        'GRAPH_DEV_WRITER_CLASS_ALREADY_BOUND');
+      this.developmentOriginalService=Service;
+    }
     need(options.databasePath === this.options.databasePath && !fs.existsSync(options.databasePath), 'INITIALIZER_REQUIRES_FRESH_EXPLICIT_STORE');
     const common = { ...options, rawStreamCapture:this, evidenceCapture:this, graphCustodyRequired:true };
     let initializer;
@@ -386,10 +444,56 @@ export class GraphCaseFactoryCore {
       initializer = await Service.create({ ...common, binaryPath:this.admission.ordinaryService.path,
         processOwner:undefined, seedFixture:true });
       const fixture = await initializer.fixtureBootstrap();
+      let originalProject = fixture.project;
+      if (this.developmentReaderReservation) {
+        // Studio's real ordinary test initializer seeds genuine SQLite/CAS
+        // but its scene renderer is not Manim. Graph's domain write contract
+        // REQUIRES ManimCommunity; without this AUTHENTIC scoped source edit
+        // the first Host context would be Blocked even with a real client.
+        // A3 never manufactures scenes, grants or project edits.
+        const scene = originalProject?.scenes?.[0];
+        need(scene?.id && originalProject?.deliverables?.[0]?.id
+          && Array.isArray(originalProject.production_design?.semantic_graphs)
+          && originalProject.production_design.semantic_graphs.length === 0,
+          'GRAPH_DEV_INITIALIZER_REAL_SCENE_OR_SOURCE_UNAVAILABLE');
+        const before = originalProject;
+        if (scene.renderer !== 'manim-community') {
+          // This is the existing scoped project_edit grant and real Store
+          // mutation through the source-built ordinary initializer. It does
+          // NOT create Native/Host authority or an R74 decision.
+          originalProject = await initializer.apply(before, {
+            type:'set_scene_renderer', scene_id:scene.id,
+            renderer:'manim-community',
+          });
+        }
+        need(originalProject.id === before.id
+          && originalProject.generation === before.generation
+          && originalProject.scenes?.[0]?.id === scene.id
+          && originalProject.scenes[0].renderer === 'manim-community'
+          && originalProject.deliverables?.[0]?.id === before.deliverables[0].id
+          && Array.isArray(originalProject.production_design?.semantic_graphs)
+          && originalProject.production_design.semantic_graphs.length === 0
+          && Number.isSafeInteger(originalProject.revision)
+          && originalProject.revision === before.revision
+            + Number(scene.renderer !== 'manim-community'),
+          'GRAPH_DEV_INITIALIZER_NATIVE_MANIM_SOURCE_NOT_READY');
+        same(await initializer.project(originalProject.id),originalProject,
+          'GRAPH_DEV_INITIALIZER_AUTHENTIC_SQLITE_READBACK_CHANGED');
+        this.metadata.json(path.join(this.root,
+          'graph-dev-manifest-scene-source.original.json'),{
+          source:this.admission.source, project_id:originalProject.id,
+          scene_id:scene.id, profile_id:originalProject.deliverables[0].id,
+          prior_revision:before.revision,
+          selected_revision:originalProject.revision,
+          declared_renderer:'manim-community',
+          pre_native_scoped_store_mutation:true, native_grant_issued:false,
+          automatic_retry:false, release_acceptance:false,
+        });
+      }
       await initializer.close();
       await this.completeInitializer();
       const physical = this.initializerPhysical;
-      this.configureSpec(await makeSpec(fixture.project,physical,this));
+      this.configureSpec(await makeSpec(originalProject,physical,this));
       // The fixed Graph recipe can use 5s + 5s + 30s; its existing Native CLI
       // transport is bounded at 45s. Let that original result and custody return
       // before the outer RPC expires, without changing the case or Host deadline.

@@ -28,14 +28,23 @@ const CLOSED_FIRST_CAUSES = new Set([
 ]);
 
 test("Graph6 dev: original Native Host flow Save and independent same-Store read-only verification", async ({ page }, info) => {
-  test.setTimeout(180_000);
+  // One original Native context and one original Native Save can each use
+  // the full bounded Service/Host RPC deadline. Independent writer EOF and
+  // the separate read-only Store process need their own bounded completion.
+  test.setTimeout(300_000);
   if (process.env.MOTIONWRIGHT_GRAPH_DEV_FIRST_SAVE !== "1" || process.env.MOTIONWRIGHT_GRAPH_NATIVE_CASE) {
     throw new Error("GRAPH_DEV_EXPLICIT_FIRST_SAVE_ONLY_NOT_RELEASE_PRODUCER");
   }
-  // The source-owned provider is intentionally unavailable until the Native owner supplies
-  // genuine Native/Host/Store owner code. Nothing from process.env proves it.
+  // The source-owned factory authenticates the original dispatch and Native
+  // producer before issuing this owner. An environment marker cannot do so.
   const owner = await acquireGraphDevelopmentOwner();
   const options = owner.writerOptions;
+  // A4's admitted Native/Host callback budget is currently 50 seconds;
+  // arbitrary browser-side 30-second waits must not turn a still-pending
+  // authentic callback into a false failure or an unconfirmed second intent.
+  // These caps are observation deadlines, never a grant or automatic retry.
+  const nativeCallbackObservationMs = Math.min(60_000,
+    Math.max(50_000, options.timeoutMs ?? 50_000)) + 5_000;
   if (options.graphCustodyRequired !== true || options.seedFixture !== false
     || options.desktopInvokeFixture !== true || !options.processOwner
     || !options.rawStreamCapture || !options.evidenceCapture) {
@@ -103,7 +112,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     await inspect.click();
     await expect(inspect).toHaveAttribute("data-graph-inspection-phase",
       /^(GRAPH_CONTEXT_INSPECTION_RESOLVED|GRAPH_CONTEXT_INSPECTION_REJECTED|GRAPH_CONTEXT_INSPECTION_OBSOLETE)$/,
-      { timeout: 30_000 });
+      { timeout: nativeCallbackObservationMs });
     const phase = await inspect.getAttribute("data-graph-inspection-phase");
     const save = button(page, "Save semantic Graph");
     const gate = await save.getAttribute("data-graph-save-gate");
@@ -169,7 +178,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     try {
       await expect(page.getByRole("status").filter({
         hasText: "Saved Graph at r" + (source.revision + 1) + ".",
-      })).toBeVisible({ timeout: 30_000 });
+      })).toBeVisible({ timeout: nativeCallbackObservationMs });
       await expect(button(page, "Save Graph changes")).toBeVisible();
       await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" }))
         .toHaveCount(0);
@@ -202,6 +211,28 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
       && "command" in item.payload && item.payload.command === "apply_change"
       && (item.payload.args?.request as { change?: { type?: string } } | undefined)?.change?.type === "upsert_semantic_graph");
     expect(mutations).toHaveLength(1);
+
+    // A stored Project and a confirmed ACK are not enough to establish that
+    // Studio can reopen its saved editable source. Reload through the SAME
+    // genuine writer while it is still alive; the later independent --read-only
+    // process remains a separate, stronger SQLite/CAS custody observation.
+    // A page reload must never create another Native editing client or Save.
+    await page.reload();
+    await field(page, "Editor preview timebase").selectOption(profile.id);
+    await button(page, "Production").click();
+    await field(page, "Production working scene").selectOption(scene.id);
+    await button(page, "Graph").click();
+    await expect(field(page, "Graph source")).toHaveValue(graph.id);
+    await expect(field(page, "Graph Deliverable")).toHaveValue(profile.id);
+    await expect(field(page, "Graph author label")).toHaveValue("Native development test author");
+    await page.locator("[data-graph-event] summary").first().click();
+    await expect(field(page, "Event 1 label")).toHaveValue("Actual Native authorized transfer");
+    await expect(button(page, "Save Graph changes")).toBeVisible();
+    // The reload is read-only. It cannot masquerade as another first Save.
+    expect(service.transcript.filter(item => item.direction === "request"
+      && "command" in item.payload && item.payload.command === "apply_change"
+      && (item.payload.args?.request as { change?: { type?: string } } | undefined)
+        ?.change?.type === "upsert_semantic_graph")).toHaveLength(1);
 
     // Close the original editorial page before its native writer is sealed.
     // An independent reader cannot reuse the old page's JSONL binding or
@@ -263,6 +294,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
       graph_mutations: mutations.length, journal: events.map(item => item.change.type),
       original_native_context_request_verified: true,
       studio_original_ack_observed: true,
+      studio_saved_graph_ui_reopen_verified: true,
       independent_same_store_reopen: true,
       opened_sqlite_identity_witness_match: true,
       read_only_bootstrap_verified: true,
