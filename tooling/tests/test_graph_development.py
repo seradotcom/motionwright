@@ -212,5 +212,58 @@ class DevelopmentFailureCustodyTests(unittest.TestCase):
             capture_complete=True, receipt=receipt, expected_source=source), "FAIL")
 
 
+class IndependentOriginalJoinTests(unittest.TestCase):
+    """Pure negative controls; never starts Host or manufactures acceptance."""
+    @staticmethod
+    def records():
+        source = {"sha": "a" * 40, "run_id": "123", "run_attempt": 1}
+        db = "/private/g3/store/motionwright.sqlite3"
+        physical = {"path": db, "device": "24", "inode": "171"}
+        project = {"id": "project-original", "revision": 1,
+                   "production_design": {"semantic_graphs": []}}
+        event = {"revision": 1, "change": {"type": "upsert_semantic_graph"}}
+        oracle = {"schemaVersion": 1, "project": project, "journal": [event],
+                  "journalAfterRevisionExclusive": 0, "journalComplete": True}
+        reader = {"schema": "motionwright.graph-dev-live-reader-open/1",
+                  "source": source, "process_id": 124, "process": {},
+                  "opened_before": {}, "opened_after": {},
+                  "physical_store": physical, "held_sqlite_pager_witness": {},
+                  "writer_oracle": {}, "full_project": project, "journal": [event],
+                  "journal_after_revision_exclusive": 0, "journal_complete": True,
+                  "native_callbacks_allowed": False, "automatic_retry": False,
+                  "returned_live": True, "formal_release_acceptance": False}
+        return reader, oracle, physical, source, db
+
+    def test_full_history_and_exact_original_inode_join_without_formal_credit(self):
+        args = self.records()
+        self.assertEqual(development.checked_independent_reader(*args), {
+            "project_id": "project-original", "revision": 1,
+            "full_journal_events": 1, "independent_read_only": True,
+            "formal_acceptance": False})
+
+    def test_reader_rejects_forged_original_scope_missing_history_and_replaced_inode(self):
+        for mutation in ("scope", "replay", "extra", "journal", "revision",
+                         "store", "source", "reader-writable"):
+            args = list(copy.deepcopy(self.records()))
+            if mutation == "scope":
+                args[0]["formal_release_acceptance"] = True
+            elif mutation == "replay":
+                args[0]["automatic_retry"] = True
+            elif mutation == "extra":
+                args[0]["unreviewed_field"] = "invented"
+            elif mutation == "journal":
+                args[0]["journal"][0]["revision"] = 2
+            elif mutation == "revision":
+                args[0]["full_project"]["revision"] = 2
+            elif mutation == "store":
+                args[0]["physical_store"] = dict(args[2], inode="999")
+            elif mutation == "source":
+                args[0]["source"] = {"sha": "b" * 40}
+            else:
+                args[0]["native_callbacks_allowed"] = True
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                development.checked_independent_reader(*args)
+
+
 if __name__ == "__main__":
     unittest.main()
