@@ -174,7 +174,7 @@ test('a pending Native inspection blocks stale ready Save in the same render', (
   const submission = ui.slice(begin, end);
   const gates = ui.slice(ui.indexOf('const saveGuards'), ui.indexOf('const canSave'));
   assert.match(gates, /\(busy \|\| inspecting \|\| inspectionToken\.current !== null\)\s*\? "GRAPH_SAVE_BUSY"/);
-  const guard = 'if (!canSave || inspectionToken.current !== null || session.preparing || session.inFlight || session.draft.pending) return;';
+  const guard = 'if ((operation === "save" ? !canSave : !canRemove) || inspectionToken.current !== null\n      || session.preparing || session.inFlight || session.draft.pending) return;';
   assert.ok(submission.includes(guard), 'pending Native inspection must block stale ready Save');
   assert.ok(submission.indexOf(guard) < submission.indexOf('const id = crypto.randomUUID()'));
   const inspect = ui.slice(ui.indexOf('async function inspectContext()'), begin);
@@ -279,7 +279,7 @@ test('a second Graph Save handler entry cannot start while its original intentio
   const end = ui.indexOf('async function readOutcome()', begin);
   assert.ok(begin >= 0 && end > begin, 'the actual Graph Save path exists');
   const save = ui.slice(begin, end);
-  const guard = 'if (!canSave || inspectionToken.current !== null || session.preparing || session.inFlight || session.draft.pending) return;';
+  const guard = 'if ((operation === "save" ? !canSave : !canRemove) || inspectionToken.current !== null\n      || session.preparing || session.inFlight || session.draft.pending) return;';
   assert.ok(save.includes(guard), 'the live session must forbid duplicate Save before preflight');
   assert.ok(save.indexOf(guard) < save.indexOf('const id = crypto.randomUUID()'));
   assert.ok(save.indexOf(guard) < save.indexOf('session.preparing = true'));
