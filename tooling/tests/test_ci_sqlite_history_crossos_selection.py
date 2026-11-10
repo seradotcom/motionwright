@@ -95,5 +95,47 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
         self.assertIn("tooling/creative_status_policy.py", formal)
 
 
+    def test_integrate_push_selects_two_macos_cases_without_replaying_11x2(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "branches: [main, 'integrate/phase1-final-composition-20261027']",
+            source,
+        )
+        original = source.split("  real-sqlite-concurrency:\n", 1)[1].split(
+            "\n  macos-history-export-selected:\n", 1
+        )[0]
+        selected = source.split("  macos-history-export-selected:\n", 1)[1]
+        self.assertIn("os: [windows-latest, macos-latest]", original)
+        self.assertIn(
+            "if: github.event_name != 'push' || github.ref != "
+            "'refs/heads/integrate/phase1-final-composition-20261027'",
+            original,
+        )
+        self.assertIn(
+            "if: github.event_name == 'push' && github.ref == "
+            "'refs/heads/integrate/phase1-final-composition-20261027'",
+            selected,
+        )
+        self.assertIn("runs-on: macos-latest", selected)
+        self.assertIn('test "$RUNNER_OS" = macOS', selected)
+        self.assertNotIn("windows-latest", selected)
+        self.assertIn(
+            "run_one orphan-history "
+            "tests::history_refuses_orphan_original_event_created_by_external_sqlite_writer",
+            selected,
+        )
+        self.assertIn(
+            "run_one foreign-kind-export "
+            "portability::tests::export_rejects_foreign_event_kind_before_publishing_backup",
+            selected,
+        )
+        self.assertIn('"selected_case_count": 2', selected)
+        self.assertIn('"status": "PASS_EXACT_TWO"', selected)
+        self.assertIn('"formal_G2": "NOT_GRANTED"', selected)
+        self.assertIn("if: always()", selected)
+        self.assertEqual(selected.count("run_one orphan-history "), 1)
+        self.assertEqual(selected.count("run_one foreign-kind-export "), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

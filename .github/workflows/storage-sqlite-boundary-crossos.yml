@@ -12,7 +12,7 @@ on:
       - 'Cargo.lock'
       - 'SOURCE_LOCK.json'
   push:
-    branches: [main]
+    branches: [main, 'integrate/phase1-final-composition-20261027']
     paths:
       - '.github/workflows/storage-sqlite-boundary-crossos.yml'
       - 'crates/storage/src/lib.rs'
@@ -171,6 +171,9 @@ jobs:
           retention-days: 14
   real-sqlite-concurrency:
     needs: g0-source-policy
+    # The integration push selects two changed macOS cases in a separate job.
+    # Historic 11/OS remains unchanged for main, PR and explicit full dispatch.
+    if: github.event_name != 'push' || github.ref != 'refs/heads/integrate/phase1-final-composition-20261027'
     strategy:
       fail-fast: false
       matrix:
@@ -387,5 +390,122 @@ jobs:
         with:
           name: sqlite-real-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.MW_SQLITE_EVIDENCE || 'missing-sqlite-real-originals' }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Integration source-impact route: TWO macOS cases, no full 11/OS replay.
+  macos-history-export-selected:
+    needs: g0-source-policy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - name: Bind source and provision a fresh original evidence root
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          work="$RUNNER_TEMP/mw-macos-two-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$work"
+          mkdir -m 700 "$work"
+          echo "MW_MACOS_TWO=$work" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$work/target" >> "$GITHUB_ENV"
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import re
+          cases = {
+              "crates/storage/src/lib.rs":
+                "history_refuses_orphan_original_event_created_by_external_sqlite_writer",
+              "crates/storage/src/portability.rs":
+                "export_rejects_foreign_event_kind_before_publishing_backup",
+          }
+          for source, name in cases.items():
+              body = Path(source).read_text(encoding="utf-8")
+              assert len(re.findall(r"(?m)^\s*fn\s+" + name + r"\s*\(", body)) == 1, name
+          PY
+      - name: Run only orphan-history and foreign-kind export on macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = macOS
+          test -d "$MW_MACOS_TWO"
+          run_one() {
+            label="$1"
+            case_id="$2"
+            exit_code=0
+            cargo test --locked --jobs 2 -p motionwright-storage --lib "$case_id" \
+              -- --exact --test-threads=1 \
+              > "$MW_MACOS_TWO/$label.stdout.original.log" \
+              2> "$MW_MACOS_TWO/$label.stderr.original.log" || exit_code=$?
+            python3 -B - "$label" "$case_id" "$exit_code" <<'PY'
+          import hashlib, json, os, pathlib, re, sys
+          label, name, code = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          root = pathlib.Path(os.environ["MW_MACOS_TWO"])
+          out = (root / (label + ".stdout.original.log")).read_bytes()
+          err = (root / (label + ".stderr.original.log")).read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", (out + b"\n" + err).decode("utf-8", "replace"))
+          found = re.findall(r"(?m)^test ([A-Za-z0-9_:]+) \.\.\. ok\r?$", text)
+          summary = re.search(
+              r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;",
+              text) is not None
+          passed = code == 0 and found == [name] and summary
+          receipt = {"case": name, "source": os.environ["GITHUB_SHA"], "exit_code": code,
+                     "observed": found, "stdout_sha256": hashlib.sha256(out).hexdigest(),
+                     "stderr_sha256": hashlib.sha256(err).hexdigest(),
+                     "result": "PASS" if passed else "FIRST_FAILURE_OR_OMISSION",
+                     "retries": 0, "physical_G2": "NOT_GRANTED"}
+          (root / (label + ".receipt.original.json")).write_text(
+              json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+          print("SELECTED_MACOS_STORAGE", label, receipt["result"], flush=True)
+          if not passed:
+              sys.exit(2)
+          PY
+          }
+          run_one orphan-history tests::history_refuses_orphan_original_event_created_by_external_sqlite_writer
+          run_one foreign-kind-export portability::tests::export_rejects_foreign_event_kind_before_publishing_backup
+          python3 -B - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ["MW_MACOS_TWO"])
+          names = ("orphan-history", "foreign-kind-export")
+          cases = [json.loads((root / (name + ".receipt.original.json")).read_text())
+                   for name in names]
+          assert len(cases) == 2 and len({row["case"] for row in cases}) == 2
+          assert all(row["result"] == "PASS" and row["source"] == os.environ["GITHUB_SHA"]
+                     for row in cases)
+          receipt = {"schema": "motionwright.sqlite-macos-changed-source-G1/1",
+                     "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                     "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "OS": "macOS",
+                     "selected_case_count": 2, "status": "PASS_EXACT_TWO",
+                     "no_windows_rerun": True, "powerloss": "NOT_RUN",
+                     "formal_G2": "NOT_GRANTED", "cases": cases}
+          (root / "selected-two.original.json").write_text(
+              json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-two-storage-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_MACOS_TWO || 'missing-macos-two-originals' }}
           if-no-files-found: warn
           retention-days: 14
