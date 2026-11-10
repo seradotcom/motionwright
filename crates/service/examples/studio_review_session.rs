@@ -1026,7 +1026,9 @@ impl ReadOnlySession {
                     .project(bound.project_id)
                     .map_err(|error| error.to_string())?;
                 if project.generation != bound.generation || project.revision != bound.revision {
-                    return Err("Read-only asset integrity requires the original Project stamp".into());
+                    return Err(
+                        "Read-only asset integrity requires the original Project stamp".into(),
+                    );
                 }
                 let expected = RevisionStamp::from(&project);
                 encoded(

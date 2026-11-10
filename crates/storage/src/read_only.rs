@@ -1,7 +1,8 @@
 //! An existing managed Store opened without writer, migration or CAS maintenance authority.
 use super::{
-    AssetIntegrityPage, Project, ProjectEvent, Result, STORAGE_SCHEMA_VERSION, StorageError, Store, cas_retention,
-    checked_sqlite_storage_path, sqlite_identity, validate_existing_project_store_layout,
+    AssetIntegrityPage, Project, ProjectEvent, Result, STORAGE_SCHEMA_VERSION, StorageError, Store,
+    cas_retention, checked_sqlite_storage_path, sqlite_identity,
+    validate_existing_project_store_layout,
 };
 use motionwright_domain::RevisionStamp;
 use rusqlite::{Connection, OpenFlags, ffi};
