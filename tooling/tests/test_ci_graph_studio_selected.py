@@ -47,6 +47,36 @@ class SelectedGraphStudioG1(unittest.TestCase):
         self.assertNotIn("workflow_dispatch:", job)
         self.assertEqual(self.workflow.count("  push:\n"), 1)
 
+    def test_selected_studio_source_contract_is_self_watched_without_browser_churn(self):
+        # An edit to the inert selection test must run its source check,
+        # without scheduling the eight component tests for that edit alone.
+        from fnmatch import fnmatchcase
+
+        lines = self.workflow.splitlines()
+        begin = lines.index("    paths:") + 1
+        watches = []
+        for line in lines[begin:]:
+            if not line.startswith("      - "):
+                break
+            watches.append(line.strip()[2:].strip("'"))
+        file = "tooling/tests/test_ci_graph_studio_selected.py"
+        source_lane = self.workflow.split("  graph-source-intake:", 1)[1].split(
+            "  studio-graph-selected:", 1
+        )[0]
+        impact = self.selected().split("          impact = {", 1)[1].split(
+            "          changed = ", 1
+        )[0]
+        with self.subTest(check="self_watch"):
+            self.assertTrue(any(fnmatchcase(file, path) for path in watches))
+        with self.subTest(check="source_execution"):
+            self.assertEqual(
+                source_lane.count("tooling.tests.test_ci_graph_studio_selected"), 1
+            )
+        with self.subTest(check="no_browser_churn"):
+            self.assertNotIn(file, impact)
+        with self.subTest(check="no_unrelated_docs"):
+            self.assertFalse(any(fnmatchcase("docs/roadmap.md", path) for path in watches))
+
     def test_exact_published_sha_and_eight_source_tests_are_required(self):
         job = self.selected()
         self.assertIn("EXPECTED_GRAPH_SHA", job)
