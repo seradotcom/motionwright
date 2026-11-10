@@ -1215,13 +1215,19 @@ mod native_graph_adapter_tests {
             let admitted = originals.begin(request.clone()).unwrap();
             assert_eq!(admitted, sequence);
             assert!(originals.pending_results.contains(&admitted));
-            assert!(originals
-                .begin(json!({"operation":"must-not-dispatch-concurrently"}))
-                .is_err());
+            assert!(
+                originals
+                    .begin(json!({"operation":"must-not-dispatch-concurrently"}))
+                    .is_err()
+            );
             originals.finish(admitted, result.clone()).unwrap();
             assert_eq!(
-                fs::read(originals.root.join(format!("{sequence:02}.result.original.json")))
-                    .unwrap(),
+                fs::read(
+                    originals
+                        .root
+                        .join(format!("{sequence:02}.result.original.json"))
+                )
+                .unwrap(),
                 serde_json::to_vec(&result).unwrap()
             );
         }
@@ -1241,7 +1247,9 @@ mod native_graph_adapter_tests {
         };
         let mut originals =
             PrivateOriginals::create(&directory.path().join("client.json"), restrictions).unwrap();
-        let admitted = originals.begin(json!({"operation":"one-original-only"})).unwrap();
+        let admitted = originals
+            .begin(json!({"operation":"one-original-only"}))
+            .unwrap();
         let oversized = json!({"payload":"x".repeat(4 * 1024 * 1024)});
         assert!(originals.finish(admitted, oversized.clone()).is_err());
         assert!(originals.stopped);
@@ -1386,11 +1394,7 @@ mod native_graph_adapter_tests {
             },
         )
         .unwrap();
-        assert!(
-            denied
-                .begin(denied_request)
-                .is_err()
-        );
+        assert!(denied.begin(denied_request).is_err());
         assert_eq!(denied.next, 0);
         assert_eq!(denied.reserved_bytes, 0);
         assert_eq!(denied.reserved_files, 0);
