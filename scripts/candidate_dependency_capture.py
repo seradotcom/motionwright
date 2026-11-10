@@ -567,9 +567,121 @@ def revalidate_build_driver(driver, cargo):
     if stable_hash(executable.parent, executable) != driver["cargo_executable"]:
         raise CaptureError("cargo_executable_changed")
 
+def require_generated_root_absent(repo):
+    if os.path.lexists(repo / "apps/desktop/src-tauri/gen"):
+        raise CaptureError("tauri_generated_root_preexisting")
+
+
+def prepare_windows_generated_metadata(repo, cargo_home, manifest, target, package,
+                                       target_directory, state_directory, resources_directory):
+    if (manifest != repo / "apps/desktop/src-tauri/Cargo.toml"
+            or target != "x86_64-pc-windows-msvc" or package != "motionwright-desktop"):
+        raise CaptureError("windows_generated_metadata_scope_invalid")
+    home = Path(cargo_home).resolve(strict=True)
+    with os.scandir(home) as listing:
+        if next(listing, None) is not None:
+            raise CaptureError("windows_capture_cargo_home_not_empty")
+    target_root = admitted(repo, Path(target_directory), directory=True)
+    with os.scandir(target_root) as listing:
+        if next(listing, None) is not None:
+            raise CaptureError("windows_capture_target_not_empty")
+    desktop = manifest.parent
+    for supplied in (target_root, Path(state_directory), Path(resources_directory)):
+        root, relative = within(repo, supplied)
+        if (root / relative).is_relative_to(desktop):
+            raise CaptureError("windows_capture_output_inside_source_package")
+    require_generated_root_absent(repo)
+
+
+def observe_cargo_git_markers(metadata, cargo_home):
+    home = Path(cargo_home).resolve(strict=True)
+    markers = {}
+    packages = metadata.get("packages")
+    if not isinstance(packages, list) or len(packages) > 4096:
+        raise CaptureError("cargo_generated_metadata_packages_invalid")
+    for package in packages:
+        source = package.get("source")
+        if not isinstance(source, str) or not source.startswith("git+"):
+            continue
+        _, relative = within(home, Path(package["manifest_path"]))
+        if (len(relative.parts) < 5 or relative.parts[:2] != ("git", "checkouts")
+                or relative.name != "Cargo.toml"):
+            raise CaptureError("cargo_generated_marker_scope_invalid")
+        checkout_relative = Path(*relative.parts[:4])
+        checkout = admitted(home, checkout_relative, directory=True)
+        revision = source.rsplit("#", 1)[-1]
+        if not re.fullmatch(r"[0-9a-f]{40}", revision) or git(checkout, "rev-parse", "HEAD").decode().strip() != revision:
+            raise CaptureError("cargo_generated_marker_source_invalid")
+        marker = checkout_relative / ".cargo-ok"
+        if os.path.lexists(home / marker):
+            raw = stable_read(home, marker, 4096)
+            if git(checkout, "ls-files", "-z", "--", ".cargo-ok"):
+                raise CaptureError("cargo_generated_marker_tracked")
+            row = {"git_head": revision, "bytes": len(raw), "sha256": sha(raw)}
+            name = marker.as_posix()
+            if name in markers and markers[name] != row:
+                raise CaptureError("cargo_generated_marker_changed")
+            markers[name] = row
+    return markers
+
+
+def observe_windows_tauri_schemas(repo):
+    sources = _load_sibling("cargo_license_sources")
+    names = sources.WINDOWS_TAURI_SCHEMAS
+    for relative, expected in (
+            (Path("apps/desktop/src-tauri/gen"), {"schemas"}),
+            (Path("apps/desktop/src-tauri/gen/schemas"), {Path(name).name for name in names})):
+        directory = admitted(repo, relative, directory=True)
+        observed = set()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                observed.add(entry.name)
+                if len(observed) > len(expected):
+                    raise CaptureError("tauri_generated_schema_roster_invalid")
+        if observed != expected:
+            raise CaptureError("tauri_generated_schema_roster_invalid")
+    result = {}
+    for name in names:
+        raw = stable_read(repo, name, sources.MAX_GENERATED_SCHEMA_BYTES)
+        # The canonical collector rejects duplicate keys and non-JSON numbers.
+        try:
+            sources._generated_json(raw)
+        except sources._Problem as error:
+            raise CaptureError(error.code) from error
+        if git(repo, "ls-files", "-z", "--", name):
+            raise CaptureError("tauri_generated_schema_tracked")
+        result[name] = {"bytes": len(raw), "sha256": sha(raw)}
+    return result
+
+
+def revalidate_windows_generated_metadata(repo, metadata, cargo_home, marker_before, schemas=None):
+    if observe_cargo_git_markers(metadata, cargo_home) != marker_before:
+        raise CaptureError("cargo_generated_marker_changed")
+    if schemas is not None and observe_windows_tauri_schemas(repo) != schemas:
+        raise CaptureError("generated_metadata_changed_after_notices")
+
+
+def retain_generated_originals(repo, cargo_home, state, profile):
+    originals = {}
+    for kind, root, rows, limit in (
+            ("workspace", repo, profile["tauri_schemas"], 4 * 1024 * 1024),
+            ("cargo_home", Path(cargo_home), profile["cargo_git_markers"], 4096)):
+        for name, descriptor in sorted(rows.items()):
+            raw = stable_read(root, name, limit)
+            if len(raw) != descriptor["bytes"] or sha(raw) != descriptor["sha256"]:
+                raise CaptureError("generated_metadata_changed_before_retention")
+            relative = (Path("generated-metadata/tauri") / Path(name).name if kind == "workspace"
+                        else Path("generated-metadata/cargo-markers") / (sha(name.encode("utf-8")) + ".bin"))
+            write_new(state / relative, raw)
+            originals[kind + ":" + name] = {
+                "path": relative.as_posix(), "bytes": len(raw), "sha256": sha(raw)}
+    return originals
+
+
 def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                   root_package_name, manifest_path, state_directory, resources_directory,
-                  build_command, metadata_features=(), no_default_features=False, env=None, build_cwd=None):
+                  build_command, metadata_features=(), no_default_features=False, env=None, build_cwd=None,
+                  tauri_generated_schemas=False):
     derive_components = _load_sibling("cargo_build_inventory").derive_components
     collect_cargo_licenses = _load_sibling("cargo_license_sources").collect_cargo_licenses
     repo = Path(repo).resolve(strict=True)
@@ -586,6 +698,10 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                                   no_default_features=no_default_features)
     effective_env = dict(os.environ if env is None else env)
     effective_env["CARGO_HOME"] = str(Path(cargo_home).resolve(strict=True))
+    if tauri_generated_schemas:
+        prepare_windows_generated_metadata(
+            repo, cargo_home, manifest, target_triple, root_package_name,
+            effective_env.get("CARGO_TARGET_DIR", ""), state_directory, resources_directory)
     state = new_directory(repo, state_directory)
     resources = new_directory(repo, resources_directory)
     write_new(state / "source-before.json", encoded(before))
@@ -604,6 +720,10 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     root_packages = [p for p in metadata["packages"] if p["name"] == root_package_name]
     if len(root_packages) != 1 or Path(root_packages[0]["manifest_path"]) != manifest:
         raise CaptureError("root_package_manifest_mismatch")
+    marker_before = None
+    if tauri_generated_schemas:
+        marker_before = observe_cargo_git_markers(metadata, cargo_home)
+        require_generated_root_absent(repo)
     build_receipt = run_captured(build_command, cwd, state, "build", env=effective_env)
     revalidate_build_driver(driver, cargo)
     after = source_snapshot(repo, expected_source)
@@ -617,8 +737,29 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     artifacts = artifact_identities(metadata, messages)
     write_new(state / "cargo-artifacts.json", encoded(artifacts))
     lock = stable_read(repo, "Cargo.lock", 8 * 1024 * 1024)
+    generated = None
+    generated_custody = None
+    if tauri_generated_schemas:
+        revalidate_windows_generated_metadata(repo, metadata, cargo_home, marker_before)
+        generated = {
+            "schema": "motionwright.windows-cargo-generated-metadata/1",
+            "source": expected_source, "target": target_triple,
+            "cargo_git_markers": marker_before,
+            "tauri_schemas": observe_windows_tauri_schemas(repo),
+        }
+        generated_custody = {
+            "profile": generated,
+            "observation": "fresh Cargo home; markers stable after metadata; schemas absent before build",
+            "writer_pid_attribution": "NOT_OBSERVED",
+            "originals": retain_generated_originals(repo, cargo_home, state, generated),
+            "phase_records": {name: stable_hash(state, name) for name in (
+                "metadata.request.json", "metadata.completion.json",
+                "build.request.json", "build.completion.json")},
+        }
+        write_new(state / "tauri-generated-schemas.json", encoded(generated_custody))
     notices = collect_cargo_licenses(inventory["components"], workspace_root=repo,
-                                    cargo_home=Path(cargo_home), lock_bytes=lock)
+                                    cargo_home=Path(cargo_home), lock_bytes=lock,
+                                    **({"generated_metadata": generated} if generated is not None else {}))
     write_new(state / "cargo-license-sources.json", encoded(
         {key: value for key, value in notices.items() if key != "texts"}))
     if notices.get("issues") or any(c.get("issues") for c in notices["components"]):
@@ -654,11 +795,17 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                           "frontend": "SEPARATE_INDEX_REQUIRED", "full_package_inventory": "NOT_VERIFIED"},
              "redistribution_permission": "NOT_INFERRED",
              "execution_boundary": "isolated CI job; pre/post byte revalidation is not an adversarial filesystem snapshot"}
+    if generated is not None:
+        revalidate_windows_generated_metadata(
+            repo, metadata, cargo_home, marker_before, generated["tauri_schemas"])
+        index["capture"]["generated_metadata_sha256"] = sha(encoded(generated_custody))
     write_new(resources / "cargo" / "index.json", encoded(index))
     write_new(state / "capture-complete.json", encoded(
         {"source": expected_source, "cargo_index_sha256": sha(encoded(index)),
          "artifact_identities_sha256": binding["artifact_identities_sha256"],
-         "resources": str(resources), "full_package_inventory": "NOT_VERIFIED"}))
+         "resources": str(resources), "full_package_inventory": "NOT_VERIFIED",
+         **({"generated_metadata_sha256": sha(encoded(generated_custody))}
+            if generated_custody is not None else {})}))
     return index
 
 def main(argv=None):
@@ -671,6 +818,7 @@ def main(argv=None):
     parser.add_argument("--build-cwd", type=Path)
     parser.add_argument("--features", action="append", default=[])
     parser.add_argument("--no-default-features", action="store_true")
+    parser.add_argument("--tauri-generated-schemas", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -680,7 +828,8 @@ def main(argv=None):
                       root_package_name=args.root_package, manifest_path=args.manifest,
                       state_directory=args.state_directory, resources_directory=args.resources_directory,
                       build_command=command, metadata_features=args.features,
-                      no_default_features=args.no_default_features, build_cwd=args.build_cwd)
+                      no_default_features=args.no_default_features, build_cwd=args.build_cwd,
+                      tauri_generated_schemas=args.tauri_generated_schemas)
     except (CaptureError, OSError, ValueError, KeyError) as error:
         print("dependency-capture-failed:" + str(error), file=sys.stderr)
         return 2

@@ -39,7 +39,7 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         self.fixture = write_distribution_fixture(self.root)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
             (self.root / name).write_bytes(b"Synthetic internal control; no real license grant.\n")
-        self.payload = self.root / "target/release/motionwright-desktop.exe"
+        self.payload = self.root / "target/windows-captured/x86_64-pc-windows-msvc/release/motionwright-desktop.exe"
         self.payload.parent.mkdir(parents=True)
         self.payload.write_bytes(self.fixture["payload_bytes"])
         self.environment_file = self.root / "job.env"
@@ -120,22 +120,47 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         windows = text.split("\n  windows:\n", 1)[1].split("\n  windows-update:\n", 1)[0]
         external = "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'"
         self.assertIn("save-if: " + "${{ " + external + " }}", windows)
-        self.assertIn("tauri bundle --bundles nsis --no-binary-patching --no-sign --ci", windows)
-        self.assertIn("tauri build --no-bundle --ci -- --locked", windows)
+        self.assertIn("tauri bundle --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bundles nsis", windows)
+        self.assertIn("--no-binary-patching --no-sign --ci", windows)
+        self.assertIn("-- cargo build --locked --release --bins --package motionwright-desktop", windows)
+        self.assertIn("--features tauri/custom-protocol --tauri-generated-schemas", windows)
+        self.assertIn("--require-cargo-binding", windows)
+        self.assertIn("ci_windows_dependency_capture.py verify", windows)
         allowed = {
             "ci-evidence/windows-candidate.json",
             "ci-evidence/windows-nsis-smoke.json",
             "ci-evidence/windows-nsis-cold-relaunch.json",
             "ci-evidence/windows-nsis-cold-relaunch-diagnostic.json",
+            "ci-evidence/windows-cargo-binding.json",
         }
+        original_names = {
+            "source-before.json", "source-after.json", "metadata.stdout", "metadata.stderr",
+            "metadata.request.json", "metadata.completion.json", "build.stdout", "build.stderr",
+            "build.request.json", "build.completion.json", "cargo-components.json",
+            "cargo-artifacts.json", "cargo-license-sources.json", "tauri-generated-schemas.json",
+            "capture-complete.json",
+            "generated-metadata/tauri/acl-manifests.json",
+            "generated-metadata/tauri/capabilities.json",
+            "generated-metadata/tauri/desktop-schema.json",
+            "generated-metadata/tauri/windows-schema.json",
+            "generated-metadata/cargo-markers/*.bin",
+        }
+        originals = {"ci-evidence/internal-windows-cargo/state/" + name for name in original_names}
+        originals.update({"ci-evidence/internal-windows-cargo/frontend/" + name
+                          for name in ("before-build.json", "after-bundle.json")})
         uploads = [part for part in re.split(r"(?m)^      - ", windows)
                    if "uses: actions/upload-artifact@" in part]
-        self.assertEqual(len(uploads), 3)
+        self.assertEqual(len(uploads), 4)
         for step in uploads:
             paths = re.findall(r"(?m)^            (\S+)\s*$", step)
             self.assertNotIn("internal-windows-capture", step)
             if "target/release/bundle/nsis/*-setup.exe" in paths:
                 self.assertIn("if: " + external, step)
+            elif "name: motionwright-windows-cargo-originals-" in step:
+                self.assertEqual(set(paths), originals)
+                self.assertIn("always() && github.event_name == 'workflow_dispatch'", step)
+                self.assertIn("inputs.verification_scope == 'windows_installed'", step)
+                self.assertNotIn("**", step)
             else:
                 self.assertTrue(paths)
                 self.assertLessEqual(set(paths), allowed)

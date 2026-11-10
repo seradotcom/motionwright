@@ -6,6 +6,7 @@ plumbing. No test executes Cargo, downloaded sources, or package installers.
 """
 from __future__ import annotations
 
+import copy
 import gzip
 import hashlib
 import io
@@ -140,8 +141,8 @@ class Fixture:
         self.bind_lock()
 
     def workspace_member(self, name: str = "member", *, inherited: bool = False,
-                         vendor: bool = False) -> dict:
-        relative = Path("vendor") / name if vendor else Path(name)
+                         vendor: bool = False, relative: Path | None = None) -> dict:
+        relative = relative if relative is not None else (Path("vendor") / name if vendor else Path(name))
         package = self.workspace / relative
         (package / "src").mkdir(parents=True)
         if inherited:
@@ -202,6 +203,90 @@ class CargoLicenseSourcesTests(unittest.TestCase):
 
     def codes(self, result: dict) -> set[str]:
         return {issue["code"] for issue in result["issues"]}
+
+    def generated_fixture(self):
+        desktop = self.fixture.workspace_member(
+            "motionwright-desktop", relative=Path("apps/desktop/src-tauri"))
+        dependency = self.fixture.git_package()
+        self.assertEqual(self.fixture.collect([desktop, dependency])["issues"], [])
+        marker = Path(dependency["manifest_path"]).parent / ".cargo-ok"
+        marker.write_bytes(b"Inert Cargo metadata fixture.\n")
+        schemas = {}
+        for name in collector.WINDOWS_TAURI_SCHEMAS:
+            path = self.fixture.workspace / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = json.dumps({"fixture_schema": path.name}).encode()
+            path.write_bytes(raw)
+            schemas[name] = {"bytes": len(raw), "sha256": sha(raw)}
+        profile = {
+            "schema": "motionwright.windows-cargo-generated-metadata/1",
+            "source": self.fixture.git(self.fixture.workspace, "rev-parse", "HEAD").decode().strip(),
+            "target": "x86_64-pc-windows-msvc",
+            "cargo_git_markers": {marker.relative_to(self.fixture.cargo).as_posix(): {
+                "git_head": dependency["source"].rsplit("#", 1)[-1],
+                "bytes": marker.stat().st_size, "sha256": sha(marker.read_bytes())}},
+            "tauri_schemas": schemas,
+        }
+        return [desktop, dependency], profile, marker
+
+    def test_closed_generated_metadata_preserves_originals_without_becoming_source(self):
+        components, profile, marker = self.generated_fixture()
+        self.assertIn("git_worktree_members_mismatch", self.codes(self.fixture.collect(components)))
+        result = self.fixture.collect(components, generated_metadata=profile)
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(set(result["texts"]), {sha(NOTICE)})
+        for component, count in zip(result["components"], (4, 1)):
+            authentication = component["source_authentication"]
+            self.assertEqual(len(authentication["excluded_generated_metadata"]), count)
+            generated = {row["path"] for row in authentication["excluded_generated_metadata"]}
+            self.assertFalse(generated & {row["source_path"] for row in authentication["files"]})
+            self.assertFalse(generated & {row["source_path"] for row in component["notices"]})
+        self.assertTrue(marker.is_file())
+        self.assertTrue(all((self.fixture.workspace / name).is_file()
+                            for name in collector.WINDOWS_TAURI_SCHEMAS))
+
+    def test_generated_profile_does_not_cover_mutations_or_extra_source(self):
+        components, profile, marker = self.generated_fixture()
+        self.assertEqual(self.fixture.collect(components, generated_metadata=profile)["issues"], [])
+        for key, value in (("source", "0"*40), ("target", "x86_64-unknown-linux-gnu")):
+            with self.subTest(field=key):
+                changed = {**profile, key: value}
+                self.assertIn("generated_metadata_profile_invalid",
+                              self.codes(self.fixture.collect(components, generated_metadata=changed)))
+        changed = copy.deepcopy(profile)
+        descriptor = next(iter(changed["cargo_git_markers"].values()))
+        descriptor["sha256"] = "0"*64
+        self.assertIn("generated_metadata_bytes_changed",
+                      self.codes(self.fixture.collect(components, generated_metadata=changed)))
+        changed = copy.deepcopy(profile)
+        next(iter(changed["cargo_git_markers"].values()))["git_head"] = "0"*40
+        self.assertIn("generated_cargo_marker_source_invalid",
+                      self.codes(self.fixture.collect(components, generated_metadata=changed)))
+        source = self.fixture.workspace / "apps/desktop/src-tauri/foreign.rs"
+        (self.fixture.workspace / ".git/info/exclude").write_text(
+            "apps/desktop/src-tauri/foreign.rs\n", encoding="utf-8")
+        source.write_bytes(b"untracked and ignored compilable source\n")
+        self.assertIn("git_worktree_members_mismatch",
+                      self.codes(self.fixture.collect(components, generated_metadata=profile)))
+        source.unlink()
+        extra = self.fixture.workspace / "apps/desktop/src-tauri/gen/schemas/extra.json"
+        extra.write_bytes(b"{}")
+        self.assertIn("generated_tauri_schema_roster_invalid",
+                      self.codes(self.fixture.collect(components, generated_metadata=profile)))
+        extra.unlink()
+        name = collector.WINDOWS_TAURI_SCHEMAS[0]
+        schema = self.fixture.workspace / name
+        original = schema.read_bytes()
+        raw = b'{"duplicate":1,"duplicate":2}'
+        schema.write_bytes(raw)
+        changed = copy.deepcopy(profile)
+        changed["tauri_schemas"][name] = {"bytes": len(raw), "sha256": sha(raw)}
+        self.assertIn("generated_metadata_json_invalid",
+                      self.codes(self.fixture.collect(components, generated_metadata=changed)))
+        schema.write_bytes(original)
+        marker.write_bytes(marker.read_bytes() + b"changed")
+        self.assertIn("generated_metadata_bytes_changed",
+                      self.codes(self.fixture.collect(components, generated_metadata=profile)))
 
     def assert_verified(self, result: dict, count: int = 1) -> None:
         self.assertEqual(result["schema"], "motionwright.cargo-license-sources/1")

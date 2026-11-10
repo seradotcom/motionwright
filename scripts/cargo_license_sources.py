@@ -12,6 +12,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import json
 import os
 import re
 import stat
@@ -115,6 +116,16 @@ def _stamp(info: os.stat_result) -> tuple[int, ...]:
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _path_descriptor_matches(descriptor: os.stat_result, named: os.stat_result) -> bool:
+    # Windows path/descriptor ctime may describe different timestamps. Retain
+    # full stamps within each domain and join only fields that are comparable,
+    # as in the existing NSIS source-capture reader.
+    if os.name != "nt":
+        return _stamp(descriptor) == _stamp(named)
+    fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_birthtime_ns", "st_birthtime")
+    return all(getattr(descriptor, name, None) == getattr(named, name, None) for name in fields)
+
+
 @dataclass
 class _Root:
     original: Path
@@ -182,7 +193,7 @@ def _read(root: _Root, parts: tuple[str, ...], limit: int, budget: _Budget) -> b
         _fail("source_file_open_failed", "An expected source file could not be opened safely.")
     try:
         opened = os.fstat(descriptor)
-        if _linked(opened) or not stat.S_ISREG(opened.st_mode) or _stamp(opened) != _stamp(before):
+        if _linked(opened) or not stat.S_ISREG(opened.st_mode) or not _path_descriptor_matches(opened, before):
             _fail("source_changed_during_capture", "A source file changed before capture.")
         chunks: list[bytes] = []
         size = 0
@@ -197,8 +208,8 @@ def _read(root: _Root, parts: tuple[str, ...], limit: int, budget: _Budget) -> b
             chunks.append(chunk)
         after = os.fstat(descriptor)
         _, named_after = root.checked(parts)
-        if (_stamp(opened) != _stamp(after) or _stamp(after) != _stamp(named_after)
-                or size != after.st_size):
+        if (_stamp(opened) != _stamp(after) or _stamp(before) != _stamp(named_after)
+                or not _path_descriptor_matches(after, named_after) or size != after.st_size):
             _fail("source_changed_during_capture", "Source content or identity changed during capture.")
         return b"".join(chunks)
     finally:
@@ -634,8 +645,93 @@ def _registry_capture(component: dict[str, Any], cargo: _Root,
     }, budget)
 
 
+WINDOWS_TAURI_SCHEMAS = tuple(
+    "apps/desktop/src-tauri/gen/schemas/" + name for name in (
+        "acl-manifests.json", "capabilities.json", "desktop-schema.json", "windows-schema.json"
+    )
+)
+MAX_GENERATED_SCHEMA_BYTES = 4 * 1024 * 1024
+MAX_CARGO_MARKER_BYTES = 4096
+
+
+def _generated_json(raw: bytes) -> dict[str, Any]:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                _fail("generated_metadata_json_invalid", "Generated JSON repeats a key.")
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw, object_pairs_hook=unique,
+                           parse_constant=lambda value: _fail(
+                               "generated_metadata_json_invalid", "Non-JSON numeric value."))
+    except (ValueError, UnicodeError):
+        _fail("generated_metadata_json_invalid", "Generated metadata is not valid JSON.")
+    if not isinstance(value, dict):
+        _fail("generated_metadata_json_invalid", "Generated metadata must be an object.")
+    return value
+
+
+def _generated_profile(profile, workspace: _Root, cargo: _Root,
+                       workspace_repo: _GitRepo, budget: _Budget):
+    if profile is None:
+        return None
+    if (not isinstance(profile, dict)
+            or set(profile) != {"schema", "source", "target", "cargo_git_markers", "tauri_schemas"}
+            or profile["schema"] != "motionwright.windows-cargo-generated-metadata/1"
+            or profile["source"] != workspace_repo.head
+            or profile["target"] != "x86_64-pc-windows-msvc"
+            or not isinstance(profile["cargo_git_markers"], dict)
+            or len(profile["cargo_git_markers"]) > 64
+            or not isinstance(profile["tauri_schemas"], dict)
+            or set(profile["tauri_schemas"]) != set(WINDOWS_TAURI_SCHEMAS)):
+        _fail("generated_metadata_profile_invalid", "The generated metadata profile is not the closed Windows scope.")
+
+    def verify(root, name, descriptor, limit, *, marker=False):
+        parts = _parts(name)
+        keys = {"bytes", "sha256", "git_head"} if marker else {"bytes", "sha256"}
+        if (not isinstance(descriptor, dict) or set(descriptor) != keys
+                or type(descriptor["bytes"]) is not int or not 0 <= descriptor["bytes"] <= limit
+                or not isinstance(descriptor["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"])):
+            _fail("generated_metadata_descriptor_invalid", "A generated metadata descriptor is invalid.")
+        data = _read(root, parts, limit, budget)
+        if len(data) != descriptor["bytes"] or _sha(data) != descriptor["sha256"]:
+            _fail("generated_metadata_bytes_changed", "Generated metadata changed from its observed bytes.")
+        return parts, data
+
+    for name, descriptor in profile["cargo_git_markers"].items():
+        parts = _parts(name)
+        if len(parts) != 5 or parts[:2] != ("git", "checkouts") or parts[-1] != ".cargo-ok":
+            _fail("generated_cargo_marker_scope_invalid", "Only a Cargo Git checkout root marker is admitted.")
+        parts, _ = verify(cargo, name, descriptor, MAX_CARGO_MARKER_BYTES, marker=True)
+        repo = _GitRepo(cargo, parts[:4])
+        if descriptor["git_head"] != repo.head or repo.entries((".cargo-ok",)):
+            _fail("generated_cargo_marker_source_invalid", "A Cargo marker must be untracked and bound to the exact checkout.")
+    gen = ("apps", "desktop", "src-tauri", "gen")
+    for parts, names in ((gen, {"schemas"}), (gen + ("schemas",),
+                         {Path(name).name for name in WINDOWS_TAURI_SCHEMAS})):
+        directory, _ = workspace.checked(parts, directory=True)
+        observed = set()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                observed.add(entry.name)
+                if len(observed) > len(names):
+                    _fail("generated_tauri_schema_roster_invalid", "The generated schema namespace is not closed.")
+        if observed != names:
+            _fail("generated_tauri_schema_roster_invalid", "The generated schema namespace is not closed.")
+    for name, descriptor in profile["tauri_schemas"].items():
+        parts, data = verify(workspace, name, descriptor, MAX_GENERATED_SCHEMA_BYTES)
+        if workspace_repo.entries(parts):
+            _fail("generated_tauri_schema_tracked", "Generated schema metadata cannot replace tracked source.")
+        _generated_json(data)
+    return profile
+
+
 def _git_capture(component: dict[str, Any], root: _Root, repo: _GitRepo,
-                 package: tuple[str, ...], budget: _Budget, kind: str) -> _Capture:
+                 package: tuple[str, ...], budget: _Budget, kind: str,
+                 generated_metadata=None) -> _Capture:
     if package[:len(repo.prefix)] != repo.prefix:
         _fail("git_package_scope_mismatch", "The package is outside its exact Git checkout.")
     inside = package[len(repo.prefix):]
@@ -643,7 +739,27 @@ def _git_capture(component: dict[str, Any], root: _Root, repo: _GitRepo,
     repo.check_index(inside, expected)
     local = set(_walk(root, package, git_metadata=not inside))
     expected_local = {repo.prefix + relative for relative in expected}
-    if local != expected_local:
+    excluded = {}
+    if generated_metadata is not None:
+        candidates = {}
+        if kind == "git_exact_revision" and root.kind == "cargo_home":
+            marker = "/".join(repo.prefix + (".cargo-ok",))
+            if marker in generated_metadata["cargo_git_markers"]:
+                candidates[marker] = generated_metadata["cargo_git_markers"][marker]
+        elif kind == "workspace_HEAD" and package == ("apps", "desktop", "src-tauri"):
+            candidates = generated_metadata["tauri_schemas"]
+        for name, descriptor in candidates.items():
+            parts = _parts(name)
+            if parts in expected_local:
+                _fail("generated_metadata_overlaps_source", "Generated metadata overlaps tracked source.")
+            limit = MAX_CARGO_MARKER_BYTES if name.endswith("/.cargo-ok") else MAX_GENERATED_SCHEMA_BYTES
+            data = _read(root, parts, limit, budget)
+            if len(data) != descriptor["bytes"] or _sha(data) != descriptor["sha256"]:
+                _fail("generated_metadata_bytes_changed", "Generated metadata changed during source collection.")
+            excluded[parts] = {"path": name, "bytes": len(data), "sha256": _sha(data),
+                               "kind": "UNTRUSTED_CARGO_CHECKOUT_MARKER" if name.endswith("/.cargo-ok")
+                               else "TAURI_GENERATED_SCHEMA"}
+    if local != expected_local | set(excluded):
         _fail("git_worktree_members_mismatch", "The source tree has missing, untracked, or ignored additional files.")
     files: dict[tuple[str, ...], dict[str, Any]] = {}
     for relative, (mode, oid) in expected.items():
@@ -659,6 +775,8 @@ def _git_capture(component: dict[str, Any], root: _Root, repo: _GitRepo,
         "status": "VERIFIED", "kind": kind, "root_kind": root.kind,
         "source_root": "/".join(package), "git_head": repo.head,
         "scope": "tracked_package_tree_and_index_at_exact_HEAD_with_verified_line_endings",
+        **({"excluded_generated_metadata": [excluded[path] for path in sorted(excluded)]}
+           if excluded else {}),
     }, budget, repo, inside)
 
 
@@ -868,7 +986,7 @@ def _is_notice(relative: tuple[str, ...], package: tuple[str, ...]) -> bool:
 
 def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
                  workspace_repo: _GitRepo, lock: dict[tuple[str, str, str | None], dict[str, Any]],
-                 budget: _Budget) -> tuple[dict[str, Any], dict[str, bytes]]:
+                 budget: _Budget, generated_metadata=None) -> tuple[dict[str, Any], dict[str, bytes]]:
     result = {
         "id": component.get("id") if isinstance(component.get("id"), str) else None,
         "name": component.get("name") if isinstance(component.get("name"), str) else None,
@@ -912,7 +1030,7 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
             if repo.head != revision:
                 _fail("git_source_revision_mismatch", "The checkout HEAD differs from the exact locked Git revision.")
             # Check the entire dependency checkout, not just one nested member.
-            capture = _git_capture(component, cargo, repo, repo.prefix, budget, "git_exact_revision")
+            capture = _git_capture(component, cargo, repo, repo.prefix, budget, "git_exact_revision", generated_metadata)
             capture.package = manifest[:-1]
             capture.repo_package = capture.package[len(repo.prefix):]
             capture.authentication["package_root"] = "/".join(capture.package)
@@ -923,7 +1041,7 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
             package = manifest[:-1]
             if component["name"] == "glib" and not any(part.casefold() in {"vendor", "vendored"} for part in package):
                 _fail("vendored_glib_wrapper_path_unverified", "A source=None glib wrapper requires an explicit tracked vendor path.")
-            capture = _git_capture(component, workspace, workspace_repo, package, budget, "workspace_HEAD")
+            capture = _git_capture(component, workspace, workspace_repo, package, budget, "workspace_HEAD", generated_metadata)
             if component["name"] == "glib":
                 capture.authentication["kind"] = "vendored_rust_glib_wrapper"
                 capture.authentication["scope"] = "tracked_rust_wrapper_only_not_native_GLib_C"
@@ -972,7 +1090,8 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
 
 
 def collect_cargo_licenses(components: Any, *, workspace_root: Path,
-                           cargo_home: Path, lock_bytes: bytes) -> dict[str, Any]:
+                           cargo_home: Path, lock_bytes: bytes,
+                           generated_metadata=None) -> dict[str, Any]:
     """Collect source-authenticated original license material; never legal consent.
 
     The caller supplies observed components/roles from the build classifier.
@@ -996,6 +1115,8 @@ def collect_cargo_licenses(components: Any, *, workspace_root: Path,
         actual_lock = workspace_repo.read_tracked(("Cargo.lock",), MAX_LOCK_BYTES, budget)
         if actual_lock != lock_bytes:
             _fail("lock_input_not_workspace_HEAD", "The captured lock bytes differ from the tracked workspace HEAD lock.")
+        generated_metadata = _generated_profile(
+            generated_metadata, workspace, cargo, workspace_repo, budget)
         seen: set[str] = set()
         total_text_bytes = 0
         for component in components:
@@ -1010,7 +1131,7 @@ def collect_cargo_licenses(components: Any, *, workspace_root: Path,
                 continue
             if isinstance(identity, str):
                 seen.add(identity)
-            record, texts = _collect_one(component, workspace, cargo, workspace_repo, lock, budget)
+            record, texts = _collect_one(component, workspace, cargo, workspace_repo, lock, budget, generated_metadata)
             result["components"].append(record)
             if isinstance(component.get("name"), str) and component["name"] in {
                     "libsqlite3-sys", "glib", "glib-sys", "gobject-sys", "gio-sys"}:
@@ -1037,6 +1158,7 @@ def collect_cargo_licenses(components: Any, *, workspace_root: Path,
                     "detail": "Collection stopped after exhausting its global source budget.",
                 })
                 break
+        _generated_profile(generated_metadata, workspace, cargo, workspace_repo, budget)
         workspace_repo.finish()
     except _Problem as problem:
         result["issues"].append(problem.issue())

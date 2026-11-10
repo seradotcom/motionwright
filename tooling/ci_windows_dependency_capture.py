@@ -1,0 +1,250 @@
+"""Compose existing dependency verifiers for isolated Windows installation CI.
+
+This helper does not grant redistribution, run Native, or replace package
+inspection. Original capture directories are create-only and are never replayed.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import urllib.parse
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import candidate_dependency_capture as capture
+import candidate_frontend_authentication as frontend
+from npm_archive_authentication import relative_path
+
+TARGET = "x86_64-pc-windows-msvc"
+BASE = Path("ci-evidence/internal-windows-cargo")
+BINARY = Path("target/windows-captured") / TARGET / "release/motionwright-desktop.exe"
+FRONTEND = Path("apps/studio/dist")
+MAX_ARCHIVE = 32 * 1024 * 1024
+MAX_ARCHIVES = 128 * 1024 * 1024
+
+
+def require(value, code):
+    if not value:
+        raise ValueError(code)
+
+
+def internal_source(environment):
+    required = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REPOSITORY": "seradotcom/motionwright",
+        "GITHUB_REF": "refs/heads/integrate/phase1-final-composition-20261027",
+        "MW_WINDOWS_CANDIDATE_SCOPE": "windows_installed",
+        "GITHUB_RUN_ATTEMPT": "1",
+    }
+    require(all(environment.get(key) == value for key, value in required.items()),
+            "internal_windows_dependency_scope_refused")
+    source = environment.get("GITHUB_SHA", "")
+    require(re.fullmatch(r"[0-9a-f]{40}", source) is not None
+            and re.fullmatch(r"[1-9][0-9]*", environment.get("GITHUB_RUN_ID", "")) is not None,
+            "internal_windows_dependency_identity_invalid")
+    return source
+
+
+def read_json(repo, path, limit=16 * 1024 * 1024):
+    return capture.parse_json(capture.stable_read(repo, path, limit))
+
+
+def archive_url(value):
+    require(isinstance(value, str) and not re.search(r"[\x00-\x20\x7f\\]", value),
+            "npm_archive_url_refused")
+    parsed = urllib.parse.urlsplit(value)
+    require(parsed.scheme == "https" and parsed.hostname == "registry.npmjs.org"
+            and parsed.port in (None, 443) and parsed.username is None
+            and parsed.password is None and not parsed.query and not parsed.fragment
+            and parsed.path.startswith("/") and parsed.path.endswith(".tgz"),
+            "npm_archive_url_refused")
+    return value
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ValueError("npm_archive_redirect_refused")
+
+
+def authenticate_frontend(repo, source, *, recheck=False):
+    capture.source_snapshot(repo, source)
+    directory = repo / BASE / "frontend"
+    if not recheck:
+        capture.new_directory(repo, directory)
+        archives = capture.new_directory(repo, directory / "archives")
+        index = read_json(repo, FRONTEND / "assets/licenses/frontend/index.json")
+        lock = read_json(repo, "apps/studio/package-lock.json")
+        require(index.get("source_binding", {}).get("source_sha") == source,
+                "frontend_source_sha_mismatch")
+        components = index.get("components")
+        require(isinstance(components, list) and 0 < len(components) <= 512,
+                "frontend_components_invalid")
+        mapping, total = {}, 0
+        opener = urllib.request.build_opener(NoRedirect())
+        for component in components:
+            key = relative_path(component.get("lock_key"))
+            require(key not in mapping, "frontend_lock_key_repeated")
+            locked = lock["packages"][key]
+            url = archive_url(locked["resolved"])
+            require(component.get("source", {}).get("resolved") == url
+                    and component.get("source", {}).get("integrity") == locked["integrity"],
+                    "frontend_archive_lock_mismatch")
+            name = hashlib.sha256(key.encode("utf-8")).hexdigest() + ".tgz"
+            request = urllib.request.Request(url, headers={"User-Agent": "Motionwright-CI"})
+            count = 0
+            with opener.open(request, timeout=30) as response, (archives / name).open("xb") as output:
+                require(response.status == 200 and response.geturl() == url,
+                        "npm_archive_response_refused")
+                while chunk := response.read(65536):
+                    count += len(chunk)
+                    total += len(chunk)
+                    require(count <= MAX_ARCHIVE and total <= MAX_ARCHIVES,
+                            "npm_archive_budget_exceeded")
+                    output.write(chunk)
+            require(count > 0, "npm_archive_empty")
+            mapping[key] = name
+        capture.write_new(directory / "archive-map.json", capture.encoded(mapping))
+    mapping = read_json(repo, directory / "archive-map.json", 1024 * 1024)
+    receipt = directory / ("after-bundle.json" if recheck else "before-build.json")
+    report = frontend.authenticate_build(
+        repo=repo, expected_source=source, output_directory=FRONTEND,
+        archive_root=directory / "archives", archive_map=mapping, receipt_path=receipt,
+    )
+    if recheck:
+        before = read_json(repo, directory / "before-build.json")
+        require(report == before, "frontend_changed_between_capture_and_bundle")
+    return report
+
+
+def cargo_binding(repo, source):
+    snapshot = capture.source_snapshot(repo, source)
+    complete = read_json(repo, BASE / "state/capture-complete.json")
+    raw = capture.stable_read(repo, BASE / "resources/cargo/index.json", 16 * 1024 * 1024)
+    require(complete.get("source") == source
+            and complete.get("cargo_index_sha256") == capture.sha(raw)
+            and complete.get("full_package_inventory") == "NOT_VERIFIED",
+            "windows_cargo_completion_mismatch")
+    result = capture.verify_binary_binding(
+        raw, expected_index_sha256=complete["cargo_index_sha256"],
+        expected_source=source, expected_source_tree=snapshot["tree"], expected_target=TARGET,
+        expected_package="motionwright-desktop", expected_binary="motionwright-desktop",
+        binary_root=repo, binary_path=repo / BINARY,
+    )
+    require(result["artifact_identities_sha256"] == complete.get("artifact_identities_sha256"),
+            "windows_cargo_roster_mismatch")
+    custody_raw = capture.stable_read(repo, BASE / "state/tauri-generated-schemas.json", 1024 * 1024)
+    digest = capture.sha(custody_raw)
+    require(complete.get("generated_metadata_sha256") == digest
+            and capture.parse_json(raw).get("capture", {}).get("generated_metadata_sha256") == digest,
+            "windows_generated_custody_mismatch")
+    profile = capture.parse_json(custody_raw).get("profile", {})
+    require(profile.get("source") == source and profile.get("target") == TARGET,
+            "windows_generated_custody_source_mismatch")
+    return snapshot, complete, raw, result
+
+
+def stage_resources(repo, source):
+    from candidate_smoke import _verify_cargo_notice_subtree
+
+    snapshot, complete, raw, binding = cargo_binding(repo, source)
+    config = read_json(repo, "apps/desktop/src-tauri/tauri.conf.json")
+    resources = config.get("bundle", {}).get("resources")
+    expected = {
+        "bundle-licenses/LICENSE": "licenses/motionwright/LICENSE",
+        "bundle-licenses/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+        "bundle-licenses/glib-0.18.5/LICENSE": "licenses/glib-0.18.5/LICENSE",
+        "bundle-licenses/glib-0.18.5/COPYRIGHT": "licenses/glib-0.18.5/COPYRIGHT",
+    }
+    require(resources == expected, "windows_original_notice_mapping_changed")
+    require(not config.get("build", {}).get("beforeBundleCommand")
+            and not config.get("build", {}).get("features"),
+            "windows_captured_bundle_configuration_changed")
+    root = repo / BASE / "resources"
+    _verify_cargo_notice_subtree(capture=capture, index_raw=raw,
+                                anchor=root, relative=Path("cargo"))
+    index = capture.parse_json(raw)
+    names = ["index.json", *("texts/" + digest + ".txt" for digest in sorted(
+        {row["sha256"] for component in index["components"] for row in component["notices"]}))]
+    mapped = dict(resources)
+    for name in names:
+        source_path = os.path.relpath(root / "cargo" / name,
+                                      repo / "apps/desktop/src-tauri").replace("\\", "/")
+        mapped[source_path] = "licenses/cargo/" + name
+    require(capture.source_snapshot(repo, source) == snapshot,
+            "windows_source_changed_during_resource_staging")
+    capture.write_new(repo / BASE / "tauri-resources.json",
+                      capture.encoded({"bundle": {"resources": mapped}}))
+    return binding
+
+
+def verify_installed(repo, source):
+    _, complete, _, observed = cargo_binding(repo, source)
+    smoke = read_json(repo, "ci-evidence/windows-nsis-smoke.json")
+    require(smoke.get("candidate", {}).get("source_revision") == source,
+            "windows_installed_source_mismatch")
+    installed = smoke.get("automated_inspection", {}).get("cargo_build_binding", {})
+    require(installed.get("status") == "CAPTURED_ROOT_BINARY_BYTE_EXACT",
+            "windows_installed_cargo_binding_required")
+    for key, value in observed.items():
+        require(installed.get(key) == value,
+                "windows_installed_cargo_identity_mismatch")
+    notices = installed.get("notice_resources", {})
+    require(notices.get("status") == "DECLARED_CARGO_TEXTS_PRESENT_BYTE_EXACT"
+            and notices.get("scope") == "CARGO_NOTICE_SUBTREE_ONLY"
+            and notices.get("subtree_closed") is True
+            and notices.get("full_package_inventory") == "NOT_VERIFIED",
+            "windows_installed_cargo_notices_required")
+    frontend_report = read_json(repo, BASE / "frontend/after-bundle.json")
+    require(frontend_report.get("source_sha") == source
+            and frontend_report.get("source_tree") == observed["source_tree"]
+            and frontend_report.get("observed_npm_source_and_notice_authentication") == "VERIFIED"
+            and frontend_report.get("source_binding") == "EXACT_HEAD_TREE_INDEX_AND_TRACKED_BYTES_REVALIDATED",
+            "windows_frontend_authentication_required")
+    report = {
+        "schema": "motionwright.windows-installed-cargo-binding/1",
+        "source": source, "source_tree": observed["source_tree"], "target": TARGET,
+        "cargo_index_sha256": complete["cargo_index_sha256"],
+        "artifact_identities_sha256": complete["artifact_identities_sha256"],
+        "installed_binary": {"bytes": observed["bytes"], "sha256": observed["sha256"]},
+        "cargo_binding": installed["status"], "cargo_notices": notices,
+        "frontend_index_sha256": frontend_report["frontend_index_sha256"],
+        "frontend_observed_npm_authentication": "VERIFIED",
+        "full_package_inventory": "NOT_VERIFIED", "human_install_acceptance": "NOT_RUN",
+        "distribution_signature": "NOT_CLAIMED", "published": False,
+    }
+    capture.write_new(repo / "ci-evidence/windows-cargo-binding.json", capture.encoded(report))
+    return report
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("phase", choices=("frontend", "frontend-recheck", "stage", "verify"))
+    args = parser.parse_args(argv)
+    try:
+        source = internal_source(os.environ)
+        require(Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True) == ROOT,
+                "windows_dependency_checkout_mismatch")
+        if args.phase.startswith("frontend"):
+            authenticate_frontend(ROOT, source, recheck=args.phase == "frontend-recheck")
+        elif args.phase == "stage":
+            stage_resources(ROOT, source)
+        else:
+            verify_installed(ROOT, source)
+        print("windows-dependency-" + args.phase + "=verified public_distribution=NOT_AUTHORIZED")
+    except (capture.CaptureError, OSError, ValueError, KeyError, TypeError) as error:
+        detail = str(error)
+        code = detail if re.fullmatch(r"[a-z][a-z0-9_]{0,95}", detail) else type(error).__name__
+        print("windows-dependency-" + args.phase + "-failed:" + code, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

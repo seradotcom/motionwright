@@ -33,6 +33,81 @@ class CaptureContracts(unittest.TestCase):
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if result.returncode:
                 self.skipTest("directory junction unavailable")
+    def test_windows_generated_preflight_refuses_preexisting_or_overlapping_roots(self):
+        self.repo()
+        manifest = self.root / "apps/desktop/src-tauri/Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes(b"[package]\n")
+        home = self.root / "cargo"; home.mkdir()
+        target = self.root / "target"; target.mkdir()
+        arguments = (self.root, home, manifest, "x86_64-pc-windows-msvc",
+                     "motionwright-desktop", target, "state", "resources")
+        capture.prepare_windows_generated_metadata(*arguments)
+        (home / "preexisting").write_bytes(b"preserve")
+        with self.assertRaisesRegex(capture.CaptureError, "cargo_home_not_empty"):
+            capture.prepare_windows_generated_metadata(*arguments)
+        (home / "preexisting").unlink()
+        (target / "preexisting").write_bytes(b"preserve")
+        with self.assertRaisesRegex(capture.CaptureError, "target_not_empty"):
+            capture.prepare_windows_generated_metadata(*arguments)
+        (target / "preexisting").unlink()
+        generated = manifest.parent / "gen"
+        generated.mkdir()
+        with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_root_preexisting"):
+            capture.prepare_windows_generated_metadata(*arguments)
+        generated.rmdir()
+        changed = list(arguments)
+        changed[-1] = "apps/desktop/src-tauri/resources"
+        with self.assertRaisesRegex(capture.CaptureError, "output_inside_source_package"):
+            capture.prepare_windows_generated_metadata(*changed)
+        self.assertFalse((self.root / "state").exists())
+
+    def test_generated_revalidation_uses_real_checkout_and_preserves_original_bytes(self):
+        import test_cargo_license_sources as sources
+        base = self.root / "fixture"; base.mkdir()
+        fixture = sources.Fixture(base)
+        component = fixture.git_package()
+        metadata = {"packages": [component]}
+        marker = pathlib.Path(component["manifest_path"]).parent / ".cargo-ok"
+        marker.write_bytes(b"inert marker\n")
+        before = capture.observe_cargo_git_markers(metadata, fixture.cargo)
+        self.assertEqual(len(before), 1)
+        self.assertEqual(next(iter(before.values()))["git_head"], component["source"].rsplit("#", 1)[-1])
+        for name in sources.collector.WINDOWS_TAURI_SCHEMAS:
+            path = fixture.workspace / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"{}")
+        schemas = capture.observe_windows_tauri_schemas(fixture.workspace)
+        self.assertEqual(len(schemas), 4)
+        capture.revalidate_windows_generated_metadata(fixture.workspace, metadata, fixture.cargo, before, schemas)
+        state = self.root / "retained"; state.mkdir()
+        profile = {"tauri_schemas": schemas, "cargo_git_markers": before}
+        retained = capture.retain_generated_originals(fixture.workspace, fixture.cargo, state, profile)
+        self.assertEqual(len(retained), 5)
+        for row in retained.values():
+            self.assertEqual(capture.stable_hash(state, row["path"]),
+                             {"bytes": row["bytes"], "sha256": row["sha256"]})
+        with self.assertRaises(FileExistsError):
+            capture.retain_generated_originals(fixture.workspace, fixture.cargo, state, profile)
+        marker.write_bytes(b"changed marker\n")
+        with self.assertRaisesRegex(capture.CaptureError, "cargo_generated_marker_changed"):
+            capture.revalidate_windows_generated_metadata(fixture.workspace, metadata, fixture.cargo, before, schemas)
+        marker.write_bytes(b"inert marker\n")
+        first = fixture.workspace / sources.collector.WINDOWS_TAURI_SCHEMAS[0]
+        first.write_bytes(b'{"changed":true}')
+        with self.assertRaisesRegex(capture.CaptureError, "generated_metadata_changed_after_notices"):
+            capture.revalidate_windows_generated_metadata(fixture.workspace, metadata, fixture.cargo, before, schemas)
+        first.write_bytes(b'{"duplicate":1,"duplicate":2}')
+        with self.assertRaisesRegex(capture.CaptureError, "generated_metadata_json_invalid"):
+            capture.observe_windows_tauri_schemas(fixture.workspace)
+        first.write_bytes(b"{}")
+        (first.parent / "extra-empty-directory").mkdir()
+        with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_schema_roster_invalid"):
+            capture.observe_windows_tauri_schemas(fixture.workspace)
+        foreign = {"packages": [{**component, "manifest_path": str(fixture.workspace / "Cargo.toml")}]}
+        with self.assertRaisesRegex(capture.CaptureError, "path_outside_anchor"):
+            capture.observe_cargo_git_markers(foreign, fixture.cargo)
+
     def test_current_git_source_and_exact_crlf_are_explicitly_distinguished(self):
         head = self.repo()
         exact = capture.source_snapshot(self.root, head)

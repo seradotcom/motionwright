@@ -37,6 +37,14 @@ on:
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
       - "tooling/tests/test_ci_windows_internal_candidate.py"
+      - "tooling/ci_windows_dependency_capture.py"
+      - "tooling/tests/test_ci_windows_dependency_capture.py"
+      - "scripts/cargo_build_inventory.py"
+      - "scripts/cargo_license_sources.py"
+      - "scripts/candidate_frontend_authentication.py"
+      - "scripts/npm_archive_authentication.py"
+      - "scripts/test_cargo_license_sources.py"
+      - "scripts/test_candidate_dependency_capture.py"
       - "tooling/source_lock_admission.py"
       - "tooling/tests/test_source_lock_admission.py"
       - "tooling/public_surface_policy.py"
@@ -113,6 +121,14 @@ on:
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
       - "tooling/tests/test_ci_windows_internal_candidate.py"
+      - "tooling/ci_windows_dependency_capture.py"
+      - "tooling/tests/test_ci_windows_dependency_capture.py"
+      - "scripts/cargo_build_inventory.py"
+      - "scripts/cargo_license_sources.py"
+      - "scripts/candidate_frontend_authentication.py"
+      - "scripts/npm_archive_authentication.py"
+      - "scripts/test_cargo_license_sources.py"
+      - "scripts/test_candidate_dependency_capture.py"
       - "tooling/source_lock_admission.py"
       - "tooling/tests/test_source_lock_admission.py"
       - "tooling/public_surface_policy.py"
@@ -972,7 +988,15 @@ jobs:
       - name: Verify isolated Windows candidate admission controls
         shell: pwsh
         run: |
-          python -B -m unittest tooling.tests.test_ci_windows_internal_candidate -v
+          python -B -m unittest tooling.tests.test_ci_windows_internal_candidate tooling.tests.test_ci_windows_dependency_capture -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows capture integration contracts failed' }
+          Push-Location scripts
+          try {
+            python -B -m unittest test_cargo_license_sources test_candidate_dependency_capture -v
+            if ($LASTEXITCODE -ne 0) { throw 'Cargo source capture contracts failed' }
+          } finally {
+            Pop-Location
+          }
           if ($LASTEXITCODE -ne 0) { throw 'Internal Windows candidate controls failed' }
       - name: Source and acceptance policy before Windows contract execution
         env:
@@ -1203,25 +1227,53 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'
         with:
           cache-on-failure: false
           save-if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed' }}
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Windows candidate
+        id: windows_candidate_build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Push-Location apps/desktop
-          try {
-            if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
-              npm --prefix ../studio exec -- tauri build --no-bundle --ci -- --locked
-            } else {
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
+            $cargoHome = Join-Path $env:RUNNER_TEMP "motionwright-windows-cargo-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+            $targetDir = Join-Path $env:GITHUB_WORKSPACE 'target/windows-captured'
+            if ((Test-Path $cargoHome) -or (Test-Path $targetDir)) { throw 'Cargo capture roots must be new' }
+            New-Item -ItemType Directory -Path $cargoHome, $targetDir | Out-Null
+            $env:CARGO_HOME = $cargoHome
+            $env:CARGO_TARGET_DIR = $targetDir
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value "CARGO_HOME=$cargoHome"
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$targetDir"
+            $env:MOTIONWRIGHT_CANDIDATE_BUILD = '1'
+            $env:MOTIONWRIGHT_CANDIDATE_SOURCE_SHA = $env:GITHUB_SHA
+            npm --prefix apps/studio run build
+            if ($LASTEXITCODE -ne 0) { throw 'Source-bound Windows frontend build failed' }
+            python -B tooling/ci_windows_dependency_capture.py frontend
+            if ($LASTEXITCODE -ne 0) { throw 'Original frontend archive authentication failed' }
+            python -B scripts/candidate_dependency_capture.py `
+              --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" `
+              --cargo-home "$cargoHome" --manifest apps/desktop/src-tauri/Cargo.toml `
+              --root-package motionwright-desktop --target x86_64-pc-windows-msvc `
+              --features tauri/custom-protocol --tauri-generated-schemas `
+              --state-directory ci-evidence/internal-windows-cargo/state `
+              --resources-directory ci-evidence/internal-windows-cargo/resources `
+              -- cargo build --locked --release --bins --package motionwright-desktop `
+              --manifest-path apps/desktop/src-tauri/Cargo.toml --target x86_64-pc-windows-msvc `
+              --features tauri/custom-protocol --message-format=json-render-diagnostics
+            if ($LASTEXITCODE -ne 0) { throw 'Original Windows Cargo capture failed' }
+            python -B tooling/ci_windows_dependency_capture.py stage
+            if ($LASTEXITCODE -ne 0) { throw 'Captured Cargo notice staging failed' }
+          } else {
+            Push-Location apps/desktop
+            try {
               npm --prefix ../studio exec -- tauri build --bundles nsis
+              if ($LASTEXITCODE -ne 0) { throw 'Windows candidate build failed' }
+            } finally {
+              Pop-Location
             }
-            if ($LASTEXITCODE -ne 0) { throw 'Windows candidate build failed' }
-          } finally {
-            Pop-Location
           }
       - name: Prepare isolated Windows candidate capture
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
@@ -1255,7 +1307,7 @@ jobs:
           if not run_id.isdecimal():
               raise ValueError("internal_candidate_run_invalid")
           _checkout(root, source)
-          payload = root / "target/release/motionwright-desktop.exe"
+          payload = root / "target/windows-captured/x86_64-pc-windows-msvc/release/motionwright-desktop.exe"
           build = distribution_build_record(root, arch="x64", payload=payload)
           lock = load_source_lock(root)
           evidence_path = lock["dependencies"]["semwright"]["verification"]["evidence"]["path"]
@@ -1310,7 +1362,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Push-Location apps/desktop
           try {
-            npm --prefix ../studio exec -- tauri bundle --bundles nsis --no-binary-patching --no-sign --ci
+            npm --prefix ../studio exec -- tauri bundle --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bundles nsis --config ../../ci-evidence/internal-windows-cargo/tauri-resources.json --no-binary-patching --no-sign --ci
             if ($LASTEXITCODE -ne 0) { throw 'Internal Windows NSIS bundle failed' }
           } finally {
             Pop-Location
@@ -1318,17 +1370,33 @@ jobs:
       - name: Record exact Windows candidate artifact
         shell: pwsh
         run: |
-          $artifacts = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe -File)
+          $ErrorActionPreference = 'Stop'
+          $bundleDir = 'target/release/bundle/nsis'
+          $cargoArgs = @()
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
+            python -B tooling/ci_windows_dependency_capture.py frontend-recheck
+            if ($LASTEXITCODE -ne 0) { throw 'Frontend changed during captured build or bundle' }
+            $bundleDir = 'target/windows-captured/x86_64-pc-windows-msvc/release/bundle/nsis'
+            $cargoArgs = @('--cargo-index', 'ci-evidence/internal-windows-cargo/resources/cargo/index.json',
+              '--cargo-binary', 'target/windows-captured/x86_64-pc-windows-msvc/release/motionwright-desktop.exe',
+              '--require-cargo-binding')
+          }
+          $artifacts = @(Get-ChildItem (Join-Path $bundleDir '*-setup.exe') -File)
           if ($artifacts.Count -ne 1) {
             throw "Expected exactly one NSIS setup artifact, observed $($artifacts.Count)"
           }
-          python tooling/package_receipt.py --git-sha "$env:GITHUB_SHA" --platform windows --arch x86_64 --artifact "$($artifacts[0].FullName)" --output ci-evidence/windows-candidate.json
+          python tooling/package_receipt.py --git-sha "$env:GITHUB_SHA" --platform windows --arch x86_64 --artifact "$($artifacts[0].FullName)" @cargoArgs --output ci-evidence/windows-candidate.json
+          if ($LASTEXITCODE -ne 0) { throw 'Exact Windows candidate receipt failed' }
       - name: Silent current-user NSIS install and inspect installed Windows executable
         shell: pwsh
         timeout-minutes: 6
         run: |
           $ErrorActionPreference = 'Stop'
-          $installers = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe -File)
+          $bundleDir = 'target/release/bundle/nsis'
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
+            $bundleDir = 'target/windows-captured/x86_64-pc-windows-msvc/release/bundle/nsis'
+          }
+          $installers = @(Get-ChildItem (Join-Path $bundleDir '*-setup.exe') -File)
           if ($installers.Count -ne 1) { throw 'Expected one NSIS installer to smoke test' }
           $dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'
           if (Test-Path $dest) { throw 'Installed destination is unexpectedly preexisting' }
@@ -1347,6 +1415,11 @@ jobs:
             --kind nsis --method nsis_silent_current_user `
             --artifact "$installer" --installed-binary "$($binaries[0].FullName)" `
             --output ci-evidence/windows-nsis-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Windows candidate inspection failed' }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
+            python -B tooling/ci_windows_dependency_capture.py verify
+            if ($LASTEXITCODE -ne 0) { throw 'Installed binary and notice capture join failed' }
+          }
       - name: Cold launch and reopen the real NSIS-installed application
         shell: pwsh
         timeout-minutes: 5
@@ -1390,12 +1463,42 @@ jobs:
             ci-evidence/windows-nsis-smoke.json
             ci-evidence/windows-nsis-cold-relaunch-diagnostic.json
           if-no-files-found: warn
+      - name: Preserve original isolated Cargo and frontend capture records
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed' && steps.windows_candidate_build.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/internal-windows-cargo/state/source-before.json
+            ci-evidence/internal-windows-cargo/state/source-after.json
+            ci-evidence/internal-windows-cargo/state/metadata.stdout
+            ci-evidence/internal-windows-cargo/state/metadata.stderr
+            ci-evidence/internal-windows-cargo/state/metadata.request.json
+            ci-evidence/internal-windows-cargo/state/metadata.completion.json
+            ci-evidence/internal-windows-cargo/state/build.stdout
+            ci-evidence/internal-windows-cargo/state/build.stderr
+            ci-evidence/internal-windows-cargo/state/build.request.json
+            ci-evidence/internal-windows-cargo/state/build.completion.json
+            ci-evidence/internal-windows-cargo/state/cargo-components.json
+            ci-evidence/internal-windows-cargo/state/cargo-artifacts.json
+            ci-evidence/internal-windows-cargo/state/cargo-license-sources.json
+            ci-evidence/internal-windows-cargo/state/tauri-generated-schemas.json
+            ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/acl-manifests.json
+            ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/capabilities.json
+            ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/desktop-schema.json
+            ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/windows-schema.json
+            ci-evidence/internal-windows-cargo/state/generated-metadata/cargo-markers/*.bin
+            ci-evidence/internal-windows-cargo/state/capture-complete.json
+            ci-evidence/internal-windows-cargo/frontend/before-build.json
+            ci-evidence/internal-windows-cargo/frontend/after-bundle.json
+          if-no-files-found: warn
       - name: Retain isolated Windows installation results
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-windows-installed-results
           path: |
+            ci-evidence/windows-cargo-binding.json
             ci-evidence/windows-candidate.json
             ci-evidence/windows-nsis-smoke.json
             ci-evidence/windows-nsis-cold-relaunch.json
