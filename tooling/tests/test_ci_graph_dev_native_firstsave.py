@@ -237,8 +237,10 @@ class OneSaveLifecycleTests(unittest.TestCase):
 
     def test_native_terminal_requires_actual_stdout_eof_even_after_last_reply(self):
         session, output = self.inert_terminal_session(read_only=True)
-        with patch.object(save.select, "select", return_value=([output], [], [])), \
-             patch.object(save.os, "read", return_value=b""):
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save, "read_terminal_stdout", return_value=complete):
             self.assertFalse(session.__exit__(None, None, None))
         terminal = json.loads(
             (self.private / "independent-readonly-session.terminal.original.json").read_text())
@@ -249,8 +251,10 @@ class OneSaveLifecycleTests(unittest.TestCase):
 
     def test_native_terminal_retains_unexpected_stdout_and_refuses_success(self):
         session, output = self.inert_terminal_session()
-        with patch.object(save.select, "select", return_value=([output], [], [])), \
-             patch.object(save.os, "read", side_effect=[b"unexpected-private-jsonl\\n", b""]):
+        extra = {"raw": b"unexpected-private-jsonl\\n", "eof": True,
+                 "over_cap": False, "reader_finished": True,
+                 "deadline_exceeded": False, "read_error": False}
+        with patch.object(save, "read_terminal_stdout", return_value=extra):
             with self.assertRaisesRegex(
                     save.FirstSaveFailure, "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as result:
                 session.__exit__(None, None, None)
@@ -265,8 +269,10 @@ class OneSaveLifecycleTests(unittest.TestCase):
 
     def test_inherited_stdout_writer_cannot_fake_complete_terminal(self):
         session, output = self.inert_terminal_session()
-        with patch.object(save.select, "select", return_value=([], [], [])), \
-             patch.object(save.os, "read", side_effect=AssertionError("pipe not readable")):
+        inherited = {"raw": b"", "eof": False, "over_cap": False,
+                     "reader_finished": True, "deadline_exceeded": True,
+                     "read_error": False}
+        with patch.object(save, "read_terminal_stdout", return_value=inherited):
             with self.assertRaisesRegex(
                     save.FirstSaveFailure, "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as result:
                 session.__exit__(None, None, None)

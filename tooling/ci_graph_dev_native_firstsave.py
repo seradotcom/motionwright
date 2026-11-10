@@ -18,6 +18,11 @@ import threading
 import time
 import uuid
 
+if __package__:
+    from .ci_graph_dev_terminal_stdout import read_terminal_stdout
+else:
+    from ci_graph_dev_terminal_stdout import read_terminal_stdout
+
 SCHEMA = "motionwright.graph-native-dev-first-save/1"
 ALLOW = "allow-one-original-save"
 DENY = "deny"
@@ -415,32 +420,24 @@ class NativeSession:
             code = self.child.wait(timeout=10)
             private_json(self.private / (self.label + ".close-timeout.original.json"),
                          {"unknown": True, "automatic_retry": False})
-        # A successful reply does not prove this child produced exactly one
-        # response. After wait(), drain any post-reply stdout and demand EOF.
-        # select(0) also detects inherited pipe writers without blocking the
-        # finite owner deadline. Unexpected bytes stay private, never ignored.
-        trailing = bytearray()
-        trailing_eof = False
-        trailing_over_cap = False
-        while True:
-            ready, _, _ = select.select([self.child.stdout], [], [], 0)
-            if not ready:
-                break
-            chunk = os.read(self.child.stdout.fileno(),
-                            min(65536, MAX_RESPONSE + 1 - len(trailing)))
-            if not chunk:
-                trailing_eof = True
-                break
-            trailing.extend(chunk)
-            if len(trailing) > MAX_RESPONSE:
-                trailing_over_cap = True
-                break
+        # Post-exit stdout is a PIPE, not a socket. Windows select() raises
+        # WinError 10038 on it. A bounded live reader proves EOF on Linux and
+        # Windows, or records UNKNOWN if an inherited writer keeps it open.
+        terminal_stdout = read_terminal_stdout(
+            self.child.stdout, maximum=MAX_RESPONSE, wait_seconds=1.0)
+        trailing = terminal_stdout["raw"]
+        trailing_eof = terminal_stdout["eof"]
+        trailing_over_cap = terminal_stdout["over_cap"]
+        trailing_failed = (terminal_stdout["deadline_exceeded"]
+                           or terminal_stdout["read_error"]
+                           or not terminal_stdout["reader_finished"])
         trailing_identity = None
         if trailing:
             trailing_identity = private_bytes(
                 self.private / (self.label + ".trailing-stdout.original"),
                 bytes(trailing))
-        self.child.stdout.close()
+        # read_terminal_stdout already closed this owned pipe on EOF, or
+        # closed its raw descriptor without waiting on an inherited writer.
         self.stderr.flush()
         os.fsync(self.stderr.fileno())
         self.stderr.close()
@@ -451,16 +448,20 @@ class NativeSession:
                       "stderr_sha256": digest(stderr_path.read_bytes())
                                        if size <= MAX_ORIGINAL else None,
                       "original_reply_complete": not self.pending and
-                          not trailing and trailing_eof,
+                          not trailing and trailing_eof and not trailing_failed,
                       "trailing_stdout": trailing_identity,
                       "trailing_stdout_over_cap": trailing_over_cap,
+                      "trailing_stdout_reader_error": terminal_stdout["read_error"],
+                      "trailing_stdout_deadline_exceeded":
+                          terminal_stdout["deadline_exceeded"],
                       "stdout_eof_observed": trailing_eof,
                       "automatic_retry": False})
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:
             require(size <= MAX_ORIGINAL and code == 0 and not self.pending
-                    and not trailing and trailing_eof and not trailing_over_cap,
+                    and not trailing and trailing_eof and not trailing_over_cap
+                    and not trailing_failed,
                     "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN", unknown=True)
         return False
 

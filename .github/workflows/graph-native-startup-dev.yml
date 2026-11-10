@@ -115,7 +115,8 @@ jobs:
           "$RUNNER_TEMP/gn1-custody-venv/bin/python" -B -m unittest \
             tooling.tests.test_ci_graph_dev_native_startup \
             tooling.tests.test_ci_graph_dev_native_budget \
-            tooling.tests.test_ci_graph_dev_native_firstsave -q
+            tooling.tests.test_ci_graph_dev_native_firstsave \
+            tooling.tests.test_ci_graph_dev_portable_terminal_stdout -q
           python3 -B tooling/source_policy.py
           python3 -B tooling/public_surface_policy.py
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
