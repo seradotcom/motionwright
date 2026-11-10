@@ -386,6 +386,16 @@ function databasePhysicalWitness(entry: PhysicalStoreEntry): string {
   return createHash("sha256").update(`linux:${major}:${minor}:${entry.ino}`).digest("hex");
 }
 
+/** Exact command set implemented by the Rust read-only Session. This client
+ * rejects everything else before allocating an RPC id, recording a request
+ * or writing to the child; the Rust reader independently rejects mutations. */
+const READ_ONLY_SERVICE_COMMANDS = new Set([
+  "bootstrap", "get_project", "reopen", "project_history", "opened_store_identity_witness",
+]);
+export function readOnlyServiceCommandAllowed(command: string): boolean {
+  return READ_ONLY_SERVICE_COMMANDS.has(command);
+}
+
 export interface ClosedStoreHandoffReceipt {
   helperId: string;
   processId: number;
@@ -789,6 +799,11 @@ export class ScopedChangeService {
   }
 
   async rawRequest<T = unknown>(request: ServiceRpcRequest): Promise<ServiceRpcResponse<T>> {
+    if (this.readOnly && !readOnlyServiceCommandAllowed(request.command)) {
+      // A rejected write is NOT sent to the external read-only process and
+      // never treated as a mutation outcome, timeout or a tainted Store.
+      throw new Error("Read-only StudioService refuses non-read command");
+    }
     const child = this.child;
     if (!child || this.closing || this.graphCustodyRequired && !this.graphStoreBoundChildren.has(child)) {
       this.taint("transport_failure", `RPC ${request.command} was requested outside a running session`);

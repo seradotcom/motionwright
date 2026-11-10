@@ -35,7 +35,7 @@ export interface OriginalGraphDevelopmentWriter {
 export interface OriginalGraphDevelopmentOwner {
   readonly writerOptions: OriginalGraphDevWriterOptions;
   /**
-   * the Native owner owns the only original process launch and Native client admission;
+   * The Native owner owns the only original process launch and Native client admission;
    * Studio receives it after the actual owner verified its Store, provider,
    * callback budget and evidence collectors. No unreviewed second client.
    */

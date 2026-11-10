@@ -51,7 +51,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store UI r
     // admitted callback or kernel Store file-limit witness.
     const original = await owner.openOriginalWriter();
     // The owner already launched and admitted this single real Native child.
-    // the browser test must never spawn a second service or synthesize a replacement Store.
+    // The browser test must never spawn a second service or synthesize a replacement Store.
     service = original.service;
     if (!original.projectId || !original.sceneId || !original.profileId
       || service.binaryPath !== options.binaryPath
