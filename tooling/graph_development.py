@@ -155,6 +155,11 @@ def run(repo, ci):
             readback = case_root / "graph-dev-live-reader/readback.original.json"
             report["reader_terminal"] = ci.graph_ref(terminal, ci.GRAPH_BYTES)
             report["reader_original"] = ci.graph_ref(readback, 4 * ci.GRAPH_BYTES)
+            readback_value = ci.graph_json(ci.graph_read(report["reader_original"], 4 * ci.GRAPH_BYTES))
+            require(readback_value.get("source") == index["source"]
+                    and readback_value.get("journal_complete") is True
+                    and readback_value.get("journal_after_revision_exclusive") == 0,
+                    "DEV_COMPLETE_INDEPENDENT_HISTORY_ABSENT")
             terminal_value = ci.graph_json(ci.graph_read(report["reader_terminal"], ci.GRAPH_BYTES))
             require(terminal_value.get("closed_after_read_only_proof") is True
                     and terminal_value.get("source") == index["source"],

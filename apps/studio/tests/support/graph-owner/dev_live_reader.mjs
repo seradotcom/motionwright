@@ -219,7 +219,7 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
     },
   ]);
   factory.assertClosed();
-  publishedOracleReference(factory,outputRoot,finalization);
+  const writerOracleRef=publishedOracleReference(factory,outputRoot,finalization);
   await publishOriginalWriterRpcRoster(factory,writer);
   need(preseal && handoff,'GRAPH_DEV_READER_ORIGINAL_WAL_HANDOFF_MISSING');
   const before=stableRead(factory.options.databasePath,GLOBAL_BYTES).physical;
@@ -250,11 +250,17 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
     requireSameOpenedProcessAndStore(beforeOpen,beforeOpen,proc);
     const identity=requireHeldStoreWitness(
       await reader.openedStoreIdentityWitness(),expectedLinuxHeldStoreDigest(before));
-    const project=await reader.project(expectedProject.id);
-    same(project,expectedProject,'GRAPH_DEV_READER_INDEPENDENT_PROJECT_CHANGED');
-    const history=await reader.history(
-      expectedProject.id,expectedProject.revision-expectedHistory.length);
-    same(history,expectedHistory,'GRAPH_DEV_READER_INDEPENDENT_HISTORY_CHANGED');
+    // The existing source-owned collector reads every page from revision zero,
+    // rejects gaps/truncation, and rechecks Project stability after the journal.
+    // Matching only the last Save would miss loss of earlier persisted events.
+    const independentOracle=await reader.observeStoredProject(expectedProject);
+    const project=independentOracle.project;
+    same(project,finalization.oracle.project,'GRAPH_DEV_READER_INDEPENDENT_PROJECT_CHANGED');
+    same(independentOracle.journal,finalization.oracle.journal,
+      'GRAPH_DEV_READER_COMPLETE_ORIGINAL_HISTORY_CHANGED');
+    const afterRevision=expectedProject.revision-expectedHistory.length;
+    same(independentOracle.journal.filter(event=>event.revision>afterRevision),
+      expectedHistory,'GRAPH_DEV_READER_INDEPENDENT_HISTORY_CHANGED');
     const afterOpen=observeOpenedSQLiteDescriptor({pid,expected:before});
     requireSameOpenedProcessAndStore(beforeOpen,afterOpen,proc);
     same(stableRead(factory.options.databasePath,GLOBAL_BYTES).physical,
@@ -271,7 +277,9 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
         process_id:pid, process:proc, opened_before:beforeOpen,
         opened_after:afterOpen, physical_store:before,
         held_sqlite_pager_witness:identity,
-        full_project:project, journal:history,
+        writer_oracle:writerOracleRef,
+        full_project:project, journal:independentOracle.journal,
+        journal_after_revision_exclusive:0, journal_complete:true,
         native_callbacks_allowed:false, automatic_retry:false,
         returned_live:true, formal_release_acceptance:false,
       })+'\n'));
