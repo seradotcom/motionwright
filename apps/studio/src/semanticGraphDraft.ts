@@ -151,7 +151,7 @@ export async function prepareGraphSubmission(draft: GraphDraft, project: Project
     // buffer. An incomplete or retargeted local draft must remain recoverable,
     // but cannot prevent an explicitly requested removal of that saved source.
     const saved = semanticGraphs(project).find(item => item.id === draft.graphId && item.scene_id === draft.sceneId);
-    if (!saved) error("The saved Graph no longer exists.");
+    if (!saved) throw new Error("The saved Graph no longer exists.");
     const admission = graphAdmissionIssue(project, saved.scene_id, saved.variant_profile_ref, context);
     if (admission) error(admission);
     const lock = graphLockIssue(project, saved);
