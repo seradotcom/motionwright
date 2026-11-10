@@ -14,6 +14,7 @@ from pathlib import Path
 import select
 import signal
 import subprocess
+import threading
 import time
 import uuid
 
@@ -116,35 +117,134 @@ def bounded_process(command, *, env, private, label, timeout=120):
             and Path(command[0]).is_absolute(), "GN1_FIRST_SAVE_CHILD_COMMAND")
     private_json(private / (label + ".intent.original.json"),
                  {"argv": command, "automatic_retry": False, "one_launch": True})
+    # subprocess.run(PIPE) collects unbounded output in memory BEFORE it
+    # checks timeout or size. A large TimeoutExpired.stdout then fails the
+    # secondary private_bytes cap and mislabels a real UNKNOWN effect as a
+    # known custody admission failure. Bound BOTH streams while the child runs.
+    require(type(timeout) in (int, float) and 0 < timeout <= 120,
+            "GN1_FIRST_SAVE_CHILD_TIMEOUT_CONTRACT")
     try:
-        child = subprocess.run(
+        child = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=env, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as error:
-        private_json(private / (label + ".timeout.original.json"),
-                     {"status": "UNKNOWN", "elapsed_limit_seconds": timeout,
-                      "stdout": private_bytes(
-                          private / (label + ".partial-stdout.original"),
-                          error.stdout if error.stdout else b"\n"),
-                      "stderr": private_bytes(
-                          private / (label + ".partial-stderr.original"),
-                          error.stderr if error.stderr else b"\n"),
-                      "automatic_retry": False})
-        raise FirstSaveFailure("GN1_FIRST_SAVE_ORIGINAL_PROCESS_TIMEOUT",
+            stderr=subprocess.PIPE, env=env,
+            start_new_session=(os.name == "posix"))
+    except OSError:
+        raise FirstSaveFailure("GN1_FIRST_SAVE_CHILD_START_UNCERTAIN",
                                unknown=True) from None
-    require(len(child.stdout) <= MAX_ORIGINAL and len(child.stderr) <= MAX_ORIGINAL,
-            "GN1_FIRST_SAVE_CHILD_STREAM_OVER_BUDGET", unknown=True)
-    stdout = private_bytes(private / (label + ".stdout.original"),
-                           child.stdout if child.stdout else b"\n")
-    stderr = private_bytes(private / (label + ".stderr.original"),
-                           child.stderr if child.stderr else b"\n")
-    private_json(private / (label + ".terminal.original.json"),
-                 {"exit_code": child.returncode, "stdout": stdout, "stderr": stderr,
-                  "automatic_retry": False})
-    require(child.returncode == 0, "GN1_FIRST_SAVE_CHILD_ORIGINAL_ERROR",
+    streams = {
+        name: {"raw": bytearray(), "observed": 0, "over_cap": False,
+               "eof": False, "finished": False, "read_error": False}
+        for name in ("stdout", "stderr")
+    }
+    wake = threading.Event()
+
+    def collect(name, pipe):
+        state = streams[name]
+        try:
+            while True:
+                chunk = os.read(pipe.fileno(), 65536)
+                if not chunk:
+                    state["eof"] = True
+                    break
+                state["observed"] += len(chunk)
+                room = MAX_ORIGINAL - len(state["raw"])
+                if room:
+                    state["raw"].extend(chunk[:room])
+                if state["observed"] > MAX_ORIGINAL:
+                    state["over_cap"] = True
+                    break
+        except OSError:
+            state["read_error"] = True
+        finally:
+            state["finished"] = True
+            wake.set()
+
+    readers = [
+        threading.Thread(target=collect, args=(name, getattr(child, name)),
+                         daemon=True)
+        for name in ("stdout", "stderr")
+    ]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout
+    first_cause = None
+    while True:
+        if any(state["over_cap"] for state in streams.values()):
+            first_cause = "GN1_FIRST_SAVE_CHILD_STREAM_OVER_BUDGET"
+            break
+        if any(state["read_error"] for state in streams.values()):
+            first_cause = "GN1_FIRST_SAVE_CHILD_PIPE_UNCERTAIN"
+            break
+        if all(state["finished"] for state in streams.values()) and child.poll() is not None:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            first_cause = "GN1_FIRST_SAVE_ORIGINAL_PROCESS_TIMEOUT"
+            break
+        wake.wait(min(remaining, 0.05))
+        wake.clear()
+
+    if first_cause is not None:
+        # Terminate only this owned process group. A killed/partially
+        # dispatched child is UNKNOWN, never classified as not executed.
+        try:
+            if os.name == "posix":
+                os.killpg(child.pid, signal.SIGKILL)
+            elif child.poll() is None:
+                child.kill()
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        code = child.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        first_cause = first_cause or "GN1_FIRST_SAVE_CHILD_TERMINAL_UNCERTAIN"
+        try:
+            child.kill()
+            code = child.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            code = child.poll()
+    for reader in readers:
+        reader.join(timeout=1)
+    for name in ("stdout", "stderr"):
+        getattr(child, name).close()
+    if first_cause is None and not all(state["eof"] and state["finished"]
+                                       for state in streams.values()):
+        first_cause = "GN1_FIRST_SAVE_CHILD_PIPE_UNCERTAIN"
+
+    # No invented newline for a stream which emitted zero observed bytes.
+    # An over-budget stream retains at most 2 MiB and explicitly marks that
+    # its original is incomplete. A custody failure after dispatch must not
+    # replace the first UNKNOWN causal code.
+    snapshots = {}
+    try:
+        for name, state in streams.items():
+            raw = bytes(state["raw"])
+            retained = (private_bytes(
+                private / (label + (".partial-" if first_cause else ".")
+                           + name + ".original"), raw) if raw else None)
+            snapshots[name] = {
+                "observed_bytes_at_least": state["observed"],
+                "retained": retained,
+                "eof": state["eof"],
+                "truncated": state["over_cap"] or not state["eof"],
+                "read_error": state["read_error"],
+            }
+        private_json(private / (label + ".terminal.original.json"), {
+            "status": "UNKNOWN" if first_cause else "RETURNED",
+            "first_cause": first_cause, "exit_code": code,
+            "streams": snapshots, "automatic_retry": False,
+        })
+    except (OSError, ValueError, FirstSaveFailure):
+        raise FirstSaveFailure(
+            first_cause or "GN1_FIRST_SAVE_CHILD_CUSTODY_UNCERTAIN",
+            unknown=True) from None
+
+    if first_cause:
+        raise FirstSaveFailure(first_cause, unknown=True)
+    require(code == 0, "GN1_FIRST_SAVE_CHILD_ORIGINAL_ERROR",
             unknown=True)
     try:
-        return json.loads(child.stdout)
+        return json.loads(bytes(streams["stdout"]["raw"]))
     except (ValueError, UnicodeError):
         raise FirstSaveFailure("GN1_FIRST_SAVE_CHILD_MALFORMED_ORIGINAL",
                                unknown=True) from None

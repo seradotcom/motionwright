@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -116,6 +117,93 @@ class SourceGuardTests(unittest.TestCase):
         self.assertIn('"reopen", "reopen"', text)
         self.assertIn('"writer-handoff", "prepare_read_only_handoff"', text)
         self.assertIn('"formal_G2_granted": False', text)
+
+
+class BoundedOriginalChildTests(unittest.TestCase):
+    """Real tiny Python children from the selected interpreter; no Native effects."""
+
+    def setUp(self):
+        root = os.environ.get("MOTIONWRIGHT_TEST_ROOT") or None
+        self.temp = tempfile.TemporaryDirectory(dir=root, prefix="gn1-bounded-child-")
+        self.addCleanup(self.temp.cleanup)
+        self.private = Path(self.temp.name) / "private"
+        self.private.mkdir()
+
+    def invoke(self, label, code, timeout=4):
+        return save.bounded_process(
+            [sys.executable, "-B", "-S", "-c", code],
+            env=dict(os.environ), private=self.private, label=label,
+            timeout=timeout)
+
+    def receipt(self, label):
+        return json.loads(
+            (self.private / (label + ".terminal.original.json")).read_text())
+
+    def test_large_stdout_is_bounded_unknown_and_never_replayed(self):
+        code = ("import os,time;"
+                f"os.write(1,b'S'*({save.MAX_ORIGINAL}+65536));"
+                "time.sleep(2)")
+        with self.assertRaises(save.FirstSaveFailure) as observed:
+            self.invoke("huge-out", code)
+        self.assertTrue(observed.exception.unknown)
+        self.assertEqual(observed.exception.code,
+                         "GN1_FIRST_SAVE_CHILD_STREAM_OVER_BUDGET")
+        receipt = self.receipt("huge-out")
+        self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertTrue(receipt["streams"]["stdout"]["truncated"])
+        self.assertGreater(receipt["streams"]["stdout"]["observed_bytes_at_least"],
+                           save.MAX_ORIGINAL)
+        self.assertEqual(
+            (self.private / "huge-out.partial-stdout.original").stat().st_size,
+            save.MAX_ORIGINAL)
+        self.assertIsNone(receipt["streams"]["stderr"]["retained"])
+        self.assertFalse((self.private / "huge-out.partial-stderr.original").exists())
+        self.assertFalse((self.private / "huge-out.stdout.original").exists())
+
+    def test_large_stderr_does_not_mask_unknown_as_custody_admission(self):
+        code = ("import os,time;"
+                f"os.write(2,b'E'*({save.MAX_ORIGINAL}+65536));"
+                "time.sleep(2)")
+        with self.assertRaises(save.FirstSaveFailure) as observed:
+            self.invoke("huge-err", code)
+        self.assertTrue(observed.exception.unknown)
+        self.assertEqual(observed.exception.code,
+                         "GN1_FIRST_SAVE_CHILD_STREAM_OVER_BUDGET")
+        receipt = self.receipt("huge-err")
+        self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertTrue(receipt["streams"]["stderr"]["truncated"])
+        self.assertEqual(
+            (self.private / "huge-err.partial-stderr.original").stat().st_size,
+            save.MAX_ORIGINAL)
+        self.assertIsNone(receipt["streams"]["stdout"]["retained"])
+        self.assertFalse((self.private / "huge-err.partial-stdout.original").exists())
+
+    def test_timeout_with_no_observed_bytes_preserves_unknown_and_no_fake_newline(self):
+        with self.assertRaises(save.FirstSaveFailure) as observed:
+            self.invoke("sleeping", "import time;time.sleep(2)", timeout=0.2)
+        self.assertTrue(observed.exception.unknown)
+        self.assertEqual(observed.exception.code,
+                         "GN1_FIRST_SAVE_ORIGINAL_PROCESS_TIMEOUT")
+        receipt = self.receipt("sleeping")
+        self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertIsNone(receipt["streams"]["stdout"]["retained"])
+        self.assertIsNone(receipt["streams"]["stderr"]["retained"])
+        self.assertEqual(receipt["streams"]["stdout"]["observed_bytes_at_least"], 0)
+        self.assertFalse((self.private / "sleeping.partial-stdout.original").exists())
+        self.assertFalse((self.private / "sleeping.partial-stderr.original").exists())
+
+    def test_returned_json_is_bound_and_empty_stderr_is_not_fabricated(self):
+        result = self.invoke(
+            "normal", "import sys;sys.stdout.write('{\"kind\":\"bounded\"}\\n')",
+            timeout=4)
+        self.assertEqual(result, {"kind": "bounded"})
+        receipt = self.receipt("normal")
+        self.assertEqual(receipt["status"], "RETURNED")
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertTrue(receipt["streams"]["stdout"]["eof"])
+        self.assertTrue(receipt["streams"]["stderr"]["eof"])
+        self.assertIsNone(receipt["streams"]["stderr"]["retained"])
+        self.assertFalse((self.private / "normal.stderr.original").exists())
 
 
 class OneSaveLifecycleTests(unittest.TestCase):
