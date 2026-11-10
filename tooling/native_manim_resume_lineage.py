@@ -140,10 +140,17 @@ def intake(args):
 
 class Snapshot:
     """One bounded authenticated capsule; selected files are read by manifest."""
-    def __init__(self, path, expected, current, key, *, complete):
+    def __init__(self, path, expected, current, key, *, complete, original_reader=None):
         self.path, self.expected = Path(path), expected
-        raw = read(self.path, MAX_CAPSULE)
+        self.original_reader = original_reader
+        require(original_reader is None or callable(original_reader),
+                "resume_lineage_original_reader_contract")
+        raw = (original_reader() if original_reader is not None
+               else read(self.path, MAX_CAPSULE))
         require(identity(raw) == expected, "resume_lineage_cipher_identity")
+        # A ZIP-backed ciphertext is transient RAM only. The signed original
+        # remains the retained GitHub artifact ZIP, never an extracted copy.
+        self.original_ciphertext = raw if original_reader is not None else None
         offset = len(engine.MAGIC)
         require(raw.startswith(engine.MAGIC), "resume_lineage_cipher_magic")
         size = int.from_bytes(raw[offset:offset + 4], "big")
@@ -207,7 +214,9 @@ class Snapshot:
     def close(self):
         self.archive.close()
         self.stream.close()
-        require(identity(read(self.path, MAX_CAPSULE)) == self.expected, "resume_lineage_cipher_changed_after_read")
+        raw = (self.original_reader() if self.original_reader is not None
+               else read(self.path, MAX_CAPSULE))
+        require(identity(raw) == self.expected, "resume_lineage_cipher_changed_after_read")
 
 
 def checked_custody(value, current, expected):

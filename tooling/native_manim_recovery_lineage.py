@@ -13,7 +13,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
-import stat
 import zipfile
 from cryptography.hazmat.primitives import serialization
 import ci_private_evidence as engine
@@ -30,6 +29,7 @@ from native_manim_resume_pixels import four_phase_pixels
 from native_manim_resume_transfer import (INPUTS, JOB, ORIGIN, RECOVERY_SCENARIO, REPOSITORY,
     MANIFEST, SOURCE_RECOVERY, timestamp, validate_release, validate_recipient, manifest)
 import native_manim_retained_reference as retained_reference
+from native_manim_artifact_original import OriginalCiphertextArchive
 
 NEW_FILES = {name + ".mwseal" for name in PHASES} | {"resume-outer.mwseal", "resume-outer.public.json"}
 
@@ -117,27 +117,26 @@ def intake(args):
                       prefix + "/actions/artifacts/" + str(row["id"]) + "/zip", limit=MAX_ARTIFACT, seconds=90)
     require(len(archive_raw) == row["size_in_bytes"] and sha(archive_raw) == row["digest"][7:],
             "resume_lineage_download_original_digest")
-    destination = root / "ciphertexts"
-    destination.mkdir(mode=0o700)
+    # The authenticated GH stdout already retains every ciphertext in one ZIP.
+    # Do not double its 140 MiB payload as a second disk roster before the
+    # private reviewer can inspect the actual Native phase originals.
     retained = {}
-    with zipfile.ZipFile(io.BytesIO(archive_raw)) as archive:
-        members = archive.infolist()
-        require(len(members) == len(expected_files) and {member.filename for member in members} == expected_files
-                and not archive.comment and sum(member.file_size for member in members) <= MAX_ARTIFACT,
-                "resume_lineage_closed_ciphertext_archive")
-        for member in members:
-            require(not member.is_dir() and not member.flag_bits & 1
-                    and not stat.S_ISLNK(member.external_attr >> 16)
-                    and 0 < member.file_size <= (65536 if member.filename.endswith(".json") else MAX_CAPSULE),
-                    "resume_lineage_original_archive_entry")
-            raw = archive.read(member)
-            require(len(raw) == member.file_size, "resume_lineage_original_member_size")
-            engine.new_bytes(destination / member.filename, raw)
-            require(read(destination / member.filename, MAX_CAPSULE) == raw, "resume_lineage_physical_cipher_readback")
-            retained[member.filename] = identity(raw)
+    archive = OriginalCiphertextArchive(
+        archive_raw, identity(archive_raw), expected_files,
+        reread_original=lambda: bounded(root / "originals-artifact.stdout.original", MAX_ARTIFACT),
+        max_archive=MAX_ARTIFACT, max_capsule=MAX_CAPSULE)
+    try:
+        for name in sorted(expected_files):
+            retained[name] = identity(archive.member(name))
+        archive.finish()
+    except BaseException:
+        archive.abort()
+        raise
     receipt = {"schema": "motionwright.manim.recovery-runtime.lineage-intake/1", "context": current,
                "recovery_continuation": retained_reference.selection(),
                "status": "AUTHENTICATED_COMPLETED_RUN_CIPHERTEXTS_RETAINED",
+               "ciphertext_origin": OriginalCiphertextArchive.MODE,
+               "extracted_ciphertext_files": 0,
                "artifact_id": row["id"], "artifact": identity(archive_raw), "files": retained,
                "completed_run_sha256": sha(run_raw), "completed_jobs_sha256": sha(jobs_raw),
                "artifact_list_sha256": sha(artifacts_raw), "private_key_accessed": False,
@@ -331,9 +330,13 @@ def phase(snapshot, name, short, root, current, custody_raw, gate=None):
             and observation.get("binding") == binding(native) and native.get("native_manim_e2e") == "PASS"
             and native.get("custody_error") is None and native.get("receipt_read_error") is None,
             "resume_lineage_real_native_source_binding")
-    verify_recovery_phase({
+    phase_proof = {
         "current": current, "evidence": root, "phase_observation": observation,
-        "native_path": root / EVIDENCE_NAME, "sealed_originals": snapshot.path}, current)
+        "native_path": root / EVIDENCE_NAME, "sealed_originals": snapshot.path}
+    if snapshot.original_ciphertext is not None:
+        phase_proof["archive_ciphertext_origin"] = OriginalCiphertextArchive.MODE
+        phase_proof["archive_ciphertext_bytes"] = snapshot.original_ciphertext
+    verify_recovery_phase(phase_proof, current)
     terminal = read_object(root / "original-terminal.json")
     require(terminal.get("schema") == "motionwright.manim.editable.original-terminal/1"
             and terminal.get("native_example_invoked") is True and same(terminal.get("native_result"), native)
@@ -562,12 +565,33 @@ def verify(args):
     completed_raw = bounded(root / "completed-run.stdout.original", 512 * 1024)
     require(sha(completed_raw) == receipt["completed_run_sha256"], "recovery_lineage_original_run_receipt")
     completed_run(engine.strict(completed_raw), current)
-    archive_raw = bounded(root / "originals-artifact.stdout.original", MAX_ARTIFACT)
+    original_archive = root / "originals-artifact.stdout.original"
+    archive_raw = bounded(original_archive, MAX_ARTIFACT)
     require(identity(archive_raw) == receipt["artifact"], "recovery_lineage_download_original_preserved")
+    mode = receipt.get("ciphertext_origin")
+    require(mode in (None, OriginalCiphertextArchive.MODE),
+            "recovery_lineage_ciphertext_origin_unknown")
+    if mode is not None:
+        require(receipt.get("extracted_ciphertext_files") == 0
+                and not (root / "ciphertexts").exists(),
+                "recovery_lineage_original_zip_only_no_duplicate_ciphertexts")
+        archive = OriginalCiphertextArchive(
+            archive_raw, receipt["artifact"], selected_files(),
+            reread_original=lambda: bounded(original_archive, MAX_ARTIFACT),
+            max_archive=MAX_ARTIFACT, max_capsule=MAX_CAPSULE)
+    else:
+        archive = None  # Exact older recorded lineage retains separate ciphers.
+
+    def original_member(name):
+        expected = receipt["files"][name]
+        raw = (archive.member(name, expected) if archive is not None
+               else read(root / "ciphertexts" / name, MAX_CAPSULE))
+        require(identity(raw) == expected, "recovery_lineage_new_cipher_changed")
+        return raw
+
     del archive_raw
-    for name, expected in receipt["files"].items():
-        require(identity(read(root / "ciphertexts" / name, MAX_CAPSULE)) == expected,
-                "recovery_lineage_new_cipher_changed")
+    for name in receipt["files"]:
+        original_member(name)
     # Only the bytes of the old ciphertexts are checked. Their old images and
     # native observations are neither redecoded nor accepted as the new baseline.
     for name, (size, digest) in OLD_CIPHERS.items():
@@ -591,11 +615,14 @@ def verify(args):
     key_raw = b""
     der = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     require(sha(der) == RECIPIENT_SHA, "recovery_lineage_original_host_key_identity")
-    public = read_object(root / "ciphertexts/resume-outer.public.json")
+    public = object_bytes(original_member("resume-outer.public.json"))
     expected = receipt["files"]["resume-outer.mwseal"]
     require(public.get("ciphertext_sha256") == expected["sha256"]
             and public.get("ciphertext_bytes") == expected["bytes"], "recovery_lineage_outer_cipher_binding")
-    outer_snapshot = Snapshot(root / "ciphertexts/resume-outer.mwseal", expected, current, key, complete=True)
+    outer_snapshot = Snapshot(
+        root / "ciphertexts/resume-outer.mwseal", expected, current, key, complete=True,
+        original_reader=(lambda: original_member("resume-outer.mwseal"))
+        if archive is not None else None)
     outer_root = destination / "outer"
     outer_root.mkdir(mode=0o700)
     originals, cycle, gate, gate_sha = new_outer(outer_snapshot, public, outer_root, current)
@@ -639,7 +666,10 @@ def verify(args):
         expected = receipt["files"][name + ".mwseal"]
         custody_raw = originals[name + "-custody"]
         checked_custody(object_bytes(custody_raw), current, expected)
-        snapshot = Snapshot(root / "ciphertexts" / (name + ".mwseal"), expected, current, key, complete=True)
+        snapshot = Snapshot(
+            root / "ciphertexts" / (name + ".mwseal"), expected, current, key, complete=True,
+            original_reader=(lambda name=name: original_member(name + ".mwseal"))
+            if archive is not None else None)
         if retained_mode and not phases:
             phases.append(retained_phase(snapshot, destination / "retained-source-owner",
                                          current, capsule, originals, cycle))
@@ -727,6 +757,11 @@ def verify(args):
             reference_post_native_runtime_observation="NOT_RETAINED",
             retained_reference_runtime_scope=phases[0]["runtime_observation"],
             historical_phase_result_created=False)
+    # Never publish lineage success until the one archived original ZIP
+    # remains byte-for-byte identical after all four independently reviewed
+    # phase members. The legacy extracted-ciphertext layout is unchanged.
+    if archive is not None:
+        archive.finish()
     save(destination, "physical-lineage.original.json", result)
     print(json.dumps(result, sort_keys=True))
 

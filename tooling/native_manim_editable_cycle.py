@@ -381,7 +381,19 @@ def verify_phase(phase, current):
             "editable_phase_sealed_custody_incomplete")
     if "sealed_custody" in phase:
         require(custody == phase["sealed_custody"], "editable_phase_custody_identity_changed")
-    cipher = read(phase["sealed_originals"], 256 * 1024 * 1024)
+    if "archive_ciphertext_bytes" in phase:
+        # The lineage reader independently authenticated the original GitHub
+        # ZIP and selected this exact member. Re-verify its sealed custody here,
+        # without creating another 40 MiB encrypted disk copy.
+        require(phase.get("archive_ciphertext_origin") == "original-artifact-zip-members/1"
+                and type(phase["archive_ciphertext_bytes"]) is bytes
+                and isinstance(phase.get("sealed_originals"), Path)
+                and not phase["sealed_originals"].exists()
+                and not phase["sealed_originals"].is_symlink(),
+                "editable_phase_original_zip_member_contract")
+        cipher = phase["archive_ciphertext_bytes"]
+    else:
+        cipher = read(phase["sealed_originals"], 256 * 1024 * 1024)
     require(cipher.startswith(b"MWCISEAL1\n") and len(cipher) == custody.get("ciphertext_bytes")
             and sha(cipher) == custody.get("ciphertext_sha256"),
             "editable_phase_original_ciphertext_changed")
