@@ -1369,18 +1369,26 @@ mod native_graph_adapter_tests {
         assert_eq!(originals.reserved_files, 4);
 
         let smaller = tempfile::tempdir().unwrap();
+        let denied_request = json!({"operation":"authoring_context"});
+        let request_bytes = serde_json::to_vec(&denied_request).unwrap().len();
+        // The request itself fits, but its source-bounded result reservation
+        // does not. Denial must occur before any request bytes are published.
+        let insufficient_parent_bytes = request_bytes + 1;
+        let result_reservation = MAX_PRIVATE_RECORD_BYTES.min(insufficient_parent_bytes / 2);
+        assert!(request_bytes < insufficient_parent_bytes);
+        assert!(request_bytes + result_reservation > insufficient_parent_bytes);
         let mut denied = PrivateOriginals::create(
             &smaller.path().join("client.json"),
             ClientRestrictions {
                 callbacks: 1,
-                private_bytes: MAX_PRIVATE_RECORD_BYTES + 8,
+                private_bytes: insufficient_parent_bytes,
                 private_files: 384,
             },
         )
         .unwrap();
         assert!(
             denied
-                .begin(json!({"operation":"authoring_context"}))
+                .begin(denied_request)
                 .is_err()
         );
         assert_eq!(denied.next, 0);
