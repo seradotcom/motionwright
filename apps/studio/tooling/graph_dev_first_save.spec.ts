@@ -9,7 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { ScopedChangeService } from "../tests/support/scopedChangeService";
 import { graphFrameTime, graphSourceSnapshot, type GraphProject } from "../src/semanticGraph";
 import { decodeGraphContextFailure } from "../src/semanticGraphContextFailure";
-import { acquireGraphDevelopmentOwner } from "./graph_dev_native_owner_port";
+import { acquireGraphDevelopmentOwner, assertOriginalGraphReadOnlyBootstrap } from "./graph_dev_native_owner_port";
 
 const button = (page: Page, label: string) => page.getByRole("button", { name: label, exact: true });
 const field = (page: Page, label: string) => page.getByLabel(label, { exact: true });
@@ -24,7 +24,7 @@ const CLOSED_FIRST_CAUSES = new Set([
   "GRAPH_DEV_ORIGINAL_SCENE_OR_PROFILE_MISSING",
 ]);
 
-test("Graph6 dev: original Native Host flow Save and independent same-Store UI reopen", async ({ page }, info) => {
+test("Graph6 dev: original Native Host flow Save and independent same-Store read-only verification", async ({ page }, info) => {
   test.setTimeout(180_000);
   if (process.env.MOTIONWRIGHT_GRAPH_DEV_FIRST_SAVE !== "1" || process.env.MOTIONWRIGHT_GRAPH_NATIVE_CASE) {
     throw new Error("GRAPH_DEV_EXPLICIT_FIRST_SAVE_ONLY_NOT_RELEASE_PRODUCER");
@@ -43,7 +43,6 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store UI r
     throw new Error("GRAPH_DEV_ORIGINAL_OWNER_NOT_E_ONLY");
   }
   let service: ScopedChangeService | undefined;
-  let readerPage: Page | null = null;
   let firstFailure: string | null = null;
   try {
     // These exact immutable options are issued by the original Native owner.
@@ -154,6 +153,10 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store UI r
       && (item.payload.args?.request as { change?: { type?: string } } | undefined)?.change?.type === "upsert_semantic_graph");
     expect(mutations).toHaveLength(1);
 
+    // Close the original editorial page before its native writer is sealed.
+    // An independent reader cannot reuse the old page's JSONL binding or
+    // masquerade as a full desktop editor.
+    await page.close();
     // The original writer closes once with real EOF/retained evidence BEFORE
     // the owner creates an independently source-bound READ-ONLY second process
     // on the identical physical SQLite/CAS. The former in-process reopen
@@ -182,36 +185,29 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store UI r
     if (!writerClosed || !separateReader) {
       throw new Error("GRAPH_DEV_INDEPENDENT_STORE_REOPEN_NOT_PROVEN");
     }
+    // The Rust read-only session exposes only five source-owned read
+    // commands and reports browser-demo mode. A full App launch would demand
+    // Tauri projection APIs it must never expose. Verify the actual original
+    // read-only bootstrap and Store Project, without fabricating Tauri.
+    const readerBootstrap = await service.invoke<unknown>("bootstrap",
+      { request: { project_id: source.id } });
+    assertOriginalGraphReadOnlyBootstrap(readerBootstrap, saved);
     const reopened = await service.project(source.id) as GraphProject;
     expect(reopened).toEqual(saved);
     expect((await service.history(source.id, source.revision)).map(item => item.change.type))
       .toEqual(["upsert_semantic_graph"]);
 
-    // The first browser page owns an init-script binding to the original
-    // writer. Reusing it after closure could nondeterministically route a
-    // "reopen" read back to that now-dead client. A separate Page gives the
-    // reader a new transport binding while sharing the same origin storage.
-    const browserContext = page.context();
-    await page.close();
-    readerPage = await browserContext.newPage();
-    await service.attachPage(readerPage, source.id);
-    await readerPage.goto("/");
-    await button(readerPage, "Production").click();
-    await field(readerPage, "Production working scene").selectOption(scene.id);
-    await button(readerPage, "Graph").click();
-    await field(readerPage, "Graph source").selectOption(graph.id);
-    await readerPage.locator("[data-graph-event] summary").first().click();
-    await expect(field(readerPage, "Event 1 label")).toHaveValue("Actual Native authorized transfer");
-
     const witness = {
       schema: "motionwright.graph-dev-first-save-observation/1",
-      scope: "one original Native development Save and separate source-built same-Store read-only reopen",
+      scope: "one original Native development Studio Save and separate same-Store source-built read-only Project verification",
       release_acceptance: false, R74_reviewed: false,
       original_source: graphSourceSnapshot(source),
       saved_revision: saved.revision, saved_graph_id: graph.id,
       event_ids: graph.content.events.map(item => item.id),
       graph_mutations: mutations.length, journal: events.map(item => item.change.type),
       independent_same_store_reopen: true,
+      read_only_bootstrap_verified: true,
+      full_editor_reopened: false,
     };
     const evidence = info.outputPath("native-development-first-save.json");
     await writeFile(evidence, JSON.stringify(witness, null, 2));
@@ -228,10 +224,6 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store UI r
     throw new Error(firstFailure);
   } finally {
     const cleanupFailures: string[] = [];
-    if (readerPage) {
-      try { await readerPage.close(); }
-      catch { cleanupFailures.push("GRAPH_DEV_READONLY_BROWSER_CLOSE_FAILED"); }
-    }
     if (service) {
       try { await service.close(); } catch { cleanupFailures.push("GRAPH_DEV_READER_OR_WRITER_CLOSE_FAILED"); }
     }

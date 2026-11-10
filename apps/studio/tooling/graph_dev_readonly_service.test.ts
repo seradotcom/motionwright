@@ -1,11 +1,42 @@
 /** Selected negative admission tests; no process is spawned or mocked. */
 import { describe, expect, it } from "vitest";
 import { ScopedChangeService, readOnlyServiceCommandAllowed } from "../tests/support/scopedChangeService";
+import { assertOriginalGraphReadOnlyBootstrap } from "./graph_dev_native_owner_port";
+import type { Project } from "../src/types";
 
 const binaryPath = "E:/source-built/native-graph-review-session.exe";
 const databasePath = "E:/original-owner/store/motionwright.sqlite3";
 
 describe("independent Graph development read-only service admission", () => {
+  it("checks the exact real read-only bootstrap shape without granting desktop or mutation authority", () => {
+    // Pure parser fixture, NOT a Native owner, credential, Store or physical
+    // success. The actual test receives these values only from the reader.
+    const project = { id: "prj_0123456789abcdef0123456789abcdef",
+      generation: "01234567-89ab-4cde-8f01-234567890abc",
+      revision: 4, production_design: { semantic_graphs: [] } } as unknown as Project;
+    const bootstrap = {
+      test_transport: "service-test-jsonl",
+      read_only: true,
+      evidence_scope: "real_service_sqlite_cas_read_only; excludes_tauri_installer_native_render",
+      native_sdk: { mode: "browser-demo" },
+      project_selection: { status: "selected", project_id: project.id },
+      project: structuredClone(project),
+    };
+    expect(() => assertOriginalGraphReadOnlyBootstrap(bootstrap, project)).not.toThrow();
+    for (const invalid of [
+      { ...bootstrap, read_only: false },
+      { ...bootstrap, native_sdk: { mode: "tauri" } },
+      { ...bootstrap, evidence_scope: "real_service_sqlite_cas" },
+      { ...bootstrap, project_selection: { status: "selected", project_id: "other" } },
+      { ...bootstrap, project: { ...project, revision: 5 } },
+      { ...bootstrap, project: null },
+      { ...bootstrap, test_transport: "browser-demo" },
+      null,
+    ]) {
+      expect(() => assertOriginalGraphReadOnlyBootstrap(invalid, project))
+        .toThrow("GRAPH_DEV_INDEPENDENT_READONLY_BOOTSTRAP_NOT_PROVEN");
+    }
+  });
   it("permits only the exact source-built reader's five original read commands", () => {
     for (const command of ["bootstrap", "get_project", "reopen", "project_history",
       "opened_store_identity_witness"]) {

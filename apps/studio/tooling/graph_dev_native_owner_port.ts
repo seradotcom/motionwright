@@ -6,6 +6,7 @@
  * the real opened Store, original process and Stream/Evidence collectors.
  * There is intentionally NO fallback, synthetic owner, or release waiver.
  */
+import { isDeepStrictEqual } from "node:util";
 import type { ScopedChangeService, ScopedChangeServiceOptions } from "../tests/support/scopedChangeService";
 import type { Project, ProjectEvent } from "../src/types";
 
@@ -47,7 +48,9 @@ export interface OriginalGraphDevelopmentOwner {
    * Use ScopedChangeService.createReadOnly with --read-only, no fixture or
    * desktop invoke flag; a second ordinary writer cannot pass the UI gate.
    * The implementation must independently verify Project/history and source,
-   * then return a read-only Studio service for the UI reload.
+   * then return a read-only Studio service for explicit read-only bootstrap
+   * and Project verification. The full editor requires projection commands
+   * and tauri mode, neither of which this reader may claim.
    */
   closeOriginalAndOpenIndependentReadOnly(
     original: ScopedChangeService,
@@ -55,6 +58,26 @@ export interface OriginalGraphDevelopmentOwner {
     expectedHistory: readonly ProjectEvent[],
   ): Promise<ScopedChangeService>;
   close(): Promise<void>;
+}
+
+/** The external reader intentionally declares browser-demo, not desktop
+ * authority. It has no project projection APIs and cannot reopen the full
+ * editing App. Verify its actual read-only bootstrap and complete original
+ * Project directly; never fabricate Tauri or turn a read into another Save. */
+export function assertOriginalGraphReadOnlyBootstrap(reply: unknown, expected: Project): void {
+  const object = typeof reply === "object" && reply !== null && !Array.isArray(reply)
+    ? reply as Record<string, unknown> : null;
+  const sdk = object?.native_sdk as Record<string, unknown> | undefined;
+  const selection = object?.project_selection as Record<string, unknown> | undefined;
+  if (!object || object.test_transport !== "service-test-jsonl"
+    || object.read_only !== true
+    || object.evidence_scope !== "real_service_sqlite_cas_read_only; excludes_tauri_installer_native_render"
+    || !sdk || sdk.mode !== "browser-demo"
+    || !selection || selection.status !== "selected"
+    || selection.project_id !== expected.id
+    || !isDeepStrictEqual(object.project, expected)) {
+    throw new Error("GRAPH_DEV_INDEPENDENT_READONLY_BOOTSTRAP_NOT_PROVEN");
+  }
 }
 
 /** No implementation is shipped without the real Native owner/custody source.
