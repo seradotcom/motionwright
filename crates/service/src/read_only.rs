@@ -1,7 +1,7 @@
 //! Read-only service surface for an existing Store. No effects or grants are exposed.
 use super::StudioService;
-use motionwright_domain::Project;
-use motionwright_storage::{ProjectEvent, Result, StoreReader};
+use motionwright_domain::{Project, RevisionStamp};
+use motionwright_storage::{AssetIntegrityPage, ProjectEvent, Result, StoreReader};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -40,6 +40,18 @@ impl StudioServiceReader {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         self.store.project_history(id, after_revision, limit)
+    }
+
+    /// Read-only, revision-bound CAS content verification from the original
+    /// retained Store reader. Returns statuses and byte counts, not paths or data.
+    pub fn asset_integrity_page(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        offset: Option<usize>,
+        limit: usize,
+    ) -> Result<AssetIntegrityPage> {
+        self.store.asset_integrity_page(project_id, expected, offset, limit)
     }
 
     pub fn database_file_identity(&self) -> Result<String> {

@@ -264,6 +264,33 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
     const afterRevision=expectedProject.revision-expectedHistory.length;
     same(independentOracle.journal.filter(event=>event.revision>afterRevision),
       expectedHistory,'GRAPH_DEV_READER_INDEPENDENT_HISTORY_CHANGED');
+    // The original fixture imports one SVG and removes its source file.
+    // Ask the separate retained read-only Store to hash its actual CAS bytes
+    // against the Project's digest. Never accept only a catalog or filename.
+    const assets=project.assets;
+    need(Array.isArray(assets) && assets.length===1
+      && assets[0]?.media_type==='image/svg+xml'
+      && /^[0-9a-f]{64}$/.test(assets[0]?.content_sha256 ?? ''),
+      'GRAPH_DEV_ORIGINAL_SVG_ASSET_NOT_REFERENCED');
+    const integrity=await reader.invoke('asset_integrity_page',{request:{
+      project_id:project.id, generation:project.generation,
+      revision:project.revision, offset:null, limit:1,
+    }});
+    const expectedFields=['project_id','generation','revision','total_assets',
+      'items','next','complete','checked_bytes'].sort();
+    const row=integrity?.items?.[0];
+    need(integrity && Object.getPrototypeOf(integrity)===Object.prototype
+      && Object.keys(integrity).sort().join('|')===expectedFields.join('|')
+      && integrity.project_id===project.id
+      && integrity.generation===project.generation
+      && integrity.revision===project.revision
+      && integrity.total_assets===1 && integrity.items.length===1
+      && integrity.next===null && integrity.complete===true
+      && row && Object.keys(row).sort().join('|')==='asset_id|size_bytes|status'
+      && row.asset_id===assets[0].id && row.status==='verified'
+      && Number.isSafeInteger(row.size_bytes) && row.size_bytes>0
+      && row.size_bytes<=4*MiB && integrity.checked_bytes===row.size_bytes,
+      'GRAPH_DEV_READONLY_CAS_ORIGINAL_BYTES_NOT_VERIFIED');
     const afterOpen=observeOpenedSQLiteDescriptor({pid,expected:before});
     requireSameOpenedProcessAndStore(beforeOpen,afterOpen,proc);
     same(stableRead(factory.options.databasePath,GLOBAL_BYTES).physical,
@@ -282,6 +309,7 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
         held_sqlite_pager_witness:identity,
         writer_oracle:writerOracleRef,
         full_project:project, journal:independentOracle.journal,
+        asset_integrity_page:integrity,
         journal_after_revision_exclusive:0, journal_complete:true,
         native_callbacks_allowed:false, automatic_retry:false,
         returned_live:true, formal_release_acceptance:false,

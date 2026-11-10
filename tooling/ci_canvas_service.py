@@ -7916,6 +7916,10 @@ GRAPH_DEVELOPMENT_SOURCES = (
     "apps/studio/tooling/graph_dev_first_save.spec.ts",
     "apps/studio/tooling/graph_dev_first_save.config.ts",
     "apps/studio/tests/support/graph-owner/dev_live_reader.mjs",
+    "apps/studio/tooling/graph_dev_readonly_service.test.ts",
+    "crates/storage/src/read_only.rs",
+    "crates/storage/src/integrity.rs",
+    "crates/service/src/read_only.rs",
 )
 GRAPH_BYTES = 1024 * 1024
 GRAPH_BUDGET = {
