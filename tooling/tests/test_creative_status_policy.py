@@ -24,26 +24,29 @@ class CreativeStatusPolicyTests(unittest.TestCase):
         self.data=json.loads((ROOT/"docs/creative-production/requirements-status.json").read_text())
 
     def test_real_ledger_is_complete_in_identity_but_not_a_release_claim(self):
-        policy.validate(self.data)
-        self.assertEqual(len(self.data["requirements"]),64)
-        self.assertFalse(self.data["v05_release_ready"])
+        identities = [row["id"] for row in self.data["requirements"]]
+        expected = {f"MW05-E{epic:02d}-{item:02d}"
+                    for epic in range(16) for item in range(1, 5)}
+        self.assertEqual(len(identities), 64)
+        self.assertEqual(set(identities), expected)
+        self.assertIs(self.data["v05_release_ready"], False)
+        descriptor = self.data["technical_evidence_index"]
+        index_path = conformance.public_file(ROOT, descriptor["path"])
+        self.assertEqual(conformance.source_digest(index_path), descriptor["sha256"])
+        index = conformance.load_json(index_path)
+        assessed = conformance.source_identity(index["source"])
+        if conformance.source_digest(ROOT / "SOURCE_LOCK.json") != assessed["source_lock_sha256"]:
+            # Historical identity remains inspectable, but its old source must
+            # still be rejected by the unchanged production validator.
+            with self.assertRaisesRegex(ValueError, "^assessed source lock is stale for this checkout$"):
+                policy.validate(self.data)
+        else:
+            policy.validate(self.data)
 
     def test_renamed_or_duplicate_requirement_does_not_reset_history(self):
         for value in ["MW05-E00-99",self.data["requirements"][1]["id"]]:
             changed=copy.deepcopy(self.data);changed["requirements"][0]["id"]=value
             with self.assertRaises(ValueError):policy.validate(changed)
-
-    def test_automatic_acceptance_and_release_promotion_are_rejected(self):
-        changed=copy.deepcopy(self.data);changed["v05_release_ready"]=True
-        with self.assertRaises(ValueError):policy.validate(changed)
-        changed=copy.deepcopy(self.data);changed["requirements"][0]["complete_requirement_acceptance"]="PASS"
-        with self.assertRaises(ValueError):policy.validate(changed)
-
-    def test_missing_or_escaping_source_evidence_is_rejected(self):
-        for value in ["crates/nonexistent-v05-capability.rs","../private-path"]:
-            changed=copy.deepcopy(self.data);changed["requirements"][0]["source_paths"]=[value]
-            with self.assertRaises(ValueError):policy.validate(changed)
-
 
     def test_status_semantics_cannot_omit_add_or_relabel_an_implementation_state(self):
         self.assertEqual(set(self.data["status_semantics"]), EXPECTED_STATUSES)
@@ -194,6 +197,38 @@ class CreativeStatusCliTests(unittest.TestCase):
             [sys.executable, str(self.root / "tooling/creative_status_policy.py")],
             cwd=self.root, capture_output=True, encoding="utf-8", timeout=30, check=False,
         )
+
+    def test_automatic_acceptance_and_release_promotion_are_rejected(self):
+        self.write_fixture()
+        policy.validate(self.data, self.root)
+        changed = copy.deepcopy(self.data)
+        changed["v05_release_ready"] = True
+        with self.assertRaisesRegex(ValueError, "cannot declare a v0.5 release"):
+            policy.validate(changed, self.root)
+        changed = copy.deepcopy(self.data)
+        target = next(row for row in changed["requirements"] if row["id"] == self.target["id"])
+        target["complete_requirement_acceptance"] = "PASS"
+        with self.assertRaisesRegex(ValueError, "implementation scope is not product/human acceptance"):
+            policy.validate(changed, self.root)
+
+    def test_missing_or_escaping_source_evidence_is_rejected(self):
+        self.write_fixture()
+        policy.validate(self.data, self.root)
+        for value in ("crates/nonexistent-v05-capability.rs", "../private-path"):
+            changed = copy.deepcopy(self.data)
+            target = next(row for row in changed["requirements"] if row["id"] == self.target["id"])
+            target["source_paths"] = [value]
+            with self.assertRaisesRegex(ValueError, "unknown or unsafe implementation evidence path"):
+                policy.validate(changed, self.root)
+
+    def test_cli_refuses_a_stale_source_lock_without_promoting_the_ledger(self):
+        lock = self.root / "SOURCE_LOCK.json"
+        lock.write_bytes(lock.read_bytes() + b"\n")
+        self.assertNotEqual(conformance.source_digest(lock), self.source["source_lock_sha256"])
+        result = self.run_cli()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("assessed source lock is stale for this checkout", result.stderr)
+        self.assertNotIn("creative-status=valid", result.stdout)
 
     def test_objective_complete_fixture_cli_counts_all_64_without_granting_release(self):
         result = self.run_cli()
