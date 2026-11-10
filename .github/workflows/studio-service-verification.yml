@@ -726,6 +726,7 @@ jobs:
         timeout-minutes: 1
         run: python -I -B tooling/ci_canvas_service.py graph-budget --repo . --phase review-upload
       - name: Retain encrypted Graph producer originals
+        id: graph-producer-upload
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 5
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -755,11 +756,13 @@ jobs:
         run: python -I -B tooling/ci_canvas_service.py graph development-run --repo .
       - name: Seal original development outcome and private process custody
         id: graph-development-seal
-        if: always() && matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode == 'development-first-save' && steps.graph-producers.outcome == 'success'
+        if: always() && matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode == 'development-first-save' && contains(fromJSON('["success","failure","cancelled"]'), steps.graph-producers.outcome)
         timeout-minutes: 11
         env:
           MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64: ${{ inputs.graph_review_spki_der_base64 }}
           MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256: ${{ inputs.graph_review_spki_sha256 }}
+          MOTIONWRIGHT_GRAPH_PRODUCER_OUTCOME: ${{ steps.graph-producers.outcome }}
+          MOTIONWRIGHT_GRAPH_CARRIER_UPLOAD_OUTCOME: ${{ steps.graph-producer-upload.outcome }}
         run: python -I -B tooling/ci_canvas_service.py graph development-seal --repo .
       - name: Retain encrypted development originals without formal acceptance credit
         if: always() && steps.graph-development-seal.outcome == 'success'

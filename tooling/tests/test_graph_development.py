@@ -71,5 +71,146 @@ class DevelopmentOriginalReportTests(unittest.TestCase):
             development.selected_report(current, listing=False)
 
 
+class RuntimeAuthorityCustodyTests(unittest.TestCase):
+    """Exercise the actual production consumer with inert decoded records only."""
+    @staticmethod
+    def admitted(development_mode):
+        source = {"sha": "a" * 40, "sdk_sha": "b" * 40, "run_id": "1234", "run_attempt": 1}
+        authority = {"source_sha": source["sha"], "run_id": source["run_id"], "run_attempt": 1,
+                     "index_sha256": "c" * 64, "actor_id": 17}
+        if development_mode:
+            authority.update(kind="EXPLICIT_DEVELOPMENT_ORIGINAL",
+                context="mw-development/1234/1/graph-flow", request_sha256="d" * 64,
+                formal_acceptance=False, automatic_retry=False)
+        else:
+            authority.update(status_id=29, context="mw-owner/phase1-native-graph/1234/1/graph-flow")
+        return {"development": development_mode, "approval": authority,
+                "index_ref": {"sha256": "c" * 64},
+                "index": {"schema": development.SCHEMA if development_mode else
+                          "motionwright.private.graph-producer-reference-index/0", "source": source}}
+
+    def test_runtime_consumer_preserves_formal_status_and_has_no_status_for_development(self):
+        from tooling import native_graph_browser_owner as owner
+        self.assertEqual(owner.graph_runtime_authority_custody(self.admitted(False)),
+                         {"independent_status_id": 29})
+        value = self.admitted(True)
+        actual = owner.graph_runtime_authority_custody(value)
+        self.assertEqual(actual, {"independent_development_authorization": value["approval"]})
+        self.assertNotIn("independent_status_id", actual)
+        self.assertFalse(actual["independent_development_authorization"]["formal_acceptance"])
+
+    def test_runtime_consumer_rejects_mixed_scope_fabricated_status_and_missing_formal_status(self):
+        from tooling import native_graph_browser_owner as owner
+        for change in ("schema", "status", "approval", "retry", "kind", "absent-scope"):
+            value = self.admitted(True)
+            if change == "schema":
+                value["index"]["schema"] = "motionwright.private.graph-producer-reference-index/0"
+            elif change == "status":
+                value["approval"]["status_id"] = 29
+            elif change == "approval":
+                value["approval"]["formal_acceptance"] = True
+            elif change == "retry":
+                value["approval"]["automatic_retry"] = True
+            elif change == "kind":
+                value["approval"]["kind"] = "CALLER_APPROVED"
+            else:
+                del value["development"]
+            with self.subTest(change=change), self.assertRaises(owner.GraphOwnerFailure):
+                owner.graph_runtime_authority_custody(value)
+        value = self.admitted(False)
+        del value["approval"]["status_id"]
+        with self.assertRaisesRegex(owner.GraphOwnerFailure, "formal-status-required"):
+            owner.graph_runtime_authority_custody(value)
+
+    def test_runtime_consumer_keeps_exact_source_run_and_index(self):
+        from tooling import native_graph_browser_owner as owner
+        for key, replacement in (("source_sha", "f" * 40), ("run_id", "9999"),
+                                 ("run_attempt", 2), ("index_sha256", "e" * 64)):
+            value = self.admitted(True)
+            value["approval"][key] = replacement
+            with self.subTest(key=key), self.assertRaisesRegex(owner.GraphOwnerFailure, "source-mismatch"):
+                owner.graph_runtime_authority_custody(value)
+
+
+class DevelopmentFailureCustodyTests(unittest.TestCase):
+    """No key generation, encryption, Host, process launch or GitHub request."""
+    @staticmethod
+    def inputs():
+        recipient = {"spki_der_base64": "INERT_PUBLIC_SPKI_REFERENCE", "sha256": "c" * 64}
+        run = {"id": 1234, "run_attempt": 1, "head_sha": "a" * 40, "head_branch": "integration",
+               "repository": {"full_name": "seradotcom/motionwright"},
+               "head_repository": {"full_name": "seradotcom/motionwright"},
+               "event": "workflow_dispatch", "actor": {"type": "User", "id": 17},
+               "path": ".github/workflows/studio-service-verification.yml"}
+        event = {"repository": run["repository"].copy(), "sender": run["actor"].copy(),
+                 "ref": "refs/heads/integration", "inputs": {
+                     "selection": "phase1-native-graph", "graph_case_mode": "development-first-save",
+                     "graph_review_spki_der_base64": recipient["spki_der_base64"],
+                     "graph_review_spki_sha256": recipient["sha256"]}}
+        binding = {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "1234", "GITHUB_RUN_ATTEMPT": "1"}
+        return event, run, binding, recipient
+
+    def test_sealer_context_uses_exact_dispatch_recipient_without_claiming_a_producer(self):
+        values = self.inputs()
+        actual = development.sealing_context(*values, "b" * 40)
+        self.assertEqual(actual, {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
+                                  "run_id": "1234", "run_attempt": "1"})
+        self.assertNotIn("producer_index", actual)
+        self.assertNotIn("status_id", actual)
+
+    def test_sealer_rejects_foreign_recipient_actor_selection_source_and_replay(self):
+        for change in ("key", "digest", "sender", "selection", "mode", "ref", "source", "attempt"):
+            event, run, binding, recipient = self.inputs()
+            if change == "key":
+                recipient["spki_der_base64"] = "DIFFERENT_INERT_PUBLIC_KEY"
+            elif change == "digest":
+                recipient["sha256"] = "d" * 64
+            elif change == "sender":
+                event["sender"]["id"] = 18
+            elif change == "selection":
+                event["inputs"]["selection"] = "phase1-native-gn1"
+            elif change == "mode":
+                event["inputs"]["graph_case_mode"] = "all"
+            elif change == "ref":
+                event["ref"] = "other"
+            elif change == "source":
+                binding["GITHUB_SHA"] = "e" * 40
+            else:
+                binding["GITHUB_RUN_ATTEMPT"] = "2"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                development.sealing_context(event, run, binding, recipient, "b" * 40)
+
+    def test_failed_producer_or_missing_carrier_upload_keeps_the_entire_original_e_tree(self):
+        root = ROOT / "inert-private-root"
+        for complete, retained in ((False, False), (False, True), (True, False)):
+            with self.subTest(complete=complete, retained=retained):
+                self.assertEqual(development.sealing_roots(root, producer_complete=complete,
+                    carrier_retained=retained), {"owner": root / "e", "clock": root / "tools"})
+        actual = development.sealing_roots(root, producer_complete=True, carrier_retained=True)
+        self.assertEqual(actual["owner"], root / "e/graph-cases")
+        self.assertEqual(actual["controller"], root / "e/graph-development-controller")
+
+    def test_partial_capture_and_failed_producer_never_upgrade_a_claimed_save(self):
+        source = {"sha": "a" * 40}
+        receipt = {"source": source, "status": "CLOSED_GRAPH_DEVELOPMENT_OBSERVATIONS",
+                   "formal_acceptance": False, "R74_reviewed": False,
+                   "automatic_retry": False, "Graph6_cases_accepted": 0}
+        for complete, captured in ((False, True), (True, False), (False, False)):
+            self.assertEqual(development.sealing_status(producer_complete=complete,
+                capture_complete=captured, receipt=receipt, expected_source=source), "UNKNOWN")
+        self.assertEqual(development.sealing_status(producer_complete=True,
+            capture_complete=True, receipt=receipt, expected_source=source), receipt["status"])
+        for key, value in (("formal_acceptance", True), ("R74_reviewed", True),
+                           ("source", {"sha": "e" * 40}), ("automatic_retry", True),
+                           ("status", "UNREVIEWED_PASS")):
+            changed = dict(receipt, **{key: value})
+            with self.subTest(key=key):
+                self.assertEqual(development.sealing_status(producer_complete=True,
+                    capture_complete=True, receipt=changed, expected_source=source), "UNKNOWN")
+        receipt["status"] = "FAIL"
+        self.assertEqual(development.sealing_status(producer_complete=True,
+            capture_complete=True, receipt=receipt, expected_source=source), "FAIL")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ const command = '"' + process.execPath + '" "' + vite
 export default defineConfig({
   testDir: ".",
   testMatch: "graph_dev_first_save.spec.ts",
-  timeout: 180_000,
+  timeout: 300_000,
   expect: { timeout: 15_000 },
   retries: 0,
   workers: 1,

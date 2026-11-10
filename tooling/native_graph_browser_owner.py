@@ -2019,6 +2019,38 @@ def verify_source279_runtime(repo, source_inputs, runtime):
     return reference
 
 
+def graph_runtime_authority_custody(admitted):
+    """Describe the already authenticated authority; never admit or launch it."""
+    development = admitted.get("development")
+    require(type(development) is bool, "graph-runtime-authority-scope-absent")
+    index, authority = admitted["index"], admitted["approval"]
+    source, index_ref = index["source"], admitted["index_ref"]
+    schema = ("motionwright.private.graph-development-producer-reference-index/1"
+              if development else "motionwright.private.graph-producer-reference-index/0")
+    require(index.get("schema") == schema
+            and authority.get("source_sha") == source["sha"]
+            and authority.get("run_id") == source["run_id"]
+            and authority.get("run_attempt") == source["run_attempt"] == 1
+            and authority.get("index_sha256") == index_ref["sha256"],
+            "graph-runtime-authority-source-mismatch")
+    if development:
+        require(set(authority) == {"kind", "context", "actor_id", "source_sha", "run_id",
+                    "run_attempt", "index_sha256", "request_sha256", "formal_acceptance", "automatic_retry"}
+                and authority.get("kind") == "EXPLICIT_DEVELOPMENT_ORIGINAL"
+                and authority.get("context") == "mw-development/" + source["run_id"] + "/1/graph-flow"
+                and type(authority.get("actor_id")) is int and authority["actor_id"] > 0
+                and type(authority.get("request_sha256")) is str
+                and DIGEST.fullmatch(authority["request_sha256"])
+                and authority.get("formal_acceptance") is False
+                and authority.get("automatic_retry") is False,
+                "graph-runtime-development-authority-invalid")
+        return {"independent_development_authorization": dict(authority)}
+    require(type(authority.get("status_id")) is int and authority["status_id"] > 0
+            and "kind" not in authority and "request_sha256" not in authority,
+            "graph-runtime-formal-status-required")
+    return {"independent_status_id": authority["status_id"]}
+
+
 def load_graph_runtime_custody(repo, source_inputs, runtime, lifecycle):
     intake = verify_source279_runtime(repo, source_inputs, runtime)
     new_json(lifecycle.evidence / "runtime-source-intake-verified.original.json", {
@@ -2029,7 +2061,7 @@ def load_graph_runtime_custody(repo, source_inputs, runtime, lifecycle):
             and admitted["index"]["runtime_originals"]["intake"] == intake,
             "graph-runtime-not-the-independent-producer-original")
     return {"intake": intake, "producer_index": admitted["index_ref"],
-            "independent_status_id": admitted["approval"]["status_id"],
+            **graph_runtime_authority_custody(admitted),
             "actual_producer_originals_validated": True,
             "shared_runtime_before_and_after_checks_required_from_ci": True,
             "profile_admitted": False}

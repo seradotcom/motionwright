@@ -28,7 +28,10 @@ const CLOSED_FIRST_CAUSES = new Set([
 ]);
 
 test("Graph6 dev: original Native Host flow Save and independent same-Store read-only verification", async ({ page }, info) => {
-  test.setTimeout(180_000);
+  // One original Native context and one original Native Save can each use
+  // the full bounded Service/Host RPC deadline. Independent writer EOF and
+  // the separate read-only Store process need their own bounded completion.
+  test.setTimeout(300_000);
   if (process.env.MOTIONWRIGHT_GRAPH_DEV_FIRST_SAVE !== "1" || process.env.MOTIONWRIGHT_GRAPH_NATIVE_CASE) {
     throw new Error("GRAPH_DEV_EXPLICIT_FIRST_SAVE_ONLY_NOT_RELEASE_PRODUCER");
   }
@@ -36,6 +39,12 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
   // producer before issuing this owner. An environment marker cannot do so.
   const owner = await acquireGraphDevelopmentOwner();
   const options = owner.writerOptions;
+  // A4's admitted Native/Host callback budget is currently 50 seconds;
+  // arbitrary browser-side 30-second waits must not turn a still-pending
+  // authentic callback into a false failure or an unconfirmed second intent.
+  // These caps are observation deadlines, never a grant or automatic retry.
+  const nativeCallbackObservationMs = Math.min(60_000,
+    Math.max(50_000, options.timeoutMs ?? 50_000)) + 5_000;
   if (options.graphCustodyRequired !== true || options.seedFixture !== false
     || options.desktopInvokeFixture !== true || !options.processOwner
     || !options.rawStreamCapture || !options.evidenceCapture) {
@@ -103,7 +112,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     await inspect.click();
     await expect(inspect).toHaveAttribute("data-graph-inspection-phase",
       /^(GRAPH_CONTEXT_INSPECTION_RESOLVED|GRAPH_CONTEXT_INSPECTION_REJECTED|GRAPH_CONTEXT_INSPECTION_OBSOLETE)$/,
-      { timeout: 30_000 });
+      { timeout: nativeCallbackObservationMs });
     const phase = await inspect.getAttribute("data-graph-inspection-phase");
     const save = button(page, "Save semantic Graph");
     const gate = await save.getAttribute("data-graph-save-gate");
@@ -169,7 +178,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     try {
       await expect(page.getByRole("status").filter({
         hasText: "Saved Graph at r" + (source.revision + 1) + ".",
-      })).toBeVisible({ timeout: 30_000 });
+      })).toBeVisible({ timeout: nativeCallbackObservationMs });
       await expect(button(page, "Save Graph changes")).toBeVisible();
       await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" }))
         .toHaveCount(0);
