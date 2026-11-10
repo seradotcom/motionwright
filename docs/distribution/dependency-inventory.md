@@ -411,9 +411,35 @@ canonical binary verifier and writes the bounded
 `windows-cargo-binding.json` result. A legacy `NOT_VERIFIED` result cannot
 satisfy this route. Cold launch and project reopening remain subsequent checks.
 
+Before the single installation, the Windows helper derives an application-file
+expectation from the exact source notices, authenticated Cargo binary/index/texts,
+reconstructed resource overlay and original candidate receipt/setup. It writes
+that expectation create-only; the workflow retains its SHA-256 before starting
+NSIS. The record also binds the selected destination locator and the physical
+identity of its existing parent. Installed readback revalidates those inputs and
+uses the original installation destination, not a recursively discovered binary's
+parent. A copied tree under another parent cannot substitute for that destination.
+
+The installed check closes both file and directory names before and after bounded
+hashing. Ancestor directories come from the expected paths; extra DLLs, assets,
+caches, empty directories, missing members, changed bytes, hardlinks and redirected
+members are refused. The inspection retains the existing 512 MiB aggregate bound,
+a 4,096-entry bound and a 16-component path bound. It is a bounded observation of
+the quiescent installed tree, not a filesystem-wide atomic snapshot.
+
+Exactly one generated member, `uninstall.exe`, is declared separately. Its installed
+size and digest are observed, but its reference remains
+`NOT_OBSERVED_BEFORE_PUBLICATION`. That digest never becomes its own expected
+identity. The result can establish exact application files and a closed inspected
+member set; `all_member_bytes_authenticated` remains false and
+`full_package_inventory` remains `NOT_VERIFIED`. The uninstaller's original runtime
+observation, installer internals and static/native library identities remain
+separate required evidence.
+
 The source-original artifact enumerates only build observations, original
-streams and generated metadata bytes. Payloads, installers, distribution
-admission records and target caches remain inside the internal runner.
+streams, generated metadata bytes, the preinstall application expectation and its
+resource overlay. Payloads, installers, distribution admission records and target
+caches remain inside the internal runner.
 Complete package/native-library inventory, legal distribution clearance, and
 human/renderer acceptance remain separate obligations.
 

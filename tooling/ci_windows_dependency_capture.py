@@ -25,6 +25,8 @@ TARGET = "x86_64-pc-windows-msvc"
 BASE = Path("ci-evidence/internal-windows-cargo")
 BINARY = Path("target/windows-captured") / TARGET / "release/motionwright-desktop.exe"
 FRONTEND = Path("apps/studio/dist")
+INVENTORY = BASE / "application-inventory.json"
+INSTALL_DIRECTORY = "motionwright-nsis-current-user"
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_ARCHIVES = 128 * 1024 * 1024
 
@@ -150,10 +152,9 @@ def cargo_binding(repo, source):
     return snapshot, complete, raw, result
 
 
-def stage_resources(repo, source):
+def resource_mapping(repo, raw):
     from candidate_smoke import _verify_cargo_notice_subtree
 
-    snapshot, complete, raw, binding = cargo_binding(repo, source)
     config = read_json(repo, "apps/desktop/src-tauri/tauri.conf.json")
     resources = config.get("bundle", {}).get("resources")
     expected = {
@@ -164,7 +165,8 @@ def stage_resources(repo, source):
     }
     require(resources == expected, "windows_original_notice_mapping_changed")
     require(not config.get("build", {}).get("beforeBundleCommand")
-            and not config.get("build", {}).get("features"),
+            and not config.get("build", {}).get("features")
+            and not config.get("bundle", {}).get("externalBin"),
             "windows_captured_bundle_configuration_changed")
     root = repo / BASE / "resources"
     _verify_cargo_notice_subtree(capture=capture, index_raw=raw,
@@ -177,6 +179,12 @@ def stage_resources(repo, source):
         source_path = os.path.relpath(root / "cargo" / name,
                                       repo / "apps/desktop/src-tauri").replace("\\", "/")
         mapped[source_path] = "licenses/cargo/" + name
+    return mapped
+
+
+def stage_resources(repo, source):
+    snapshot, _, raw, binding = cargo_binding(repo, source)
+    mapped = resource_mapping(repo, raw)
     require(capture.source_snapshot(repo, source) == snapshot,
             "windows_source_changed_during_resource_staging")
     capture.write_new(repo / BASE / "tauri-resources.json",
@@ -184,7 +192,113 @@ def stage_resources(repo, source):
     return binding
 
 
-def verify_installed(repo, source):
+def application_expectation(repo, source, run_id, install_root):
+    """Derive only from source/build originals; never inspect the destination."""
+    from candidate_smoke import NOTICE_FILES, MAX_NOTICE_BYTES
+    from package_receipt import make_receipt
+
+    require(isinstance(run_id, str) and re.fullmatch(r"[1-9][0-9]*", run_id),
+            "windows_inventory_run_invalid")
+    require(install_root.is_absolute() and install_root.name == INSTALL_DIRECTORY,
+            "windows_inventory_destination_invalid")
+    parent = install_root.parent.resolve(strict=True)
+    parent_info = parent.stat()
+    require(parent.is_dir(), "windows_inventory_destination_parent")
+    destination_observation = {
+        "locator_sha256": capture.sha(str(parent / INSTALL_DIRECTORY).encode("utf-8")),
+        "parent_device": str(parent_info.st_dev), "parent_inode": str(parent_info.st_ino)}
+    snapshot, complete, raw, binding = cargo_binding(repo, source)
+    mapped = resource_mapping(repo, raw)
+    overlay_raw = capture.stable_read(repo, BASE / "tauri-resources.json", 2 * 1024 * 1024)
+    require(capture.parse_json(overlay_raw) == {"bundle": {"resources": mapped}},
+            "windows_inventory_overlay_changed")
+    files = {"motionwright-desktop.exe": {
+        key: binding[key] for key in ("bytes", "sha256")}}
+    for original, destination in NOTICE_FILES:
+        files[destination] = capture.stable_hash(repo, original, limit=MAX_NOTICE_BYTES)
+    files["licenses/cargo/index.json"] = {"bytes": len(raw), "sha256": capture.sha(raw)}
+    digests = {row["sha256"] for component in capture.parse_json(raw)["components"]
+               for row in component["notices"]}
+    require(len(files) + len(digests) <= 4000, "windows_inventory_member_bound")
+    for digest in sorted(digests):
+        name = "cargo/texts/" + digest + ".txt"
+        item = capture.stable_hash(repo, BASE / "resources" / name)
+        require(item["sha256"] == digest, "windows_inventory_cargo_text_changed")
+        files["licenses/" + name] = item
+    require(all(item["bytes"] > 0 for item in files.values())
+            and sum(item["bytes"] for item in files.values()) < 512 * 1024 * 1024,
+            "windows_inventory_byte_bound")
+    receipt_path = Path("ci-evidence/windows-candidate.json")
+    receipt_raw = capture.stable_read(repo, receipt_path, 1024 * 1024)
+    receipt = capture.parse_json(receipt_raw)
+    artifacts = receipt.get("artifacts")
+    require(isinstance(artifacts, list) and len(artifacts) == 1,
+            "windows_inventory_candidate_count")
+    filename = relative_path(artifacts[0].get("filename"))
+    require("/" not in filename, "windows_inventory_setup_filename")
+    artifact = repo / BINARY.parent / "bundle/nsis" / filename
+    rebuilt = make_receipt(
+        repo, source, "windows", "x86_64", [artifact],
+        cargo_index=repo / BASE / "resources/cargo/index.json",
+        cargo_binary=repo / BINARY, require_cargo_binding=True)
+    require(receipt == rebuilt, "windows_inventory_candidate_changed")
+    require(capture.source_snapshot(repo, source) == snapshot
+            and capture.stable_read(repo, receipt_path, 1024 * 1024) == receipt_raw,
+            "windows_inventory_source_changed")
+    return {
+        "schema": "motionwright.windows-application-expectation/1",
+        "source": source, "source_tree": snapshot["tree"], "target": TARGET,
+        "workflow_run_id": run_id, "workflow_run_attempt": 1,
+        "install_directory_name": INSTALL_DIRECTORY, "install_destination": destination_observation,
+        "candidate_receipt": {"bytes": len(receipt_raw), "sha256": capture.sha(receipt_raw)},
+        "setup": {key: artifacts[0][key] for key in ("filename", "bytes", "sha256")},
+        "cargo_index_sha256": complete["cargo_index_sha256"],
+        "generated_metadata_sha256": complete["generated_metadata_sha256"],
+        "resource_overlay_sha256": capture.sha(overlay_raw), "application_files": files,
+        "pending_generated_members": {"uninstall.exe": {
+            "expected_role": "INSTALLER_GENERATED_SELF",
+            "reference_status": "NOT_OBSERVED_BEFORE_PUBLICATION"}},
+        "full_package_inventory": "NOT_VERIFIED",
+    }
+
+
+def prepare_application_inventory(repo, source, run_id, install_root):
+    require(install_root.is_absolute() and install_root.name == INSTALL_DIRECTORY,
+            "windows_inventory_destination_invalid")
+    try:
+        install_root.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError("windows_inventory_destination_preexisting")
+    expected = application_expectation(repo, source, run_id, install_root)
+    raw = capture.encoded(expected)
+    capture.write_new(repo / INVENTORY, raw)
+    return capture.sha(raw)
+
+
+def verify_application_inventory(repo, source, run_id, install_root, expected_sha256):
+    from candidate_smoke import verify_windows_application_files
+
+    require(isinstance(expected_sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", expected_sha256),
+            "windows_inventory_preinstall_digest_required")
+    require(install_root.is_absolute() and install_root.name == INSTALL_DIRECTORY,
+            "windows_inventory_destination_invalid")
+    raw = capture.stable_read(repo, INVENTORY, 2 * 1024 * 1024)
+    require(capture.sha(raw) == expected_sha256, "windows_inventory_original_changed")
+    expected = capture.parse_json(raw)
+    require(expected == application_expectation(repo, source, run_id, install_root),
+            "windows_inventory_expectation_mismatch")
+    result = verify_windows_application_files(
+        capture=capture, install_root=install_root, expected_files=expected["application_files"])
+    require(capture.stable_read(repo, INVENTORY, 2 * 1024 * 1024) == raw,
+            "windows_inventory_original_changed")
+    result["preinstall_expectation_sha256"] = expected_sha256
+    return result
+
+
+def verify_installed(repo, source, *, run_id, install_root, expected_inventory_sha256):
     _, complete, _, observed = cargo_binding(repo, source)
     smoke = read_json(repo, "ci-evidence/windows-nsis-smoke.json")
     require(smoke.get("candidate", {}).get("source_revision") == source,
@@ -207,6 +321,13 @@ def verify_installed(repo, source):
             and frontend_report.get("observed_npm_source_and_notice_authentication") == "VERIFIED"
             and frontend_report.get("source_binding") == "EXACT_HEAD_TREE_INDEX_AND_TRACKED_BYTES_REVALIDATED",
             "windows_frontend_authentication_required")
+    application = verify_application_inventory(
+        repo, source, run_id, install_root, expected_inventory_sha256)
+    inventory = read_json(repo, INVENTORY, 2 * 1024 * 1024)
+    candidate = read_json(repo, "ci-evidence/windows-candidate.json", 1024 * 1024)
+    require(smoke.get("candidate_archive") == inventory["setup"]
+            and smoke.get("candidate") == candidate["candidate"],
+            "windows_installed_inventory_package_mismatch")
     report = {
         "schema": "motionwright.windows-installed-cargo-binding/1",
         "source": source, "source_tree": observed["source_tree"], "target": TARGET,
@@ -216,6 +337,7 @@ def verify_installed(repo, source):
         "cargo_binding": installed["status"], "cargo_notices": notices,
         "frontend_index_sha256": frontend_report["frontend_index_sha256"],
         "frontend_observed_npm_authentication": "VERIFIED",
+        "application_payload": application,
         "full_package_inventory": "NOT_VERIFIED", "human_install_acceptance": "NOT_RUN",
         "distribution_signature": "NOT_CLAIMED", "published": False,
     }
@@ -225,18 +347,36 @@ def verify_installed(repo, source):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("frontend", "frontend-recheck", "stage", "verify"))
+    parser.add_argument("phase", choices=("frontend", "frontend-recheck", "stage", "inventory", "verify"))
+    parser.add_argument("--installed-root", type=Path)
+    parser.add_argument("--expected-inventory-sha256")
     args = parser.parse_args(argv)
     try:
         source = internal_source(os.environ)
         require(Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True) == ROOT,
                 "windows_dependency_checkout_mismatch")
+        if args.phase in ("frontend", "frontend-recheck", "stage"):
+            require(args.installed_root is None and args.expected_inventory_sha256 is None,
+                    "windows_inventory_unexpected_inputs")
         if args.phase.startswith("frontend"):
             authenticate_frontend(ROOT, source, recheck=args.phase == "frontend-recheck")
         elif args.phase == "stage":
             stage_resources(ROOT, source)
         else:
-            verify_installed(ROOT, source)
+            runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+            destination = runner_temp / INSTALL_DIRECTORY
+            if args.phase == "inventory":
+                require(args.installed_root is None and args.expected_inventory_sha256 is None,
+                        "windows_inventory_unexpected_inputs")
+                prepare_application_inventory(ROOT, source, os.environ["GITHUB_RUN_ID"], destination)
+            else:
+                require(args.installed_root is not None and args.installed_root.is_absolute()
+                        and args.installed_root.name == INSTALL_DIRECTORY
+                        and args.installed_root.parent.resolve(strict=True) == runner_temp,
+                        "windows_inventory_original_destination_required")
+                verify_installed(
+                    ROOT, source, run_id=os.environ["GITHUB_RUN_ID"], install_root=destination,
+                    expected_inventory_sha256=args.expected_inventory_sha256)
         print("windows-dependency-" + args.phase + "=verified public_distribution=NOT_AUTHORIZED")
     except (capture.CaptureError, OSError, ValueError, KeyError, TypeError) as error:
         detail = str(error)

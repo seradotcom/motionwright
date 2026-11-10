@@ -5,7 +5,9 @@ No Cargo build, archive download, installer, or application is executed here.
 from __future__ import annotations
 import copy
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import unittest
 
@@ -22,7 +24,13 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
         fixtures.CandidateCargoProducerTests.setUp(self)
         config = self.root / "apps/desktop/src-tauri/tauri.conf.json"
         config.write_bytes((ROOT / "apps/desktop/src-tauri/tauri.conf.json").read_bytes())
-        git(self.root, "add", "apps/desktop/src-tauri/tauri.conf.json")
+        from candidate_smoke import NOTICE_FILES
+        for original, _ in NOTICE_FILES:
+            path = self.root / original
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT / original).read_bytes())
+        git(self.root, "add", "apps/desktop/src-tauri/tauri.conf.json",
+            *(original for original, _ in NOTICE_FILES))
         git(self.root, "-c", "user.name=fixture", "-c",
             "user.email=fixture@example.invalid", "commit", "-qm", "resource fixture")
         self.sha = git(self.root, "rev-parse", "HEAD")
@@ -56,6 +64,129 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
                                gate.capture.encoded(self.complete))
 
     save_cargo_index = fixtures.CandidateCargoProducerTests.save_cargo_index
+
+    def application_fixture(self):
+        from candidate_smoke import NOTICE_FILES
+        from package_receipt import make_receipt
+
+        gate.stage_resources(self.root, self.sha)
+        artifact = self.root / gate.BINARY.parent / "bundle/nsis" / self.bundle.name
+        artifact.parent.mkdir(parents=True)
+        self.bundle.replace(artifact)
+        self.bundle = artifact
+        candidate = make_receipt(
+            self.root, self.sha, "windows", "x86_64", [artifact],
+            cargo_index=self.cargo_index, cargo_binary=self.cargo_binary,
+            require_cargo_binding=True)
+        gate.capture.write_new(self.root / "ci-evidence/windows-candidate.json",
+                               gate.capture.encoded(candidate))
+        self.install_root = self.root / "runner" / gate.INSTALL_DIRECTORY
+        self.install_root.parent.mkdir()
+        self.inventory_sha = gate.prepare_application_inventory(
+            self.root, self.sha, "123", self.install_root)
+        self.install_root.mkdir()
+        sources = [("motionwright-desktop.exe", self.cargo_binary),
+                   ("licenses/cargo/index.json", self.cargo_index),
+                   ("licenses/cargo/texts/" + self.notice_path.name, self.notice_path)]
+        sources += [(destination, self.root / original) for original, destination in NOTICE_FILES]
+        for relative, source in sources:
+            target = self.install_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        (self.install_root / "uninstall.exe").write_bytes(
+            b"INERT generated member fixture; no installer ran.\n")
+        self.candidate = candidate
+
+    def verify_installed(self):
+        return gate.verify_installed(
+            self.root, self.sha, run_id="123", install_root=self.install_root,
+            expected_inventory_sha256=self.inventory_sha)
+
+    def verify_inventory(self, *, root=None, digest=None):
+        return gate.verify_application_inventory(
+            self.root, self.sha, "123", root or self.install_root,
+            digest or self.inventory_sha)
+
+    def test_original_destination_member_set_rejects_extras_and_nested_main(self):
+        self.application_fixture()
+        original = (self.root / gate.INVENTORY).read_bytes()
+        result = self.verify_inventory()
+        self.assertTrue(result["namespace_closed"])
+        self.assertEqual(result["application_files"], 7)
+        self.assertFalse(result["all_member_bytes_authenticated"])
+        self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
+        pending = result["generated_members"]["uninstall.exe"]
+        self.assertEqual(pending["reference_status"], "NOT_OBSERVED_BEFORE_PUBLICATION")
+        self.assertNotIn("uninstall.exe", json.loads(original)["application_files"])
+        for name, directory in (("unexpected.dll", False), ("unlisted-cache", True)):
+            target = self.install_root / name
+            if directory:
+                target.mkdir()
+            else:
+                target.write_bytes(b"Unlisted file")
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    ValueError, "candidate_application_tree_extra"):
+                self.verify_inventory()
+            target.rmdir() if directory else target.unlink()
+            self.assertEqual((self.root / gate.INVENTORY).read_bytes(), original)
+        child = self.install_root / "nested"
+        child.mkdir()
+        for path in list(self.install_root.iterdir()):
+            if path != child:
+                path.replace(child / path.name)
+        (self.install_root / "outside-extra").write_bytes(b"Not part of the nested payload")
+        with self.assertRaisesRegex(ValueError, "candidate_application_tree_extra"):
+            self.verify_inventory()
+        with self.assertRaisesRegex(ValueError, "windows_inventory_destination_invalid"):
+            self.verify_inventory(root=child)
+
+    def test_inventory_keeps_prior_digest_source_and_destination_independent(self):
+        self.application_fixture()
+        path = self.root / gate.INVENTORY
+        original = path.read_bytes()
+        self.verify_inventory()
+        for field, value in (("source", "0"*40), ("workflow_run_id", "124"),
+                             ("full_package_inventory", "VERIFIED")):
+            changed = json.loads(original)
+            changed[field] = value
+            raw = gate.capture.encoded(changed)
+            path.write_bytes(raw)
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    ValueError, "windows_inventory_original_changed"):
+                self.verify_inventory()
+            with self.subTest(rehashed=field), self.assertRaisesRegex(
+                    ValueError, "windows_inventory_expectation_mismatch"):
+                self.verify_inventory(digest=gate.capture.sha(raw))
+            path.write_bytes(original)
+        other = self.root / "other-runner" / gate.INSTALL_DIRECTORY
+        other.parent.mkdir()
+        shutil.copytree(self.install_root, other)
+        with self.assertRaisesRegex(ValueError, "windows_inventory_expectation_mismatch"):
+            self.verify_inventory(root=other)
+        with self.assertRaisesRegex(ValueError, "windows_inventory_destination_preexisting"):
+            gate.prepare_application_inventory(self.root, self.sha, "123", self.install_root)
+        self.assertEqual(path.read_bytes(), original)
+        overlay = self.root / gate.BASE / "tauri-resources.json"
+        data = json.loads(overlay.read_bytes())
+        data["bundle"]["resources"]["foreign"] = "foreign"
+        overlay.write_bytes(gate.capture.encoded(data))
+        with self.assertRaisesRegex(ValueError, "windows_inventory_overlay_changed"):
+            self.verify_inventory()
+
+    def test_inventory_rejects_missing_substituted_and_hardlinked_members(self):
+        self.application_fixture()
+        self.verify_inventory()
+        main = self.install_root / "motionwright-desktop.exe"
+        raw = main.read_bytes()
+        main.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+        with self.assertRaisesRegex(ValueError, "candidate_application_bytes_mismatch"):
+            self.verify_inventory()
+        main.unlink()
+        with self.assertRaisesRegex(ValueError, "candidate_application_resource_missing"):
+            self.verify_inventory()
+        os.link(self.cargo_binary, main)
+        with self.assertRaisesRegex(ValueError, "candidate_application_hardlink"):
+            self.verify_inventory()
 
     def test_overlay_preserves_originals_and_binds_real_bytes_before_publication(self):
         binding = gate.stage_resources(self.root, self.sha)
@@ -93,13 +224,16 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
             gate.stage_resources(self.root, "3"*40)
 
     def test_installed_readback_requires_all_actual_binding_fields_and_notices(self):
+        self.application_fixture()
         _, _, _, observed = gate.cargo_binding(self.root, self.sha)
         from candidate_smoke import _verify_cargo_notice_subtree
         notices = _verify_cargo_notice_subtree(
             capture=gate.capture, index_raw=self.cargo_index.read_bytes(),
             anchor=self.root / gate.BASE / "resources", relative=Path("cargo"))
         smoke = {
-            "candidate": {"source_revision": self.sha},
+            "candidate": self.candidate["candidate"],
+            "candidate_archive": {key: self.candidate["artifacts"][0][key]
+                                  for key in ("filename", "bytes", "sha256")},
             "automated_inspection": {"cargo_build_binding": {**observed, "notice_resources": notices}},
         }
         smoke_path = self.root / "ci-evidence/windows-nsis-smoke.json"
@@ -112,7 +246,7 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
         }
         gate.capture.write_new(self.root / gate.BASE / "frontend/after-bundle.json",
                                gate.capture.encoded(frontend))
-        result = gate.verify_installed(self.root, self.sha)
+        result = self.verify_installed()
         self.assertEqual(result["installed_binary"]["sha256"], gate.capture.sha(self.cargo_original))
         self.assertFalse(result["published"])
         self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
@@ -124,12 +258,18 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
             smoke_path.write_bytes(gate.capture.encoded(changed))
             with self.subTest(field=field), self.assertRaisesRegex(
                     ValueError, "windows_installed_cargo_identity_mismatch"):
-                gate.verify_installed(self.root, self.sha)
+                self.verify_installed()
             self.assertEqual(output.read_bytes(), original)
+        changed = copy.deepcopy(smoke)
+        changed["candidate_archive"]["sha256"] = "0" * 64
+        smoke_path.write_bytes(gate.capture.encoded(changed))
+        with self.assertRaisesRegex(ValueError, "windows_installed_inventory_package_mismatch"):
+            self.verify_installed()
+        self.assertEqual(output.read_bytes(), original)
         smoke["automated_inspection"]["cargo_build_binding"] = {"status": "NOT_VERIFIED"}
         smoke_path.write_bytes(gate.capture.encoded(smoke))
         with self.assertRaisesRegex(ValueError, "windows_installed_cargo_binding_required"):
-            gate.verify_installed(self.root, self.sha)
+            self.verify_installed()
 
     def test_scope_and_archive_origins_are_closed_before_any_effect(self):
         environment = {

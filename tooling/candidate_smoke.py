@@ -305,19 +305,113 @@ def verify_macos_bundle(path: Path, executable: Path) -> dict:
 MAX_CARGO_NOTICE_TOTAL_BYTES = 512 * 1024 * 1024
 
 
-def _closed_cargo_directory(*, capture, anchor: Path,
-                            relative: Path, expected: dict[str, bool]) -> None:
+def _closed_resource_directory(*, capture, anchor: Path, relative: Path,
+                               expected: dict[str, bool], code: str) -> None:
     directory = capture.admitted(anchor, relative, directory=True)
     seen = set()
     with os.scandir(directory) as entries:
         for entry in entries:
-            require(entry.name in expected and entry.name not in seen,
-                    "candidate_cargo_notice_tree_extra")
+            require(entry.name in expected and entry.name not in seen, code + "_tree_extra")
             # Reject links/reparse points even if the target has the right bytes.
             capture.admitted(anchor, relative / entry.name,
                              directory=expected[entry.name])
             seen.add(entry.name)
-    require(seen == set(expected), "candidate_cargo_notice_resource_missing")
+    require(seen == set(expected), code + "_resource_missing")
+
+
+def _closed_cargo_directory(*, capture, anchor: Path,
+                            relative: Path, expected: dict[str, bool]) -> None:
+    _closed_resource_directory(capture=capture, anchor=anchor, relative=relative,
+                               expected=expected, code="candidate_cargo_notice")
+
+
+def verify_windows_application_files(*, capture, install_root: Path,
+                                     expected_files: dict) -> dict:
+    """Compare authenticated expectations at the original install destination.
+
+    The sole declared generated member has no retained pre-publication reference.
+    Its installed digest is an observation, never its own expected identity.
+    This bounded inspection does not claim a filesystem-wide atomic snapshot.
+    """
+    from nsis_owned_files import _relative
+
+    require(install_root.is_absolute() and isinstance(expected_files, dict)
+            and 0 < len(expected_files) < 4096
+            and "motionwright-desktop.exe" in expected_files
+            and "uninstall.exe" not in expected_files,
+            "candidate_application_expectations_invalid")
+    tree, folded, folded_nodes, total_expected = {}, set(), {}, 0
+    names = [*expected_files, "uninstall.exe"]
+    for name in names:
+        require(isinstance(name, str) and _relative(name, "application payload") == name,
+                "candidate_application_relative_invalid")
+        require(name.casefold() not in folded, "candidate_application_case_alias")
+        folded.add(name.casefold())
+        if name in expected_files:
+            item = expected_files[name]
+            require(isinstance(item, dict) and set(item) == {"bytes", "sha256"}
+                    and type(item["bytes"]) is int and 0 < item["bytes"]
+                    and isinstance(item["sha256"], str) and SHA64.fullmatch(item["sha256"]),
+                    "candidate_application_identity_invalid")
+            total_expected += item["bytes"]
+        parts = name.split("/")
+        require(len(parts) <= 16, "candidate_application_path_depth")
+        for end in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:end])
+            require(folded_nodes.get(prefix.casefold(), prefix) == prefix,
+                    "candidate_application_case_alias")
+            folded_nodes[prefix.casefold()] = prefix
+        node = tree
+        for part in parts[:-1]:
+            require(part not in node or isinstance(node[part], dict),
+                    "candidate_application_path_collision")
+            node = node.setdefault(part, {})
+        require(parts[-1] not in node, "candidate_application_path_collision")
+        node[parts[-1]] = False
+    require(total_expected < MAX_CARGO_NOTICE_TOTAL_BYTES,
+            "candidate_application_byte_bound")
+    anchor = install_root.parent.resolve(strict=True)
+    root_relative = Path(install_root.name)
+    directories = [(root_relative, tree)]
+    for relative, children in directories:
+        for name, child in children.items():
+            if isinstance(child, dict):
+                directories.append((relative / name, child))
+        require(len(directories) + len(names) <= 4096,
+                "candidate_application_entry_bound")
+
+    def inspect_names():
+        for relative, children in directories:
+            _closed_resource_directory(
+                capture=capture, anchor=anchor, relative=relative,
+                expected={name: isinstance(child, dict) for name, child in children.items()},
+                code="candidate_application")
+
+    inspect_names()
+    total = 0
+    for name, expected in sorted(expected_files.items()):
+        relative = root_relative / name
+        path = capture.admitted(anchor, relative)
+        require(path.lstat().st_nlink == 1, "candidate_application_hardlink")
+        observed = capture.stable_hash(anchor, relative, limit=expected["bytes"])
+        require(observed == expected, "candidate_application_bytes_mismatch")
+        total += observed["bytes"]
+    generated_path = capture.admitted(anchor, root_relative / "uninstall.exe")
+    require(generated_path.lstat().st_nlink == 1, "candidate_application_hardlink")
+    generated = capture.stable_hash(
+        anchor, root_relative / "uninstall.exe", limit=MAX_CARGO_NOTICE_TOTAL_BYTES - total)
+    require(generated["bytes"] > 0, "candidate_generated_member_empty")
+    inspect_names()
+    return {
+        "status": "EXPECTED_APPLICATION_FILES_BYTE_EXACT",
+        "scope": "APPLICATION_FILES_AND_ORIGINAL_DESTINATION_MEMBER_SET",
+        "namespace_closed": True, "application_files": len(expected_files),
+        "application_bytes": total,
+        "generated_members": {"uninstall.exe": {
+            "expected_role": "INSTALLER_GENERATED_SELF", "observed_identity": generated,
+            "reference_status": "NOT_OBSERVED_BEFORE_PUBLICATION"}},
+        "all_member_bytes_authenticated": False, "full_package_inventory": "NOT_VERIFIED",
+    }
 
 
 def _verify_cargo_notice_subtree(*, capture, index_raw: bytes,

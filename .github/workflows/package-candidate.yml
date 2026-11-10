@@ -1387,6 +1387,12 @@ jobs:
           }
           python tooling/package_receipt.py --git-sha "$env:GITHUB_SHA" --platform windows --arch x86_64 --artifact "$($artifacts[0].FullName)" @cargoArgs --output ci-evidence/windows-candidate.json
           if ($LASTEXITCODE -ne 0) { throw 'Exact Windows candidate receipt failed' }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
+            python -B tooling/ci_windows_dependency_capture.py inventory
+            if ($LASTEXITCODE -ne 0) { throw 'Preinstall application inventory failed' }
+            $inventoryHash = (Get-FileHash -Algorithm SHA256 'ci-evidence/internal-windows-cargo/application-inventory.json').Hash.ToLowerInvariant()
+            "MW_WINDOWS_APPLICATION_INVENTORY_SHA256=$inventoryHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
       - name: Silent current-user NSIS install and inspect installed Windows executable
         shell: pwsh
         timeout-minutes: 6
@@ -1417,8 +1423,8 @@ jobs:
             --output ci-evidence/windows-nsis-smoke.json
           if ($LASTEXITCODE -ne 0) { throw 'Installed Windows candidate inspection failed' }
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
-            python -B tooling/ci_windows_dependency_capture.py verify
-            if ($LASTEXITCODE -ne 0) { throw 'Installed binary and notice capture join failed' }
+            python -B tooling/ci_windows_dependency_capture.py verify --installed-root "$dest" --expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"
+            if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }
           }
       - name: Cold launch and reopen the real NSIS-installed application
         shell: pwsh
@@ -1469,6 +1475,8 @@ jobs:
         with:
           name: motionwright-windows-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ci-evidence/internal-windows-cargo/application-inventory.json
+            ci-evidence/internal-windows-cargo/tauri-resources.json
             ci-evidence/internal-windows-cargo/state/source-before.json
             ci-evidence/internal-windows-cargo/state/source-after.json
             ci-evidence/internal-windows-cargo/state/metadata.stdout

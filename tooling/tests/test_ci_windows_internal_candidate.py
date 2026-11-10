@@ -125,7 +125,12 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         self.assertIn("-- cargo build --locked --release --bins --package motionwright-desktop", windows)
         self.assertIn("--features tauri/custom-protocol --tauri-generated-schemas", windows)
         self.assertIn("--require-cargo-binding", windows)
-        self.assertIn("ci_windows_dependency_capture.py verify", windows)
+        inventory_command = "python -B tooling/ci_windows_dependency_capture.py inventory"
+        self.assertLess(windows.index(inventory_command),
+                        windows.index("Start-Process -FilePath $installer"))
+        self.assertIn("MW_WINDOWS_APPLICATION_INVENTORY_SHA256=$inventoryHash", windows)
+        self.assertIn('ci_windows_dependency_capture.py verify --installed-root "$dest" '
+                      '--expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"', windows)
         allowed = {
             "ci-evidence/windows-candidate.json",
             "ci-evidence/windows-nsis-smoke.json",
@@ -148,6 +153,8 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         originals = {"ci-evidence/internal-windows-cargo/state/" + name for name in original_names}
         originals.update({"ci-evidence/internal-windows-cargo/frontend/" + name
                           for name in ("before-build.json", "after-bundle.json")})
+        originals.update({"ci-evidence/internal-windows-cargo/" + name
+                          for name in ("application-inventory.json", "tauri-resources.json")})
         uploads = [part for part in re.split(r"(?m)^      - ", windows)
                    if "uses: actions/upload-artifact@" in part]
         self.assertEqual(len(uploads), 4)
