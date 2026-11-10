@@ -84,11 +84,18 @@ class GraphCompiledSourceTriggerTests(unittest.TestCase):
             "crates/native/src/production/graph_authoring_tests.rs",
             "crates/service/src/semantic_graph.rs",
             "crates/service/src/semantic_graph_admission.rs",
+            "crates/service/src/read_only.rs",
+            "crates/storage/src/read_only.rs",
+            "crates/storage/src/integrity.rs",
         ):
             with self.subTest(source=relative):
                 self.assertTrue((root / relative).is_file())
                 self.assertTrue(any(fnmatchcase(relative, glob) for glob in globs),
                                 f"Bounded Graph compile not triggered by {relative}")
+        self.assertIn("components: rustfmt", workflow)
+        formatting = workflow.index("cargo fmt --all -- --check")
+        self.assertLess(formatting, workflow.index("cargo check --locked -p motionwright-service"))
+        self.assertLess(formatting, workflow.index("cargo check --locked -p motionwright-native"))
         for unrelated in (
             "docs/roadmap.md",
             "crates/native/src/production/blender_render.rs",
