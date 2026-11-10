@@ -64,6 +64,54 @@ def selected_report(document, *, listing):
             "formal_acceptance": False}
 
 
+def checked_independent_reader(reader, writer_oracle, initializer, source, database_path):
+    """Join two actual original payloads; cannot mint a Native/Store receipt."""
+    require(type(reader) is dict and type(writer_oracle) is dict
+            and type(initializer) is dict and type(source) is dict,
+            "DEV_READER_ORIGINALS_REQUIRED")
+    expected_fields = {
+        "schema", "source", "process_id", "process", "opened_before",
+        "opened_after", "physical_store", "held_sqlite_pager_witness",
+        "writer_oracle", "full_project", "journal",
+        "journal_after_revision_exclusive", "journal_complete",
+        "native_callbacks_allowed", "automatic_retry", "returned_live",
+        "formal_release_acceptance",
+    }
+    require(set(reader) == expected_fields
+            and reader["schema"] == "motionwright.graph-dev-live-reader-open/1"
+            and reader["source"] == source
+            and reader["returned_live"] is True
+            and reader["native_callbacks_allowed"] is False
+            and reader["automatic_retry"] is False
+            and reader["formal_release_acceptance"] is False
+            and type(reader["process_id"]) is int and reader["process_id"] > 1,
+            "DEV_READER_ORIGINAL_FIELDS_OR_SCOPE")
+    require(reader["journal_after_revision_exclusive"] == 0
+            and reader["journal_complete"] is True
+            and writer_oracle.get("schemaVersion") == 1
+            and writer_oracle.get("journalAfterRevisionExclusive") == 0
+            and writer_oracle.get("journalComplete") is True
+            and reader["full_project"] == writer_oracle.get("project")
+            and reader["journal"] == writer_oracle.get("journal"),
+            "DEV_READER_PROJECT_OR_COMPLETE_JOURNAL_MISMATCH")
+    project, history = reader["full_project"], reader["journal"]
+    require(type(project) is dict and type(history) is list
+            and type(project.get("revision")) is int
+            and project["revision"] == len(history)
+            and all(type(row) is dict and row.get("revision") == index + 1
+                    for index, row in enumerate(history)),
+            "DEV_READER_HISTORY_REVISIONS_NOT_CONTIGUOUS")
+    require(reader["physical_store"] == initializer
+            and initializer.get("path") == database_path
+            and type(initializer.get("device")) is str
+            and type(initializer.get("inode")) is str
+            and initializer["device"].isdigit() and initializer["inode"].isdigit(),
+            "DEV_READER_ORIGINAL_SQLITE_INODE_MISMATCH")
+    return {"project_id": project.get("id"), "revision": project["revision"],
+            "full_journal_events": len(history), "independent_read_only": True,
+            "formal_acceptance": False}
+
+
 def original_index(repo, ci):
     repo, root = ci.graph_layout(repo)
     ref = ci.graph_ref(root / "e/graph-producer/producer-index.original.json", ci.GRAPH_BYTES)
@@ -158,10 +206,23 @@ def run(repo, ci):
             report["reader_terminal"] = ci.graph_ref(terminal, ci.GRAPH_BYTES)
             report["reader_original"] = ci.graph_ref(readback, 4 * ci.GRAPH_BYTES)
             readback_value = ci.graph_json(ci.graph_read(report["reader_original"], 4 * ci.GRAPH_BYTES))
-            require(readback_value.get("source") == index["source"]
-                    and readback_value.get("journal_complete") is True
-                    and readback_value.get("journal_after_revision_exclusive") == 0,
-                    "DEV_COMPLETE_INDEPENDENT_HISTORY_ABSENT")
+            # Verify the read-only process against the WRITER'S original,
+            # retained under the canonical case root, rather than accepting a
+            # boolean emitted by the Studio browser as Store proof.
+            oracle_path = case_root / "graph-dev-closed-store/oracle.json"
+            writer_ref = readback_value.get("writer_oracle")
+            require(type(writer_ref) is dict and writer_ref.get("path") == str(oracle_path)
+                    and writer_ref == ci.graph_ref(oracle_path, 4 * ci.GRAPH_BYTES),
+                    "DEV_WRITER_ORIGINAL_ORACLE_REF_MISMATCH")
+            writer_oracle = ci.graph_json(ci.graph_read(writer_ref, 4 * ci.GRAPH_BYTES))
+            physical_path = case_root / "initializer-store-physical.original.json"
+            initializer_ref = ci.graph_ref(physical_path, ci.GRAPH_BYTES)
+            initializer = ci.graph_json(ci.graph_read(initializer_ref, ci.GRAPH_BYTES))
+            report["reader_reconciliation"] = checked_independent_reader(
+                readback_value, writer_oracle, initializer, index["source"],
+                str(case_root / "store/motionwright.sqlite3"))
+            report["writer_oracle"] = writer_ref
+            report["initializer_physical_original"] = initializer_ref
             terminal_value = ci.graph_json(ci.graph_read(report["reader_terminal"], ci.GRAPH_BYTES))
             require(terminal_value.get("closed_after_read_only_proof") is True
                     and terminal_value.get("source") == index["source"],
@@ -182,6 +243,19 @@ def run(repo, ci):
                     and observation.get("opened_sqlite_identity_witness_match") is True
                     and observation.get("read_only_bootstrap_verified") is True,
                     "DEV_ORIGINAL_SAVE_AND_REOPEN_NOT_PROVEN")
+            saved = readback_value["full_project"]
+            graphs = saved.get("production_design", {}).get("semantic_graphs", [])
+            admitted_graphs = [graph for graph in graphs if type(graph) is dict
+                               and graph.get("id") == observation.get("saved_graph_id")]
+            require(type(graphs) is list and len(admitted_graphs) == 1
+                    and saved["revision"] == observation.get("saved_revision")
+                    and observation.get("journal") == ["upsert_semantic_graph"]
+                    and type(admitted_graphs[0].get("content")) is dict
+                    and [row.get("id") for row in admitted_graphs[0]["content"].get("events", [])]
+                        == observation.get("event_ids")
+                    and type(readback_value["journal"][-1].get("change")) is dict
+                    and readback_value["journal"][-1]["change"].get("type") == "upsert_semantic_graph",
+                    "DEV_SAVED_STUDIO_GRAPH_NOT_PRESENT_IN_INDEPENDENT_ORIGINAL")
             report["studio_observation"] = observation_ref
             report["status"] = "CLOSED_GRAPH_DEVELOPMENT_OBSERVATIONS"
     except BaseException as error:
