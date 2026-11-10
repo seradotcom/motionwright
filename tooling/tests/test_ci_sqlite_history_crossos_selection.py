@@ -1,6 +1,8 @@
 """Source-only checks for the selected cross-platform SQLite history roster."""
 
 import ast
+import hashlib
+import re
 import unittest
 from pathlib import Path
 
@@ -31,6 +33,23 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
                 self.assertEqual(definitions.count("fn " + name + "("), 1)
         self.assertEqual(source.count('"expected_total_invocations_per_OS":11'), 2)
         self.assertEqual(source.count('"bound_SQLite_cases":11'), 2)
+
+    def test_reviewed_composed_storage_source_pins_are_exact_in_both_jobs(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        expected = {
+            "crates/storage/src/lib.rs": "23f85144b11965b38f7cdee9d76ad8d87475041ca4d4b7ebeb588edb939282b9",
+            "crates/storage/src/portability.rs": "886c0b016b91faf1badeff2ac9ab07a8786d904da29bf3860e00a2b7e5cc1d52",
+        }
+        maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
+        self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
+        self.assertEqual(source.count('foundation_reviewed_source="6e5ca13310aa3e8fe819816d39072075df40bd7c"'), 2)
+        origin = 'foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs")'
+        self.assertEqual(source.count(origin), 2, "Both Storage inputs must name the composed source")
+        for raw in maps:
+            pins = ast.literal_eval(raw)
+            for rel, sha in expected.items():
+                self.assertEqual(pins[rel], sha)
+                self.assertEqual(hashlib.sha256((ROOT / rel).read_bytes()).hexdigest(), sha)
 
     def test_real_os_matrix_selects_two_history_cases(self):
         source = WORKFLOW.read_text(encoding="utf-8")
