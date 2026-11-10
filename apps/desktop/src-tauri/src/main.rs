@@ -552,11 +552,12 @@ async fn semantic_graph_authoring_context(
         attempt.retain_result(&result),
         GraphExchangeRetention::Published
     ) {
-        return Err(GraphContextFailure::without_code(GraphContextStage::Custody));
+        return Err(GraphContextFailure::without_code(
+            GraphContextStage::Custody,
+        ));
     }
-    let report = result.map_err(|error| {
-        GraphContextFailure::from_report(&error, false, transport_failed)
-    })?;
+    let report = result
+        .map_err(|error| GraphContextFailure::from_report(&error, false, transport_failed))?;
     let original_native = report.original_native_error().is_some();
     let context = report
         .outcome()

@@ -350,12 +350,7 @@ fn db_to_gain(value: f64) -> f64 {
 }
 // The outer mixer supplies only already-started windows whose attack or
 // release can still affect this sample. The sample expression is unchanged.
-fn duck_gain(
-    plan: &OriginalMixPlan,
-    at: u64,
-    active: &[VoiceActivityWindow],
-    low: f64,
-) -> f64 {
+fn duck_gain(plan: &OriginalMixPlan, at: u64, active: &[VoiceActivityWindow], low: f64) -> f64 {
     let mut result = 1.0_f64;
     for interval in active {
         let start = interval.start_sample;
@@ -465,9 +460,8 @@ pub fn render_original_source_mix_with_budget(
     // A muted narration bus cannot trigger audible music ducking. A muted
     // music bus or zero attenuation likewise has no measured duck effect.
     // Retain the reviewed speech windows for source custody regardless.
-    let music_duck_active = !plan.voice_envelope.muted
-        && !plan.music_envelope.muted
-        && plan.duck_attenuation_db > 0.0;
+    let music_duck_active =
+        !plan.voice_envelope.muted && !plan.music_envelope.muted && plan.duck_attenuation_db > 0.0;
     let mut out = Vec::with_capacity(plan.sample_frames as usize * 4);
     let mut peak = 0.0_f64;
     let mut sum_squared = 0.0_f64;
