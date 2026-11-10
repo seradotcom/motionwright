@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 
-from tooling.ci_graph_dev_terminal_stdout import read_terminal_stdout
+from tooling.ci_graph_dev_terminal_stdout import read_live_stdout, read_terminal_stdout
 from tooling.ci_graph_dev_native_firstsave import FirstSaveFailure, NativeSession
 
 
@@ -113,6 +113,58 @@ class PortableStdoutCustodyTests(unittest.TestCase):
         self.assertTrue(outcome["deadline_exceeded"])
         self.assertFalse(outcome["eof"])
         self.assertEqual(outcome["raw"], b"")
+
+    def test_live_jsonl_request_receives_bound_reply_on_real_windows_pipe(self):
+        # One fake JSONL program with the exact request ID; no Graph backend.
+        program = (
+            "import json,sys\n"
+            "for line in sys.stdin.buffer:\n"
+            " request=json.loads(line)\n"
+            " response={'id':request['id'],'ok':True,"
+            "'result':{'command':request['command']}}\n"
+            " sys.stdout.buffer.write(json.dumps(response).encode()+b'\\n')\n"
+            " sys.stdout.buffer.flush()\n"
+        )
+        session = self.new_session(program, read_only=True)
+        with session as reader:
+            reply = reader.request(
+                "actual-inert-rpc", "get_project",
+                {"project_id": "synthetic-not-real"})
+        self.assertEqual(reply["result"], {"command": "get_project"})
+        retained = json.loads(
+            (self.private / "actual-inert-rpc.response.original.jsonl")
+            .read_text(encoding="utf-8"))
+        self.assertEqual(retained["id"], reply["id"])
+        terminal = json.loads(
+            (self.private / "independent-readonly-session.terminal.original.json")
+            .read_text(encoding="utf-8"))
+        self.assertTrue(terminal["stdout_eof_observed"])
+        self.assertTrue(terminal["original_reply_complete"])
+
+    def test_live_jsonl_reply_timeout_remains_unknown_without_replay(self):
+        session = self.new_session(
+            "import sys,time;sys.stdin.buffer.readline();time.sleep(0.2)",
+            read_only=True)
+        session.timeout = 0.035
+        with self.assertRaisesRegex(
+                FirstSaveFailure, "GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT") as failed:
+            with session as reader:
+                reader.request("inert-delayed", "get_project", {"project_id": "test"})
+        self.assertTrue(failed.exception.unknown)
+        self.assertTrue(
+            (self.private / "inert-delayed.request.original.jsonl").is_file())
+        self.assertFalse(
+            (self.private / "inert-delayed.response.original.jsonl").exists())
+
+    def test_direct_live_reader_never_blocks_on_open_idle_writer(self):
+        reader_fd, writer_fd = os.pipe()
+        pipe = os.fdopen(reader_fd, "rb", buffering=0)
+        try:
+            self.assertIsNone(
+                read_live_stdout(pipe, maximum=64, wait_seconds=0.025))
+        finally:
+            pipe.close()
+            os.close(writer_fd)
 
     def test_selected_ci_routes_the_new_portable_stdout_regressions(self):
         workflow = (Path(__file__).resolve().parents[2] /

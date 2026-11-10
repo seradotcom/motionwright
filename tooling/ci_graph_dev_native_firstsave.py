@@ -19,9 +19,9 @@ import time
 import uuid
 
 if __package__:
-    from .ci_graph_dev_terminal_stdout import read_terminal_stdout
+    from .ci_graph_dev_terminal_stdout import read_live_stdout, read_terminal_stdout
 else:
-    from ci_graph_dev_terminal_stdout import read_terminal_stdout
+    from ci_graph_dev_terminal_stdout import read_live_stdout, read_terminal_stdout
 
 SCHEMA = "motionwright.graph-native-dev-first-save/1"
 ALLOW = "allow-one-original-save"
@@ -381,11 +381,17 @@ class NativeSession:
             if remaining <= 0:
                 raise FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT",
                                        unknown=True)
-            readable, _, _ = select.select([self.child.stdout], [], [], remaining)
-            if not readable:
+            try:
+                chunk = read_live_stdout(
+                    self.child.stdout,
+                    maximum=min(65536, MAX_RESPONSE + 1 - len(self.pending)),
+                    wait_seconds=remaining)
+            except (OSError, ValueError):
+                raise FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_PIPE_UNCERTAIN",
+                                       unknown=True) from None
+            if chunk is None:
                 raise FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT",
                                        unknown=True)
-            chunk = os.read(self.child.stdout.fileno(), min(65536, MAX_RESPONSE + 1))
             if not chunk:
                 raise FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_CLOSED",
                                        unknown=True)
@@ -394,7 +400,11 @@ class NativeSession:
                     "GN1_FIRST_SAVE_NATIVE_REPLY_TOO_LARGE", unknown=True)
         line, _, tail = self.pending.partition(b"\n")
         self.pending = bytearray(tail)
-        private_bytes(self.private / (label + ".response.original.jsonl"), line + b"\n")
+        # bytearray.partition retains the mutable bytearray type. Private
+        # originals require immutable bytes, otherwise the very first real
+        # JSONL reply fails custody even if Native answered successfully.
+        private_bytes(self.private / (label + ".response.original.jsonl"),
+                      bytes(line) + b"\n")
         try:
             response = json.loads(line)
         except (ValueError, UnicodeError):
