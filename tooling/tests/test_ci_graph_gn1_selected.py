@@ -103,6 +103,19 @@ class Gn1CompiledSelectedSourceTests(unittest.TestCase):
         self.assertNotIn("one_original_save:", self.workflow)
         self.assertNotIn("GH_TOKEN", self.workflow)
 
+
+    def test_compiled_target_is_outside_retained_original_artifacts(self):
+        assignments = re.findall(
+            r'(?m)^\s*echo "CARGO_TARGET_DIR=([^"]+)" >> "\$GITHUB_ENV"$',
+            self.workflow,
+        )
+        self.assertEqual(len(assignments), 1)
+        target = assignments[0]
+        self.assertTrue(target.startswith("$RUNNER_TEMP/gn1-two-compiled-target-"), target)
+        self.assertNotIn("$evidence/", target)
+        self.assertNotIn("$GN1_TWO_EVIDENCE/", target)
+        self.assertIn("GN1_TWO_EVIDENCE ||", self.workflow)
+
     def test_originals_have_portable_sha_and_no_self_hash(self):
         self.assertEqual(
             self.workflow.count(

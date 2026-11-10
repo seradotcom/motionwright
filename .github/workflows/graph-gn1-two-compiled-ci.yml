@@ -87,7 +87,7 @@ jobs:
           test ! -e "$evidence"
           mkdir -m 700 "$evidence"
           echo "GN1_TWO_EVIDENCE=$evidence" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$evidence/target" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/gn1-two-compiled-target-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
           printf '%s\n' "$GITHUB_SHA" > "$evidence/source-sha.original.txt"
           printf '%s\n' "GN1_INERT_SOURCE_AND_RUST_ONLY_NO_NATIVE_OWNER_NO_GRAPH_SAVE" \
             > "$evidence/scope.original.txt"
