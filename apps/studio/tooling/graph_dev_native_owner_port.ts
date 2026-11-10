@@ -7,7 +7,10 @@
  * There is intentionally NO fallback, synthetic owner, or release waiver.
  */
 import { isDeepStrictEqual } from "node:util";
-import type { ScopedChangeService, ScopedChangeServiceOptions } from "../tests/support/scopedChangeService";
+import { isAbsolute, join } from "node:path";
+import { lstatSync } from "node:fs";
+import { createGraphCaseFactory } from "../tests/support/graph-owner/factory.mjs";
+import { ScopedChangeService, type ScopedChangeServiceOptions } from "../tests/support/scopedChangeService";
 import type { Project, ProjectEvent } from "../src/types";
 
 export type OriginalGraphDevWriterOptions = ScopedChangeServiceOptions & {
@@ -80,8 +83,266 @@ export function assertOriginalGraphReadOnlyBootstrap(reply: unknown, expected: P
   }
 }
 
-/** No implementation is shipped without the real Native owner/custody source.
- * Failing before any executable is launched is deliberate, not a test PASS. */
+/**
+ * Authenticated original Host/Store owner, not a binary-path or JSON-capability
+ * adapter. GraphCaseFactoryCore verifies the R74 producer index, signed run,
+ * source-built Native executable, pinned Semwright runtime, original SharedPool
+ * and kernel-bound SQLite/CAS BEFORE this constructor is reached.
+ *
+ * This is the existing real production authorization, not a way around R74.
+ * A separate development-original producer is NOT currently admitted by that
+ * factory; until it exists, the pre-effect source gate denies acquisition.
+ */
+type AdmittedGraphCaseFactory = Awaited<ReturnType<typeof createGraphCaseFactory>>;
+
+/** Missing on the current source-owned R74 factory. A first-party source
+ * implementation must seal the original Writer, close its Host and return a
+ * NEW authenticated live read-only Service with original stream evidence.
+ * Merely returning an oracle or a SQLite file copy is not this capability. */
+type LiveIndependentReaderPort = {
+  openIndependentlyCustodiedReadOnlyService?: (
+    writer: ScopedChangeService,
+    expectedProject: Project,
+    expectedHistory: readonly ProjectEvent[],
+  ) => Promise<ScopedChangeService>;
+};
+
+class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner {
+  readonly writerOptions: OriginalGraphDevWriterOptions;
+  private attempted = false;
+  private original: OriginalGraphDevelopmentWriter | undefined;
+  private reader: ScopedChangeService | undefined;
+  private closed = false;
+
+  constructor(private readonly factory: AdmittedGraphCaseFactory) {
+    if (!factory.originalProduction || !factory.admission?.approval
+      || !factory.admission?.nativeService || !factory.admission?.source
+      || !factory.admission?.runtime) {
+      throw new Error("GRAPH_DEV_AUTHENTIC_NATIVE_HOST_SOURCE_NOT_ADMITTED");
+    }
+    // The original index supplies BOTH paths; neither a user flag nor Studio
+    // can select a Store or substitute another source-built Native binary.
+    const binaryPath = factory.admission.nativeService.path as string;
+    const databasePath = factory.options.databasePath as string;
+    if (!isAbsolute(binaryPath) || !isAbsolute(databasePath)
+      || (process.platform === "win32"
+        && ![binaryPath, databasePath].every(value => /^[Ee]:[\\/]/.test(value)))) {
+      throw new Error("GRAPH_DEV_ORIGINAL_OWNER_NOT_E_ONLY");
+    }
+    this.writerOptions = Object.freeze({
+      binaryPath, databasePath,
+      processOwner: factory,
+      rawStreamCapture: factory,
+      evidenceCapture: factory,
+      graphCustodyRequired: true as const,
+      seedFixture: false as const,
+      desktopInvokeFixture: true as const,
+      timeoutMs: 50_000,
+    });
+  }
+
+  async openOriginalWriter(): Promise<OriginalGraphDevelopmentWriter> {
+    // Current GraphCaseFactoryCore's independent reopen is a *completed*
+    // private run, not a live ScopedChangeService returned to Studio. Do not
+    // begin an irreversible Native Save with no authenticated way to deliver
+    // the required independently observed read-only process afterward.
+    // This missing first-party factory port must be implemented and reviewed
+    // before the real source-authorized writer may be admitted.
+    const readerPort = this.factory as LiveIndependentReaderPort;
+    if (typeof readerPort.openIndependentlyCustodiedReadOnlyService !== "function") {
+      throw new Error("GRAPH_DEV_LIVE_INDEPENDENT_READONLY_OWNER_CONTRACT_UNAVAILABLE");
+    }
+    // The one-shot intent is consumed BEFORE initializer or Native launch.
+    if (this.attempted || this.closed) {
+      throw new Error("GRAPH_DEV_ORIGINAL_WRITER_ALREADY_ATTEMPTED");
+    }
+    this.attempted = true;
+    // Mutable cell: the initializer callback is invoked by the real
+    // source-owned factory, not synchronously in this method body.
+    const selected: { project?: Project } = {};
+    let started: ScopedChangeService | undefined;
+    try {
+      const factory = this.factory;
+      started = await factory.createNativeService(
+        ScopedChangeService, this.writerOptions,
+        async (project: Project) => {
+          // These IDs are read from the REAL ordinary initializer's SQLite;
+          // this callback grants no ability to manufacture a second project.
+          if (!project?.id || !project.scenes?.[0]?.id
+            || !project.deliverables?.[0]?.id
+            || project.production_design?.semantic_graphs?.length) {
+            throw new Error("GRAPH_DEV_REAL_INITIALIZER_SOURCE_UNAVAILABLE");
+          }
+          selected.project = structuredClone(project);
+          const root = join(factory.root, "owner");
+          return {
+            schema: "motionwright.graph-browser-owner-spec/6",
+            case_id: "graph-flow",
+            source: factory.admission.source,
+            paths: {
+              private_root: root,
+              owner_home: join(root, "home"),
+              owner_runtime: join(root, "runtime"),
+              owner_state: join(root, "state"),
+              owner_socket: join(root, "runtime", "broker.sock"),
+              manim_work: join(root, "work"),
+            },
+            binaries: factory.admission.binaries,
+            runtime: factory.admission.runtime,
+            store: {
+              database_path: factory.options.databasePath,
+              project_id: project.id,
+            },
+            limits: {
+              deadline_unix_ms: factory.deadline,
+              max_clients: 8,
+              max_processes: 128,
+              max_stream_bytes: 1_048_576,
+              cli_timeout_ms: 20_000,
+              close_timeout_ms: 30_000,
+            },
+          };
+        },
+      );
+      if (!selected.project) throw new Error("GRAPH_DEV_ORIGINAL_PROJECT_NOT_ISSUED");
+      const source = selected.project;
+      // Native must read precisely the initializer's original Store. Neither
+      // URI equality nor a previously parsed fixture can replace this read.
+      const current = await started.project(source.id);
+      if (!isDeepStrictEqual(current, source)
+        || started.binaryPath !== this.writerOptions.binaryPath
+        || started.databasePath !== this.writerOptions.databasePath
+        || started.processStreams.length !== 1
+        || started.processExits.length !== 0
+        || started.lifecycleTaints.length !== 0
+        || !started.processStreams[0].process_id) {
+        throw new Error("GRAPH_DEV_ORIGINAL_NATIVE_WRITER_SOURCE_NOT_PROVEN");
+      }
+      this.original = Object.freeze({
+        service: started,
+        projectId: current.id,
+        sceneId: current.scenes[0].id,
+        profileId: current.deliverables[0].id,
+      });
+      return this.original;
+    } catch (error) {
+      // An uncertain launch remains consumed. Keep the source-owned original
+      // evidence and first failure; never re-open this Store as a substitute.
+      this.factory.taint(error);
+      if (started) {
+        try { await started.close(); } catch (cleanup) { this.factory.taint(cleanup); }
+      }
+      throw error;
+    }
+  }
+
+  async closeOriginalAndOpenIndependentReadOnly(
+    original: ScopedChangeService, expectedProject: Project,
+    expectedHistory: readonly ProjectEvent[],
+  ): Promise<ScopedChangeService> {
+    if (!this.original || original !== this.original.service || this.reader) {
+      throw new Error("GRAPH_DEV_ORIGINAL_WRITER_CUSTODY_IDENTITY_MISMATCH");
+    }
+    const readerPort = this.factory as LiveIndependentReaderPort;
+    const reopen = readerPort.openIndependentlyCustodiedReadOnlyService;
+    if (typeof reopen !== "function") {
+      throw new Error("GRAPH_DEV_LIVE_INDEPENDENT_READONLY_OWNER_CONTRACT_UNAVAILABLE");
+    }
+    // Real original opened pager request, before the factory closes its
+    // original writer. No pathname, caller-provided digest or copied DB is an
+    // acceptable replacement for either live process observation.
+    const writerWitness = await original.openedStoreIdentityWitness();
+    const reader = await reopen.call(this.factory, original, expectedProject, expectedHistory);
+    this.reader = reader; // Retain even if verification fails: cleanup owns it.
+    const writerStreams = original.processStreams;
+    const writerClosed = writerStreams.length === original.processExits.length
+      && writerStreams.length > 0
+      && writerStreams.every(stream => stream.process_id !== null
+        && stream.exit_index !== null && stream.stdout_ended
+        && stream.stderr_ended && stream.jsonl_reader_closed)
+      && original.processExits.every(exit => exit.code === 0 && exit.signal === null)
+      && original.lifecycleTaints.length === 0;
+    const sourceReader = reader !== original && reader.isReadOnly
+      && reader.binaryPath === this.writerOptions.binaryPath
+      && reader.databasePath === this.writerOptions.databasePath
+      && reader.processStreams.length === 1
+      && reader.processStreams[0].process_id !== null
+      && writerStreams.every(stream => stream.process_id !== reader.processStreams[0].process_id);
+    if (!writerClosed || !sourceReader) {
+      throw new Error("GRAPH_DEV_INDEPENDENT_SOURCE_BUILT_READONLY_NOT_PROVEN");
+    }
+    const readerWitness = await reader.openedStoreIdentityWitness();
+    if (readerWitness !== writerWitness
+      || !isDeepStrictEqual(await reader.project(expectedProject.id), expectedProject)
+      || !isDeepStrictEqual(
+        await reader.history(expectedProject.id, expectedProject.revision - expectedHistory.length),
+        expectedHistory)) {
+      throw new Error("GRAPH_DEV_INDEPENDENT_SQLITE_CAS_IDENTITY_OR_HISTORY_CHANGED");
+    }
+    return reader;
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.reader) {
+      await this.reader.close();
+      // A source-owner-supplied live reader is valid only if its real parent
+      // completed the original custody before returning this reader.
+      this.factory.assertClosed();
+      return;
+    }
+    if (this.original) {
+      try { await this.original.service.close(); }
+      catch (error) { this.factory.taint(error); }
+    }
+    // Without the trusted service-closure barrier this is deliberately an
+    // INCOMPLETE original. It still asks the existing source-owned process to
+    // terminate and retain evidence; never upgrades an uncertain case to PASS.
+    if (this.factory.ownerStart) {
+      await this.factory.closeAfterClients({
+        closed: false, receipt_path: null, receipt_sha256: null,
+      });
+    }
+  }
+}
+
+/**
+ * Acquire only the actual independently authenticated Graph Host producer.
+ *
+ * The locator is untrusted. createGraphCaseFactory() itself verifies its
+ * branded original index and reviewed R74 status before creating the owner.
+ * An environment value alone can NEVER create a Native callback capability.
+ */
 export async function acquireGraphDevelopmentOwner(): Promise<OriginalGraphDevelopmentOwner> {
-  throw new Error("GRAPH_DEV_ORIGINAL_OWNER_PORT_UNAVAILABLE");
+  if (process.env.MOTIONWRIGHT_GRAPH_DEV_FIRST_SAVE !== "1"
+    || process.env.MOTIONWRIGHT_GRAPH_NATIVE_CASE) {
+    throw new Error("GRAPH_DEV_ORIGINAL_DEVELOPMENT_SELECTION_INVALID");
+  }
+  // The existing kernel/file-limit and original-process guard is Linux-only.
+  // Windows local source review cannot impersonate a Linux GitHub original.
+  if (process.platform !== "linux") {
+    throw new Error("GRAPH_DEV_ORIGINAL_OWNER_REQUIRES_LINUX_PROCESS_CUSTODY");
+  }
+  const original = process.env.MOTIONWRIGHT_GRAPH_PRODUCER_ORIGINAL;
+  if (!original || !isAbsolute(original)) {
+    throw new Error("GRAPH_DEV_AUTHENTIC_ORIGINAL_PRODUCER_PATH_REQUIRED");
+  }
+  let metadata: ReturnType<typeof lstatSync>;
+  try { metadata = lstatSync(original); }
+  catch { throw new Error("GRAPH_DEV_AUTHENTIC_ORIGINAL_PRODUCER_MISSING"); }
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw new Error("GRAPH_DEV_AUTHENTIC_ORIGINAL_PRODUCER_FILE_INVALID");
+  }
+  const provisional = join(process.cwd(), ".graph-dev-source-candidate");
+  // The provisional path is NOT authority or the actual Store path. The
+  // original authenticated producer index defines the g-slot and exact mount.
+  const factory = await createGraphCaseFactory({
+    privateRoot: provisional,
+    databasePath: join(provisional, "store", "motionwright.sqlite3"),
+    caseId: "graph-flow",
+    deadlineUnixMs: Date.now() + 900_000,
+    producerOriginalPath: original,
+  });
+  return new SourceBoundGraphDevelopmentOwner(factory);
 }
