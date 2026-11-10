@@ -98,6 +98,67 @@ test("Graph same-render bursts honor vertex, edge and waypoint author budgets", 
   expect(await requestCount(page)).toBe(0);
 });
 
+test("Graph same-render removals preserve the final required vertex", async ({ page }) => {
+  await open(page);
+  await page.locator("[data-graph-edge] summary").first().click();
+  await button(page, "Remove edge 1").click();
+  await expect(button(page, "Remove vertex 1")).toBeEnabled();
+  await page.evaluate(() => {
+    const remove = [...document.querySelectorAll("[data-graph-vertex] button.text-button")]
+      .filter(item => /^Remove vertex [12]$/.test(item.textContent?.trim() ?? ""));
+    if (remove.length !== 2 || remove.some(item => item.disabled))
+      throw new Error("Expected two currently removable vertices");
+    // Same JavaScript turn: old React disabled conditions cannot protect
+    // the remaining vertex against the second already-mounted callback.
+    remove[0].click();
+    remove[1].click();
+  });
+  await expect(page.locator("[data-graph-vertex]")).toHaveCount(1);
+  expect(await requestCount(page)).toBe(0);
+});
+
+test("Graph same-render removals keep edges referenced by new flow events", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph source").selectOption("new:system_flow");
+  await page.evaluate(() => {
+    const add = [...document.querySelectorAll("button")]
+      .find(button => button.textContent?.trim() === "Add synthetic event");
+    const remove = [...document.querySelectorAll("[data-graph-edge] button.text-button")]
+      .find(button => button.textContent?.trim() === "Remove edge 1");
+    if (!(add instanceof HTMLButtonElement) || !(remove instanceof HTMLButtonElement)
+      || add.disabled || remove.disabled) throw new Error("Expected two active Graph controls");
+    add.click();
+    remove.click();
+  });
+  await expect(page.locator("[data-graph-event]")).toHaveCount(1);
+  await expect(page.locator("[data-graph-edge]")).toHaveCount(1);
+  expect(await requestCount(page)).toBe(0);
+});
+
+test("Graph double waypoint removal cannot consume the next authored waypoint", async ({ page }) => {
+  await open(page);
+  await page.locator("[data-graph-edge] summary").first().click();
+  await button(page, "Add edge 1 waypoint").click();
+  await button(page, "Add edge 1 waypoint").click();
+  await field(page, "Edge 1 waypoint 2 x").fill("123");
+  await expect(page.locator("[data-graph-edge]").first().locator("button.text-button")
+    .filter({ hasText: /^Remove edge 1 waypoint / })).toHaveCount(2);
+  await page.evaluate(() => {
+    const remove = [...document.querySelectorAll("[data-graph-edge] button.text-button")]
+      .find(item => item.textContent?.trim() === "Remove edge 1 waypoint 1");
+    if (!(remove instanceof HTMLButtonElement) || remove.disabled)
+      throw new Error("Expected first authored waypoint removal");
+    // A double click on the SAME rendered index must not delete the next
+    // waypoint whose array index shifts before React can rerender.
+    remove.click();
+    remove.click();
+  });
+  await expect(page.locator("[data-graph-edge]").first().locator("button.text-button")
+    .filter({ hasText: /^Remove edge 1 waypoint / })).toHaveCount(1);
+  await expect(field(page, "Edge 1 waypoint 1 x")).toHaveValue("123");
+  expect(await requestCount(page)).toBe(0);
+});
+
 test("Graph flow refuses out-of-interval defaults but can use another free edge", async ({ page }) => {
   await open(page);
   await field(page, "Graph source").selectOption("new:system_flow");

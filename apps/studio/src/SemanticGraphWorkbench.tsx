@@ -835,7 +835,14 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           </select></label>
           <RationalFields label={prefix + " appearance start"} value={v.appearance.at} onChange={(value, part) => change(vertex => { vertex.appearance.at = value; }, "/appearance/at/" + part)} />
           <RationalFields label={prefix + " appearance duration"} value={v.appearance.duration} onChange={(value, part) => change(vertex => { vertex.appearance.duration = value; }, "/appearance/duration/" + part)} />
-          <button className="text-button" disabled={raw.content.vertices.length <= 1 || raw.content.edges.some(edge => edge.from_vertex_id === v.id || edge.to_vertex_id === v.id)} onClick={() => edit(next => { next.content.vertices = next.content.vertices.filter(item => item.id !== v.id); }, path)}>Remove {prefix.toLowerCase()}</button>
+          <button className="text-button" disabled={raw.content.vertices.length <= 1 || raw.content.edges.some(edge => edge.from_vertex_id === v.id || edge.to_vertex_id === v.id)} onClick={() => {
+            const live = session.draft.input.content;
+            // Multiple removal buttons can still be mounted in one React
+            // turn. Never remove the last vertex or a newly connected source.
+            if (live.vertices.length <= 1 || !live.vertices.some(item => item.id === v.id)
+              || live.edges.some(edge => edge.from_vertex_id === v.id || edge.to_vertex_id === v.id)) return;
+            edit(next => { next.content.vertices = next.content.vertices.filter(item => item.id !== v.id); }, path);
+          }}>Remove {prefix.toLowerCase()}</button>
           {raw.content.edges.some(edge => edge.from_vertex_id === v.id || edge.to_vertex_id === v.id) && <p>Remove or reconnect its edges before removing this vertex.</p>}
         </details>;
       })}
@@ -880,7 +887,13 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
               onChange={value => change(edge => { if (edge.label_placement) edge.label_placement.offset[key] = value; }, "/label_placement/offset/" + key)} />)}</div>
           </>}
           <BoxFields label={prefix + " label box"} value={e.label_box} onChange={(key, value) => change(edge => { edge.label_box[key] = value; }, "/label_box/" + key)} />
-          {e.waypoints.map((point, i) => <fieldset key={i}><legend>{prefix} waypoint {i + 1}</legend>{(["x", "y"] as const).map(key => <TextField key={key} label={prefix + " waypoint " + (i + 1) + " " + key} value={point[key]} onChange={value => change(edge => { edge.waypoints[i][key] = value; }, "/waypoints")} />)}<button className="text-button" onClick={() => change(edge => { edge.waypoints.splice(i, 1); }, "/waypoints")}>Remove {prefix.toLowerCase()} waypoint {i + 1}</button></fieldset>)}
+          {e.waypoints.map((point, i) => <fieldset key={i}><legend>{prefix} waypoint {i + 1}</legend>{(["x", "y"] as const).map(key => <TextField key={key} label={prefix + " waypoint " + (i + 1) + " " + key} value={point[key]} onChange={value => change(edge => { edge.waypoints[i][key] = value; }, "/waypoints")} />)}<button className="text-button" onClick={() => {
+            const live = session.draft.input.content.edges.find(edge => edge.id === e.id);
+            // Waypoints have positional identities. A second click from the
+            // old render must not splice the next waypoint at the shifted index.
+            if (!live || session.draft.sequence !== draft.sequence || i >= live.waypoints.length) return;
+            change(edge => { edge.waypoints.splice(i, 1); }, "/waypoints");
+          }}>Remove {prefix.toLowerCase()} waypoint {i + 1}</button></fieldset>)}
           <button className="secondary-button" disabled={e.waypoints.length >= GRAPH_LIMITS.waypoints} onClick={() => {
             const live = session.draft.input.content.edges.find(edge => edge.id === e.id);
             if (!live || live.waypoints.length >= GRAPH_LIMITS.waypoints) return;
@@ -888,7 +901,18 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           }}>Add {prefix.toLowerCase()} waypoint</button>
           <RationalFields label={prefix + " appearance start"} value={e.appearance.at} onChange={(value, part) => change(edge => { edge.appearance.at = value; }, "/appearance/at/" + part)} />
           <RationalFields label={prefix + " appearance duration"} value={e.appearance.duration} onChange={(value, part) => change(edge => { edge.appearance.duration = value; }, "/appearance/duration/" + part)} />
-          <button className="text-button" disabled={raw.content.kind === "system_flow" && raw.content.events.some(event => event.edge_id === e.id)} onClick={() => edit(next => { if (next.content.kind === "causal_diagram") next.content.edges = next.content.edges.filter(edge => edge.id !== e.id); else next.content.edges = next.content.edges.filter(edge => edge.id !== e.id); }, path)}>Remove {prefix.toLowerCase()}</button>
+          <button className="text-button" disabled={raw.content.kind === "system_flow" && raw.content.events.some(event => event.edge_id === e.id)} onClick={() => {
+            const live = session.draft.input.content;
+            // An event may have been authored after this button rendered.
+            // Its edge cannot be removed while the live event still owns it.
+            if (!live.edges.some(edge => edge.id === e.id)
+              || (live.kind === "system_flow" && live.events.some(event => event.edge_id === e.id))) return;
+            edit(next => {
+              if (next.content.kind === "causal_diagram")
+                next.content.edges = next.content.edges.filter(edge => edge.id !== e.id);
+              else next.content.edges = next.content.edges.filter(edge => edge.id !== e.id);
+            }, path);
+          }}>Remove {prefix.toLowerCase()}</button>
         </details>;
       })}
       <button className="secondary-button" disabled={raw.content.vertices.length < 2 || raw.content.edges.length >= GRAPH_LIMITS.edges || !profile} onClick={() => {
