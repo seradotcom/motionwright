@@ -74,6 +74,25 @@ test("Graph flow refuses out-of-interval defaults but can use another free edge"
   expect(await requestCount(page)).toBe(0);
 });
 
+test("Graph flow keeps an unfinished event untouched and selects another valid edge", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph source").selectOption("new:system_flow");
+  await button(page, "Add synthetic event").click();
+  await page.locator("[data-graph-event] summary").first().click();
+  await field(page, "Event 1 start numerator").fill("1e");
+  await expect(button(page, "Add synthetic event")).toBeDisabled();
+  await button(page, "Add edge").click();
+  const secondEdge = await page.locator("[data-graph-edge]").nth(1).getAttribute("data-graph-edge");
+  expect(secondEdge).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(button(page, "Add synthetic event")).toBeEnabled();
+  await button(page, "Add synthetic event").click();
+  await page.locator("[data-graph-event] summary").nth(1).click();
+  await expect(field(page, "Event 2 edge")).toHaveValue(secondEdge!);
+  await expect(field(page, "Event 1 start numerator")).toHaveValue("1e");
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  expect(await requestCount(page)).toBe(0);
+});
+
 test("Graph retains every incomplete geometry and rational byte across navigation and reload without sending", async ({ page }, testInfo) => {
   await open(page); await testInfo.attach("causal-editorial-component-fixture", { body: await page.screenshot(), contentType: "image/png" });
   await field(page, "Vertex 1 label").fill("Preserve my authored concept"); await field(page, "Vertex 1 box x").fill("1e"); await field(page, "Graph duration denominator").fill("");

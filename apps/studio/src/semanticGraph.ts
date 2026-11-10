@@ -326,12 +326,23 @@ export function graphSuggestedFlowEventSlot(
 ): { edge_id: string; at: RationalTime } | null {
   const frame = graphFrameTime(1, rate);
   for (const edge of flow.edges) {
-    const at = graphSuggestedFlowEventAt(edge, flow.events, rate);
     try {
+      // The lower-level suggestion retains incomplete author input, but its
+      // fallback is not proof that this edge has a free valid frame. Reject
+      // unfinished/non-frame-aligned edge and event times for this candidate.
+      if (graphExactFrame(edge.appearance.at, rate) < 0n
+        || graphExactFrame(edge.appearance.duration, rate) <= 0n) continue;
+      for (const event of flow.events) if (event.edge_id === edge.id) {
+        if (graphExactFrame(event.at, rate) < 0n
+          || graphExactFrame(event.duration, rate) <= 0n)
+          throw new Error("An existing flow event has invalid authored timing.");
+      }
+      const at = graphSuggestedFlowEventAt(edge, flow.events, rate);
       if (graphCompareTime(graphAddTime(at, frame), duration) <= 0)
         return { edge_id: edge.id, at };
     } catch {
-      // Invalid existing authored time is not a permission to invent space.
+      // Invalid existing authored time cannot authorize a new event here.
+      // Other edges remain eligible without rewriting the incomplete bytes.
     }
   }
   return null;

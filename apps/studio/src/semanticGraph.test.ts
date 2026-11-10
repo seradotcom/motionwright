@@ -109,6 +109,25 @@ describe("closed semantic Graph editorial contract", () => {
       .toEqual({ edge_id: edge.id, at: graphFrameTime(2, fractional) });
     expect(graph.content.events).toEqual([]);
   });
+  it("does not advertise a new flow event on an edge whose existing time is incomplete", () => {
+    const { graph, profile } = source("system_flow");
+    if (graph.content.kind !== "system_flow") throw new Error("Expected system flow.");
+    const edge = graph.content.edges[0], secondEdge = { ...edge, id: crypto.randomUUID() };
+    const rawEvent = {
+      id: crypto.randomUUID(), edge_id: edge.id, label: "Unfinished event",
+      at: { num: "1e", den: "1" }, duration: graphFrameTime(1, profile.frame_rate),
+    };
+    const original = structuredClone(rawEvent);
+    const scope = { edges: [edge], events: [rawEvent] };
+    expect(graphSuggestedFlowEventSlot(scope, graph.time_range.duration, profile.frame_rate)).toBeNull();
+    expect(graphSuggestedFlowEventSlot({ ...scope, edges: [edge, secondEdge] },
+      graph.time_range.duration, profile.frame_rate))
+      .toEqual({ edge_id: secondEdge.id, at: graphFrameTime(2, profile.frame_rate) });
+    const invalidEdge = { ...edge, appearance: { ...edge.appearance, at: { num: "1e", den: "1" } } };
+    expect(graphSuggestedFlowEventSlot({ edges: [invalidEdge], events: [] },
+      graph.time_range.duration, profile.frame_rate)).toBeNull();
+    expect(rawEvent).toEqual(original);
+  });
   it.each([
     { num: "0", den: "2" }, { num: "2", den: "4" }, { num: "+1", den: "1" }, { num: "01", den: "1" }, { num: "-0", den: "1" },
     { num: "1", den: "0" }, { num: "1", den: "-1" }, { num: "9223372036854775808", den: "1" }, { num: "1", den: "9223372036854775808" },
