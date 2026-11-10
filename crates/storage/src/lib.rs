@@ -1698,6 +1698,9 @@ impl Store {
         // The UNIQUE(project_id,revision) index plus a positive integer
         // revision, COUNT, MIN and MAX prove a contiguous 1..=revision
         // sequence without fetching the complete journal or another project.
+        // Also reject orphan event originals when a foreign SQLite writer
+        // inserted rows with foreign_keys disabled. With no parent project,
+        // the project-scoped COUNT/MIN/MAX consistency check is vacuous.
         let bad_sequence: i64 = self.conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM projects AS p
@@ -1715,6 +1718,10 @@ impl Store {
                         )
                     )
                   )
+            )
+            OR (
+                NOT EXISTS(SELECT 1 FROM projects WHERE id=?1)
+                AND EXISTS(SELECT 1 FROM events WHERE project_id=?1)
             )",
             [id.to_string()],
             |row| row.get(0),
@@ -3236,6 +3243,75 @@ mod tests {
         let events = store.events_since(project.id, 0, 10).unwrap();
         assert_eq!(events[0].0, 1);
         assert_eq!(events[1].0, 2);
+    }
+
+    #[test]
+    fn history_refuses_orphan_original_event_created_by_external_sqlite_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("db.sqlite3")).unwrap();
+        let healthy = store.create_named_project("Healthy original").unwrap();
+        store
+            .apply(
+                healthy.id,
+                &RevisionStamp::from(&healthy),
+                "orphan-history-source",
+                &Change::RenameProject {
+                    title: "Retained original".into(),
+                },
+            )
+            .unwrap();
+        let orphan_id = Uuid::now_v7();
+        assert!(matches!(
+            store.load_project(orphan_id),
+            Err(StorageError::NotFound)
+        ));
+        // A second SQLite writer with foreign-key enforcement deliberately
+        // disabled can leave physically valid event bytes for a deleted or
+        // unknown project. These must not become a new Graph source of truth.
+        let external = Connection::open(store.path()).unwrap();
+        root_operation_budget::register_writer_fence(&external).unwrap();
+        external.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        assert_eq!(
+            external
+                .execute(
+                    "INSERT INTO events(project_id,revision,kind,payload_json,created_at)
+                     SELECT ?1,revision,kind,payload_json,created_at
+                     FROM events WHERE project_id=?2",
+                    params![orphan_id.to_string(), healthy.id.to_string()],
+                )
+                .unwrap(),
+            1
+        );
+        let physical_orphans: i64 = external
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE project_id=?1",
+                [orphan_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(physical_orphans, 1);
+        // Unrelated, real project history remains readable and unchanged.
+        assert_eq!(
+            store.event_records_since(healthy.id, 0, 1).unwrap().len(),
+            1
+        );
+        for result in [
+            store.event_records_since(orphan_id, 0, 1),
+            store.event_records_through(orphan_id, u64::MAX, 1),
+        ] {
+            assert!(
+                matches!(result, Err(StorageError::InvalidBackup(ref message))
+                    if message.contains("event sequence")),
+                "orphan event must not be emitted as legitimate history: {result:?}"
+            );
+        }
+        // Keep the previous empty-history semantics for an ID with no rows.
+        assert!(
+            store
+                .event_records_since(Uuid::now_v7(), 0, 1)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

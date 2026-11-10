@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DeliverableProfile, Project, RationalTime, ReviewAnchor, Scene } from "./types";
 import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
 import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphPreviewClock, graphReviewAnchor,
-  graphSame, graphSourceSnapshot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
+  graphSame, graphSourceSnapshot, graphSuggestedFlowEventAt, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
   forkGraphCopy, graphDraftScope, graphDownload, graphHasWork, graphOutcomeMatches, graphUnconfirmed, rejectGraphSubmission,
@@ -429,7 +429,12 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   const refreshToken = useRef<number | null>(null);
   const draft = session.draft, raw = draft.input, pending = !!draft.pending, busy = props.busy || session.inFlight || session.preparing;
   const profile = props.project.deliverables.find(item => item.id === raw.variant_profile_ref);
+  // Removal is scoped to the existing saved resource, never to the current
+  // (possibly incomplete or retargeted) author buffer.
+  const savedSource = semanticGraphs(props.project).find(item => item.id === draft.graphId && item.scene_id === draft.sceneId);
   const admission = graphAdmissionIssue(props.project, draft.sceneId, raw.variant_profile_ref, context);
+  const removeAdmission = savedSource
+    ? graphAdmissionIssue(props.project, savedSource.scene_id, savedSource.variant_profile_ref, context) : "No saved Graph source is selected.";
   const changed = draft.baseRevision !== props.project.revision || !graphSame(draft.base, (() => { const value = semanticGraphs(props.project).find(graph => graph.id === draft.graphId); return value ? graphToRaw(value) : null; })());
   let model: SemanticGraph | null = null, inputIssue: string | null = null;
   try { model = graphFromRaw(raw); validateSemanticGraphShape(model, profile?.frame_rate); }
@@ -464,6 +469,12 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
   ].filter((gate): gate is string => gate !== null);
   const canSave = saveGuards.length === 0;
   const saveGate = canSave ? "GRAPH_SAVE_READY" : saveGuards.join(",");
+  // An explicit delete does not require valid unsaved geometry, timings,
+  // dependencies or a retargeted Deliverable. It still requires the same
+  // original project revision, Native context, locks and recovery custody.
+  const canRemove = !!savedSource && !busy && !inspecting && inspectionToken.current === null
+    && !pending && !removeAdmission && !session.backupError && !session.recoveryProblem
+    && !changed && !graphLockIssue(props.project, savedSource) && !props.identityProblem;
   // Diagnostic only: never infer admission from a decoded error or reuse it
   // across a changed source, scene, profile, draft edit or inspection epoch.
   const currentContextFailure = inspectionPhase === "GRAPH_CONTEXT_INSPECTION_REJECTED" && contextFailure
@@ -537,8 +548,11 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     // The previously ready context may still be captured by this render when
     // a fresh Native inspection has already started. Its live token wins over
     // the stale canSave snapshot; no new mutation intent may be prepared.
-    if (!canSave || inspectionToken.current !== null || session.preparing || session.inFlight || session.draft.pending) return;
+    if ((operation === "save" ? !canSave : !canRemove) || inspectionToken.current !== null
+      || session.preparing || session.inFlight || session.draft.pending) return;
     const id = crypto.randomUUID(), source = clone(session.draft), project = clone(current.current.project), token = epoch.current;
+    const removalSource = operation === "remove" ? semanticGraphs(project).find(graph => graph.id === source.graphId && graph.scene_id === source.sceneId) : null;
+    if (operation === "remove" && !removalSource) return;
     session.preparing = true; session.error = null; notify(session);
     let prepared: Awaited<ReturnType<typeof prepareGraphSubmission>>;
     try {
@@ -588,23 +602,23 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           // distinct successor has a confirmed durable retirement marker.
           // A failed marker must NEVER publish a clean post-remove checkpoint.
           try {
-            retireGraphIdentity(project, source.sceneId, source.input.variant_profile_ref, source.input.content.kind, source.graphId);
+            retireGraphIdentity(project, source.sceneId, removalSource!.variant_profile_ref, removalSource!.content.kind, source.graphId);
           } catch (reason) {
-            const key = graphNewKey(project, source.sceneId, source.input.variant_profile_ref, source.input.content.kind);
+            const key = graphNewKey(project, source.sceneId, removalSource!.variant_profile_ref, removalSource!.content.kind);
             failedRetirements.set(key, source.graphId);
             newIds.set(key, { id: source.graphId, problem: message(reason) });
             session.error = message(reason);
             session.backupError = "The saved removal was confirmed, but its new identity is not in recoverable custody. Keep the original pending copy and inspect the saved result.";
             // The original ACK still needs custody, but an unmounted editor
             // cannot change whichever Graph the author selected meanwhile.
-            if (mounted.current) current.current.onConfirmedRemoval(source.input.content.kind);
+            if (mounted.current) current.current.onConfirmedRemoval(removalSource!.content.kind);
             throw reason; // ACK is observed; local custody is not acknowledged.
           }
         }
         const custody = forkGraphCopy(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
         session.custody = custody; session.draft = next; session.observedAck = null; session.backupError = null;
         session.notice = "Saved Graph at r" + receipt.revision + "." + (Object.keys(next.edited).length ? " Later author input remains pending." : "");
-        if (operation === "remove" && mounted.current) current.current.onConfirmedRemoval(source.input.content.kind);
+        if (operation === "remove" && mounted.current) current.current.onConfirmedRemoval(removalSource!.content.kind);
         copies(session);
       });
       if (!result.ok) retainFailure(result.failure);
@@ -866,7 +880,13 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
           </details>;
         })}
         <button className="secondary-button" disabled={!profile || !raw.content.edges.length || raw.content.events.length >= 64} onClick={() => {
-          if (!profile) return; const id = crypto.randomUUID(); edit(next => { if (next.content.kind === "system_flow") next.content.events.push({ id, edge_id: next.content.edges[0].id, label: "Synthetic transfer", at: graphFrameTime(2, profile.frame_rate), duration: graphFrameTime(1, profile.frame_rate) }); }, "/content/events/" + id);
+          if (!profile) return; const id = crypto.randomUUID(); edit(next => {
+            if (next.content.kind !== "system_flow") return;
+            const edge = next.content.edges[0];
+            next.content.events.push({ id, edge_id: edge.id, label: "Synthetic transfer",
+              at: graphSuggestedFlowEventAt(edge, next.content.events, profile.frame_rate),
+              duration: graphFrameTime(1, profile.frame_rate) });
+          }, "/content/events/" + id);
         }}>Add synthetic event</button>
       </>}
       {changed && !pending && <section aria-label="Graph source reconciliation"><h3>Saved Graph changed</h3><p>Your raw input remains retained. Review this revision before saving.</p>
@@ -892,7 +912,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       </section>}
       {session.error && <p role="alert" className="production-error">{session.error}</p>}{session.notice && <p role="status">{session.notice}</p>}
       <div className="production-button-row"><button className="primary-button" data-graph-save-gate={saveGate} disabled={!canSave} onClick={() => void send("save")}>{saved ? "Save Graph changes" : "Save semantic Graph"}</button>
-        {saved && <button className="text-button" disabled={!canSave} onClick={() => void send("remove")}>Remove saved Graph</button>}
+        {saved && <button className="text-button" disabled={!canRemove} onClick={() => void send("remove")}>Remove saved Graph</button>}
         <button className="secondary-button" onClick={() => download()}>Download complete Graph input</button></div>
       <details><summary>Recoverable Graph copies ({session.copies.length}{session.copiesLimited ? "+" : ""})</summary>
         <button className="secondary-button" onClick={() => { copies(session); notify(session); }}>Refresh Graph copies</button>

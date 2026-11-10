@@ -286,6 +286,33 @@ export function graphFrameTime(frames: number, rate: RationalTime): RationalTime
   const result = { num: (n / divisor).toString(), den: (d / divisor).toString() }; graphFraction(result); return result;
 }
 
+/** Suggest the first free authored frame on this edge, without changing prior
+ * events. This is an editor default, never Native readiness or a new authority.
+ * Incomplete existing author times remain editable rather than being coerced. */
+export function graphSuggestedFlowEventAt(
+  edge: Pick<GraphFlowEdge, "id" | "appearance">,
+  events: readonly Pick<GraphFlowEvent, "edge_id" | "at" | "duration">[],
+  rate: RationalTime,
+): RationalTime {
+  const first = graphFrameTime(2, rate), oneFrame = graphFrameTime(1, rate);
+  try {
+    let next = first;
+    const edgeReady = graphAddTime(edge.appearance.at, edge.appearance.duration);
+    if (graphCompareTime(edgeReady, next) > 0) next = edgeReady;
+    const occupied = events.filter(event => event.edge_id === edge.id)
+      .map(event => ({ at: event.at, end: graphAddTime(event.at, event.duration) }))
+      .sort((a, b) => graphCompareTime(a.at, b.at));
+    for (const interval of occupied) {
+      if (graphCompareTime(graphAddTime(next, oneFrame), interval.at) <= 0) break;
+      if (graphCompareTime(next, interval.end) < 0) next = interval.end;
+    }
+    return next;
+  } catch {
+    // Preserve an unfinished author buffer; validation still blocks its Save.
+    return first;
+  }
+}
+
 /** Editorial timing against the shared project clock; never changes authored times. */
 export function graphPreviewClock(
   graph: Pick<SemanticGraph, "time_range" | "motion">,

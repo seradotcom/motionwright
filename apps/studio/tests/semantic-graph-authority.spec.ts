@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { GraphRaw } from "../src/semanticGraph";
 import type {} from "./fixtures/semantic-graph-authority";
 const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
 const field = (page: Page, name: string) => page.getByLabel(name, { exact: true });
@@ -24,6 +25,30 @@ test("Graph double activation in one event turn never dispatches a second origin
   expect(await requestCount(page)).toBe(1);
   await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(1));
   await expect(button(page, "Save Graph changes")).toBeVisible();
+  expect(await requestCount(page)).toBe(1);
+});
+
+test("Graph flow adds sequential exact-frame events without creating a default overlap", async ({ page }) => {
+  await open(page);
+  await field(page, "Graph source").selectOption("new:system_flow");
+  await button(page, "Add synthetic event").click();
+  await button(page, "Add synthetic event").click();
+  await page.locator("[data-graph-event] summary").nth(0).click();
+  await page.locator("[data-graph-event] summary").nth(1).click();
+  await expect(field(page, "Event 1 start numerator")).toHaveValue("1");
+  await expect(field(page, "Event 1 start denominator")).toHaveValue("15");
+  await expect(field(page, "Event 2 start numerator")).toHaveValue("1");
+  await expect(field(page, "Event 2 start denominator")).toHaveValue("10");
+  await valid(page);
+  await button(page, "Save semantic Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(1);
+  const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[0]);
+  if (saved.change.type !== "upsert_semantic_graph" || saved.change.graph.content.kind !== "system_flow")
+    throw new Error("Expected one typed synthetic flow Save.");
+  expect(saved.change.graph.content.events.map(event => event.at)).toEqual([
+    { num: "1", den: "15" }, { num: "1", den: "10" },
+  ]);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(1));
   expect(await requestCount(page)).toBe(1);
 });
 
@@ -117,6 +142,38 @@ test("Graph confirmed removal permits a new identity without reviving the remove
   await expect(field(page, "Graph source")).toHaveValue(third.change.graph.id);
   expect(await requestCount(page)).toBe(5);
 });
+
+test("Graph removal uses the saved source even with incomplete unsent editor fields", async ({ page }) => {
+  await open(page); await saveFirst(page);
+  const original = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());
+  const saved = original.production_design!.semantic_graphs![0];
+  await field(page, "Vertex 1 box x").fill("1e");
+  await field(page, "Graph rationale").fill("Unfinished local input must stay in recovery custody, not become a removal operand.");
+  await expect(button(page, "Save Graph changes")).toBeDisabled();
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Remove saved Graph")).toBeEnabled();
+  await button(page, "Remove saved Graph").click();
+  await expect.poll(() => requestCount(page)).toBe(2);
+  const submitted = await page.evaluate(() => window.__GRAPH_AUTHORITY__.requests()[1]);
+  expect(submitted.change).toEqual({
+    type: "remove_semantic_graph", graph_id: saved.id, scene_id: saved.scene_id,
+    source_snapshot: {
+      project_id: original.id, generation: original.generation,
+      branch_id: original.active_branch, revision: original.revision,
+    },
+  });
+  const pendingCopy = await page.evaluate(graphId => Object.keys(localStorage)
+    .filter(key => key.startsWith("motionwright.semantic-graph-recovery.v1:"))
+    .map(key => localStorage.getItem(key))
+    .filter((raw): raw is string => raw !== null)
+    .map(raw => JSON.parse(raw) as { draft: { graphId: string; pending: { input: GraphRaw } | null } })
+    .some(item => item.draft.graphId === graphId && item.draft.pending?.input.content.vertices[0].box.x === "1e"), saved.id);
+  expect(pendingCopy).toBe(true);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.resolve(2));
+  expect((await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).production_design!.semantic_graphs).toHaveLength(0);
+  expect(await requestCount(page)).toBe(2);
+});
+
 test("Graph UNKNOWN removal retains its original identity without issuing a successor", async ({ page }) => {
   await open(page); await saveFirst(page);
   const saved = await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved());

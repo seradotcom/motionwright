@@ -1,7 +1,7 @@
 /** Author-buffer custody and field reconciliation. This module cannot mutate a Project. */
 import type { Project, ProjectEvent } from "./types";
 import { graphExact, graphRecord, graphSame, graphUuid, graphSourceSnapshot, graphFromRaw, graphToRaw,
-  graphLockIssue, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
+  graphAdmissionIssue, graphLockIssue, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphRaw, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { GRAPH_MUTATION_REJECTED_MESSAGE } from "./semanticGraphMutationError";
 import { decodeGraphOperationRecovery, GRAPH_RECOVERY_READ_ERROR, type GraphOperationRecovery } from "./semanticGraphRecovery";
@@ -145,13 +145,22 @@ export async function prepareGraphSubmission(draft: GraphDraft, project: Project
   if (draft.pending) error("The earlier Graph operation remains unconfirmed; it cannot be replayed.");
   if (draft.baseRevision !== project.revision) error("Review the current saved Graph explicitly before saving a new intention.");
   if (!graphSame(draft.base, currentRaw(project, draft.graphId))) error("Graph source changed without the expected revision. Read and review it again.");
-  const graph = graphFromRaw(draft.input); graph.authorship.source_snapshot = graphSourceSnapshot(project);
-  await validateSemanticGraphForWrite(project, graph, context);
-  let change: SemanticGraphChange = { type: "upsert_semantic_graph", graph };
+  let change: SemanticGraphChange;
   if (operation === "remove") {
-    const saved = semanticGraphs(project).find(item => item.id === draft.graphId); if (!saved) error("The saved Graph no longer exists.");
-    const lock = graphLockIssue(project, saved!); if (lock) error(lock);
-    change = { type: "remove_semantic_graph", graph_id: draft.graphId, scene_id: draft.sceneId, source_snapshot: graphSourceSnapshot(project) };
+    // Remove is an operation on the stored Graph, not on the editable raw
+    // buffer. An incomplete or retargeted local draft must remain recoverable,
+    // but cannot prevent an explicitly requested removal of that saved source.
+    const saved = semanticGraphs(project).find(item => item.id === draft.graphId && item.scene_id === draft.sceneId);
+    if (!saved) error("The saved Graph no longer exists.");
+    const admission = graphAdmissionIssue(project, saved.scene_id, saved.variant_profile_ref, context);
+    if (admission) error(admission);
+    const lock = graphLockIssue(project, saved);
+    if (lock) error(lock);
+    change = { type: "remove_semantic_graph", graph_id: saved.id, scene_id: saved.scene_id, source_snapshot: graphSourceSnapshot(project) };
+  } else {
+    const graph = graphFromRaw(draft.input); graph.authorship.source_snapshot = graphSourceSnapshot(project);
+    await validateSemanticGraphForWrite(project, graph, context);
+    change = { type: "upsert_semantic_graph", graph };
   }
   return { change, draft: { ...draft, pending: { id, revision: project.revision, sequence: draft.sequence, submitted: clone(change), input: clone(draft.input), outcome: "UNKNOWN", diagnostic: null } } as GraphDraft };
 }

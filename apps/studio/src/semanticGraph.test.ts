@@ -3,7 +3,7 @@ import { fixtureBootstrap } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
 import { stepEditorialFrame } from "./timecode";
 import { graphAddTime, graphAdmissionIssue, graphAuthoredNumber, graphEdgeLabelBox, graphEdgePoints, graphExactFrame, graphFraction, graphFrameTime,
-  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
+  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphSuggestedFlowEventAt, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphProject, SemanticGraph } from "./semanticGraph";
 
 function source(kind: "causal_diagram" | "system_flow" = "causal_diagram") {
@@ -63,6 +63,29 @@ describe("closed semantic Graph editorial contract", () => {
     graph.content.events.push({ ...event, id: crypto.randomUUID() }); expect(() => validateSemanticGraphShape(graph, profile.frame_rate)).toThrow(/Overlapping/);
     graph.content.events.pop(); graph.content.events[0].edge_id = crypto.randomUUID(); expect(() => validateSemanticGraphShape(graph)).toThrow(/missing/);
     graph.content.events[0].edge_id = graph.content.edges[0].id; graph.content.events[0].at = graphFrameTime(1, profile.frame_rate); expect(() => validateSemanticGraphShape(graph)).toThrow(/fully visible/);
+  });
+  it("suggests the earliest non-overlapping authored frame for successive synthetic flow events", () => {
+    const { graph, profile } = source("system_flow");
+    if (graph.content.kind !== "system_flow") throw new Error("Fixture kind");
+    const rate = profile.frame_rate, edge = graph.content.edges[0], one = graphFrameTime(1, rate);
+    const first = graphSuggestedFlowEventAt(edge, [], rate);
+    expect(first).toEqual(graphFrameTime(2, rate));
+    const event = { id: crypto.randomUUID(), edge_id: edge.id, label: "First transfer", at: first, duration: one };
+    const second = graphSuggestedFlowEventAt(edge, [event], rate);
+    expect(second).toEqual(graphFrameTime(3, rate));
+    const future = { ...event, id: crypto.randomUUID(), at: graphFrameTime(10, rate) };
+    expect(graphSuggestedFlowEventAt(edge, [event, future], rate)).toEqual(second);
+    expect(graphSuggestedFlowEventAt(edge, [{ ...event, edge_id: crypto.randomUUID() }], rate)).toEqual(first);
+    graph.content.events.push(event, { ...event, id: crypto.randomUUID(), label: "Second transfer", at: second });
+    expect(() => validateSemanticGraphShape(graph, rate)).not.toThrow();
+    const fractional = { num: "24000", den: "1001" };
+    const fractionalEdge = { ...edge, appearance: { at: graphFrameTime(1, fractional), duration: graphFrameTime(1, fractional) } };
+    const fractionalFirst = graphFrameTime(2, fractional);
+    expect(graphSuggestedFlowEventAt(fractionalEdge, [{ ...event, at: fractionalFirst, duration: graphFrameTime(1, fractional) }], fractional))
+      .toEqual(graphFrameTime(3, fractional));
+    const malformed = { ...event, at: { num: "1e", den: "1" } };
+    expect(graphSuggestedFlowEventAt(edge, [malformed], rate)).toEqual(first);
+    expect(malformed.at.num).toBe("1e");
   });
   it.each([
     { num: "0", den: "2" }, { num: "2", den: "4" }, { num: "+1", den: "1" }, { num: "01", den: "1" }, { num: "-0", den: "1" },

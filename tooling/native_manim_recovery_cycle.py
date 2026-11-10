@@ -269,6 +269,13 @@ def finish_phase(context, prepared, native, evidence, output_root, work_root, da
     from native_manim_recovery_gate import check_runtime
     index = PHASES.index(context["phase"])
     require(read_object(evidence / EVIDENCE_NAME) == native, "recovery_runtime_original_native_stdout")
+    # The original Native call has completed. Retain the frozen-runtime
+    # observation BEFORE source readback, which may fail after the effect.
+    # This is evidence of one real boundary, never an acceptance/G2 grant.
+    post_native_runtime = check_runtime(context["current"])
+    require(post_native_runtime == context["runtime_binding"],
+            "recovery_runtime_changed_during_native_phase")
+    private_json(evidence / "frozen-runtime-binding.json", post_native_runtime)
     source = retained_source(native, prepared, evidence, output_root, work_root, database)
     expected_plan = prepared["original_plan"] if index < 2 else prepared["prepared_plan"]
     expected_sha = INPUTS["original-source.mwedit.zip"][1] if index < 2 else SOURCE_RECOVERY["export_sha256"]
@@ -289,9 +296,11 @@ def finish_phase(context, prepared, native, evidence, output_root, work_root, da
     else:
         checked_readback(value, prepared["recovery_path"], read_object(prepared["recovery_path"]),
                          current, context["phase"])
+    # Keep the second independent observation after source readback as a gate.
+    # On failure, the earlier one remains original, and no phase is accepted.
     runtime_after = check_runtime(context["current"])
-    require(runtime_after == context["runtime_binding"], "recovery_runtime_changed_during_native_phase")
-    private_json(evidence / "frozen-runtime-binding.json", runtime_after)
+    require(runtime_after == post_native_runtime,
+            "recovery_runtime_changed_during_source_readback")
     pixel_report = None
     if index == 3:
         for previous in context["history"]:

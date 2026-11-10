@@ -54,6 +54,49 @@ const recordedRecovery = (project: Project) => async (id: string, submitted: Sem
 
 function copy(draft: GraphDraft) { const local = new Memory(), pointers = new Memory(), custody: GraphCustody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: null }; writeGraphCopy(local, pointers, draft, custody); return { local, pointers, custody }; }
 
+describe("saved Graph removal keeps stored-source authority independent of incomplete author input", () => {
+  it("removes the original saved UUID and retains invalid, retargeted local edits without submitting them", async () => {
+    const { project, graph, draft, context } = source();
+    const incomplete = change(draft, "/content/vertices/" + graph.content.vertices[0].id + "/box/x", raw => {
+      raw.content.vertices[0].box.x = "1e";
+    });
+    const retargeted = change(incomplete, "/variant_profile_ref", raw => {
+      raw.variant_profile_ref = crypto.randomUUID();
+    });
+    const original = structuredClone(retargeted);
+    const requestId = crypto.randomUUID();
+    await expect(prepareGraphSubmission(retargeted, project, context, crypto.randomUUID())).rejects.toThrow();
+    const prepared = await prepareGraphSubmission(retargeted, project, context, requestId, "remove");
+    expect(prepared.change).toEqual({
+      type: "remove_semantic_graph", graph_id: graph.id, scene_id: graph.scene_id,
+      source_snapshot: graphSourceSnapshot(project),
+    });
+    expect(prepared.draft.pending).toMatchObject({
+      id: requestId, revision: project.revision, sequence: retargeted.sequence,
+      submitted: prepared.change, input: retargeted.input, outcome: "UNKNOWN",
+    });
+    expect(retargeted).toEqual(original);
+    const held = copy(prepared.draft), receipt = syntheticReceipt(project, prepared.change);
+    const acknowledged = acknowledgeGraphDraft(prepared.draft, requestId, receipt);
+    expect(acknowledged.pending).toBeNull();
+    expect(acknowledged.base).toBeNull();
+    expect(acknowledged.input).toEqual(retargeted.input);
+    expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(held.custody.expectedRaw);
+    expect(receipt.production_design?.semantic_graphs).toHaveLength(0);
+  });
+  it("still denies removal without the original source admission or against a saved Graph lock", async () => {
+    const { project, graph, draft, context } = source();
+    const malformed = change(draft, "/content/vertices/" + graph.content.vertices[0].id + "/box/x", raw => {
+      raw.content.vertices[0].box.x = "1e";
+    });
+    await expect(prepareGraphSubmission(malformed, project, null, crypto.randomUUID(), "remove")).rejects.toThrow(/awaits/);
+    const locked = structuredClone(project);
+    locked.locks.push({ id: crypto.randomUUID(), resource: "graph:" + graph.id, kind: "content", note: "Original saved Graph lock" });
+    await expect(prepareGraphSubmission(malformed, locked, context, crypto.randomUUID(), "remove")).rejects.toThrow(/lock/);
+    expect(malformed.pending).toBeNull();
+  });
+});
+
 describe("explicit label-placement recovery and authority", () => {
   const placementPath = (draft: GraphDraft) => "/content/edges/" + draft.input.content.edges[0].id + "/label_placement";
   const automatic = (draft: GraphDraft) => change(draft, placementPath(draft), raw => {
