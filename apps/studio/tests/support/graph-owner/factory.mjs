@@ -6,7 +6,8 @@ import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusi
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
   ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines } from './contracts.mjs';
-import { admitOriginalProducers, assertOriginalProducerAdmission, ownerReadOnlyMetadataCredential,
+import { admitOriginalProducers, admitOriginalDevelopmentProducers, assertOriginalProducerAdmission,
+  assertGraphProducerAdmission, ownerReadOnlyMetadataCredential,
   originalGraphCaseLayout, GRAPH_BUDGET } from './producer_guard.mjs';
 import { snapshotSdkTicketPlan, SdkTicketPrewrite } from './sdk_ticket_prewrite.mjs';
 import { reserveOriginalDevelopmentReader, openOriginalDevelopmentReadOnly,
@@ -180,6 +181,21 @@ export async function createGraphCaseFactory(options) {
   return GraphCaseFactoryCore.create(options, production);
 }
 
+const development = Object.freeze({spawn, admitSource: async options => {
+  const admitted = await admitOriginalDevelopmentProducers(options);
+  assertGraphProducerAdmission(admitted);
+  need(admitted.development && !admitted.approval
+    && !Object.hasOwn(admitted,'synthetic_adapter_only'), 'DEV_FORMAL_OR_SYNTHETIC_ADMISSION_FORBIDDEN');
+  schema(admitted.source,SPEC_SCHEMA.properties.source);
+  schema(admitted.binaries,SPEC_SCHEMA.properties.binaries);
+  schema(admitted.runtime,SPEC_SCHEMA.properties.runtime);
+  for (const role of ['ordinaryService','nativeService']) schema(admitted[role],SPEC_SCHEMA.properties.binaries.properties.semwright);
+  return admitted;
+}});
+export async function createGraphDevelopmentCaseFactory(options) {
+  return GraphCaseFactoryCore.create(options, development);
+}
+
 /** Pure layout calculation, never an admission. Production supplies only the
  * cases_root and case ID already bound by the original index/status. */
 export function graphCaseLayout(casesRoot, caseId) {
@@ -273,8 +289,12 @@ export class GraphCaseFactoryCore {
       'SOURCE_ADMISSION_MISSING');
     let layout = {};
     if (admission.binaries && !admission.synthetic_adapter_only) {
-      assertOriginalProducerAdmission(admission);
-      need(admission.approval.context === 'mw-owner/phase1-native-graph/' + admission.source.run_id + '/1/' + options.caseId,
+      assertGraphProducerAdmission(admission);
+      const context = admission.development?.context ?? admission.approval?.context;
+      const expected = admission.development
+        ? 'mw-development/' + admission.source.run_id + '/1/' + options.caseId
+        : 'mw-owner/phase1-native-graph/' + admission.source.run_id + '/1/' + options.caseId;
+      need(context === expected,
         'CASE_LAYOUT_NOT_THE_ADMITTED_CASE');
       // The browser's outputDir is only a provisional, untrusted test path.
       // Containment must be checked on the case root derived from the
@@ -304,7 +324,7 @@ export class GraphCaseFactoryCore {
     const ticketPlan = snapshotSdkTicketPlan(admission);
     this.originalProduction = !admission.synthetic_adapter_only;
     if (this.originalProduction) {
-      assertOriginalProducerAdmission(admission);
+      assertGraphProducerAdmission(admission);
       same(admission.execution.budget, GRAPH_BUDGET, 'CASE_ALLOCATION_NOT_ADMITTED');
       inside(admission.execution.cases_root, options.privateRoot);
       const expectedLayout = graphCaseLayout(admission.execution.cases_root, options.caseId);
@@ -360,7 +380,12 @@ export class GraphCaseFactoryCore {
       const writer = new OriginalWriter(admission.execution.producer_root, this.pool.counter(allocation));
       writer.json(path.join(admission.execution.producer_root, 'consumption', options.caseId + '.original.json'), {
         case_id: options.caseId, private_root: this.root, index: admission.producer_originals.index,
-        status_id: admission.approval.status_id, source: admission.source,
+        ...(admission.development ? {development_authorization: {
+          kind:admission.development.kind, index_sha256:admission.development.index_sha256,
+          request_sha256:admission.development.request_sha256,
+          actor_id:admission.development.actor_id,
+        }} : {status_id: admission.approval.status_id}),
+        source: admission.source,
         meaning: 'IRREVOCABLY_CONSUMED_BEFORE_INITIALIZER', automatic_retry: false,
       });
     }

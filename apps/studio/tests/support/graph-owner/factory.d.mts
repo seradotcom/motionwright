@@ -3,7 +3,8 @@
  *
  * The actual implementation is factory.mjs. This declaration does not invent
  * an approval, capability, credential, Store, Host, or a reader: the factory
- * can only be constructed by its real original-producer/R74 admission path.
+ * can only be constructed by a separately authenticated formal or development
+ * original-producer admission. Development carries no R74 approval.
  *
  * Keep the launch/custody interfaces linked to the same source-defined
  * ScopedChangeService types, so a caller cannot substitute a plain object.
@@ -21,7 +22,7 @@ import type { Project } from "../../../src/types";
 export interface AuthenticatedGraphOwnerSpec {
   schema: "motionwright.graph-browser-owner-spec/6";
   case_id: string;
-  /** The original reviewer-authenticated producer's exact source identity. */
+  /** The authenticated original producer's exact source identity. */
   source: AuthenticatedGraphCaseSource;
   paths: {
     private_root: string;
@@ -63,7 +64,17 @@ export interface AuthenticatedGraphExecutable {
 
 export interface AuthenticatedGraphSourceAdmission {
   source: AuthenticatedGraphCaseSource;
-  approval: { context: string; status_id: string };
+  approval?: { context: string; status_id: number };
+  development?: {
+    kind: "EXPLICIT_DEVELOPMENT_ORIGINAL";
+    context: string;
+    source_sha: string;
+    run_id: string;
+    index_sha256: string;
+    request_sha256: string;
+    actor_id: number;
+    formal_acceptance: false;
+  };
   nativeService: AuthenticatedGraphExecutable;
   ordinaryService: AuthenticatedGraphExecutable;
   binaries: Record<string, AuthenticatedGraphExecutable>;
@@ -120,5 +131,10 @@ export interface GraphCaseOriginalAdmissionInput {
 
 /** Performs genuine source, R74, executable and physical owner admission. */
 export function createGraphCaseFactory(
+  options: GraphCaseOriginalAdmissionInput,
+): Promise<AuthenticatedGraphCaseFactory>;
+
+/** Authenticates one explicit development original, without formal R74 credit. */
+export function createGraphDevelopmentCaseFactory(
   options: GraphCaseOriginalAdmissionInput,
 ): Promise<AuthenticatedGraphCaseFactory>;

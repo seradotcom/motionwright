@@ -2485,13 +2485,19 @@ _GRAPH_IMPORT_CLOSURE = tuple("tooling/" + name + ".py" for name in (
     "native_provider_lifecycle", "runtime_first_use_audit", "manim_bundled_font_intake", "mlt_official_runtime_intake"))
 
 
-def independently_observe_r74(index, index_ref, parent, lifecycle):
-    """The owner obtains real HTTPS originals itself before importing producers."""
+def _independently_observe_graph_authority(index, index_ref, parent, lifecycle, *, development=False):
+    """The owner authenticates live HTTPS originals before importing producers."""
     import ssl
     import urllib.error
     import urllib.request
     global _GRAPH_API_SEQUENCE
-    source, approval = _OWNER_SPEC["source"], parent["approval"]
+    source = _OWNER_SPEC["source"]
+    expected_schema = ("motionwright.private.graph-development-producer-reference-index/1"
+                       if development else "motionwright.private.graph-producer-reference-index/0")
+    require(index.get("schema") == expected_schema
+            and ("approval" not in parent if development else "development" not in parent),
+            "owner-original-authority-scope")
+    approval = parent["development" if development else "approval"]
     require(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
             and os.environ.get("GITHUB_API_URL") == "https://api.github.com"
@@ -2544,6 +2550,39 @@ def independently_observe_r74(index, index_ref, parent, lifecycle):
             and type(run.get("workflow_id")) is int and run["workflow_id"] > 0
             and run.get("actor", {}).get("type") == "User" and type(run["actor"].get("id")) is int
             and run["actor"]["id"] > 0, "owner-r74-original-run-actor")
+    if development:
+        execution = index["contract"]["execution"]
+        require(execution.get("scope") == "phase1-native-graph-development"
+                and execution.get("selected_case") == _OWNER_SPEC["case_id"] == "graph-flow"
+                and set(index["contract"]["cases"]) == {"graph-flow"}
+                and index["contract"]["cases"]["graph-flow"]["callback_caps"] == [2],
+                "owner-development-one-original-case")
+        request_ref = execution["development_request"]
+        require(request_ref["path"] == str(Path(execution["producer_root"]) / "development-dispatch.original.json"),
+                "owner-development-original-request-location")
+        request_raw, actual = read_original(request_ref["path"], 1024 * 1024,
+                                           expected_sha=request_ref["sha256"])
+        require(actual == request_ref, "owner-development-request-changed")
+        event = strict_json(request_raw)
+        require(event.get("repository", {}).get("full_name") == "seradotcom/motionwright"
+                and event.get("sender", {}).get("type") == "User"
+                and event["sender"].get("id") == run["actor"]["id"]
+                and type(run.get("head_branch")) is str and bool(run["head_branch"])
+                and event.get("ref") in (run["head_branch"], "refs/heads/" + run["head_branch"])
+                and event.get("inputs", {}).get("selection") == "phase1-native-graph"
+                and event["inputs"].get("graph_case_mode") == "development-first-save",
+                "owner-development-explicit-authenticated-dispatch")
+        observed = {"kind": "EXPLICIT_DEVELOPMENT_ORIGINAL",
+                    "context": "mw-development/" + source["run_id"] + "/1/graph-flow",
+                    "actor_id": run["actor"]["id"], "source_sha": source["sha"],
+                    "run_id": source["run_id"], "run_attempt": 1,
+                    "index_sha256": index_ref["sha256"], "request_sha256": request_ref["sha256"],
+                    "formal_acceptance": False, "automatic_retry": False}
+        require(all(type(approval.get(key)) is type(value) and approval.get(key) == value
+                    for key, value in observed.items()) and approval.get("index") == index_ref,
+                "owner-development-parent-and-owner-authority-differ")
+        new_json(lifecycle.evidence / ("development-independent-join-" + str(_GRAPH_API_SEQUENCE) + ".original.json"), observed)
+        return observed
     context = "mw-owner/phase1-native-graph/" + source["run_id"] + "/1/" + _OWNER_SPEC["case_id"]
     rows, selected, previous = [], None, 2**53 - 1
     for page in range(1, 5):
@@ -2574,6 +2613,14 @@ def independently_observe_r74(index, index_ref, parent, lifecycle):
     return observed
 
 
+def independently_observe_r74(index, index_ref, parent, lifecycle):
+    return _independently_observe_graph_authority(index, index_ref, parent, lifecycle)
+
+
+def independently_observe_development(index, index_ref, parent, lifecycle):
+    return _independently_observe_graph_authority(index, index_ref, parent, lifecycle, development=True)
+
+
 def receive_original_producer_admission(repo, lifecycle):
     global _GRAPH_J1, _GRAPH_J1_ATTEMPTED, _GRAPH_READ_TOKEN
     require(not _GRAPH_J1_ATTEMPTED, "owner-j1-already-consumed")
@@ -2587,7 +2634,9 @@ def receive_original_producer_admission(repo, lifecycle):
     require(actual == index_ref, "owner-j1-original-index")
     index = strict_json(raw)
     require(all(index.get(name) == _OWNER_SPEC[name] for name in ("source", "binaries", "runtime")), "owner-j1-index-spec-binding")
-    approval = independently_observe_r74(index, index_ref, parent, lifecycle)
+    development = index.get("schema") == "motionwright.private.graph-development-producer-reference-index/1"
+    authority_reader = independently_observe_development if development else independently_observe_r74
+    approval = authority_reader(index, index_ref, parent, lifecycle)
     files = index["contract"]["source_files"]
     for name in _GRAPH_IMPORT_CLOSURE:
         expected = files[name]
@@ -2604,7 +2653,7 @@ def receive_original_producer_admission(repo, lifecycle):
     module_name = "motionwright_graph_original_reader"
     spec = importlib.util.spec_from_file_location(module_name, repo / "tooling/ci_canvas_service.py")
     reader = importlib.util.module_from_spec(spec); spec.loader.exec_module(reader)
-    verified = reader.graph_verify_producer_index(index_ref, _OWNER_SPEC["case_id"])
+    verified = reader.graph_verify_producer_index(index_ref, _OWNER_SPEC["case_id"], development=development)
     require(verified["index"] == index and parent["nativeService"] == index["binaries"]["native_graph_session"]
             and parent["ordinaryService"] == index["binaries"]["ordinary_service"], "owner-j1-service-causality")
     expected_caps = index["contract"]["cases"][_OWNER_SPEC["case_id"]]["callback_caps"]
@@ -2620,12 +2669,17 @@ def receive_original_producer_admission(repo, lifecycle):
     consumed_path = Path(parent["execution"]["producer_root"]) / "consumption" / (_OWNER_SPEC["case_id"] + ".original.json")
     consumed_raw, consumed_ref = read_original(consumed_path, 8192)
     consumed = strict_json(consumed_raw)
+    authority_matches = (consumed.get("development_authorization") == {
+        key: approval[key] for key in ("kind", "index_sha256", "request_sha256", "actor_id")}
+        and "status_id" not in consumed) if development else (
+        consumed.get("status_id") == approval["status_id"] and "development_authorization" not in consumed)
     require(consumed["private_root"] == str(_PARENT_ROOT) and consumed["case_id"] == _OWNER_SPEC["case_id"]
-            and consumed["index"] == index_ref and consumed["status_id"] == approval["status_id"]
+            and consumed["index"] == index_ref and authority_matches
             and consumed["source"] == index["source"] and consumed["automatic_retry"] is False,
             "owner-j1-exact-consumed-root")
     _GRAPH_J1 = {"parent": parent, "parent_ref": parent_ref, "index_ref": index_ref, "index": index,
-                 "approval": approval, "reader": reader, "references": verified["references"], "physical": verified["physical"]}
+                 "approval": approval, "development": development,
+                 "reader": reader, "references": verified["references"], "physical": verified["physical"]}
     new_json(lifecycle.evidence / "producer-originals-independent.original.json", {
         "index": index_ref, "parent": parent_ref, "consumption": consumed_ref, "approval": approval,
         "actual_rust_build_roles": list(reader.GRAPH_RUST_ROLES), "actual_runtime_roles": list(reader.GRAPH_ROLES),
@@ -2641,7 +2695,8 @@ def revalidate_original_producer_admission(lifecycle, *, before_effect=False):
         raw, actual = read_original(ref["path"], max(ref["size_bytes"], 1), expected_sha=ref["sha256"])
         require(actual == ref and stamp == _GRAPH_J1["physical"][ref["path"]], "owner-j1-original-replaced-after-admission")
     if before_effect:
-        independently_observe_r74(_GRAPH_J1["index"], _GRAPH_J1["index_ref"], _GRAPH_J1["parent"], lifecycle)
+        authority_reader = independently_observe_development if _GRAPH_J1["development"] else independently_observe_r74
+        authority_reader(_GRAPH_J1["index"], _GRAPH_J1["index_ref"], _GRAPH_J1["parent"], lifecycle)
     return _GRAPH_J1
 
 

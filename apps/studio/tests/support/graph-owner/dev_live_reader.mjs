@@ -1,7 +1,7 @@
 /**
  * Genuine, source-bound LIVE read-only Graph development owner.
  *
- * This module is NOT an admission path. The original R74 Graph owner factory
+ * This module is NOT an admission path. The authenticated Graph owner factory
  * must already have authenticated its producer, source-built executables,
  * Linux file limit, Host, original Store and closed native cohort. It keeps
  * a slice of that SAME parent SharedPool; no second pool/grant/retry.
@@ -14,7 +14,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { SharedPool, OriginalWriter, bindRawPair, freshDirectory,
   inside, need, stableRead, GLOBAL_BYTES } from './custody.mjs';
-import { assertOriginalProducerAdmission } from './producer_guard.mjs';
+import { assertGraphProducerAdmission } from './producer_guard.mjs';
 import { captureOriginalOpenedStoreWitness, prepareOriginalReadOnlyHandoff,
   publishedOracleReference, publishOriginalWriterRpcRoster } from './same_store_reopen.mjs';
 import { observeOpenedSQLiteDescriptor } from './opened_store_descriptor.mjs';
@@ -43,7 +43,7 @@ const originalBinary = (factory) => {
 
 /** Immutable one-shot quota reservation BEFORE Native write/initializer. */
 export function reserveOriginalDevelopmentReader(factory) {
-  assertOriginalProducerAdmission(factory?.admission);
+  assertGraphProducerAdmission(factory?.admission);
   need(factory?.originalProduction === true
     && factory.pool instanceof SharedPool
     && !factory.closed && !factory.sealed
@@ -193,7 +193,7 @@ class OriginalLiveReaderCustody {
 
 export async function openOriginalDevelopmentReadOnly(factory, writer,
   expectedProject, expectedHistory, Service) {
-  assertOriginalProducerAdmission(factory?.admission);
+  assertGraphProducerAdmission(factory?.admission);
   need(factory?.developmentReaderReservation
     && factory.developmentReaderReservation.claimed===false
     && !factory.developmentReaderOwner
@@ -286,7 +286,7 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
 }
 
 export function assertOriginalDevelopmentReaderClosed(factory) {
-  assertOriginalProducerAdmission(factory?.admission);
+  assertGraphProducerAdmission(factory?.admission);
   const custody=factory.developmentReaderOwner;
   need(custody,
     'GRAPH_DEV_READER_ORIGINAL_OWNER_NOT_READY_FOR_CLOSE');

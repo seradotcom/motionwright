@@ -1,6 +1,7 @@
 /**
  * Explicit development probe only; never selected by standard Studio tests,
- * Graph R74 acceptance, or any release workflow.
+ * or Graph R74 acceptance. The explicit development workflow selector alone
+ * chooses this configuration; its results cannot grant release acceptance.
  */
 import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";

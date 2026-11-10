@@ -9,7 +9,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { isAbsolute, join } from "node:path";
 import { lstatSync } from "node:fs";
-import { createGraphCaseFactory } from "../tests/support/graph-owner/factory.mjs";
+import { createGraphDevelopmentCaseFactory } from "../tests/support/graph-owner/factory.mjs";
 import { ScopedChangeService, type ScopedChangeServiceOptions } from "../tests/support/scopedChangeService";
 import type { Project, ProjectEvent } from "../src/types";
 
@@ -84,16 +84,13 @@ export function assertOriginalGraphReadOnlyBootstrap(reply: unknown, expected: P
 }
 
 /**
- * Authenticated original Host/Store owner, not a binary-path or JSON-capability
- * adapter. GraphCaseFactoryCore verifies the R74 producer index, signed run,
- * source-built Native executable, pinned Semwright runtime, original SharedPool
- * and kernel-bound SQLite/CAS BEFORE this constructor is reached.
- *
- * This is the existing real production authorization, not a way around R74.
- * A separate development-original producer is NOT currently admitted by that
- * factory; until it exists, the pre-effect source gate denies acquisition.
+ * Authenticated development Host/Store owner. The separate development
+ * factory verifies the explicit original dispatch against the current HTTPS
+ * run, then the original build/source/runtime records and exact callback plan.
+ * Its different index schema cannot enter formal R74 admission.
+ * The real SharedPool, kernel Store bound and Native Host custody remain required.
  */
-type AdmittedGraphCaseFactory = Awaited<ReturnType<typeof createGraphCaseFactory>>;
+type AdmittedGraphCaseFactory = Awaited<ReturnType<typeof createGraphDevelopmentCaseFactory>>;
 
 /** Authenticated first-party factory capability to close the original
  * Writer and Host and return a NEW live read-only Service with its own
@@ -115,8 +112,8 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
   private closed = false;
 
   constructor(private readonly factory: AdmittedGraphCaseFactory) {
-    if (!factory.originalProduction || !factory.admission?.approval
-      || !factory.admission?.nativeService || !factory.admission?.source
+    if (!factory.originalProduction || !factory.admission?.development
+      || factory.admission?.approval || !factory.admission?.nativeService || !factory.admission?.source
       || !factory.admission?.runtime) {
       throw new Error("GRAPH_DEV_AUTHENTIC_NATIVE_HOST_SOURCE_NOT_ADMITTED");
     }
@@ -318,9 +315,9 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
 /**
  * Acquire only the actual independently authenticated Graph Host producer.
  *
- * The locator is untrusted. createGraphCaseFactory() itself verifies its
- * branded original index and reviewed R74 status before creating the owner.
- * An environment value alone can NEVER create a Native callback capability.
+ * The locator is untrusted. createGraphDevelopmentCaseFactory() authenticates
+ * the current explicit development dispatch and original source-built producer.
+ * The Native callback capability still comes from the real scoped Host grant.
  */
 export async function acquireGraphDevelopmentOwner(): Promise<OriginalGraphDevelopmentOwner> {
   if (process.env.MOTIONWRIGHT_GRAPH_DEV_FIRST_SAVE !== "1"
@@ -345,7 +342,7 @@ export async function acquireGraphDevelopmentOwner(): Promise<OriginalGraphDevel
   const provisional = join(process.cwd(), ".graph-dev-source-candidate");
   // The provisional path is NOT authority or the actual Store path. The
   // original authenticated producer index defines the g-slot and exact mount.
-  const factory = await createGraphCaseFactory({
+  const factory = await createGraphDevelopmentCaseFactory({
     privateRoot: provisional,
     databasePath: join(provisional, "store", "motionwright.sqlite3"),
     caseId: "graph-flow",

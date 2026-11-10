@@ -69,11 +69,11 @@ function validateOracle(value) {
 }
 
 function requireOriginalAdmission(factory) {
-  // R94's unchanged guard has no branded-admission assertion. Namespace
-  // import keeps that DENY composition loadable; it does not supply an admitter.
-  need(typeof producerGuard.assertOriginalProducerAdmission === 'function',
+  // Both entry points authenticate actual originals; development keeps its
+  // separate brand and cannot enter the formal complete-reopen entry below.
+  need(typeof producerGuard.assertGraphProducerAdmission === 'function',
     'INDEPENDENT_SAME_STORE_REOPEN_PRODUCER_AND_REVIEWED_CONTRACT_UNAVAILABLE');
-  producerGuard.assertOriginalProducerAdmission(factory?.admission);
+  producerGuard.assertGraphProducerAdmission(factory?.admission);
   need(factory?.admission && !Object.hasOwn(factory.admission, 'synthetic_adapter_only'),
     'REOPEN_SYNTHETIC_SOURCE_FORBIDDEN');
 }
@@ -554,6 +554,7 @@ export async function publishOriginalWriterRpcRoster(factory, service) {
  * sufficient: assertClosed verifies original owner exit/raw/cohort conjunction.
  */
 export async function runIndependentSameStoreReopen(factory, options) {
+  producerGuard.assertOriginalProducerAdmission(factory?.admission);
   requireOriginalAdmission(factory);
   return runSameStoreReopenCore(factory, options, { spawn, groupAbsent });
 }

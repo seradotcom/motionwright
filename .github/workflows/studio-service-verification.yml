@@ -12,11 +12,11 @@ on:
         default: authoring-drafts
         options: [studio-service-68, phase1-service47, phase1-native-graph, phase1-native-gn1, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-production-browser, project-authoring, project-authoring-core, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser, branch-claim, branch-authoring, claim-source, branch-combination]
       graph_case_mode:
-        description: Native Graph R74 original case cohort (whole six or only reviewed graph-flow)
+        description: Formal R74 cohort, or one separately authorized development Studio Save
         type: choice
         required: true
         default: all
-        options: [all, graph-flow]
+        options: [all, graph-flow, development-first-save]
       graph_review_spki_der_base64:
         description: Existing external review recipient RSA3072 public SPKI, required only for phase1-native-graph
         type: string
@@ -77,7 +77,7 @@ jobs:
               python -B -m unittest tooling.tests.test_ci_canvas_service.Phase1Service47Tests tooling.tests.test_ci_canvas_service.Phase1Service47DeadlineTests -q
               ;;
             workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-graph|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-graph)
-              python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests -q
+              python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR74JoinTests tooling.tests.test_graph_development -q
               ;;
             workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-native-gn1|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-native-gn1)
               # Source/inert GN1 G0 only: Native effects require the separate
@@ -709,7 +709,8 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
-      - name: Produce the original Graph builds and private R74 review carrier
+      - name: Produce source-bound Graph builds and private originals
+        id: graph-producers
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 112
         env:
@@ -724,28 +725,51 @@ jobs:
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 1
         run: python -I -B tooling/ci_canvas_service.py graph-budget --repo . --phase review-upload
-      - name: Publish encrypted Graph originals for independent R74 review
+      - name: Retain encrypted Graph producer originals
         if: matrix.selection == 'phase1-native-graph'
         timeout-minutes: 5
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graph-originals-review-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: graph-${{ inputs.graph_case_mode == 'development-first-save' && 'development-source' || 'originals-review' }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: v/graph-review
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
-      - name: Observe the independent Graph statuses before any case or owner
-        if: matrix.selection == 'phase1-native-graph'
+      - name: Observe the independent Graph statuses before any formal case or owner
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode != 'development-first-save'
         timeout-minutes: 21
         env:
           MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
         run: python -I -B tooling/ci_canvas_service.py graph wait --repo .
-      - name: Execute the six original Graph cases and complete closure
-        if: matrix.selection == 'phase1-native-graph'
+      - name: Execute the selected formal Graph cases and complete closure
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode != 'development-first-save'
         timeout-minutes: 20
         env:
           MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
         run: python -I -B tooling/ci_canvas_service.py graph run --repo .
+      - name: Execute one original development Studio Graph Save and independent reopen
+        if: matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode == 'development-first-save'
+        timeout-minutes: 10
+        env:
+          MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
+        run: python -I -B tooling/ci_canvas_service.py graph development-run --repo .
+      - name: Seal original development outcome and private process custody
+        id: graph-development-seal
+        if: always() && matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode == 'development-first-save' && steps.graph-producers.outcome == 'success'
+        timeout-minutes: 11
+        env:
+          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64: ${{ inputs.graph_review_spki_der_base64 }}
+          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256: ${{ inputs.graph_review_spki_sha256 }}
+        run: python -I -B tooling/ci_canvas_service.py graph development-seal --repo .
+      - name: Retain encrypted development originals without formal acceptance credit
+        if: always() && steps.graph-development-seal.outcome == 'success'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: graph-development-${{ github.sha }}-${{ github.run_id }}-attempt1
+          path: v/graph-development
+          if-no-files-found: error
+          retention-days: 14
       - name: Execute the closed selection through the canonical observer
         if: matrix.selection != 'phase1-native-graph'
         env:
@@ -757,7 +781,7 @@ jobs:
       - name: Close complete original evidence into a verified TAR
         id: archive
         timeout-minutes: ${{ matrix.selection == 'phase1-native-graph' && 11 || matrix.selection == 'phase1-service47' && 7 || 360 }}
-        if: success()
+        if: success() && (matrix.selection != 'phase1-native-graph' || inputs.graph_case_mode != 'development-first-save')
         run: |
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py archive --repo . --evidence ../v
@@ -826,7 +850,7 @@ jobs:
           PY
       - name: Admit the one Graph final upload within the original deadline
         id: graph-final-upload-admission
-        if: always() && matrix.selection == 'phase1-native-graph'
+        if: always() && matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode != 'development-first-save'
         timeout-minutes: 2
         env:
           MOTIONWRIGHT_GRAPH_METADATA_TOKEN: ${{ github.token }}
