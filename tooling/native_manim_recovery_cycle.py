@@ -268,14 +268,14 @@ def finish_phase(context, prepared, native, evidence, output_root, work_root, da
                  env, *, capture, source_binary, python, runtime, tooling, launch):
     from native_manim_recovery_gate import check_runtime
     index = PHASES.index(context["phase"])
-    require(read_object(evidence / EVIDENCE_NAME) == native, "recovery_runtime_original_native_stdout")
-    # The original Native call has completed. Retain the frozen-runtime
-    # observation BEFORE source readback, which may fail after the effect.
-    # This is evidence of one real boundary, never an acceptance/G2 grant.
+    # The Native call has already completed. Retain the runtime identity before
+    # even re-reading its receipt: that read may also fail after the real effect.
+    # This records a boundary only, never acceptance or an extra Native action.
     post_native_runtime = check_runtime(context["current"])
     require(post_native_runtime == context["runtime_binding"],
             "recovery_runtime_changed_during_native_phase")
     private_json(evidence / "frozen-runtime-binding.json", post_native_runtime)
+    require(read_object(evidence / EVIDENCE_NAME) == native, "recovery_runtime_original_native_stdout")
     source = retained_source(native, prepared, evidence, output_root, work_root, database)
     expected_plan = prepared["original_plan"] if index < 2 else prepared["prepared_plan"]
     expected_sha = INPUTS["original-source.mwedit.zip"][1] if index < 2 else SOURCE_RECOVERY["export_sha256"]

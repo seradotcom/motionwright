@@ -17,7 +17,7 @@ class SourceReadbackFailed(Exception):
 
 
 class EarlyPostNativeCustodyTests(unittest.TestCase):
-    def finish_phase(self, recorded, runtime_identity):
+    def finish_phase(self, recorded, runtime_identity, *, first_receipt_read_fails=False):
         source = SOURCE.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(SOURCE))
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
@@ -38,11 +38,15 @@ class EarlyPostNativeCustodyTests(unittest.TestCase):
                 raise ValueError(code)
         def retain_source(*args, **kwargs):
             raise SourceReadbackFailed("First original source readback failed")
+        def original_receipt_read(path):
+            if first_receipt_read_fails:
+                raise SourceReadbackFailed("First original Native receipt readback failed")
+            return native
         namespace = {
             "PHASES": ("original-reference", "reopen-original-reference",
                        "edited", "reopen-edited"),
             "EVIDENCE_NAME": "motionwright-manim-evidence.json",
-            "read_object": lambda path: native,
+            "read_object": original_receipt_read,
             "require": require,
             "private_json": lambda path, value: recorded.append((path.name, value)),
             "retained_source": retain_source,
@@ -65,6 +69,15 @@ class EarlyPostNativeCustodyTests(unittest.TestCase):
         retained = []
         attempt = self.finish_phase(retained, {"source": "same-runtime"})
         with self.assertRaisesRegex(SourceReadbackFailed, "readback failed"):
+            attempt()
+        self.assertEqual(retained,
+                         [("frozen-runtime-binding.json", {"source": "same-runtime"})])
+
+    def test_post_native_runtime_observation_survives_original_receipt_readback_error(self):
+        retained = []
+        attempt = self.finish_phase(retained, {"source": "same-runtime"},
+                                    first_receipt_read_fails=True)
+        with self.assertRaisesRegex(SourceReadbackFailed, "Native receipt readback failed"):
             attempt()
         self.assertEqual(retained,
                          [("frozen-runtime-binding.json", {"source": "same-runtime"})])
