@@ -496,6 +496,38 @@ class EffectBoundaryTests(unittest.TestCase):
 
 
 class WorkflowContextTests(unittest.TestCase):
+    def test_installed_native_producer_is_source_bound_and_not_an_untracked_effect(self):
+        producer = "tooling/native_host_installed_shared_state.py"
+        self.assertIn(producer, gate.PATHS)
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        self.assertIn(producer, workflow)
+        for mode in ("--ci-controls", "--ci-run", "--ci-seal", "--ci-upload"):
+            self.assertIn(mode, workflow)
+
+    def test_every_closed_first_use_source_input_triggers_candidate_pr_and_push(self):
+        from fnmatch import fnmatchcase
+
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        required = set(gate.PATHS) | {"tooling/native_host_installed_shared_state.py"}
+        self.assertEqual(len(gate.PATHS), len(set(gate.PATHS)))
+        for event, terminal in (("pull_request", "\n  push:\n"),
+                                ("push", "\npermissions:\n")):
+            body = workflow.split("\n  " + event + ":\n", 1)[1].split(terminal, 1)[0]
+            self.assertIn("    paths:\n", body)
+            patterns = [
+                line.strip()[3:-1]
+                for line in body.splitlines()
+                if line.startswith('      - "') and line.endswith('"')
+            ]
+            self.assertEqual(len(patterns), len(set(patterns)), event + " duplicate paths")
+            uncovered = sorted(
+                path for path in required
+                if not any(fnmatchcase(path, pattern) for pattern in patterns)
+            )
+            self.assertEqual(uncovered, [], event + " has first-use source blind spots")
+
     def test_runner_temp_is_bound_only_in_the_executing_step(self):
         workflow = (Path(__file__).resolve().parents[2] /
                     ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
