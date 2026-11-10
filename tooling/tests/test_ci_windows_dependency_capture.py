@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -293,6 +294,165 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
                     "file:///foreign.tgz", "https://registry.npmjs.org/a.tgz\n"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 gate.archive_url(url)
+
+
+class FrontendInputCustodyTests(unittest.TestCase):
+    """Real local Git/TAR verification; no network, compiler or application."""
+
+    def setUp(self):
+        from test_candidate_frontend_authentication import FrontendAdapterTests
+        FrontendAdapterTests.setUp(self)
+        for name, value in (("BASE", Path("receipts/windows-capture")), ("FRONTEND", Path("dist"))):
+            patch = mock.patch.object(gate, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.directory = self.f.repo / gate.BASE / "frontend"
+
+    def prepare_recheck(self):
+        report = self.f.run("prior-authentication.json")
+        gate.capture.new_directory(self.f.repo, self.directory)
+        archives = gate.capture.new_directory(self.f.repo, self.directory / "archives")
+        (archives / "fixture.tgz").write_bytes((self.f.archive_root / "fixture.tgz").read_bytes())
+        gate.capture.write_new(self.directory / "archive-map.json",
+                               gate.capture.encoded({"node_modules/fixture": "fixture.tgz"}))
+        gate.capture.write_new(self.directory / "before-build.json", gate.capture.encoded(report))
+        return report
+
+    def observation(self, phase="pre-recheck"):
+        return json.loads((self.directory / (phase + "-emitted-set.json")).read_bytes())
+
+    def assert_original(self, raw, phase="pre-recheck"):
+        self.assertEqual((self.directory / (phase + "-index.original.json")).read_bytes(), raw)
+        record = self.observation(phase)
+        self.assertEqual(record["source_sha"], self.f.head)
+        self.assertEqual(record["index"]["sha256"], gate.capture.sha(raw))
+        self.assertEqual(record["npm_authentication"], "NOT_VERIFIED")
+        self.assertEqual(record["full_package_inventory"], "NOT_VERIFIED")
+        return record
+
+    def test_declared_public_copy_authenticates_and_each_phase_is_create_only(self):
+        source = self.f.repo / "public/desktop-bootstrap.html"
+        source.parent.mkdir()
+        raw_copy = b"<!doctype html><title>Tracked public fixture</title>\n"
+        source.write_bytes(raw_copy)
+        self.f.git("add", "--", "public/desktop-bootstrap.html")
+        self.f.git("commit", "-qm", "tracked public fixture")
+        self.f.head = self.f.git("rev-parse", "HEAD").decode().strip()
+        before = gate.capture.source_snapshot(self.f.repo, self.f.head)
+        self.f.index["source_binding"] = {
+            "mode": "EXACT_HEAD_AND_TRACKED_BLOBS", "source_sha": self.f.head,
+            "tracked_inputs": [{key: row[key] for key in ("path", "bytes", "sha256", "git_blob")}
+                               for row in before["files"]],
+        }
+        self.f.index["original_outputs"].append({
+            "path": "desktop-bootstrap.html", "kind": "asset",
+            "bytes": len(raw_copy), "sha256": gate.capture.sha(raw_copy),
+            "origin": "vite-public-copy", "source_path": "public/desktop-bootstrap.html",
+        })
+        (self.f.out / "desktop-bootstrap.html").write_bytes(raw_copy)
+        self.f.write_index()
+        original = (self.f.out / "assets/licenses/frontend/index.json").read_bytes()
+        prior = self.prepare_recheck()
+        gate.retain_frontend_inputs(self.f.repo, before, self.directory, "pre-archive")
+        self.assertEqual(gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True), prior)
+        record = self.assert_original(original)
+        self.assertTrue(record["collection_complete"])
+        self.assertEqual(record["files"]["desktop-bootstrap.html"],
+                         {"bytes": len(raw_copy), "sha256": gate.capture.sha(raw_copy)})
+        self.assert_original(original, "pre-archive")
+        retained = {path.name: path.read_bytes() for path in self.directory.iterdir() if path.is_file()}
+        with self.assertRaises(FileExistsError):
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+        self.assertEqual({path.name: path.read_bytes() for path in self.directory.iterdir() if path.is_file()},
+                         retained)
+
+    def test_unexpected_physical_member_is_retained_while_real_authentication_rejects_it(self):
+        self.prepare_recheck()
+        original = (self.f.out / "assets/licenses/frontend/index.json").read_bytes()
+        (self.f.out / "unexpected.bin").write_bytes(b"Undeclared physical bytes.\n")
+        (self.f.out / "empty-unexpected-directory").mkdir()
+        with self.assertRaisesRegex(ValueError, "emitted_asset_set_mismatch"):
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+        record = self.assert_original(original)
+        self.assertTrue(record["collection_complete"])
+        self.assertEqual(record["entries"]["empty-unexpected-directory"], "directory")
+        self.assertEqual(record["files"]["unexpected.bin"]["sha256"],
+                         gate.capture.sha(b"Undeclared physical bytes.\n"))
+        self.assertNotIn("Undeclared physical bytes.", json.dumps(record))
+        self.assertFalse((self.directory / "after-bundle.json").exists())
+
+    def test_invalid_index_bytes_survive_before_parsing_without_normalization(self):
+        original = b'{  "invalid" : \r\n ORIGINAL-BYTES\t}\r\n'
+        (self.f.out / "assets/licenses/frontend/index.json").write_bytes(original)
+        with self.assertRaises((ValueError, gate.capture.CaptureError)):
+            gate.authenticate_frontend(self.f.repo, self.f.head)
+        self.assertTrue(self.assert_original(original, "pre-archive")["collection_complete"])
+        self.assertFalse((self.directory / "before-build.json").exists())
+        self.assertEqual(list((self.directory / "archives").iterdir()), [])
+
+    def test_originals_survive_real_local_archive_integrity_failure(self):
+        self.prepare_recheck()
+        original = (self.f.out / "assets/licenses/frontend/index.json").read_bytes()
+        archive = self.directory / "archives/fixture.tgz"
+        raw = bytearray(archive.read_bytes())
+        raw[-1] ^= 1
+        archive.write_bytes(raw)
+        with self.assertRaises(ValueError) as caught:
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+        self.assertRegex(str(caught.exception).lower(), r"sri|integrity")
+        self.assertTrue(self.assert_original(original)["collection_complete"])
+        self.assertFalse((self.directory / "after-bundle.json").exists())
+
+    def test_authentication_of_another_valid_index_cannot_replace_retained_original(self):
+        self.prepare_recheck()
+        index_path = self.f.out / "assets/licenses/frontend/index.json"
+        original = index_path.read_bytes()
+        authentic = gate.frontend.authenticate_build
+
+        def authenticate_after_real_replacement(**kwargs):
+            index_path.write_bytes(b" \r\n" + original)
+            return authentic(**kwargs)
+
+        with mock.patch.object(gate.frontend, "authenticate_build",
+                               side_effect=authenticate_after_real_replacement), \
+             self.assertRaisesRegex(ValueError, "frontend_authenticated_index_differs_from_retained_original"):
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+        self.assertTrue(self.assert_original(original)["collection_complete"])
+        # The separate authenticator's original report survives; the composed gate failed.
+        report = json.loads((self.directory / "after-bundle.json").read_bytes())
+        self.assertNotEqual(report["frontend_index_sha256"], gate.capture.sha(original))
+
+    def test_secondary_recording_failure_does_not_mask_the_original_collection_rejection(self):
+        self.prepare_recheck()
+        original = (self.f.out / "assets/licenses/frontend/index.json").read_bytes()
+        write_original = gate.capture.write_new
+
+        def refuse_secondary_record(path, data):
+            if path.name == "pre-recheck-emitted-set.json":
+                raise OSError("Synthetic secondary output refusal")
+            return write_original(path, data)
+
+        with mock.patch.object(gate.frontend, "MAX_EMITTED_ENTRIES", 1), \
+             mock.patch.object(gate.capture, "write_new", side_effect=refuse_secondary_record), \
+             self.assertRaisesRegex(ValueError, "emitted_entry_count_budget") as caught:
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+        self.assertEqual((self.directory / "pre-recheck-index.original.json").read_bytes(), original)
+        self.assertIn("Secondary observation recording failed: OSError", caught.exception.__notes__)
+        self.assertFalse((self.directory / "pre-recheck-emitted-set.json").exists())
+        self.assertFalse((self.directory / "after-bundle.json").exists())
+
+    def test_collection_budget_failure_preserves_index_and_explicit_incomplete_observation(self):
+        self.prepare_recheck()
+        original = (self.f.out / "assets/licenses/frontend/index.json").read_bytes()
+        with mock.patch.object(gate.frontend, "MAX_EMITTED_ENTRIES", 1), \
+             self.assertRaisesRegex(ValueError, "emitted_entry_count_budget"):
+            gate.authenticate_frontend(self.f.repo, self.f.head, recheck=True)
+        record = self.assert_original(original)
+        self.assertFalse(record["collection_complete"])
+        self.assertNotIn("entries", record)
+        self.assertNotIn("files", record)
+        self.assertEqual(record["original_exception"], "PROPAGATED")
+        self.assertFalse((self.directory / "after-bundle.json").exists())
 
 
 if __name__ == "__main__":

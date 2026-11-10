@@ -152,7 +152,9 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         }
         originals = {"ci-evidence/internal-windows-cargo/state/" + name for name in original_names}
         originals.update({"ci-evidence/internal-windows-cargo/frontend/" + name
-                          for name in ("before-build.json", "after-bundle.json")})
+                          for name in ("before-build.json", "after-bundle.json",
+                                       "pre-archive-index.original.json", "pre-archive-emitted-set.json",
+                                       "pre-recheck-index.original.json", "pre-recheck-emitted-set.json")})
         originals.update({"ci-evidence/internal-windows-cargo/" + name
                           for name in ("application-inventory.json", "tauri-resources.json")})
         uploads = [part for part in re.split(r"(?m)^      - ", windows)

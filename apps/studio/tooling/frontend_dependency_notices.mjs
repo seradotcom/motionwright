@@ -145,6 +145,9 @@ export function candidateFrontendNotices(options = {}) {
   if (!Array.isArray(additionalTrackedFiles) || additionalTrackedFiles.length > 64) fail("INVALID_OPTIONS");
   additionalTrackedFiles.forEach(publicPath);
   let configRoot;
+  let configPublicDir;
+  let configCopyPublicDir = true;
+  let configOutputDirectories = [];
   let state;
 
   function git(cwd, args, maxBuffer = BOUNDS.gitTreeBytes) {
@@ -403,7 +406,67 @@ export function candidateFrontendNotices(options = {}) {
     if (canonical(listing) !== canonical(component.listing)) fail("NOTICE_SET_CHANGED", component.lockKey);
     for (const notice of component.notices) assertSnapshot(notice.source);
   }
+  function publicListing() {
+    if (state.publicDirectory === null) return { exists: false, anchors: [], entries: [] };
+    const anchors = outputDirectoryAnchors(state.publicDirectory, false);
+    if (anchors.at(-1)?.path !== state.publicDirectory) return { exists: false, anchors, entries: [] };
+    const entries = [], folded = new Set(), pending = [[state.publicDirectory, 0]];
+    while (pending.length > 0) {
+      const [directory, depth] = pending.pop();
+      guardPath(directory, true);
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entries.length >= BOUNDS.directoryEntries || depth >= 16) fail("PUBLIC_ENTRY_BUDGET");
+        const filename = path.join(directory, entry.name);
+        const name = relativeTo(state.publicDirectory, filename);
+        if (folded.has(name.toLowerCase())) fail("PUBLIC_PATH_COLLISION", name);
+        folded.add(name.toLowerCase());
+        const stat = fs.lstatSync(filename, { bigint: true });
+        if (stat.isSymbolicLink()) fail("LINK_REFUSED", name);
+        if (stat.isDirectory()) {
+          guardPath(filename, true);
+          entries.push({ path: name, kind: "directory", identity: String(stat.dev) + ":" + String(stat.ino) });
+          pending.push([filename, depth + 1]);
+        } else {
+          guardPath(filename);
+          entries.push({ path: name, kind: "file" });
+        }
+      }
+    }
+    entries.sort((a, b) => a.path.localeCompare(b.path, "en"));
+    return { exists: true, anchors, entries };
+  }
+  function assertPublicInputs() {
+    if (canonical(publicListing()) !== canonical(state.publicListing)) fail("PUBLIC_SET_CHANGED");
+  }
+  function capturePublicInputs() {
+    state.publicInputs = [];
+    state.publicListing = publicListing();
+    if (state.publicDirectory === null) return;
+    const prefix = relativeTo(state.root, state.publicDirectory) + "/";
+    const trackedNames = fixture ? [...fixtureTracked.keys()] : [...state.gitTree.keys()];
+    const expected = trackedNames.filter((name) => name.startsWith(prefix)).sort();
+    const actual = state.publicListing.entries.filter((entry) => entry.kind === "file")
+      .map((entry) => prefix + entry.path).sort();
+    if (canonical(actual) !== canonical(expected)) fail("PUBLIC_TRACKED_SET_MISMATCH");
+    let total = 0;
+    for (const entry of state.publicListing.entries.filter((item) => item.kind === "file")) {
+      const source = snapshot(path.join(state.publicDirectory, ...entry.path.split("/")), BOUNDS.outputBytes - total);
+      total += source.size;
+      const gitBlob = tracked(source);
+      source.bytes = undefined;
+      state.publicInputs.push({ name: entry.path, source, gitBlob });
+    }
+    assertPublicInputs();
+  }
+  function assertPublicSeparation(directory) {
+    if (state.publicDirectory === null || directory === null) return;
+    const source = state.publicDirectory.toLowerCase(), target = directory.toLowerCase();
+    if (source === target || source.startsWith(target + path.sep) || target.startsWith(source + path.sep)) {
+      fail("PUBLIC_OUTPUT_OVERLAP");
+    }
+  }
   function verifyEmitted(context, selected, components) {
+    assertPublicInputs();
     assertBinding();
     for (const record of selected.values()) {
       const current = context.getModuleInfo(record.id);
@@ -487,16 +550,41 @@ export function candidateFrontendNotices(options = {}) {
   function generate(context, outputOptions, bundle) {
     if (!state) fail("BUILD_NOT_STARTED");
     const destination = outputDestination(outputOptions);
+    assertPublicSeparation(destination.directory);
+    if (state.publicInputs.length > 0 && destination.directory === null) fail("PUBLIC_OUTPUT_DESTINATION_REQUIRED");
     const selected = new Map();
     const components = new Map();
     const outputs = [];
-    const names = new Set();
+    const publicOutputs = [];
+    const names = new Map(), directories = new Map();
+    function claimDirectory(filename) {
+      publicPath(filename);
+      const parts = filename.split("/");
+      for (let count = 1; count <= parts.length; count += 1) {
+        const prefix = parts.slice(0, count).join("/"), key = prefix.toLowerCase();
+        if (names.has(key) || (directories.has(key) && directories.get(key) !== prefix)) {
+          fail("OUTPUT_COLLISION", filename);
+        }
+        directories.set(key, prefix);
+      }
+    }
+    function claimName(filename) {
+      publicPath(filename);
+      const folded = filename.toLowerCase();
+      if (names.has(folded) || directories.has(folded)) fail("OUTPUT_COLLISION", filename);
+      const slash = filename.lastIndexOf("/");
+      if (slash !== -1) claimDirectory(filename.slice(0, slash));
+      names.set(folded, filename);
+    }
+    for (const entry of state.publicListing.entries) {
+      if (entry.kind === "directory") claimDirectory(entry.path);
+    }
     let outputBytes = 0;
     for (const [key, item] of Object.entries(bundle).sort(([a], [b]) => a.localeCompare(b, "en"))) {
       publicPath(key);
-      if (item.fileName !== key || names.has(key.toLowerCase()) ||
+      if (item.fileName !== key ||
           key.toLowerCase().startsWith(PREFIX.toLowerCase())) fail("OUTPUT_COLLISION", key);
-      names.add(key.toLowerCase());
+      claimName(key);
       const bytes = bytesOfOutput(item);
       outputBytes += bytes.length;
       if (outputBytes > BOUNDS.outputBytes) fail("OUTPUT_BUDGET");
@@ -518,6 +606,14 @@ export function candidateFrontendNotices(options = {}) {
         }
       }
       outputs.push(output);
+    }
+    for (const { name, source, gitBlob } of state.publicInputs) {
+      if (name.toLowerCase().startsWith(PREFIX.toLowerCase())) fail("OUTPUT_COLLISION", name);
+      claimName(name);
+      outputBytes += source.size;
+      if (outputBytes > BOUNDS.outputBytes) fail("OUTPUT_BUDGET");
+      publicOutputs.push({ path: name, kind: "asset", bytes: source.size, sha256: source.sha256,
+        origin: "vite-public-copy", source_path: source.publicPath, git_blob: gitBlob });
     }
     verifyEmitted(context, selected, components);
     const texts = new Map();
@@ -571,8 +667,8 @@ export function candidateFrontendNotices(options = {}) {
       package_lock: { path: state.lockSnapshot.publicPath, bytes: state.lockSnapshot.size,
         sha256: state.lockSnapshot.sha256, lockfile_version: state.lock.lockfileVersion },
       output_format: outputOptions.format ?? null,
-      output_snapshot: "generateBundle-post-before-notice-assets",
-      original_outputs: outputs,
+      output_snapshot: "generateBundle-post-and-tracked-public-before-notice-assets",
+      original_outputs: [...outputs, ...publicOutputs],
       modules: moduleRecords,
       components: componentRecords,
       generated_notice_assets: [...texts].map(([asset, bytes]) => ({ path: asset, bytes: bytes.length, sha256: sha256(bytes) })),
@@ -580,6 +676,7 @@ export function candidateFrontendNotices(options = {}) {
         "Only chunk.modules entries with renderedLength > 0 establish this closure.",
         "Virtual and local module records do not establish npm license coverage.",
         "CSS and other assets have byte digests, not a dependency-license closure.",
+        "Copied public files bind exact tracked source bytes and physical readback, not a dependency-license closure.",
         "Raw on-disk source hashes and Rollup transformed-code hashes are distinct.",
         "Lock metadata does not authenticate installed files against registry tarballs.",
         "Hook-boundary readback is not protection against every concurrent or ABA write.",
@@ -589,11 +686,7 @@ export function candidateFrontendNotices(options = {}) {
     };
     const indexBytes = Buffer.from(JSON.stringify(index, null, 2) + "\n", "utf8");
     const generated = new Map([...texts, [INDEX, indexBytes]]);
-    for (const filename of generated.keys()) {
-      publicPath(filename);
-      if (names.has(filename.toLowerCase())) fail("OUTPUT_COLLISION", filename);
-      names.add(filename.toLowerCase());
-    }
+    for (const filename of generated.keys()) claimName(filename);
     // Revalidate every input before the first emission; emit captured bytes only.
     verifyEmitted(context, selected, components);
     assertUniqueOutputDestination(destination);
@@ -603,6 +696,7 @@ export function candidateFrontendNotices(options = {}) {
     }
     verifyEmitted(context, selected, components);
     state.outputChecks.push({ selected, components, destination,
+      publicExpected: publicOutputs,
       expected: new Map([
         ...outputs.map((item) => [item.path, {
           type: item.kind, size: item.bytes, sha256: item.sha256,
@@ -621,6 +715,16 @@ export function candidateFrontendNotices(options = {}) {
     configResolved(config) {
       if (config.command !== "build") fail("BUILD_ONLY");
       configRoot = config.root;
+      configPublicDir = config.publicDir === undefined ? path.resolve(config.root, "public") : config.publicDir;
+      if (configPublicDir !== false && typeof configPublicDir !== "string") fail("INVALID_PUBLIC_DIRECTORY");
+      configCopyPublicDir = config.build?.copyPublicDir ?? true;
+      if (typeof configCopyPublicDir !== "boolean") fail("INVALID_PUBLIC_COPY_SETTING");
+      const configuredOutputs = config.build?.rollupOptions?.output;
+      const outputOptions = configuredOutputs
+        ? (Array.isArray(configuredOutputs) ? configuredOutputs : [configuredOutputs]) : [{}];
+      if (outputOptions.length > 64 || outputOptions.some((output) => !plain(output))) fail("INVALID_OUTPUT_OPTIONS");
+      configOutputDirectories = outputOptions.map((output) =>
+        path.resolve(config.root, output.dir || config.build?.outDir || "dist"));
     },
     buildStart() {
       const project = fs.realpathSync(path.resolve(options.projectRoot ?? configRoot ?? process.cwd()));
@@ -633,6 +737,10 @@ export function candidateFrontendNotices(options = {}) {
       state = { root, project, observations: new Map(), components: new Map(), tracked: new Map(),
         gitTree: new Map(), outputChecks: [], noticeBytes: 0, metadataBytes: 0 };
       guardPath(project, true);
+      state.publicDirectory = configCopyPublicDir && configPublicDir
+        ? path.resolve(configPublicDir) : null;
+      if (state.publicDirectory !== null) relativeTo(root, state.publicDirectory);
+      for (const directory of configOutputDirectories) assertPublicSeparation(directory);
       const sourceSha = fixture ? fixture.sourceSha : head();
       if (typeof sourceSha !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceSha) ||
           (options.sourceSha !== undefined && options.sourceSha !== sourceSha)) fail("SOURCE_SHA_MISMATCH");
@@ -667,6 +775,7 @@ export function candidateFrontendNotices(options = {}) {
       }
       for (const relative of additionalTrackedFiles) tracked(snapshot(path.join(root, ...relative.split("/")), BOUNDS.lockBytes));
       if (!fixture) tracked(snapshot(fileURLToPath(import.meta.url), BOUNDS.moduleBytes));
+      capturePublicInputs();
       assertBinding();
     },
     shouldTransformCachedModule() { return true; },
@@ -697,6 +806,12 @@ export function candidateFrontendNotices(options = {}) {
             if (written.size !== expected.size || written.sha256 !== expected.sha256) {
               fail("PHYSICAL_OUTPUT_CHANGED", key);
             }
+          }
+        }
+        for (const expected of check.publicExpected) {
+          const written = snapshot(path.join(destination.directory, ...expected.path.split("/")), expected.bytes);
+          if (written.size !== expected.bytes || written.sha256 !== expected.sha256) {
+            fail("PHYSICAL_PUBLIC_OUTPUT_CHANGED", expected.path);
           }
         }
         if (destination.directory !== null) {

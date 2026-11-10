@@ -75,13 +75,65 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError("npm_archive_redirect_refused")
 
 
+def retain_frontend_inputs(repo, source_state, directory, phase):
+    """Keep bounded originals before parsing or authenticating their contents."""
+    require(phase in ("pre-archive", "pre-recheck"), "frontend_observation_phase_invalid")
+    index_name = "assets/licenses/frontend/index.json"
+    observation_path = directory / (phase + "-emitted-set.json")
+    record = {
+        "schema": "motionwright.frontend-input-observation/1",
+        "source_sha": source_state["source"], "source_tree": source_state["tree"],
+        "phase": phase, "status": "PRE_AUTHENTICATION_OBSERVATION",
+        "collection_complete": False, "index": None,
+        "npm_authentication": "NOT_VERIFIED",
+        "full_package_inventory": "NOT_VERIFIED",
+        "redistribution_permission": "NOT_INFERRED",
+        "limitations": ["Bounded readback is not an atomic filesystem snapshot."],
+    }
+    try:
+        out = capture.admitted(repo, FRONTEND, directory=True)
+        index_raw = capture.stable_read(out, index_name, 16 * 1024 * 1024)
+        capture.write_new(directory / (phase + "-index.original.json"), index_raw)
+        record["index"] = {"path": index_name, "bytes": len(index_raw),
+                           "sha256": capture.sha(index_raw)}
+        entries, files = frontend.emitted_snapshot(out, index_name)
+        require(files.get(index_name) == index_raw, "frontend_index_changed_during_observation")
+        metadata = {
+            **record, "collection_complete": True, "entries": dict(sorted(entries.items())),
+            "files": {name: {"bytes": len(raw), "sha256": capture.sha(raw)}
+                      for name, raw in sorted(files.items())},
+        }
+        del files
+        raw_metadata = capture.encoded(metadata)
+        require(len(raw_metadata) <= 16 * 1024 * 1024, "frontend_observation_budget")
+        capture.write_new(observation_path, raw_metadata)
+        return index_raw
+    except (ValueError, capture.CaptureError, OSError, KeyError, TypeError) as error:
+        # Retain the original index even when collection or parsing cannot finish.
+        # This failure record never presents a partial member set as complete.
+        try:
+            if not observation_path.exists():
+                capture.write_new(observation_path, capture.encoded({
+                    **record, "collection_failure": type(error).__name__,
+                    "original_exception": "PROPAGATED",
+                }))
+        except OSError as retention_error:
+            error.add_note("Secondary observation recording failed: " + type(retention_error).__name__)
+        raise
+
+
 def authenticate_frontend(repo, source, *, recheck=False):
-    capture.source_snapshot(repo, source)
+    source_state = capture.source_snapshot(repo, source)
     directory = repo / BASE / "frontend"
     if not recheck:
         capture.new_directory(repo, directory)
+    else:
+        capture.admitted(repo, directory, directory=True)
+    index_raw = retain_frontend_inputs(
+        repo, source_state, directory, "pre-recheck" if recheck else "pre-archive")
+    if not recheck:
         archives = capture.new_directory(repo, directory / "archives")
-        index = read_json(repo, FRONTEND / "assets/licenses/frontend/index.json")
+        index = capture.parse_json(index_raw)
         lock = read_json(repo, "apps/studio/package-lock.json")
         require(index.get("source_binding", {}).get("source_sha") == source,
                 "frontend_source_sha_mismatch")
@@ -119,6 +171,8 @@ def authenticate_frontend(repo, source, *, recheck=False):
         repo=repo, expected_source=source, output_directory=FRONTEND,
         archive_root=directory / "archives", archive_map=mapping, receipt_path=receipt,
     )
+    require(report.get("frontend_index_sha256") == capture.sha(index_raw),
+            "frontend_authenticated_index_differs_from_retained_original")
     if recheck:
         before = read_json(repo, directory / "before-build.json")
         require(report == before, "frontend_changed_between_capture_and_bundle")

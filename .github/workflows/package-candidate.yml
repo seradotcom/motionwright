@@ -1499,6 +1499,10 @@ jobs:
             ci-evidence/internal-windows-cargo/state/capture-complete.json
             ci-evidence/internal-windows-cargo/frontend/before-build.json
             ci-evidence/internal-windows-cargo/frontend/after-bundle.json
+            ci-evidence/internal-windows-cargo/frontend/pre-archive-index.original.json
+            ci-evidence/internal-windows-cargo/frontend/pre-archive-emitted-set.json
+            ci-evidence/internal-windows-cargo/frontend/pre-recheck-index.original.json
+            ci-evidence/internal-windows-cargo/frontend/pre-recheck-emitted-set.json
           if-no-files-found: warn
       - name: Retain isolated Windows installation results
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'

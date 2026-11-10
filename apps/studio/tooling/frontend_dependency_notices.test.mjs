@@ -72,7 +72,7 @@ function controlledFixture(t) {
     return { sourceRoot: root, projectRoot: project, sourceSha: SOURCE,
       fixture: { mode: "explicit-synthetic", sourceSha: SOURCE, trackedSha256, readHead: () => reportedHead } };
   }
-  function start(customOptions = options()) {
+  function start(customOptions = options(), resolvedConfig = {}) {
     const plugin = candidateFrontendNotices(customOptions);
     const context = {
       infos: new Map(), emitted: [],
@@ -83,7 +83,8 @@ function controlledFixture(t) {
       },
       getFileName(reference) { return this.emitted[Number(reference.slice(6))].fileName; },
     };
-    plugin.configResolved({ command: "build", root: project });
+    plugin.configResolved({ command: "build", root: project,
+      publicDir: path.join(project, "public"), build: { copyPublicDir: true }, ...resolvedConfig });
     plugin.buildStart.call(context);
     return { plugin, context,
       observe(id, code = fs.readFileSync(id.split(/[?#]/u, 1)[0], "utf8")) {
@@ -424,4 +425,194 @@ test("case-only physical output directories conflict before a second notice inde
     { dir: path.join(f.project, "CASE-OUTPUT"), format: "cjs" }, bundle),
     /DUPLICATE_OUTPUT_DESTINATION/);
   assert.equal(build.context.emitted.length, count);
+});
+
+
+test("public copy: tracked bootstrap is indexed and read back outside the Rollup bundle", (t) => {
+  const f = controlledFixture(t), pkg = f.addPackage("public-bootstrap");
+  const source = f.local("public/desktop-bootstrap.html", "<!doctype html><title>Fixture bootstrap</title>\n");
+  const raw = fs.readFileSync(source);
+  const build = f.start();
+  build.observe(pkg.module);
+  const output = materializedOutput(build, f, pkg, "public-output");
+  write(path.join(output.options.dir, "desktop-bootstrap.html"), raw);
+  const index = JSON.parse(output.bundle[INDEX].source.toString("utf8"));
+  assert.deepEqual(index.original_outputs.find((row) => row.path === "desktop-bootstrap.html"), {
+    path: "desktop-bootstrap.html", kind: "asset", bytes: raw.length, sha256: hash(raw),
+    origin: "vite-public-copy", source_path: "apps/studio/public/desktop-bootstrap.html",
+    git_blob: null,
+  });
+  assert.ok(index.source_binding.tracked_inputs.some((row) =>
+    row.path === "apps/studio/public/desktop-bootstrap.html" && row.sha256 === hash(raw)));
+  assert.equal(Object.hasOwn(output.bundle, "desktop-bootstrap.html"), false);
+  assert.equal(index.non_chunk_asset_dependency_closure, "NOT_VERIFIED");
+  assert.doesNotThrow(() =>
+    build.plugin.writeBundle.handler.call(build.context, output.options, output.bundle));
+});
+
+
+test("public copy: absent, empty and explicitly disabled sources do not invent outputs", async (t) => {
+  for (const mode of ["absent", "empty", "disabled-copy", "disabled-directory"]) {
+    await t.test(mode, (t) => {
+      const f = controlledFixture(t), pkg = f.addPackage("public-" + mode);
+      const config = {};
+      if (mode === "empty") fs.mkdirSync(path.join(f.project, "public"));
+      if (mode.startsWith("disabled")) {
+        write(path.join(f.project, "public", "untracked.txt"), "Copy is disabled.\n");
+        if (mode === "disabled-copy") config.build = { copyPublicDir: false };
+        else config.publicDir = "";
+      }
+      const build = f.start(f.options(), config);
+      build.observe(pkg.module);
+      const { index } = build.generate([pkg.module]);
+      assert.ok(index.original_outputs.every((row) => row.origin !== "vite-public-copy"));
+      assert.ok(index.source_binding.tracked_inputs.every((row) => !row.path.includes("/public/")));
+    });
+  }
+});
+
+test("public copy: the resolved custom public directory is the admitted source", (t) => {
+  const f = controlledFixture(t), pkg = f.addPackage("custom-public");
+  const source = f.local("static/nested/bootstrap.html", "<title>Custom public fixture</title>\n");
+  const build = f.start(f.options(), { publicDir: path.join(f.project, "static") });
+  build.observe(pkg.module);
+  const output = materializedOutput(build, f, pkg, "custom-public-output");
+  write(path.join(output.options.dir, "nested/bootstrap.html"), fs.readFileSync(source));
+  assert.doesNotThrow(() => build.plugin.writeBundle.handler.call(build.context, output.options, output.bundle));
+  const index = JSON.parse(output.bundle[INDEX].source);
+  assert.equal(index.original_outputs.find((row) => row.origin === "vite-public-copy").source_path,
+    "apps/studio/static/nested/bootstrap.html");
+});
+
+test("public copy: initial untracked and missing tracked files are refused", async (t) => {
+  for (const mode of ["untracked", "missing-file", "missing-directory"]) {
+    await t.test(mode, (t) => {
+      const f = controlledFixture(t);
+      const source = f.local("public/desktop-bootstrap.html", "<title>Expected source</title>\n");
+      const options = f.options();
+      if (mode === "untracked") write(path.join(f.project, "public", "extra.txt"), "Not tracked.\n");
+      else fs.unlinkSync(source);
+      if (mode === "missing-directory") fs.rmdirSync(path.join(f.project, "public"));
+      assert.throws(() => f.start(options), /PUBLIC_TRACKED_SET_MISMATCH/);
+    });
+  }
+});
+
+test("public copy: source bytes and member set remain fixed through the output hooks", async (t) => {
+  for (const mode of ["changed", "added", "removed", "created-after-absence"]) {
+    await t.test(mode, (t) => {
+      const f = controlledFixture(t), pkg = f.addPackage("source-" + mode);
+      const source = mode === "created-after-absence" ? null :
+        f.local("public/desktop-bootstrap.html", "<title>Original source</title>\n");
+      const build = f.start();
+      build.observe(pkg.module);
+      if (mode === "changed") overwriteSameSize(source);
+      else if (mode === "removed") fs.unlinkSync(source);
+      else write(path.join(f.project, "public", "late.txt"), "Added after capture.\n");
+      assert.throws(() => materializedOutput(build, f, pkg, "source-mutation-output"),
+        /SOURCE_CHANGED|PUBLIC_SET_CHANGED/);
+      assert.equal(build.context.emitted.length, 0);
+    });
+  }
+});
+
+test("public copy: missing or substituted physical copies and late sources are refused", async (t) => {
+  for (const mode of ["missing-copy", "changed-copy", "late-source"]) {
+    await t.test(mode, (t) => {
+      const f = controlledFixture(t), pkg = f.addPackage("physical-" + mode);
+      const source = f.local("public/desktop-bootstrap.html", "<title>Original copy</title>\n");
+      const raw = fs.readFileSync(source), build = f.start();
+      build.observe(pkg.module);
+      const output = materializedOutput(build, f, pkg, "physical-public-output");
+      const target = path.join(output.options.dir, "desktop-bootstrap.html");
+      if (mode !== "missing-copy") write(target, raw);
+      if (mode === "changed-copy") overwriteSameSize(target);
+      if (mode === "late-source") overwriteSameSize(source);
+      assert.throws(() => build.plugin.writeBundle.handler.call(build.context, output.options, output.bundle),
+        /SOURCE_UNREADABLE|PHYSICAL_PUBLIC_OUTPUT_CHANGED|SOURCE_CHANGED/);
+    });
+  }
+});
+
+test("public copy: Rollup, directory-prefix, case and reserved-notice collisions fail before emission", async (t) => {
+  for (const name of ["assets/app.js", "assets/APP.js", "assets", "Assets/other.js",
+    "assets/licenses/frontend/index.json", "assets/licenses"]) {
+    await t.test(name, (t) => {
+      const f = controlledFixture(t), pkg = f.addPackage("public-collision");
+      f.local("public/" + name, "Collision fixture.\n");
+      const build = f.start();
+      build.observe(pkg.module);
+      assert.throws(() => materializedOutput(build, f, pkg, "collision-output"), /OUTPUT_COLLISION/);
+      assert.equal(build.context.emitted.length, 0);
+    });
+  }
+});
+
+test("public copy: source/output overlap and linked directories are refused", async (t) => {
+  for (const mode of ["same", "output-parent", "output-child", "linked-root", "linked-child"]) {
+    await t.test(mode, (t) => {
+      const f = controlledFixture(t);
+      const target = path.join(f.project, "link-target");
+      if (mode.startsWith("linked")) {
+        fs.mkdirSync(target);
+        write(path.join(target, "data.txt"), "Junction target.\n");
+        const link = path.join(f.project, "public", ...(mode === "linked-child" ? ["linked"] : []));
+        fs.mkdirSync(path.dirname(link), { recursive: true });
+        fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+        assert.throws(() => f.start(), /UNSAFE_OUTPUT_DIRECTORY|LINK_REFUSED/);
+      } else {
+        const publicDir = path.join(f.project, "public");
+        const outDir = mode === "same" ? publicDir :
+          mode === "output-parent" ? f.project : path.join(publicDir, "out");
+        assert.throws(() => f.start(f.options(), { build: { copyPublicDir: true, outDir } }),
+          /PUBLIC_OUTPUT_OVERLAP/);
+      }
+    });
+  }
+});
+
+test("public copy: excessive depth and a sparse over-budget source fail before capture", async (t) => {
+  await t.test("depth", (t) => {
+    const f = controlledFixture(t);
+    f.local("public/" + Array(17).fill("nested").join("/") + "/file.txt", "Bounded fixture.\n");
+    assert.throws(() => f.start(), /PUBLIC_ENTRY_BUDGET/);
+  });
+  await t.test("source-bytes", (t) => {
+    const f = controlledFixture(t);
+    const source = f.local("public/oversize.bin", "Small source before size control.\n");
+    const options = f.options();
+    fs.truncateSync(source, 128 * 1024 * 1024 + 1);
+    assert.throws(() => f.start(options), /UNSTABLE_SOURCE/);
+  });
+});
+
+
+test("public copy: empty directories reserve output names and casing", async (t) => {
+  for (const name of ["assets/app.js", "Assets"]) {
+    await t.test(name, (t) => {
+      const f = controlledFixture(t), pkg = f.addPackage("empty-directory-collision");
+      fs.mkdirSync(path.join(f.project, "public", name), { recursive: true });
+      const build = f.start();
+      build.observe(pkg.module);
+      assert.throws(() => materializedOutput(build, f, pkg, "empty-directory-output"), /OUTPUT_COLLISION/);
+      assert.equal(build.context.emitted.length, 0);
+    });
+  }
+});
+
+test("public copy: effective Rollup preparation directories are checked before renderStart", async (t) => {
+  for (const mode of ["object", "array"]) {
+    await t.test(mode, (t) => {
+      const f = controlledFixture(t);
+      f.local("public/desktop-bootstrap.html", "<title>Must remain intact</title>\n");
+      const publicDir = path.join(f.project, "public");
+      const original = fs.readFileSync(path.join(publicDir, "desktop-bootstrap.html"));
+      const output = { dir: publicDir };
+      assert.throws(() => f.start(f.options(), { build: {
+        copyPublicDir: true, outDir: "separate-dist",
+        rollupOptions: { output: mode === "array" ? [{ dir: "other-dist" }, output] : output },
+      } }), /PUBLIC_OUTPUT_OVERLAP/);
+      assert.deepEqual(fs.readFileSync(path.join(publicDir, "desktop-bootstrap.html")), original);
+    });
+  }
 });

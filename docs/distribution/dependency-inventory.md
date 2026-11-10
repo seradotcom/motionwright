@@ -109,6 +109,16 @@ The plugin observes rendered JavaScript modules and writes:
 - the original license/notice text assets referenced by that index;
 - recorded hashes for the original emitted chunks and assets.
 
+The resolved Vite public directory is included when public copying is enabled.
+Its physical file roster must equal the tracked HEAD roster before the build;
+an absent directory is accepted only when no tracked file is missing. Public
+sources enter the tracked-input binding, and their literal copies enter
+original outputs as assets, separately from Rollup's bundle entries. The
+producer rejects links, source/output overlap, case and file/directory-prefix
+collisions, source mutations, and missing or changed physical copies. The public
+tree is limited to 4,096 entries and 16 levels; public bytes share the 128 MiB
+original-output budget with Rollup. Disabled copying creates no public rows.
+
 It revalidates the physical outputs at the write boundary. The index still marks
 CSS/native/other non-chunk dependency closure and full package inventory as
 `NOT_VERIFIED`. A virtual module is not authenticated as an NPM or Git source
@@ -128,6 +138,18 @@ the frontend output directory and is created exclusively.
 Archive retrieval belongs to the controlled candidate build. These verifiers
 do not download archives. A lockfile declaration or an installed
 `node_modules` directory by itself is insufficient archive authentication.
+
+The isolated Windows helper retains the exact original index bytes and a
+bounded physical file/directory observation before parsing the index or
+authenticating archives. Initial and post-bundle phases use distinct create-only
+records. The observation contains paths, kinds, sizes and hashes, including
+unexpected physical members; it contains no asset or archive bodies. A failed
+collection retains its captured index and explicitly incomplete metadata.
+Index and serialized metadata are each limited to 16 MiB. The existing artifact
+step exports only these named records, including on authentication failure.
+This custody begins when the helper is invoked; it cannot recover originals
+from a build that failed before invocation or from a prior unretained run.
+The authentication receipt must bind the same original index digest.
 
 The Vite configuration loader must preserve the physical plugin identity.
 An actual build with the selected Vite version must demonstrate that
@@ -469,7 +491,7 @@ node --test --test-reporter=tap apps/studio/tooling/frontend_dependency_notices.
 | Cargo capture | 41 | Exact source/build scope, captured root executable identity, all-bin selection, bounded streams, subprocess completion and no replay |
 | NPM archive authentication | 17 | Locked archive integrity, safe members and exact package/source/notice identities |
 | Frontend authentication | 12 | Git-bound local modules, original package archives, exact output files/directories and detached receipt |
-| Frontend plugin | 33 including 6 nested cases | Rendered module closure, original notices, output/source mutation and production binding |
+| Frontend plugin | 75 including 37 nested cases | Rendered module closure, original notices, tracked public copies, output/source mutation and production binding |
 
 The five inventory Python suites total 172 cases. The five receipt and package
 suites below add 77 cases, for 249 Python cases in this selection. A
