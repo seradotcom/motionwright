@@ -45,7 +45,7 @@ class StagingBudgetTests(unittest.TestCase):
             binaries = {"native_provider": identity(gn1.MAX_NATIVE_STAGING_BYTES + 1),
                         "manim_runner": identity(4096)}
             env = {"GITHUB_SHA": "1" * 40, "RUNNER_TEMP": str(parent),
-                   "GN1_RECIPIENT_JSON": "{}"}
+                   "GN1_RECIPIENT_JSON": "{}", "GN1_ONE_ORIGINAL_OWNER": "allow-one-original", "GN1_FIRST_SAVE": "deny"}
             with mock.patch.dict(os.environ, env), \
                     mock.patch.dict(sys.modules, {"ci_private_evidence": mock.Mock()}), \
                     mock.patch.object(gn1, "require_runner", return_value="42"), \
@@ -390,7 +390,8 @@ with tempfile.TemporaryDirectory(prefix='gn1-fifo-race-') as tmp:
             source = {"source_sha": "1" * 40, "sdk_sha": "2" * 40}
             args = argparse.Namespace(repo=parent, sdk=parent, expected_source="1" * 40, root=root)
 
-            def fixture_startup(_repo, _sdk, owner, _first, private, marks, _staging):
+            def fixture_startup(_repo, _sdk, owner, _first, private, marks, _staging, *, one_original_save=False):
+                self.assertFalse(one_original_save, "synthetic fixture cannot request an actual Graph Save")
                 # Synthetic unit fixture only; never used as Native evidence.
                 for label, stage in (("bootstrap", "BOOTSTRAP_SOCKET"),
                                      ("restricted", "RESTRICTED_SOCKET")):
@@ -402,7 +403,7 @@ with tempfile.TemporaryDirectory(prefix='gn1-fifo-race-') as tmp:
                     file.truncate(gn1.MAX_PRIVATE_SINGLE + 1)
 
             env = {"GITHUB_SHA": "1" * 40, "RUNNER_TEMP": str(parent),
-                   "GN1_RECIPIENT_JSON": json.dumps(recipient)}
+                   "GN1_RECIPIENT_JSON": json.dumps(recipient), "GN1_ONE_ORIGINAL_OWNER": "allow-one-original", "GN1_FIRST_SAVE": "deny"}
             public_output = io.StringIO()
             with mock.patch.dict(os.environ, env), \
                     mock.patch.object(gn1, "require_runner", return_value="42"), \
