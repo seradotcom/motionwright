@@ -20,6 +20,7 @@ class SemanticSfxSelectedSourceRoutingTests(unittest.TestCase):
         self.assertIn("integrate/phase1-final-composition-20261027", head)
         self.assertIn("'crates/native/src/sfx_mix.rs'", head)
         self.assertIn("'crates/native/tests/semantic_sfx_mix.rs'", head)
+        self.assertIn("'.github/workflows/semantic-sfx-selected-source.yml'", head)
         self.assertNotIn("workflow_dispatch:", head)
         self.assertNotIn("pull_request:", head)
         self.assertNotIn("crates/native/src/original_mix.rs", head)

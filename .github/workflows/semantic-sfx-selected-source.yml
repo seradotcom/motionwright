@@ -6,6 +6,7 @@ on:
     paths:
       - 'crates/native/src/sfx_mix.rs'
       - 'crates/native/tests/semantic_sfx_mix.rs'
+      - '.github/workflows/semantic-sfx-selected-source.yml'
 
 permissions:
   contents: read
