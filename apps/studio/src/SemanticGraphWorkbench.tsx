@@ -887,7 +887,14 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
               onChange={value => change(edge => { if (edge.label_placement) edge.label_placement.offset[key] = value; }, "/label_placement/offset/" + key)} />)}</div>
           </>}
           <BoxFields label={prefix + " label box"} value={e.label_box} onChange={(key, value) => change(edge => { edge.label_box[key] = value; }, "/label_box/" + key)} />
-          {e.waypoints.map((point, i) => <fieldset key={i}><legend>{prefix} waypoint {i + 1}</legend>{(["x", "y"] as const).map(key => <TextField key={key} label={prefix + " waypoint " + (i + 1) + " " + key} value={point[key]} onChange={value => change(edge => { edge.waypoints[i][key] = value; }, "/waypoints")} />)}<button className="text-button" onClick={() => {
+          {e.waypoints.map((point, i) => <fieldset key={i}><legend>{prefix} waypoint {i + 1}</legend>{(["x", "y"] as const).map(key => <TextField key={key} label={prefix + " waypoint " + (i + 1) + " " + key} value={point[key]} onChange={value => {
+            // These points have positional indices, not stable IDs. Editing
+            // an old mounted field after a deletion must not retarget its
+            // value to the next point at the same index.
+            const live = session.draft.input.content.edges.find(edge => edge.id === e.id);
+            if (!live || session.draft.sequence !== draft.sequence || i >= live.waypoints.length) return;
+            change(edge => { edge.waypoints[i][key] = value; }, "/waypoints");
+          }} />)}<button className="text-button" onClick={() => {
             const live = session.draft.input.content.edges.find(edge => edge.id === e.id);
             // Waypoints have positional identities. A second click from the
             // old render must not splice the next waypoint at the shifted index.

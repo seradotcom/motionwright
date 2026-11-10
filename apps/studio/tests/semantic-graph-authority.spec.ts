@@ -159,6 +159,30 @@ test("Graph double waypoint removal cannot consume the next authored waypoint", 
   expect(await requestCount(page)).toBe(0);
 });
 
+test("Graph stale waypoint typing after removal cannot overwrite its successor", async ({ page }) => {
+  await open(page);
+  await page.locator("[data-graph-edge] summary").first().click();
+  await button(page, "Add edge 1 waypoint").click();
+  await button(page, "Add edge 1 waypoint").click();
+  await field(page, "Edge 1 waypoint 2 x").fill("123");
+  await page.evaluate(() => {
+    const priorInput = document.querySelector<HTMLInputElement>(
+      'input[aria-label="Edge 1 waypoint 1 x"]');
+    const remove = [...document.querySelectorAll("[data-graph-edge] button.text-button")]
+      .find(item => item.textContent?.trim() === "Remove edge 1 waypoint 1");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!priorInput || !(remove instanceof HTMLButtonElement) || !setValue)
+      throw new Error("Expected original waypoint input and its removal");
+    // The old input is still mounted until React commits a new render.
+    // Its queued edit must not be retargeted to the shifted next index.
+    remove.click();
+    setValue.call(priorInput, "999");
+    priorInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(field(page, "Edge 1 waypoint 1 x")).toHaveValue("123");
+  expect(await requestCount(page)).toBe(0);
+});
+
 test("Graph flow refuses out-of-interval defaults but can use another free edge", async ({ page }) => {
   await open(page);
   await field(page, "Graph source").selectOption("new:system_flow");
