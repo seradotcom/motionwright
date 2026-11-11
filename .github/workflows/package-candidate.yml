@@ -1172,10 +1172,10 @@ jobs:
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods[class_name]) != 48 or source_methods[cohort_class] != exact_six
-                  or len(methods) != 52 or len(all_methods) != 52
-                  or len(set(all_methods)) != 52 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires 48 plus four exact Storage 6 controls")
+          if (len(source_methods[class_name]) != 52 or source_methods[cohort_class] != exact_six
+                  or len(methods) != 56 or len(all_methods) != 56
+                  or len(set(all_methods)) != 56 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires 52 plus four exact Storage 6 controls")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("schema") != "motionwright.unittest-execution/1"
                   or receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
@@ -1197,11 +1197,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 52
-                      or type(counts.get("passed")) is not int or counts["passed"] != 52
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 56
+                      or type(counts.get("passed")) is not int or counts["passed"] != 56
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 52 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 56 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -1211,8 +1211,8 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{method}" for method in methods}
-              if len(observed) != 52 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 52 source controls exactly once")
+              if len(observed) != 56 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 56 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -1224,14 +1224,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 52, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 56, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=52 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=56 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
