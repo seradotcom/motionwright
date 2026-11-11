@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import threading
+import time
 
 from native_pcm_source_fidelity import inspect_source_pcm16_stereo_content
 from native_mp4_aac_presentation import (
@@ -289,25 +291,112 @@ def inspect_selected_pixels(frames: dict[int, bytes],
     }
 
 
+def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
+    """Supervise one read-only ffprobe with bounded stdout AND stderr in flight.
+
+    A post-hoc len(subprocess.run(..., capture_output=True).stdout) check is not
+    a memory budget: the entire child output was already buffered. No new
+    native effect, original source, or retry is introduced by this supervisor.
+    """
+    limit = 4 * 1024 * 1024
+    ceilings = (limit, 64 * 1024)
+    streams = (bytearray(), bytearray())
+    exceeded = [False, False]
+    read_errors = []
+    wake = threading.Event()
+    process = subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+    )
+
+    def drain(pipe, index):
+        try:
+            while True:
+                chunk = pipe.read(65536)
+                if not chunk:
+                    break
+                room = max(0, ceilings[index] + 1 - len(streams[index]))
+                streams[index].extend(chunk[:room])
+                if len(streams[index]) > ceilings[index]:
+                    exceeded[index] = True
+                    break
+        except OSError as error:
+            read_errors.append(type(error).__name__)
+        finally:
+            try:
+                pipe.close()
+            except OSError as error:
+                read_errors.append(type(error).__name__)
+            wake.set()
+
+    readers = [
+        threading.Thread(target=drain, args=(process.stdout, 0), daemon=True),
+        threading.Thread(target=drain, args=(process.stderr, 1), daemon=True),
+    ]
+    timed_out = False
+    deadline = time.monotonic() + timeout
+    for thread in readers:
+        thread.start()
+    try:
+        while process.poll() is None:
+            if any(exceeded) or read_errors:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            wake.wait(min(remaining, 0.05))
+            wake.clear()
+    finally:
+        if any(exceeded) or read_errors or timed_out:
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            process.wait(timeout=2)
+        for thread in readers:
+            thread.join(timeout=2)
+        for pipe in (process.stdout, process.stderr):
+            pipe.close()
+
+    require(not any(thread.is_alive() for thread in readers)
+            and not read_errors, "original_ffprobe_pipe_uncertain")
+    require(not exceeded[0], over_limit)
+    require(not exceeded[1], "original_ffprobe_stderr_unbounded")
+    if timed_out:
+        raise subprocess.TimeoutExpired(argv, timeout,
+                                        output=bytes(streams[0]),
+                                        stderr=bytes(streams[1]))
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(
+            process.returncode, argv, output=bytes(streams[0]),
+            stderr=bytes(streams[1]),
+        )
+    return bytes(streams[0])
+
+
 def ffprobe_media(media: Path, executable: str) -> dict:
-    proc = subprocess.run(
+    first = _bounded_ffprobe(
         [executable, "-v", "error", "-show_streams",
          "-select_streams", "v:0", "-show_frames", "-of", "json", str(media)],
-        capture_output=True, timeout=90, check=True,
+        timeout=90, over_limit="original_ffprobe_receipt_unbounded",
     )
-    require(len(proc.stdout) <= 4 * 1024 * 1024,
-            "original_ffprobe_receipt_unbounded")
-    partial = json.loads(proc.stdout)
+    require(len(first) <= 4 * 1024 * 1024, "original_ffprobe_receipt_unbounded")
+    partial = json.loads(first)
     # A second independent full inventory prevents a fake video-only master.
-    all_streams = subprocess.run(
+    second = _bounded_ffprobe(
         [executable, "-v", "error", "-show_streams", "-of", "json", str(media)],
-        capture_output=True, timeout=60, check=True,
+        timeout=60, over_limit="original_ffprobe_stream_inventory_unbounded",
     )
-    # The independent all-stream inventory has the same finite receipt bound
-    # as the frame probe. Never parse an oversized second original as proof.
-    require(len(all_streams.stdout) <= 4 * 1024 * 1024,
+    require(len(second) <= 4 * 1024 * 1024,
             "original_ffprobe_stream_inventory_unbounded")
-    partial["streams"] = json.loads(all_streams.stdout)["streams"]
+    partial["streams"] = json.loads(second)["streams"]
     return inspect_video_probe(partial)
 
 
