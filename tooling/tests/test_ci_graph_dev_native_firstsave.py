@@ -257,6 +257,7 @@ class OneSaveLifecycleTests(unittest.TestCase):
             self.root / "no-native-binary", self.database,
             self.root / "no-real-connection", self.private, {}, read_only=read_only)
         session.stderr = (self.private / (session.label + ".stderr.original")).open("xb")
+        self.addCleanup(session.stderr.close)
         def complete_inert_stderr():
             # This fixture has NO process or Native Host. Model only a real
             # empty original pipe EOF after its exclusive sink is synchronized.
@@ -267,7 +268,8 @@ class OneSaveLifecycleTests(unittest.TestCase):
                     "eof": True, "over_cap": False, "read_error": None,
                     "reader_finished": True, "complete": True,
                     "automatic_retry": False}
-        session.stderr_capture = SimpleNamespace(finish=complete_inert_stderr)
+        session.stderr_capture = SimpleNamespace(
+            finish=complete_inert_stderr, uncertain=lambda: False)
         output = SimpleNamespace(fileno=lambda: 8, close=lambda: None)
         session.child = SimpleNamespace(
             stdin=None, stdout=output, wait=lambda timeout: 0)
@@ -303,6 +305,7 @@ class OneSaveLifecycleTests(unittest.TestCase):
             (self.private / "graph-native-session.terminal.original.json").read_text())
         self.assertTrue(terminal["stderr_over_cap"])
         self.assertFalse(terminal["stderr_retained_complete"])
+        self.assertTrue(session.stderr_capture.uncertain())
         self.assertGreater(terminal["stderr_observed_bytes_at_least"],
                            save.MAX_ORIGINAL)
         self.assertFalse(terminal["original_reply_complete"])
@@ -331,6 +334,7 @@ class OneSaveLifecycleTests(unittest.TestCase):
             (self.private / "graph-native-session.terminal.original.json").read_text())
         self.assertTrue(terminal["stderr_retained_complete"])
         self.assertFalse(terminal["stderr_over_cap"])
+        self.assertFalse(session.stderr_capture.uncertain())
         self.assertEqual(terminal["stderr_bytes"], len(original))
         self.assertEqual(terminal["stderr_sha256"], save.digest(original))
         self.assertTrue(terminal["original_reply_complete"])
@@ -376,6 +380,61 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertTrue(terminal["stdin_close_failed"])
         self.assertFalse(terminal["original_reply_complete"])
         self.assertEqual(original.code, "ORIGINAL_MUTATION_UNKNOWN")
+
+    def test_stderr_custody_failure_denies_next_original_request_pre_dispatch(self):
+        # An already-overrun stderr stream forbids a subsequent Native effect
+        # even while the original process still reports a live PID.
+        session, _ = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        writes = []
+        session.child.stdin = SimpleNamespace(
+            write=lambda body: writes.append(body),
+            flush=lambda: None, close=lambda: None)
+        session.stderr_capture.uncertain = lambda: True
+        with patch.object(save, "read_live_stdout",
+                          side_effect=AssertionError("never read Native stdout")):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_STDERR_CUSTODY_UNCERTAIN") as denied:
+                session.request("second-native-effect", "apply_change",
+                                {"not_dispatched": True})
+        self.assertTrue(denied.exception.unknown)
+        self.assertEqual(writes, [])
+        self.assertFalse(
+            (self.private / "second-native-effect.request.original.jsonl").exists())
+
+    def test_stderr_overrun_after_original_reply_is_unknown_without_ack(self):
+        # The exact original JSONL bytes must survive, but an already observed
+        # stream overrun cannot turn a returned 'ok' into confirmed authority.
+        session, _ = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        session.child.stdin = SimpleNamespace(
+            write=lambda body: len(body),
+            flush=lambda: None, close=lambda: None)
+        state = {"uncertain": False}
+        session.stderr_capture.uncertain = lambda: state["uncertain"]
+        def original_reply(_pipe, **_kwargs):
+            body = json.loads(
+                (self.private / "returned-but-overrun.request.original.jsonl").read_text())
+            state["uncertain"] = True
+            return (json.dumps({
+                "id": body["id"], "ok": True,
+                "result": {"this_is_not_a_confirmed_save": True},
+            }) + "\n").encode()
+        with patch.object(save, "read_live_stdout", side_effect=original_reply):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_STDERR_CUSTODY_UNCERTAIN") as denied:
+                session.request("returned-but-overrun", "apply_change",
+                                {"not_dispatched": True})
+        self.assertTrue(denied.exception.unknown)
+        self.assertEqual(
+            json.loads((self.private /
+                "returned-but-overrun.response.original.jsonl").read_text())["ok"],
+            True)
+        self.assertEqual(state["uncertain"], True)
 
     def test_unterminated_native_jsonl_reply_is_retained_as_partial_original(self):
         # The original JSONL read observed bytes, but no newline/terminal
