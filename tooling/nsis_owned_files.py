@@ -455,6 +455,33 @@ def _publish_include(
 
 
 
+def _pinned_internal_main_paths(root: Path, arch: str) -> tuple[Path, Path, Path]:
+    """Use the exact reviewed internal build layout, never a Tauri path alias.
+
+    Tauri may emit a lexical source/output path containing parent components.
+    Only the source checkout and arch that passed distribution admission select
+    these paths. This is for the isolated CI candidate, not public release.
+    """
+    triples = {
+        "x64": "x86_64-pc-windows-msvc",
+        "x86": "i686-pc-windows-msvc",
+        "arm64": "aarch64-pc-windows-msvc",
+    }
+    if arch not in triples:
+        raise CaptureError("distribution_admission_main_arch_unsupported")
+    canonical_root = Path(root).resolve(strict=True)
+    if canonical_root != root or not canonical_root.is_absolute():
+        raise CaptureError("distribution_admission_source_root_not_canonical")
+    _require_plain_parents(canonical_root)
+    release = canonical_root / "target" / "windows-captured" / triples[arch] / "release"
+    bundle = release / "nsis" / arch
+    return (
+        _validated_path(release / "motionwright-desktop.exe"),
+        _validated_path(bundle / "mw-owned-MW_MAIN.bin"),
+        _validated_path(bundle / "mw-owned-MW_MAIN.nsh"),
+    )
+
+
 def capture_owned_file(
     source: str | os.PathLike[str],
     capture: str | os.PathLike[str],
@@ -754,11 +781,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source")
     parser.add_argument("--capture")
-    parser.add_argument("--include", required=True)
+    parser.add_argument("--include")
     parser.add_argument("--symbol")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--emit-predecessor", action="store_true")
     modes.add_argument("--prepare-distribution", action="store_true")
+    parser.add_argument("--from-pinned-build", action="store_true")
     parser.add_argument("--application")
     parser.add_argument("--bundle-id")
     parser.add_argument("--arch")
@@ -767,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.emit_predecessor:
+            if args.include is None or args.from_pinned_build:
+                raise CaptureError("predecessor include required and pinned build forbidden")
             if any(value is not None for value in (args.source, args.capture, args.symbol)):
                 raise CaptureError("predecessor and single-file capture arguments cannot be mixed")
             result = emit_predecessor_include(
@@ -776,8 +806,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result, sort_keys=True))
         else:
-            if not all(value is not None for value in (args.source, args.capture, args.symbol)):
-                raise CaptureError("source, capture and symbol are required for a single-file capture")
             if args.prepare_distribution:
                 if args.symbol != "MW_MAIN" or args.arch is None:
                     raise CaptureError("distribution_admission_main_and_arch_required")
@@ -786,24 +814,51 @@ def main(argv: list[str] | None = None) -> int:
                     args.target_main_sha256,
                 )):
                     raise CaptureError("predecessor identity requires --emit-predecessor")
-                from source_lock_admission import verify_distribution_admission
+                from types import ModuleType
 
-                # The real template selects this mode literally. Read caller-pinned
-                # environment inputs directly; never interpolate them into NSIS.
+                # This helper's original sibling is the only policy source.
+                # An embedded Python may otherwise import a different worktree
+                # through ambient sys.path and mis-admit the pinned build.
                 helper = Path(__file__).absolute()
                 _require_plain_parents(helper)
                 _require_regular(helper.lstat(), "helper")
-                payload = verify_distribution_admission(
-                    helper.resolve(strict=True).parents[1],
+                sibling = helper.with_name("source_lock_admission.py")
+                _require_plain_parents(sibling)
+                _require_regular(sibling.lstat(), "source admission")
+                admission = ModuleType("_motionwright_nsis_source_lock_admission")
+                admission.__file__ = str(sibling)
+                admission.__package__ = ""
+                exec(compile(sibling.read_bytes(), str(sibling), "exec",
+                             dont_inherit=True), admission.__dict__)
+                root = helper.parents[1]
+                payload = admission.verify_distribution_admission(
+                    root,
                     arch=args.arch,
                     record_path=os.environ.get("MW_NSIS_DISTRIBUTION_ADMISSION"),
                     record_sha256=os.environ.get("MW_NSIS_DISTRIBUTION_ADMISSION_SHA256"),
                 )
+                if args.from_pinned_build:
+                    if any(value is not None for value in (
+                        args.source, args.capture, args.include,
+                    )):
+                        raise CaptureError("pinned main capture cannot accept caller paths")
+                    source, capture, include = _pinned_internal_main_paths(root, args.arch)
+                else:
+                    if not all(value is not None for value in (
+                        args.source, args.capture, args.include,
+                    )):
+                        raise CaptureError("source, capture and include are required")
+                    source, capture, include = args.source, args.capture, args.include
                 capture_owned_file(
-                    args.source, args.capture, args.include, args.symbol,
-                    expected_payload=payload,
+                    source, capture, include, args.symbol, expected_payload=payload,
                 )
             else:
+                if args.from_pinned_build:
+                    raise CaptureError("pinned main capture requires distribution admission")
+                if not all(value is not None for value in (
+                    args.source, args.capture, args.include, args.symbol,
+                )):
+                    raise CaptureError("source, capture, include and symbol are required")
                 if args.symbol == "MW_MAIN":
                     raise CaptureError("distribution_admission_mode_required")
                 if any(value is not None for value in (
