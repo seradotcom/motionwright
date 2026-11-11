@@ -86,6 +86,27 @@ fn decode_recorded(
 }
 
 #[test]
+fn confirmed_recovery_transport_is_required_before_using_even_a_valid_record() {
+    let fixture = upsert_fixture();
+    let record = RecoveryRecord::Recorded {
+        identity: fixture.prepared.identity().clone(),
+        result: fixture.result,
+    };
+    // The DTO itself is valid, but a failed/uncertain read transport may not
+    // promote it to Recorded, even though no new mutation is dispatched.
+    assert!(fixture.prepared.decode_read::<()>(Ok(&record)).is_ok());
+    assert_eq!(
+        require_confirmed_recovery_transport(true),
+        Err(GraphRecoveryReadError::ReadFailed)
+    );
+    assert!(require_confirmed_recovery_transport(false).is_ok());
+    assert_eq!(
+        GraphRecoveryReadError::ReadFailed.to_string(),
+        "Graph recovery read could not be completed"
+    );
+}
+
+#[test]
 fn graph_recovery_prepares_only_closed_original_graph_requests() {
     let fixture = upsert_fixture();
     let original = json!({

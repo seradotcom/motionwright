@@ -14,6 +14,8 @@ on:
       - 'crates/service/examples/studio_review_session.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
       - 'apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_recovery.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_recovery_tests.rs'
       # Only source modules consumed by these bounded real Graph transports.
       # Broader unrelated Native changes use their separate impact lanes.
       - 'crates/native/src/production/graph_authoring.rs'
@@ -101,13 +103,14 @@ jobs:
           assert required.issubset(passed)
           assert re.search(rf"^test result: ok\. {len(passed)} passed; 0 failed;", raw, re.M)
           PY
-      - name: Check exact original Native mutation failure projections
+      - name: Check exact Graph mutation and recovery failure projections
         run: |
           set -euo pipefail
           test_index=0
           for test_name in \
             semantic_graph_mutation_error::tests::original_native_envelope_is_the_only_source_of_outcome_knownness \
-            semantic_graph_mutation_error::tests::invalid_keys_never_emit_a_typed_error_or_reflect_private_input
+            semantic_graph_mutation_error::tests::invalid_keys_never_emit_a_typed_error_or_reflect_private_input \
+            semantic_graph_recovery::tests::confirmed_recovery_transport_is_required_before_using_even_a_valid_record
           do
             test_index=$((test_index + 1))
             log_path="$RUNNER_TEMP/graph-mutation-$test_index.tests.original.log"

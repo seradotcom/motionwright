@@ -648,12 +648,17 @@ async fn semantic_graph_operation_recovery(
         .begin("recovery", Some(prepared.request_id()))?;
     let client = client.with_transport_custody(attempt.custody());
     let result = client.operation_recovery(prepared.identity()).await;
+    let transport_failed = attempt.custody().has_unconfirmed_or_failed_invocation();
     if !matches!(
         attempt.retain_result(&result),
         GraphExchangeRetention::Published
     ) {
         return Err("Graph recovery read could not retain its original evidence".into());
     }
+    // Neither a returned historical receipt nor a local read error can
+    // resolve the original mutation while this read transport is uncertain.
+    semantic_graph_recovery::require_confirmed_recovery_transport(transport_failed)
+        .map_err(|error| error.to_string())?;
     let report = result.map_err(|_| "Graph recovery read is unavailable".to_owned())?;
     // Read errors never classify the original mutation. Only the closed
     // historical receipt decoder can reconcile a Recorded response.

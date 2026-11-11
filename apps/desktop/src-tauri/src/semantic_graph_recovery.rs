@@ -116,6 +116,19 @@ impl std::fmt::Display for GraphRecoveryReadError {
 
 impl std::error::Error for GraphRecoveryReadError {}
 
+/// A recovered historical receipt is authoritative only when its own read
+/// transport finished. Preserve the original mutation as UNKNOWN otherwise;
+/// a failed recovery read never proves application or non-application.
+pub(crate) fn require_confirmed_recovery_transport(
+    transport_failed: bool,
+) -> Result<(), GraphRecoveryReadError> {
+    if transport_failed {
+        Err(GraphRecoveryReadError::ReadFailed)
+    } else {
+        Ok(())
+    }
+}
+
 impl GraphRecoveryRequest {
     pub(crate) fn prepare(self) -> Result<PreparedGraphRecovery, GraphRecoveryReadError> {
         // Preserve the original spelling, including case; parsing is validation
