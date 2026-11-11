@@ -233,6 +233,26 @@ class Film180G2SourceTests(unittest.TestCase):
         self.assertFalse(result["original_PNG_pixel_equality_claim"])
         self.assertFalse(result["H264_perceptual_fidelity_claim"])
 
+    def test_all180_hash_decoder_uses_a_precharged_128k_pipe_budget(self):
+        # No media decode/Native Host: the real orchestrator function runs
+        # against a synthetic original file and source-only 180-frame hashes.
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "original-source-only.mp4"
+            video.write_bytes(b"source-owned-no-render")
+            manifest = self.decoded_all_180_manifest()
+            with mock.patch(
+                    "native_film180_media_readback._bounded_readonly_output",
+                    return_value=manifest) as bounded:
+                result = runner.actual_all180_original_RGB_digests(video, "ffmpeg")
+            bounded.assert_called_once()
+            self.assertEqual(bounded.call_args.kwargs["stdout_limit"], 128 * 1024)
+            self.assertEqual(bounded.call_args.kwargs["timeout"], runner.MEDIA_TIMEOUT)
+            self.assertEqual(bounded.call_args.kwargs["over_limit"],
+                             "all180_decoded_RGB_hash_receipt_budget")
+            self.assertEqual(result["source_frame_count"], 180)
+            self.assertEqual(result["source_master_sha256"],
+                             hashlib.sha256(video.read_bytes()).hexdigest())
+
     def test_video_with_missing_179th_original_RGB_frame_fails_closed(self):
         with self.assertRaisesRegex(runner.Film180G2Rejected, "frames_not_actually_decoded"):
             runner.parse_original_180_framemd5(

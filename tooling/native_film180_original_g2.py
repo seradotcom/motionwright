@@ -612,13 +612,21 @@ def actual_all180_original_RGB_digests(video: Path, ffmpeg: str) -> dict:
     require(video.is_absolute() and video.is_file() and not video.is_symlink(),
             "all180_original_native_MP4_source_not_regular_absolute")
     saved_sha = digest(video)
-    result = subprocess.run(
+    # The original all-180 SHA manifest is at most 128 KiB. Collecting with
+    # subprocess.run(capture_output=True) before that check would buffer an
+    # unbounded decoder stream, even though no RGB frames should be emitted.
+    # Use the same one-shot read-only pipe supervisor as Film180 media readback;
+    # no replacement render, Native callback, or retry is admitted.
+    from native_film180_media_readback import _bounded_readonly_output
+    raw = _bounded_readonly_output(
         [ffmpeg, "-nostdin", "-v", "error", "-i", str(video), "-map", "0:v:0",
          "-an", "-fps_mode", "passthrough", "-pix_fmt", "rgb24",
          "-f", "framemd5", "-hash", "sha256", "pipe:1"],
-        capture_output=True, timeout=MEDIA_TIMEOUT, check=True,
+        timeout=MEDIA_TIMEOUT,
+        stdout_limit=128 * 1024,
+        over_limit="all180_decoded_RGB_hash_receipt_budget",
     )
-    original = parse_original_180_framemd5(result.stdout)
+    original = parse_original_180_framemd5(raw)
     require(saved_sha == digest(video),
             "original_AV_master_mutated_during_full_RGB_decode")
     original["source_master_sha256"] = saved_sha

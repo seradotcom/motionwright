@@ -486,6 +486,19 @@ class OriginalFFprobeProcessBoundTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1.7)
 
 
+    def test_all180_hash_manifest_pipe_rejects_128k_plus_one_in_flight(self):
+        # A source-only Python process exercises the real pipe ceiling. No
+        # FFmpeg launch, media decoding, Native effect, or copied frame hashes.
+        command = [sys.executable, "-I", "-c",
+                   "import sys;sys.stdout.buffer.write(b'h'*(131072+1))"]
+        with self.assertRaisesRegex(
+                verifier.OriginalMediaMismatch,
+                "^all180_decoded_RGB_hash_receipt_budget$"):
+            verifier._bounded_readonly_output(
+                command, timeout=8, stdout_limit=128 * 1024,
+                over_limit="all180_decoded_RGB_hash_receipt_budget",
+            )
+
     def test_selected_rgb_pipe_has_its_exact_precharged_output_ceiling(self):
         # Inert decoder, not an MP4 or Native Host. A small output cap lets
         # this test check the real stream boundary without allocating 75 MiB.
