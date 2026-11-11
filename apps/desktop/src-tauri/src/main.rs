@@ -3180,14 +3180,15 @@ async fn apply_semantic_graph_change(
             &request.request_id,
         )));
     }
-    // The outer error is local/transport; only the original typed Native
-    // envelope can establish outcome knownness. Never infer non-application.
+    // Only the original typed Native error with confirmed transport can
+    // establish knownness. An unconfirmed transport outranks even that error.
     let report = result
         .map_err(|_| graph_failure_value(GraphInvokeFailure::unknown(&request.request_id)))?;
     let receipt = report.outcome().map_err(|_| {
         graph_failure_value(GraphInvokeFailure::from_original_native_or_unknown(
             &request.request_id,
             report.original_native_error(),
+            transport_failed,
         ))
     })?;
     if transport_failed {
