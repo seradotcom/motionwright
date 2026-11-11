@@ -126,7 +126,14 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         self.assertIn("tauri bundle --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bundles nsis", windows)
         self.assertIn("--no-binary-patching --no-sign --ci", windows)
         self.assertIn("-- cargo build --locked --release --bins --package motionwright-desktop", windows)
-        self.assertIn("--features tauri/custom-protocol --tauri-generated-schemas", windows)
+        self.assertIn("--features tauri/custom-protocol --tauri-generated-schemas "
+                      "--tauri-generated-command-permissions", windows)
+        self.assertIn("python -B -m unittest test_tauri_generated_permissions "
+                      "test_tauri_generated_metadata -v", text)
+        for path in ("scripts/tauri_generated_permissions.py",
+                     "scripts/test_tauri_generated_permissions.py",
+                     "scripts/test_tauri_generated_metadata.py"):
+            self.assertEqual(text.count('- "' + path + '"'), 2)
         self.assertIn("--require-cargo-binding", windows)
         inventory_command = "python -B tooling/ci_windows_dependency_capture.py inventory"
         self.assertLess(windows.index(inventory_command),
@@ -152,6 +159,8 @@ class InternalWindowsCandidateTests(unittest.TestCase):
             "generated-metadata/tauri/desktop-schema.json",
             "generated-metadata/tauri/windows-schema.json",
             "generated-metadata/cargo-markers/*.bin",
+            "generated-metadata/tauri-command-source/build.rs",
+            "generated-metadata/tauri-command-permissions/*.toml",
         }
         originals = {"ci-evidence/internal-windows-cargo/state/" + name for name in original_names}
         originals.update({"ci-evidence/internal-windows-cargo/frontend/" + name
