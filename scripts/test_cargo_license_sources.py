@@ -480,6 +480,35 @@ class CargoLicenseSourcesTests(unittest.TestCase):
         self.assert_blocked(result, "license_expression_malformed")
         self.assertEqual(result["texts"], {})
 
+    def test_five_original_cargo_legacy_dual_license_literals_are_preserved(self):
+        # Cargo source declarations are not choices of a legal license or SPDX
+        # normalization. Keep each original literal and original notice bytes.
+        literals = ("MIT/Apache-2.0", "BSD-3-Clause/MIT",
+                    "Apache-2.0/MIT", "Apache-2.0 / MIT",
+                    "Unlicense/MIT")
+        for index, literal in enumerate(literals):
+            with self.subTest(expression=literal):
+                component = self.fixture.registry(
+                    name=f"legacy_source_{index}", license_expression=literal)
+                result = self.fixture.collect([component])
+                self.assert_verified(result)
+                self.assertEqual(result["components"][0]["license_expression"], literal)
+                self.assertEqual(result["texts"][sha(NOTICE)], NOTICE)
+                self.assertEqual(result["components"][0]["source_authentication"]
+                                 ["license_expression_check"],
+                                 "CARGO_LEGACY_DUAL_LITERAL_PRESERVED_NO_CHOICE")
+                self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
+
+    def test_other_slash_notation_is_not_silently_normalized(self):
+        for index, literal in enumerate(("MIT / Apache-2.0", "MIT/MIT",
+                                         "MIT/Unknown", "MIT/Apache-2.0/BSD",
+                                         "Apache-2.0 /MIT", "MIT // Apache-2.0")):
+            with self.subTest(expression=literal):
+                component = self.fixture.registry(
+                    name=f"unreviewed_source_{index}", license_expression=literal)
+                self.assert_blocked(self.fixture.collect([component]),
+                                    "license_expression_malformed")
+
     def test_notice_byte_budget_is_enforced_and_original_is_unchanged(self):
         component = self.fixture.registry(notices={"LICENSE": b"x" * 65})
         original = (Path(component["manifest_path"]).parent / "LICENSE").read_bytes()

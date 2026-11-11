@@ -46,6 +46,12 @@ _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _NOTICE = re.compile(r"(?:LICENSE|LICENCE|COPYING|NOTICE|COPYRIGHT)(?:[._-].*)?\Z", re.I)
+# Exact five historical Cargo literals observed in the pinned candidate.
+# Do not reinterpret these as SPDX OR, select a license, or grant distribution.
+_LEGACY_CARGO_DUAL_LITERALS = frozenset({
+    "MIT/Apache-2.0", "BSD-3-Clause/MIT", "Apache-2.0/MIT",
+    "Apache-2.0 / MIT", "Unlicense/MIT",
+})
 _RESERVED = {"con", "prn", "aux", "nul"} | {
     f"{stem}{number}" for stem in ("com", "lpt") for number in range(1, 10)
 }
@@ -816,6 +822,10 @@ def _expression(value: Any) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip() or len(value) > 4096:
         _fail("license_expression_malformed", "The license expression is absent, empty, or oversized.")
+    if value in _LEGACY_CARGO_DUAL_LITERALS:
+        # Preserve original historical Cargo spelling, without normalizing to
+        # SPDX, interpreting either side, or conferring any license right.
+        return value
     tokens = re.findall(r"\(|\)|[A-Za-z0-9][A-Za-z0-9.+:-]*", value)
     if re.sub(r"\s+", "", value) != "".join(tokens):
         _fail("license_expression_malformed", "The license expression has unsupported syntax.")
@@ -1146,7 +1156,10 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
             {"source_path": "/".join(path), **descriptor}
             for path, descriptor in sorted(capture.files.items())
         ]
-        capture.authentication["license_expression_check"] = "GRAMMAR_ONLY_NO_ALTERNATIVE_SELECTED"
+        capture.authentication["license_expression_check"] = (
+            "CARGO_LEGACY_DUAL_LITERAL_PRESERVED_NO_CHOICE"
+            if expression in _LEGACY_CARGO_DUAL_LITERALS
+            else "GRAMMAR_ONLY_NO_ALTERNATIVE_SELECTED")
         result["source_authentication"] = capture.authentication
         result["notices"] = notices
     except _Problem as problem:
