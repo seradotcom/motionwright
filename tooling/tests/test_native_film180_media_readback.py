@@ -432,6 +432,36 @@ class Film180HashReadBoundsTests(unittest.TestCase):
                     verifier.digest(path, 100, hashlib.sha256(data).hexdigest())
 
 
+class OriginalFFprobeProcessBoundTests(unittest.TestCase):
+    """Inert Python child only: actual pipe bytes, no media or Native Host."""
+
+    def test_small_read_only_child_retains_exact_stdout(self):
+        command = [sys.executable, "-I", "-c",
+                   "import sys;sys.stdout.buffer.write(b'original\\n');"
+                   "sys.stderr.buffer.write(b'bounded')"]
+        self.assertEqual(
+            verifier._bounded_ffprobe(command, timeout=8,
+                over_limit="original_ffprobe_receipt_unbounded"),
+            b"original\n",
+        )
+
+    def test_oversized_child_stdout_is_rejected_while_streaming(self):
+        command = [sys.executable, "-I", "-c",
+                   "import sys;sys.stdout.buffer.write(b'x'*(4194304+1))"]
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^original_ffprobe_receipt_unbounded$"):
+            verifier._bounded_ffprobe(command, timeout=8,
+                                     over_limit="original_ffprobe_receipt_unbounded")
+
+    def test_oversized_child_stderr_is_also_bounded_in_flight(self):
+        command = [sys.executable, "-I", "-c",
+                   "import sys;sys.stderr.buffer.write(b'y'*(65536+1))"]
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^original_ffprobe_stderr_unbounded$"):
+            verifier._bounded_ffprobe(command, timeout=8,
+                                     over_limit="original_ffprobe_receipt_unbounded")
+
+
 class OriginalFFprobeStreamBoundTests(unittest.TestCase):
     """Both original inventories have an equal finite JSON receipt ceiling."""
 
@@ -453,9 +483,8 @@ class OriginalFFprobeStreamBoundTests(unittest.TestCase):
         first, second = self.data(oversized=True)
         self.assertLess(len(first), 4 * 1024 * 1024)
         self.assertGreater(len(second), 4 * 1024 * 1024)
-        with mock.patch.object(verifier.subprocess, "run",
-                               side_effect=[mock.Mock(stdout=first),
-                                            mock.Mock(stdout=second)]) as run:
+        with mock.patch.object(verifier, "_bounded_ffprobe",
+                               side_effect=[first, second]) as run:
             with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
                                         "^original_ffprobe_stream_inventory_unbounded$"):
                 verifier.ffprobe_media(Path("not-dispatched.mp4"), "ffprobe")
@@ -463,9 +492,8 @@ class OriginalFFprobeStreamBoundTests(unittest.TestCase):
 
     def test_two_small_original_stream_inventories_are_supported(self):
         first, second = self.data()
-        with mock.patch.object(verifier.subprocess, "run",
-                               side_effect=[mock.Mock(stdout=first),
-                                            mock.Mock(stdout=second)]) as run:
+        with mock.patch.object(verifier, "_bounded_ffprobe",
+                               side_effect=[first, second]) as run:
             observed = verifier.ffprobe_media(Path("not-dispatched.mp4"), "ffprobe")
             self.assertEqual(observed["video_frames_decoded"], verifier.FRAME_COUNT)
             self.assertEqual(observed["audio_codec"], "aac")
