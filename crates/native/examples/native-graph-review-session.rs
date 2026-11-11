@@ -831,11 +831,21 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         // The existing mutation DTO conservatively reports UNKNOWN for an
         // unclassified outer/local error. Even if that local Error has its
         // default knownness, this client receives no further callback credit.
-        // A genuine known Native rejection keeps its original typed status.
+        // A genuine known Native rejection retains its typed status only
+        // when the original transport has also confirmed its completion.
         let unclassified_mutation_failure = match &report {
             Err(_) => true,
             Ok(report) => report.outcome().is_err() && report.original_native_error().is_none(),
         };
+        // Even a typed known Native error cannot restore admission while
+        // another original transport invocation remains unconfirmed.
+        self.callbacks.observe_return(
+            transport_failed,
+            report
+                .as_ref()
+                .ok()
+                .and_then(|entry| entry.original_native_error()),
+        );
         if unclassified_mutation_failure {
             self.callbacks.stop();
         }
@@ -855,6 +865,7 @@ impl shared_session::GraphBackend for NativeGraphBackend {
                     GraphInvokeFailure::from_original_native_or_unknown(
                         request_id,
                         report.original_native_error(),
+                        transport_failed,
                     ),
                 )),
             },

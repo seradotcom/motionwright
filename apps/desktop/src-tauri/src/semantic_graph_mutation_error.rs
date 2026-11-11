@@ -80,12 +80,18 @@ impl GraphInvokeFailure {
         Self::new(request_id, false)
     }
 
-    /// Only a typed failure from the original Native envelope can provide
-    /// outcome knownness. An outer transport/local/decoder error never can.
+    /// Only a typed failure from the original Native envelope can establish
+    /// knownness when the original transport has confirmed its completion.
+    /// A pending, failed or dropped transport outranks even a known typed
+    /// rejection: its exact original error remains private, never an ACK.
     pub(crate) fn from_original_native_or_unknown(
         request_id: &str,
         original_native: Option<&NativeError>,
+        transport_failed: bool,
     ) -> Result<Self, InvalidGraphRequestId> {
+        if transport_failed {
+            return Self::unknown(request_id);
+        }
         match original_native {
             Some(error) => Self::from_native(request_id, error),
             None => Self::unknown(request_id),
@@ -202,25 +208,30 @@ mod tests {
     }
 
     #[test]
-    fn original_native_envelope_is_the_only_source_of_outcome_knownness() {
-        assert_closed(
-            &GraphInvokeFailure::from_original_native_or_unknown(ORIGINAL_KEY, None).unwrap(),
-            ORIGINAL_KEY,
-            false,
-        );
-        let known = NativeError::new(ErrorCode::BackendFailed, PRIVATE);
-        assert_closed(
-            &GraphInvokeFailure::from_original_native_or_unknown(ORIGINAL_KEY, Some(&known))
-                .unwrap(),
-            ORIGINAL_KEY,
-            true,
-        );
+    fn unconfirmed_original_transport_overrules_even_a_known_native_rejection() {
+        let known = NativeError::new(ErrorCode::PolicyDenied, PRIVATE);
         let uncertain = NativeError::invalid(PRIVATE).uncertain();
-        assert_closed(
-            &GraphInvokeFailure::from_original_native_or_unknown(ORIGINAL_KEY, Some(&uncertain))
-                .unwrap(),
-            ORIGINAL_KEY,
-            false,
+        let original_known = serde_json::to_value(&known).unwrap();
+        let original_uncertain = serde_json::to_value(&uncertain).unwrap();
+        for transport_failed in [false, true] {
+            for native in [None, Some(&known), Some(&uncertain)] {
+                let expected_known =
+                    !transport_failed && native.is_some_and(|error| error.outcome_known);
+                let projected = GraphInvokeFailure::from_original_native_or_unknown(
+                    ORIGINAL_KEY,
+                    native,
+                    transport_failed,
+                )
+                .unwrap();
+                assert_closed(&projected, ORIGINAL_KEY, expected_known);
+            }
+        }
+        // A later failure to confirm the transport does not rewrite or leak
+        // the actual typed Core errors retained in original private custody.
+        assert_eq!(serde_json::to_value(&known).unwrap(), original_known);
+        assert_eq!(
+            serde_json::to_value(&uncertain).unwrap(),
+            original_uncertain
         );
     }
 
@@ -262,8 +273,17 @@ mod tests {
             for rejected in [
                 GraphInvokeFailure::before_dispatch(&key),
                 GraphInvokeFailure::from_native(&key, &native_error),
-                GraphInvokeFailure::from_original_native_or_unknown(&key, None),
-                GraphInvokeFailure::from_original_native_or_unknown(&key, Some(&native_error)),
+                GraphInvokeFailure::from_original_native_or_unknown(&key, None, false),
+                GraphInvokeFailure::from_original_native_or_unknown(
+                    &key,
+                    Some(&native_error),
+                    false,
+                ),
+                GraphInvokeFailure::from_original_native_or_unknown(
+                    &key,
+                    Some(&native_error),
+                    true,
+                ),
                 GraphInvokeFailure::unknown(&key),
             ] {
                 let error = rejected.unwrap_err();
