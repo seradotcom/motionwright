@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
@@ -256,10 +257,84 @@ class OneSaveLifecycleTests(unittest.TestCase):
             self.root / "no-native-binary", self.database,
             self.root / "no-real-connection", self.private, {}, read_only=read_only)
         session.stderr = (self.private / (session.label + ".stderr.original")).open("xb")
+        def complete_inert_stderr():
+            # This fixture has NO process or Native Host. Model only a real
+            # empty original pipe EOF after its exclusive sink is synchronized.
+            session.stderr.flush()
+            os.fsync(session.stderr.fileno())
+            session.stderr.close()
+            return {"observed_bytes_at_least": 0, "retained_prefix_bytes": 0,
+                    "eof": True, "over_cap": False, "read_error": None,
+                    "reader_finished": True, "complete": True,
+                    "automatic_retry": False}
+        session.stderr_capture = SimpleNamespace(finish=complete_inert_stderr)
         output = SimpleNamespace(fileno=lambda: 8, close=lambda: None)
         session.child = SimpleNamespace(
             stdin=None, stdout=output, wait=lambda timeout: 0)
         return session, output
+
+    def test_original_native_stderr_is_bounded_during_actual_child_output(self):
+        # One inert Python child, NOT the original Native Host or a Save.
+        # A direct-to-file stderr previously exceeded MAX_ORIGINAL before the
+        # GN1 source checked that file at close.
+        session = save.NativeSession(
+            self.root / "never-started-native", self.database,
+            self.root / "no-real-connection", self.private, {})
+        real_popen = subprocess.Popen
+        chunk_bytes = save.MAX_ORIGINAL + 65536
+        command = [sys.executable, "-I", "-c",
+                   "import sys;sys.stderr.buffer.write(b'X'*"
+                   + str(chunk_bytes) + ");sys.stderr.buffer.flush()"]
+        def spawn_inert(original_argv, **kwargs):
+            self.assertEqual(original_argv, session.command)
+            return real_popen(
+                command, stdin=kwargs["stdin"], stdout=kwargs["stdout"],
+                stderr=kwargs["stderr"], env=kwargs["env"])
+        with patch.object(save.subprocess, "Popen", side_effect=spawn_inert):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as failure:
+                with session:
+                    pass
+        self.assertTrue(failure.exception.unknown)
+        retained = self.private / "graph-native-session.stderr.original"
+        self.assertLessEqual(retained.stat().st_size, save.MAX_ORIGINAL)
+        self.assertEqual(retained.read_bytes(), b"X" * save.MAX_ORIGINAL)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["stderr_over_cap"])
+        self.assertFalse(terminal["stderr_retained_complete"])
+        self.assertGreater(terminal["stderr_observed_bytes_at_least"],
+                           save.MAX_ORIGINAL)
+        self.assertFalse(terminal["original_reply_complete"])
+        self.assertFalse(terminal["automatic_retry"])
+
+    def test_actual_inert_child_normal_stderr_is_retained_complete(self):
+        # Positive original stream capture, still an inert Python child.
+        session = save.NativeSession(
+            self.root / "never-started-native", self.database,
+            self.root / "no-real-connection", self.private, {})
+        original = b"one original bounded stderr diagnostic\\n"
+        real_popen = subprocess.Popen
+        command = [sys.executable, "-I", "-c",
+                   "import sys;sys.stderr.buffer.write(" + repr(original)
+                   + ");sys.stderr.buffer.flush()"]
+        def spawn_inert(_argv, **kwargs):
+            return real_popen(
+                command, stdin=kwargs["stdin"], stdout=kwargs["stdout"],
+                stderr=kwargs["stderr"], env=kwargs["env"])
+        with patch.object(save.subprocess, "Popen", side_effect=spawn_inert):
+            with session:
+                pass
+        retained = self.private / "graph-native-session.stderr.original"
+        self.assertEqual(retained.read_bytes(), original)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["stderr_retained_complete"])
+        self.assertFalse(terminal["stderr_over_cap"])
+        self.assertEqual(terminal["stderr_bytes"], len(original))
+        self.assertEqual(terminal["stderr_sha256"], save.digest(original))
+        self.assertTrue(terminal["original_reply_complete"])
+        self.assertFalse(terminal["automatic_retry"])
 
     def test_failed_writer_stdin_close_is_unknown_with_original_terminal_retained(self):
         session, output = self.inert_terminal_session()

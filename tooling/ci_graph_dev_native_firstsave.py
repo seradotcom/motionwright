@@ -338,6 +338,93 @@ def authenticated_connection(*, client, mounted, resource, binaries, output,
     }
 
 
+class OriginalNativeStderr:
+    """Bound the ONE original child stderr while running, never after capture.
+
+    Own the pipe and its exclusive original file on a single collector thread.
+    A completed/known Native reply is not sufficient if this original stream
+    exceeded its prepaid bytes or never reached EOF. No process is retried.
+    """
+
+    def __init__(self, child, file):
+        self.child, self.file, self.pipe = child, file, child.stderr
+        self.observed = self.written = 0
+        self.eof = self.over_cap = False
+        self.error = None
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._collect, daemon=True)
+        self.thread.start()
+
+    def _stop_original_child(self):
+        # Only the process/group started by this owner, never a broker or
+        # another agent. A stream overrun cannot keep writing to private disk.
+        try:
+            if self.child.poll() is None:
+                if os.name == "posix":
+                    os.killpg(self.child.pid, signal.SIGTERM)
+                else:
+                    self.child.terminate()
+        except OSError as error:
+            self.error = type(error).__name__
+
+    def _collect(self):
+        try:
+            while not self.stop.is_set():
+                # This reader is the sole owner of the stderr pipe. POSIX select
+                # and Windows PeekNamedPipe both observe bytes without a
+                # blocking buffered 64KiB read or an unsafe cross-thread close.
+                chunk = read_live_stdout(
+                    self.pipe, maximum=65536, wait_seconds=0.1)
+                if chunk is None:
+                    continue
+                if not chunk:
+                    self.eof = True
+                    break
+                self.observed += len(chunk)
+                retained = chunk[:max(0, MAX_ORIGINAL - self.written)]
+                if retained:
+                    self.file.write(retained)
+                    self.written += len(retained)
+                if self.observed > MAX_ORIGINAL:
+                    self.over_cap = True
+                    self._stop_original_child()
+                    break
+        except (OSError, ValueError) as error:
+            self.error = type(error).__name__
+            self._stop_original_child()
+        finally:
+            try:
+                self.file.flush()
+                os.fsync(self.file.fileno())
+            except (OSError, ValueError) as error:
+                self.error = type(error).__name__
+            try:
+                self.file.close()
+                self.pipe.close()
+            except (OSError, ValueError) as error:
+                self.error = type(error).__name__
+
+    def finish(self):
+        self.thread.join(timeout=2.0)
+        if self.thread.is_alive():
+            # An inherited writer may hold the pipe open after the direct
+            # child exited. Stop only the reader we own; UNKNOWN remains.
+            self.stop.set()
+            self.thread.join(timeout=0.5)
+        finished = not self.thread.is_alive()
+        return {
+            "observed_bytes_at_least": self.observed,
+            "retained_prefix_bytes": self.written,
+            "eof": self.eof,
+            "over_cap": self.over_cap,
+            "read_error": self.error,
+            "reader_finished": finished,
+            "complete": finished and self.eof
+                and not self.over_cap and self.error is None,
+            "automatic_retry": False,
+        }
+
+
 class NativeSession:
     """One original JSONL child and original response per operation, no retry."""
 
@@ -349,6 +436,7 @@ class NativeSession:
         self.started = False
         self.child = None
         self.stderr = None
+        self.stderr_capture = None
         self.read_only = read_only
         self.label = ("independent-readonly-session" if read_only
                       else "graph-native-session")
@@ -373,10 +461,23 @@ class NativeSession:
         try:
             self.child = subprocess.Popen(
                 self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=self.stderr, env=self.env, start_new_session=True)
+                stderr=subprocess.PIPE, env=self.env, start_new_session=True)
         except BaseException:
             self.stderr.close()
             raise
+        try:
+            self.stderr_capture = OriginalNativeStderr(self.child, self.stderr)
+        except BaseException:
+            # The child is ours; an unavailable stream collector must never
+            # leave an unbounded original process running after launch.
+            try:
+                self.child.kill()
+                self.child.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            self.stderr.close()
+            raise FirstSaveFailure(
+                "GN1_FIRST_SAVE_STDERR_CAPTURE_UNAVAILABLE", unknown=True) from None
         self.started = True
         private_json(self.private / (self.label + ".spawn.original.json"),
                      {"pid": self.child.pid, "automatic_retry": False})
@@ -500,22 +601,30 @@ class NativeSession:
                 pending_capture_failed = True
         # read_terminal_stdout already closed this owned pipe on EOF, or
         # closed its raw descriptor without waiting on an inherited writer.
-        self.stderr.flush()
-        os.fsync(self.stderr.fileno())
-        self.stderr.close()
+        stderr_capture = self.stderr_capture.finish()
         stderr_path = self.private / (self.label + ".stderr.original")
         size = stderr_path.stat().st_size
+        stderr_digest = (digest(stderr_path.read_bytes())
+                         if stderr_capture["reader_finished"]
+                         and size <= MAX_ORIGINAL else None)
         private_json(self.private / (self.label + ".terminal.original.json"),
                      {"exit_code": code, "stderr_bytes": size,
-                      "stderr_sha256": digest(stderr_path.read_bytes())
-                                       if size <= MAX_ORIGINAL else None,
+                      "stderr_sha256": stderr_digest
+                          if stderr_capture["complete"] else None,
+                      "stderr_retained_prefix_sha256": stderr_digest,
+                      "stderr_observed_bytes_at_least":
+                          stderr_capture["observed_bytes_at_least"],
+                      "stderr_over_cap": stderr_capture["over_cap"],
+                      "stderr_retained_complete": stderr_capture["complete"],
+                      "stderr_capture_error": stderr_capture["read_error"],
+                      "stderr_reader_finished": stderr_capture["reader_finished"],
                       "stdin_close_failed": stdin_close_failed,
                       "pending_stdout": pending_identity,
                       "pending_stdout_capture_failed": pending_capture_failed,
-                      "original_reply_complete": not stdin_close_failed and
-                          not self.pending and not pending_capture_failed
-                          and not trailing and trailing_eof
-                          and not trailing_failed,
+                      "original_reply_complete": stderr_capture["complete"]
+                          and not stdin_close_failed and not self.pending
+                          and not pending_capture_failed and not trailing
+                          and trailing_eof and not trailing_failed,
                       "trailing_stdout": trailing_identity,
                       "trailing_stdout_over_cap": trailing_over_cap,
                       "trailing_stdout_reader_error": terminal_stdout["read_error"],
@@ -526,7 +635,8 @@ class NativeSession:
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:
-            require(not stdin_close_failed and not pending_capture_failed
+            require(stderr_capture["complete"] and not stdin_close_failed
+                    and not pending_capture_failed
                     and size <= MAX_ORIGINAL and code == 0
                     and not self.pending and not trailing and trailing_eof
                     and not trailing_over_cap and not trailing_failed,
