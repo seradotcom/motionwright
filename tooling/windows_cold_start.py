@@ -224,10 +224,33 @@ def expected_storage_schema(storage_cohort, first_use_contract):
     return version
 
 
+def checked_existing_project_reference(value: dict) -> dict:
+    """Admit an immutable prior project observation, never a new Create request."""
+    require(type(value) is dict
+            and set(value) == {"project_id", "generation", "revision",
+                               "title", "document_sha256"},
+            "Existing project reference fields are not closed")
+    require(type(value["revision"]) is int and 0 <= value["revision"] < 2**63
+            and type(value["title"]) is str and 0 < len(value["title"]) <= 200
+            and type(value["document_sha256"]) is str
+            and SHA64.fullmatch(value["document_sha256"]) is not None,
+            "Existing project reference values are invalid")
+    try:
+        require(str(uuid.UUID(value["project_id"])) == value["project_id"]
+                and str(uuid.UUID(value["generation"])) == value["generation"],
+                "Existing project reference UUIDs are not canonical")
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ColdStartError("Existing project reference UUIDs are malformed") from error
+    return dict(value)
+
+
 def read_project_snapshot(
     database: Path, *, first_use_contract: str = CURRENT_FIRST_USE_CONTRACT, storage_cohort=None,
+    expected_project: dict | None = None,
 ) -> dict:
     expected_title = _first_use_title(first_use_contract)
+    previous = (checked_existing_project_reference(expected_project)
+                if expected_project is not None else None)
     expected_schema = expected_storage_schema(storage_cohort, first_use_contract)
     require(database.is_file() and not database.is_symlink(),
             "Installed application did not persist a regular SQLite database")
@@ -264,18 +287,26 @@ def read_project_snapshot(
     require(isinstance(doc, dict)
             and doc.get("id") == project_id
             and doc.get("generation") == generation
+            and type(doc.get("revision")) is int
             and doc.get("revision") == revision
             and doc.get("title") == title,
             "SQLite source project identity conflicts with saved JSON")
-    require(title == expected_title and type(revision) is int and revision >= 0,
+    require(type(revision) is int and revision >= 0,
             "Installed first-use project was not initialized as expected")
-    return {
+    if previous is None:
+        require(title == expected_title,
+                "Installed first-use project was not initialized as expected")
+    observed = {
         "project_id": project_id,
         "generation": generation,
         "revision": revision,
         "title": title,
         "document_sha256": hashlib.sha256(encoded).hexdigest(),
     }
+    if previous is not None:
+        require(observed == previous,
+                "Existing saved project differs from the retained original")
+    return observed
 
 
 def known_databases(appdata_roots: list[Path]) -> list[Path]:
@@ -413,8 +444,13 @@ def boot_once(
     binary: Path, env: dict[str, str], database_roots: list[Path],
     log_path: Path, expected_db: Path | None = None, seconds: int = 55,
     first_use_contract: str = CURRENT_FIRST_USE_CONTRACT, storage_cohort=None,
+    expected_project: dict | None = None,
 ) -> tuple[dict, Path, int]:
     expected_storage_schema(storage_cohort, first_use_contract)
+    if expected_project is not None:
+        require(expected_db is not None,
+                "Existing project reopening requires the original SQLite path")
+        checked_existing_project_reference(expected_project)
     cohort_options = {"storage_cohort": storage_cohort} if storage_cohort is not None else {}
     observations = _BootObservations(first_use_contract)
     creation_sent = False
@@ -459,11 +495,16 @@ def boot_once(
                         raise ColdStartError("Relaunched desktop switched to another project database")
                     try:
                         snapshot = read_project_snapshot(
-                            database, first_use_contract=first_use_contract, **cohort_options,
+                            database, first_use_contract=first_use_contract,
+                            expected_project=expected_project, **cohort_options,
                         )
                     except ColdStartError as error:
-                        # Retain the exact reader failure while allowing a
-                        # still-uncommitted first SQLite transaction to finish.
+                        # A fixed prior identity mismatch is terminal, unlike a
+                        # transient SQLite migration still finishing on startup.
+                        if expected_project is not None and (
+                                str(error).startswith("Existing saved project differs")
+                                or str(error).startswith("Existing project reference")):
+                            raise
                         observations.sample(time.monotonic() - started, True, 1, "ERROR", error)
                         time.sleep(0.3)
                         continue
@@ -548,7 +589,8 @@ def run_installed_relaunch(
         first_use_contract=first_use_contract, **cohort_options,
     )
     second, repeated_path, second_seconds = boot_once(
-        executable, environment, roots, scratch / "relaunch.log", expected_db=db_path,
+        executable, environment, roots, scratch / "relaunch.log",
+        expected_db=db_path, expected_project=first,
         first_use_contract=first_use_contract, **cohort_options,
     )
     require(db_path == repeated_path and first == second,
