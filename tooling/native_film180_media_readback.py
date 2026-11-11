@@ -291,15 +291,17 @@ def inspect_selected_pixels(frames: dict[int, bytes],
     }
 
 
-def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
-    """Supervise one read-only ffprobe with bounded stdout AND stderr in flight.
+def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
+                             stdout_limit: int) -> bytes:
+    """Supervise one read-only decoder with bounded stdout AND stderr in flight.
 
     A post-hoc len(subprocess.run(..., capture_output=True).stdout) check is not
     a memory budget: the entire child output was already buffered. No new
     native effect, original source, or retry is introduced by this supervisor.
     """
-    limit = 4 * 1024 * 1024
-    ceilings = (limit, 64 * 1024)
+    require(type(stdout_limit) is int and 0 < stdout_limit <= MAX_MP4_BYTES,
+            "original_decoder_stdout_budget_invalid")
+    ceilings = (stdout_limit, 64 * 1024)
     streams = (bytearray(), bytearray())
     exceeded = [False, False]
     read_errors = []
@@ -312,7 +314,9 @@ def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
     def drain(pipe, index):
         try:
             while True:
-                chunk = pipe.read(65536)
+                # os.read returns available pipe bytes without waiting for a
+                # full BufferedReader chunk; reject even small overruns early.
+                chunk = os.read(pipe.fileno(), 65536)
                 if not chunk:
                     break
                 room = max(0, ceilings[index] + 1 - len(streams[index]))
@@ -391,6 +395,12 @@ def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
     return bytes(streams[0])
 
 
+def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
+    return _bounded_readonly_output(argv, timeout=timeout,
+                                    over_limit=over_limit,
+                                    stdout_limit=4 * 1024 * 1024)
+
+
 def ffprobe_media(media: Path, executable: str) -> dict:
     first = _bounded_ffprobe(
         [executable, "-v", "error", "-show_streams",
@@ -412,16 +422,20 @@ def ffprobe_media(media: Path, executable: str) -> dict:
 
 def decode_selected_video(media: Path, executable: str) -> dict[int, bytes]:
     selector = "+".join(f"eq(n\\,{n})" for n in SELECTED)
-    proc = subprocess.run(
+    expected_bytes = len(SELECTED) * FRAME_BYTES
+    # The exact 12-frame RGB geometry is a pre-dispatch pipe budget, not
+    # just a post-hoc check after subprocess.run buffered arbitrary output.
+    raw = _bounded_readonly_output(
         [executable, "-nostdin", "-v", "error", "-i", str(media), "-an",
          "-vf", "select=" + selector, "-fps_mode", "passthrough",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
-        capture_output=True, timeout=150, check=True,
+        timeout=150, stdout_limit=expected_bytes,
+        over_limit="selected_decoded_native_frame_bytes_mismatch",
     )
-    require(len(proc.stdout) == len(SELECTED) * FRAME_BYTES,
+    require(len(raw) == expected_bytes,
             "selected_decoded_native_frame_bytes_mismatch")
     return {
-        frame: proc.stdout[index * FRAME_BYTES:(index + 1) * FRAME_BYTES]
+        frame: raw[index * FRAME_BYTES:(index + 1) * FRAME_BYTES]
         for index, frame in enumerate(SELECTED)
     }
 
