@@ -129,6 +129,17 @@ fn graph_context_report_failure(
     graph_context_failure(stage, Some(error))
 }
 
+/// A returned context is not READY while its original CLI transport remains
+/// uncertain. This guard runs only after the original report is retained, and
+/// does not overwrite a typed failed outcome or retry the callback.
+fn graph_context_require_confirmed_transport(transport_failed: bool) -> Result<(), Value> {
+    if transport_failed {
+        Err(graph_context_failure(GraphContextStage::Transport, None))
+    } else {
+        Ok(())
+    }
+}
+
 /// Restrictions supplied by the existing parent allocation. No value here
 /// grants SDK authority or chooses a different connection/session file.
 #[derive(Clone, Copy)]
@@ -704,9 +715,11 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         match report {
             Ok(report) => {
                 let original_native = report.original_native_error().is_some();
-                report.outcome().cloned().map_err(|error| {
+                let context = report.outcome().cloned().map_err(|error| {
                     graph_context_report_failure(error, original_native, transport_failed)
-                })
+                })?;
+                graph_context_require_confirmed_transport(transport_failed)?;
+                Ok(context)
             }
             Err(error) => Err(graph_context_report_failure(
                 &error,
@@ -919,6 +932,19 @@ mod native_graph_adapter_tests {
             graph_context_failure(GraphContextStage::Custody, None),
             json!({"schema":"motionwright.native.graph-context-failure/1",
                    "stage":"CUSTODY","error_code":null})
+        );
+    }
+
+    #[test]
+    fn graph_context_success_requires_a_confirmed_original_transport() {
+        assert!(graph_context_require_confirmed_transport(false).is_ok());
+        assert_eq!(
+            graph_context_require_confirmed_transport(true),
+            Err(json!({
+                "schema":"motionwright.native.graph-context-failure/1",
+                "stage":"TRANSPORT",
+                "error_code":null,
+            }))
         );
     }
 

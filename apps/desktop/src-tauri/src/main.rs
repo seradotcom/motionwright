@@ -565,6 +565,7 @@ async fn semantic_graph_authoring_context(
             GraphContextFailure::from_report(error, original_native, transport_failed)
         })?
         .clone();
+    GraphContextFailure::require_confirmed_transport(transport_failed)?;
 
     // A completed read supplies no later phase or write authority. Re-admit
     // the owner and check the original snapshot before exposing this context.
