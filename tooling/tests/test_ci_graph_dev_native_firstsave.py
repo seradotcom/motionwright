@@ -428,6 +428,109 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertTrue(terminal["original_reply_complete"])
         self.assertFalse(terminal["automatic_retry"])
 
+    def test_close_timeout_raced_process_exit_cannot_be_promoted_to_success(self):
+        # Original child wait first times out, then the process group has
+        # disappeared by the time SIGKILL is issued. Even a reported 0 from
+        # the second wait is NOT proof of a clean original terminal.
+        session, _ = self.inert_terminal_session()
+        session.child.pid = 424242
+        calls = []
+        def wait(*, timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(["inert-original"], timeout)
+            return 0
+        session.child.wait = wait
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save.os, "killpg",
+                          side_effect=ProcessLookupError("already gone"),
+                          create=True), \
+                patch.object(session.child, "kill",
+                             side_effect=ProcessLookupError("already gone"),
+                             create=True), \
+                patch.object(save, "read_terminal_stdout",
+                             return_value=complete):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as error:
+                session.__exit__(None, None, None)
+        self.assertTrue(error.exception.unknown)
+        self.assertEqual(calls, [20, 10])
+        self.assertTrue(
+            (self.private / "graph-native-session.close-timeout.original.json").exists())
+        receipt = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertTrue(receipt["close_timed_out"])
+        self.assertFalse(receipt["original_reply_complete"])
+        self.assertFalse(receipt["automatic_retry"])
+
+    def test_close_timeout_unfinished_child_cannot_prove_terminal(self):
+        session, _ = self.inert_terminal_session()
+        session.child.pid = 424242
+        seen = []
+        def wait(*, timeout):
+            seen.append(timeout)
+            raise subprocess.TimeoutExpired(["inert-never-finished"], timeout)
+        session.child.wait = wait
+        terminated = []
+        session.child.kill = lambda: terminated.append("direct-child-only")
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save.os, "killpg", return_value=None, create=True), \
+                patch.object(save, "read_terminal_stdout", return_value=complete):
+            with self.assertRaisesRegex(save.FirstSaveFailure,
+                                        "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN"):
+                session.__exit__(None, None, None)
+        self.assertEqual(seen, [20, 10, 2])
+        self.assertEqual(terminated, ["direct-child-only"] if os.name == "posix"
+                         else ["direct-child-only", "direct-child-only"])
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertIsNone(terminal["exit_code"])
+        self.assertTrue(terminal["close_wait_unfinished"])
+        self.assertTrue(terminal["close_timed_out"])
+        self.assertFalse(terminal["original_reply_complete"])
+        captured = json.loads(
+            (self.private / "graph-native-session.close-timeout.original.json").read_text())
+        self.assertTrue(captured["close_wait_unfinished"])
+        self.assertTrue(captured["unknown"])
+
+    def test_close_timeout_original_failure_survives_missing_timeout_receipt(self):
+        session, _ = self.inert_terminal_session()
+        session.child.pid = 424242
+        times = []
+        def wait(*, timeout):
+            times.append(timeout)
+            return 0 if len(times) == 2 else (
+                (_ for _ in ()).throw(
+                    subprocess.TimeoutExpired(["inert"], timeout)))
+        session.child.wait = wait
+        session.child.kill = lambda: None
+        original = save.FirstSaveFailure("ORIGINAL_MUTATION_UNKNOWN", unknown=True)
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        private_json = save.private_json
+        def write_receipt(path, payload):
+            if path.name.endswith(".close-timeout.original.json"):
+                raise OSError("secondary original disk write failure")
+            return private_json(path, payload)
+        with patch.object(save.os, "killpg", return_value=None, create=True), \
+                patch.object(save, "read_terminal_stdout", return_value=complete), \
+                patch.object(save, "private_json", side_effect=write_receipt):
+            self.assertFalse(session.__exit__(type(original), original, None))
+        self.assertEqual(original.code, "ORIGINAL_MUTATION_UNKNOWN")
+        self.assertEqual(times, [20, 10])
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["close_timed_out"])
+        self.assertTrue(terminal["close_timeout_capture_failed"])
+        self.assertFalse(terminal["original_reply_complete"])
+
     def test_failed_writer_stdin_close_is_unknown_with_original_terminal_retained(self):
         session, output = self.inert_terminal_session()
         class OriginalPipeCloseError:
