@@ -20,8 +20,8 @@ class DefinitionAndSelectionTests(unittest.TestCase):
         for mode in ("discovery", "dotted"):
             linux = gate.selection_contract("test_nsis_owned_files", mode, "linux")
             windows = gate.selection_contract("test_nsis_owned_files", mode, "win32")
-            self.assertEqual((linux["required_total"], linux["required_selected"]), (33, 31))
-            self.assertEqual((windows["required_total"], windows["required_selected"]), (33, 33))
+            self.assertEqual((linux["required_total"], linux["required_selected"]), (34, 32))
+            self.assertEqual((windows["required_total"], windows["required_selected"]), (34, 34))
             prefix = ("" if mode == "discovery" else "tooling.tests.") + "test_nsis_owned_files."
             self.assertEqual({item["id"] for item in linux["not_applicable"]}, {
                 prefix + "PublicationIntegrityTests.test_windows_guards_block_writes_and_capture_deletion_through_publication",
@@ -145,7 +145,7 @@ class OriginalReceiptTests(unittest.TestCase):
             self.admit()
 
     def test_exact_originals_admitted_for_both_platforms_without_inventing_linux_credit(self):
-        for platform, invocations, unique in (("linux", 152, 76), ("win32", 156, 78)):
+        for platform, invocations, unique in (("linux", 154, 77), ("win32", 158, 79)):
             self.make(platform)
             value = self.admit()
             self.assertEqual((value["status"], value["invocations"], value["unique_applicable_controls"]), ("PASS", invocations, unique))
@@ -237,7 +237,7 @@ class OriginalReceiptTests(unittest.TestCase):
         raw = self.read_log(0, "stderr")
         self.log(0, "stderr", raw.split(b"\nRan ", 1)[0])
         self.refused()
-        self.log(0, "stderr", raw + b"\nRan 31 tests in 0.01s\n\nOK\n")
+        self.log(0, "stderr", raw + b"\nRan 32 tests in 0.01s\n\nOK\n")
         self.refused()
 
     def test_admission_does_not_rewrite_original_receipts_or_logs(self):
@@ -260,7 +260,7 @@ class OriginalReceiptTests(unittest.TestCase):
                 self.assertEqual(raw.count(original), 1)
                 self.log(index, "stderr", raw.replace(original, retained, 1))
             admitted = self.admit()
-            self.assertEqual(admitted["invocations"], 152 if platform == "linux" else 156)
+            self.assertEqual(admitted["invocations"], 154 if platform == "linux" else 158)
 
     def test_interleaved_diagnostic_cannot_supply_a_missing_foreign_or_failed_result(self):
         suffix = "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"
