@@ -144,6 +144,20 @@ class OriginalPcmSourceFidelityTests(unittest.TestCase):
                  r"source_audio_content_missing_or_scaled:channel=1:start=52736:end=52737:"):
             witness(source_wave(raw),altered)
 
+    def test_single_terminal_right_polarity_inversion_cannot_hide_in_previous_window(self):
+        # A 1-frame terminal remainder uses 256 preceding frames for its
+        # correlation. Their strong agreement must not conceal inversion of
+        # the actual final right-channel sample at an informative amplitude.
+        count=52_737
+        original=self.source[:count*4]
+        changed=bytearray(original)
+        final_right=struct.unpack_from("<h",changed,(count-1)*4+2)[0]
+        self.assertGreater(abs(final_right),256)
+        struct.pack_into("<h",changed,(count-1)*4+2,-final_right)
+        with self.assertRaisesRegex(PcmContentError,
+                 r"source_audio_terminal_polarity_changed:channel=1:start=52736:end=52737"):
+            witness(source_wave(original),bytes(changed))
+
     def test_arbitrary_nonperiodic_original_source_passes_and_reordered_block_fails(self):
         # The product gate must not be limited to the historical 400/600Hz
         # periodic MLT CI waveform. This exercises a separate seeded, bounded
