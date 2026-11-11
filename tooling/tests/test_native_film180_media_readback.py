@@ -432,5 +432,45 @@ class Film180HashReadBoundsTests(unittest.TestCase):
                     verifier.digest(path, 100, hashlib.sha256(data).hexdigest())
 
 
+class OriginalFFprobeStreamBoundTests(unittest.TestCase):
+    """Both original inventories have an equal finite JSON receipt ceiling."""
+
+    @staticmethod
+    def data(*, oversized=False):
+        frames = [{"media_type": "video", "best_effort_timestamp_time": str(i / 30)}
+                  for i in range(verifier.FRAME_COUNT)]
+        video = {"codec_type": "video", "codec_name": "h264",
+                 "width": verifier.WIDTH, "height": verifier.HEIGHT,
+                 "avg_frame_rate": "30/1"}
+        audio = {"codec_type": "audio", "codec_name": "aac",
+                 "sample_rate": str(verifier.PCM_RATE), "channels": 2}
+        first = json.dumps({"frames": frames}).encode()
+        second = json.dumps({"streams": [video, audio],
+                             "unused": "x" * (4 * 1024 * 1024) if oversized else ""}).encode()
+        return first, second
+
+    def test_all_streams_original_rejects_oversize_before_json_parsing(self):
+        first, second = self.data(oversized=True)
+        self.assertLess(len(first), 4 * 1024 * 1024)
+        self.assertGreater(len(second), 4 * 1024 * 1024)
+        with mock.patch.object(verifier.subprocess, "run",
+                               side_effect=[mock.Mock(stdout=first),
+                                            mock.Mock(stdout=second)]) as run:
+            with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                        "^original_ffprobe_stream_inventory_unbounded$"):
+                verifier.ffprobe_media(Path("not-dispatched.mp4"), "ffprobe")
+            self.assertEqual(run.call_count, 2)
+
+    def test_two_small_original_stream_inventories_are_supported(self):
+        first, second = self.data()
+        with mock.patch.object(verifier.subprocess, "run",
+                               side_effect=[mock.Mock(stdout=first),
+                                            mock.Mock(stdout=second)]) as run:
+            observed = verifier.ffprobe_media(Path("not-dispatched.mp4"), "ffprobe")
+            self.assertEqual(observed["video_frames_decoded"], verifier.FRAME_COUNT)
+            self.assertEqual(observed["audio_codec"], "aac")
+            self.assertEqual(run.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

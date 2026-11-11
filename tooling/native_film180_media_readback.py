@@ -303,6 +303,10 @@ def ffprobe_media(media: Path, executable: str) -> dict:
         [executable, "-v", "error", "-show_streams", "-of", "json", str(media)],
         capture_output=True, timeout=60, check=True,
     )
+    # The independent all-stream inventory has the same finite receipt bound
+    # as the frame probe. Never parse an oversized second original as proof.
+    require(len(all_streams.stdout) <= 4 * 1024 * 1024,
+            "original_ffprobe_stream_inventory_unbounded")
     partial["streams"] = json.loads(all_streams.stdout)["streams"]
     return inspect_video_probe(partial)
 
