@@ -367,6 +367,14 @@ class OriginalNativeStderr:
         except OSError as error:
             self.error = type(error).__name__
 
+    def uncertain(self):
+        # A failed stderr stream must stop further Native effect admission
+        # before another request can be sent. Live capture remains allowed
+        # until actual EOF; a returned JSONL reply alone is not a terminal.
+        return (self.over_cap or self.error is not None
+                or self.stop.is_set()
+                or (not self.thread.is_alive() and not self.eof))
+
     def _collect(self):
         try:
             while not self.stop.is_set():
@@ -487,6 +495,9 @@ class NativeSession:
         require(self.started and self.child is not None
                 and self.child.poll() is None and not self.pending,
                 "GN1_FIRST_SAVE_NATIVE_SESSION_NOT_READY", unknown=True)
+        require(self.stderr_capture is not None
+                and not self.stderr_capture.uncertain(),
+                "GN1_FIRST_SAVE_NATIVE_STDERR_CUSTODY_UNCERTAIN", unknown=True)
         request_id = str(uuid.uuid4())
         # These two read-only SQLite/owner observations require literal JSON
         # null. No caller value may fabricate an opened-pager identity.
@@ -508,6 +519,8 @@ class NativeSession:
                                    unknown=True) from None
         deadline = time.monotonic() + self.timeout
         while b"\n" not in self.pending:
+            require(not self.stderr_capture.uncertain(),
+                    "GN1_FIRST_SAVE_NATIVE_STDERR_CUSTODY_UNCERTAIN", unknown=True)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT",
@@ -536,6 +549,8 @@ class NativeSession:
         # JSONL reply fails custody even if Native answered successfully.
         private_bytes(self.private / (label + ".response.original.jsonl"),
                       bytes(line) + b"\n")
+        require(not self.stderr_capture.uncertain(),
+                "GN1_FIRST_SAVE_NATIVE_STDERR_CUSTODY_UNCERTAIN", unknown=True)
         try:
             response = json.loads(line)
         except (ValueError, UnicodeError):
