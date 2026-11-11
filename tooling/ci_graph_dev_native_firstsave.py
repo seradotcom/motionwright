@@ -483,6 +483,21 @@ class NativeSession:
             trailing_identity = private_bytes(
                 self.private / (self.label + ".trailing-stdout.original"),
                 bytes(trailing))
+        # A timed-out or unterminated JSONL reply has already left real bytes
+        # in pending. Their absence from the terminal record would discard the
+        # only observed response after an uncertain Native mutation. Retain
+        # those bytes separately, NEVER as a completed response or an ACK.
+        pending_identity = None
+        pending_capture_failed = False
+        if self.pending:
+            try:
+                pending_identity = private_bytes(
+                    self.private / (self.label + ".pending-stdout.original"),
+                    bytes(self.pending))
+            except (OSError, ValueError, FirstSaveFailure):
+                # A secondary disk error cannot replace the original timeout
+                # or decode failure. The terminal still reports incomplete.
+                pending_capture_failed = True
         # read_terminal_stdout already closed this owned pipe on EOF, or
         # closed its raw descriptor without waiting on an inherited writer.
         self.stderr.flush()
@@ -495,8 +510,11 @@ class NativeSession:
                       "stderr_sha256": digest(stderr_path.read_bytes())
                                        if size <= MAX_ORIGINAL else None,
                       "stdin_close_failed": stdin_close_failed,
+                      "pending_stdout": pending_identity,
+                      "pending_stdout_capture_failed": pending_capture_failed,
                       "original_reply_complete": not stdin_close_failed and
-                          not self.pending and not trailing and trailing_eof
+                          not self.pending and not pending_capture_failed
+                          and not trailing and trailing_eof
                           and not trailing_failed,
                       "trailing_stdout": trailing_identity,
                       "trailing_stdout_over_cap": trailing_over_cap,
@@ -508,10 +526,10 @@ class NativeSession:
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:
-            require(not stdin_close_failed and size <= MAX_ORIGINAL
-                    and code == 0 and not self.pending and not trailing
-                    and trailing_eof and not trailing_over_cap
-                    and not trailing_failed,
+            require(not stdin_close_failed and not pending_capture_failed
+                    and size <= MAX_ORIGINAL and code == 0
+                    and not self.pending and not trailing and trailing_eof
+                    and not trailing_over_cap and not trailing_failed,
                     "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN", unknown=True)
         return False
 

@@ -302,6 +302,65 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertFalse(terminal["original_reply_complete"])
         self.assertEqual(original.code, "ORIGINAL_MUTATION_UNKNOWN")
 
+    def test_unterminated_native_jsonl_reply_is_retained_as_partial_original(self):
+        # The original JSONL read observed bytes, but no newline/terminal
+        # envelope arrived. The read is UNKNOWN, not a replay or empty reply.
+        session, output = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        session.child.stdin = SimpleNamespace(
+            write=lambda body: len(body), flush=lambda: None, close=lambda: None)
+        partial = b'{"id":"unfinished-original","ok":true'
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save, "read_live_stdout", side_effect=[partial, None]):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT") as unknown:
+                session.request("incomplete-native-save", "apply_change",
+                                {"test_only_not_dispatched": True})
+        self.assertTrue(unknown.exception.unknown)
+        self.assertEqual(bytes(session.pending), partial)
+        with patch.object(save, "read_terminal_stdout", return_value=complete):
+            self.assertFalse(session.__exit__(
+                type(unknown.exception), unknown.exception, None))
+        retained = self.private / "graph-native-session.pending-stdout.original"
+        self.assertEqual(retained.read_bytes(), partial)
+        receipt = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertFalse(receipt["original_reply_complete"])
+        self.assertEqual(receipt["pending_stdout"]["bytes"], len(partial))
+        self.assertEqual(receipt["pending_stdout"]["sha256"], save.digest(partial))
+        self.assertFalse(receipt["automatic_retry"])
+        self.assertFalse((self.private / "incomplete-native-save.response.original.jsonl").exists())
+
+
+    def test_failed_partial_stdout_retention_keeps_first_native_timeout(self):
+        session, output = self.inert_terminal_session()
+        partial = b'{"partial":"uncommitted original"'
+        session.pending.extend(partial)
+        original = save.FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT",
+                                         unknown=True)
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        write_original = save.private_bytes
+        def blocked_partial_write(path, data):
+            if path.name.endswith(".pending-stdout.original"):
+                raise OSError("original private retention unavailable")
+            return write_original(path, data)
+        with patch.object(save, "private_bytes", side_effect=blocked_partial_write), \
+                patch.object(save, "read_terminal_stdout", return_value=complete):
+            self.assertFalse(session.__exit__(type(original), original, None))
+        self.assertEqual(original.code, "GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT")
+        self.assertTrue(original.unknown)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["pending_stdout_capture_failed"])
+        self.assertIsNone(terminal["pending_stdout"])
+        self.assertFalse(terminal["original_reply_complete"])
+        self.assertFalse((self.private / "graph-native-session.pending-stdout.original").exists())
+
     def test_native_terminal_requires_actual_stdout_eof_even_after_last_reply(self):
         session, output = self.inert_terminal_session(read_only=True)
         complete = {"raw": b"", "eof": True, "over_cap": False,
