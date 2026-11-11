@@ -5,6 +5,12 @@ import pathlib
 import re
 import sys
 
+# An embedded Python runtime can pin sys.path to an old worktree. Bind every
+# product policy import to the *exact source checkout* this script attests.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+TOOLING = ROOT / "tooling"
+sys.path.insert(0, str(TOOLING))
+
 from public_surface_policy import (
     PublicSurfaceError, iter_source_files, verify_public_surface,
 )
@@ -13,7 +19,23 @@ from source_lock_admission import (
     SourceAdmissionError, load_source_lock, verify_source_lock,
 )
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+def _require_checkout_policy_module(name: str) -> None:
+    module = sys.modules.get(name)
+    location = getattr(module, "__file__", None)
+    if not isinstance(location, str):
+        raise ImportError("source_policy_module_not_checkout")
+    if pathlib.Path(location).resolve(strict=True).parent != TOOLING:
+        raise ImportError("source_policy_module_not_checkout")
+
+
+for name in ("public_surface_policy", "source_lock_admission"):
+    try:
+        _require_checkout_policy_module(name)
+    except (ImportError, OSError, ValueError):
+        print("ERROR: source-policy import was not from the active checkout",
+              file=sys.stderr)
+        raise SystemExit(1) from None
 try:
     LOCK = load_source_lock(ROOT)
     verify_source_lock(ROOT, LOCK)
@@ -43,14 +65,24 @@ if f'rev = "{REV}"' not in cargo:
 # the Cargo.toml path or glib semantic version. No warning is waived.
 try:
     from v01_glib_product_admission import admit_patched_glib
+    _require_checkout_policy_module("v01_glib_product_admission")
+    _require_checkout_policy_module("v01_glib_backport_integrity")
     admit_patched_glib(ROOT)
 except (ImportError, OSError, ValueError) as error:
-    errors.append("glib 0.18.5 patched source custody is unverified")
+    # Keep untrusted exception paths private; expose a fixed diagnostic family
+    # and an optional bounded product verifier code, not a misleading PASS.
+    reason = ("import_error" if isinstance(error, ImportError)
+              else "filesystem_error" if isinstance(error, OSError)
+              else str(error) if type(error).__name__ == "ProductBackportError"
+              and re.fullmatch(r"[a-z][a-z0-9_]{2,90}", str(error))
+              else "value_error")
+    errors.append("glib 0.18.5 patched source custody is unverified: " + reason)
 
 # Tauri IPC diagnostics must use the three reviewed source substitutions.
 # Check the complete upstream archive and every vendored file independently.
 try:
     from v01_tauri_ipc_product_admission import admit_patched_tauri
+    _require_checkout_policy_module("v01_tauri_ipc_product_admission")
     admit_patched_tauri(ROOT)
 except (ImportError, OSError, ValueError) as error:
     # Report only a bounded fixed verifier code, never paths or raw source.
