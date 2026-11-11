@@ -302,6 +302,65 @@ class Film180G2SourceTests(unittest.TestCase):
             )
         return ("\n".join(lines) + "\n").encode("ascii")
 
+    def test_psnr_source_comparison_precharges_both_original_pipes(self):
+        # Linux-only owner paths and entirely synthetic source metrics; no
+        # FFmpeg, Native Host or G2 effect is invoked by this contract test.
+        if sys.platform != "linux":
+            self.skipTest("G2 PSNR original owner layout is Linux-only")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            frame_root = root / "native-frames"
+            frame_root.mkdir()
+            (frame_root / "artifact-manifest.json").write_bytes(b"source-only")
+            evidence = root / "evidence"
+            evidence.mkdir()
+            master = root / "owned-master.mp4"
+            master.write_bytes(b"source-only-original-mp4")
+            stats = evidence / "original-film180-allframe-RGB-PSNR.stats"
+            def observe(_argv, **_kwargs):
+                stats.write_bytes(self.synthetic_RGB_loss_report())
+                return b""
+            with mock.patch(
+                    "native_film180_media_readback._bounded_readonly_output",
+                    side_effect=observe) as bounded, mock.patch.object(
+                    runner, "original_png_color_types",
+                    return_value={"native_source_PNG_color_type_counts": {"6": 180},
+                                  "all180_PNG_IHDR_geometry_verified": True}):
+                result = runner.native_png_vs_h264_observations(
+                    root, {"segments": [{"artifact": {"directory": "native-frames"}}]},
+                    master, evidence, "original", ffmpeg="ffmpeg")
+            bounded.assert_called_once()
+            self.assertEqual(bounded.call_args.kwargs["stdout_limit"], 4096)
+            self.assertEqual(bounded.call_args.kwargs["stderr_limit"], 8192)
+            self.assertEqual(bounded.call_args.kwargs["timeout"], 2 * runner.MEDIA_TIMEOUT)
+            self.assertEqual(bounded.call_args.kwargs["over_limit"],
+                             "RGB_PSN_FFmpeg_source_comparison_not_bounded")
+            self.assertEqual(bounded.call_args.kwargs["stderr_over_limit"],
+                             "RGB_PSN_FFmpeg_source_comparison_not_bounded")
+            self.assertEqual(result["observed_frame_count"], 180)
+            self.assertTrue(result["no_H264_quality_floor_assumed"])
+
+    def test_edited_rgb_source_difference_precharges_each_exact_frame(self):
+        import native_film180_media_readback as media
+        with mock.patch.object(media, "WIDTH", 4), mock.patch.object(
+                media, "HEIGHT", 2), mock.patch.object(
+                media, "_bounded_readonly_output",
+                side_effect=[b"A" * 24, b"B" * 24]) as bounded, mock.patch.object(
+                media, "difference_count", return_value=300) as pixels:
+            result = runner.original_frame_difference(
+                "ffmpeg", Path("source.mp4"), Path("edited.mp4"), number=110)
+        self.assertEqual(result["changed_decoded_pixels"], 300)
+        self.assertFalse(result["human_visual_acceptance"])
+        self.assertEqual(bounded.call_count, 2)
+        self.assertEqual(pixels.call_count, 1)
+        for call in bounded.call_args_list:
+            self.assertEqual(call.kwargs["stdout_limit"], 24)
+            self.assertEqual(call.kwargs["timeout"], runner.MEDIA_TIMEOUT)
+            self.assertEqual(call.kwargs["over_limit"],
+                             "edited_native_mp4_frame_not_decodable")
+            self.assertTrue(any("110" in str(item) and "select" in str(item)
+                                for item in call.args[0]))
+
     def test_full_180_native_png_against_H264_RGB_loss_stats_are_observational(self):
         report = runner.parse_rgb_psnr_observations(self.synthetic_RGB_loss_report())
         self.assertEqual(report["observed_frame_count"], 180)

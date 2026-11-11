@@ -486,6 +486,23 @@ class OriginalFFprobeProcessBoundTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1.7)
 
 
+    def test_psnr_auxiliary_pipes_use_four_and_eight_kib_inflight(self):
+        # Pure Python source-only child: no PNG, FFmpeg or Native render.
+        for stream, size in (("stdout", 4097), ("stderr", 8193)):
+            with self.subTest(stream=stream):
+                command = [sys.executable, "-I", "-c",
+                           "import sys;sys." + stream
+                           + ".buffer.write(b'x'*" + str(size) + ")"]
+                with self.assertRaisesRegex(
+                        verifier.OriginalMediaMismatch,
+                        "^RGB_PSN_FFmpeg_source_comparison_not_bounded$"):
+                    verifier._bounded_readonly_output(
+                        command, timeout=8, stdout_limit=4096,
+                        stderr_limit=8192,
+                        over_limit="RGB_PSN_FFmpeg_source_comparison_not_bounded",
+                        stderr_over_limit="RGB_PSN_FFmpeg_source_comparison_not_bounded",
+                    )
+
     def test_all180_hash_manifest_pipe_rejects_128k_plus_one_in_flight(self):
         # A source-only Python process exercises the real pipe ceiling. No
         # FFmpeg launch, media decoding, Native effect, or copied frame hashes.

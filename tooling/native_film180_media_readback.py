@@ -292,7 +292,9 @@ def inspect_selected_pixels(frames: dict[int, bytes],
 
 
 def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
-                             stdout_limit: int, observed: dict | None = None) -> bytes:
+                             stdout_limit: int, observed: dict | None = None,
+                             stderr_limit: int = 64 * 1024,
+                             stderr_over_limit: str = "original_ffprobe_stderr_unbounded") -> bytes:
     """Supervise one read-only decoder with bounded stdout AND stderr in flight.
 
     A post-hoc len(subprocess.run(..., capture_output=True).stdout) check is not
@@ -303,7 +305,10 @@ def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
             "original_decoder_stdout_budget_invalid")
     require(observed is None or (type(observed) is dict and not observed),
             "original_decoder_observation_must_be_new")
-    ceilings = (stdout_limit, 64 * 1024)
+    require(type(stderr_limit) is int and 0 < stderr_limit <= 64 * 1024
+            and type(stderr_over_limit) is str and bool(stderr_over_limit),
+            "original_decoder_stderr_budget_invalid")
+    ceilings = (stdout_limit, stderr_limit)
     streams = (bytearray(), bytearray())
     exceeded = [False, False]
     read_errors = []
@@ -394,7 +399,7 @@ def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
         })
     require(pipes_complete, "original_ffprobe_pipe_uncertain")
     require(not exceeded[0], over_limit)
-    require(not exceeded[1], "original_ffprobe_stderr_unbounded")
+    require(not exceeded[1], stderr_over_limit)
     if timed_out:
         raise subprocess.TimeoutExpired(argv, timeout,
                                         output=bytes(streams[0]),
