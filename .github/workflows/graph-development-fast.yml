@@ -12,7 +12,6 @@ on:
       - 'tooling/ci_graph_dev_native_startup.py'
       - 'tooling/tests/test_ci_graph_dev_native_startup.py'
       - 'tooling/tests/test_ci_graph_dev_native_budget.py'
-      # Original first-Save and portable terminal changes must trigger inert G0.
       - 'tooling/ci_graph_dev_native_firstsave.py'
       - 'tooling/tests/test_ci_graph_dev_native_firstsave.py'
       - 'tooling/ci_graph_dev_portable_terminal_stdout.py'
