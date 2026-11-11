@@ -753,10 +753,16 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         let report = self
             .runtime
             .block_on(client.operation_recovery(prepared.identity()));
+        // Snapshot the original read transport before its custody guard is
+        // retained. A syntactically valid recovered receipt is not evidence
+        // if that transport failed or never confirmed its return.
+        let transport_failed = transport.has_unconfirmed_or_failed_invocation();
         // Preserve every actual envelope, typed failure and binary transport
         // observation before validating the historical read DTO.
         self.retain(sequence, &report, &transport)
             .map_err(|_| recovery_read_error(GraphRecoveryReadError::ReadFailed))?;
+        semantic_graph_recovery::require_confirmed_recovery_transport(transport_failed)
+            .map_err(recovery_read_error)?;
         let exchange =
             report.map_err(|_| recovery_read_error(GraphRecoveryReadError::ReadFailed))?;
         let response = prepared
