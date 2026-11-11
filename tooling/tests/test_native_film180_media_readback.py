@@ -486,6 +486,51 @@ class OriginalFFprobeProcessBoundTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1.7)
 
 
+    def test_selected_rgb_pipe_has_its_exact_precharged_output_ceiling(self):
+        # Inert decoder, not an MP4 or Native Host. A small output cap lets
+        # this test check the real stream boundary without allocating 75 MiB.
+        argv = [sys.executable, "-I", "-c",
+                "import sys;sys.stdout.buffer.write(b'a'*33)"]
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^selected_decoded_native_frame_bytes_mismatch$"):
+            verifier._bounded_readonly_output(
+                argv, timeout=8, stdout_limit=32,
+                over_limit="selected_decoded_native_frame_bytes_mismatch",
+            )
+        self.assertEqual(
+            verifier._bounded_readonly_output(
+                [sys.executable, "-I", "-c",
+                 "import sys;sys.stdout.buffer.write(b'a'*32)"],
+                timeout=8, stdout_limit=32,
+                over_limit="selected_decoded_native_frame_bytes_mismatch",
+            ),
+            b"a" * 32,
+        )
+
+    def test_selected_video_exact_rgb_geometry_uses_the_bounded_supervisor(self):
+        # A tiny synthetic output tests split/join logic without a renderer.
+        raw = b"ABCDEFghijkl"
+        with mock.patch.object(verifier, "FRAME_BYTES", 6), \
+                mock.patch.object(verifier, "SELECTED", (0, 5)), \
+                mock.patch.object(verifier, "_bounded_readonly_output",
+                                  return_value=raw) as bounded:
+            actual = verifier.decode_selected_video(
+                Path("not-dispatched.mp4"), "ffmpeg")
+            self.assertEqual(actual, {0: b"ABCDEF", 5: b"ghijkl"})
+            self.assertEqual(bounded.call_count, 1)
+            self.assertEqual(bounded.call_args.kwargs["stdout_limit"], 12)
+            self.assertEqual(bounded.call_args.kwargs["timeout"], 150)
+            self.assertEqual(
+                bounded.call_args.kwargs["over_limit"],
+                "selected_decoded_native_frame_bytes_mismatch",
+            )
+            bounded.return_value = raw[:-1]
+            with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                        "^selected_decoded_native_frame_bytes_mismatch$"):
+                verifier.decode_selected_video(
+                    Path("not-dispatched.mp4"), "ffmpeg")
+
+
 class OriginalFFprobeStreamBoundTests(unittest.TestCase):
     """Both original inventories have an equal finite JSON receipt ceiling."""
 
