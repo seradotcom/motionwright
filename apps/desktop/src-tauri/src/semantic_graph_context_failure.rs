@@ -70,6 +70,17 @@ impl GraphContextFailure {
         })
     }
 
+    /// A returned context is not READY if its original transport is uncertain.
+    /// Keep the private outcome already retained; do not grant another read or
+    /// write, mint a typed ErrorCode, or retry the Native callback.
+    pub(crate) fn require_confirmed_transport(transport_failed: bool) -> Result<(), Value> {
+        if transport_failed {
+            Err(Self::without_code(GraphContextStage::Transport))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Transport uncertainty outranks a reported Native error. The closed
     /// ErrorCode is copied only from the actual typed callback error.
     pub(crate) fn from_report(
@@ -124,6 +135,13 @@ mod tests {
         ] {
             assert_closed(&GraphContextFailure::without_code(stage), expected, None);
         }
+    }
+
+    #[test]
+    fn context_success_cannot_hide_an_unconfirmed_transport() {
+        assert!(GraphContextFailure::require_confirmed_transport(false).is_ok());
+        let failure = GraphContextFailure::require_confirmed_transport(true).unwrap_err();
+        assert_closed(&failure, "TRANSPORT", None);
     }
 
     #[test]

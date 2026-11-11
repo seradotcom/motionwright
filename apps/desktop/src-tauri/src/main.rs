@@ -565,6 +565,7 @@ async fn semantic_graph_authoring_context(
             GraphContextFailure::from_report(error, original_native, transport_failed)
         })?
         .clone();
+    GraphContextFailure::require_confirmed_transport(transport_failed)?;
 
     // A completed read supplies no later phase or write authority. Re-admit
     // the owner and check the original snapshot before exposing this context.
@@ -3161,6 +3162,9 @@ async fn apply_semantic_graph_change(
         }
         _ => return Err(rejected()),
     };
+    // Observe the original transport before its custody guard is consumed.
+    // Neither a returned receipt nor a local error can override uncertainty.
+    let transport_failed = attempt.custody().has_unconfirmed_or_failed_invocation();
     // Retain both outer failures and complete reports before interpreting any
     // result. A local custody failure cannot certify the original mutation.
     if !matches!(
@@ -3171,17 +3175,26 @@ async fn apply_semantic_graph_change(
             &request.request_id,
         )));
     }
-    let report = result.map_err(|error| {
-        graph_failure_value(GraphInvokeFailure::from_native(&request.request_id, &error))
+    // The outer error is local/transport; only the original typed Native
+    // envelope can establish outcome knownness. Never infer non-application.
+    let report = result.map_err(|_| {
+        graph_failure_value(GraphInvokeFailure::unknown(&request.request_id))
     })?;
-    report
-        .outcome()
-        .map(|receipt| receipt.project().clone())
-        .map_err(|error| {
-            graph_failure_value(GraphInvokeFailure::from_native(&request.request_id, error))
-        })
-    // The original receipt Project is the ACK, including replay. Do not load
-    // a later Project or start another owner/effect phase after this result.
+    let receipt = report.outcome().map_err(|_| {
+        graph_failure_value(GraphInvokeFailure::from_original_native_or_unknown(
+            &request.request_id,
+            report.original_native_error(),
+        ))
+    })?;
+    if transport_failed {
+        return Err(graph_failure_value(GraphInvokeFailure::unknown(
+            &request.request_id,
+        )));
+    }
+    // The original receipt Project is the ACK, including replay, but only
+    // after original transport custody confirms its return. No later Project
+    // read or second owner/effect phase can replace this exact acknowledgement.
+    Ok(receipt.project().clone())
 }
 
 fn main() {

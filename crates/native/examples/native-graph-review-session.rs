@@ -129,6 +129,17 @@ fn graph_context_report_failure(
     graph_context_failure(stage, Some(error))
 }
 
+/// A returned context is not READY while its original CLI transport remains
+/// uncertain. This guard runs only after the original report is retained, and
+/// does not overwrite a typed failed outcome or retry the callback.
+fn graph_context_require_confirmed_transport(transport_failed: bool) -> Result<(), Value> {
+    if transport_failed {
+        Err(graph_context_failure(GraphContextStage::Transport, None))
+    } else {
+        Ok(())
+    }
+}
+
 /// Restrictions supplied by the existing parent allocation. No value here
 /// grants SDK authority or chooses a different connection/session file.
 #[derive(Clone, Copy)]
@@ -704,9 +715,11 @@ impl shared_session::GraphBackend for NativeGraphBackend {
         match report {
             Ok(report) => {
                 let original_native = report.original_native_error().is_some();
-                report.outcome().cloned().map_err(|error| {
+                let context = report.outcome().cloned().map_err(|error| {
                     graph_context_report_failure(error, original_native, transport_failed)
-                })
+                })?;
+                graph_context_require_confirmed_transport(transport_failed)?;
+                Ok(context)
             }
             Err(error) => Err(graph_context_report_failure(
                 &error,
@@ -806,6 +819,9 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             )),
             _ => unreachable!("Canonical Graph change was prepared before dispatch"),
         };
+        // Never ACK a returned mutation receipt if the original transport
+        // remains unconfirmed. Source custody/UNKNOWN outranks a local return.
+        let transport_failed = transport.has_unconfirmed_or_failed_invocation();
         // The existing mutation DTO conservatively reports UNKNOWN for an
         // unclassified outer/local error. Even if that local Error has its
         // default knownness, this client receives no further callback credit.
@@ -823,13 +839,18 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             Ok(report) => match report.outcome() {
                 // This is the original native receipt, including exact replay.
                 // Do not reload local SQLite or recalculate a successful Project.
+                // A returned receipt cannot confirm a mutation when the
+                // original transport has an unconfirmed or failed invocation.
+                Ok(_) if transport_failed => {
+                    Err(mutation_failure(GraphInvokeFailure::unknown(request_id)))
+                }
                 Ok(receipt) => Ok(receipt.project().clone()),
-                Err(_) => Err(mutation_failure(match report.original_native_error() {
-                    // This accessor is populated only by the client's original
-                    // typed Native failure, never a later local decoder error.
-                    Some(error) => GraphInvokeFailure::from_native(request_id, error),
-                    None => GraphInvokeFailure::unknown(request_id),
-                })),
+                Err(_) => Err(mutation_failure(
+                    GraphInvokeFailure::from_original_native_or_unknown(
+                        request_id,
+                        report.original_native_error(),
+                    ),
+                )),
             },
             Err(_) => Err(mutation_failure(GraphInvokeFailure::unknown(request_id))),
         }
@@ -919,6 +940,19 @@ mod native_graph_adapter_tests {
             graph_context_failure(GraphContextStage::Custody, None),
             json!({"schema":"motionwright.native.graph-context-failure/1",
                    "stage":"CUSTODY","error_code":null})
+        );
+    }
+
+    #[test]
+    fn graph_context_success_requires_a_confirmed_original_transport() {
+        assert!(graph_context_require_confirmed_transport(false).is_ok());
+        assert_eq!(
+            graph_context_require_confirmed_transport(true),
+            Err(json!({
+                "schema":"motionwright.native.graph-context-failure/1",
+                "stage":"TRANSPORT",
+                "error_code":null,
+            }))
         );
     }
 

@@ -80,6 +80,18 @@ impl GraphInvokeFailure {
         Self::new(request_id, false)
     }
 
+    /// Only a typed failure from the original Native envelope can provide
+    /// outcome knownness. An outer transport/local/decoder error never can.
+    pub(crate) fn from_original_native_or_unknown(
+        request_id: &str,
+        original_native: Option<&NativeError>,
+    ) -> Result<Self, InvalidGraphRequestId> {
+        match original_native {
+            Some(error) => Self::from_native(request_id, error),
+            None => Self::unknown(request_id),
+        }
+    }
+
     fn new(request_id: &str, outcome_known: bool) -> Result<Self, InvalidGraphRequestId> {
         Self::validate_request_id(request_id)?;
         Ok(Self {
@@ -190,6 +202,29 @@ mod tests {
     }
 
     #[test]
+    fn original_native_envelope_is_the_only_source_of_outcome_knownness() {
+        assert_closed(
+            &GraphInvokeFailure::from_original_native_or_unknown(ORIGINAL_KEY, None).unwrap(),
+            ORIGINAL_KEY,
+            false,
+        );
+        let known = NativeError::new(ErrorCode::BackendFailed, PRIVATE);
+        assert_closed(
+            &GraphInvokeFailure::from_original_native_or_unknown(ORIGINAL_KEY, Some(&known))
+                .unwrap(),
+            ORIGINAL_KEY,
+            true,
+        );
+        let uncertain = NativeError::invalid(PRIVATE).uncertain();
+        assert_closed(
+            &GraphInvokeFailure::from_original_native_or_unknown(ORIGINAL_KEY, Some(&uncertain))
+                .unwrap(),
+            ORIGINAL_KEY,
+            false,
+        );
+    }
+
+    #[test]
     fn equal_uuid_values_keep_their_distinct_original_spelling() {
         let lower = ORIGINAL_KEY.to_ascii_lowercase();
         assert_eq!(
@@ -227,6 +262,8 @@ mod tests {
             for rejected in [
                 GraphInvokeFailure::before_dispatch(&key),
                 GraphInvokeFailure::from_native(&key, &native_error),
+                GraphInvokeFailure::from_original_native_or_unknown(&key, None),
+                GraphInvokeFailure::from_original_native_or_unknown(&key, Some(&native_error)),
                 GraphInvokeFailure::unknown(&key),
             ] {
                 let error = rejected.unwrap_err();
