@@ -644,15 +644,52 @@ class NativeSession:
                 # additional original terminal observation, not a replacement
                 # for the first failure. No retry, no inference of no effect.
                 stdin_close_failed = True
+        close_timed_out = False
+        close_wait_unfinished = False
+        close_timeout_capture_failed = False
         try:
             code = self.child.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            # Stop only this owned child group after an unknown operation.
-            # Never relaunch it or attribute the missing reply to failure.
-            os.killpg(self.child.pid, signal.SIGKILL)
-            code = self.child.wait(timeout=10)
-            private_json(self.private / (self.label + ".close-timeout.original.json"),
-                         {"unknown": True, "automatic_retry": False})
+            # The original child exceeded its closure deadline. A signal
+            # racing its already-observed exit, or even a later reported 0,
+            # cannot promote this original to clean closure/known Save.
+            close_timed_out = True
+            try:
+                if os.name == "posix":
+                    os.killpg(self.child.pid, signal.SIGKILL)
+                else:
+                    self.child.kill()
+            except ProcessLookupError:
+                pass
+            except OSError:
+                # If the process-group signal failed, make one bounded direct
+                # child termination attempt; never touch unrelated processes.
+                try:
+                    self.child.kill()
+                except OSError:
+                    pass
+            try:
+                code = self.child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                # A still-live process must not masquerade as a closed owner.
+                # Terminate only this original child and observe at most once.
+                try:
+                    self.child.kill()
+                except OSError:
+                    pass
+                try:
+                    code = self.child.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    code = None
+                    close_wait_unfinished = True
+            try:
+                private_json(self.private / (self.label + ".close-timeout.original.json"),
+                             {"unknown": True, "automatic_retry": False,
+                              "close_wait_unfinished": close_wait_unfinished})
+            except (OSError, ValueError, FirstSaveFailure):
+                # Preserve the first exception; terminal custody still names
+                # this secondary failure, never claims full original capture.
+                close_timeout_capture_failed = True
         # Post-exit stdout is a PIPE, not a socket. Windows select() raises
         # WinError 10038 on it. A bounded live reader proves EOF on Linux and
         # Windows, or records UNKNOWN if an inherited writer keeps it open.
@@ -704,10 +741,16 @@ class NativeSession:
                       "stderr_capture_error": stderr_capture["read_error"],
                       "stderr_reader_finished": stderr_capture["reader_finished"],
                       "stdin_close_failed": stdin_close_failed,
+                      "close_timed_out": close_timed_out,
+                      "close_wait_unfinished": close_wait_unfinished,
+                      "close_timeout_capture_failed": close_timeout_capture_failed,
                       "unknown_request_latched": self.unknown_request_latched,
                       "pending_stdout": pending_identity,
                       "pending_stdout_capture_failed": pending_capture_failed,
                       "original_reply_complete": stderr_capture["complete"]
+                          and not close_timed_out
+                          and not close_wait_unfinished
+                          and not close_timeout_capture_failed
                           and not self.unknown_request_latched
                           and not stdin_close_failed and not self.pending
                           and not pending_capture_failed and not trailing
@@ -722,7 +765,9 @@ class NativeSession:
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:
-            require(stderr_capture["complete"]
+            require(stderr_capture["complete"] and not close_timed_out
+                    and not close_wait_unfinished
+                    and not close_timeout_capture_failed
                     and not self.unknown_request_latched
                     and not stdin_close_failed and not pending_capture_failed
                     and size <= MAX_ORIGINAL and code == 0
