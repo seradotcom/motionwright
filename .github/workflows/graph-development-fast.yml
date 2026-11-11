@@ -12,6 +12,11 @@ on:
       - 'tooling/ci_graph_dev_native_startup.py'
       - 'tooling/tests/test_ci_graph_dev_native_startup.py'
       - 'tooling/tests/test_ci_graph_dev_native_budget.py'
+      # Original first-Save and portable terminal changes must trigger inert G0.
+      - 'tooling/ci_graph_dev_native_firstsave.py'
+      - 'tooling/tests/test_ci_graph_dev_native_firstsave.py'
+      - 'tooling/ci_graph_dev_portable_terminal_stdout.py'
+      - 'tooling/tests/test_ci_graph_dev_portable_terminal_stdout.py'
       - 'tooling/ci_private_evidence.py'
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'tooling/tests/test_ci_graph_dev_fast.py'
@@ -158,6 +163,8 @@ jobs:
             tooling.tests.test_ci_graph_studio_selected \
             tooling.tests.test_ci_graph_dev_native_startup \
             tooling.tests.test_ci_graph_dev_native_budget \
+            tooling.tests.test_ci_graph_dev_native_firstsave \
+            tooling.tests.test_ci_graph_dev_portable_terminal_stdout \
             tooling.tests.test_ci_canvas_service.GraphR74JoinTests \
             tooling.tests.test_graph_development \
             tooling.tests.test_ci_graph_r74_singlecase \

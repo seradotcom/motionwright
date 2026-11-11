@@ -396,6 +396,35 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("tooling.tests.test_graph_owner_incomplete_terminal",
                       selected)
 
+    def test_graph_first_save_and_terminal_source_oracles_run_without_native_owner(self):
+        """Graph G0 must verify original Save custody even while G2 is blocked."""
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        trigger = workflow.split("    paths:", 1)[1].split(
+            "  workflow_dispatch:", 1)[0]
+        for path in (
+            "tooling/ci_graph_dev_native_firstsave.py",
+            "tooling/tests/test_ci_graph_dev_native_firstsave.py",
+            "tooling/ci_graph_dev_portable_terminal_stdout.py",
+            "tooling/tests/test_ci_graph_dev_portable_terminal_stdout.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("      - '" + path + "'", trigger)
+        gn1 = workflow.split("      - name: Verify GN1 startup", 1)[1].split(
+            "      - name: Verify original J1", 1)[0]
+        selected = [line.strip().split()[0] for line in gn1.splitlines()
+                    if line.strip().startswith("tooling.tests.")]
+        for module in ("tooling.tests.test_ci_graph_dev_native_firstsave",
+                       "tooling.tests.test_ci_graph_dev_portable_terminal_stdout"):
+            with self.subTest(module=module):
+                self.assertEqual(selected.count(module), 1)
+        self.assertIn("--require-hashes --only-binary=:all:", gn1)
+        self.assertNotIn("graph development-run", gn1)
+        self.assertNotIn("allow-one-original-save", gn1)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("contents: read", workflow)
+
     def test_original_provider_lease_roster_oracles_are_selected_in_source_fast(self):
         """New mixed-client negatives must be selected with the owner source."""
         root = Path(__file__).resolve().parents[2]
