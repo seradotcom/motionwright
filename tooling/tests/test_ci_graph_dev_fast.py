@@ -540,8 +540,8 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("tooling.tests.test_graph_owner_final_error_catalog", gn1)
 
     def test_context_and_inspection_node_contracts_are_selected_in_fast_g0(self):
-        # The fast source lane must actually execute the two focused Node
-        # contracts it watches; a path trigger alone is not verification.
+        # The fast source lane must execute all three focused Node contracts
+        # it watches; a path trigger alone is not verification.
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
             encoding="utf-8")
@@ -554,6 +554,7 @@ class ManualWorkflowBoundaryTests(unittest.TestCase):
         for source in (
             "apps/studio/tooling/graph-owner/context_failure_decode.test.mjs",
             "apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs",
+            "apps/studio/tests/support/graph-owner/dev_live_reader_continuity.test.mjs",
         ):
             with self.subTest(source=source):
                 self.assertTrue((root / source).is_file())

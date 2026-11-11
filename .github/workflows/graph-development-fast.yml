@@ -214,11 +214,12 @@ jobs:
           set -euo pipefail
           # Inert source fixtures only: no R74 statuses, Native Host, Store or G2.
           node --test apps/studio/tooling/graph-owner/producer_guard.test.mjs
-          # Keep the existing Linux-only J1 original unchanged; these are the
-          # two actual closed-context/Save-guard contracts selected by this lane.
+          # Keep the existing Linux-only J1 source contract unchanged;
+          # select the closed-context, Save and full original CAS continuity checks.
           node --test \
             apps/studio/tooling/graph-owner/context_failure_decode.test.mjs \
-            apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs
+            apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs \
+            apps/studio/tests/support/graph-owner/dev_live_reader_continuity.test.mjs
       - name: Retain bounded source-only result, even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
