@@ -5,8 +5,10 @@ import copy
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -460,6 +462,28 @@ class OriginalFFprobeProcessBoundTests(unittest.TestCase):
                                     "^original_ffprobe_stderr_unbounded$"):
             verifier._bounded_ffprobe(command, timeout=8,
                                      over_limit="original_ffprobe_receipt_unbounded")
+
+
+    def test_exited_parent_with_inherited_child_pipes_remains_bounded_unknown(self):
+        # The direct child exits cleanly, but a self-terminating descendant
+        # inherits both stream handles and keeps them open. The original
+        # transport is incomplete, not an empty stream or a completed ffprobe.
+        script = (
+            "import subprocess,sys;"
+            "subprocess.Popen([sys.executable,'-I','-c',"
+            "'import time; time.sleep(2)'],stdin=subprocess.DEVNULL,"
+            "stdout=sys.stdout,stderr=sys.stderr,shell=False);"
+            "sys.stdout.buffer.write(b'original\\n');"
+            "sys.stdout.buffer.flush()"
+        )
+        started = time.monotonic()
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^original_ffprobe_pipe_uncertain$"):
+            verifier._bounded_ffprobe(
+                [sys.executable, "-I", "-c", script], timeout=0.25,
+                over_limit="original_ffprobe_receipt_unbounded",
+            )
+        self.assertLess(time.monotonic() - started, 1.7)
 
 
 class OriginalFFprobeStreamBoundTests(unittest.TestCase):
