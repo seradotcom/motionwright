@@ -815,6 +815,16 @@ def _expression(value: Any) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip() or len(value) > 4096:
         _fail("license_expression_malformed", "The license expression is absent, empty, or oversized.")
+    if "/" in value:
+        # Cargo's legacy slash spelling separates simple license alternatives.
+        # Preserve the literal without selecting an alternative or inventing text.
+        alternatives = [part.strip(" \t") for part in value.split("/")]
+        if 2 * len(alternatives) - 1 > 512:
+            _fail("license_expression_budget_exceeded", "The license expression exceeds the parser budget.")
+        if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]*", part)
+               or part in {"AND", "OR", "WITH"} for part in alternatives):
+            _fail("license_expression_malformed", "Legacy slash syntax requires simple license identifiers.")
+        return value
     tokens = re.findall(r"\(|\)|[A-Za-z0-9][A-Za-z0-9.+:-]*", value)
     if re.sub(r"\s+", "", value) != "".join(tokens):
         _fail("license_expression_malformed", "The license expression has unsupported syntax.")
@@ -1000,13 +1010,15 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
     }
     texts: dict[str, bytes] = {}
     try:
+        # Ambiguous build contexts can leave confirmed roles empty. Possible
+        # roles are not promoted here; source and notice checks still apply.
         if (not isinstance(component.get("id"), str) or not component["id"]
                 or len(component["id"]) > 8192 or not isinstance(component.get("name"), str)
                 or not _NAME.fullmatch(component["name"])
                 or not isinstance(component.get("version"), str)
                 or not component["version"] or len(component["version"]) > 128
                 or not isinstance(component.get("manifest_path"), (str, Path))
-                or not isinstance(component.get("roles"), list) or not component["roles"]
+                or not isinstance(component.get("roles"), list)
                 or any(not isinstance(role, str) or not role or len(role) > 128
                        for role in component["roles"])
                 or len(component["roles"]) > 32):

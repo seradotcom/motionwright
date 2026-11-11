@@ -325,6 +325,82 @@ class CargoLicenseSourcesTests(unittest.TestCase):
                             and item["sha256"] == sha(SOURCE) for item in files))
         self.assertEqual(result["texts"][sha(NOTICE)], NOTICE)
 
+    def test_unknown_classifier_roles_remain_empty_with_original_notices(self):
+        component = self.fixture.registry()
+        component.update(roles=[], possible_roles=["build", "host", "runtime", "target"],
+                         graph_contexts=[],
+                         possible_graph_contexts=["build", "proc-macro-support", "runtime"])
+        original = copy.deepcopy(component)
+        result = self.fixture.collect([component])
+        self.assert_verified(result)
+        self.assertEqual(result["components"][0]["roles"], [])
+        self.assertEqual(component, original)
+        self.assertEqual(result["texts"], {sha(NOTICE): NOTICE})
+        self.assertEqual(result["components"][0]["source_authentication"][
+            "license_expression_check"], "GRAMMAR_ONLY_NO_ALTERNATIVE_SELECTED")
+
+    def test_role_metadata_still_requires_a_bounded_list_of_nonempty_strings(self):
+        component = self.fixture.registry()
+        missing = dict(component)
+        del missing["roles"]
+        malformed = [missing] + [
+            {**component, "roles": value}
+            for value in (None, "", (), {}, [None], [1], [""], ["x" * 129], ["host"] * 33)
+        ]
+        for changed in malformed:
+            with self.subTest(roles=changed.get("roles", "<absent>")):
+                result = self.fixture.collect([changed])
+                self.assert_blocked(result, "component_metadata_malformed")
+                self.assertEqual(result["texts"], {})
+
+    def test_unknown_roles_do_not_bypass_lock_source_or_notice_requirements(self):
+        component = self.fixture.registry()
+        component["roles"] = []
+        changed_identity = {**component, "version": "9.9.9"}
+        self.assert_blocked(self.fixture.collect([changed_identity]), "component_not_in_exact_lock")
+        source = Path(component["manifest_path"]).parent / "src/lib.rs"
+        source.write_bytes(SOURCE + b"// altered source\n")
+        result = self.fixture.collect([component])
+        self.assert_blocked(result, "registry_source_bytes_mismatch")
+        self.assertEqual(result["texts"], {})
+        missing = self.fixture.registry("unknown_roles_without_notice", notices={})
+        missing["roles"] = []
+        result = self.fixture.collect([missing])
+        self.assert_blocked(result, "license_text_missing")
+        self.assertEqual(result["texts"], {})
+
+    def test_legacy_slash_preserves_exact_expressions_and_original_notices(self):
+        expressions = ("MIT/Apache-2.0", "BSD-3-Clause/MIT", "Apache-2.0/MIT",
+                       "Apache-2.0 / MIT", "Unlicense/MIT")
+        components = [self.fixture.registry(f"legacy_slash_{index}", license_expression=value)
+                      for index, value in enumerate(expressions)]
+        originals = copy.deepcopy(components)
+        manifests = [Path(component["manifest_path"]).read_bytes() for component in components]
+        result = self.fixture.collect(components)
+        self.assert_verified(result, len(expressions))
+        self.assertEqual([row["license_expression"] for row in result["components"]],
+                         list(expressions))
+        self.assertEqual(components, originals)
+        self.assertEqual(result["texts"], {sha(NOTICE): NOTICE})
+        for component, manifest, record in zip(components, manifests, result["components"]):
+            self.assertEqual(Path(component["manifest_path"]).read_bytes(), manifest)
+            self.assertEqual(record["source_authentication"]["license_expression_check"],
+                             "GRAMMAR_ONLY_NO_ALTERNATIVE_SELECTED")
+
+    def test_legacy_slash_still_requires_exact_manifest_metadata(self):
+        component = self.fixture.registry(license_expression="Apache-2.0 / MIT")
+        for replacement in ("Apache-2.0/MIT", "Apache-2.0 OR MIT", "MIT"):
+            with self.subTest(replacement=replacement):
+                result = self.fixture.collect([{**component, "license": replacement}])
+                self.assert_blocked(result, "component_license_metadata_mismatch")
+                self.assertEqual(result["texts"], {})
+
+    def test_legacy_slash_does_not_synthesize_missing_notices(self):
+        component = self.fixture.registry(license_expression="MIT/Apache-2.0", notices={})
+        result = self.fixture.collect([component])
+        self.assert_blocked(result, "license_text_missing")
+        self.assertEqual(result["texts"], {})
+
     def test_matching_texts_are_deduplicated_without_merging_component_identity_or_roles(self):
         left = self.fixture.registry("left")
         right = self.fixture.registry("right")
@@ -769,6 +845,34 @@ class CargoLicenseDeltaTests(unittest.TestCase):
                    / f'{component["name"]}-{component["version"]}.crate')
         self.fixture.repin_archive(component, archive.read_bytes() + gzip.compress(b"hidden payload"))
         self.assert_blocked(self.fixture.collect([component]), "crate_trailing_payload_rejected")
+
+class LicenseExpressionBoundaryTests(unittest.TestCase):
+    def test_legacy_slash_rejects_empty_nonidentifier_and_mixed_operands(self):
+        invalid = (
+            "/MIT", "MIT/", "MIT//Apache-2.0", "MIT/ /Apache-2.0",
+            "MIT/AND", "OR/MIT", "MIT/WITH", "MIT/(Apache-2.0)",
+            "MIT/Apache-2.0 OR BSD-3-Clause", "MIT OR Apache-2.0/BSD-3-Clause",
+            "MIT WITH LLVM-exception/Apache-2.0", "https://example.invalid/LICENSE",
+            "../LICENSE", r"MIT\Apache-2.0", "C:/LICENSE", "MIT/Apache_2.0",
+            "MIT/\nApache-2.0", "MIT/\x00Apache-2.0",
+        )
+        for value in invalid:
+            with self.subTest(expression=value), self.assertRaises(collector._Problem) as caught:
+                collector._expression(value)
+            self.assertEqual(caught.exception.code, "license_expression_malformed")
+
+    def test_legacy_slash_keeps_expression_length_and_token_budgets(self):
+        largest = "/".join(["MIT"] * 256)
+        self.assertEqual(collector._expression(largest), largest)
+        with self.assertRaises(collector._Problem) as caught:
+            collector._expression(largest + "/MIT")
+        self.assertEqual(caught.exception.code, "license_expression_budget_exceeded")
+        longest = "A" * 4094 + "/B"
+        self.assertEqual(collector._expression(longest), longest)
+        with self.assertRaises(collector._Problem) as caught:
+            collector._expression(longest + "B")
+        self.assertEqual(caught.exception.code, "license_expression_malformed")
+
 
 class GitAndGzipBoundaryTests(unittest.TestCase):
     def test_git_completed_process_with_retained_output_pipe_returns_timeout(self):
