@@ -571,5 +571,333 @@ class CaptureContracts(unittest.TestCase):
         with self.assertRaisesRegex(capture.CaptureError, "cargo_index_digest_mismatch"):
             capture.verify_binary_binding(raw, **{**arguments, "expected_index_sha256": "0"*64})
 
+
+
+class TauriPermissionCaptureContracts(unittest.TestCase):
+    """Real filesystem/Git contracts only; no Cargo or build process is run."""
+    setUp = CaptureContracts.setUp
+    tearDown = CaptureContracts.tearDown
+    git = CaptureContracts.git
+
+    def commit(self, *extra):
+        paths = ["Cargo.lock", capture.COMMAND_PERMISSION_SOURCE,
+                 "apps/desktop/src-tauri/Cargo.toml", *extra]
+        self.git("-c", "core.autocrlf=false", "add", "--", *paths)
+        self.git("-c", "user.name=Permission fixture", "-c",
+                 "user.email=fixture@invalid.local", "commit", "-qm", "Exact permission fixture")
+        return self.git("rev-parse", "HEAD").decode().strip()
+
+    def generator_row(self, name, version, checksum, source=None):
+        registry = "registry+https://github.com/rust-lang/crates.io-index"
+        return (f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+                f'source = "{registry if source is None else source}"\n'
+                f'checksum = "{checksum}"\n\n').encode()
+
+    def fixture(self):
+        self.permissions = capture._load_sibling("tauri_generated_permissions")
+        self.git("init", "-q")
+        self.source_path = self.root / capture.COMMAND_PERMISSION_SOURCE
+        self.source_path.parent.mkdir(parents=True)
+        self.source_bytes = (
+            b"fn main() {\n"
+            b"let attributes = tauri_build::Attributes::new().app_manifest("
+            b'tauri_build::AppManifest::new().commands(&["bootstrap", "read_mix",]));\n'
+            b'tauri_build::try_build(attributes).expect("fixture command ACL");\n}\n'
+        )
+        self.source_path.write_bytes(self.source_bytes)
+        (self.source_path.parent / "Cargo.toml").write_bytes(
+            b'[package]\nname = "motionwright-desktop"\nversion = "0.1.0"\nlicense = "MIT"\n')
+        self.lock_bytes = (
+            b"version = 3\n\n"
+            + b"".join(self.generator_row(*row) for row in self.permissions.GENERATOR_PACKAGES)
+            + b'[[package]]\nname = "motionwright-desktop"\nversion = "0.1.0"\n'
+        )
+        (self.root / "Cargo.lock").write_bytes(self.lock_bytes)
+        self.head = self.commit()
+        return capture.prepare_windows_command_permissions(self.root, self.head)
+
+    def emit(self, expectation):
+        for name, raw in expectation["expected_files"].items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+
+    def observe(self, expectation):
+        return capture.observe_windows_command_permissions(self.root, self.head, expectation)
+
+    def test_opt_in_requires_schemas_before_any_source_access_or_effect(self):
+        kwargs = dict(
+            repo=self.root / "missing-repository", expected_source="0" * 40,
+            cargo="not-a-cargo-command", cargo_home=self.root / "missing-home",
+            target_triple="x86_64-pc-windows-msvc", root_package_name="motionwright-desktop",
+            manifest_path="apps/desktop/src-tauri/Cargo.toml",
+            state_directory=self.root / "state", resources_directory=self.root / "resources",
+            build_command=["not-a-build"],
+        )
+        for permission_flag, schema_flag, code in (
+                (True, False, "requires_generated_schemas"),
+                (True, 1, "requires_generated_schemas"),
+                (1, True, "flag_invalid"),
+                ("yes", True, "flag_invalid")):
+            with self.subTest(permission_flag=permission_flag, schema_flag=schema_flag):
+                with self.assertRaisesRegex(capture.CaptureError, "tauri_command_permissions_" + code):
+                    capture.capture_build(
+                        **kwargs, tauri_generated_schemas=schema_flag,
+                        tauri_generated_command_permissions=permission_flag)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_cli_requires_explicit_schemas_without_running_cargo(self):
+        import contextlib
+        output = io.StringIO()
+        args = [
+            "--repo", str(self.root / "missing"), "--expected-source", "0" * 40,
+            "--cargo-home", str(self.root / "home"), "--manifest", "missing/Cargo.toml",
+            "--state-directory", str(self.root / "state"),
+            "--resources-directory", str(self.root / "resources"),
+            "--target", "x86_64-pc-windows-msvc", "--root-package", "motionwright-desktop",
+            "--tauri-generated-command-permissions", "--", "not-a-build",
+        ]
+        with contextlib.redirect_stderr(output):
+            code = capture.main(args)
+        self.assertEqual(code, 2)
+        self.assertIn("tauri_command_permissions_requires_generated_schemas", output.getvalue())
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_real_preflight_binds_source_blob_lock_and_exact_expected_files(self):
+        expectation = self.fixture()
+        self.assertEqual(set(expectation), {"command_source", "expected_files", "lock_identity"})
+        descriptor = expectation["command_source"]
+        self.assertEqual(descriptor, {
+            "path": capture.COMMAND_PERMISSION_SOURCE,
+            "git_blob": self.git("rev-parse", "HEAD:" + capture.COMMAND_PERMISSION_SOURCE).decode().strip(),
+            "bytes": len(self.source_bytes), "sha256": capture.sha(self.source_bytes),
+        })
+        self.assertEqual(expectation["lock_identity"], {
+            "path": "Cargo.lock", "git_blob": self.git("rev-parse", "HEAD:Cargo.lock").decode().strip(),
+            "bytes": len(self.lock_bytes), "sha256": capture.sha(self.lock_bytes),
+        })
+        self.assertEqual(expectation["expected_files"],
+                         self.permissions.derive_command_permissions(self.source_bytes))
+        self.assertEqual(capture.prepare_windows_command_permissions(self.root, self.head), expectation)
+        self.assertFalse((self.root / self.permissions.GENERATED_ROOT).exists())
+
+    def test_preflight_refuses_existing_namespace_or_non_directory_parent(self):
+        self.fixture()
+        namespace = self.root / self.permissions.GENERATED_ROOT
+        namespace.mkdir(parents=True)
+        with self.assertRaisesRegex(capture.CaptureError, "root_preexisting"):
+            capture.prepare_windows_command_permissions(self.root, self.head)
+        namespace.rmdir()
+        namespace.parent.rmdir()
+        namespace.parent.write_bytes(b"ordinary parent file; never followed")
+        with self.assertRaisesRegex(capture.CaptureError, "unexpected_file_type"):
+            capture.prepare_windows_command_permissions(self.root, self.head)
+        self.assertEqual(namespace.parent.read_bytes(), b"ordinary parent file; never followed")
+
+    def test_source_head_dirty_bytes_and_index_are_independently_rejected(self):
+        self.fixture()
+        with self.assertRaisesRegex(capture.CaptureError, "source_head_mismatch"):
+            capture.prepare_windows_command_permissions(self.root, "0" * 40)
+        changed = self.source_bytes.replace(b'"bootstrap"', b'"bootstraq"')
+        self.source_path.write_bytes(changed)
+        with self.assertRaisesRegex(capture.CaptureError, "git_worktree_bytes_mismatch"):
+            capture.prepare_windows_command_permissions(self.root, self.head)
+        self.git("-c", "core.autocrlf=false", "add", "--", capture.COMMAND_PERMISSION_SOURCE)
+        with self.assertRaisesRegex(capture.CaptureError, "git_index_not_clean"):
+            capture.prepare_windows_command_permissions(self.root, self.head)
+        self.assertFalse((self.root / self.permissions.GENERATED_ROOT).exists())
+
+    def test_generator_lock_rejects_missing_wrong_or_ambiguous_exact_packages(self):
+        self.fixture()
+        name, version, checksum = self.permissions.GENERATOR_PACKAGES[0]
+        row = self.generator_row(name, version, checksum)
+        variants = (
+            self.lock_bytes.replace(row, b""),
+            self.lock_bytes.replace(row, self.generator_row(name, "2.7.0", checksum)),
+            self.lock_bytes.replace(row, self.generator_row(name, version, "0" * 64)),
+            self.lock_bytes.replace(row, self.generator_row(name, version, checksum,
+                                                            "registry+https://example.invalid/index")),
+            self.lock_bytes + row,
+            self.lock_bytes + self.generator_row(name, "2.6.0", "0" * 64),
+        )
+        for number, raw in enumerate(variants):
+            with self.subTest(number=number):
+                (self.root / "Cargo.lock").write_bytes(raw)
+                head = self.commit()
+                with self.assertRaisesRegex(capture.CaptureError, "generator_lock_mismatch:tauri-build"):
+                    capture.prepare_windows_command_permissions(self.root, head)
+                self.assertFalse((self.root / self.permissions.GENERATED_ROOT).exists())
+
+    def test_legal_crlf_proof_does_not_transfer_a_previous_byte_identity(self):
+        expectation = self.fixture()
+        self.git("config", "core.autocrlf", "true")
+        crlf = self.source_bytes.replace(b"\n", b"\r\n")
+        self.source_path.write_bytes(crlf)
+        changed = capture.prepare_windows_command_permissions(self.root, self.head)
+        self.assertEqual(changed["command_source"]["git_blob"], expectation["command_source"]["git_blob"])
+        self.assertEqual(changed["command_source"]["sha256"], capture.sha(crlf))
+        self.assertNotEqual(changed["command_source"], expectation["command_source"])
+        self.emit(changed)
+        with self.assertRaisesRegex(capture.CaptureError, "source_identity_changed"):
+            self.observe(expectation)
+        self.assertEqual(self.observe(changed)["command_source"], changed["command_source"])
+
+    def test_postbuild_observation_has_only_source_descriptor_and_actual_file_digests(self):
+        expectation = self.fixture()
+        self.emit(expectation)
+        observed = self.observe(expectation)
+        self.assertEqual(set(observed), {"command_source", "files"})
+        self.assertEqual(observed["command_source"], expectation["command_source"])
+        self.assertEqual(observed["files"], {
+            name: {"bytes": len(raw), "sha256": capture.sha(raw)}
+            for name, raw in expectation["expected_files"].items()
+        })
+        for descriptor in observed["files"].values():
+            self.assertEqual(set(descriptor), {"bytes", "sha256"})
+
+    def test_namespace_missing_extra_directory_and_case_alias_are_rejected(self):
+        expectation = self.fixture()
+        self.emit(expectation)
+        self.observe(expectation)
+        names = sorted(expectation["expected_files"])
+        target = self.root / names[0]
+        original = target.read_bytes()
+        target.unlink()
+        with self.assertRaisesRegex(capture.CaptureError, "roster_invalid"):
+            self.observe(expectation)
+        target.write_bytes(original)
+        extra = target.parent / "unexpected.toml"
+        extra.write_bytes(b"not admitted")
+        with self.assertRaisesRegex(capture.CaptureError, "roster_invalid"):
+            self.observe(expectation)
+        extra.unlink()
+        target.unlink(); target.mkdir()
+        with self.assertRaisesRegex(capture.CaptureError, "nonregular"):
+            self.observe(expectation)
+        target.rmdir(); target.write_bytes(original)
+        temporary = target.with_suffix(".rename")
+        alias = target.with_name(target.name.upper())
+        target.rename(temporary); temporary.rename(alias)
+        with self.assertRaisesRegex(capture.CaptureError, "roster_invalid"):
+            self.observe(expectation)
+
+    def test_permission_bytes_and_bounded_reads_are_not_descriptor_only(self):
+        expectation = self.fixture()
+        self.emit(expectation)
+        target = self.root / sorted(expectation["expected_files"])[0]
+        original = target.read_bytes()
+        target.write_bytes(b"!" + original[1:])
+        with self.assertRaisesRegex(capture.CaptureError, "bytes_mismatch"):
+            self.observe(expectation)
+        target.write_bytes(b"x" * (self.permissions.MAX_PERMISSION_BYTES + 1))
+        with self.assertRaisesRegex(capture.CaptureError, "file_budget_exceeded"):
+            self.observe(expectation)
+
+    def test_tracked_overlap_and_staged_overlap_are_rejected_before_capture(self):
+        expectation = self.fixture()
+        self.emit(expectation)
+        name = sorted(expectation["expected_files"])[0]
+        self.git("-c", "core.autocrlf=false", "add", "--", name)
+        with self.assertRaisesRegex(capture.CaptureError, "git_index_not_clean"):
+            capture.authenticate_windows_command_source(self.root, self.head)
+        self.head = self.commit(name)
+        for file in (self.root / self.permissions.GENERATED_ROOT).iterdir():
+            file.unlink()
+        (self.root / self.permissions.GENERATED_ROOT).rmdir()
+        with self.assertRaisesRegex(capture.CaptureError, "permission_tracked"):
+            capture.prepare_windows_command_permissions(self.root, self.head)
+
+    def test_retention_preserves_actual_source_and_permissions_once(self):
+        expectation = self.fixture()
+        self.emit(expectation)
+        observed = self.observe(expectation)
+        state = self.root / "state"; state.mkdir()
+        originals = capture.retain_command_permission_originals(
+            self.root, state, expectation, observed, expected_source=self.head)
+        self.assertEqual(len(originals), len(expectation["expected_files"]) + 1)
+        source_record = originals["workspace:" + capture.COMMAND_PERMISSION_SOURCE]
+        self.assertEqual(source_record["path"], "generated-metadata/tauri-command-source/build.rs")
+        self.assertEqual((state / source_record["path"]).read_bytes(), self.source_bytes)
+        for name, raw in expectation["expected_files"].items():
+            row = originals["workspace:" + name]
+            self.assertEqual(row["path"],
+                             "generated-metadata/tauri-command-permissions/" + pathlib.Path(name).name)
+            self.assertEqual((state / row["path"]).read_bytes(), raw)
+            self.assertEqual(capture.stable_hash(state, row["path"]),
+                             {"bytes": row["bytes"], "sha256": row["sha256"]})
+        with self.assertRaises(FileExistsError):
+            capture.retain_command_permission_originals(
+                self.root, state, expectation, observed, expected_source=self.head)
+        self.assertEqual((state / source_record["path"]).read_bytes(), self.source_bytes)
+        self.assertFalse((state / "capture-complete.json").exists())
+
+    def test_forged_observation_is_refused_before_originals_are_created(self):
+        import copy
+        expectation = self.fixture()
+        self.emit(expectation)
+        observed = self.observe(expectation)
+        state = self.root / "state"; state.mkdir()
+        changes = []
+        altered = copy.deepcopy(observed)
+        altered["command_source"]["sha256"] = "0" * 64
+        changes.append(altered)
+        altered = copy.deepcopy(observed)
+        altered["files"][sorted(altered["files"])[0]]["bytes"] += 1
+        changes.append(altered)
+        for changed in changes:
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(capture.CaptureError, "observation_changed"):
+                    capture.retain_command_permission_originals(
+                        self.root, state, expectation, changed, expected_source=self.head)
+                self.assertEqual(list(state.iterdir()), [])
+
+    def test_revalidation_refusal_does_not_rewrite_retained_originals(self):
+        expectation = self.fixture()
+        self.emit(expectation)
+        observed = self.observe(expectation)
+        state = self.root / "state"; state.mkdir()
+        originals = capture.retain_command_permission_originals(
+            self.root, state, expectation, observed, expected_source=self.head)
+        name = sorted(expectation["expected_files"])[0]
+        raw = expectation["expected_files"][name]
+        (self.root / name).write_bytes(b"!" + raw[1:])
+        with self.assertRaisesRegex(capture.CaptureError, "bytes_mismatch"):
+            self.observe(expectation)
+        self.assertEqual((state / originals["workspace:" + name]["path"]).read_bytes(), raw)
+        self.assertFalse((state / "capture-complete.json").exists())
+
+    def test_retained_inputs_survive_real_notice_collection_refusal(self):
+        self.fixture()
+        refused = self.root / "crates/refused/Cargo.toml"
+        refused.parent.mkdir(parents=True)
+        refused.write_bytes(b'[package]\nname = "refused"\nversion = "0.1.0"\nlicense = "MIT"\n')
+        raw_lock = self.lock_bytes + b'\n[[package]]\nname = "refused"\nversion = "0.1.0"\n'
+        (self.root / "Cargo.lock").write_bytes(raw_lock)
+        self.head = self.commit("crates/refused/Cargo.toml")
+        expectation = capture.prepare_windows_command_permissions(self.root, self.head)
+        self.emit(expectation)
+        observed = self.observe(expectation)
+        state = self.root / "state"; state.mkdir()
+        originals = capture.retain_command_permission_originals(
+            self.root, state, expectation, observed, expected_source=self.head)
+        cargo_home = self.root / "cargo-home"; cargo_home.mkdir()
+        sources = capture._load_sibling("cargo_license_sources")
+        component = {
+            "id": refused.parent.as_uri() + "#refused@0.1.0",
+            "name": "refused", "version": "0.1.0", "source": None,
+            "manifest_path": str(refused), "roles": ["runtime", "target"],
+            "license": "MIT", "license_file": None,
+        }
+        notices = sources.collect_cargo_licenses(
+            [component], workspace_root=self.root, cargo_home=cargo_home, lock_bytes=raw_lock)
+        self.assertEqual([row["code"] for row in notices["components"][0]["issues"]],
+                         ["license_text_missing"])
+        self.assertTrue(notices["issues"])
+        for row in originals.values():
+            self.assertEqual(capture.stable_hash(state, row["path"]),
+                             {"bytes": row["bytes"], "sha256": row["sha256"]})
+        self.assertFalse((state / "capture-complete.json").exists())
+
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
