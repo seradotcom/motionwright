@@ -261,6 +261,47 @@ class OneSaveLifecycleTests(unittest.TestCase):
             stdin=None, stdout=output, wait=lambda timeout: 0)
         return session, output
 
+    def test_failed_writer_stdin_close_is_unknown_with_original_terminal_retained(self):
+        session, output = self.inert_terminal_session()
+        class OriginalPipeCloseError:
+            def close(self):
+                raise BrokenPipeError("original writer stdin pipe closed unexpectedly")
+        session.child.stdin = OriginalPipeCloseError()
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save, "read_terminal_stdout", return_value=complete):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as denied:
+                session.__exit__(None, None, None)
+        self.assertTrue(denied.exception.unknown)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["stdin_close_failed"])
+        self.assertFalse(terminal["original_reply_complete"])
+        self.assertTrue(terminal["stdout_eof_observed"])
+        self.assertEqual(terminal["exit_code"], 0)
+
+    def test_failed_stdin_close_does_not_replace_the_first_original_error(self):
+        session, output = self.inert_terminal_session()
+        class OriginalPipeCloseError:
+            def close(self):
+                raise BrokenPipeError("secondary pipe close denied")
+        session.child.stdin = OriginalPipeCloseError()
+        original = save.FirstSaveFailure("ORIGINAL_MUTATION_UNKNOWN", unknown=True)
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save, "read_terminal_stdout", return_value=complete):
+            # Context-manager __exit__ must not overwrite the original when
+            # a secondary stdin-close error occurs after dispatch.
+            self.assertFalse(session.__exit__(type(original), original, None))
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["stdin_close_failed"])
+        self.assertFalse(terminal["original_reply_complete"])
+        self.assertEqual(original.code, "ORIGINAL_MUTATION_UNKNOWN")
+
     def test_native_terminal_requires_actual_stdout_eof_even_after_last_reply(self):
         session, output = self.inert_terminal_session(read_only=True)
         complete = {"raw": b"", "eof": True, "over_cap": False,
