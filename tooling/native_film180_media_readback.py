@@ -292,7 +292,7 @@ def inspect_selected_pixels(frames: dict[int, bytes],
 
 
 def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
-                             stdout_limit: int) -> bytes:
+                             stdout_limit: int, observed: dict | None = None) -> bytes:
     """Supervise one read-only decoder with bounded stdout AND stderr in flight.
 
     A post-hoc len(subprocess.run(..., capture_output=True).stdout) check is not
@@ -301,6 +301,8 @@ def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
     """
     require(type(stdout_limit) is int and 0 < stdout_limit <= MAX_MP4_BYTES,
             "original_decoder_stdout_budget_invalid")
+    require(observed is None or (type(observed) is dict and not observed),
+            "original_decoder_observation_must_be_new")
     ceilings = (stdout_limit, 64 * 1024)
     streams = (bytearray(), bytearray())
     exceeded = [False, False]
@@ -379,8 +381,18 @@ def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
         for thread in readers:
             thread.join(timeout=max(0, cleanup_deadline - time.monotonic()))
 
-    require(not any(thread.is_alive() for thread in readers)
-            and not read_errors, "original_ffprobe_pipe_uncertain")
+    pipes_complete = not any(thread.is_alive() for thread in readers) and not read_errors
+    # A PCM producer needs the original bounded stdout/stderr BEFORE result
+    # interpretation, including failures. A partial stream or a killed child
+    # must never be presented to its custody owner as an exit-zero receipt.
+    if observed is not None:
+        observed.update({
+            "stdout": bytes(streams[0]), "stderr": bytes(streams[1]),
+            "exit_code": process.returncode if pipes_complete
+                         and not any(exceeded) and not timed_out else None,
+            "deadline_exceeded": timed_out, "automatic_retry": False,
+        })
+    require(pipes_complete, "original_ffprobe_pipe_uncertain")
     require(not exceeded[0], over_limit)
     require(not exceeded[1], "original_ffprobe_stderr_unbounded")
     if timed_out:
@@ -392,7 +404,7 @@ def _bounded_readonly_output(argv, *, timeout: int, over_limit: str,
             process.returncode, argv, output=bytes(streams[0]),
             stderr=bytes(streams[1]),
         )
-    return bytes(streams[0])
+    return observed["stdout"] if observed is not None else bytes(streams[0])
 
 
 def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
@@ -441,29 +453,33 @@ def decode_selected_video(media: Path, executable: str) -> dict[int, bytes]:
 
 
 def decode_original_audio(media: Path, executable: str, *, capture=None) -> bytes:
+    # This is the single original decoder, not a retry. Its complete stdout
+    # belongs to the existing producer's private custody BEFORE interpretation.
+    # Buffer at most the fixed stereo PCM16 source interval plus AAC padding.
+    observed = {}
     try:
-        proc = subprocess.run(
+        pcm = _bounded_readonly_output(
             [executable, "-nostdin", "-v", "error", "-i", str(media), "-map", "0:a:0",
              "-acodec", "pcm_s16le", "-ac", "2", "-ar", str(PCM_RATE),
              "-f", "s16le", "pipe:1"],
-            capture_output=True, timeout=120, check=True,
+            timeout=120, stdout_limit=AUDIO_BYTES_MAX,
+            over_limit="full_original_aac_pcm_sample_budget_changed",
+            observed=observed,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        if capture is not None:
+    except BaseException as error:
+        if capture is not None and observed:
             try:
-                capture({"stdout": error.stdout or b"", "stderr": error.stderr or b"",
-                         "exit_code": getattr(error, "returncode", None),
-                         "deadline_exceeded": isinstance(error, subprocess.TimeoutExpired),
-                         "automatic_retry": False})
+                # On incomplete pipe custody the supervisor records exit_code
+                # None; never let a partial stream masquerade as decoded PCM.
+                capture(observed)
             except BaseException:
                 error.private_capture_failed = True
         raise
     if capture is not None:
-        capture({"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode,
-                 "deadline_exceeded": False, "automatic_retry": False})
-    require(PCM_FRAMES * 4 <= len(proc.stdout) <= AUDIO_BYTES_MAX
-            and len(proc.stdout) % 4 == 0, "full_original_aac_pcm_sample_budget_changed")
-    return proc.stdout
+        capture(observed)
+    require(PCM_FRAMES * 4 <= len(pcm) <= AUDIO_BYTES_MAX
+            and len(pcm) % 4 == 0, "full_original_aac_pcm_sample_budget_changed")
+    return pcm
 
 
 def inspect_original_audio_presentation(master_path: Path, master_hash: str,

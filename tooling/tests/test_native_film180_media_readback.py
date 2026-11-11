@@ -531,6 +531,88 @@ class OriginalFFprobeProcessBoundTests(unittest.TestCase):
                     Path("not-dispatched.mp4"), "ffmpeg")
 
 
+class OriginalPCMBoundedCaptureTests(unittest.TestCase):
+    """Bounded original PCM decode custody, with no external FFmpeg process."""
+
+    def test_original_pcm_observed_once_before_returning_the_same_bytes(self):
+        pcm = b"\x01\x00\x02\x00" * verifier.PCM_FRAMES
+        seen = []
+        def source_decoder(_argv, *, observed, stdout_limit, **_kwargs):
+            self.assertEqual(stdout_limit, verifier.AUDIO_BYTES_MAX)
+            observed.update(stdout=pcm, stderr=b"original stderr",
+                            exit_code=0, deadline_exceeded=False,
+                            automatic_retry=False)
+            return pcm
+        with mock.patch.object(verifier, "_bounded_readonly_output",
+                               side_effect=source_decoder) as decode:
+            result = verifier.decode_original_audio(
+                Path("not-dispatched.mp4"), "ffmpeg", capture=seen.append)
+        decode.assert_called_once()
+        self.assertIs(result, pcm)
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0]["stdout"], pcm)
+        self.assertEqual(seen[0]["stderr"], b"original stderr")
+        self.assertEqual(seen[0]["exit_code"], 0)
+        self.assertFalse(seen[0]["deadline_exceeded"])
+        self.assertFalse(seen[0]["automatic_retry"])
+
+    def test_partial_pcm_retained_once_without_promoting_a_failed_decoder(self):
+        error = verifier.OriginalMediaMismatch(
+            "full_original_aac_pcm_sample_budget_changed")
+        seen = []
+        def source_decoder(_argv, *, observed, **_kwargs):
+            observed.update(stdout=b"partial\x00", stderr=b"original",
+                            exit_code=None, deadline_exceeded=False,
+                            automatic_retry=False)
+            raise error
+        def failing_capture(value):
+            seen.append(value)
+            raise OSError("private original disk failed")
+        with mock.patch.object(verifier, "_bounded_readonly_output",
+                               side_effect=source_decoder) as decode:
+            with self.assertRaises(verifier.OriginalMediaMismatch) as raised:
+                verifier.decode_original_audio(
+                    Path("not-dispatched.mp4"), "ffmpeg",
+                    capture=failing_capture)
+        decode.assert_called_once()
+        self.assertIs(raised.exception, error)
+        self.assertTrue(error.private_capture_failed)
+        self.assertEqual(len(seen), 1)
+        self.assertIsNone(seen[0]["exit_code"])
+        self.assertEqual(seen[0]["stdout"], b"partial\x00")
+
+    def test_short_original_pcm_is_captured_then_rejected_not_adjusted(self):
+        short_pcm = b"\x00" * (verifier.PCM_FRAMES * 4 - 4)
+        seen = []
+        def source_decoder(_argv, *, observed, **_kwargs):
+            observed.update(stdout=short_pcm, stderr=b"", exit_code=0,
+                            deadline_exceeded=False, automatic_retry=False)
+            return short_pcm
+        with mock.patch.object(verifier, "_bounded_readonly_output",
+                               side_effect=source_decoder) as decode:
+            with self.assertRaisesRegex(
+                    verifier.OriginalMediaMismatch, "sample_budget_changed"):
+                verifier.decode_original_audio(
+                    Path("not-dispatched.mp4"), "ffmpeg", capture=seen.append)
+        decode.assert_called_once()
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0]["stdout"], short_pcm)
+
+    def test_over_budget_child_retains_bounded_original_not_an_exit_zero(self):
+        observed = {}
+        argv = [sys.executable, "-I", "-c",
+                "import sys;sys.stdout.buffer.write(b'x'*33)"]
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch,
+                                    "^full_original_aac_pcm_sample_budget_changed$"):
+            verifier._bounded_readonly_output(
+                argv, timeout=8, stdout_limit=32,
+                over_limit="full_original_aac_pcm_sample_budget_changed",
+                observed=observed)
+        self.assertEqual(observed["stdout"], b"x" * 33)
+        self.assertEqual(observed["exit_code"], None)
+        self.assertFalse(observed["automatic_retry"])
+
+
 class OriginalFFprobeStreamBoundTests(unittest.TestCase):
     """Both original inventories have an equal finite JSON receipt ceiling."""
 
