@@ -178,12 +178,14 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
 
     def kill_original() -> None:
         try:
-            if child.poll() is None:
-                if os.name == "posix":
-                    import signal
-                    os.killpg(child.pid, signal.SIGKILL)
-                else:
-                    child.kill()
+            if os.name == "posix":
+                # start_new_session=True assigned this direct child its OWN
+                # group. Descendant writers can outlive its leader and keep
+                # both original pipes open after child.poll() is non-None.
+                import signal
+                os.killpg(child.pid, signal.SIGKILL)
+            elif child.poll() is None:
+                child.kill()
         except ProcessLookupError:
             pass
         except OSError:
@@ -248,15 +250,18 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
                 timed_out = not exited
                 break
             # An exited direct child cannot prove its inherited pipes have
-            # closed. Wait briefly for EOF; never block until a global 15m
-            # deadline on a detached writer.
-            if exited and now - child_exit_observed_at >= 1.0:
+            # closed. Give inherited pipe writers only a brief EOF grace,
+            # BUT do not confuse original data with its still-running fsync
+            # custody: if both EOFs are observed, allow the bounded overall
+            # deadline for reader synchronization to finish.
+            if (exited and now - child_exit_observed_at >= 1.0
+                    and not all(eof)):
                 break
             changed.wait(min(0.05, deadline - now))
             changed.clear()
     finally:
         if (timed_out or any(overflow) or any(errors)
-                or child.poll() is None):
+                or child.poll() is None or not all(eof)):
             kill_original()
         try:
             child.wait(timeout=2)
