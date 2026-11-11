@@ -11,6 +11,7 @@
  */
 import * as fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { SharedPool, OriginalWriter, bindRawPair, freshDirectory,
   inside, need, stableRead, GLOBAL_BYTES } from './custody.mjs';
@@ -43,6 +44,39 @@ const originalBinary = (factory) => {
   fs.accessSync(expected.path,fs.constants.X_OK);
   return expected;
 };
+
+/** Compare the FULL closed original Store/CAS inventory with BOTH phases of
+ * the independent read-only process. Its selected SVG hash alone would not
+ * detect a changed sibling, catalog or anchor. This check does not open a
+ * second writable Store, replay Native or grant any additional authority. */
+export function requireClosedDevelopmentStoreContinuity(capture, before, after,
+  casAnchorBefore, casAnchorAfter) {
+  const hash = /^[0-9a-f]{64}$/;
+  need(capture?.schemaVersion === 1 && Array.isArray(capture.entries)
+    && capture.entries.length > 0
+    && hash.test(capture.sourceBeforeSha256 ?? '')
+    && capture.sourceBeforeSha256 === createHash('sha256')
+      .update(JSON.stringify(capture.entries)).digest('hex')
+    && capture.sourceBeforeSha256 === capture.sourceAfterSha256
+    && capture.sourceAfterSha256 === capture.snapshotSha256
+    && Array.isArray(before?.entries) && Array.isArray(after?.entries)
+    && typeof before.cas_root_id === 'string'
+    && before.cas_root_id.length > 0
+    && before.cas_root_id === after.cas_root_id,
+    'GRAPH_DEV_READER_ORIGINAL_CAS_CAPTURE_UNAVAILABLE');
+  same(before.entries,capture.entries,
+    'GRAPH_DEV_READER_STORE_CHANGED_SINCE_WRITER_CAPTURE');
+  same(after.entries,capture.entries,
+    'GRAPH_DEV_READER_STORE_CHANGED_DURING_INDEPENDENT_READ');
+  need(typeof casAnchorBefore?.path === 'string'
+    && casAnchorBefore.path.endsWith('/blobs/.motionwright-cas-root-v1.json')
+    && typeof casAnchorBefore.device === 'string'
+    && typeof casAnchorBefore.inode === 'string',
+    'GRAPH_DEV_READER_ORIGINAL_CAS_ANCHOR_UNAVAILABLE');
+  same(casAnchorBefore,casAnchorAfter,
+    'GRAPH_DEV_READER_ORIGINAL_CAS_ANCHOR_REPLACED');
+  return true;
+}
 
 /** Immutable one-shot quota reservation BEFORE Native write/initializer. */
 export function reserveOriginalDevelopmentReader(factory) {
@@ -227,6 +261,18 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
   need(preseal && handoff,'GRAPH_DEV_READER_ORIGINAL_WAL_HANDOFF_MISSING');
   const before=stableRead(factory.options.databasePath,GLOBAL_BYTES).physical;
   same(before,factory.initializerPhysical,'GRAPH_DEV_READER_PHYSICAL_ORIGINAL_REPLACED');
+  // The actual writer's captured SQLite/CAS manifest is generated only after
+  // clean closure, copied original bytes and a stable before/after inventory.
+  const closedCapture=finalization.capture;
+  need(closedCapture?.schemaVersion===1
+    && closedCapture.sourceDirectory===path.dirname(factory.options.databasePath)
+    && closedCapture.snapshotDirectory===path.join(outputRoot,'store')
+    && closedCapture.databaseRelativePath===path.basename(factory.options.databasePath),
+    'GRAPH_DEV_READER_CLOSED_ORIGINAL_MANIFEST_MISSING');
+  const originalInventory=factory.verifyStoreAllocation();
+  const casAnchorPath=path.join(path.dirname(factory.options.databasePath),
+    'blobs','.motionwright-cas-root-v1.json');
+  const casAnchorBefore=stableRead(casAnchorPath,65536).physical;
   const binary=originalBinary(factory);
   const custody=new OriginalLiveReaderCustody(factory,binary,factory.options.databasePath);
   factory.developmentReaderOwner=custody;
@@ -295,10 +341,14 @@ export async function openOriginalDevelopmentReadOnly(factory, writer,
     requireSameOpenedProcessAndStore(beforeOpen,afterOpen,proc);
     same(stableRead(factory.options.databasePath,GLOBAL_BYTES).physical,
       before,'GRAPH_DEV_READER_SQLITE_REPLACED_DURING_READ');
-    // SQLite alone is insufficient: this source-owned Store also has a
-    // managed CAS anchor, sibling control and original directory identity.
-    // Reuse the exact pre-paid Store+CAS inventory contract after the read.
-    factory.verifyStoreAllocation();
+    // The read-only CAS hash proves the referenced SVG bytes. Also require
+    // every SQLite/CAS sibling, catalog and control file to match the WRITER'S
+    // closed original manifest before and after this independent process.
+    // Pin the managed CAS anchor's physical inode across the read as well.
+    const reopenedInventory=factory.verifyStoreAllocation();
+    const casAnchorAfter=stableRead(casAnchorPath,65536).physical;
+    requireClosedDevelopmentStoreContinuity(closedCapture,originalInventory,
+      reopenedInventory,casAnchorBefore,casAnchorAfter);
     factory.assertClosed();
     await custody.publish(path.join(custody.root,'readback.original.json'),
       Buffer.from(JSON.stringify({
