@@ -244,6 +244,7 @@ def gather_snapshot(roots, *, preserve_partial=False, max_archive_bytes=None):
                                 and metadata_identity(final) == metadata_identity(observed),
                                 "snapshot_startup_stderr_changed")
                     require(total + len(data) <= min(MAX_TOTAL, selected_budget),
+                            "snapshot_total_size" if max_archive_bytes is None else
                             "snapshot_total_size_or_partial_envelope_budget")
                     total += len(data)
                     entries.append((name, data))
@@ -325,6 +326,7 @@ def encrypt_snapshot(plaintext, recipient, current):
               "wrapped_key": base64.b64encode(wrapped).decode(),
               "plaintext_sha256": sha(plaintext), "plaintext_bytes": len(plaintext)}
     aad = json_bytes(header)
+    require(0 < len(aad) <= 8192, "seal_header_size")
     ciphertext = AESGCM(secret).encrypt(nonce, plaintext, aad)
     return MAGIC + len(aad).to_bytes(4, "big") + aad + ciphertext
 
