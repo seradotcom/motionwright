@@ -108,7 +108,7 @@ jobs:
           set -euo pipefail
           test_index=0
           for test_name in \
-            semantic_graph_mutation_error::tests::original_native_envelope_is_the_only_source_of_outcome_knownness \
+            semantic_graph_mutation_error::tests::unconfirmed_original_transport_overrules_even_a_known_native_rejection \
             semantic_graph_mutation_error::tests::invalid_keys_never_emit_a_typed_error_or_reflect_private_input \
             semantic_graph_recovery::tests::confirmed_recovery_transport_is_required_before_using_even_a_valid_record
           do
