@@ -1048,6 +1048,34 @@ class DistributionOwnedFilesTests(unittest.TestCase):
                 self.assertEqual(distribution_source_context(root), context)
                 self.assertEqual(fixture["source"].read_bytes(), fixture["payload_bytes"])
 
+    def test_pinned_main_root_uses_plain_checkout_without_windows_resolve_alias(self):
+        # Windows may spell one ordinary checkout differently after resolve.
+        # The actual CLI already derives this root from its verified helper.
+        # Never resolve aliases to make caller-controlled lexical paths safe.
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            with mock.patch.object(
+                Path, "resolve",
+                side_effect=AssertionError("pinned root must not rely on resolve"),
+            ):
+                source, capture, include = owned._pinned_internal_main_paths(root, "x64")
+            release = (root / "target" / "windows-captured"
+                       / "x86_64-pc-windows-msvc" / "release")
+            self.assertEqual(source, release / "motionwright-desktop.exe")
+            self.assertEqual(capture, release / "nsis" / "x64"
+                             / "mw-owned-MW_MAIN.bin")
+            self.assertEqual(include, release / "nsis" / "x64"
+                             / "mw-owned-MW_MAIN.nsh")
+            with self.assertRaisesRegex(
+                    owned.CaptureError, "ambiguous path components"):
+                owned._pinned_internal_main_paths(root / "target" / "..", "x64")
+            with mock.patch.object(owned, "_require_plain_parents",
+                                   side_effect=owned.CaptureError("reparse refused")):
+                with self.assertRaisesRegex(
+                        owned.CaptureError, "reparse refused"):
+                    owned._pinned_internal_main_paths(root, "x64")
+
     def test_real_cli_synthetic_permitted_control_binds_bytes_not_actual_rights(self):
         with self.temporary() as directory:
             fixture = self.fixture(directory, status="permitted")

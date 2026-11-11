@@ -469,10 +469,19 @@ def _pinned_internal_main_paths(root: Path, arch: str) -> tuple[Path, Path, Path
     }
     if arch not in triples:
         raise CaptureError("distribution_admission_main_arch_unsupported")
-    canonical_root = Path(root).resolve(strict=True)
-    if canonical_root != root or not canonical_root.is_absolute():
+    # The caller derives this checkout from the verified source sibling and
+    # binds it through distribution admission. Windows Path.resolve can respell
+    # an ordinary checkout; spelling inequality is not a security decision.
+    # Reject lexical aliases before abspath, then check every parent and the
+    # root itself for reparse points. Never use Tauri's caller-supplied path.
+    requested_root = Path(root)
+    if not requested_root.is_absolute():
         raise CaptureError("distribution_admission_source_root_not_canonical")
-    _require_plain_parents(canonical_root)
+    canonical_root = _validated_path(requested_root)
+    root_info = canonical_root.lstat()
+    if not stat.S_ISDIR(root_info.st_mode) or _is_link_or_reparse(root_info):
+        raise CaptureError("distribution_admission_source_root_not_canonical")
+    _require_plain_parents(canonical_root / "tooling" / "nsis_owned_files.py")
     release = canonical_root / "target" / "windows-captured" / triples[arch] / "release"
     bundle = release / "nsis" / arch
     return (
