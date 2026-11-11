@@ -127,6 +127,49 @@ A marked deletion is not itself independent evidence of namespace disappearance;
 
 An installation failure may leave removed predecessors, missing canonical paths, untrusted staged files, created directories or older registration. The new source path avoids direct extraction of partially written new canonical files. The installer never deletes unknown stages to obtain green evidence. NSIS cleans only its plugin directory; destination-volume staged files must be inspected and preserved independently.
 
+## Isolated same-size refusal observations
+
+The existing `nsis_lifecycle` scope retains its clean install, update and uninstall
+sequence. After that producer succeeds, three matrix jobs use fresh disposable
+Windows runners and the same original compiled setup. They cover the main
+executable, one declared resource and one declared external binary. They do not
+recompile or manufacture another package identity.
+
+The new jobs take the artifact ID and SHA-256 from the producer's upload outputs.
+The transport records GitHub run and artifact metadata, verifies the original ZIP
+against both the upload digest and API metadata, bounds extraction, and retains
+the downloaded originals. The readback consumer revalidates the original
+admission, compiled payload identities and complete clean lifecycle result before
+the case may invoke an installer. A rerun attempt is refused.
+
+Each runner begins with a new installation location and absent observed
+registration keys. It copies the original predecessor project's retained SQLite
+family as a preservation fixture, then invokes the admitted current setup once.
+The installed payloads and generated self are captured before a single byte of
+the selected owned payload is changed with XOR 1. The file length remains
+unchanged. An explicit foreign file is also retained. The changed application or
+external binary is never launched.
+
+One invocation of the intact generated uninstaller uses exactly `/S` followed by
+the final `_?=<install-root>` argument. `/UPDATE` is excluded because its early
+refusal would not exercise payload integrity. The original terminal must remain
+`ERROR / EXIT_OBSERVED / 2`; the observer does not turn it into ACK. Complete
+technical readback requires every observed installed file, both registry views,
+the SQLite family and the project observation to remain unchanged. The consumer
+compares the captured original and altered payload bytes to prove exactly one
+XOR-1 change, rather than relying only on unequal same-size hashes.
+
+An exit of zero, exit 3, timeout, missing process identity, changed evidence or
+incomplete custody fails this check. It never authorizes another launch,
+restoration, a registry reset or a cleanup attempt. Each matrix job retains its
+original intents, process terminal and snapshots even on failure. `fail-fast` is
+disabled so one job cannot cancel another during its physical operation.
+
+These results concern the observed files and historical project preservation.
+They do not establish preservation of unrecorded empty directories, current
+application storage opening or migration, human acceptance, Graph Save, G2/G3 or
+publication. The fixture remains distinct from formal release acceptance.
+
 ## Required verification
 
 Capture and predecessor tests exercise byte identity, real source changes, pins, exact target binding, physical package/receipt/file mutations, duplicate or aliased ownership, unsafe paths, missing self, exclusive outputs and the real helper CLI. The unavailable-change-time control checks initial observation and both rechecks, requiring absent includes and preservation of any already completed capture. The positive helper fixture has two resources and two external binaries. It is deliberately not an executable package or an acceptance receipt.

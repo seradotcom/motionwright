@@ -57,6 +57,12 @@ on:
       - "tooling/tests/test_nsis_owned_files.py"
       - "tooling/windows_installer_lifecycle.py"
       - "tooling/tests/test_windows_installer_lifecycle.py"
+      - "tooling/windows_uninstall_tamper.py"
+      - "tooling/tests/test_windows_uninstall_tamper.py"
+      - "tooling/windows_uninstall_tamper_producer.py"
+      - "tooling/windows_tamper_artifact.py"
+      - "tooling/tests/test_windows_tamper_artifact.py"
+      - "tooling/ci_windows_tamper_contracts.py"
       - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
@@ -145,6 +151,12 @@ on:
       - "tooling/tests/test_nsis_owned_files.py"
       - "tooling/windows_installer_lifecycle.py"
       - "tooling/tests/test_windows_installer_lifecycle.py"
+      - "tooling/windows_uninstall_tamper.py"
+      - "tooling/tests/test_windows_uninstall_tamper.py"
+      - "tooling/windows_uninstall_tamper_producer.py"
+      - "tooling/windows_tamper_artifact.py"
+      - "tooling/tests/test_windows_tamper_artifact.py"
+      - "tooling/ci_windows_tamper_contracts.py"
       - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
@@ -391,6 +403,27 @@ jobs:
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
           PY
+      - name: Require tamper evidence contracts in both import modes
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          subprocess.run([
+              sys.executable, "-B", "-E", "-s", "tooling/ci_windows_tamper_contracts.py",
+              "--repo", os.environ["GITHUB_WORKSPACE"],
+              "--expected-source", os.environ["GITHUB_SHA"],
+              "--output", str(Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-tamper-contracts"),
+          ], check=True)
+      - name: Retain exact tamper evidence contract receipts
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-tamper-contracts-${{ runner.os }}
+          path: ${{ runner.temp }}/motionwright-nsis-tamper-contracts/*
+          if-no-files-found: warn
       - name: Retain exact lifecycle contract receipts
         if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -538,6 +571,27 @@ jobs:
               "human_acceptance": "NOT_RUN", "release_published": False})
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
+      - name: Require tamper evidence contracts in both import modes
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          subprocess.run([
+              sys.executable, "-B", "-E", "-s", "tooling/ci_windows_tamper_contracts.py",
+              "--repo", os.environ["GITHUB_WORKSPACE"],
+              "--expected-source", os.environ["GITHUB_SHA"],
+              "--output", str(Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-tamper-contracts"),
+          ], check=True)
+      - name: Retain exact tamper evidence contract receipts
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-tamper-contracts-${{ runner.os }}
+          path: ${{ runner.temp }}/motionwright-nsis-tamper-contracts/*
+          if-no-files-found: warn
       - name: Retain exact lifecycle contract receipts
         if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1542,6 +1596,9 @@ jobs:
     needs: [receipt-policy, nsis-source-windows]
     runs-on: windows-latest
     timeout-minutes: 60
+    outputs:
+      lifecycle-artifact-id: ${{ steps.lifecycle_originals.outputs.artifact-id }}
+      lifecycle-artifact-digest: ${{ steps.lifecycle_originals.outputs.artifact-digest }}
     permissions:
       contents: read
       actions: read
@@ -3087,6 +3144,7 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
       - name: Retain original lifecycle observations even after ERROR or UNKNOWN
+        id: lifecycle_originals
         if: always() && inputs.verification_scope == 'nsis_lifecycle'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -3102,6 +3160,58 @@ jobs:
             ci-evidence/windows-nsis-update-*.json
             ci-evidence/windows-nsis-update-compiled-diagnostics/*
             ci-evidence/nsis-windows-junction-test.json
+          if-no-files-found: warn
+
+  windows-uninstall-tamper:
+    name: NSIS same-size refusal (${{ matrix.role }})
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'nsis_lifecycle'
+    needs: windows-update
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      # A failed case must not interrupt another runner's physical operation.
+      fail-fast: false
+      matrix:
+        role: [main, resource, external_binary]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.16'
+      - name: Admit the original producer and observe one refused uninstall
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MW_NSIS_LIFECYCLE_SCOPE: ${{ inputs.verification_scope }}
+          MW_TAMPER_ROLE: ${{ matrix.role }}
+          MW_PRODUCER_ARTIFACT_ID: ${{ needs.windows-update.outputs.lifecycle-artifact-id }}
+          MW_PRODUCER_ARTIFACT_SHA256: ${{ needs.windows-update.outputs.lifecycle-artifact-digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:GITHUB_WORKSPACE "ci-evidence/windows-uninstall-tamper-$($env:MW_TAMPER_ROLE)"
+          python -B tooling/windows_uninstall_tamper_producer.py --role "$env:MW_TAMPER_ROLE" --artifact-id "$env:MW_PRODUCER_ARTIFACT_ID" --artifact-sha256 "$env:MW_PRODUCER_ARTIFACT_SHA256" --output-root "$output"
+          if ($LASTEXITCODE -ne 0) { throw 'The original same-size refusal or custody was incomplete; no replay is authorized' }
+      - name: Retain original case observations even after ERROR or UNKNOWN
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-uninstall-tamper-${{ matrix.role }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/case/**
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/binding.json
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.json
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.txt
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.log
           if-no-files-found: warn
 
   macos:
