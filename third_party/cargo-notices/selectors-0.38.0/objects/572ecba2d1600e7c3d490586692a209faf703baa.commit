@@ -1,0 +1,12 @@
+tree f2fdcc0ee347ce28a12060fb8b07ef7ea403d7ed
+parent e342ab2cb165f56b310c5b147f1c09af4830fac9
+author Oriol Brufau <obrufau@igalia.com> 1777837332 +0200
+committer Oriol Brufau <obrufau@igalia.com> 1777893153 +0200
+
+Bump versions
+
+- Bump stylo_* to 0.17.0
+- Bump selectors to 0.38.0
+- Bump to_shmem to 0.4.0
+
+Signed-off-by: Oriol Brufau <obrufau@igalia.com>

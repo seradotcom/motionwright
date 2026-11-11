@@ -1,0 +1,138 @@
+{
+  "commit": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+  "component": {
+    "crate_sha256": "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#webview2-com-macros@0.8.1",
+    "license": "MIT",
+    "name": "webview2-com-macros",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "0.8.1"
+  },
+  "members": [
+    {
+      "bytes": 116,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "c24c2646f52e6cb4c1f382afc69fa99c0dc78d6d8e4316ade7e51707b4f9af8e"
+    },
+    {
+      "bytes": 459,
+      "kind": "git_exact",
+      "path": "CHANGELOG.md",
+      "sha256": "b08e9505188cbc503774202cf4e79007091d202d496d8c84d0ca48b52260de20"
+    },
+    {
+      "bytes": 1124,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "7b405591fcf6f4dec48361fad725fcfe9f5ca17a49f532192771644f4736a601"
+    },
+    {
+      "bytes": 1131,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "b006cef88171ef3675df724a900cb31eb1f74158f77a20680915f1dbe95d457e"
+    },
+    {
+      "bytes": 419,
+      "kind": "git_package_manifest",
+      "path": "Cargo.toml.orig",
+      "sha256": "a615e325d5acebc64f6553724028cd5e3639397e534cef107f172540cb78d0fd"
+    },
+    {
+      "bytes": 429,
+      "kind": "git_lf_to_crlf",
+      "path": "README.md",
+      "sha256": "94f2342f8b689e65aed07e90f52acf08a5705b8aeae57c68db9ea51610d68cf2"
+    },
+    {
+      "bytes": 8428,
+      "kind": "git_lf_to_crlf",
+      "path": "src/lib.rs",
+      "sha256": "3e0fb6feaaea5811a304205b8eaba424a5763947143fc27357f0106db3681ed3"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "crates/callback-macros/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 425,
+      "oid": "2097555df5987d2347f4a4bded90004883203689",
+      "path": "objects/2097555df5987d2347f4a4bded90004883203689.blob",
+      "sha256": "dcffb41c431986c4458c0204413c2bcec8ebf81a6a45774888a5e71d50c3417a",
+      "type": "blob"
+    },
+    {
+      "bytes": 8178,
+      "oid": "49ea6a8b1e58aa7c1136f113099e0f3e9ef1fbcb",
+      "path": "objects/49ea6a8b1e58aa7c1136f113099e0f3e9ef1fbcb.blob",
+      "sha256": "0e04b45fa54d548e31b5dbfe295f2eac28ea308bf0339d2357f0c0be1b9daf36",
+      "type": "blob"
+    },
+    {
+      "bytes": 977,
+      "oid": "65d9539393fa4f192836f68814c4c3fdf1a3aa4f",
+      "path": "objects/65d9539393fa4f192836f68814c4c3fdf1a3aa4f.blob",
+      "sha256": "5d0444d55131aa8a4290fc3cd54bd8598e9528577ddf5c3368ee48a02e297f6d",
+      "type": "blob"
+    },
+    {
+      "bytes": 419,
+      "oid": "6fddda2393e35884555b9eed20c2e82e22b520e0",
+      "path": "objects/6fddda2393e35884555b9eed20c2e82e22b520e0.blob",
+      "sha256": "a615e325d5acebc64f6553724028cd5e3639397e534cef107f172540cb78d0fd",
+      "type": "blob"
+    },
+    {
+      "bytes": 215,
+      "oid": "b5c681de95add5dfc1ea93b79174b669761e86c7",
+      "path": "objects/b5c681de95add5dfc1ea93b79174b669761e86c7.tree",
+      "sha256": "94ee2fa525ab76e0430c5cd971235db9591606102d4f0b028d769f03b00db7c6",
+      "type": "tree"
+    },
+    {
+      "bytes": 145,
+      "oid": "c634b1ab5085438ddd5069d410e315dbac1a5c2a",
+      "path": "objects/c634b1ab5085438ddd5069d410e315dbac1a5c2a.tree",
+      "sha256": "d3bec494f77476229a191efeb319585fbe1cd972105aa18f2f72ebfe6448e22b",
+      "type": "tree"
+    },
+    {
+      "bytes": 34,
+      "oid": "d86c7679511f2d3e52d4d6709b1d34c6e958c5c0",
+      "path": "objects/d86c7679511f2d3e52d4d6709b1d34c6e958c5c0.tree",
+      "sha256": "da778fb8beef14752273e93e29e07f0d95fbaacb213e55f97bced4a5f38e702f",
+      "type": "tree"
+    },
+    {
+      "bytes": 1067,
+      "oid": "de9a7e660e173136b351982a34f715af424ff812",
+      "path": "objects/de9a7e660e173136b351982a34f715af424ff812.txt",
+      "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73",
+      "type": "blob"
+    },
+    {
+      "bytes": 240,
+      "oid": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+      "path": "objects/dffa41a8a46d3f5565eefbff2de57d38d399f158.commit",
+      "sha256": "6112680418b024c7cc100b33241ed64cb42c6ed8d492b9a1359d70e659edec50",
+      "type": "commit"
+    },
+    {
+      "bytes": 158,
+      "oid": "eab1d418262a853492b311a5afdd8f9499a8e0d6",
+      "path": "objects/eab1d418262a853492b311a5afdd8f9499a8e0d6.tree",
+      "sha256": "abcee16c28a48f872c6413f940bfd82b465f411bf22989263a2a81e9b115f7a9",
+      "type": "tree"
+    }
+  ],
+  "package_path": "crates/callback-macros",
+  "repository": "https://github.com/wravery/webview2-rs",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": "Cargo.toml"
+}

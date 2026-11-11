@@ -1,0 +1,21 @@
+tree 393c305921514223def5043dfcf88a7dc023ff2d
+parent 2eabdb539f0808b592e495838e89993f8689c565
+author Bill Avery <wravery@gmail.com> 1773215491 -0700
+committer Bill Avery <wravery@gmail.com> 1773215519 -0700
+change-id vmxxotzsrmrsvulonrrtusnrtxvtrypn
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ iQGzBAABCAAdFiEEff4XEyplhGvK12rLTLQj4jsSopgFAmmxHyAACgkQTLQj4jsS
+ opilywv/Zz52F3DfgwdY6OfmIn2P0IDWL9dgAlyGdVpzzyzjci39l9UHGMzUKFi7
+ a5gTr7LYlFwv8akA094gBN4dHnBpNjvbjuhNjwwIJcV2b2jsYb08DYhSdvuyJ/1n
+ h2O7tOUv6bSlRgUpC5yQxEaA/rR2X1H+SKI6wesYHKy29vv/7B4is0+pLFngPjL3
+ ElIVGIAv/SgQ0tFE21GGXup8yjurRdx8PPfYt/wzOeQ1PJtQdBkUgTdhRIQk6e7T
+ +ANaEZ0LeQoF7Wm92ophFFPa8GIyGkxeIARZiHzKEbHQt+s92dbik3kK1BAzDzYZ
+ p9K6ilz0MPdTw0Z60wzewFZUbTASt20X5sMpf19hjS3b15dgyfYshKw8b5GbwBpw
+ vtOwYAfMNf9FnFCKZgCqInFA5R2fqJ1JP0dxAjaAuda3KUrToktxmgWSVblgGgWh
+ uaJWm89OjianbqJAuEsn3LVyvQjmJG8YfW/4TaJbwpjscwH68rxkxHwv8zM+X2S9
+ IpHI4LkE
+ =gb8B
+ -----END PGP SIGNATURE-----
+
+chore: release-plz update

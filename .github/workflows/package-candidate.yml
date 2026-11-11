@@ -41,10 +41,16 @@ on:
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
+      - "scripts/cargo_notice_supplements.py"
       - "scripts/tauri_generated_permissions.py"
       - "scripts/candidate_frontend_authentication.py"
       - "scripts/npm_archive_authentication.py"
       - "scripts/test_cargo_license_sources.py"
+      - "scripts/test_cargo_notice_supplements.py"
+      - "scripts/test_cargo_notice_supplement_integration.py"
+      - "third_party/cargo-notices/**"
+      - ".gitattributes"
+      - "docs/reliability/cargo-notice-supplements.md"
       - "scripts/test_tauri_generated_permissions.py"
       - "scripts/test_tauri_generated_metadata.py"
       - "scripts/test_candidate_dependency_capture.py"
@@ -138,10 +144,16 @@ on:
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
+      - "scripts/cargo_notice_supplements.py"
       - "scripts/tauri_generated_permissions.py"
       - "scripts/candidate_frontend_authentication.py"
       - "scripts/npm_archive_authentication.py"
       - "scripts/test_cargo_license_sources.py"
+      - "scripts/test_cargo_notice_supplements.py"
+      - "scripts/test_cargo_notice_supplement_integration.py"
+      - "third_party/cargo-notices/**"
+      - ".gitattributes"
+      - "docs/reliability/cargo-notice-supplements.md"
       - "scripts/test_tauri_generated_permissions.py"
       - "scripts/test_tauri_generated_metadata.py"
       - "scripts/test_candidate_dependency_capture.py"
@@ -1062,6 +1074,8 @@ jobs:
           try {
             python -B -m unittest test_cargo_license_sources test_candidate_dependency_capture test_candidate_frontend_authentication.PublicCopySourceTests -v
             if ($LASTEXITCODE -ne 0) { throw 'Cargo source capture contracts failed' }
+            python -B -m unittest test_cargo_notice_supplements test_cargo_notice_supplement_integration -v
+            if ($LASTEXITCODE -ne 0) { throw 'Cargo supplemental notice contracts failed' }
             python -B -m unittest test_tauri_generated_permissions test_tauri_generated_metadata -v
             if ($LASTEXITCODE -ne 0) { throw 'Tauri generated-permission contracts failed' }
           } finally {

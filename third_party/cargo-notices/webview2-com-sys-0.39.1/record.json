@@ -1,0 +1,224 @@
+{
+  "commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+  "component": {
+    "crate_sha256": "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#webview2-com-sys@0.39.1",
+    "license": "MIT",
+    "name": "webview2-com-sys",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "0.39.1"
+  },
+  "members": [
+    {
+      "bytes": 109,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "d4137410068017c3f66fe98578f2fd40f0e76d3fd628fa361c758f3b262351c7"
+    },
+    {
+      "bytes": 796,
+      "kind": "git_exact",
+      "path": "CHANGELOG.md",
+      "sha256": "588514a94c4cd5e654568ef9d90f14e4b6dad1aa42da4a7d3463171914925f6d"
+    },
+    {
+      "bytes": 4401,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "5acab72613ba01060b99a8d464b4abc7d9aaec0089b68bcc7136de6d1e059642"
+    },
+    {
+      "bytes": 1514,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "1a3e5684710cb1d2e7e7afdd32af011a4a8038c259f6592ade3f871ca31cad7d"
+    },
+    {
+      "bytes": 627,
+      "kind": "git_package_manifest",
+      "path": "Cargo.toml.orig",
+      "sha256": "00229c125c597e4f0ddb9e598738ee5b38a9086fd59eea6d2577cdda5f8e5875"
+    },
+    {
+      "bytes": 297,
+      "kind": "git_exact",
+      "path": "README.md",
+      "sha256": "156441af62661bc25ae6c3d374af3eaccc66d1d97f49de11d8a996158ea2ca50"
+    },
+    {
+      "bytes": 146536,
+      "kind": "git_exact",
+      "path": "arm64/WebView2Loader.dll",
+      "sha256": "a0de1844933a10c898f833771a85f0ab9a0e3c745d4715f63d2d9730f9416025"
+    },
+    {
+      "bytes": 2916,
+      "kind": "git_exact",
+      "path": "arm64/WebView2Loader.dll.lib",
+      "sha256": "d70271daa44507865ca0696cd1c1ede5e58e694eec74cb2d06e17dbbe205e9a2"
+    },
+    {
+      "bytes": 10505262,
+      "kind": "git_exact",
+      "path": "arm64/WebView2LoaderStatic.lib",
+      "sha256": "4a1ca4b518337c508aa0d778b220c6e59558fce21f4fd0d79a6ea944dd9d5208"
+    },
+    {
+      "bytes": 2742,
+      "kind": "git_exact",
+      "path": "build.rs",
+      "sha256": "deafb36ba38083bd048fadb28b2266a94322bb5a793e85f4c50a040cf3da5c8a"
+    },
+    {
+      "bytes": 1694472,
+      "kind": "git_exact",
+      "path": "src/bindings.rs",
+      "sha256": "be4a5291da4946ca04630dc9b6adbff5e13e61d39d205b08aff450339f30e1e5"
+    },
+    {
+      "bytes": 7664,
+      "kind": "git_exact",
+      "path": "src/declared_interfaces.rs",
+      "sha256": "d30f5e7d36792f8f62a3aefb295e8c010a15c9c08cf27b08e957856512c29cc8"
+    },
+    {
+      "bytes": 1866,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "9e8ead3a21710d872bcc1d6ed214af1b91eca24e158733305bb77b1199247ea1"
+    },
+    {
+      "bytes": 160880,
+      "kind": "git_exact",
+      "path": "x64/WebView2Loader.dll",
+      "sha256": "86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5"
+    },
+    {
+      "bytes": 2916,
+      "kind": "git_exact",
+      "path": "x64/WebView2Loader.dll.lib",
+      "sha256": "bfc8ccaaa056be95243a5b66a827e5849d2bb39676fca4dcc2053796d8e15c6d"
+    },
+    {
+      "bytes": 10500472,
+      "kind": "git_exact",
+      "path": "x64/WebView2LoaderStatic.lib",
+      "sha256": "89c6b872783b8f6c3cedbff618adb42082d455c615453ae10cfc753f1e8f25d8"
+    },
+    {
+      "bytes": 121448,
+      "kind": "git_exact",
+      "path": "x86/WebView2Loader.dll",
+      "sha256": "161dc6673084a31f64670ace8e61cb0e1b55af815b6c7c8217a0cdd8503454e2"
+    },
+    {
+      "bytes": 2998,
+      "kind": "git_exact",
+      "path": "x86/WebView2Loader.dll.lib",
+      "sha256": "a3ec0ee539d58fe72391f2e89cb814f96fab721c6d8d30953d152ea95dffad49"
+    },
+    {
+      "bytes": 10465074,
+      "kind": "git_exact",
+      "path": "x86/WebView2LoaderStatic.lib",
+      "sha256": "0513f7e61304321f2d91e1851475be07e091042aa3640597e660608f72521e6c"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "crates/bindings/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 215,
+      "oid": "393c305921514223def5043dfcf88a7dc023ff2d",
+      "path": "objects/393c305921514223def5043dfcf88a7dc023ff2d.tree",
+      "sha256": "a70776de493ffcc19f0ae88dca641405869bdaed78849beb5b46b1f4652b7cd0",
+      "type": "tree"
+    },
+    {
+      "bytes": 123,
+      "oid": "551f99873fd7cfee609a1a85769d06d2f4f666b9",
+      "path": "objects/551f99873fd7cfee609a1a85769d06d2f4f666b9.tree",
+      "sha256": "4ed3c6a5465e33d8be12721fb15018a13fb86ebebf7742b8872bec906948287c",
+      "type": "tree"
+    },
+    {
+      "bytes": 923,
+      "oid": "70692e4dcafb11fda1982c0f95df5a640a52f704",
+      "path": "objects/70692e4dcafb11fda1982c0f95df5a640a52f704.blob",
+      "sha256": "86df68bbb014e816ac356a462838914d813ce6aaa1d11b2aa284941701c6c7c2",
+      "type": "blob"
+    },
+    {
+      "bytes": 148,
+      "oid": "757dd0e0b9909dc38a94a1e54f85eadf6f559ab2",
+      "path": "objects/757dd0e0b9909dc38a94a1e54f85eadf6f559ab2.tree",
+      "sha256": "33bfdab7ac593c5874d0bd55cbcaa7e820f141b902f8e4332e952dc9fd777d41",
+      "type": "tree"
+    },
+    {
+      "bytes": 158,
+      "oid": "9a432d57cb609508abd342c36eacb615b36c6ad3",
+      "path": "objects/9a432d57cb609508abd342c36eacb615b36c6ad3.tree",
+      "sha256": "b32ef7b33f0c099a659261707058f977359d759b3e950c3db59706189b112cf3",
+      "type": "tree"
+    },
+    {
+      "bytes": 180,
+      "oid": "a4ce1eaa2913818f7bdfd71bfc2f9caac82219fc",
+      "path": "objects/a4ce1eaa2913818f7bdfd71bfc2f9caac82219fc.tree",
+      "sha256": "021349e86ac0f52de41ed936aca2b72477d0b6c737987ef478068932a26fffab",
+      "type": "tree"
+    },
+    {
+      "bytes": 273,
+      "oid": "c99e58a717eef76f375a56c4aea9cccabedbbe87",
+      "path": "objects/c99e58a717eef76f375a56c4aea9cccabedbbe87.tree",
+      "sha256": "b38acbb1e3c1c29bfbac98e2f36a50b5b8342669808d6746df660c3ed4e58b7c",
+      "type": "tree"
+    },
+    {
+      "bytes": 1067,
+      "oid": "de9a7e660e173136b351982a34f715af424ff812",
+      "path": "objects/de9a7e660e173136b351982a34f715af424ff812.txt",
+      "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73",
+      "type": "blob"
+    },
+    {
+      "bytes": 970,
+      "oid": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+      "path": "objects/edc2caf886175ccaebe86078c9cfe1ae2a187328.commit",
+      "sha256": "7b61d6759acb1551981db97dc33ba5fd6a7877ad9dfc2c548f550d440b286170",
+      "type": "commit"
+    },
+    {
+      "bytes": 148,
+      "oid": "f0006b8ec437071f1492c941c475a890b59ae265",
+      "path": "objects/f0006b8ec437071f1492c941c475a890b59ae265.tree",
+      "sha256": "70f4e4bfaffd4ad60b6f1b018545856929ffd037b4ef0c4af4295d28b1e7bb62",
+      "type": "tree"
+    },
+    {
+      "bytes": 627,
+      "oid": "f229a893528a12d9c034f6f3a82582e6f1617848",
+      "path": "objects/f229a893528a12d9c034f6f3a82582e6f1617848.blob",
+      "sha256": "00229c125c597e4f0ddb9e598738ee5b38a9086fd59eea6d2577cdda5f8e5875",
+      "type": "blob"
+    },
+    {
+      "bytes": 148,
+      "oid": "f64c92ecf5587960907ae15e418761d473ab859d",
+      "path": "objects/f64c92ecf5587960907ae15e418761d473ab859d.tree",
+      "sha256": "8b1aa3e5412a1457d70385a2ca6dedfab29a645e36dfab187d8f47d62fee0301",
+      "type": "tree"
+    }
+  ],
+  "package_path": "crates/bindings",
+  "repository": "https://github.com/wravery/webview2-rs",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": "Cargo.toml"
+}

@@ -1,0 +1,115 @@
+{
+  "components": [
+    {
+      "crate_sha256": "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1",
+      "name": "alloc-stdlib",
+      "record": {
+        "bytes": 5054,
+        "path": "third_party/cargo-notices/alloc-stdlib-0.3.0/record.json",
+        "sha256": "3eaa297cd156e316e8d7adb05f6e8eec4bd705470db3ddbe332d41e770373921"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.0"
+    },
+    {
+      "crate_sha256": "a968fffd387b2ab005bf00c1851f5d26e90df05b6f7ad609ed0d620033cca5e7",
+      "name": "jsonschema-regex",
+      "record": {
+        "bytes": 4294,
+        "path": "third_party/cargo-notices/jsonschema-regex-0.58.6/record.json",
+        "sha256": "300762045bfc0a2c2bb17336bb55f87574734d3a7e7b49da14b3fb69225d7130"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.58.6"
+    },
+    {
+      "crate_sha256": "39b7670345e5ce87371339d13705dbb9276b7e3e934bbe1efa2c6734a1f65a96",
+      "name": "jsonschema-value",
+      "record": {
+        "bytes": 8905,
+        "path": "third_party/cargo-notices/jsonschema-value-0.58.6/record.json",
+        "sha256": "f71b60980ff051988fb7731b3efb5d5a116303465376bc52c3ac00cc942e1ef7"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.58.6"
+    },
+    {
+      "crate_sha256": "8adfa1c298912827b8a28b223b3b874357397ae706e6190acd9bf28cee99114d",
+      "name": "selectors",
+      "record": {
+        "bytes": 6569,
+        "path": "third_party/cargo-notices/selectors-0.38.0/record.json",
+        "sha256": "2ca856cadf2a53b97030e33f072e285e4a88258d9707f422141b460c63c1ec53"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.38.0"
+    },
+    {
+      "crate_sha256": "1140cf34a3b3b836a13103dcab17f18831d5cc3534cbd435dc01a5c6daa65aa2",
+      "name": "tauri-plugin",
+      "record": {
+        "bytes": 5634,
+        "path": "third_party/cargo-notices/tauri-plugin-2.7.1/record.json",
+        "sha256": "b1666bceeea4aed47621b0105a3564c08654d137995522612e81c36e26b6c36b"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.7.1"
+    },
+    {
+      "crate_sha256": "23b082222b4f6619906941c17eb2297fff4c2fb96cb60164170522942a200bd8",
+      "name": "uuid-simd",
+      "record": {
+        "bytes": 5275,
+        "path": "third_party/cargo-notices/uuid-simd-0.8.0/record.json",
+        "sha256": "c231a0d7ae965150a8fff5ec899b9c4d84c629b42859f90a6b207b2ac0bfc7f5"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.8.0"
+    },
+    {
+      "crate_sha256": "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64",
+      "name": "vsimd",
+      "record": {
+        "bytes": 7708,
+        "path": "third_party/cargo-notices/vsimd-0.8.0/record.json",
+        "sha256": "c602401506b810b051a69fdc05ab7350efffeeee7df610a7e9c27cef450d8472"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.8.0"
+    },
+    {
+      "crate_sha256": "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6",
+      "name": "webview2-com",
+      "record": {
+        "bytes": 5416,
+        "path": "third_party/cargo-notices/webview2-com-0.39.1/record.json",
+        "sha256": "61c3a5c9856628cdfc0831661e18340566b2a9f04d5ba821c267622425d77e9f"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.39.1"
+    },
+    {
+      "crate_sha256": "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54",
+      "name": "webview2-com-macros",
+      "record": {
+        "bytes": 4734,
+        "path": "third_party/cargo-notices/webview2-com-macros-0.8.1/record.json",
+        "sha256": "78e55729c4e1b5fcae4ff4681e131ad75b66c040af4de12aaf769d94e5db598a"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.8.1"
+    },
+    {
+      "crate_sha256": "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb",
+      "name": "webview2-com-sys",
+      "record": {
+        "bytes": 7486,
+        "path": "third_party/cargo-notices/webview2-com-sys-0.39.1/record.json",
+        "sha256": "c83e68e42b93d75cc77661dfac7f3ac44a603ca776dfd38d703cd58af5c00fb7"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.39.1"
+    }
+  ],
+  "schema": "motionwright.cargo-notice-supplement-index/1"
+}

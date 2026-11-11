@@ -1,0 +1,167 @@
+{
+  "commit": "30da1fd6e17de6107ecc850c95dfb16b5729f2dd",
+  "component": {
+    "crate_sha256": "1140cf34a3b3b836a13103dcab17f18831d5cc3534cbd435dc01a5c6daa65aa2",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#tauri-plugin@2.7.1",
+    "license": "Apache-2.0 OR MIT",
+    "name": "tauri-plugin",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "2.7.1"
+  },
+  "members": [
+    {
+      "bytes": 113,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "d0e5b111493a2063a796e983a33b167c08a5727db27957bb868dbd984eb40541"
+    },
+    {
+      "bytes": 11053,
+      "kind": "git_exact",
+      "path": "CHANGELOG.md",
+      "sha256": "3cece1258fdf035aa2f0afcc0bb2e4a3e54d655f70185ea122cbb9940ee6199b"
+    },
+    {
+      "bytes": 44689,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "d5c7c2b8b17d60838239d4a925e41f37a75e82a8a170d2698bc849650a6e02f6"
+    },
+    {
+      "bytes": 1847,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "f0e91be8837645becb9b7082a7ae3aa99de96c1bf78a9fa2e91b39e98fa09388"
+    },
+    {
+      "bytes": 1048,
+      "kind": "git_package_manifest",
+      "path": "Cargo.toml.orig",
+      "sha256": "96f3eee516fd31f70455ea082ff7e23cf074b0e105a88b28253f6b667e9c5328"
+    },
+    {
+      "bytes": 8298,
+      "kind": "git_exact",
+      "path": "src/build/mobile.rs",
+      "sha256": "f937c4c42aa335c28c9c03c70db87a7255e67da53ecbab082cdcb2adc4c92c10"
+    },
+    {
+      "bytes": 7662,
+      "kind": "git_exact",
+      "path": "src/build/mod.rs",
+      "sha256": "ba22a29217222c022b8e4d26f2771f3262b53d7dcedc5bbddd22b3b14f53c556"
+    },
+    {
+      "bytes": 3289,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "d150a91db60dd3e3423e631b58a2952fa8f33361a98c007c80728b5f71ad3aac"
+    },
+    {
+      "bytes": 141,
+      "kind": "git_exact",
+      "path": "src/runtime.rs",
+      "sha256": "5ac83667211771c07b88c58fc6cdec8712974d74d2d8ee6e4cbc127f45d0f8e3"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "crates/tauri-plugin/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE-APACHE-2.0"
+    },
+    {
+      "declared_by": "crates/tauri-plugin/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE-MIT"
+    },
+    {
+      "declared_by": "crates/tauri-plugin/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE.spdx"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 71,
+      "oid": "0663a7d32e320c285b03a81e8501865dc7a89ad7",
+      "path": "objects/0663a7d32e320c285b03a81e8501865dc7a89ad7.tree",
+      "sha256": "8f0764409b74c3f4173292d42bf3abe7e87ed69d565ecca2dfc434eeede90710",
+      "type": "tree"
+    },
+    {
+      "bytes": 1105,
+      "oid": "30da1fd6e17de6107ecc850c95dfb16b5729f2dd",
+      "path": "objects/30da1fd6e17de6107ecc850c95dfb16b5729f2dd.commit",
+      "sha256": "07037be42244fefb691c3b8880b4980cf1066bdb4d575eae6bf213a5ba7d5b5f",
+      "type": "commit"
+    },
+    {
+      "bytes": 889,
+      "oid": "4080281f12fc44a831babb7bb4f531aeb070078b",
+      "path": "objects/4080281f12fc44a831babb7bb4f531aeb070078b.txt",
+      "sha256": "5e834fe9788c524210deda859c46a550ffa5aa0cba9ea0572f0d81120e97c008",
+      "type": "blob"
+    },
+    {
+      "bytes": 2953,
+      "oid": "84792d7826ecc67eef9e78aae9267d5100a3ddff",
+      "path": "objects/84792d7826ecc67eef9e78aae9267d5100a3ddff.blob",
+      "sha256": "ae215a9af22c8ffc1d2a13596a39c21d81490558e6e9aacc2abf0c3b87b6da27",
+      "type": "blob"
+    },
+    {
+      "bytes": 1048,
+      "oid": "ab360b9dfe2a614a46fd3342dd6334cda6db3320",
+      "path": "objects/ab360b9dfe2a614a46fd3342dd6334cda6db3320.blob",
+      "sha256": "96f3eee516fd31f70455ea082ff7e23cf074b0e105a88b28253f6b667e9c5328",
+      "type": "blob"
+    },
+    {
+      "bytes": 1090,
+      "oid": "b08530d59433b3060f4fad8751ac2610c0b0aff3",
+      "path": "objects/b08530d59433b3060f4fad8751ac2610c0b0aff3.txt",
+      "sha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+      "type": "blob"
+    },
+    {
+      "bytes": 104,
+      "oid": "c2fc053c9527ccdc097b54869e8ac98d447b9083",
+      "path": "objects/c2fc053c9527ccdc097b54869e8ac98d447b9083.tree",
+      "sha256": "d80184df955696deb59ebaa1b514d5618284ed9782a8cae66e43f1e2195e9caf",
+      "type": "tree"
+    },
+    {
+      "bytes": 108,
+      "oid": "d2c114e27e5c0cc64cb5da3b4786c4627e8710df",
+      "path": "objects/d2c114e27e5c0cc64cb5da3b4786c4627e8710df.tree",
+      "sha256": "4596e30599e95ccecba7cabeb34fd8bc3b626ca1a7c14c316fc021146f31d3c0",
+      "type": "tree"
+    },
+    {
+      "bytes": 1185,
+      "oid": "d37d94dfe2f057d94308468598a22d6a6ead83ea",
+      "path": "objects/d37d94dfe2f057d94308468598a22d6a6ead83ea.tree",
+      "sha256": "a5d80dbef73a81c287f466273ed0ef7fbc688f3d7105ab4b2f5a5af841863a28",
+      "type": "tree"
+    },
+    {
+      "bytes": 595,
+      "oid": "d9fb9f8316002e58482388cab30d838fbb6a3e85",
+      "path": "objects/d9fb9f8316002e58482388cab30d838fbb6a3e85.tree",
+      "sha256": "9cf194a60e3fec423c967d082f8404a4db3c672e259bade1553f25ae5bb43fdf",
+      "type": "tree"
+    },
+    {
+      "bytes": 10174,
+      "oid": "f433b1a53f5b830a205fd2df78e2b34974656c7b",
+      "path": "objects/f433b1a53f5b830a205fd2df78e2b34974656c7b.txt",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "type": "blob"
+    }
+  ],
+  "package_path": "crates/tauri-plugin",
+  "repository": "https://github.com/tauri-apps/tauri",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": "Cargo.toml"
+}
