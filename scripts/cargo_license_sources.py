@@ -24,6 +24,7 @@ import threading
 import time
 import zlib
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1098,6 +1099,211 @@ def _is_notice(relative: tuple[str, ...], package: tuple[str, ...]) -> bool:
                 or any(part.casefold() in {"licenses", "licences"} for part in local[:-1])))
 
 
+_SUPPLEMENT_INDEX = ("third_party", "cargo-notices", "index.json")
+_SUPPLEMENT_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
+MAX_SUPPLEMENT_INDEX_BYTES = 64 * 1024
+MAX_SUPPLEMENT_RECORD_BYTES = 64 * 1024
+MAX_SUPPLEMENT_ENTRIES = 64
+
+
+def _supplement_helper():
+    """Load the offline verifier from its physical sibling, never a search path."""
+    name = "cargo_notice_supplements"
+    path = Path(__file__).resolve(strict=True).with_name(name + ".py").resolve(strict=True)
+    existing = sys.modules.get(name)
+    if existing is not None:
+        try:
+            same = Path(getattr(existing, "__file__", None)).resolve(strict=True) == path
+        except (OSError, TypeError, ValueError):
+            same = False
+        if not same:
+            _fail("cargo_notice_supplement_helper_invalid", "The notice verifier is not the physical sibling.")
+        return existing
+    specification = importlib.util.spec_from_file_location(name, path)
+    if specification is None or specification.loader is None:
+        _fail("cargo_notice_supplement_helper_invalid", "The offline notice verifier is unavailable.")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[name] = module
+    try:
+        specification.loader.exec_module(module)
+    except BaseException:
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+        raise
+    return module
+
+
+def _supplement_index(workspace, repo, lock, budget):
+    # Absence is not an opt-in. A local-only or deleted tracked index is refused.
+    entries = repo.entries(_SUPPLEMENT_INDEX)
+    if not entries:
+        try:
+            workspace.checked(_SUPPLEMENT_INDEX)
+        except _Problem as problem:
+            if problem.code == "source_file_missing":
+                return None
+            raise
+    raw = repo.read_tracked(_SUPPLEMENT_INDEX, MAX_SUPPLEMENT_INDEX_BYTES, budget)
+    if repo.byte_proofs[_SUPPLEMENT_INDEX]["git_line_endings"] != "raw":
+        _fail("cargo_notice_supplement_index_invalid", "The reviewed notice index must retain raw Git bytes.")
+
+    def invalid():
+        _fail("cargo_notice_supplement_index_invalid", "The reviewed notice index is not an exact bounded lock-bound record.")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                invalid()
+            result[key] = value
+        return result
+
+    def constant(value):
+        invalid()
+
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        invalid()
+    if (not isinstance(document, dict) or set(document) != {"schema", "components"}
+            or document["schema"] != "motionwright.cargo-notice-supplement-index/1"
+            or not isinstance(document["components"], list)
+            or len(document["components"]) > MAX_SUPPLEMENT_ENTRIES):
+        invalid()
+    selected, paths = {}, set()
+    for row in document["components"]:
+        if (not isinstance(row, dict)
+                or set(row) != {"name", "version", "source", "crate_sha256", "record"}
+                or not isinstance(row["name"], str) or not _NAME.fullmatch(row["name"])
+                or not isinstance(row["version"], str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", row["version"]) is None
+                or row["source"] != _SUPPLEMENT_REGISTRY
+                or not isinstance(row["crate_sha256"], str)
+                or not _HEX64.fullmatch(row["crate_sha256"])):
+            invalid()
+        key = (row["name"], row["version"], row["source"])
+        entry = lock.get(key)
+        record = row["record"]
+        expected = f"third_party/cargo-notices/{row['name']}-{row['version']}/record.json"
+        if (key in selected or entry is None or entry.get("checksum") != row["crate_sha256"]
+                or not isinstance(record, dict) or set(record) != {"path", "bytes", "sha256"}
+                or record["path"] != expected or expected.casefold() in paths
+                or type(record["bytes"]) is not int
+                or not 0 < record["bytes"] <= MAX_SUPPLEMENT_RECORD_BYTES
+                or not isinstance(record["sha256"], str) or not _HEX64.fullmatch(record["sha256"])):
+            invalid()
+        _parts(expected)
+        paths.add(expected.casefold())
+        selected[key] = row
+    return raw, selected, {
+        "source_path": "/".join(_SUPPLEMENT_INDEX), "bytes": len(raw), "sha256": _sha(raw),
+        **repo.byte_proofs[_SUPPLEMENT_INDEX], "git_head": repo.head,
+    }
+
+
+class _SupplementMaterialBudget:
+    """Account both material snapshots against the caller's global budget."""
+    def __init__(self, parent):
+        self.parent = parent
+        self.read = 0
+        self.files = 0
+
+    def consume(self, count):
+        self.parent.consume(count)
+        self.read += count
+        if self.read > 32 * 1024 * 1024:
+            _fail("cargo_notice_supplement_material_budget", "Supplement snapshots exceeded their byte budget.")
+
+    def file(self):
+        self.parent.file()
+        self.files += 1
+        if self.files > 2 * (512 + 3):
+            _fail("cargo_notice_supplement_material_budget", "Supplement snapshots exceeded their file budget.")
+
+
+class _CrateMembers(Mapping):
+    """Lazy reads remain joined to the already authenticated physical crate."""
+    def __init__(self, capture):
+        self.capture = capture
+        self.paths = {
+            "/".join(path[len(capture.package):]): path
+            for path in capture.files if path[:len(capture.package)] == capture.package
+        }
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, name):
+        return self.capture.read(self.paths[name], MAX_SOURCE_FILE_BYTES)
+
+
+def _supplement_notices(component, capture, workspace, repo, lock, expression, budget):
+    if capture.authentication["kind"] != "registry_archive":
+        return None
+    index = _supplement_index(workspace, repo, lock, budget)
+    if index is None:
+        return None
+    index_raw, entries, index_proof = index
+    row = entries.get((component["name"], component["version"], component["source"]))
+    if row is None:
+        return None
+    record = row["record"]
+    record_path = _parts(record["path"])
+    scope = record_path[:-1]
+    material_budget = _SupplementMaterialBudget(budget)
+    materials = _git_capture(component, workspace, repo, scope, material_budget, "workspace_HEAD")
+    if any(item["git_line_endings"] != "raw" for item in materials.files.values()):
+        _fail("cargo_notice_supplement_record_invalid", "Supplement material must retain raw Git bytes.")
+    raw = materials.read(record_path, MAX_SUPPLEMENT_RECORD_BYTES)
+    if len(raw) != record["bytes"] or _sha(raw) != record["sha256"]:
+        _fail("cargo_notice_supplement_record_invalid", "The tracked supplement differs from its reviewed index.")
+    helper = _supplement_helper()
+    # The independent reader has its own bounded I/O; reserve it globally too.
+    budget.consume(helper.MAX_PROOF)
+    try:
+        verified = helper.verify_supplement(
+            workspace.path.joinpath(*scope),
+            expected_record_sha256=record["sha256"],
+            component_identity={key: component[key] for key in ("id", "name", "version", "source")}
+                | {"license": expression},
+            crate_members=_CrateMembers(capture),
+            expected_crate_sha256=capture.authentication["archive_sha256"],
+        )
+    except helper.SupplementError as error:
+        _fail("cargo_notice_supplement_invalid", str(error))
+    # The helper has validated the closed record schema and all references.
+    record_document = json.loads(raw)
+    material_paths = {record_path}
+    material_paths.update(scope + _parts(item["path"]) for item in record_document["objects"])
+    for notice in record_document["notices"]:
+        if notice["kind"] == "mozilla_mpl_2_0":
+            material_paths.update(scope + _parts(notice[key]["path"]) for key in ("text", "receipt"))
+    if set(materials.files) != material_paths:
+        _fail("cargo_notice_supplement_record_invalid", "Supplement material includes unreferenced tracked files.")
+    # The helper has an independent physical reader; join its read interval back
+    # to both exact tracked snapshots. Never silently accept a concurrent change.
+    after = _git_capture(component, workspace, repo, scope, material_budget, "workspace_HEAD")
+    if after.files != materials.files:
+        _fail("cargo_notice_supplement_record_invalid", "The supplement changed during independent verification.")
+    if repo.read_tracked(_SUPPLEMENT_INDEX, MAX_SUPPLEMENT_INDEX_BYTES, budget) != index_raw:
+        _fail("cargo_notice_supplement_index_invalid", "The reviewed notice index changed during verification.")
+    repo.finish()
+    capture.authentication["supplemental_notices"] = {
+        "index": index_proof,
+        "materials": {
+            **materials.authentication,
+            "files": [{"source_path": "/".join(path), **descriptor}
+                      for path, descriptor in sorted(materials.files.items())],
+        },
+        "source_proof": verified.source_proof,
+        "independent_verifier_read_budget_reserved": helper.MAX_PROOF,
+    }
+    return verified
+
+
 def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
                  workspace_repo: _GitRepo, lock: dict[tuple[str, str, str | None], dict[str, Any]],
                  budget: _Budget, generated_metadata=None) -> tuple[dict[str, Any], dict[str, bytes]]:
@@ -1168,11 +1374,22 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
         paths = {path for path in capture.files if _is_notice(path, capture.package)}
         if explicit is not None:
             paths.add(explicit)
+        supplemental = None
         if not paths:
-            _fail("license_text_missing", "No original bounded license/notice text is available; no text was synthesized.")
+            supplemental = _supplement_notices(
+                component, capture, workspace, workspace_repo, lock, expression, budget)
+            if supplemental is None:
+                _fail("license_text_missing", "No original bounded license/notice text is available; no text was synthesized.")
         notices: list[dict[str, Any]] = []
-        for path in sorted(paths):
-            data = capture.read(path, MAX_NOTICE_BYTES)
+        candidates = (
+            ((notice, supplemental.texts[notice["sha256"]]) for notice in supplemental.notices)
+            if supplemental is not None else
+            (({"source_path": "/".join(path)}, capture.read(path, MAX_NOTICE_BYTES))
+             for path in sorted(paths))
+        )
+        for notice, data in candidates:
+            if len(data) > MAX_NOTICE_BYTES:
+                _fail("source_file_budget_exceeded", "An original notice exceeds its byte budget.")
             try:
                 decoded = data.decode("utf-8-sig")
             except UnicodeError:
@@ -1183,7 +1400,7 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
             if digest not in texts and sum(map(len, texts.values())) + len(data) > MAX_TEXT_BYTES:
                 _fail("notice_collection_budget_exceeded", "Original notice texts exceed the bounded collection budget.")
             texts[digest] = data
-            notices.append({"source_path": "/".join(path), "sha256": digest, "bytes": len(data)})
+            notices.append({**notice, "sha256": digest, "bytes": len(data)})
         capture.authentication["files"] = [
             {"source_path": "/".join(path), **descriptor}
             for path, descriptor in sorted(capture.files.items())

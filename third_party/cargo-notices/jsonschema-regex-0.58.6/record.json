@@ -1,0 +1,125 @@
+{
+  "commit": "55ac1664384793c5d3b20745d3f9c169dfe2c06f",
+  "component": {
+    "crate_sha256": "a968fffd387b2ab005bf00c1851f5d26e90df05b6f7ad609ed0d620033cca5e7",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#jsonschema-regex@0.58.6",
+    "license": "MIT",
+    "name": "jsonschema-regex",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "0.58.6"
+  },
+  "members": [
+    {
+      "bytes": 117,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "5cdf5be701eb41261e0c7c2598ce2fa1a8c7cbafb704d2ca36e4502204efa5d3"
+    },
+    {
+      "bytes": 3234,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "31c5b9553a3e8af88dcefb12676d276f8f86c65bbd7959897a4345e2ea45b9ba"
+    },
+    {
+      "bytes": 1552,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "0274bed679c5cda4876367818ae5e70d0f33c9d4e7d3c479927ff31b5a33ecca"
+    },
+    {
+      "bytes": 374,
+      "kind": "git_package_manifest",
+      "path": "Cargo.toml.orig",
+      "sha256": "0dfc740a2dd8466356f0ef1dd7ce56d795fd67e421d4949379f8b640aad68ba0"
+    },
+    {
+      "bytes": 33493,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "fba857667696ea7b56539824064f024d8742cec8fdb45348925b41db01fcd49e"
+    },
+    {
+      "bytes": 25933,
+      "kind": "git_exact",
+      "path": "src/syntax.rs",
+      "sha256": "d21e060c4a3c50a415b62f3c4e8e09a7330e51e60a0269726246f674b13747b7"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "crates/jsonschema-regex/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 1075,
+      "oid": "20c070f6401feda6f47be1b158f4f5a4a9d14062",
+      "path": "objects/20c070f6401feda6f47be1b158f4f5a4a9d14062.txt",
+      "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+      "type": "blob"
+    },
+    {
+      "bytes": 483,
+      "oid": "55ac1664384793c5d3b20745d3f9c169dfe2c06f",
+      "path": "objects/55ac1664384793c5d3b20745d3f9c169dfe2c06f.commit",
+      "sha256": "1f08db1dbf15d3d3f37675efc159771a7735b9e4ca5734a46b1af3d7171e3ecf",
+      "type": "commit"
+    },
+    {
+      "bytes": 855,
+      "oid": "8aa884df020bce21fc4d6a33196c4d7db5a1c88b",
+      "path": "objects/8aa884df020bce21fc4d6a33196c4d7db5a1c88b.tree",
+      "sha256": "9ac3d2a1eeeda9ef37974eca17f6e803f91f31da6a6453f6a7d52184de28cc09",
+      "type": "tree"
+    },
+    {
+      "bytes": 68,
+      "oid": "8b1a41d49ef9836af249b0583dd95467793a1ee0",
+      "path": "objects/8b1a41d49ef9836af249b0583dd95467793a1ee0.tree",
+      "sha256": "76ce1714c1cf67a89c22bf095f0ac619576d959b9342d323d9f784ed17654040",
+      "type": "tree"
+    },
+    {
+      "bytes": 1294,
+      "oid": "97e57b8a4663ec929a7cebcb80650d954033b6e6",
+      "path": "objects/97e57b8a4663ec929a7cebcb80650d954033b6e6.blob",
+      "sha256": "cc637e24d6a7cc90a0658c4cd4566929e42ec5d5813dcef246d0d3614a21ca98",
+      "type": "blob"
+    },
+    {
+      "bytes": 71,
+      "oid": "a11ac52d07a0e8449f52e361dce71d1fee266159",
+      "path": "objects/a11ac52d07a0e8449f52e361dce71d1fee266159.tree",
+      "sha256": "228839e8d5878b768ac8ccfa135c3b151be754cf2cb7c71652dbe881d35ac507",
+      "type": "tree"
+    },
+    {
+      "bytes": 374,
+      "oid": "ce71c219ab1e7a44240024b627963cac638ca79d",
+      "path": "objects/ce71c219ab1e7a44240024b627963cac638ca79d.blob",
+      "sha256": "0dfc740a2dd8466356f0ef1dd7ce56d795fd67e421d4949379f8b640aad68ba0",
+      "type": "blob"
+    },
+    {
+      "bytes": 1160,
+      "oid": "ed99f1c908911bab0328e1c9a456cd449a5d5fec",
+      "path": "objects/ed99f1c908911bab0328e1c9a456cd449a5d5fec.tree",
+      "sha256": "853f934f4fb69604870fa59caf76051db4976eaff8a7f38e13edee5b9667cc94",
+      "type": "tree"
+    },
+    {
+      "bytes": 173,
+      "oid": "f787034e9dbb3e676e7cfc3fc5f6967a8d3be8fb",
+      "path": "objects/f787034e9dbb3e676e7cfc3fc5f6967a8d3be8fb.tree",
+      "sha256": "6921d2162d998b8b67293be23ef04aa49957449f047a1bbcf93399cc5ecfc696",
+      "type": "tree"
+    }
+  ],
+  "package_path": "crates/jsonschema-regex",
+  "repository": "https://github.com/Stranger6667/jsonschema",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": "Cargo.toml"
+}

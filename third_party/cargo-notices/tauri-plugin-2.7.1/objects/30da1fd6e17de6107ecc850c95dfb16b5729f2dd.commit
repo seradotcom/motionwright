@@ -1,0 +1,22 @@
+tree d37d94dfe2f057d94308468598a22d6a6ead83ea
+parent 1aefcf6e6abc8e18be794ac9401150f27fcbe958
+author Lucas Nogueira <lucas@tauri.app> 1790797846 -0300
+committer Lucas Nogueira <lucas@tauri.app> 1790797846 -0300
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ iQIzBAABCgAdFiEEg4Yh6YpBMV2tNSWmLArxxU/pY64FAmq9aBYACgkQLArxxU/p
+ Y67b/w/9GXHtHnCpCmjrnMONaGFVzcScbujLc7OA/NsQs1cVQeUOkc8VCfpp4lZd
+ Ob7IIKVV3fbqhN3bEzV6EOsK+36EcZLo8yWvk0j8k4tMzEs0r+Bog8kG61SbY0Qw
+ 0MGgtqG04vJVm0CaZvbNv56StWepJNaYasp0zeW90I5Fu1jhWnIiXNgkDmtRjbQN
+ 566KLUfxEG0kk0CgBQdRUC44QtO3HagzOOWh5NLNUu1AvL5ORgIRRmDMR98FNmAP
+ TnuaQnu7/pe2lP4xW+QarbtaYdc3taBsl1ZH5YmJIg3wZ2WX4BuZnB0wuKBqemEj
+ 4q3GTHdobN6djb7wWvk+Zdsbasgf+fG0lMSziIg/b/xCJjWcBpkG494LPgH5A14b
+ q9fMSjLkIrcXstZ1yeEwQzsHeFB5s5SMBC290oJH4k8uoIuf6OLeu4W6MqMuC/5Z
+ BKbli4Auva4gZRdndGY2tf7Q6gL+ImKivceYhNgPC7I9anwy9yJXkAyHV1lkKGQR
+ fJShDZtMUwiOBan766/aSV1ojoM6AZUxbcFHMDuNKO3M9nh1hWJshds+r2mUnYiU
+ PploJEUzcq4xHDNheg62XGGNILuQiYg5tgL+NtEsi+2Q5kqlDi1A9qS9ohbaniZY
+ v6HCQD3NwkZo+XW41tWQzByqatDivtC7yBfuN3M1dWP4djw1wIM=
+ =hnBO
+ -----END PGP SIGNATURE-----
+
+feat(ci): run audit before publishing

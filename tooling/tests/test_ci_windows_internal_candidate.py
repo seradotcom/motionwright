@@ -67,6 +67,20 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         checkout.assert_has_calls([mock.call(self.root, "a" * 40)] * 2)
         return namespace
 
+    def test_supplemental_notices_use_the_existing_windows_contract_step(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        for path in ("scripts/cargo_notice_supplements.py",
+                     "scripts/test_cargo_notice_supplements.py",
+                     "scripts/test_cargo_notice_supplement_integration.py",
+                     "third_party/cargo-notices/**", ".gitattributes",
+                     "docs/reliability/cargo-notice-supplements.md"):
+            self.assertEqual(text.count('- "' + path + '"'), 2, path)
+        contracts = re.search(
+            r"(?ms)^  windows-contracts:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text).group(1)
+        self.assertIn("python -B -m unittest test_cargo_notice_supplements "
+                      "test_cargo_notice_supplement_integration -v", contracts)
+        self.assertIn("throw 'Cargo supplemental notice contracts failed'", contracts)
+
     def test_internal_capture_binds_real_fixture_bytes_and_denies_a_changed_payload(self):
         result = self.execute()
         record = json.loads((self.root / result["record_path"]).read_bytes())
