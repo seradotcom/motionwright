@@ -442,6 +442,7 @@ class NativeSession:
         self.private, self.timeout = private, timeout
         self.pending = bytearray()
         self.started = False
+        self.unknown_request_latched = False
         self.child = None
         self.stderr = None
         self.stderr_capture = None
@@ -492,6 +493,20 @@ class NativeSession:
         return self
 
     def request(self, label, command, payload):
+        # A Native attempt that reaches UNKNOWN cannot be re-admitted under
+        # a fresh label or request ID on this still-live original child.
+        require(not self.unknown_request_latched,
+                "GN1_FIRST_SAVE_NATIVE_SESSION_UNKNOWN_LATCHED", unknown=True)
+        try:
+            return self._request_once(label, command, payload)
+        except BaseException:
+            # Preserve the exact first exception, including a local private
+            # custody failure after an effect. Never infer nonapplication or
+            # offer a fresh Native dispatch when this method is retried.
+            self.unknown_request_latched = True
+            raise
+
+    def _request_once(self, label, command, payload):
         require(self.started and self.child is not None
                 and self.child.poll() is None and not self.pending,
                 "GN1_FIRST_SAVE_NATIVE_SESSION_NOT_READY", unknown=True)
@@ -634,9 +649,11 @@ class NativeSession:
                       "stderr_capture_error": stderr_capture["read_error"],
                       "stderr_reader_finished": stderr_capture["reader_finished"],
                       "stdin_close_failed": stdin_close_failed,
+                      "unknown_request_latched": self.unknown_request_latched,
                       "pending_stdout": pending_identity,
                       "pending_stdout_capture_failed": pending_capture_failed,
                       "original_reply_complete": stderr_capture["complete"]
+                          and not self.unknown_request_latched
                           and not stdin_close_failed and not self.pending
                           and not pending_capture_failed and not trailing
                           and trailing_eof and not trailing_failed,
@@ -650,8 +667,9 @@ class NativeSession:
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:
-            require(stderr_capture["complete"] and not stdin_close_failed
-                    and not pending_capture_failed
+            require(stderr_capture["complete"]
+                    and not self.unknown_request_latched
+                    and not stdin_close_failed and not pending_capture_failed
                     and size <= MAX_ORIGINAL and code == 0
                     and not self.pending and not trailing and trailing_eof
                     and not trailing_over_cap and not trailing_failed,

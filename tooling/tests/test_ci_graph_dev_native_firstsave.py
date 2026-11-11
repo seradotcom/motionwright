@@ -436,6 +436,70 @@ class OneSaveLifecycleTests(unittest.TestCase):
             True)
         self.assertEqual(state["uncertain"], True)
 
+    def test_unknown_native_reply_timeout_blocks_another_request_and_successful_close(self):
+        session, _ = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        writes = []
+        session.child.stdin = SimpleNamespace(
+            write=lambda raw: writes.append(raw),
+            flush=lambda: None, close=lambda: None)
+        with patch.object(save, "read_live_stdout", return_value=None):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_REPLY_TIMEOUT") as first:
+                session.request("first-unknown-rpc", "apply_change",
+                                {"effect": "never retried"})
+            self.assertTrue(first.exception.unknown)
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_SESSION_UNKNOWN_LATCHED") as replay:
+                session.request("new-label-cannot-retry", "apply_change",
+                                {"effect": "not authorized"})
+            self.assertTrue(replay.exception.unknown)
+        self.assertEqual(len(writes), 1)
+        self.assertFalse(
+            (self.private / "new-label-cannot-retry.request.original.jsonl").exists())
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        with patch.object(save, "read_terminal_stdout", return_value=complete):
+            with self.assertRaisesRegex(save.FirstSaveFailure,
+                                        "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN"):
+                session.__exit__(None, None, None)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["unknown_request_latched"])
+        self.assertFalse(terminal["original_reply_complete"])
+
+    def test_malformed_native_reply_latches_unknown_before_a_new_label(self):
+        session, _ = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        writes = []
+        session.child.stdin = SimpleNamespace(
+            write=lambda raw: writes.append(raw),
+            flush=lambda: None, close=lambda: None)
+        original = b'{"original":"malformed",not-valid-json}\n'
+        with patch.object(save, "read_live_stdout", return_value=original):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_REPLY_INVALID") as error:
+                session.request("malformed-first-original", "apply_change",
+                                {"original": "request"})
+            self.assertTrue(error.exception.unknown)
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_SESSION_UNKNOWN_LATCHED"):
+                session.request("forbidden-second-original", "apply_change",
+                                {"disallowed": True})
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(
+            (self.private / "malformed-first-original.response.original.jsonl").read_bytes(),
+            original)
+        self.assertFalse(
+            (self.private / "forbidden-second-original.request.original.jsonl").exists())
+
     def test_unterminated_native_jsonl_reply_is_retained_as_partial_original(self):
         # The original JSONL read observed bytes, but no newline/terminal
         # envelope arrived. The read is UNKNOWN, not a replay or empty reply.
