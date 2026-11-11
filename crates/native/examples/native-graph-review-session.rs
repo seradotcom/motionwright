@@ -819,6 +819,9 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             )),
             _ => unreachable!("Canonical Graph change was prepared before dispatch"),
         };
+        // Never ACK a returned mutation receipt if the original transport
+        // remains unconfirmed. Source custody/UNKNOWN outranks a local return.
+        let transport_failed = transport.has_unconfirmed_or_failed_invocation();
         // The existing mutation DTO conservatively reports UNKNOWN for an
         // unclassified outer/local error. Even if that local Error has its
         // default knownness, this client receives no further callback credit.
@@ -836,13 +839,18 @@ impl shared_session::GraphBackend for NativeGraphBackend {
             Ok(report) => match report.outcome() {
                 // This is the original native receipt, including exact replay.
                 // Do not reload local SQLite or recalculate a successful Project.
+                // A returned receipt cannot confirm a mutation when the
+                // original transport has an unconfirmed or failed invocation.
+                Ok(_) if transport_failed => {
+                    Err(mutation_failure(GraphInvokeFailure::unknown(request_id)))
+                }
                 Ok(receipt) => Ok(receipt.project().clone()),
-                Err(_) => Err(mutation_failure(match report.original_native_error() {
-                    // This accessor is populated only by the client's original
-                    // typed Native failure, never a later local decoder error.
-                    Some(error) => GraphInvokeFailure::from_native(request_id, error),
-                    None => GraphInvokeFailure::unknown(request_id),
-                })),
+                Err(_) => Err(mutation_failure(
+                    GraphInvokeFailure::from_original_native_or_unknown(
+                        request_id,
+                        report.original_native_error(),
+                    ),
+                )),
             },
             Err(_) => Err(mutation_failure(GraphInvokeFailure::unknown(request_id))),
         }
