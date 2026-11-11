@@ -275,6 +275,94 @@ class OneSaveLifecycleTests(unittest.TestCase):
             stdin=None, stdout=output, wait=lambda timeout: 0)
         return session, output
 
+    def test_failed_native_child_start_never_leaks_private_launcher_error(self):
+        session = save.NativeSession(
+            self.root / "not-launched-native", self.database,
+            self.root / "no-real-connection", self.private, {})
+        with patch.object(save.subprocess, "Popen",
+                          side_effect=OSError("private OS process path")) as spawn:
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_NATIVE_CHILD_START_UNCERTAIN") as failure:
+                session.__enter__()
+        spawn.assert_called_once()
+        self.assertTrue(failure.exception.unknown)
+        self.assertTrue(session.unknown_request_latched)
+        self.assertFalse(session.started)
+        self.assertIsNone(session.child)
+        self.assertTrue(session.stderr.closed)
+        self.assertFalse(
+            (self.private / "graph-native-session.spawn.original.json").exists())
+
+    def test_failed_spawn_original_cannot_abandon_live_native_child(self):
+        # Source-only failpoint on the receipt AFTER a child was admitted.
+        # The child is an inert object, never a Native Host or real process.
+        session = save.NativeSession(
+            self.root / "not-launched-native", self.database,
+            self.root / "no-real-connection", self.private, {})
+        observed = []
+        class InertChild:
+            pid = 424242
+            def __init__(self):
+                self.stdin = SimpleNamespace(close=lambda: observed.append("stdin-close"))
+                self.stdout = SimpleNamespace(close=lambda: observed.append("stdout-close"))
+                self.stderr = SimpleNamespace(close=lambda: observed.append("stderr-pipe-close"))
+                self.killed = False
+            def poll(self):
+                return None if not self.killed else -9
+            def kill(self):
+                self.killed = True
+                observed.append("child-kill")
+            def wait(self, *, timeout):
+                observed.append("child-wait")
+                return -9
+        fake = InertChild()
+        class InertCapture:
+            def __init__(self, file):
+                self.file = file
+            def finish(self):
+                self.file.close()
+                observed.append("stderr-capture-finished")
+        def capture_factory(child, file):
+            self.assertIs(child, fake)
+            return InertCapture(file)
+        original_json = save.private_json
+        def fail_spawn_receipt(path, value):
+            if path.name.endswith(".spawn.original.json"):
+                raise OSError("private spawn receipt not durable")
+            return original_json(path, value)
+        def stop_owned_group(pid, _signal):
+            self.assertEqual(pid, fake.pid)
+            fake.killed = True
+            observed.append("owned-group-kill")
+        with patch.object(save.subprocess, "Popen", return_value=fake) as started, \
+                patch.object(save, "OriginalNativeStderr",
+                             side_effect=capture_factory), \
+                patch.object(save, "private_json", side_effect=fail_spawn_receipt), \
+                patch.object(save.os, "killpg", side_effect=stop_owned_group,
+                             create=True):
+            try:
+                with self.assertRaisesRegex(
+                        save.FirstSaveFailure,
+                        "GN1_FIRST_SAVE_NATIVE_SPAWN_CUSTODY_UNCERTAIN") as denied:
+                    session.__enter__()
+                self.assertTrue(denied.exception.unknown)
+            finally:
+                if session.stderr and not session.stderr.closed:
+                    session.stderr.close()
+        started.assert_called_once()
+        self.assertEqual(started.call_args.kwargs["stderr"], subprocess.PIPE)
+        self.assertTrue(fake.killed)
+        self.assertIn("child-wait", observed)
+        self.assertIn("stdin-close", observed)
+        self.assertIn("stdout-close", observed)
+        self.assertIn("stderr-capture-finished", observed)
+        self.assertFalse(session.started)
+        self.assertFalse(
+            (self.private / "graph-native-session.spawn.original.json").exists())
+        self.assertTrue(
+            (self.private / "graph-native-session.intent.original.json").exists())
+
     def test_original_native_stderr_is_bounded_during_actual_child_output(self):
         # One inert Python child, NOT the original Native Host or a Save.
         # A direct-to-file stderr previously exceeded MAX_ORIGINAL before the

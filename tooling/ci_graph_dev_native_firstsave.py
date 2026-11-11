@@ -465,6 +465,52 @@ class NativeSession:
                       "maximum_private_files": PRIVATE_FILES,
                       "automatic_retry": False})
 
+    def _abort_unconfirmed_start(self):
+        """Terminate only this owned original process/group before returning UNKNOWN.
+
+        A Native process may have launched even if its private spawn record
+        could not be written. No retry or unobserved active child is allowed.
+        """
+        self.unknown_request_latched = True
+        if self.child is not None:
+            try:
+                if os.name == "posix":
+                    # The child was launched with start_new_session=True.
+                    os.killpg(self.child.pid, signal.SIGKILL)
+                elif self.child.poll() is None:
+                    self.child.kill()
+            except (OSError, ValueError):
+                pass
+            try:
+                self.child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # A failed group signal cannot leave the directly owned
+                # original child alive when spawn custody is unavailable.
+                try:
+                    self.child.kill()
+                    self.child.wait(timeout=2)
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    pass
+            except (OSError, ValueError):
+                pass
+            for stream in (self.child.stdin, self.child.stdout):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
+        if self.stderr_capture is not None:
+            try:
+                self.stderr_capture.finish()
+            except BaseException:
+                pass
+        elif self.stderr is not None:
+            try:
+                self.stderr.close()
+            except (OSError, ValueError):
+                pass
+        self.started = False
+
     def __enter__(self):
         self.stderr = (self.private / (self.label + ".stderr.original")).open("xb")
         try:
@@ -472,24 +518,33 @@ class NativeSession:
                 self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, env=self.env, start_new_session=True)
         except BaseException:
+            # Spawn did not return a child identity; never expose a private
+            # launcher message or an imagined no-effect result to the caller.
             self.stderr.close()
-            raise
+            self.unknown_request_latched = True
+            raise FirstSaveFailure(
+                "GN1_FIRST_SAVE_NATIVE_CHILD_START_UNCERTAIN",
+                unknown=True) from None
         try:
             self.stderr_capture = OriginalNativeStderr(self.child, self.stderr)
         except BaseException:
-            # The child is ours; an unavailable stream collector must never
-            # leave an unbounded original process running after launch.
-            try:
-                self.child.kill()
-                self.child.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            self.stderr.close()
+            # The child is ours, and failed collector setup cannot leave a
+            # real owner or its descendants behind without original custody.
+            self._abort_unconfirmed_start()
             raise FirstSaveFailure(
                 "GN1_FIRST_SAVE_STDERR_CAPTURE_UNAVAILABLE", unknown=True) from None
         self.started = True
-        private_json(self.private / (self.label + ".spawn.original.json"),
-                     {"pid": self.child.pid, "automatic_retry": False})
+        try:
+            private_json(self.private / (self.label + ".spawn.original.json"),
+                         {"pid": self.child.pid, "automatic_retry": False})
+        except BaseException:
+            # If this source-original receipt cannot be retained, Python's
+            # with context has NOT entered: __exit__ will not be invoked.
+            # Stop exactly the one launched child group here, fail UNKNOWN.
+            self._abort_unconfirmed_start()
+            raise FirstSaveFailure(
+                "GN1_FIRST_SAVE_NATIVE_SPAWN_CUSTODY_UNCERTAIN",
+                unknown=True) from None
         return self
 
     def request(self, label, command, payload):
