@@ -591,6 +591,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
       - name: Require tamper evidence contracts in both import modes
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
         shell: python
         run: |
           import os
