@@ -449,8 +449,15 @@ class NativeSession:
     def __exit__(self, exc_type, exc, tb):
         if self.child is None:
             return False
+        stdin_close_failed = False
         if self.child.stdin:
-            self.child.stdin.close()
+            try:
+                self.child.stdin.close()
+            except (OSError, ValueError):
+                # A broken writer pipe after an uncertain mutation is an
+                # additional original terminal observation, not a replacement
+                # for the first failure. No retry, no inference of no effect.
+                stdin_close_failed = True
         try:
             code = self.child.wait(timeout=20)
         except subprocess.TimeoutExpired:
@@ -487,8 +494,10 @@ class NativeSession:
                      {"exit_code": code, "stderr_bytes": size,
                       "stderr_sha256": digest(stderr_path.read_bytes())
                                        if size <= MAX_ORIGINAL else None,
-                      "original_reply_complete": not self.pending and
-                          not trailing and trailing_eof and not trailing_failed,
+                      "stdin_close_failed": stdin_close_failed,
+                      "original_reply_complete": not stdin_close_failed and
+                          not self.pending and not trailing and trailing_eof
+                          and not trailing_failed,
                       "trailing_stdout": trailing_identity,
                       "trailing_stdout_over_cap": trailing_over_cap,
                       "trailing_stdout_reader_error": terminal_stdout["read_error"],
@@ -499,8 +508,9 @@ class NativeSession:
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:
-            require(size <= MAX_ORIGINAL and code == 0 and not self.pending
-                    and not trailing and trailing_eof and not trailing_over_cap
+            require(not stdin_close_failed and size <= MAX_ORIGINAL
+                    and code == 0 and not self.pending and not trailing
+                    and trailing_eof and not trailing_over_cap
                     and not trailing_failed,
                     "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN", unknown=True)
         return False
