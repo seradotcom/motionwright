@@ -526,7 +526,11 @@ def real_first_save(*, fixture, native_session, source, store_path, client,
                   "request_id": request_key,
                   "graph_id": graph.get("id"),
                   "source_revision": project["revision"],
-                  "first_save_authorized": True,
+                  # Selecting one Save is not permission: the original Native
+                  # project-edit grant has not been returned at this point.
+                  "explicit_one_original_save_selected": True,
+                  "native_edit_grant_observed": False,
+                  "formal_G2_granted": False,
                   "automatic_retry": False})
     with NativeSession(native_session, store_path, connection_file,
                        private, env) as rpc:
@@ -551,10 +555,23 @@ def real_first_save(*, fixture, native_session, source, store_path, client,
              "generation": project["generation"],
              "revision": project["revision"],
              "subject": request_key})
-        require(grant["ok"] and type(grant.get("result")) is dict
-                and type(grant["result"].get("token")) is str,
+        token = (grant.get("result", {}).get("token")
+                 if type(grant.get("result")) is dict else None)
+        # A reported "ok" with an absent, empty, nil or malformed token is
+        # not an admitted project edit. Do not record authority or call Save.
+        require(grant.get("ok") is True and type(token) is str
+                and re.fullmatch(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}",
+                                 token) is not None
+                and uuid.UUID(token).int != 0,
                 "GN1_FIRST_SAVE_REAL_EDIT_GRANT_UNAVAILABLE")
-        token = grant["result"]["token"]
+        private_json(private / "first-save-grant-observed.original.json",
+                     {"schema": "motionwright.graph-dev-edit-grant-observation/1",
+                      "project_id": source["id"], "request_id": request_key,
+                      "original_rpc_label": "project-edit-grant",
+                      "native_edit_grant_observed": True,
+                      "mutation_dispatched_at_observation": False,
+                      "formal_G2_granted": False,
+                      "automatic_retry": False})
         mutation = rpc.request(
             "first-graph-save", "apply_change",
             {"project_id": source["id"],

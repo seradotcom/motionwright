@@ -320,15 +320,14 @@ class OneSaveLifecycleTests(unittest.TestCase):
         yield Fake()
 
     def execute(self, *, context_ready=True, save_ok=True, release_ok=True,
-                writer_witness="a" * 64):
+                writer_witness="a" * 64, grant_token="ffffffff-ffff-4fff-8fff-ffffffffffff"):
         project = self.src["project"]
         saved = {**project, "revision": 3}
         replies = [
             ("get_project", {"ok": True, "result": project}),
             ("semantic_graph_authoring_context", {"ok": True, "result": {
                 "availability": "ready" if context_ready else "blocked"}}),
-            ("issue_effect_grant", {"ok": True, "result": {"token": str(
-                "ffffffff-ffff-4fff-8fff-ffffffffffff")}}),
+            ("issue_effect_grant", {"ok": True, "result": {"token": grant_token}}),
             ("apply_change", {"ok": save_ok, "result": saved if save_ok else None}),
             ("opened_store_identity_witness", {"ok": True, "result": writer_witness}),
             ("reopen", {"ok": True, "result": saved}),
@@ -391,7 +390,17 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertEqual(result["writer_opened_store_identity_witness"], "a" * 64)
         self.assertEqual(result["Graph6_accepted"], 0)
         self.assertFalse(result["formal_G2_granted"])
-        self.assertTrue((self.private / "first-save-intent.original.json").is_file())
+        intent = json.loads((self.private / "first-save-intent.original.json").read_text())
+        self.assertTrue(intent["explicit_one_original_save_selected"])
+        self.assertNotIn("first_save_authorized", intent)
+        self.assertNotIn("token", intent)
+        grant = json.loads((self.private / "first-save-grant-observed.original.json").read_text())
+        self.assertTrue(grant["native_edit_grant_observed"])
+        self.assertEqual(grant["request_id"], intent["request_id"])
+        self.assertEqual(grant["project_id"], self.src["project"]["id"])
+        self.assertFalse(grant["formal_G2_granted"])
+        self.assertFalse(grant["automatic_retry"])
+        self.assertNotIn("token", grant)
 
     def test_invalid_writer_opened_pager_identity_never_reopens_or_retries(self):
         with self.assertRaisesRegex(
@@ -426,6 +435,24 @@ class OneSaveLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(save.FirstSaveFailure, "CONTEXT_NOT_READY"):
             self.execute(context_ready=False)
         self.assertEqual(self.trace, ["get_project", "semantic_graph_authoring_context"])
+        intent = json.loads((self.private / "first-save-intent.original.json").read_text())
+        self.assertTrue(intent["explicit_one_original_save_selected"])
+        self.assertNotIn("first_save_authorized", intent)
+        self.assertFalse((self.private / "first-save-grant-observed.original.json").exists())
+
+    def test_empty_grant_token_never_becomes_original_authority(self):
+        with self.assertRaisesRegex(save.FirstSaveFailure, "REAL_EDIT_GRANT_UNAVAILABLE"):
+            self.execute(grant_token="")
+        self.assertEqual(self.trace[-1], "issue_effect_grant")
+        self.assertNotIn("apply_change", self.trace)
+        self.assertFalse((self.private / "first-save-grant-observed.original.json").exists())
+
+    def test_nil_grant_token_is_never_a_real_native_edit_grant(self):
+        with self.assertRaisesRegex(save.FirstSaveFailure, "REAL_EDIT_GRANT_UNAVAILABLE"):
+            self.execute(grant_token="00000000-0000-0000-0000-000000000000")
+        self.assertEqual(self.trace[-1], "issue_effect_grant")
+        self.assertNotIn("apply_change", self.trace)
+        self.assertFalse((self.private / "first-save-grant-observed.original.json").exists())
 
     def test_unknown_save_has_one_call_and_no_reopen_or_retry(self):
         with self.assertRaisesRegex(save.FirstSaveFailure, "SAVE_REJECTED_OR_UNKNOWN") as outcome:
