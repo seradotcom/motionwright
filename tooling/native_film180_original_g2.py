@@ -762,16 +762,23 @@ def native_png_vs_h264_observations(
         "[reference][encoded]psnr="
         f"stats_file={stats}:stats_version=1[observed]"
     )
-    result = subprocess.run(
+    # PSNR emits its actual measurements into the owner stats file. Its
+    # auxiliary stdout (4 KiB) and stderr (8 KiB) are both bounded DURING
+    # the single original FFmpeg process, not after unbounded PIPE capture.
+    from native_film180_media_readback import _bounded_readonly_output
+    stdout = _bounded_readonly_output(
         [ffmpeg, "-nostdin", "-v", "error",
          "-framerate", "30", "-start_number", "0",
          "-i", str(frames / "%06d.png"),
          "-i", str(master_path),
          "-filter_complex", filter_code, "-map", "[observed]",
          "-an", "-f", "null", "-"],
-        capture_output=True, timeout=2 * MEDIA_TIMEOUT, check=True,
+        timeout=2 * MEDIA_TIMEOUT,
+        stdout_limit=4096, stderr_limit=8192,
+        over_limit="RGB_PSN_FFmpeg_source_comparison_not_bounded",
+        stderr_over_limit="RGB_PSN_FFmpeg_source_comparison_not_bounded",
     )
-    require(len(result.stdout) <= 4096 and len(result.stderr) <= 8192
+    require(len(stdout) <= 4096
             and stats.is_file() and stats.stat().st_size <= 128 * 1024,
             "RGB_PSN_FFmpeg_source_comparison_not_bounded")
     report = parse_rgb_psnr_observations(stats.read_bytes())
@@ -786,17 +793,22 @@ def native_png_vs_h264_observations(
 
 def original_frame_difference(ffmpeg: str, first: Path, second: Path,
                               *, number: int = 110) -> dict:
-    from native_film180_media_readback import WIDTH, HEIGHT, difference_count
+    from native_film180_media_readback import (
+        WIDTH, HEIGHT, difference_count, _bounded_readonly_output,
+    )
     def at(media: Path) -> bytes:
-        result = subprocess.run(
+        # Both source and edited frames have the same fixed RGB geometry.
+        # Preserve the two original reads, but deny stream growth in flight.
+        raw = _bounded_readonly_output(
             [ffmpeg, "-nostdin", "-v", "error", "-i", str(media),
              "-an", "-vf", f"select=eq(n\\,{number})",
              "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
-            capture_output=True, timeout=MEDIA_TIMEOUT, check=True,
+            timeout=MEDIA_TIMEOUT, stdout_limit=WIDTH * HEIGHT * 3,
+            over_limit="edited_native_mp4_frame_not_decodable",
         )
-        require(len(result.stdout) == WIDTH * HEIGHT * 3,
+        require(len(raw) == WIDTH * HEIGHT * 3,
                 "edited_native_mp4_frame_not_decodable")
-        return result.stdout
+        return raw
     change = difference_count(at(first), at(second), WIDTH, HEIGHT,
                               bottom_only=False)
     require(change >= 250, "edited_Film180_final_MP4_did_not_retain_authored_canvas_change")
