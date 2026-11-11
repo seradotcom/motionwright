@@ -3177,9 +3177,8 @@ async fn apply_semantic_graph_change(
     }
     // The outer error is local/transport; only the original typed Native
     // envelope can establish outcome knownness. Never infer non-application.
-    let report = result.map_err(|_| {
-        graph_failure_value(GraphInvokeFailure::unknown(&request.request_id))
-    })?;
+    let report = result
+        .map_err(|_| graph_failure_value(GraphInvokeFailure::unknown(&request.request_id)))?;
     let receipt = report.outcome().map_err(|_| {
         graph_failure_value(GraphInvokeFailure::from_original_native_or_unknown(
             &request.request_id,
