@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_COMPONENTS = 4096
+MAX_CARGO_MESSAGES = 50000  # Same captured Cargo JSON bound as build inventory.
 MAX_LOCK_BYTES = 8 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -1007,6 +1008,36 @@ def _is_notice(relative: tuple[str, ...], package: tuple[str, ...]) -> bool:
                 or any(part.casefold() in {"licenses", "licences"} for part in local[:-1])))
 
 
+def _unresolved_original_cargo_unit_roles(component: dict[str, Any]) -> bool:
+    """Allow exact source-observed ambiguity without inventing a host/target role.
+
+    Cargo JSON does not always determine which side of a mixed-context
+    dependency produced a unit. The receipt must preserve an observed compiler
+    artifact with both original uncertainty markers, never assign a role.
+    """
+    expected = component.get("possible_roles")
+    # The original Cargo stream has two bounded uncertain forms: build/host
+    # only, or mixed host/target runtime. Neither becomes a confirmed role.
+    admitted = (["build", "host"], ["build", "host", "runtime", "target"])
+    units = component.get("observed_units")
+    return (
+        component.get("roles") == []
+        and expected in admitted
+        and isinstance(units, list) and 0 < len(units) <= 128
+        and all(isinstance(unit, dict)
+                and unit.get("kind") == "compiler-artifact"
+                and unit.get("package_id") == component.get("id")
+                and isinstance(unit.get("unit_id"), str)
+                and _HEX64.fullmatch(unit["unit_id"]) is not None
+                and type(unit.get("message_index")) is int
+                and 0 <= unit["message_index"] <= MAX_CARGO_MESSAGES
+                and unit.get("roles") == []
+                and unit.get("possible_roles") == expected
+                and unit.get("execution_context") == "NOT_DETERMINABLE_FROM_CARGO_JSON"
+                and unit.get("feature_context_assignment") == "NOT_DETERMINABLE_FROM_CARGO_JSON"
+                for unit in units))
+
+
 def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
                  workspace_repo: _GitRepo, lock: dict[tuple[str, str, str | None], dict[str, Any]],
                  budget: _Budget, generated_metadata=None) -> tuple[dict[str, Any], dict[str, bytes]]:
@@ -1029,7 +1060,9 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
                 or not isinstance(component.get("version"), str)
                 or not component["version"] or len(component["version"]) > 128
                 or not isinstance(component.get("manifest_path"), (str, Path))
-                or not isinstance(component.get("roles"), list) or not component["roles"]
+                or not isinstance(component.get("roles"), list)
+                or (not component["roles"]
+                    and not _unresolved_original_cargo_unit_roles(component))
                 or any(not isinstance(role, str) or not role or len(role) > 128
                        for role in component["roles"])
                 or len(component["roles"]) > 32):

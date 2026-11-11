@@ -656,6 +656,55 @@ class CargoLicenseSourcesTests(unittest.TestCase):
             shared_license_file=False, root_notices=False)
         self.assert_blocked(self.fixture.collect([component]), "license_text_missing")
 
+    def ambiguous_original_cargo_component(self):
+        component = self.fixture.registry("ambiguous_original")
+        component["roles"] = []
+        possible = ["build", "host", "runtime", "target"]
+        component["possible_roles"] = possible
+        component["observed_units"] = [{
+            "kind": "compiler-artifact", "package_id": component["id"],
+            "unit_id": "a" * 64, "message_index": 0,
+            "roles": [], "possible_roles": list(possible),
+            "execution_context": "NOT_DETERMINABLE_FROM_CARGO_JSON",
+            "feature_context_assignment": "NOT_DETERMINABLE_FROM_CARGO_JSON",
+        }]
+        return component
+
+    def test_unresolved_original_unit_can_supply_notices_without_assigning_a_role(self):
+        component = self.ambiguous_original_cargo_component()
+        for possibilities in (["build", "host", "runtime", "target"],
+                              ["build", "host"]):
+            with self.subTest(possible_roles=possibilities):
+                component["possible_roles"] = list(possibilities)
+                component["observed_units"][0]["possible_roles"] = list(possibilities)
+                result = self.fixture.collect([component])
+                self.assert_verified(result)
+                original = result["components"][0]
+                self.assertEqual(original["roles"], [])
+                self.assertEqual(result["texts"][sha(NOTICE)], NOTICE)
+                self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
+
+    def test_unsubstantiated_or_forged_empty_roles_remain_blocked(self):
+        baseline = self.ambiguous_original_cargo_component()
+        mutations = (
+            lambda row: row.pop("possible_roles"),
+            lambda row: row.update(possible_roles=["target"]),
+            lambda row: row.update(observed_units=[]),
+            lambda row: row["observed_units"][0].update(roles=["target"]),
+            lambda row: row["observed_units"][0].update(package_id="foreign"),
+            lambda row: row["observed_units"][0].update(unit_id="x" * 64),
+            lambda row: row["observed_units"][0].update(
+                execution_context="target"),
+            lambda row: row["observed_units"][0].update(
+                feature_context_assignment="CONFIRMED_CONTEXT"),
+        )
+        for number, mutation in enumerate(mutations):
+            with self.subTest(mutation=number):
+                value = copy.deepcopy(baseline)
+                mutation(value)
+                self.assert_blocked(self.fixture.collect([value]),
+                                    "component_metadata_malformed")
+
     def test_git_dependency_requires_exact_full_locked_revision_and_clean_raw_tree(self):
         component = self.fixture.git_package()
         result = self.fixture.collect([component])
