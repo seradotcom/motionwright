@@ -158,6 +158,16 @@ def inspect_source_pcm16_stereo_content(
             # One terminal frame cannot define a correlation by itself. Keep
             # its own energy check above, and include it with the preceding
             # complete window for waveform identity; no source frame is skipped.
+            if sample_count==1:
+                # A single sample has no variance, so its 256-frame context
+                # correlation cannot establish the terminal sample's sign.
+                # The already informative per-channel sample must retain its
+                # polarity after lossy decoding, without requiring PCM equality.
+                terminal_source=int(x[2*first+channel])
+                terminal_decoded=int(y[2*first+channel])
+                insist(terminal_source*terminal_decoded>0,
+                       f"source_audio_terminal_polarity_changed:channel={channel}:"
+                       f"start={first}:end={final}")
             correlation_first=max(0,first-WINDOW_FRAMES) if sample_count==1 else first
             corr=_correlation(x,y,correlation_first,final,channel,channel)
             insist(corr>=MIN_CORRELATION,
