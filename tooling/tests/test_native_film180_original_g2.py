@@ -565,8 +565,14 @@ class PrivateCommandCaptureTests(unittest.TestCase):
     def test_pcm_capture_uses_the_single_original_decode_without_sample_adjustment(self):
         _, pcm = film_source_wave()
         seen = []
-        result = types.SimpleNamespace(stdout=pcm, stderr=b"decoder-original", returncode=0)
-        with mock.patch.object(media.subprocess, "run", return_value=result) as call:
+        def source_decoder(_argv, *, observed, **kwargs):
+            self.assertEqual(kwargs["stdout_limit"], media.AUDIO_BYTES_MAX)
+            observed.update(stdout=pcm, stderr=b"decoder-original",
+                            exit_code=0, deadline_exceeded=False,
+                            automatic_retry=False)
+            return pcm
+        with mock.patch.object(media, "_bounded_readonly_output",
+                               side_effect=source_decoder) as call:
             returned = media.decode_original_audio(Path("owned.mp4"), "ffmpeg", capture=seen.append)
         call.assert_called_once()
         self.assertIs(returned, pcm)
@@ -580,7 +586,13 @@ class PrivateCommandCaptureTests(unittest.TestCase):
         def capture(value):
             seen.append(value)
             raise OSError("private capture failure")
-        with mock.patch.object(media.subprocess, "run", side_effect=failure) as call:
+        def source_decoder(_argv, *, observed, **_kwargs):
+            observed.update(stdout=b"\x01\x00", stderr=b"original",
+                            exit_code=None, deadline_exceeded=True,
+                            automatic_retry=False)
+            raise failure
+        with mock.patch.object(media, "_bounded_readonly_output",
+                               side_effect=source_decoder) as call:
             with self.assertRaises(subprocess.TimeoutExpired) as caught:
                 media.decode_original_audio(Path("owned.mp4"), "ffmpeg", capture=capture)
         self.assertIs(caught.exception, failure)
@@ -590,12 +602,17 @@ class PrivateCommandCaptureTests(unittest.TestCase):
 
     def test_short_pcm_is_captured_before_the_existing_budget_rejects_it(self):
         seen = []
-        result = types.SimpleNamespace(stdout=b"\x00" * 211200, stderr=b"", returncode=0)
-        with mock.patch.object(media.subprocess, "run", return_value=result) as call:
+        pcm = b"\x00" * 211200
+        def source_decoder(_argv, *, observed, **_kwargs):
+            observed.update(stdout=pcm, stderr=b"", exit_code=0,
+                            deadline_exceeded=False, automatic_retry=False)
+            return pcm
+        with mock.patch.object(media, "_bounded_readonly_output",
+                               side_effect=source_decoder) as call:
             with self.assertRaisesRegex(media.OriginalMediaMismatch, "sample_budget_changed"):
                 media.decode_original_audio(Path("owned.mp4"), "ffmpeg", capture=seen.append)
         call.assert_called_once()
-        self.assertEqual(seen[0]["stdout"], result.stdout)
+        self.assertIs(seen[0]["stdout"], pcm)
 
 
 class FilmRuntimeEnvelopeTests(unittest.TestCase):
