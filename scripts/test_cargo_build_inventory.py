@@ -189,6 +189,135 @@ class InventoryTests(unittest.TestCase):
         self.messages.insert(0, artifact(self.meta, ROOT, "example"))
         self.rejects("development_unit_forbidden")
 
+    def test_development_parent_paths_are_metadata_only_and_preserved(self):
+        paths = (
+            "/checkout/crates/sdk/../../examples/demo.rs",
+            r"E:\checkout\crates\sdk\..\..\examples\demo.rs",
+            r"\\host\share\checkout\crates\sdk\..\..\examples\demo.rs",
+        )
+        for kind in ("example", "test", "bench"):
+            for path in paths:
+                with self.subTest(kind=kind, path=path):
+                    self.meta, self.messages = fixture()
+                    declared = package(self.meta, ROOT)["targets"][-1]
+                    declared["kind"] = [kind]
+                    expected = self.derive()
+                    declared["src_path"] = path
+                    original = deepcopy(self.meta)
+                    self.assertEqual(expected, self.derive())
+                    self.assertEqual(original, self.meta)
+                    parsed = inventory._target(declared, metadata_declaration=True)
+                    self.assertEqual(path, parsed["src_path"])
+
+    def test_development_metadata_still_rejects_invalid_path_bounds(self):
+        for path in (
+                "examples/../demo.rs", r"E:examples\demo.rs", r"\root\demo.rs",
+                "/fixture/../../outside.rs", r"E:\fixture\..\..\outside.rs",
+                r"\\host\share\..\outside.rs", "/fixture/\x00/demo.rs",
+                "/fixture/\n/demo.rs", "/fixture/\r/demo.rs"):
+            with self.subTest(path=path):
+                self.meta, self.messages = fixture()
+                package(self.meta, ROOT)["targets"][-1]["src_path"] = path
+                self.rejects("target_invalid")
+
+    def test_non_development_package_target_budget_remains_128(self):
+        declared = package(self.meta, ROOT)["targets"]
+        original_count = sum(t["kind"] != ["example"] for t in declared)
+        expected = self.derive()
+        for n in range(inventory.MAX_PACKAGE_TARGETS - original_count):
+            declared.append(target("unobserved_library_" + str(n)))
+        self.assertEqual(expected, self.derive())
+        declared.append(target("one_library_too_many"))
+        self.rejects("package_targets_invalid")
+
+    def test_development_declaration_budget_is_global_and_bounded(self):
+        # Include an unobserved dev dependency: its declarations still consume
+        # the document budget but never count as emitted product units.
+        remaining = inventory.MAX_DEVELOPMENT_TARGETS - 1
+        for n in range(remaining):
+            name = ROOT if n % 2 else "dev_only"
+            package(self.meta, name)["targets"].append(
+                target("unobserved_example_" + str(n), "example"))
+        result = self.derive()
+        self.assertEqual(7, result["compiler_unit_count"])
+        self.assertNotIn("dev_only", {p["name"] for p in result["components"]})
+        package(self.meta, "dev_only")["targets"].append(
+            target("one_example_too_many", "example"))
+        self.rejects("development_targets_budget_exceeded")
+
+    def test_development_declarations_after_128_are_fully_validated(self):
+        for mutation, code in (("invalid", "target_invalid"),
+                               ("duplicate", "duplicate_target_identity")):
+            with self.subTest(mutation=mutation):
+                self.meta, self.messages = fixture()
+                declared = package(self.meta, "runtime")["targets"]
+                for n in range(172):
+                    item = target("declared_test_" + str(n), "example")
+                    item["kind"] = ["test"]
+                    declared.append(item)
+                if mutation == "invalid":
+                    declared[-1]["src_path"] = "relative.rs"
+                else:
+                    declared[-1] = deepcopy(declared[1])
+                self.rejects(code)
+
+    def test_runtime_metadata_parent_paths_remain_rejected(self):
+        for name, kind in (
+                (ROOT, "bin"), (ROOT, "custom-build"),
+                ("runtime", "lib"), ("derive", "proc-macro")):
+            with self.subTest(name=name, kind=kind):
+                self.meta, self.messages = fixture()
+                declared = next(t for t in package(self.meta, name)["targets"]
+                                if t["kind"] == [kind])
+                declared["src_path"] = "/checkout/crates/../source.rs"
+                self.rejects("target_invalid")
+
+    def test_observed_development_parent_paths_remain_rejected(self):
+        for reason in ("compiler-artifact", "compiler-message"):
+            with self.subTest(reason=reason):
+                self.meta, self.messages = fixture()
+                package(self.meta, ROOT)["targets"][-1]["src_path"] = (
+                    r"E:\checkout\crates\sdk\..\..\examples\demo.rs")
+                observed = artifact(self.meta, ROOT, "example")
+                observed["reason"] = reason
+                self.messages.insert(0, observed)
+                self.rejects("target_invalid")
+
+    def test_parent_declaration_does_not_normalize_observed_identity(self):
+        package(self.meta, ROOT)["targets"][-1]["src_path"] = (
+            "/checkout/crates/sdk/../../examples/demo.rs")
+        observed = artifact(self.meta, ROOT, "example")
+        observed["target"]["src_path"] = "/checkout/examples/demo.rs"
+        self.messages.insert(0, observed)
+        self.rejects("observed_target_identity_mismatch")
+
+    def test_parent_metadata_does_not_admit_traversing_artifact_paths(self):
+        changes = (
+            ("manifest_path", "/fixture/runtime/../Cargo.toml",
+             "artifact_manifest_invalid"),
+            ("filenames", ["/fixture/target/../foreign/app.exe"],
+             "artifact_filenames_invalid"),
+            ("executable", "/fixture/target/../foreign/app.exe",
+             "artifact_executable_invalid"),
+        )
+        for field, value, code in changes:
+            with self.subTest(field=field):
+                self.meta, self.messages = fixture()
+                package(self.meta, ROOT)["targets"][-1]["src_path"] = (
+                    "/checkout/crates/sdk/../../examples/demo.rs")
+                self.unit(ROOT, "bin")[field] = value
+                self.rejects(code)
+
+    def test_parent_metadata_does_not_admit_traversing_build_output(self):
+        package(self.meta, ROOT)["targets"][-1]["src_path"] = (
+            "/checkout/crates/sdk/../../examples/demo.rs")
+        self.messages.insert(0, {
+            "reason": "build-script-executed", "package_id": package_id(ROOT),
+            "linked_libs": [], "linked_paths": [], "cfgs": [], "env": [],
+            "out_dir": "/fixture/target/../foreign/out",
+        })
+        self.rejects("build_script_out_dir_invalid")
+
     def test_same_package_host_and_target_units_keep_features_and_ambiguity(self):
         edge(self.meta, ROOT, "runtime", "build")
         node(self.meta, "runtime")["features"] = ["host-feature", "target-feature"]

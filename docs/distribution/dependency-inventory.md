@@ -66,6 +66,25 @@ changed source, redirected paths, and incomplete notice coverage are failures.
 A directory from a failed or uncertain invocation is evidence to inspect, not
 a destination to overwrite or a request to replay.
 
+### Cargo metadata declarations
+
+The inventory admits at most 128 non-development targets per package and 2048
+development declarations across the entire metadata document, including packages
+outside the observed runtime closure. Every example, test and benchmark is
+validated and duplicate target identities are rejected. These declarations do
+not count as compiled units or establish emitted package contents.
+
+Only development metadata declarations may contain balanced parent segments in
+an absolute source path. Their spelling is preserved, without filesystem
+resolution or file-read authority. A parent that crosses the path anchor is
+rejected. Observed target paths, manifests, artifact filenames, executables and
+build-output directories retain the strict rejection of parent segments.
+
+The global input bounds still apply before target parsing: 1,000,000 JSON nodes,
+64 MiB of text, depth 32, 8192 packages and 50,000 build messages. The development
+budget does not change the rejection of development artifacts in the build
+stream.
+
 ### Cargo output contract
 
 The state directory retains, among other records:

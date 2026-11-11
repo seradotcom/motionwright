@@ -20,6 +20,8 @@ from pathlib import PurePosixPath, PureWindowsPath
 import re
 
 MAX_PACKAGES = 8192
+MAX_PACKAGE_TARGETS = 128
+MAX_DEVELOPMENT_TARGETS = 2048
 MAX_MESSAGES = 50000
 MAX_JSON_NODES = 1000000
 MAX_TOTAL_TEXT = 64 * 1024 * 1024
@@ -100,14 +102,22 @@ def _texts(value: object, code: str, *, maximum: int = 8192,
     return result
 
 
-def _path(value: object, code: str) -> str:
+def _path(value: object, code: str, *, allow_parent_segments: bool = False) -> str:
     text = _text(value, code)
     _require("\r" not in text and "\n" not in text, code)
     windows = PureWindowsPath(text)
     posix = PurePosixPath(text)
     _require(windows.is_absolute() or posix.is_absolute(), code)
     parts = windows.parts if windows.is_absolute() else posix.parts
-    _require(".." not in parts, code)
+    if allow_parent_segments:
+        # Validate lexical bounds only. Do not resolve or rewrite this opaque
+        # metadata declaration: symlinks can change the meaning of parents.
+        depth = 0
+        for part in parts[1:]:
+            depth += -1 if part == ".." else 1
+            _require(depth >= 0, code)
+    else:
+        _require(".." not in parts, code)
     return text
 
 
@@ -117,7 +127,7 @@ def _path_key(value: str) -> str:
     return value.replace("\\", "/")
 
 
-def _target(value: object) -> dict:
+def _target(value: object, *, metadata_declaration: bool = False) -> dict:
     value = _object(value, "target_invalid")
     _keys(value, ("name", "kind", "crate_types", "src_path"), "target_missing_field")
     result = {
@@ -126,11 +136,16 @@ def _target(value: object) -> dict:
                               nonempty=True)),
         "crate_types": sorted(_texts(value["crate_types"], "target_invalid",
                                      maximum=16, nonempty=True)),
-        "src_path": _path(value["src_path"], "target_invalid"),
     }
     if "edition" in value:
         result["edition"] = _text(value["edition"], "target_invalid", maximum=16)
-    _target_category(result)
+    category = _target_category(result)
+    # Cargo may declare unbuilt examples outside a package directory. These
+    # paths are identities only, never file-read authority or emitted units.
+    # Observed targets and every manifest/output path retain the strict rule.
+    result["src_path"] = _path(
+        value["src_path"], "target_invalid",
+        allow_parent_segments=metadata_declaration and category == "development")
     return result
 
 
@@ -177,6 +192,7 @@ def _metadata(metadata: dict, root_package_name: str) -> tuple:
     _require(type(raw_packages) is list
              and 0 < len(raw_packages) <= MAX_PACKAGES, "package_count_invalid")
     packages = {}
+    development_target_count = 0
     for raw in raw_packages:
         raw = _object(raw, "package_invalid")
         _keys(raw, ("id", "name", "version", "source", "manifest_path",
@@ -189,9 +205,24 @@ def _metadata(metadata: dict, root_package_name: str) -> tuple:
         for value in (source, license_expression, license_file):
             if value is not None:
                 _text(value, "package_identity_invalid")
-        _require(type(raw["targets"]) is list and 0 < len(raw["targets"]) <= 128,
+        _require(type(raw["targets"]) is list
+                 and 0 < len(raw["targets"]) <= MAX_PACKAGE_TARGETS + MAX_DEVELOPMENT_TARGETS,
                  "package_targets_invalid")
-        targets = [_target(target) for target in raw["targets"]]
+        targets = []
+        package_target_count = 0
+        for raw_target in raw["targets"]:
+            target = _target(raw_target, metadata_declaration=True)
+            if _target_category(target) == "development":
+                # Bound declarations across the entire metadata document,
+                # including packages outside the observed runtime closure.
+                development_target_count += 1
+                _require(development_target_count <= MAX_DEVELOPMENT_TARGETS,
+                         "development_targets_budget_exceeded")
+            else:
+                package_target_count += 1
+                _require(package_target_count <= MAX_PACKAGE_TARGETS,
+                         "package_targets_invalid")
+            targets.append(target)
         target_keys = [_target_key(target) for target in targets]
         _require(len(target_keys) == len(set(target_keys)), "duplicate_target_identity")
         packages[package_id] = {
