@@ -85,6 +85,52 @@ class BlenderCommandInFlightBounds(unittest.TestCase):
                          "PROCESS_STREAM_UNBOUNDED")
         self.assertFalse(self.record["stream_custody"]["complete"])
 
+    def test_delayed_original_stream_sync_does_not_false_reject_completed_child(self):
+        # Both original pipes reached EOF, but flushing their exact retained
+        # bytes to disk can outlast the direct child's exit by >1 second.
+        # That is not an inherited live pipe writer or an UNKNOWN response.
+        import threading
+        import time
+        real_sync = evidence.os.fsync
+        def slow_sync(fd):
+            if threading.current_thread() is not threading.main_thread():
+                time.sleep(2)
+            return real_sync(fd)
+        with mock.patch.object(evidence.os, "fsync", side_effect=slow_sync):
+            result = self.run_inert(
+                "import sys;sys.stdout.buffer.write(b'{\\\"done\\\":true}\\n');"
+                "sys.stderr.buffer.write(b'original-slow-sync')",
+            )
+        self.assertEqual(result, {"done": True})
+        self.assertEqual(
+            self.prefix.with_suffix(".stderr").read_bytes(),
+            b"original-slow-sync")
+        self.assertTrue(self.record["stream_custody"]["complete"])
+        self.assertEqual(self.record["terminal"],
+                         {"status": "PROCESS_EXIT", "returncode": 0})
+
+    def test_inherited_original_writer_after_parent_exit_never_creates_ack(self):
+        # The direct child reports exit zero, but a self-terminating Python
+        # descendant holds its original pipes. No source status is allowed
+        # until both stdout/stderr have actual EOF and complete custody.
+        producer = (
+            "import subprocess,sys;"
+            "subprocess.Popen([sys.executable,'-I','-c',"
+            "'import time;time.sleep(3)'],"
+            "stdin=subprocess.DEVNULL,stdout=sys.stdout,stderr=sys.stderr);"
+            "sys.stdout.buffer.write(b'{\\\"ok\\\":true}\\n');"
+            "sys.stdout.buffer.flush()"
+        )
+        with self.assertRaisesRegex(
+                evidence.OriginalSceneUnverified,
+                "original_scene_command_stream_incomplete"):
+            self.run_inert(producer)
+        self.assertEqual(self.record["terminal"]["status"],
+                         "PROCESS_STREAM_INCOMPLETE")
+        self.assertFalse(self.record["stream_custody"]["complete"])
+        self.assertFalse(self.record["terminal"]["outcome_known"])
+        self.assertFalse(self.record["stream_custody"]["automatic_retry"])
+
     def test_nonzero_original_child_is_not_an_ack(self):
         with self.assertRaisesRegex(
                 evidence.OriginalSceneUnverified,
