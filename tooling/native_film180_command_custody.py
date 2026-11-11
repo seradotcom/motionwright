@@ -285,7 +285,11 @@ def summarize(rows, guards, payloads, selected_contract):
                 linked = linked and member["state"] == "INCLUDED" and type(terminal.get(size_key)) is int                     and terminal[size_key] == member["bytes"] and terminal.get(stream + "_sha256") == member["sha256"]
         code = terminal.get("exit_code") if terminal else None
         deadline = terminal.get("deadline_exceeded") if terminal else None
-        result = ("UNKNOWN" if terminal is None or type(code) is not int or deadline is not False
+        # A terminal's claimed exit code cannot promote a partial capture.
+        # Retain the original bytes but publish UNKNOWN until its intent and
+        # BOTH original streams are retained and cryptographically linked.
+        result = ("UNKNOWN" if not (all_present and linked)
+                  or type(code) is not int or deadline is not False
                   else "EXIT_ZERO_REPORTED" if code == 0 else "EXIT_NONZERO_REPORTED")
         commands.append(dict(label=label, phase=phase, parts=selected,
             capture_status="ORIGINALS_RETAINED" if all_present and linked else
