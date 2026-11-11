@@ -26,6 +26,7 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 PHASES = ("create_original", "edit_original", "verify_edited")
 LABELS = {phase: phase.replace("_", "-") for phase in PHASES}
 MAX_JSON = 64 * 1024 * 1024
+MAX_STDERR = 4 * 1024 * 1024
 MAX_EXE = 768 * 1024 * 1024
 MAX_PROC = 64 * 1024
 COMMANDS = frozenset("driver.blender." + tail for tail in (
@@ -88,6 +89,208 @@ def new_json(path: Path, value: object) -> dict:
     return new_bytes(path, canonical_bytes(value))
 
 
+def _exclusive_original_binary(path: Path):
+    """Create a private original atomically at 0600, without post-create chmod.
+
+    Windows reports different st_ctime_ns through fstat and lstat after a
+    chmod of an already-open original. Atomic initial mode preserves the
+    security intent while keeping strict source identity checks unchanged.
+    """
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_BINARY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags, 0o600)
+    try:
+        return os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_stable_command_stdout(path: Path, limit: int) -> bytes:
+    """Independently read the bounded original after both collectors closed.
+
+    On Windows Python 3.13, fstat.st_ctime_ns can report NTFS change time
+    while Path.lstat.st_ctime_ns reports creation time for the SAME inode.
+    Keep all same-handle fields, byte count, path identity and birth time;
+    only that cross-API ctime representation is not compared on Windows.
+    Linux retains the exact shared source-intake policy unchanged.
+    """
+    from mlt_official_runtime_intake import capture_regular
+    if os.name != "nt":
+        return capture_regular(path, limit)[0]
+    require(not path.is_symlink(), "original_scene_command_stdout_symlink")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        require(stat.S_ISREG(before.st_mode)
+                and 0 <= before.st_size <= limit,
+                "original_scene_command_stdout_not_bounded_regular")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, min(65536, limit + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            require(total <= limit, "original_scene_command_stdout_unbounded")
+            chunks.append(chunk)
+        after = os.fstat(fd)
+        path_stat = path.lstat()
+        require(not path.is_symlink(),
+                "original_scene_command_stdout_symlink")
+        keys = ("st_dev", "st_ino", "st_size", "st_mode",
+                "st_uid", "st_gid", "st_mtime_ns")
+        require(all(getattr(before, key) == getattr(after, key)
+                    == getattr(path_stat, key) for key in keys)
+                and before.st_ctime_ns == after.st_ctime_ns
+                and getattr(before, "st_birthtime_ns", None) is not None
+                and getattr(before, "st_birthtime_ns")
+                    == getattr(after, "st_birthtime_ns", None)
+                    == getattr(path_stat, "st_birthtime_ns", None)
+                and total == before.st_size,
+                "original_scene_command_stdout_source_changed")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _bounded_original_command(argv: list[str], *, env: dict[str, str],
+                              stdout, stderr, timeout: float,
+                              record: dict) -> subprocess.CompletedProcess:
+    """One original producer, two concurrently drained, finite private pipes.
+
+    Direct stdout/stderr file redirection with subprocess.run only checks
+    file budgets AFTER the command has already written arbitrary bytes. This
+    reader retains each exact observed prefix and refuses any stream overrun,
+    timeout or missing EOF; it never launches a replacement Native effect.
+    """
+    limits = (MAX_JSON, MAX_STDERR)
+    seen, written = [0, 0], [0, 0]
+    eof, overflow = [False, False], [False, False]
+    errors: list[str | None] = [None, None]
+    changed = threading.Event()
+    child = subprocess.Popen(
+        argv, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        shell=False, start_new_session=True,
+    )
+
+    def kill_original() -> None:
+        try:
+            if child.poll() is None:
+                if os.name == "posix":
+                    import signal
+                    os.killpg(child.pid, signal.SIGKILL)
+                else:
+                    child.kill()
+        except ProcessLookupError:
+            pass
+        except OSError:
+            try:
+                child.kill()
+            except OSError:
+                pass
+
+    def drain(index: int, pipe, output) -> None:
+        try:
+            while True:
+                chunk = os.read(pipe.fileno(), 65536)
+                if not chunk:
+                    eof[index] = True
+                    break
+                seen[index] += len(chunk)
+                room = max(0, limits[index] - written[index])
+                if room:
+                    prefix = chunk[:room]
+                    output.write(prefix)
+                    written[index] += len(prefix)
+                if seen[index] > limits[index]:
+                    overflow[index] = True
+                    changed.set()
+                    break
+        except (OSError, ValueError) as error:
+            errors[index] = type(error).__name__
+        finally:
+            try:
+                output.flush()
+                os.fsync(output.fileno())
+            except (OSError, ValueError) as error:
+                errors[index] = type(error).__name__
+            try:
+                pipe.close()
+            except (OSError, ValueError) as error:
+                errors[index] = type(error).__name__
+            changed.set()
+
+    readers = [
+        threading.Thread(target=drain, args=(0, child.stdout, stdout),
+                         daemon=True),
+        threading.Thread(target=drain, args=(1, child.stderr, stderr),
+                         daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout
+    child_exit_observed_at = None
+    timed_out = False
+    try:
+        while True:
+            if any(overflow) or any(errors):
+                break
+            exited = child.poll() is not None
+            if exited and all(not reader.is_alive() for reader in readers):
+                break
+            now = time.monotonic()
+            if exited and child_exit_observed_at is None:
+                child_exit_observed_at = now
+            if now >= deadline:
+                timed_out = not exited
+                break
+            # An exited direct child cannot prove its inherited pipes have
+            # closed. Wait briefly for EOF; never block until a global 15m
+            # deadline on a detached writer.
+            if exited and now - child_exit_observed_at >= 1.0:
+                break
+            changed.wait(min(0.05, deadline - now))
+            changed.clear()
+    finally:
+        if (timed_out or any(overflow) or any(errors)
+                or child.poll() is None):
+            kill_original()
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            kill_original()
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        for reader in readers:
+            reader.join(timeout=0.25)
+        complete = (all(eof) and not any(overflow) and not any(errors)
+                    and all(not reader.is_alive() for reader in readers))
+        record["stream_custody"] = {
+            "stdout": {"observed_bytes_at_least": seen[0],
+                       "retained_prefix_bytes": written[0],
+                       "limit_bytes": limits[0], "eof": eof[0],
+                       "over_cap": overflow[0], "capture_error": errors[0]},
+            "stderr": {"observed_bytes_at_least": seen[1],
+                       "retained_prefix_bytes": written[1],
+                       "limit_bytes": limits[1], "eof": eof[1],
+                       "over_cap": overflow[1], "capture_error": errors[1]},
+            "complete": complete, "automatic_retry": False,
+        }
+    if timed_out:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    if any(overflow):
+        raise OriginalSceneUnverified("original_scene_command_stream_unbounded")
+    require(complete and child.returncode is not None,
+            "original_scene_command_stream_incomplete")
+    return subprocess.CompletedProcess(argv, child.returncode)
+
+
 def captured_json(
     argv: list[str], *, env: dict[str, str], prefix: Path,
     record: dict, timeout: int = 900,
@@ -102,15 +305,22 @@ def captured_json(
     value = None
     secondary: list[str] = []
     try:
-        stdout = prefix.with_suffix(".stdout").open("xb")
-        os.chmod(prefix.with_suffix(".stdout"), 0o600)
-        stderr = prefix.with_suffix(".stderr").open("xb")
-        os.chmod(prefix.with_suffix(".stderr"), 0o600)
+        stdout = _exclusive_original_binary(prefix.with_suffix(".stdout"))
+        stderr = _exclusive_original_binary(prefix.with_suffix(".stderr"))
         try:
-            result = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL,
-                                    stdout=stdout, stderr=stderr, timeout=timeout, check=False)
+            result = _bounded_original_command(
+                argv, env=env, stdout=stdout, stderr=stderr,
+                timeout=timeout, record=record)
         except subprocess.TimeoutExpired:
             record["terminal"] = {"status": "PROCESS_TIMEOUT", "outcome_known": False}
+            raise
+        except OriginalSceneUnverified as error:
+            record["terminal"] = {
+                "status": ("PROCESS_STREAM_UNBOUNDED"
+                           if str(error) == "original_scene_command_stream_unbounded"
+                           else "PROCESS_STREAM_INCOMPLETE"),
+                "outcome_known": False,
+            }
             raise
         except OSError:
             record["terminal"] = {"status": "PROCESS_CALL_ERROR", "outcome_known": False}
@@ -119,8 +329,13 @@ def captured_json(
         if result.returncode != 0:
             raise OriginalSceneUnverified("original_scene_process_returned_nonzero")
         stdout.flush()
-        from mlt_official_runtime_intake import capture_regular
-        body, _binding = capture_regular(prefix.with_suffix(".stdout"), MAX_JSON)
+        os.fsync(stdout.fileno())
+        # The collector has observed stdout EOF; close this original writer
+        # BEFORE the independent stat/read/stat intake. Windows can report
+        # changing file metadata while the original writer handle is open.
+        stdout.close()
+        body = _read_stable_command_stdout(
+            prefix.with_suffix(".stdout"), MAX_JSON)
         value = unique_json(body)
         record["returned_json"] = value
     except BaseException as error:
@@ -128,7 +343,7 @@ def captured_json(
         record["error"] = {"type": type(error).__name__, "message": str(error)}
     finally:
         for name, stream in (("stdout", stdout), ("stderr", stderr)):
-            if stream is None:
+            if stream is None or stream.closed:
                 continue
             for operation, action in (
                 ("flush", stream.flush), ("sync", lambda stream=stream: os.fsync(stream.fileno())),

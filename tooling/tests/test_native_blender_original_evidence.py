@@ -367,7 +367,8 @@ class CapturedCommandTests(unittest.TestCase):
         def execute(_argv, **kw):
             kw["stdout"].write(json.dumps(value).encode())
             return subprocess.CompletedProcess([], 0)
-        with mock.patch.object(evidence.subprocess, "run", side_effect=execute) as run, \
+        with mock.patch.object(evidence, "_bounded_original_command",
+                               side_effect=execute) as run, \
                 mock.patch.object(evidence, "new_json", side_effect=OSError("record failure")):
             with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "custody"):
                 evidence.captured_json(["synthetic-no-process"], env={}, prefix=self.prefix, record=self.record)
@@ -380,7 +381,8 @@ class CapturedCommandTests(unittest.TestCase):
         def execute(_argv, **kw):
             kw["stderr"].write(raw)
             return subprocess.CompletedProcess([], 7)
-        with mock.patch.object(evidence.subprocess, "run", side_effect=execute) as run:
+        with mock.patch.object(evidence, "_bounded_original_command",
+                               side_effect=execute) as run:
             with self.assertRaises(evidence.OriginalSceneUnverified):
                 evidence.captured_json(["synthetic-no-process"], env={}, prefix=self.prefix, record=self.record)
         run.assert_called_once()
@@ -390,7 +392,8 @@ class CapturedCommandTests(unittest.TestCase):
 
     def test_timeout_error_identity_survives_secondary_custody_failure(self):
         original = subprocess.TimeoutExpired(["synthetic-no-process"], 1)
-        with mock.patch.object(evidence.subprocess, "run", side_effect=original) as run, \
+        with mock.patch.object(evidence, "_bounded_original_command",
+                               side_effect=original) as run, \
                 mock.patch.object(evidence, "new_json", side_effect=OSError("secondary")):
             with self.assertRaises(subprocess.TimeoutExpired) as raised:
                 evidence.captured_json(["synthetic-no-process"], env={}, prefix=self.prefix, record=self.record)
@@ -400,14 +403,14 @@ class CapturedCommandTests(unittest.TestCase):
 
     def test_reserved_invocation_cannot_be_replayed(self):
         self.record["invocation_reserved"] = True
-        with mock.patch.object(evidence.subprocess, "run") as run:
+        with mock.patch.object(evidence, "_bounded_original_command") as run:
             with self.assertRaisesRegex(evidence.OriginalSceneUnverified, "already_attempted"):
                 evidence.captured_json(["synthetic-no-process"], env={}, prefix=self.prefix, record=self.record)
         run.assert_not_called()
 
     def test_existing_capture_destination_prevents_any_process(self):
         self.prefix.with_suffix(".stdout").write_bytes(b"retained-original")
-        with mock.patch.object(evidence.subprocess, "run") as run:
+        with mock.patch.object(evidence, "_bounded_original_command") as run:
             with self.assertRaises(FileExistsError):
                 evidence.captured_json(["synthetic-no-process"], env={}, prefix=self.prefix, record=self.record)
         run.assert_not_called()
