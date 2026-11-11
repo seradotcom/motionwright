@@ -187,6 +187,50 @@ class Fixture:
                 "license": "MIT OR Apache-2.0", "license_file": None,
                 "roles": ["host-proc-macro"]}
 
+    def git_workspace_member(self, *, explicit_workspace=False,
+                             nested_workspace=False, wrong_workspace=False,
+                             shared_license_file=True, root_notices=True) -> dict:
+        """One tracked Git checkout with a nested Cargo member and root license."""
+        checkout = self.cargo / "git" / "checkouts" / "fixture-origin" / "fixture-checkout"
+        member = checkout / "crates" / "member"
+        (member / "src").mkdir(parents=True)
+        self.git(checkout, "init", "--quiet")
+        self.git(checkout, "config", "core.autocrlf", "false")
+        (checkout / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/member"]\n'
+            '[workspace.package]\nversion = "1.2.3"\n'
+            'license = "MIT OR Apache-2.0"\n'
+            + ('license-file = "LICENSE"\n' if shared_license_file else ''),
+            encoding="utf-8")
+        if root_notices:
+            for name in (["LICENSE"] if shared_license_file else
+                         ["LICENSE-MIT", "LICENSE-APACHE", "NOTICE"]):
+                (checkout / name).write_bytes(NOTICE if shared_license_file else
+                                                NOTICE + name.encode())
+        if nested_workspace:
+            (checkout / "crates" / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["member"]\n', encoding="utf-8")
+        manifest = ('[package]\nname = "git_fixture_member"\n'
+                    + ('workspace = "../../.."\n' if wrong_workspace else
+                       'workspace = "../.."\n' if explicit_workspace else '')
+                    + 'version.workspace = true\nlicense.workspace = true\n'
+                    + ('license-file.workspace = true\n' if shared_license_file else ''))
+        (member / "Cargo.toml").write_text(manifest, encoding="utf-8")
+        (member / "src" / "lib.rs").write_bytes(SOURCE)
+        self.git(checkout, "add", "--all")
+        self.git(checkout, "commit", "--quiet", "-m", "root license at exact revision")
+        revision = self.git(checkout, "rev-parse", "HEAD").decode().strip()
+        source = f"git+https://example.invalid/fixture?rev={revision}#{revision}"
+        self.packages.append({"name": "git_fixture_member",
+                              "version": "1.2.3", "source": source})
+        self.bind_lock()
+        return {"id": f"{source}#git_fixture_member@1.2.3",
+                "name": "git_fixture_member", "version": "1.2.3",
+                "source": source, "manifest_path": str(member / "Cargo.toml"),
+                "license": "MIT OR Apache-2.0",
+                "license_file": str(checkout / "LICENSE") if shared_license_file else None,
+                "roles": ["target-runtime"]}
+
     def collect(self, components: list[dict], **overrides) -> dict:
         options = {"workspace_root": self.workspace, "cargo_home": self.cargo,
                    "lock_bytes": self.lock_bytes}
@@ -559,6 +603,58 @@ class CargoLicenseSourcesTests(unittest.TestCase):
         component = self.fixture.workspace_member()
         (Path(component["manifest_path"]).parent / "extra.rs").write_bytes(b"untracked\n")
         self.assert_blocked(self.fixture.collect([component]), "git_worktree_members_mismatch")
+
+    def test_git_workspace_root_license_is_exact_source_authenticated(self):
+        component = self.fixture.git_workspace_member()
+        result = self.fixture.collect([component])
+        self.assert_verified(result)
+        record = result["components"][0]
+        self.assertEqual(record["license_expression"], "MIT OR Apache-2.0")
+        self.assertEqual(len(record["notices"]), 1)
+        self.assertTrue(record["notices"][0]["source_path"].endswith("/LICENSE"))
+        self.assertEqual(result["texts"][sha(NOTICE)], NOTICE)
+        files = record["source_authentication"]["files"]
+        self.assertTrue(any(row["source_path"].endswith(
+            "/fixture-checkout/Cargo.toml") for row in files))
+        self.assertEqual(record["source_authentication"]["kind"], "git_exact_revision")
+
+    def test_explicit_git_workspace_root_is_verified_not_outer_workspace(self):
+        component = self.fixture.git_workspace_member(explicit_workspace=True)
+        self.assert_verified(self.fixture.collect([component]))
+
+    def test_git_workspace_parent_outside_authenticated_root_refuses(self):
+        component = self.fixture.git_workspace_member(wrong_workspace=True)
+        self.assert_blocked(self.fixture.collect([component]),
+                            "manifest_inheritance_unverified")
+
+    def test_git_workspace_nearer_root_is_not_silently_skipped(self):
+        component = self.fixture.git_workspace_member(nested_workspace=True)
+        self.assert_blocked(self.fixture.collect([component]),
+                            "nested_workspace_inheritance_unverified")
+
+    def test_changed_git_workspace_license_cannot_inherit_original_revision(self):
+        component = self.fixture.git_workspace_member()
+        checkout = Path(component["manifest_path"]).parents[2]
+        (checkout / "LICENSE").write_bytes(b"changed without Git commit")
+        self.assert_blocked(self.fixture.collect([component]), "git_worktree_bytes_mismatch")
+
+    def test_git_workspace_license_root_originals_without_explicit_license_file(self):
+        component = self.fixture.git_workspace_member(shared_license_file=False)
+        result = self.fixture.collect([component])
+        self.assert_verified(result)
+        sources = {row["source_path"].split("/")[-1]
+                   for row in result["components"][0]["notices"]}
+        self.assertEqual(sources, {"LICENSE-MIT", "LICENSE-APACHE", "NOTICE"})
+        self.assertEqual(set(result["texts"]), {sha(NOTICE + name.encode())
+                         for name in sources})
+        for name in sources:
+            self.assertEqual(result["texts"][sha(NOTICE + name.encode())],
+                             NOTICE + name.encode())
+
+    def test_git_workspace_without_original_root_text_still_refuses(self):
+        component = self.fixture.git_workspace_member(
+            shared_license_file=False, root_notices=False)
+        self.assert_blocked(self.fixture.collect([component]), "license_text_missing")
 
     def test_git_dependency_requires_exact_full_locked_revision_and_clean_raw_tree(self):
         component = self.fixture.git_package()

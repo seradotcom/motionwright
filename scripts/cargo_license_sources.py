@@ -898,38 +898,60 @@ def _component_manifest(component: dict[str, Any], capture: _Capture,
         nonlocal inherited
         if inherited is not None:
             return inherited
-        if capture.root is not workspace or capture.repo is not workspace_repo:
-            _fail("manifest_inheritance_unverified", "Workspace inheritance outside the admitted workspace is unverified.")
+        # Cargo Git dependencies can inherit from their OWN tracked checkout
+        # root. The whole exact-revision checkout has already been authenticated
+        # by _git_capture; do not borrow Motionwright's unrelated workspace.
+        if capture.root is workspace and capture.repo is workspace_repo:
+            root_prefix = ()
+            member_root = workspace
+            authenticated_repo = workspace_repo
+        elif (capture.repo is not None
+              and capture.root.kind == "cargo_home"
+              and capture.authentication.get("kind") == "git_exact_revision"
+              and capture.authentication.get("git_head") == capture.repo.head
+              and capture.package[:len(capture.repo.prefix)] == capture.repo.prefix):
+            root_prefix = capture.repo.prefix
+            member_root = capture.root
+            authenticated_repo = capture.repo
+        else:
+            _fail("manifest_inheritance_unverified",
+                  "Workspace inheritance outside an authenticated source root is unverified.")
+        root_manifest = root_prefix + ("Cargo.toml",)
         explicit_workspace = package.get("workspace")
         if explicit_workspace is not None:
             if not isinstance(explicit_workspace, str):
                 _fail("manifest_inheritance_malformed", "The package workspace reference is malformed.")
-            # Normalize a directory reference without resolving an inner link.
-            referenced = _join_license(capture.package, explicit_workspace.rstrip("/") + "/Cargo.toml",
-                                       allow_parent=True)
-            if referenced != ("Cargo.toml",):
+            # Normalize lexical parents within the already verified checkout.
+            # Never resolve another workspace through an alias or symlink.
+            referenced = _join_license(
+                capture.package, explicit_workspace.rstrip("/") + "/Cargo.toml",
+                allow_parent=True)
+            if referenced != root_manifest:
                 _fail("manifest_inheritance_unverified", "The package selects a different workspace root.")
         else:
-            # Never substitute the caller's outer workspace for a nearer one.
-            for depth in range(len(capture.package) - 1, 0, -1):
+            # A nearer tracked workspace cannot be silently inherited from
+            # the caller's unrelated root; it needs its own explicit protocol.
+            for depth in range(len(capture.package) - 1, len(root_prefix), -1):
                 candidate = capture.package[:depth] + ("Cargo.toml",)
                 try:
-                    workspace.checked(candidate)
+                    member_root.checked(candidate)
                 except _Problem as problem:
                     if problem.code == "source_file_missing":
                         continue
                     raise
-                closer = _toml(capture.read(candidate, MAX_MANIFEST_BYTES), "workspace_manifest_malformed")
+                closer = _toml(capture.read(candidate, MAX_MANIFEST_BYTES),
+                               "workspace_manifest_malformed")
                 if isinstance(closer.get("workspace"), dict):
-                    _fail("nested_workspace_inheritance_unverified", "A nearer workspace requires its own inheritance protocol.")
-        document = _toml(workspace_repo.read_tracked(("Cargo.toml",), MAX_MANIFEST_BYTES,
-                                                    capture.budget),
-                         "workspace_manifest_malformed")
+                    _fail("nested_workspace_inheritance_unverified",
+                          "A nearer workspace requires its own inheritance protocol.")
+        document = _toml(authenticated_repo.read_tracked(
+            ("Cargo.toml",), MAX_MANIFEST_BYTES, capture.budget),
+            "workspace_manifest_malformed")
         workspace_table = document.get("workspace")
         inherited = workspace_table.get("package") if isinstance(workspace_table, dict) else None
         if not isinstance(inherited, dict):
             _fail("manifest_inheritance_unverified", "The authenticated workspace package table is missing.")
-        capture.read(("Cargo.toml",), MAX_MANIFEST_BYTES)
+        capture.read(root_manifest, MAX_MANIFEST_BYTES)
         return inherited
 
     def field_value(name: str) -> tuple[Any, bool]:
@@ -953,9 +975,10 @@ def _component_manifest(component: dict[str, Any], capture: _Capture,
     license_file, inherited_file = field_value("license-file")
     explicit: tuple[str, ...] | None = None
     if license_file is not None:
-        base = () if inherited_file else capture.package
-        # Only authenticated workspace inheritance permits a member metadata
-        # path containing parents. Registry declarations never permit traversal.
+        base = capture.repo.prefix if inherited_file and capture.repo is not None else capture.package
+        # Only an authenticated workspace (including the exact pinned Git
+        # checkout) can supply a root-relative license-file declaration.
+        # Registry package paths never acquire parent traversal authority.
         explicit = _join_license(base, license_file, allow_parent=inherited_file)
         metadata = component.get("license_file")
         if not isinstance(metadata, (str, Path)):
@@ -1050,6 +1073,24 @@ def _collect_one(component: dict[str, Any], workspace: _Root, cargo: _Root,
         expression, explicit = _component_manifest(component, capture, workspace, workspace_repo)
         result["license_expression"] = expression
         paths = {path for path in capture.files if _is_notice(path, capture.package)}
+        if (source is not None and source.startswith("git+")
+                and capture.repo is not None
+                and capture.authentication.get("kind") == "git_exact_revision"):
+            member_manifest = _toml(
+                capture.read(capture.package + ("Cargo.toml",), MAX_MANIFEST_BYTES),
+                "package_manifest_malformed")
+            member = member_manifest.get("package")
+            if isinstance(member, dict) and member.get("license") == {"workspace": True}:
+                # A source-authenticated workspace license may use repository
+                # root LICENSE-MIT/LICENSE-APACHE/NOTICE without declaring
+                # license-file.workspace. Include original top-level notices
+                # only, never synthesize a missing text or choose an SPDX
+                # alternative on behalf of the license holder.
+                git_root = capture.repo.prefix
+                paths.update(file for file in capture.files
+                             if file[:len(git_root)] == git_root
+                             and len(file) == len(git_root) + 1
+                             and _NOTICE.fullmatch(file[-1]))
         if explicit is not None:
             paths.add(explicit)
         if not paths:
