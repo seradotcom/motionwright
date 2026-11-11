@@ -338,8 +338,14 @@ def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
     for thread in readers:
         thread.start()
     try:
-        while process.poll() is None:
+        while True:
             if any(exceeded) or read_errors:
+                break
+            # The immediate process may have exited while an inherited pipe
+            # writer is still live in its cohort. Neither its exit code nor
+            # poll() establishes stdout/stderr EOF or complete custody.
+            if process.poll() is not None and not any(
+                    thread.is_alive() for thread in readers):
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -355,15 +361,19 @@ def _bounded_ffprobe(argv, *, timeout: int, over_limit: str) -> bytes:
             except ProcessLookupError:
                 pass
         try:
-            process.wait(timeout=5)
+            process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             timed_out = True
             process.kill()
             process.wait(timeout=2)
+        # The reader is the sole closer of its BufferedReader. close() from
+        # this thread can block on the reader's internal lock while a spawned
+        # descendant holds the original pipe open; it defeated the deadline.
+        # Never wait on that lock or present partial bytes as a complete read.
+        # An unfinished daemon reader retains its exact bound until real EOF.
+        cleanup_deadline = time.monotonic() + 0.5
         for thread in readers:
-            thread.join(timeout=2)
-        for pipe in (process.stdout, process.stderr):
-            pipe.close()
+            thread.join(timeout=max(0, cleanup_deadline - time.monotonic()))
 
     require(not any(thread.is_alive() for thread in readers)
             and not read_errors, "original_ffprobe_pipe_uncertain")
