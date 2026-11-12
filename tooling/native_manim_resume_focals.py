@@ -138,13 +138,14 @@ def parse_original_tests(stdout):
     return parse_named_rust_tests(stdout, SELECTED, "resume_eight_actual_recovery_tests_required")
 
 
-def check_source_gate(current, root=None):
+def check_source_gate(current, root=None, *, reader=None):
     from native_manim_resume_runtime import ORIGINAL_INVENTORY_SHA, ORIGINAL_PROJECTION_SHA
     root = folder() if root is None else Path(root)
-    raw = original(root / "source-gate.json", 128 * 1024)
+    read_original = original if reader is None else reader
+    raw = read_original(root / "source-gate.json", 128 * 1024)
     value = json.loads(raw)
-    stdout = original(root / "source-gate.stdout.log", 4 * 1024 * 1024)
-    stderr = original(root / "source-gate.stderr.log", 4 * 1024 * 1024)
+    stdout = read_original(root / "source-gate.stdout.log", 4 * 1024 * 1024)
+    stderr = read_original(root / "source-gate.stderr.log", 4 * 1024 * 1024)
     counts = parse_original_tests(stdout)
     source, binary = value.get("source_before"), value.get("compiled_binary_before")
     require(type(source) is dict and type(source.get("files")) is int and 0 < source["files"] <= 8192

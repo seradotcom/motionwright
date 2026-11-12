@@ -275,7 +275,7 @@ def prepare(args):
             require(total <= 4 * 1024 * 1024, "resume_host_public_artifact_expansion_budget")
             with (public / row.filename).open("xb") as stream:
                 stream.write(raw)
-    gate, gate_sha = check_source_gate(current, public)
+    gate, gate_sha = check_source_gate(current, public, reader=bounded)
     if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
         from native_manim_recovery_gate import validate_artifact
         retained = gate["runtime"]["retained_artifact"]
@@ -356,7 +356,7 @@ def publish(args):
     current = plan["context"]
     engine.validate_context(current)
     public = root / "public-recipient-originals"
-    gate, gate_sha = check_source_gate(current, public)
+    gate, gate_sha = check_source_gate(current, public, reader=bounded)
     if transfer.selected_scenario() == transfer.RECOVERY_SCENARIO:
         require(plan.get("runtime_binding") == gate["runtime"], "recovery_runtime_reviewed_binding_changed")
     record = engine.strict(bounded(public / "recipient.json", 16384))

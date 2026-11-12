@@ -57,7 +57,7 @@ def absolute(value):
             and len(value) <= 4096)
 
 
-def sdk_relation(current):
+def sdk_relation(current, *, reader=None):
     """Pin an explicit new wheel-only reuse context without rewriting ORIGIN.
 
     Original SDK custody is historical. Reuse on the reviewed current SDK
@@ -71,7 +71,8 @@ def sdk_relation(current):
                 "current_sdk_sha": sdk, "source_lock_sha256": None,
                 "native_effects_attested": False}
     need(sdk == CURRENT_SDK, "runtime_reuse_unreviewed_sdk")
-    original = SOURCE_LOCK_PATH.read_bytes()
+    original = (SOURCE_LOCK_PATH.read_bytes() if reader is None else
+                frozen.metadata_original(SOURCE_LOCK_PATH, frozen.MAX_METADATA, reader=reader)[1])
     need(0 < len(original) <= frozen.MAX_METADATA
          and hashlib.sha256(original).hexdigest() == CURRENT_SOURCE_LOCK_SHA,
          "runtime_reuse_source_lock_changed")
@@ -90,14 +91,14 @@ def sdk_relation(current):
             "native_effects_attested": False}
 
 
-def context(current, *, hosted=False):
+def context(current, *, hosted=False, reader=None):
     need(type(current) is dict and set(current) == set(ORIGIN)
          and all(type(current[key]) is str and re.fullmatch(r"[0-9a-f]{40}", current[key])
                  for key in ("source_sha", "semwright_sha"))
          and type(current["run_id"]) is str and re.fullmatch(r"[1-9][0-9]*", current["run_id"])
          and current["run_id"] != ORIGIN["run_id"] and current["run_attempt"] == "1",
          "runtime_reuse_new_explicit_context")
-    relation = sdk_relation(current)
+    relation = sdk_relation(current, reader=reader)
     if hosted:
         # A historical acc0 request cannot describe this current 0b job.
         # GitHub source identity is checked independently from its SDK pin.
@@ -109,10 +110,10 @@ def context(current, *, hosted=False):
     return current
 
 
-def origin_metadata():
+def origin_metadata(*, reader=None):
     from native_manim_recovery_gate import validate_artifact
-    receipt_identity, receipt_raw = frozen.regular(RECEIPT_PATH, frozen.MAX_METADATA, collect=True)
-    artifact_identity, artifact_raw = frozen.regular(ARTIFACT_PATH, frozen.MAX_METADATA, collect=True)
+    receipt_identity, receipt_raw = frozen.metadata_original(RECEIPT_PATH, frozen.MAX_METADATA, reader=reader)
+    artifact_identity, artifact_raw = frozen.metadata_original(ARTIFACT_PATH, frozen.MAX_METADATA, reader=reader)
     need(receipt_identity["sha256"] == ORIGIN_RECEIPT_SHA
          and artifact_identity["sha256"] == ORIGIN_ARTIFACT_SHA, "runtime_reuse_reviewed_origin_changed")
     receipt = frozen.strict(receipt_raw)
@@ -203,17 +204,17 @@ def validate_command(row, expected_argv, seconds):
              and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]), "runtime_reuse_current_command_stream")
 
 
-def validate_reuse(receipt_path, manifest_path, wheel_lock_path, reuse_path, current):
+def validate_reuse(receipt_path, manifest_path, wheel_lock_path, reuse_path, current, *, reader=None):
     """Validate origin and reuse metadata without pretending to read the TAR."""
-    context(current)
-    origin, artifact = origin_metadata()
-    binding = frozen.validate_receipt(receipt_path, manifest_path, wheel_lock_path)
+    context(current, reader=reader)
+    origin, artifact = origin_metadata(reader=reader)
+    binding = frozen.validate_receipt(receipt_path, manifest_path, wheel_lock_path, reader=reader)
     need(binding["receipt_sha256"] == ORIGIN_RECEIPT_SHA
-         and frozen.object_file(receipt_path) == origin, "runtime_reuse_original_receipt_required")
-    value = frozen.object_file(reuse_path)
+         and frozen.object_file(receipt_path, reader=reader) == origin, "runtime_reuse_original_receipt_required")
+    value = frozen.object_file(reuse_path, reader=reader)
     need(value.get("schema") == SCHEMA and value.get("status") == STATUS
          and value.get("context") == current and value.get("origin_context") == ORIGIN
-         and value.get("sdk_relation") == sdk_relation(current)
+         and value.get("sdk_relation") == sdk_relation(current, reader=reader)
          and value.get("origin_receipt_sha256") == ORIGIN_RECEIPT_SHA
          and value.get("origin_artifact") == artifact and value.get("archive") == origin["archive"]
          and value.get("input_lock_sha256") == frozen.LOCK_SHA
@@ -278,8 +279,8 @@ def validate_reuse(receipt_path, manifest_path, wheel_lock_path, reuse_path, cur
     stdout = download["streams"]["stdout"]
     need(stdout["written_bytes"] == artifact["artifact_zip_bytes"]
          and stdout["sha256"] == artifact["artifact_zip_sha256"], "runtime_reuse_downloaded_original_zip")
-    binding["reuse"] = {"receipt_sha256": frozen.regular(reuse_path, frozen.MAX_METADATA)["sha256"],
-        "context": current, "origin_context": ORIGIN, "sdk_relation": sdk_relation(current),
+    binding["reuse"] = {"receipt_sha256": frozen.metadata_original(reuse_path, frozen.MAX_METADATA, reader=reader)[0]["sha256"],
+        "context": current, "origin_context": ORIGIN, "sdk_relation": sdk_relation(current, reader=reader),
         "origin_receipt_sha256": ORIGIN_RECEIPT_SHA,
         "origin_artifact": artifact, "source_build_invocations": 0,
         "exact_installed_files_reused": True, "exact_imported_native_files_reused": True}
