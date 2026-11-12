@@ -201,5 +201,42 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                 self.assertLessEqual(set(paths), allowed)
 
 
+    def test_installed_inventory_has_own_bound_and_blocks_cold_relaunch(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        windows = workflow.split("\n  windows:\n", 1)[1].split(
+            "\n  windows-update:\n", 1)[0]
+        install_name = "      - name: Silent current-user NSIS install and inspect installed Windows executable\n"
+        verify_name = "      - name: Verify isolated installed Windows application inventory\n"
+        cold_name = "      - name: Cold launch and reopen the real NSIS-installed application\n"
+        self.assertEqual(windows.count(install_name), 1)
+        self.assertEqual(windows.count(verify_name), 1)
+        self.assertEqual(windows.count(cold_name), 1)
+        install = windows.split(install_name, 1)[1].split(verify_name, 1)[0]
+        verification = windows.split(verify_name, 1)[1].split(cold_name, 1)[0]
+        relaunch = windows.split(cold_name, 1)[1].split(
+            "      - name: Preserve sanitized Windows first-use failure evidence", 1)[0]
+        self.assertIn("timeout-minutes: 6", install)
+        self.assertIn("Start-Process -FilePath $installer", install)
+        self.assertIn("candidate_smoke.py", install)
+        self.assertNotIn("ci_windows_dependency_capture.py verify", install)
+        self.assertIn(
+            "if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+            verification,
+        )
+        self.assertIn("timeout-minutes: 30", verification)
+        self.assertIn("$dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'", verification)
+        command = ('python -B tooling/ci_windows_dependency_capture.py verify '
+                   '--installed-root "$dest" --expected-inventory-sha256 '
+                   '"$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"')
+        self.assertEqual(windows.count(command), 1)
+        self.assertIn(command, verification)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }", verification)
+        self.assertIn("timeout-minutes: 5", relaunch)
+        self.assertIn("python tooling/windows_cold_start.py", relaunch)
+        self.assertLess(windows.index(verify_name), windows.index(cold_name))
+        self.assertNotIn("continue-on-error", verification)
+        self.assertNotIn("|| true", verification)
+
+
 if __name__ == "__main__":
     unittest.main()
