@@ -232,7 +232,8 @@ jobs:
           test "$RUNNER_OS" = Linux
           test "$(uname -m)" = x86_64
           test "$GITHUB_SHA" = "$EXPECTED_GRAPH_SOURCE"
-          python3 -B - <<'PY'
+          test -x "$RUNNER_TEMP/graph-fast-custody-venv/bin/python"
+          "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B - <<'PY'
           import hashlib
           import json
           import os

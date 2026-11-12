@@ -48,6 +48,7 @@ class GraphSfntPangoSourceRoutingTests(unittest.TestCase):
             "timeout-minutes: 6",
             'test "$RUNNER_OS" = Linux',
             'test "$GITHUB_SHA" = "$EXPECTED_GRAPH_SOURCE"',
+            'test -x "$RUNNER_TEMP/graph-fast-custody-venv/bin/python"',
             "NativeFontProvenanceTests.test_real_native_files_bind_distinct_hashes_to_all_retained_sources",
             "NativeSfntFaceTests.test_real_bundled_sfnt_faces_have_exact_ascii_coverage_without_fallback",
             "tooling.tests.test_native_manim_graph_manifest",
@@ -68,7 +69,7 @@ class GraphSfntPangoSourceRoutingTests(unittest.TestCase):
                 self.assertIn(expected, step)
         for forbidden in ("continue-on-error", "cargo build", "render.start", "NativeOwner.acquire"):
             self.assertNotIn(forbidden, step)
-        source = step.split("          python3 -B - <<'PY'\n", 1)[1].split("          PY\n", 1)[0]
+        source = step.split("          \"$RUNNER_TEMP/graph-fast-custody-venv/bin/python\" -B - <<'PY'\n", 1)[1].split("          PY\n", 1)[0]
         script = "\n".join(line[10:] for line in source.splitlines())
         ast.parse(script, filename="graph-fast-real-pango-original.py")
 
