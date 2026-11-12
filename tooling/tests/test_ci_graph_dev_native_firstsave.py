@@ -782,6 +782,55 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertTrue(terminal["stdout_eof_observed"])
         self.assertEqual(terminal["trailing_stdout"]["bytes"], len(trailing.read_bytes()))
 
+    def test_failed_original_trailing_stdout_retention_keeps_prior_native_error(self):
+        # A post-exit unexpected stdout receipt cannot replace the original
+        # unknown Native failure just because private disk custody failed.
+        session, _ = self.inert_terminal_session()
+        original = save.FirstSaveFailure("ORIGINAL_GRAPH_SAVE_UNKNOWN", unknown=True)
+        extra = {"raw": b"unclassified-original-stdout\\n", "eof": True,
+                 "over_cap": False, "reader_finished": True,
+                 "deadline_exceeded": False, "read_error": False}
+        first_write = save.private_bytes
+        def reject_trailing(path, body):
+            if path.name.endswith(".trailing-stdout.original"):
+                raise OSError("private original disk not writable")
+            return first_write(path, body)
+        with patch.object(save, "private_bytes", side_effect=reject_trailing), \
+                patch.object(save, "read_terminal_stdout", return_value=extra):
+            self.assertFalse(session.__exit__(type(original), original, None))
+        self.assertEqual(original.code, "ORIGINAL_GRAPH_SAVE_UNKNOWN")
+        self.assertTrue(original.unknown)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["trailing_stdout_capture_failed"])
+        self.assertIsNone(terminal["trailing_stdout"])
+        self.assertFalse(terminal["original_reply_complete"])
+        self.assertTrue(terminal["stdout_eof_observed"])
+        self.assertFalse(
+            (self.private / "graph-native-session.trailing-stdout.original").exists())
+
+    def test_failed_trailing_retention_without_first_error_is_closed_unknown(self):
+        session, _ = self.inert_terminal_session()
+        extra = {"raw": b"late-native-reply\\n", "eof": True,
+                 "over_cap": False, "reader_finished": True,
+                 "deadline_exceeded": False, "read_error": False}
+        first_write = save.private_bytes
+        def reject_trailing(path, body):
+            if path.name.endswith(".trailing-stdout.original"):
+                raise OSError("private original disk not writable")
+            return first_write(path, body)
+        with patch.object(save, "private_bytes", side_effect=reject_trailing), \
+                patch.object(save, "read_terminal_stdout", return_value=extra):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN") as failure:
+                session.__exit__(None, None, None)
+        self.assertTrue(failure.exception.unknown)
+        terminal = json.loads(
+            (self.private / "graph-native-session.terminal.original.json").read_text())
+        self.assertTrue(terminal["trailing_stdout_capture_failed"])
+        self.assertFalse(terminal["original_reply_complete"])
+
     def test_inherited_stdout_writer_cannot_fake_complete_terminal(self):
         session, output = self.inert_terminal_session()
         inherited = {"raw": b"", "eof": False, "over_cap": False,

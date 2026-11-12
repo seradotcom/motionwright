@@ -702,10 +702,17 @@ class NativeSession:
                            or terminal_stdout["read_error"]
                            or not terminal_stdout["reader_finished"])
         trailing_identity = None
+        trailing_capture_failed = False
         if trailing:
-            trailing_identity = private_bytes(
-                self.private / (self.label + ".trailing-stdout.original"),
-                bytes(trailing))
+            try:
+                trailing_identity = private_bytes(
+                    self.private / (self.label + ".trailing-stdout.original"),
+                    bytes(trailing))
+            except (OSError, ValueError, FirstSaveFailure):
+                # A secondary private storage error cannot replace the first
+                # original Native error. Record that actual trailing bytes
+                # were observed but not durably retained; never infer an ACK.
+                trailing_capture_failed = True
         # A timed-out or unterminated JSONL reply has already left real bytes
         # in pending. Their absence from the terminal record would discard the
         # only observed response after an uncertain Native mutation. Retain
@@ -753,9 +760,11 @@ class NativeSession:
                           and not close_timeout_capture_failed
                           and not self.unknown_request_latched
                           and not stdin_close_failed and not self.pending
-                          and not pending_capture_failed and not trailing
+                          and not pending_capture_failed
+                          and not trailing_capture_failed and not trailing
                           and trailing_eof and not trailing_failed,
                       "trailing_stdout": trailing_identity,
+                      "trailing_stdout_capture_failed": trailing_capture_failed,
                       "trailing_stdout_over_cap": trailing_over_cap,
                       "trailing_stdout_reader_error": terminal_stdout["read_error"],
                       "trailing_stdout_deadline_exceeded":
@@ -771,7 +780,8 @@ class NativeSession:
                     and not self.unknown_request_latched
                     and not stdin_close_failed and not pending_capture_failed
                     and size <= MAX_ORIGINAL and code == 0
-                    and not self.pending and not trailing and trailing_eof
+                    and not self.pending and not trailing_capture_failed
+                    and not trailing and trailing_eof
                     and not trailing_over_cap and not trailing_failed,
                     "GN1_FIRST_SAVE_SESSION_CLOSE_UNCERTAIN", unknown=True)
         return False
