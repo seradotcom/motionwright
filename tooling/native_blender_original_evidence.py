@@ -260,8 +260,12 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
             changed.wait(min(0.05, deadline - now))
             changed.clear()
     finally:
-        if (timed_out or any(overflow) or any(errors)
-                or child.poll() is None or not all(eof)):
+        # Capture the need for intervention BEFORE group cleanup. Killing an
+        # inherited pipe writer may produce EOF, but that post-kill EOF does
+        # not authenticate the original producer's natural completion.
+        cleanup_required = (timed_out or any(overflow) or any(errors)
+                            or child.poll() is None or not all(eof))
+        if cleanup_required:
             kill_original()
         try:
             child.wait(timeout=2)
@@ -274,7 +278,8 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
                 pass
         for reader in readers:
             reader.join(timeout=0.25)
-        complete = (all(eof) and not any(overflow) and not any(errors)
+        complete = (not cleanup_required and all(eof)
+                    and not any(overflow) and not any(errors)
                     and all(not reader.is_alive() for reader in readers))
         record["stream_custody"] = {
             "stdout": {"observed_bytes_at_least": seen[0],
