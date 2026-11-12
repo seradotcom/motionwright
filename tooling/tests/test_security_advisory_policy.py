@@ -8,7 +8,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
-from security_advisory_policy import verify_ttf_parser_review
+from security_advisory_policy import verify_ttf_parser_review, verify_rustix_0486_patched
 POLICY = ROOT / "tooling" / "security_advisory_policy.py"
 
 
@@ -63,6 +63,38 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
             )
             evidence = json.loads(output.read_text()) if output.exists() else None
             return process, evidence
+
+    def test_rustix_0486_is_patched_without_a_new_warning_waiver(self):
+        from copy import deepcopy
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        selected = [item for item in lock["package"] if item["name"] == "rustix"]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["version"], "1.1.6")
+        self.assertEqual(
+            selected[0]["checksum"],
+            "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
+        )
+        self.assertIn(
+            'rustix = { version = "=1.1.6", features = ["fs"] }',
+            (ROOT / "crates/storage/Cargo.toml").read_text(),
+        )
+        self.assertIsNone(verify_rustix_0486_patched(lock))
+        for mutation in ("old-version", "bad-checksum", "missing", "duplicate", "source"):
+            with self.subTest(mutation=mutation):
+                altered = deepcopy(lock)
+                target = [item for item in altered["package"] if item.get("name") == "rustix"][0]
+                if mutation == "old-version":
+                    target["version"] = "1.1.5"
+                elif mutation == "bad-checksum":
+                    target["checksum"] = "0" * 64
+                elif mutation == "missing":
+                    altered["package"].remove(target)
+                elif mutation == "duplicate":
+                    altered["package"].append(deepcopy(target))
+                else:
+                    target["source"] = "unreviewed"
+                with self.assertRaises(SystemExit):
+                    verify_rustix_0486_patched(altered)
 
     def test_exact_reviewed_warning_set_is_evidenced_without_claiming_resolution(self):
         process, evidence = self.run_policy(audit_payload())

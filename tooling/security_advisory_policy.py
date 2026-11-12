@@ -36,6 +36,23 @@ def package_versions(lock: dict[str, Any]) -> dict[str, set[str]]:
     return versions
 
 
+def verify_rustix_0486_patched(lock: dict[str, Any]) -> None:
+    """Reject an affected rustix source instead of waiving a new RustSec warning.
+
+    This lock/source check is not proof that unsafe APIs are unreachable, nor
+    a substitute for the authoritative hosted cargo-audit database.
+    """
+    selected = [item for item in lock.get("package", [])
+                if item.get("name") == "rustix"]
+    if (len(selected) != 1
+            or selected[0].get("version") != "1.1.6"
+            or selected[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index"
+            or selected[0].get("checksum") !=
+            "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"):
+        fail("RUSTSEC-2026-0486: reviewed patched rustix 1.1.6 source is missing or changed")
+
+
+
 def first_party_files() -> list[pathlib.Path]:
     roots = [ROOT / "crates", ROOT / "apps"]
     files: list[pathlib.Path] = []
@@ -188,6 +205,7 @@ def main() -> None:
         fail("known advisory policy must contain at least one reviewed advisory")
 
     lock = tomllib.loads(LOCK_PATH.read_text())
+    verify_rustix_0486_patched(lock)
     locked = package_versions(lock)
     expected: dict[str, dict[str, Any]] = {}
     for advisory in advisories:

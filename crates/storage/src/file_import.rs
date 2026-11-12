@@ -1166,7 +1166,7 @@ mod source_open_tests {
                     os::unix::ffi::OsStrExt,
                 };
 
-                // rustix 1.1.5 does not expose mkfifoat on Apple targets.
+                // The pinned rustix API does not expose mkfifoat on Apple targets.
                 unsafe extern "C" {
                     fn mkfifo(path: *const c_char, mode: rustix::fs::RawMode) -> c_int;
                 }

@@ -35,5 +35,5 @@ The supported public APIs and serialized bundle format are unchanged. Import sti
 ## Platform references
 
 - [Rust rename semantics](https://doc.rust-lang.org/std/fs/fn.rename.html)
-- [rustix 1.1.5 renameat_with](https://docs.rs/rustix/1.1.5/rustix/fs/fn.renameat_with.html)
+- [rustix 1.1.5 renameat_with](https://docs.rs/rustix/1.1.6/rustix/fs/fn.renameat_with.html)
 - [Microsoft MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
