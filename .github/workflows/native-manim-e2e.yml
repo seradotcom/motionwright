@@ -1050,39 +1050,50 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $lines = @(python -B -m unittest tooling.tests.test_native_manim_resume_host_files -v 2>&1)
-          $runExitCode = $LASTEXITCODE
-          $lines | ForEach-Object { Write-Output $_ }
-          if ($runExitCode -ne 0) { throw 'Windows original file source contracts failed' }
-          $expected = @(
-            'test_directory_is_never_admitted_as_an_original',
-            'test_empty_original_and_oversize_rejection_preserve_bytes',
-            'test_existing_writer_obeys_platform_sharing_without_mutation',
-            'test_modified_binary_original_is_read_exactly'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import unittest
+
+          source = os.environ["GITHUB_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", source) or os.name != "nt":
+              raise SystemExit("Windows original source requires exact GitHub SHA and Windows")
+          expected = (
+              "test_directory_is_never_admitted_as_an_original",
+              "test_empty_original_and_oversize_rejection_preserve_bytes",
+              "test_existing_writer_obeys_platform_sharing_without_mutation",
+              "test_modified_binary_original_is_read_exactly",
           )
-          foreach ($method in $expected) {
-            $count = @($lines | Where-Object { $_ -match ('^' + [regex]::Escape($method) + ' \(') -and $_ -match '\.\.\. ok$' }).Count
-            if ($count -ne 1) { throw "Original Windows test not independently observed: $method" }
+          owner = "tooling.tests.test_native_manim_resume_host_files.OriginalHostFileTests."
+          loader = unittest.TestLoader()
+          suite = unittest.TestSuite(loader.loadTestsFromName(owner + name) for name in expected)
+          result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
+          if (result.testsRun != len(expected) or result.errors or result.failures
+                  or result.skipped or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit("Four original Windows source tests must all execute and pass")
+          report = {
+              "schema": "motionwright.manim.windows-held-original-source/1",
+              "source": source,
+              "host_sha256": hashlib.sha256(Path("tooling/native_manim_resume_host.py").read_bytes()).hexdigest(),
+              "tests": list(expected),
+              "passed": 4,
+              "skipped": 0,
+              "native_effects": "NOT_RUN",
+              "G2": "NOT_GRANTED",
           }
-          if (@($lines | Where-Object { $_ -match '^Ran 4 tests in ' }).Count -ne 1 -or
-              @($lines | Where-Object { $_ -eq 'OK' }).Count -ne 1 -or
-              @($lines | Where-Object { $_ -match '(?i)skipped|failed|error|unexpected success' }).Count -ne 0) {
-            throw 'Windows held-file source four-test roster is incomplete'
-          }
-          $receipt = @{
-            schema = 'motionwright.manim.windows-held-original-source/1'
-            source = $env:GITHUB_SHA
-            host_sha256 = (Get-FileHash -Algorithm SHA256 'tooling/native_manim_resume_host.py').Hash.ToLowerInvariant()
-            tests = $expected
-            passed = 4
-            skipped = 0
-            native_effects = 'NOT_RUN'
-            G2 = 'NOT_GRANTED'
-          }
-          $destination = Join-Path $env:RUNNER_TEMP 'manim-windows-held-original-source.json'
-          if (Test-Path $destination) { throw 'Original Windows source report destination is not fresh' }
-          $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $destination -Encoding utf8
-          Write-Output "manim-windows-held-original-source=PASS source=$env:GITHUB_SHA tests=4 native=NOT_RUN"
+          destination = Path(os.environ["RUNNER_TEMP"]) / "manim-windows-held-original-source.json"
+          with destination.open("x", encoding="utf-8", newline="\n") as out:
+              json.dump(report, out, sort_keys=True, indent=2)
+              out.write("\n")
+              out.flush()
+              os.fsync(out.fileno())
+          print("manim-windows-held-original-source=PASS source=" + source + " tests=4 native=NOT_RUN")
+          '@ | python -B -
+          if ($LASTEXITCODE -ne 0) { throw 'Windows original file source contracts or receipt failed' }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: manim-windows-held-original-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
