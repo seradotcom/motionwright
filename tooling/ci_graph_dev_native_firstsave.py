@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -75,6 +76,34 @@ def private_json(path, payload):
     return private_bytes(
         path, (json.dumps(payload, sort_keys=True, separators=(",", ":"),
                           allow_nan=False) + "\n").encode("utf-8"))
+
+
+def strict_original_native_jsonl(raw):
+    """Parse ONLY one original UTF-8 JSONL reply without ambiguous fields.
+
+    The literal original is already retained by the caller. A duplicated key
+    (including a nested one), NaN/Infinity, nonfinite exponent or invalid
+    encoding must never be interpreted as a confirmed Native ACK.
+    """
+    def unique_keys(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("GN1_NATIVE_ORIGINAL_DUPLICATE_KEY")
+            value[key] = item
+        return value
+
+    def finite_float(number):
+        parsed = float(number)
+        if not math.isfinite(parsed):
+            raise ValueError("GN1_NATIVE_ORIGINAL_NONFINITE_NUMBER")
+        return parsed
+
+    def reject_constant(_number):
+        raise ValueError("GN1_NATIVE_ORIGINAL_NONFINITE_CONSTANT")
+
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=unique_keys,
+                      parse_float=finite_float, parse_constant=reject_constant)
 
 
 def retain_terminal_original(path, payload, *, had_first_error: bool):
@@ -639,8 +668,8 @@ class NativeSession:
         require(not self.stderr_capture.uncertain(),
                 "GN1_FIRST_SAVE_NATIVE_STDERR_CUSTODY_UNCERTAIN", unknown=True)
         try:
-            response = json.loads(line)
-        except (ValueError, UnicodeError):
+            response = strict_original_native_jsonl(line)
+        except (ValueError, UnicodeError, RecursionError, OverflowError):
             raise FirstSaveFailure("GN1_FIRST_SAVE_NATIVE_REPLY_INVALID",
                                    unknown=True) from None
         require(type(response) is dict

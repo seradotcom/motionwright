@@ -663,6 +663,86 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertTrue(terminal["unknown_request_latched"])
         self.assertFalse(terminal["original_reply_complete"])
 
+    def test_strict_native_jsonl_preserves_normal_correlated_result(self):
+        source = (b'{"id":"one-original","ok":true,'
+                  b'"result":{"revision":3,"finite_weight":0.125}}')
+        self.assertEqual(
+            save.strict_original_native_jsonl(source),
+            {"id": "one-original", "ok": True,
+             "result": {"revision": 3, "finite_weight": 0.125}},
+        )
+
+    def test_strict_native_jsonl_rejects_nested_duplicates_constants_and_utf16(self):
+        originals = (
+            b'{"id":"one","ok":true,"result":{"revision":3,"revision":4}}',
+            b'{"id":"one","ok":true,"result":NaN}',
+            b'{"id":"one","ok":true,"result":Infinity}',
+            b'{"id":"one","ok":true,"result":-Infinity}',
+            b'\xff\xfe{\x00"\x00o\x00k\x00"\x00:\x00t\x00r\x00u\x00e\x00}\x00',
+        )
+        for original in originals:
+            with self.subTest(original=original[:40]):
+                with self.assertRaises((ValueError, UnicodeError)):
+                    save.strict_original_native_jsonl(original)
+
+    def test_duplicate_native_jsonl_ack_keys_never_admit_a_save(self):
+        session, _ = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        writes = []
+        session.child.stdin = SimpleNamespace(
+            write=lambda body: writes.append(body),
+            flush=lambda: None, close=lambda: None)
+        original = []
+        def duplicate_reply(_pipe, **_kwargs):
+            request = json.loads(
+                (self.private / "duplicate-ack.request.original.jsonl").read_text())
+            response = (
+                '{"id":"' + request["id"]
+                + '","ok":false,"ok":true,"result":{"revision":3}}'
+                + chr(10)
+            ).encode("utf-8")
+            original.append(response)
+            return response
+        with patch.object(save, "read_live_stdout", side_effect=duplicate_reply):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_NATIVE_REPLY_INVALID") as denied:
+                session.request("duplicate-ack", "apply_change",
+                                {"no_effect": "inert-test"})
+            self.assertTrue(denied.exception.unknown)
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_NATIVE_SESSION_UNKNOWN_LATCHED"):
+                session.request("duplicate-second-forbidden", "apply_change", {})
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(
+            (self.private / "duplicate-ack.response.original.jsonl").read_bytes(),
+            original[0])
+        self.assertFalse(
+            (self.private / "duplicate-second-forbidden.request.original.jsonl").exists())
+
+    def test_nonfinite_native_jsonl_value_cannot_be_a_known_response(self):
+        session, _ = self.inert_terminal_session()
+        session.started = True
+        session.child.poll = lambda: None
+        session.child.stdin = SimpleNamespace(
+            write=lambda body: len(body), flush=lambda: None, close=lambda: None)
+        def nonfinite_reply(_pipe, **_kwargs):
+            request = json.loads(
+                (self.private / "nonfinite-original.request.original.jsonl").read_text())
+            return ('{"id":"' + request["id"]
+                    + '","ok":true,"result":{"revision":1e999}}'
+                    + chr(10)).encode("utf-8")
+        with patch.object(save, "read_live_stdout", side_effect=nonfinite_reply):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure, "GN1_FIRST_SAVE_NATIVE_REPLY_INVALID") as denied:
+                session.request("nonfinite-original", "apply_change",
+                                {"no_effect": "inert-test"})
+        self.assertTrue(denied.exception.unknown)
+        self.assertTrue(session.unknown_request_latched)
+        self.assertIn(
+            b'1e999',
+            (self.private / "nonfinite-original.response.original.jsonl").read_bytes())
+
     def test_malformed_native_reply_latches_unknown_before_a_new_label(self):
         session, _ = self.inert_terminal_session()
         session.started = True
