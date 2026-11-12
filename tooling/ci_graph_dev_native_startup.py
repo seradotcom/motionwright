@@ -568,7 +568,10 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
     if one_original_save:
         # The actual Native fixture writes a real edited scene to a fresh
         # SQLite Store. It retains the authored Graph as UNSAVED source.
-        from ci_graph_dev_native_firstsave import FirstSaveFailure, seed_original
+        if __package__:
+            from .ci_graph_dev_native_firstsave import FirstSaveFailure, seed_original
+        else:
+            from ci_graph_dev_native_firstsave import FirstSaveFailure, seed_original
         try:
             seeded = seed_original(Path(binaries["graph_fixture"]["path"]),
                                    store_path, private, owner_env)
@@ -668,7 +671,10 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
         if one_original_save:
             # One real scoped service grant and one actual Native Graph Save.
             # No R74, no Graph6 G2; the original Store is disposable.
-            from ci_graph_dev_native_firstsave import FirstSaveFailure, real_first_save
+            if __package__:
+                from .ci_graph_dev_native_firstsave import FirstSaveFailure, real_first_save
+            else:
+                from ci_graph_dev_native_firstsave import FirstSaveFailure, real_first_save
             mark("FIRST_GRAPH_SAVE")
             # Seal any Native output together with the private operation
             # originals, not as a separate uncollected runner directory.
@@ -740,10 +746,16 @@ def actual_startup(repo: Path, sdk: Path, root: Path, first: dict,
         # Independent read-only process opens the same SQLite after the
         # writer's WAL->DELETE and the restricted broker have closed. The
         # Native graph factory is never invoked in this read-only branch.
-        from ci_graph_dev_native_firstsave import (
-            FirstSaveFailure, NativeSession, digest,
-            require_same_opened_sqlite_witness,
-        )
+        if __package__:
+            from .ci_graph_dev_native_firstsave import (
+                FirstSaveFailure, NativeSession, digest,
+                require_same_opened_sqlite_witness,
+            )
+        else:
+            from ci_graph_dev_native_firstsave import (
+                FirstSaveFailure, NativeSession, digest,
+                require_same_opened_sqlite_witness,
+            )
         need(observed_save["provider_lease_shutdown_completed"] is True
              and observed_save["one_native_graph_save_and_reopen"] is True,
              "GN1_FIRST_SAVE_NO_AUTHENTIC_WRITER_CLOSURE")
@@ -1004,7 +1016,10 @@ def run_once(args):
     need(0 < len(raw_recipient) <= 4096, "GN1_RECIPIENT_REQUIRED")
     recipient = json.loads(raw_recipient)
     custody.public_key(recipient)
-    from ci_graph_dev_native_firstsave import selected as first_save_selected
+    if __package__:
+        from .ci_graph_dev_native_firstsave import selected as first_save_selected
+    else:
+        from ci_graph_dev_native_firstsave import selected as first_save_selected
     # A second explicit permit is required. Existing GN1 workflows default to
     # startup-only, and a Save cannot piggyback on their owner approval.
     need(os.environ.get("GN1_ONE_ORIGINAL_OWNER") == "allow-one-original",
