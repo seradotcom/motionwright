@@ -5,7 +5,7 @@ use crate::semantic_graph_profile_probe::{
     GRAPH_PROFILE_PROBE_FONT_SIZE, GRAPH_PROFILE_PROBE_SAMPLE, GraphObservedAssetV1,
     GraphObservedFontRunV1, GraphObservedHelperV1,
 };
-use crate::semantic_graph_source::{graph_builtin_asset_pins, graph_font_lock, graph_helper_pins};
+use crate::semantic_graph_source::{graph_font_lock, graph_helper_pins, graph_runtime_asset_pins};
 use crate::semantic_graph_text::{GRAPH_TEXT_GEOMETRY_CONTRACT_SHA256, text_blocks};
 use crate::{ManimProfileError, Result};
 use motionwright_domain::{
@@ -275,7 +275,7 @@ pub struct ManimGraphTextProbeObservationV1 {
     pub pango_version: String,
     pub fontconfig_version: u32,
     pub helper_pins: [GraphObservedHelperV1; 6],
-    pub asset_pins: [GraphObservedAssetV1; 9],
+    pub asset_pins: [GraphObservedAssetV1; 16],
     pub blocks: Vec<GraphTextBlockObservationV1>,
     pub glyph_coverage_verified: bool,
     pub coverage_scope: String,
@@ -335,7 +335,7 @@ pub fn parse_graph_text_probe_observation_v1(
         != Value::Array(graph_helper_pins())
         || serde_json::to_value(&value.asset_pins)
             .map_err(|_| reject("graph_text_probe_asset_encoding"))?
-            != serde_json::to_value(graph_builtin_asset_pins())
+            != serde_json::to_value(graph_runtime_asset_pins())
                 .map_err(|_| reject("graph_text_probe_asset_encoding"))?
     {
         return Err(reject("graph_text_probe_fixed_closure"));
@@ -431,7 +431,7 @@ mod tests {
             "source_binding_sha256":request.source_binding_sha256,"request_sha256":request.request_sha256().unwrap(),
             "editorial_family":request.editorial_family,"native_family":"Instrument Sans",
             "font_size_px":24.0,"manim_version":"0.21.0","pango_version":"mock-1",
-            "fontconfig_version":1,"helper_pins":graph_helper_pins(),"asset_pins":graph_builtin_asset_pins(),
+            "fontconfig_version":1,"helper_pins":graph_helper_pins(),"asset_pins":graph_runtime_asset_pins(),
             "blocks":[{"ordinal":0,"text_sha256":crate::source_digest(text.as_bytes()),
                 "text_bytes":text.len(),"unknown_glyph_count":0,
                 "runs":[{"offset":0,"length":text.len(),"num_chars":text.chars().count(),

@@ -70,6 +70,25 @@ def compiler_pin_specs(raw):
                 == {"instrument-sans/LICENSE", "ibm-plex-mono/LICENSE"},
             "graph_runtime_asset_inventory")
 
+    native = _literal_body(
+        text, "const NATIVE_FONT_ASSETS: [GraphBuiltinAssetPin; 7] = [",
+        "];\n\npub fn graph_runtime_asset_pins()",
+    )
+    position, native_pins = 0, []
+    expected_sources = {row["relative_path"][:-6] + ".ttf" for row in pins
+                        if row["relative_path"].endswith(".woff2")}
+    while position < len(native.rstrip()):
+        match = pattern.match(native, position)
+        require(match is not None, "graph_runtime_native_asset_literal")
+        relative, digest, count = match.groups()
+        require(relative in expected_sources and 0 < int(count) <= MAX_MEMBER,
+                "graph_runtime_native_asset_path")
+        native_pins.append({"relative_path": relative, "sha256": digest, "size_bytes": int(count)})
+        position = match.end()
+    require(len(native_pins) == 7 and {row["relative_path"] for row in native_pins} == expected_sources,
+            "graph_runtime_native_asset_inventory")
+    pins += native_pins
+
     helpers = _literal_body(
         text, "fn helper_sources() -> [(&'static str, &'static [u8]); 6] {\n    [",
         "    ]\n}\n\npub(crate) fn graph_helper_pins()",
@@ -197,7 +216,8 @@ def _inputs(repo):
         entries[relative] = raw
         rows.append({"source_relative_path": source, "runtime_relative_path": PROFILE_DIRECTORY + "/" + relative,
                      "sha256": pin["sha256"], "size_bytes": pin["size_bytes"],
-                     "pin_origin": COMPILER + "::BUILTIN_ASSETS"})
+                     "pin_origin": COMPILER + ("::NATIVE_FONT_ASSETS" if pin["relative_path"].endswith(".ttf")
+                                               else "::BUILTIN_ASSETS")})
     for module in modules:
         source = "tooling/" + module + ".py"
         raw = _read_original(repo, repo / source, MAX_HELPER_BYTES)

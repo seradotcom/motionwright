@@ -1,7 +1,7 @@
-"""Pure rejection/ownership tests. Every Pango observation here is a MOCK.
+"""Labelled pure/mock controls plus an explicit Linux SFNT integration test.
 
-These tests never load native libraries and do not prove font support, glyph
-coverage, layout fidelity, sandbox support, a Manim frame, or profile admission.
+Only NativeSfntFaceTests loads real Pango. Its result proves font coverage in
+that process, never Native Host admission, sandbox support, a frame or Save.
 """
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ class ClosedRuntimeBoundaryTests(unittest.TestCase):
         native.config_new = lambda: 101
         native.config_free = lambda pointer: calls.append(("free_config", pointer))
         native.add_font = lambda _config, _path: 0
-        with self.assertRaisesRegex(probe.Rejected, "native_woff2_open_failed"):
+        with self.assertRaisesRegex(probe.Rejected, "native_sfnt_open_failed"):
             native.observe(["/mock-font"], "Instrument Sans", b"A", 20, True)
         self.assertEqual(calls, [("free_config", 101)])
 
@@ -164,6 +164,81 @@ class ClosedRuntimeBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(probe.Rejected, "native_pango_context_failed"):
             native.observe(["/mock-font"], "Instrument Sans", b"A", 20, True)
         self.assertEqual(calls, [("unref", 202), ("free_config", 101)])
+
+
+class NativeFontProvenanceTests(unittest.TestCase):
+    def test_real_native_files_bind_distinct_hashes_to_all_retained_sources(self):
+        import hashlib
+        from manim_bundled_font_intake import NATIVE_FONT_DERIVATIONS, PACKAGES, native_font_descriptors
+        root = HERE.parent / "crates/manim-profile/testdata/graph-fonts"
+        for specification in PACKAGES:
+            rows = [row for row in NATIVE_FONT_DERIVATIONS
+                    if row["relative_path"].startswith(specification["id"] + "/")]
+            sources = [{"relative_path": row["source_relative_path"],
+                        "sha256": row["source_sha256"], "size_bytes": row["source_size_bytes"]} for row in rows]
+            native = native_font_descriptors({"package": specification["package"], "font_files": sources})
+            self.assertEqual(len(native), len(rows))
+            for source, target in zip(sources, native):
+                raw_source, raw_native = [(root / row["relative_path"]).read_bytes() for row in (source, target)]
+                self.assertEqual(raw_source[:4], b"wOF2")
+                self.assertEqual(raw_native[:4], b"\x00\x01\x00\x00")
+                for raw, row in ((raw_source, source), (raw_native, target)):
+                    self.assertEqual((len(raw), hashlib.sha256(raw).hexdigest()),
+                                     (row["size_bytes"], row["sha256"]))
+                self.assertNotEqual(source["sha256"], target["sha256"])
+
+    def test_changed_or_missing_original_cannot_select_a_native_derivative(self):
+        from manim_bundled_font_intake import NATIVE_FONT_DERIVATIONS, PACKAGES, native_font_descriptors
+        specification = PACKAGES[0]
+        rows = [row for row in NATIVE_FONT_DERIVATIONS
+                if row["relative_path"].startswith(specification["id"] + "/")]
+        sources = [{"relative_path": row["source_relative_path"],
+                    "sha256": row["source_sha256"], "size_bytes": row["source_size_bytes"]} for row in rows]
+        package = {"package": specification["package"], "font_files": sources}
+        with self.assertRaisesRegex(probe.Rejected, "native_font_source_inventory"):
+            native_font_descriptors({**package, "font_files": sources[:-1]})
+        altered = copy.deepcopy(package)
+        altered["font_files"][0]["sha256"] = "00" * 32
+        with self.assertRaisesRegex(probe.Rejected, "native_font_source_pin"):
+            native_font_descriptors(altered)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "real Pango requires Linux")
+class NativeSfntFaceTests(unittest.TestCase):
+    def test_real_bundled_sfnt_faces_have_exact_ascii_coverage_without_fallback(self):
+        import hashlib
+        import json
+        from manim_bundled_font_intake import NATIVE_FONT_DERIVATIONS, PACKAGES
+        root = HERE.parent / "crates/manim-profile/testdata/graph-fonts"
+        sample = b"Motionwright Graph 0123456789"
+        for package in PACKAGES:
+            with self.subTest(family=package["editorial_family"]):
+                rows = [row for row in NATIVE_FONT_DERIVATIONS
+                        if row["relative_path"].startswith(package["id"] + "/")]
+                allowed = {}
+                for row in rows:
+                    path = root / row["relative_path"]
+                    raw = path.read_bytes()
+                    self.assertEqual(raw[:4], b"\x00\x01\x00\x00")
+                    self.assertEqual((len(raw), hashlib.sha256(raw).hexdigest()),
+                                     (row["size_bytes"], row["sha256"]))
+                    allowed[str(path.resolve())] = row
+                native = probe.NativePango()
+                observation = native.observe(list(allowed), package["expected_native_family"],
+                                             sample, 24.0, package["id"] == "instrument-sans")
+                runs = probe.validate_observation(observation, allowed,
+                                                   package["expected_native_family"], sample)
+                self.assertTrue(runs)
+                for path, row in allowed.items():
+                    self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), row["sha256"])
+                print(json.dumps({"status": "REAL_PANGO_SFNT_COVERAGE_ONLY",
+                                  "family": package["editorial_family"],
+                                  "pango_version": observation["pango_version"],
+                                  "fontconfig_version": observation["fontconfig_version"],
+                                  "unknown_glyph_count": observation["unknown_glyph_count"],
+                                  "runs": runs, "native_host_executed": False,
+                                  "profile_admitted": False, "graph_save_performed": False},
+                                 sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ class GraphRuntimeSourceIntakeControls(unittest.TestCase):
         self.profile = self.runtime / intake.PROFILE_DIRECTORY
         original = COMPILER_ORIGINAL.read_bytes()
         pins, modules = intake.compiler_pin_specs(original)
-        self.assertEqual(len(pins), 9)
+        self.assertEqual(len(pins), 16)
         self.assertEqual(len(modules), 6)
         self.compiler = self.repo / intake.COMPILER
         self.originals = {}
@@ -97,9 +97,9 @@ class GraphRuntimeSourceIntakeControls(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.profile))
         self.assertFalse(os.path.lexists(self.receipt))
 
-    def test_fresh_copies_fifteen_originals_and_exact_provenance_without_execution(self):
+    def test_fresh_copies_twenty_two_source_pinned_files_and_exact_provenance_without_execution(self):
         receipt = self.prepare()
-        self.assertEqual(receipt['files_count'], 15)
+        self.assertEqual(receipt['files_count'], 22)
         self.assertEqual(receipt['status'], 'SOURCE_INTAKE_ONLY')
         for key in ('compiled_runner_pin_agreement_verified','native_font_open_observed',
                     'pango_layout_observed','native_render_performed','profile_admitted'):
@@ -229,7 +229,7 @@ class GraphRuntimeSourceIntakeControls(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'graph_runtime_original_changed'): self.prepare()
         self.assertFalse((self.profile / intake.CLOSURE_NAME).exists())
         self.assertFalse(self.receipt.exists())
-        self.assertEqual(len(calls), 15)
+        self.assertEqual(len(calls), 22)
 
     def test_existing_receipt_collision_denies_before_runtime_mutation(self):
         self.receipt.write_bytes(b'original unrelated receipt')
@@ -237,10 +237,14 @@ class GraphRuntimeSourceIntakeControls(unittest.TestCase):
         self.assertFalse(self.profile.exists())
         self.assertEqual(self.receipt.read_bytes(), b'original unrelated receipt')
 
-    def test_real_compiler_original_has_closed_nine_assets_and_six_helpers(self):
+    def test_real_compiler_has_nine_originals_seven_sfnt_and_six_helpers(self):
         pins, modules = intake.compiler_pin_specs(COMPILER_ORIGINAL.read_bytes())
-        self.assertEqual((len(pins), tuple(modules)), (9, intake.HELPERS))
-        self.assertEqual(sum(row['size_bytes'] for row in pins), 100265)
+        self.assertEqual((len(pins), tuple(modules)), (16, intake.HELPERS))
+        self.assertEqual(sum(row['size_bytes'] for row in pins[:9]), 100265)
+        self.assertEqual(sum(row['size_bytes'] for row in pins[9:]), 224852)
+        from manim_bundled_font_intake import NATIVE_FONT_DERIVATIONS
+        self.assertEqual(pins[9:], [{key: row[key] for key in ('relative_path', 'sha256', 'size_bytes')}
+                                  for row in NATIVE_FONT_DERIVATIONS])
 
     def test_owner_stages_before_provider_manifest_and_host_configuration(self):
         tree = ast.parse((TOOLING / 'native_manim_e2e.py').read_text())

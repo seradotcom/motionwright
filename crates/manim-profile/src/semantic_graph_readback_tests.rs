@@ -42,10 +42,10 @@ fn controlled_text(
     let box_ = &block.authored_box;
     let typography = plan.typography_requirement();
     let family = typography.native_family;
-    let pin = graph_builtin_asset_pins()
-        .iter()
+    let pin = graph_runtime_asset_pins()
+        .into_iter()
         .find(|pin| {
-            pin.relative_path == "instrument-sans/files/instrument-sans-latin-wght-normal.woff2"
+            pin.relative_path == "instrument-sans/files/instrument-sans-latin-wght-normal.ttf"
         })
         .unwrap();
     let width = plan.render_profile.width;
@@ -240,7 +240,7 @@ fn controlled_observation(plan: &ManimSemanticGraphPlan) -> BTreeMap<String, Vec
         "schema":"motionwright.manim.graph-native-observation/1","profile_id":SEMANTIC_GRAPH_PROFILE,
         "plan_sha256":prepared.plan_sha256,"generated_source_sha256":prepared.source_sha256,
         "execution_snapshot":plan.execution_snapshot,"graph_id":plan.source.id,"scene_id":plan.source.scene_id,
-        "camera":camera(plan),"helper_modules":graph_helper_pins(),"font_files":graph_builtin_asset_pins(),
+        "camera":camera(plan),"helper_modules":graph_helper_pins(),"font_files":graph_runtime_asset_pins(),
         "text_blocks":references,"objects":geometry,"derived_byte_limit":MAX_GRAPH_READBACK_BYTES,
         "one_svg_parser_temporary_byte_limit":MAX_SVG_BYTES,"point_limit":MAX_POINTS,
         "decoded_video_verified":false,"native_reopen_verified":false,"profile_admitted":false,

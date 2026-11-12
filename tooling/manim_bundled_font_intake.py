@@ -276,6 +276,37 @@ def inspect_package(raw, spec, lock_entry):
     }
 
 
+# Decoded SFNT resources. The npm originals above remain unmodified and retain
+# their licenses. Native hashes must never be presented as archive-member hashes.
+NATIVE_FONT_DERIVATIONS = (
+    {'source_relative_path': 'instrument-sans/files/instrument-sans-latin-ext-wght-normal.woff2', 'source_sha256': 'c4fcfea41f2c1cfeea9211fa43679845454a1d0e0d7e95e069c7e73c4ae302d2', 'source_size_bytes': 11144, 'relative_path': 'instrument-sans/files/instrument-sans-latin-ext-wght-normal.ttf', 'sha256': 'd10bfae57de8923533bf611e08ccde537e4b0bf4b4ba6a7a4e5eb3e3b6d05527', 'size_bytes': 23988},
+    {'source_relative_path': 'instrument-sans/files/instrument-sans-latin-wght-normal.woff2', 'source_sha256': '2ee17598a98d8a59e4df8152d015bec9ab8e4d5672cc0ab42bef806b568e3971', 'source_size_bytes': 30092, 'relative_path': 'instrument-sans/files/instrument-sans-latin-wght-normal.ttf', 'sha256': '83de837ee7d7dc3ea0311376947b5709abdd1c648df41a057b3e95ea6da843d5', 'size_bytes': 63220},
+    {'source_relative_path': 'ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-400-normal.woff2', 'source_sha256': 'f8c22ec1804bd6966b70f43ac7c327025645b4c09597117fca2a5a6c750106fe', 'source_size_bytes': 6912, 'relative_path': 'ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-400-normal.ttf', 'sha256': '77f6e07ec5e6f6dbeb0cdab1688681cc5173169977bedfa6c948a4a7a7a21f76', 'size_bytes': 18356},
+    {'source_relative_path': 'ibm-plex-mono/files/ibm-plex-mono-cyrillic-400-normal.woff2', 'source_sha256': '7635422bd10ddbbcb0e0caa1154b928298f5c8319b8c00b30978d4395f4783ce', 'source_size_bytes': 8356, 'relative_path': 'ibm-plex-mono/files/ibm-plex-mono-cyrillic-400-normal.ttf', 'sha256': '27a091e020dac653c9b382eee9fea3362968d01d5edf943ab512fdb845337598', 'size_bytes': 22656},
+    {'source_relative_path': 'ibm-plex-mono/files/ibm-plex-mono-vietnamese-400-normal.woff2', 'source_sha256': '62632b6375305e70ddcafdd895218e6ae41a184fcd280a69c739460604ca00a9', 'source_size_bytes': 5868, 'relative_path': 'ibm-plex-mono/files/ibm-plex-mono-vietnamese-400-normal.ttf', 'sha256': '019774bae13f411cd7fcb0952282fbfd76ba1c7abe112bb6a8a37f2e518994c7', 'size_bytes': 17832},
+    {'source_relative_path': 'ibm-plex-mono/files/ibm-plex-mono-latin-ext-400-normal.woff2', 'source_sha256': '6bc0f226a5b7884a8170e3f62c63d7675609d4631bdc5931b5cdab81821f00eb', 'source_size_bytes': 13348, 'relative_path': 'ibm-plex-mono/files/ibm-plex-mono-latin-ext-400-normal.ttf', 'sha256': 'b5da802bbac01efcf5ecaae42117b513efb62c47722ba944d61465ce8b7c66f5', 'size_bytes': 37872},
+    {'source_relative_path': 'ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2', 'source_sha256': '08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7', 'source_size_bytes': 14708, 'relative_path': 'ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.ttf', 'sha256': '3f7efa37307b8b54338fc6437acd67f8d936239ec8e0708551a9b746474f2176', 'size_bytes': 40928},
+)
+
+
+def native_font_descriptors(package):
+    """Bind each fixed SFNT to one exact retained WOFF2, without conversion."""
+    specification = next((item for item in PACKAGES if item["package"] == package["package"]), None)
+    require(specification is not None, "native_font_package")
+    prefix = specification["id"] + "/"
+    expected = [row for row in NATIVE_FONT_DERIVATIONS if row["source_relative_path"].startswith(prefix)]
+    sources = package["font_files"]
+    require(len(sources) == len(expected) and {row["relative_path"] for row in sources}
+            == {row["source_relative_path"] for row in expected}, "native_font_source_inventory")
+    result = []
+    for row in expected:
+        original = next(item for item in sources if item["relative_path"] == row["source_relative_path"])
+        require(original["sha256"] == row["source_sha256"]
+                and original["size_bytes"] == row["source_size_bytes"], "native_font_source_pin")
+        result.append({key: row[key] for key in ("relative_path", "sha256", "size_bytes")})
+    return result
+
+
 def inspect_archives(lock_bytes, archives):
     lock = strict_json(lock_bytes)
     require(lock.get("lockfileVersion") == 3 and type(lock.get("packages")) is dict, "dependency_lock")
