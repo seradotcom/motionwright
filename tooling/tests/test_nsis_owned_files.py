@@ -1134,6 +1134,27 @@ class DistributionOwnedFilesTests(unittest.TestCase):
                         owned.CaptureError, "reparse refused"):
                     owned._pinned_internal_main_paths(root, "x64")
 
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            source, capture, include = owned._pinned_internal_main_paths(
+                root, "x64", layout="guarded-update-release",
+            )
+            release = root / "target" / "release"
+            self.assertEqual(source, release / "motionwright-desktop.exe")
+            self.assertEqual(capture, release / "nsis" / "x64" / "mw-owned-MW_MAIN.bin")
+            self.assertEqual(include, release / "nsis" / "x64" / "mw-owned-MW_MAIN.nsh")
+            for layout in ("", "release", "guarded-update", "../release", "WINDOWS-CAPTURED"):
+                with self.subTest(layout=layout):
+                    with self.assertRaisesRegex(
+                        owned.CaptureError, "main_layout_unsupported",
+                    ):
+                        owned._pinned_internal_main_paths(root, "x64", layout=layout)
+            with self.assertRaisesRegex(owned.CaptureError, "ambiguous path components"):
+                owned._pinned_internal_main_paths(
+                    root / "target" / "..", "x64", layout="guarded-update-release",
+                )
+
     def test_real_cli_synthetic_permitted_control_binds_bytes_not_actual_rights(self):
         with self.temporary() as directory:
             fixture = self.fixture(directory, status="permitted")
@@ -1196,6 +1217,46 @@ class DistributionOwnedFilesTests(unittest.TestCase):
                 owned._pinned_internal_main_paths(
                     fixture["root"] / "target" / "..", "x64",
                 )
+
+        with self.temporary() as directory:
+            fixture = self.fixture(directory, status="permitted")
+            root = fixture["root"]
+            source, capture, include = owned._pinned_internal_main_paths(
+                root, "x64", layout="guarded-update-release",
+            )
+            source.parent.mkdir(parents=True)
+            source.write_bytes(fixture["payload_bytes"])
+            capture.parent.mkdir(parents=True)
+            hook = root / "apps" / "desktop" / "src-tauri" / "windows"
+            hook.mkdir(parents=True)
+            entry = hook / ".." / ".." / ".." / ".." / "tooling" / SCRIPT.name
+            command = [
+                sys.executable, "-B", str(entry), "--prepare-distribution",
+                "--from-pinned-build", "--arch", "x64", "--symbol", "MW_MAIN",
+            ]
+            def invoke(layout):
+                env = dict(fixture["environment"])
+                if layout is not None:
+                    env["MW_NSIS_PINNED_MAIN_LAYOUT"] = layout
+                else:
+                    env.pop("MW_NSIS_PINNED_MAIN_LAYOUT", None)
+                return subprocess.run(
+                    command, cwd=fixture["cwd"], env=env,
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+            missing_default = invoke(None)
+            self.assertEqual(missing_default.returncode, 2)
+            self.assertFalse(capture.exists())
+            self.assertFalse(include.exists())
+            unknown = invoke("target/release")
+            self.assertEqual(unknown.returncode, 2)
+            self.assertIn("distribution_admission_main_layout_unsupported", unknown.stderr)
+            self.assertFalse(capture.exists())
+            admitted = invoke("guarded-update-release")
+            self.assertEqual(admitted.returncode, 0, admitted.stderr)
+            self.assertEqual(capture.read_bytes(), fixture["payload_bytes"])
+            self.assertIn("!define MW_MAIN_SHA256", include.read_text(encoding="utf-8-sig"))
+            self.assertNotIn(str(fixture["source"]), include.read_text(encoding="utf-8-sig"))
 
     def test_real_cli_main_mode_and_pinned_context_are_required_without_fallback(self):
         for case in (

@@ -472,7 +472,9 @@ def _source_helper_path(value: str | os.PathLike[str]) -> Path:
     return helper
 
 
-def _pinned_internal_main_paths(root: Path, arch: str) -> tuple[Path, Path, Path]:
+def _pinned_internal_main_paths(
+    root: Path, arch: str, *, layout: str = "windows-captured",
+) -> tuple[Path, Path, Path]:
     """Use the exact reviewed internal build layout, never a Tauri path alias.
 
     Tauri may emit a lexical source/output path containing parent components.
@@ -499,7 +501,16 @@ def _pinned_internal_main_paths(root: Path, arch: str) -> tuple[Path, Path, Path
     if not stat.S_ISDIR(root_info.st_mode) or _is_link_or_reparse(root_info):
         raise CaptureError("distribution_admission_source_root_not_canonical")
     _require_plain_parents(canonical_root / "tooling" / "nsis_owned_files.py")
-    release = canonical_root / "target" / "windows-captured" / triples[arch] / "release"
+    # Only two reviewed, source-bound CI producer layouts are admitted. The
+    # update fixture builds target/release without the isolated capture target.
+    # Neither choice grants distribution: the original disposition and exact
+    # binary digest are still verified before any capture or publication.
+    if layout == "windows-captured":
+        release = canonical_root / "target" / "windows-captured" / triples[arch] / "release"
+    elif layout == "guarded-update-release":
+        release = canonical_root / "target" / "release"
+    else:
+        raise CaptureError("distribution_admission_main_layout_unsupported")
     bundle = release / "nsis" / arch
     return (
         _validated_path(release / "motionwright-desktop.exe"),
@@ -866,7 +877,10 @@ def main(argv: list[str] | None = None) -> int:
                         args.source, args.capture, args.include,
                     )):
                         raise CaptureError("pinned main capture cannot accept caller paths")
-                    source, capture, include = _pinned_internal_main_paths(root, args.arch)
+                    source, capture, include = _pinned_internal_main_paths(
+                        root, args.arch,
+                        layout=os.environ.get("MW_NSIS_PINNED_MAIN_LAYOUT", "windows-captured"),
+                    )
                 else:
                     if not all(value is not None for value in (
                         args.source, args.capture, args.include,

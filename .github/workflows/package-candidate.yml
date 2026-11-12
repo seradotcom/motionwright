@@ -2296,6 +2296,8 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS gate failed' }
       - name: Compile the actual NSIS template with two resources and two distinct PE sidecars
+        env:
+          MW_NSIS_PINNED_MAIN_LAYOUT: guarded-update-release
         shell: pwsh
         timeout-minutes: 12
         run: |
