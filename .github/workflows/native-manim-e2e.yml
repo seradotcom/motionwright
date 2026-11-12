@@ -71,6 +71,7 @@ on:
       - 'tooling/tests/test_native_manim_runtime_restore.py'
       - 'tooling/tests/test_native_manim_resume.py'
       - 'tooling/tests/test_native_manim_resume_host_files.py'
+      - 'tooling/tests/test_native_manim_resume_metadata_reader.py'
       - 'tooling/requirements/manim-windows-held-originals.txt'
       - 'tooling/native_manim_editable_cycle.py'
       - 'tooling/native_manim_editable_outer.py'
@@ -1046,7 +1047,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Hashed Windows original dependency closure failed' }
           python -B -c "import cryptography,cffi,pycparser;assert cryptography.__version__=='50.0.2' and cffi.__version__=='2.1.1' and pycparser.__version__=='2.23'"
           if ($LASTEXITCODE -ne 0) { throw 'Windows original dependency versions differ' }
-      - name: Require four real Windows held-file original source contracts
+      - name: Require ten Windows original and nested metadata source contracts
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1062,25 +1063,32 @@ jobs:
           source = os.environ["GITHUB_SHA"]
           if not re.fullmatch(r"[0-9a-f]{40}", source) or os.name != "nt":
               raise SystemExit("Windows original source requires exact GitHub SHA and Windows")
+          held = "tooling.tests.test_native_manim_resume_host_files.OriginalHostFileTests."
+          nested = "tooling.tests.test_native_manim_resume_metadata_reader.ExplicitMetadataReaderTests."
           expected = (
-              "test_directory_is_never_admitted_as_an_original",
-              "test_empty_original_and_oversize_rejection_preserve_bytes",
-              "test_existing_writer_obeys_platform_sharing_without_mutation",
-              "test_modified_binary_original_is_read_exactly",
+              held + "test_directory_is_never_admitted_as_an_original",
+              held + "test_empty_original_and_oversize_rejection_preserve_bytes",
+              held + "test_existing_writer_obeys_platform_sharing_without_mutation",
+              held + "test_modified_binary_original_is_read_exactly",
+              nested + "test_both_scenarios_use_reader_before_rejecting_incomplete_original_logs",
+              nested + "test_current_sdk_source_lock_is_read_through_custodian",
+              nested + "test_nested_origin_metadata_reads_both_pinned_originals_through_custodian",
+              nested + "test_reader_preserves_actual_metadata_bytes_identity_and_closes_handle",
+              nested + "test_reader_result_cannot_expand_metadata_budget",
+              nested + "test_same_strict_json_parser_rejects_duplicate_keys",
           )
-          owner = "tooling.tests.test_native_manim_resume_host_files.OriginalHostFileTests."
           loader = unittest.TestLoader()
-          suite = unittest.TestSuite(loader.loadTestsFromName(owner + name) for name in expected)
+          suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in expected)
           result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
           if (result.testsRun != len(expected) or result.errors or result.failures
                   or result.skipped or result.expectedFailures or result.unexpectedSuccesses):
-              raise SystemExit("Four original Windows source tests must all execute and pass")
+              raise SystemExit("Ten original Windows and nested custody source tests must all execute and pass")
           report = {
-              "schema": "motionwright.manim.windows-held-original-source/1",
+              "schema": "motionwright.manim.windows-held-original-source/2",
               "source": source,
               "host_sha256": hashlib.sha256(Path("tooling/native_manim_resume_host.py").read_bytes()).hexdigest(),
               "tests": list(expected),
-              "passed": 4,
+              "passed": len(expected),
               "skipped": 0,
               "native_effects": "NOT_RUN",
               "G2": "NOT_GRANTED",
@@ -1091,9 +1099,9 @@ jobs:
               out.write("\n")
               out.flush()
               os.fsync(out.fileno())
-          print("manim-windows-held-original-source=PASS source=" + source + " tests=4 native=NOT_RUN")
+          print("manim-windows-held-original-source=PASS source=" + source + " tests=10 native=NOT_RUN")
           '@ | python -B -
-          if ($LASTEXITCODE -ne 0) { throw 'Windows original file source contracts or receipt failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Windows original/nested source contracts or receipt failed' }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: manim-windows-held-original-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}

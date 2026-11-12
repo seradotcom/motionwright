@@ -35,6 +35,7 @@ REQUIRED_PR_PATHS = (
     "tooling/native_manim_frozen_runtime_host.py",
     "tooling/tests/test_native_manim_resume.py",
     "tooling/tests/test_native_manim_resume_host_files.py",
+    "tooling/tests/test_native_manim_resume_metadata_reader.py",
     "tooling/requirements/manim-windows-held-originals.txt",
     ".github/workflows/native-manim-e2e.yml",
     "crates/driver-manim-community/src/lib.rs",
@@ -119,7 +120,10 @@ class NativeManimPullRequestWatchTests(unittest.TestCase):
         self.assertIn("python-version: '3.13'", job)
         self.assertIn("--require-hashes -r tooling/requirements/manim-windows-held-originals.txt", job)
         self.assertIn("cryptography.__version__", job)
-        self.assertIn("owner = \"tooling.tests.test_native_manim_resume_host_files.OriginalHostFileTests.\"", job)
+        self.assertIn('held = "tooling.tests.test_native_manim_resume_host_files.OriginalHostFileTests."', job)
+        self.assertIn('nested = "tooling.tests.test_native_manim_resume_metadata_reader.ExplicitMetadataReaderTests."', job)
+        self.assertIn("tests=10 native=NOT_RUN", job)
+        self.assertIn("motionwright.manim.windows-held-original-source/2", job)
         self.assertIn("TextTestRunner(stream=sys.stdout, verbosity=2)", job)
         self.assertIn("result.testsRun != len(expected)", job)
         for required in ("result.skipped", "result.errors", "result.failures",
