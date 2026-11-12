@@ -17,6 +17,12 @@ on:
         required: true
         default: all
         options: [all, graph-flow, development-first-save]
+      gn1_one_original_save:
+        description: Explicit permission for exactly one GN1 development Save on a disposable Store, not G2
+        type: choice
+        required: true
+        default: deny
+        options: [deny, allow-one-original-save]
       graph_review_spki_der_base64:
         description: Existing external review recipient RSA3072 public SPKI, required only for phase1-native-graph
         type: string
@@ -1024,3 +1030,4 @@ jobs:
       expected_source_sha: ${{ github.sha }}
       recipient_json: ${{ format('{{"spki_der_base64":"{0}","sha256":"{1}"}}', inputs.graph_review_spki_der_base64, inputs.graph_review_spki_sha256) }}
       one_original_owner: allow-one-original
+      one_original_save: ${{ inputs.gn1_one_original_save }}
