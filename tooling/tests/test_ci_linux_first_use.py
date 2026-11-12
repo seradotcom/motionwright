@@ -539,11 +539,12 @@ class WorkflowContextTests(unittest.TestCase):
         expected = {
             prefix + mode + ":1" for mode in (
                 "nsis_lifecycle", "windows_contracts", "windows_installed",
-                "linux_first_use_source",
+                "linux_first_use_source", "macos_bundle",
             )
         }
         self.assertEqual(set(admitted.split("|")), expected)
         self.assertIn('"linux_first_use_source": "dev-linux-first-use-source"', workflow)
+        self.assertIn('"macos_bundle": "dev-macos-bundle-source"', workflow)
         guarded = workflow.split(marker, 1)[1].split("              ;;\n", 1)[0]
         for closed in (
             'len(required) != 208',

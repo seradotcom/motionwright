@@ -11,6 +11,7 @@ on:
         default: all
         options:
           - all
+          - macos_bundle
           - windows_contracts
           - windows_installed
           - nsis_source
@@ -37,6 +38,7 @@ on:
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
       - "tooling/tests/test_ci_windows_internal_candidate.py"
+      - "tooling/tests/test_ci_candidate_macos_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
@@ -140,6 +142,7 @@ on:
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
       - "tooling/tests/test_ci_windows_internal_candidate.py"
+      - "tooling/tests/test_ci_candidate_macos_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
@@ -261,7 +264,7 @@ jobs:
           # observations, never historical or final F/G3 acceptance.
           # F and all other refs/scopes still run both complete policies.
           case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in
-            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1)
+            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:macos_bundle:1)
               python3 -B - <<'PY'
           import json
           import os
@@ -289,7 +292,8 @@ jobs:
           labels = {"nsis_lifecycle": "dev-nsis-source",
                     "windows_contracts": "dev-windows-contracts-source",
                     "windows_installed": "dev-windows-installed-source",
-                    "linux_first_use_source": "dev-linux-first-use-source"}
+                    "linux_first_use_source": "dev-linux-first-use-source",
+                    "macos_bundle": "dev-macos-bundle-source"}
           if scope not in labels:
               raise SystemExit("Development verification scope is not admitted")
           print(labels[scope]
@@ -301,6 +305,8 @@ jobs:
               python3 tooling/creative_status_policy.py
               ;;
           esac
+      - name: Verify bounded macOS-only bundle selection without acceptance
+        run: python3 -B -m unittest tooling.tests.test_ci_candidate_macos_scope -v
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
@@ -460,7 +466,7 @@ jobs:
           if-no-files-found: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'error' || 'warn' }}
 
   nsis-source-windows:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')
     needs: receipt-policy
     runs-on: windows-latest
     timeout-minutes: 10
@@ -886,7 +892,7 @@ jobs:
           retention-days: 30
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -1054,7 +1060,7 @@ jobs:
           if-no-files-found: error
 
   windows-contracts:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -1292,7 +1298,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs['receipt-policy'].result == 'success' &&
           needs['windows-contracts'].result == 'success' && needs['nsis-source-windows'].result == 'success' &&
-          (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')) }}
+          (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')) }}
     needs: [receipt-policy, windows-contracts, nsis-source-windows, linux]
     runs-on: windows-latest
     env:
@@ -3243,7 +3249,7 @@ jobs:
           if-no-files-found: warn
 
   macos:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'all' || inputs.verification_scope == 'macos_bundle'
     needs: receipt-policy
     runs-on: macos-latest
     steps:
