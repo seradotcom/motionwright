@@ -111,8 +111,23 @@ def regular(path, maximum, *, collect=False):
         os.close(fd)
 
 
-def object_file(path, maximum=MAX_METADATA):
-    _identity, raw = regular(path, maximum, collect=True)
+def metadata_original(path, maximum=MAX_METADATA, *, reader=None):
+    """Read bounded metadata with the original or an explicit owner custodian.
+
+    The optional callable only supplies bytes. Every schema, identity, source
+    pin and resource predicate remains in the existing metadata validators.
+    It is never selected by a receipt, environment flag or CLI input.
+    """
+    if reader is None:
+        return regular(path, maximum, collect=True)
+    need(type(maximum) is int and maximum >= 0, "frozen_runtime_metadata_reader_bound")
+    raw = reader(Path(path), maximum)
+    need(type(raw) is bytes and len(raw) <= maximum, "frozen_runtime_metadata_reader_bytes")
+    return {"bytes": len(raw), "sha256": digest(raw)}, raw
+
+
+def object_file(path, maximum=MAX_METADATA, *, reader=None):
+    _identity, raw = metadata_original(path, maximum, reader=reader)
     return strict(raw)
 
 
@@ -139,8 +154,8 @@ def name_key(value):
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
-def input_lock():
-    identity, raw = regular(LOCK_PATH, 128 * 1024, collect=True)
+def input_lock(*, reader=None):
+    identity, raw = metadata_original(LOCK_PATH, 128 * 1024, reader=reader)
     need(identity["sha256"] == LOCK_SHA, "frozen_runtime_input_lock_changed")
     value = strict(raw)
     rows = value["entries"]
@@ -471,15 +486,15 @@ def native_observation(runtime, output):
     json_new(output, value)
 
 
-def validate_receipt(receipt_path, manifest_path=None, wheel_lock_path=None):
+def validate_receipt(receipt_path, manifest_path=None, wheel_lock_path=None, *, reader=None):
     """Validate retained metadata bindings; this never claims to read the tar."""
     receipt_path = Path(receipt_path)
     manifest_path = Path(manifest_path) if manifest_path else receipt_path.with_name("installed-files.json")
     wheel_lock_path = Path(wheel_lock_path) if wheel_lock_path else receipt_path.with_name("wheel-lock.json")
-    receipt = object_file(receipt_path)
-    manifest = object_file(manifest_path)
-    wheel_lock = object_file(wheel_lock_path)
-    lock, _raw = input_lock()
+    receipt = object_file(receipt_path, reader=reader)
+    manifest = object_file(manifest_path, reader=reader)
+    wheel_lock = object_file(wheel_lock_path, reader=reader)
+    lock, _raw = input_lock(reader=reader)
     need(receipt.get("schema") == "motionwright.manim.frozen-runtime/1"
          and receipt.get("status") == "EXACT_WHEELS_AND_INSTALLED_FILES_RETAINED"
          and receipt.get("input_lock_sha256") == LOCK_SHA
@@ -488,8 +503,8 @@ def validate_receipt(receipt_path, manifest_path=None, wheel_lock_path=None):
          and receipt.get("automatic_retry") is False
          and receipt.get("archive_physical_readback") is True
          and receipt.get("native_effect_invocations") == 0 and receipt.get("project_inputs_read") is False
-         and receipt.get("installed_manifest") == regular(manifest_path, MAX_METADATA)
-         and receipt.get("wheel_lock") == regular(wheel_lock_path, MAX_METADATA), "frozen_runtime_receipt_chain")
+         and receipt.get("installed_manifest") == metadata_original(manifest_path, MAX_METADATA, reader=reader)[0]
+         and receipt.get("wheel_lock") == metadata_original(wheel_lock_path, MAX_METADATA, reader=reader)[0], "frozen_runtime_receipt_chain")
     need(wheel_lock.get("schema") == "motionwright.manim.exact-wheel-lock/1"
          and wheel_lock.get("input_lock_sha256") == LOCK_SHA and len(wheel_lock.get("wheels", [])) == 32
          and wheel_lock.get("context") == receipt.get("context"),
@@ -574,7 +589,7 @@ def validate_receipt(receipt_path, manifest_path=None, wheel_lock_path=None):
          and set(receipt.get("python", {})) == {"bytes", "sha256"}
          and type(receipt["python"]["bytes"]) is int and 0 < receipt["python"]["bytes"] <= MAX_INPUT
          and SHA.fullmatch(receipt["python"]["sha256"]), "frozen_runtime_host_runtime_identity")
-    return {"receipt_sha256": regular(receipt_path, MAX_METADATA)["sha256"],
+    return {"receipt_sha256": metadata_original(receipt_path, MAX_METADATA, reader=reader)[0]["sha256"],
             "input_lock_sha256": LOCK_SHA, "wheel_lock_sha256": receipt["wheel_lock"]["sha256"],
             "installed_files_sha256": receipt["installed_manifest"]["sha256"],
             "native_observation_sha256": digest(encoded(native)),

@@ -76,12 +76,12 @@ def input_files():
     return result
 
 
-def selected_source_gate(current, root=None):
+def selected_source_gate(current, root=None, *, reader=None):
     if selected_scenario() == RECOVERY_SCENARIO:
         from native_manim_recovery_gate import check_source_gate
     else:
         from native_manim_resume_focals import check_source_gate
-    return check_source_gate(current, root)
+    return check_source_gate(current, root, reader=reader)
 
 
 def selected_public_gate_files():

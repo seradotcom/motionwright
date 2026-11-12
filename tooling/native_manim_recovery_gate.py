@@ -12,7 +12,7 @@ import stat
 import urllib.request
 
 import ci_private_evidence as engine
-from native_manim_camera_evidence import read, read_object, require, sha
+from native_manim_camera_evidence import MAX_JSON, object_bytes, read, read_object, require, sha
 from native_manim_editable_outer import load_deadline, new_bytes, new_json, original
 from native_manim_resume_focals import (
     SELECTED, binary_identity, folder, parse_original_tests, parse_named_rust_tests, source_snapshot,
@@ -89,18 +89,26 @@ def validate_artifact(value, current, receipt_sha):
             "artifact_zip_bytes": row["size_in_bytes"], "tar": value["local_tar"]}
 
 
-def metadata_runtime(current, root):
+def _metadata_object(path, reader):
+    # Preserve the original JSON parser and byte budget with an explicit
+    # owner-provided file custodian; serialized metadata cannot select it.
+    return read_object(path) if reader is None else object_bytes(reader(path, MAX_JSON))
+
+
+def metadata_runtime(current, root, *, reader=None):
     from native_manim_frozen_runtime_restore import validate_reuse
     root = Path(root)
+    read_original = read if reader is None else reader
     frozen = validate_reuse(root / "runtime-receipt.json", root / "runtime-installed-files.json",
-                            root / "runtime-wheel-lock.json", root / "runtime-reuse.json", current)
-    receipt_raw = read(root / "runtime-receipt.json", 2 * 1024 * 1024)
+                            root / "runtime-wheel-lock.json", root / "runtime-reuse.json", current,
+                            reader=reader)
+    receipt_raw = read_original(root / "runtime-receipt.json", 2 * 1024 * 1024)
     origin = frozen.get("reuse", {}).get("origin_context")
     require(frozen.get("reuse", {}).get("context") == current
-            and read_object(root / "runtime-receipt.json").get("context") == origin
+            and _metadata_object(root / "runtime-receipt.json", reader).get("context") == origin
             and frozen["reuse"]["origin_receipt_sha256"] == sha(receipt_raw),
             "recovery_runtime_freeze_original_context")
-    artifact = validate_artifact(read_object(root / "runtime-artifact.original.json"), origin, sha(receipt_raw))
+    artifact = validate_artifact(_metadata_object(root / "runtime-artifact.original.json", reader), origin, sha(receipt_raw))
     require(frozen["reuse"].get("origin_artifact") == artifact,
             "recovery_runtime_reuse_original_artifact_binding")
     checked_archive_binding(frozen, artifact)
@@ -202,14 +210,15 @@ def parse_reference_tests(stdout):
     return parse_named_rust_tests(stdout, REFERENCE, "recovery_runtime_two_actual_reference_tests_required")
 
 
-def check_source_gate(current, root=None):
+def check_source_gate(current, root=None, *, reader=None):
     root = folder() if root is None else Path(root)
-    raw = original(root / "source-gate.json", 128 * 1024)
+    read_original = original if reader is None else reader
+    raw = read_original(root / "source-gate.json", 128 * 1024)
     value = engine.strict(raw)
     counts = {}
     for label, prefix, parser in (("recovery", "source-gate", parse_original_tests),
                                   ("reference", "reference-gate", parse_reference_tests)):
-        stdout, stderr = (original(root / (prefix + suffix), 1024 * 1024)
+        stdout, stderr = (read_original(root / (prefix + suffix), 1024 * 1024)
                           for suffix in (".stdout.log", ".stderr.log"))
         counts[label] = parser(stdout)
         row = value.get("tests", {}).get(label, {})
@@ -227,7 +236,7 @@ def check_source_gate(current, root=None):
                 and row.get("resources", {}).get("cgroup_quiescent") is True,
                 "recovery_runtime_actual_focal_source_originals")
     source, binary = value.get("source_before", {}), value.get("compiled_binary_before", {})
-    runtime = metadata_runtime(current, root)
+    runtime = metadata_runtime(current, root, reader=reader)
     inventory_sha = value.get("runtime", {}).get("runtime_inventory_sha256", "")
     require(re.fullmatch(r"[0-9a-f]{64}", inventory_sha), "recovery_runtime_native_inventory_binding")
     runtime["runtime_inventory_sha256"] = inventory_sha
