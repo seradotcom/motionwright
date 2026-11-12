@@ -436,7 +436,7 @@ mod tests {
             GRAPH_PROFILE_PROBE_FONT_SIZE, GRAPH_PROFILE_PROBE_SAMPLE,
             fixed_graph_profile_probe_program_v1,
         },
-        semantic_graph_source::graph_builtin_asset_pins,
+        semantic_graph_source::graph_runtime_asset_pins,
         semantic_graph_text::GRAPH_TEXT_GEOMETRY_CONTRACT_SHA256,
     };
     // Parser/transport fixture only: these bytes are not native runtime or font evidence.
@@ -478,7 +478,7 @@ mod tests {
             "manim_version":MANIM_VERSION,"sample_text":GRAPH_PROFILE_PROBE_SAMPLE,
             "sample_font_size_px":GRAPH_PROFILE_PROBE_FONT_SIZE,
             "coverage_scope":"fixed_ascii_sample_only","helper_pins":compiler["helper_pins"],
-            "asset_pins":graph_builtin_asset_pins(),"families":families,
+            "asset_pins":graph_runtime_asset_pins(),"families":families,
             "future_label_coverage_verified":false,"render_performed":false,
             "scene_mutation_performed":false,"profile_admitted":false,
         })
@@ -519,7 +519,7 @@ mod tests {
         let parsed = parse_profile(&data).unwrap();
         assert_eq!(parsed.state, ManimGraphProfileState::Observed);
         let profile = parsed.observation.unwrap();
-        assert_eq!(profile.asset_pins.len(), 9);
+        assert_eq!(profile.asset_pins.len(), 16);
         assert_eq!(profile.helper_pins.len(), 6);
         assert_eq!(profile.families.len(), 2);
         assert!(!profile.profile_admitted && !profile.future_label_coverage_verified);
