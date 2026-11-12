@@ -212,7 +212,48 @@ def _empty_library_ready(scratch: Path, *, storage_cohort=None) -> bool:
         return False
 
 
-def _send_native_x11_create() -> None:
+def _unique_original_x11_window(scratch: Path) -> int:
+    """Read only: await one exact native title before a single GUI effect."""
+    latest = b""
+
+    def retain_refusal() -> None:
+        # The disposable runner scratch is fresh. Never replace foreign bytes.
+        with (scratch / "x11-first-create.original.txt").open("xb") as original:
+            original.write(latest)
+
+    for attempt in range(3):
+        try:
+            observed = subprocess.run(
+                ["xwininfo", "-root", "-tree"], capture_output=True, timeout=3,
+                check=False, env={**os.environ, "LC_ALL": "C"},
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ColdStartError("Read-only installed X11 query timed out") from error
+        latest = observed.stdout
+        if len(latest) > 65536:
+            raise ColdStartError("Original X11 tree exceeds the bounded read budget")
+        if observed.returncode:
+            retain_refusal()
+            raise ColdStartError("Could not inspect native installed X11 window")
+        try:
+            source = latest.decode("utf-8", errors="strict")
+        except UnicodeError as error:
+            retain_refusal()
+            raise ColdStartError("Original X11 tree has invalid text encoding") from error
+        ids = re.findall(r'^\s*(0x[0-9A-Fa-f]+)\s+"Motionwright":',
+                         source, re.MULTILINE)
+        if len(ids) == 1:
+            return int(ids[0], 16)
+        if len(ids) > 1:
+            retain_refusal()
+            raise ColdStartError("Ambiguous original Motionwright X11 windows")
+        if attempt < 2:
+            time.sleep(0.3)  # Only observations repeat; never a project mutation.
+    retain_refusal()
+    raise ColdStartError("Expected exactly one original Motionwright X11 window")
+
+
+def _send_native_x11_create(scratch: Path) -> None:
     """Send a single real keyboard activation to the accessible modal.
 
     ProjectLibraryDialog focuses its heading and traps Shift+Tab to its last
@@ -221,16 +262,7 @@ def _send_native_x11_create() -> None:
     """
     if os.environ.get("GITHUB_ACTIONS") != "true" or not os.environ.get("DISPLAY"):
         raise ColdStartError("Native first-use keyboard requires disposable Xvfb CI")
-    observed = subprocess.run(
-        ["xwininfo", "-root", "-tree"], capture_output=True, text=True,
-        timeout=5, check=False,
-    )
-    if observed.returncode:
-        raise ColdStartError("Could not inspect native installed X11 window")
-    ids = re.findall(r'^\s*(0x[0-9A-Fa-f]+)\s+"Motionwright":',
-                     observed.stdout, re.MULTILINE)
-    if len(ids) != 1:
-        raise ColdStartError("Expected exactly one original Motionwright X11 window")
+    window_id = _unique_original_x11_window(scratch)
     x11_name = ctypes.util.find_library("X11") or "libX11.so.6"
     xtst_name = ctypes.util.find_library("Xtst") or "libXtst.so.6"
     try:
@@ -258,7 +290,6 @@ def _send_native_x11_create() -> None:
     if not display:
         raise ColdStartError("Xvfb display could not be opened for the native GUI action")
     try:
-        window_id = int(ids[0], 16)
         x11.XRaiseWindow(display, window_id)
         x11.XSetInputFocus(display, window_id, 1, 0)
         x11.XSync(display, 0)
@@ -295,7 +326,7 @@ def _first_project_window_interaction(scratch: Path, *, storage_cohort=None) -> 
         return False
     # No retry follows this point even if acknowledgement is lost. The
     # installed application and SQLite journal remain authoritative.
-    _send_native_x11_create()
+    _send_native_x11_create(scratch)
     return True
 
 

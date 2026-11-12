@@ -329,6 +329,65 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         with self.assertRaisesRegex(windows.ColdStartError, "initialized"):
             windows.read_project_snapshot(path)
 
+    def test_existing_legacy_project_requires_exact_retained_identity(self):
+        path = self.root / "roaming" / "com.seradotcom.motionwright" / "motionwright.sqlite3"
+        source = project_db(path, title="Untitled Motion Project")
+        prior = {"project_id": source["id"], "generation": source["generation"],
+                 "revision": source["revision"], "title": source["title"],
+                 "document_sha256": hashlib.sha256(json.dumps(source).encode()).hexdigest()}
+        with self.assertRaisesRegex(windows.ColdStartError, "initialized"):
+            windows.read_project_snapshot(path)
+        self.assertEqual(windows.read_project_snapshot(path, expected_project=prior), prior)
+        for mutation in ("project_id", "generation", "revision", "title", "document_sha256"):
+            forged = dict(prior)
+            forged[mutation] = ("0" * 64 if mutation == "document_sha256"
+                                else 2 if mutation == "revision" else "changed")
+            with self.subTest(field=mutation), self.assertRaises(windows.ColdStartError):
+                windows.read_project_snapshot(path, expected_project=forged)
+        for bogus in ({}, {**prior, "formal_acceptance": True},
+                      {**prior, "revision": True}):
+            with self.subTest(bogus=bogus), self.assertRaises(windows.ColdStartError):
+                windows.read_project_snapshot(path, expected_project=bogus)
+
+    def test_reopening_existing_project_never_reserves_create_effect(self):
+        path = self.root / "roaming" / "com.seradotcom.motionwright" / "motionwright.sqlite3"
+        project = project_db(path, title="Untitled Motion Project")
+        prior = {"project_id": project["id"], "generation": project["generation"],
+                 "revision": project["revision"], "title": project["title"],
+                 "document_sha256": hashlib.sha256(json.dumps(project).encode()).hexdigest()}
+        executable = self.root / "installed" / "motionwright-desktop.exe"
+        executable.parent.mkdir()
+        executable.write_bytes(b"MZ original transport fixture")
+        with patch.object(windows.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(windows.ColdStartError, "original SQLite path"):
+                windows.boot_once(
+                    executable, {}, [path.parent.parent],
+                    self.root / "missing-store-path.original.log",
+                    expected_project=prior, seconds=4)
+            launch.assert_not_called()
+        with mocked_boot() as (process, launch, create):
+            found, actual, _ = windows.boot_once(
+                executable, {}, [path.parent.parent], self.root / "existing-boot.original.log",
+                expected_db=path, expected_project=prior, seconds=4)
+        self.assertEqual((found, actual), (prior, path))
+        launch.assert_called_once()
+        create.assert_not_called()
+        self.assertEqual(process.returncode, 0)
+
+    def test_boolean_document_revision_is_not_an_existing_project_identity(self):
+        path = self.root / "motionwright.sqlite3"
+        doc = project_db(path)
+        doc["revision"] = True
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("UPDATE projects SET document_json=?", (json.dumps(doc),))
+        with self.assertRaisesRegex(windows.ColdStartError, "conflicts"):
+            windows.read_project_snapshot(path)
+        prior = {"project_id": doc["id"], "generation": doc["generation"],
+                 "revision": 1, "title": doc["title"],
+                 "document_sha256": hashlib.sha256(json.dumps(doc).encode()).hexdigest()}
+        with self.assertRaisesRegex(windows.ColdStartError, "conflicts"):
+            windows.read_project_snapshot(path, expected_project=prior)
+
     def test_corrupt_sqlite_database_does_not_become_evidence(self):
         path = self.root / "motionwright.sqlite3"
         path.write_bytes(b"not-a-real-sqlite-file")
@@ -402,6 +461,29 @@ class WindowsCandidateUnitTests(unittest.TestCase):
                     output=self.root / "not-created.json",
                 )
         self.assertFalse(scratch.exists())
+
+    def test_two_launch_source_contract_binds_second_reader_to_first_project(self):
+        executable, receipt, source = candidate_fixture(self.root)
+        database = self.root / "profile/com.seradotcom.motionwright/motionwright.sqlite3"
+        first = {"project_id": str(uuid.uuid4()),
+                 "generation": str(uuid.uuid4()), "revision": 1,
+                 "title": TITLE, "document_sha256": "f" * 64}
+        with patch.object(windows.os, "name", "nt"), \
+             patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                    "APPDATA": str(self.root),
+                                    "LOCALAPPDATA": str(self.root)}), \
+             patch.object(windows, "known_databases", return_value=[]), \
+             patch.object(windows, "boot_once",
+                          side_effect=[(first, database, 1), (first, database, 2)]) as boot:
+            result = windows.run_installed_relaunch(
+                executable=executable, smoke_receipt=receipt,
+                expected_sha=source, scratch=self.root / "real-scratch",
+                output=self.root / "real-relauch.json")
+        self.assertTrue(result["same_database_reopened"])
+        self.assertEqual(boot.call_count, 2)
+        self.assertEqual(boot.call_args_list[1].kwargs["expected_db"], database)
+        self.assertEqual(boot.call_args_list[1].kwargs["expected_project"], first)
+        self.assertNotIn("expected_project", boot.call_args_list[0].kwargs)
 
     def test_forged_nsis_bundle_scope_rejected(self):
         exe, receipt, sha = candidate_fixture(self.root)

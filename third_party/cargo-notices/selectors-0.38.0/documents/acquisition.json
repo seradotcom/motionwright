@@ -1,0 +1,9 @@
+{
+  "bytes": 16726,
+  "content_type": "text/plain",
+  "final_url": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+  "http_status": 200,
+  "requested_url": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+  "schema": "motionwright.official-license-acquisition/1",
+  "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+}

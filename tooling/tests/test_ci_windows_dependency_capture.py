@@ -189,6 +189,34 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "candidate_application_hardlink"):
             self.verify_inventory()
 
+    def test_cargo_resource_sources_are_absolute_plain_checkout_files_for_nsis(self):
+        # The Tauri overlay may refer to generated Cargo notices above
+        # src-tauri. NSIS must never see a '..' source path; preserve the
+        # authenticated source bytes by spelling each as a checkout-anchored
+        # absolute path instead of weakening nsis_owned_files validation.
+        source_root = self.root / gate.BASE / "resources/cargo"
+        expected = {
+            (source_root / "index.json").as_posix(): "licenses/cargo/index.json",
+            (source_root / "texts" / self.notice_path.name).as_posix():
+                "licenses/cargo/texts/" + self.notice_path.name,
+        }
+        mapped = gate.resource_mapping(self.root, self.cargo_index.read_bytes())
+        cargo = {name: dest for name, dest in mapped.items()
+                 if dest.startswith("licenses/cargo/")}
+        self.assertEqual(cargo, expected)
+        self.assertEqual(len(cargo), 2)
+        for source in cargo:
+            with self.subTest(source=source):
+                path = Path(source)
+                self.assertTrue(path.is_absolute())
+                self.assertNotIn("..", path.parts)
+                self.assertNotIn("\\", source)
+                self.assertIn(source_root, path.parents)
+                self.assertTrue(path.is_file())
+        gate.stage_resources(self.root, self.sha)
+        overlay = json.loads((self.root / gate.BASE / "tauri-resources.json").read_bytes())
+        self.assertEqual(overlay["bundle"]["resources"], mapped)
+
     def test_overlay_preserves_originals_and_binds_real_bytes_before_publication(self):
         binding = gate.stage_resources(self.root, self.sha)
         overlay = self.root / gate.BASE / "tauri-resources.json"

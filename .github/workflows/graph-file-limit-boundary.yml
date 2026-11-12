@@ -13,6 +13,9 @@ on:
       - 'apps/studio/tooling/graph-owner/owner_environment_layout.test.mjs'
       - 'crates/service/examples/studio_review_session.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_recovery.rs'
+      - 'apps/desktop/src-tauri/src/semantic_graph_recovery_tests.rs'
       # Only source modules consumed by these bounded real Graph transports.
       # Broader unrelated Native changes use their separate impact lanes.
       - 'crates/native/src/production/graph_authoring.rs'
@@ -87,6 +90,7 @@ jobs:
           passed = re.findall(r"^test native_graph_adapter_tests::([^\r\n ]*) \.\.\. ok$", raw, re.M)
           required = {
               "graph_context_public_stage_and_pinned_error_code_rosters_are_closed",
+              "graph_context_success_requires_a_confirmed_original_transport",
               "graph_context_public_error_projection_redacts_every_private_message",
               "parent_journal_file_slice_rejects_before_publishing_an_unreserved_request",
               "parent_journal_byte_slice_preserves_charges_and_existing_originals",
@@ -99,3 +103,25 @@ jobs:
           assert required.issubset(passed)
           assert re.search(rf"^test result: ok\. {len(passed)} passed; 0 failed;", raw, re.M)
           PY
+      - name: Check exact Graph mutation and recovery failure projections
+        run: |
+          set -euo pipefail
+          test_index=0
+          for test_name in \
+            semantic_graph_mutation_error::tests::unconfirmed_original_transport_overrules_even_a_known_native_rejection \
+            semantic_graph_mutation_error::tests::invalid_keys_never_emit_a_typed_error_or_reflect_private_input \
+            semantic_graph_recovery::tests::confirmed_recovery_transport_is_required_before_using_even_a_valid_record
+          do
+            test_index=$((test_index + 1))
+            log_path="$RUNNER_TEMP/graph-mutation-$test_index.tests.original.log"
+            cargo test --locked -p motionwright-native --example native-graph-review-session \
+              "$test_name" -- --exact --nocapture 2>&1 | tee "$log_path"
+            python3 - "$test_name" "$log_path" <<'PY'
+          import re, sys
+          from pathlib import Path
+          name, path = sys.argv[1:]
+          raw = Path(path).read_text()
+          assert re.search(r"^test " + re.escape(name) + r" \.\.\. ok$", raw, re.M)
+          assert re.search(r"^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;", raw, re.M)
+          PY
+          done

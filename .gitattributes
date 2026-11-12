@@ -34,3 +34,6 @@ apps/desktop/src-tauri/bundle-licenses/** -text whitespace=-blank-at-eof
 
 # Preserve the literal predecessor archive, including its historical failure receipt.
 tooling/tests/fixtures/windows-predecessor-12101216495.original.zip -text
+
+# Preserve reviewed supplemental notice text and raw Git-object bytes.
+third_party/cargo-notices/** -text whitespace=-blank-at-eof,-blank-at-eol

@@ -67,6 +67,20 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         checkout.assert_has_calls([mock.call(self.root, "a" * 40)] * 2)
         return namespace
 
+    def test_supplemental_notices_use_the_existing_windows_contract_step(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        for path in ("scripts/cargo_notice_supplements.py",
+                     "scripts/test_cargo_notice_supplements.py",
+                     "scripts/test_cargo_notice_supplement_integration.py",
+                     "third_party/cargo-notices/**", ".gitattributes",
+                     "docs/reliability/cargo-notice-supplements.md"):
+            self.assertEqual(text.count('- "' + path + '"'), 2, path)
+        contracts = re.search(
+            r"(?ms)^  windows-contracts:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text).group(1)
+        self.assertIn("python -B -m unittest test_cargo_notice_supplements "
+                      "test_cargo_notice_supplement_integration -v", contracts)
+        self.assertIn("throw 'Cargo supplemental notice contracts failed'", contracts)
+
     def test_internal_capture_binds_real_fixture_bytes_and_denies_a_changed_payload(self):
         result = self.execute()
         record = json.loads((self.root / result["record_path"]).read_bytes())
@@ -126,7 +140,14 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         self.assertIn("tauri bundle --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bundles nsis", windows)
         self.assertIn("--no-binary-patching --no-sign --ci", windows)
         self.assertIn("-- cargo build --locked --release --bins --package motionwright-desktop", windows)
-        self.assertIn("--features tauri/custom-protocol --tauri-generated-schemas", windows)
+        self.assertIn("--features tauri/custom-protocol --tauri-generated-schemas "
+                      "--tauri-generated-command-permissions", windows)
+        self.assertIn("python -B -m unittest test_tauri_generated_permissions "
+                      "test_tauri_generated_metadata -v", text)
+        for path in ("scripts/tauri_generated_permissions.py",
+                     "scripts/test_tauri_generated_permissions.py",
+                     "scripts/test_tauri_generated_metadata.py"):
+            self.assertEqual(text.count('- "' + path + '"'), 2)
         self.assertIn("--require-cargo-binding", windows)
         inventory_command = "python -B tooling/ci_windows_dependency_capture.py inventory"
         self.assertLess(windows.index(inventory_command),
@@ -152,6 +173,8 @@ class InternalWindowsCandidateTests(unittest.TestCase):
             "generated-metadata/tauri/desktop-schema.json",
             "generated-metadata/tauri/windows-schema.json",
             "generated-metadata/cargo-markers/*.bin",
+            "generated-metadata/tauri-command-source/build.rs",
+            "generated-metadata/tauri-command-permissions/*.toml",
         }
         originals = {"ci-evidence/internal-windows-cargo/state/" + name for name in original_names}
         originals.update({"ci-evidence/internal-windows-cargo/frontend/" + name
@@ -176,6 +199,43 @@ class InternalWindowsCandidateTests(unittest.TestCase):
             else:
                 self.assertTrue(paths)
                 self.assertLessEqual(set(paths), allowed)
+
+
+    def test_installed_inventory_has_own_bound_and_blocks_cold_relaunch(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        windows = workflow.split("\n  windows:\n", 1)[1].split(
+            "\n  windows-update:\n", 1)[0]
+        install_name = "      - name: Silent current-user NSIS install and inspect installed Windows executable\n"
+        verify_name = "      - name: Verify isolated installed Windows application inventory\n"
+        cold_name = "      - name: Cold launch and reopen the real NSIS-installed application\n"
+        self.assertEqual(windows.count(install_name), 1)
+        self.assertEqual(windows.count(verify_name), 1)
+        self.assertEqual(windows.count(cold_name), 1)
+        install = windows.split(install_name, 1)[1].split(verify_name, 1)[0]
+        verification = windows.split(verify_name, 1)[1].split(cold_name, 1)[0]
+        relaunch = windows.split(cold_name, 1)[1].split(
+            "      - name: Preserve sanitized Windows first-use failure evidence", 1)[0]
+        self.assertIn("timeout-minutes: 6", install)
+        self.assertIn("Start-Process -FilePath $installer", install)
+        self.assertIn("candidate_smoke.py", install)
+        self.assertNotIn("ci_windows_dependency_capture.py verify", install)
+        self.assertIn(
+            "if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+            verification,
+        )
+        self.assertIn("timeout-minutes: 30", verification)
+        self.assertIn("$dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'", verification)
+        command = ('python -B tooling/ci_windows_dependency_capture.py verify '
+                   '--installed-root "$dest" --expected-inventory-sha256 '
+                   '"$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"')
+        self.assertEqual(windows.count(command), 1)
+        self.assertIn(command, verification)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }", verification)
+        self.assertIn("timeout-minutes: 5", relaunch)
+        self.assertIn("python tooling/windows_cold_start.py", relaunch)
+        self.assertLess(windows.index(verify_name), windows.index(cold_name))
+        self.assertNotIn("continue-on-error", verification)
+        self.assertNotIn("|| true", verification)
 
 
 if __name__ == "__main__":

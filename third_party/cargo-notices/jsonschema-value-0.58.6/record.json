@@ -1,0 +1,272 @@
+{
+  "commit": "55ac1664384793c5d3b20745d3f9c169dfe2c06f",
+  "component": {
+    "crate_sha256": "39b7670345e5ce87371339d13705dbb9276b7e3e934bbe1efa2c6734a1f65a96",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#jsonschema-value@0.58.6",
+    "license": "MIT",
+    "name": "jsonschema-value",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "0.58.6"
+  },
+  "members": [
+    {
+      "bytes": 117,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "ee8166ff3889517d9b0ff72c62a57bea91d872c2d46160033de2c60340cb06dc"
+    },
+    {
+      "bytes": 20097,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "da5a1f6aef2e53b7a1b0fa95e03ce74d25c717736507c3ea88508ce95980818d"
+    },
+    {
+      "bytes": 3122,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "8270a39ed0531eaf4de5ff516df9e09d17d3c2a697b0b428b02673a661f37844"
+    },
+    {
+      "bytes": 1966,
+      "kind": "git_package_manifest",
+      "path": "Cargo.toml.orig",
+      "sha256": "fc9363e8e19857cdd58db66ce582a24cb0dd3047684955728e67b94b46b7e8cd"
+    },
+    {
+      "bytes": 428,
+      "kind": "git_exact",
+      "path": "README.md",
+      "sha256": "bb70b119d16af0e45cd1e7649a0f7f45b17ed13f72f59298225bf06fb919a920"
+    },
+    {
+      "bytes": 83,
+      "kind": "git_exact",
+      "path": "build.rs",
+      "sha256": "eaf4038e865deb416425dc3cc3f0bd8afdc580481f82cdd487913c87ed14aab6"
+    },
+    {
+      "bytes": 13696,
+      "kind": "git_exact",
+      "path": "src/cmp.rs",
+      "sha256": "425eb00b7917714f42ade82a4dd7ed7d720e0221ad231c706ffb6d9e5219cde4"
+    },
+    {
+      "bytes": 7606,
+      "kind": "git_exact",
+      "path": "src/conformance.rs",
+      "sha256": "3851e3e8d354cdfe70c47c2fab4d5dc6e248b419fb02389eb2c13fbea8bc72b6"
+    },
+    {
+      "bytes": 14516,
+      "kind": "git_exact",
+      "path": "src/jsonb/encode.rs",
+      "sha256": "64229610ef0034f897ddb47041eeb542907ab394aa8c10b8d09f51b9373ab5f9"
+    },
+    {
+      "bytes": 33652,
+      "kind": "git_exact",
+      "path": "src/jsonb/mod.rs",
+      "sha256": "1c3ac81bfdccfbbf2188cd94db0185fca016096fa996831511c0096c931a9997"
+    },
+    {
+      "bytes": 9776,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "2f33edb30dd9fec570e8a938b5f88a892940f5fec24170394999dc53011b7758"
+    },
+    {
+      "bytes": 62635,
+      "kind": "git_exact",
+      "path": "src/magnus.rs",
+      "sha256": "4f6428f3a367d9e77d04e28b9f10e790f952083ac1cf9162fed0eea66b10871c"
+    },
+    {
+      "bytes": 36326,
+      "kind": "git_exact",
+      "path": "src/numeric.rs",
+      "sha256": "1f88af8a453960f5f89cf2ca302ff02ebfc9dd0da5d1df5094bf9ff6d90b4fc0"
+    },
+    {
+      "bytes": 13437,
+      "kind": "git_exact",
+      "path": "src/numeric_check.rs",
+      "sha256": "028d1f3455ffe248d3b7bcf390415ed213632ce83b6d947a10ed623bde6b5142"
+    },
+    {
+      "bytes": 62546,
+      "kind": "git_exact",
+      "path": "src/pyo3.rs",
+      "sha256": "1b7626c997b0044f460f294f50fbee5c45f10b14dbaee628a53123fb9bac39af"
+    },
+    {
+      "bytes": 8391,
+      "kind": "git_exact",
+      "path": "src/serde_json.rs",
+      "sha256": "04069919ec9ce3ddfb6bbe1a6bb7be93342ac224233a4ab2e09bd339ce487296"
+    },
+    {
+      "bytes": 2085,
+      "kind": "git_exact",
+      "path": "src/serde_number.rs",
+      "sha256": "350bcd4370649d71686cf7c5005c464f01be4568407c3f98bd36840292c74345"
+    },
+    {
+      "bytes": 15497,
+      "kind": "git_exact",
+      "path": "src/types.rs",
+      "sha256": "85386f9c610b1ee4a256ced203fe2f5deb172b3c261cb4610753cfe48b8bd2c1"
+    },
+    {
+      "bytes": 6917,
+      "kind": "git_exact",
+      "path": "src/unique.rs",
+      "sha256": "6ed3ae6d86dc987aaa4bf5ebc829c0682ba0b9bbb8d3f2534b0c0b84b591416f"
+    },
+    {
+      "bytes": 12376,
+      "kind": "git_exact",
+      "path": "tests/conformance.rs",
+      "sha256": "5dba2b7b05a7c7c24af05df53a506c9948aad82003dc0930e821318b48a89c07"
+    },
+    {
+      "bytes": 8296,
+      "kind": "git_exact",
+      "path": "tests/fixtures/jsonb-corpus-be.tsv",
+      "sha256": "aa3cb57397cff604ecbc63b19f22d41e94fee53d16e3051748d09efb073b5191"
+    },
+    {
+      "bytes": 1094,
+      "kind": "git_exact",
+      "path": "tests/fixtures/jsonb-corpus-input.jsonl",
+      "sha256": "9b7d083ffd74a8beb648f0d06905a1a3659776e480300930fb72fa5ccf436b20"
+    },
+    {
+      "bytes": 185,
+      "kind": "git_exact",
+      "path": "tests/fixtures/jsonb-corpus-reader-only.jsonl",
+      "sha256": "6bb46f3e33b2d37cf3a54a647d484400a7188de1c5524dc417eb21b92a53bb2e"
+    },
+    {
+      "bytes": 8337,
+      "kind": "git_exact",
+      "path": "tests/fixtures/jsonb-corpus.tsv",
+      "sha256": "b18760b0dcf17ec73ac6074afe17a905b119e5f0ceb1a9aebdd461e4426986fc"
+    },
+    {
+      "bytes": 37317,
+      "kind": "git_exact",
+      "path": "tests/jsonb.rs",
+      "sha256": "86463fa20bb56d7e03a72eb824a4b17bee1f4f7cc5a9e9099160569e74ab2fb9"
+    },
+    {
+      "bytes": 4614,
+      "kind": "git_exact",
+      "path": "tests/jsonb_live.rs",
+      "sha256": "1d99725fe0cd08ca454088ae797da800a5d251dcea200e3d16d37dba5bcd5b8b"
+    },
+    {
+      "bytes": 3330,
+      "kind": "git_exact",
+      "path": "tests/numeric.rs",
+      "sha256": "070f3477949c0154e290ec874bbe5563cdba2a6a5af89475f56bfe9a472abbb0"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "crates/jsonschema-value/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 1075,
+      "oid": "20c070f6401feda6f47be1b158f4f5a4a9d14062",
+      "path": "objects/20c070f6401feda6f47be1b158f4f5a4a9d14062.txt",
+      "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+      "type": "blob"
+    },
+    {
+      "bytes": 453,
+      "oid": "2e1713952ca408edf44700fc6474fb98085b9894",
+      "path": "objects/2e1713952ca408edf44700fc6474fb98085b9894.tree",
+      "sha256": "e2aae311b63ddb7faae771f276db3ff8f5caf4ac044b887b7f3b521106f65330",
+      "type": "tree"
+    },
+    {
+      "bytes": 483,
+      "oid": "55ac1664384793c5d3b20745d3f9c169dfe2c06f",
+      "path": "objects/55ac1664384793c5d3b20745d3f9c169dfe2c06f.commit",
+      "sha256": "1f08db1dbf15d3d3f37675efc159771a7735b9e4ca5734a46b1af3d7171e3ecf",
+      "type": "commit"
+    },
+    {
+      "bytes": 192,
+      "oid": "6181098e4fbe6d7a8d38050970c1c433862d9903",
+      "path": "objects/6181098e4fbe6d7a8d38050970c1c433862d9903.tree",
+      "sha256": "d71d9f2291629bb76160265c5b62997cf6b1e82e15f9431817f09677a666eb8d",
+      "type": "tree"
+    },
+    {
+      "bytes": 201,
+      "oid": "6b5b4b65172d0483f4a825bdbdac8d478af2ea20",
+      "path": "objects/6b5b4b65172d0483f4a825bdbdac8d478af2ea20.tree",
+      "sha256": "2f0fc85e6f12441a46e8ebf75246da7157d1ada310a87ba36a2c343c6f4da4df",
+      "type": "tree"
+    },
+    {
+      "bytes": 855,
+      "oid": "8aa884df020bce21fc4d6a33196c4d7db5a1c88b",
+      "path": "objects/8aa884df020bce21fc4d6a33196c4d7db5a1c88b.tree",
+      "sha256": "9ac3d2a1eeeda9ef37974eca17f6e803f91f31da6a6453f6a7d52184de28cc09",
+      "type": "tree"
+    },
+    {
+      "bytes": 68,
+      "oid": "8b1a41d49ef9836af249b0583dd95467793a1ee0",
+      "path": "objects/8b1a41d49ef9836af249b0583dd95467793a1ee0.tree",
+      "sha256": "76ce1714c1cf67a89c22bf095f0ac619576d959b9342d323d9f784ed17654040",
+      "type": "tree"
+    },
+    {
+      "bytes": 1294,
+      "oid": "97e57b8a4663ec929a7cebcb80650d954033b6e6",
+      "path": "objects/97e57b8a4663ec929a7cebcb80650d954033b6e6.blob",
+      "sha256": "cc637e24d6a7cc90a0658c4cd4566929e42ec5d5813dcef246d0d3614a21ca98",
+      "type": "blob"
+    },
+    {
+      "bytes": 71,
+      "oid": "a5f26083d982e3d639d9c8c8c2dbb0ea16fd3fee",
+      "path": "objects/a5f26083d982e3d639d9c8c8c2dbb0ea16fd3fee.tree",
+      "sha256": "943d4ed866bf67cddf98129432c4236b1ea735e5e7955add4ff19132f55ce24c",
+      "type": "tree"
+    },
+    {
+      "bytes": 1160,
+      "oid": "ed99f1c908911bab0328e1c9a456cd449a5d5fec",
+      "path": "objects/ed99f1c908911bab0328e1c9a456cd449a5d5fec.tree",
+      "sha256": "853f934f4fb69604870fa59caf76051db4976eaff8a7f38e13edee5b9667cc94",
+      "type": "tree"
+    },
+    {
+      "bytes": 173,
+      "oid": "f787034e9dbb3e676e7cfc3fc5f6967a8d3be8fb",
+      "path": "objects/f787034e9dbb3e676e7cfc3fc5f6967a8d3be8fb.tree",
+      "sha256": "6921d2162d998b8b67293be23ef04aa49957449f047a1bbcf93399cc5ecfc696",
+      "type": "tree"
+    },
+    {
+      "bytes": 1966,
+      "oid": "fbb9babe98a620a8c012b836cdce46fc4db250a6",
+      "path": "objects/fbb9babe98a620a8c012b836cdce46fc4db250a6.blob",
+      "sha256": "fc9363e8e19857cdd58db66ce582a24cb0dd3047684955728e67b94b46b7e8cd",
+      "type": "blob"
+    }
+  ],
+  "package_path": "crates/jsonschema-value",
+  "repository": "https://github.com/Stranger6667/jsonschema",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": "Cargo.toml"
+}

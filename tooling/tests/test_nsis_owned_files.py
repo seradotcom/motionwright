@@ -1048,6 +1048,113 @@ class DistributionOwnedFilesTests(unittest.TestCase):
                 self.assertEqual(distribution_source_context(root), context)
                 self.assertEqual(fixture["source"].read_bytes(), fixture["payload_bytes"])
 
+    def test_helper_entry_rejects_missing_parent_hidden_by_parent_component(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            helper = root / "tooling" / "helper.py"
+            helper.write_bytes(b"original helper")
+            entry = root / "missing" / ".." / "tooling" / helper.name
+            with self.assertRaises(OSError):
+                owned._source_helper_path(entry)
+            self.assertEqual(helper.read_bytes(), b"original helper")
+
+    def test_helper_entry_rejects_reparse_parent_hidden_by_parent_component(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            helper = root / "tooling" / "helper.py"
+            helper.write_bytes(b"original helper")
+            actual = root / "actual"
+            actual.mkdir()
+            link = root / "link"
+            try:
+                link.symlink_to(actual, target_is_directory=True)
+            except OSError:
+                self.skipTest("this host cannot create the real symlink/reparse fixture")
+            entry = link / ".." / "tooling" / helper.name
+            with self.assertRaisesRegex(owned.CaptureError, "path parents must be ordinary"):
+                owned._source_helper_path(entry)
+            self.assertEqual(helper.read_bytes(), b"original helper")
+
+    def test_helper_entry_rejects_same_size_replacement_during_normalization(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            helper = root / "helper.py"
+            original = b"original helper"
+            replacement = b"replaced helper"
+            self.assertEqual(len(original), len(replacement))
+            helper.write_bytes(original)
+            before = helper.stat()
+            displaced = root / "displaced.py"
+            validate = owned._validated_path
+
+            def replace_at_normalization(value):
+                normalized = validate(value)
+                # Replace a real file at a deterministic race boundary; the
+                # old inode remains live, so equal size/mtime cannot hide it.
+                helper.rename(displaced)
+                helper.write_bytes(replacement)
+                os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
+                return normalized
+
+            with mock.patch.object(owned, "_validated_path", side_effect=replace_at_normalization):
+                with self.assertRaisesRegex(owned.CaptureError, "helper changed during capture"):
+                    owned._source_helper_path(helper)
+            self.assertEqual(displaced.read_bytes(), original)
+            self.assertEqual(helper.read_bytes(), replacement)
+            self.assertNotEqual(owned._object_identity(helper.stat()),
+                                owned._object_identity(before))
+
+    def test_pinned_main_root_uses_plain_checkout_without_windows_resolve_alias(self):
+        # Windows may spell one ordinary checkout differently after resolve.
+        # The actual CLI already derives this root from its verified helper.
+        # Never resolve aliases to make caller-controlled lexical paths safe.
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            with mock.patch.object(
+                Path, "resolve",
+                side_effect=AssertionError("pinned root must not rely on resolve"),
+            ):
+                source, capture, include = owned._pinned_internal_main_paths(root, "x64")
+            release = (root / "target" / "windows-captured"
+                       / "x86_64-pc-windows-msvc" / "release")
+            self.assertEqual(source, release / "motionwright-desktop.exe")
+            self.assertEqual(capture, release / "nsis" / "x64"
+                             / "mw-owned-MW_MAIN.bin")
+            self.assertEqual(include, release / "nsis" / "x64"
+                             / "mw-owned-MW_MAIN.nsh")
+            with self.assertRaisesRegex(
+                    owned.CaptureError, "ambiguous path components"):
+                owned._pinned_internal_main_paths(root / "target" / "..", "x64")
+            with mock.patch.object(owned, "_require_plain_parents",
+                                   side_effect=owned.CaptureError("reparse refused")):
+                with self.assertRaisesRegex(
+                        owned.CaptureError, "reparse refused"):
+                    owned._pinned_internal_main_paths(root, "x64")
+
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            source, capture, include = owned._pinned_internal_main_paths(
+                root, "x64", layout="guarded-update-release",
+            )
+            release = root / "target" / "release"
+            self.assertEqual(source, release / "motionwright-desktop.exe")
+            self.assertEqual(capture, release / "nsis" / "x64" / "mw-owned-MW_MAIN.bin")
+            self.assertEqual(include, release / "nsis" / "x64" / "mw-owned-MW_MAIN.nsh")
+            for layout in ("", "release", "guarded-update", "../release", "WINDOWS-CAPTURED"):
+                with self.subTest(layout=layout):
+                    with self.assertRaisesRegex(
+                        owned.CaptureError, "main_layout_unsupported",
+                    ):
+                        owned._pinned_internal_main_paths(root, "x64", layout=layout)
+            with self.assertRaisesRegex(owned.CaptureError, "ambiguous path components"):
+                owned._pinned_internal_main_paths(
+                    root / "target" / "..", "x64", layout="guarded-update-release",
+                )
+
     def test_real_cli_synthetic_permitted_control_binds_bytes_not_actual_rights(self):
         with self.temporary() as directory:
             fixture = self.fixture(directory, status="permitted")
@@ -1062,6 +1169,94 @@ class DistributionOwnedFilesTests(unittest.TestCase):
                 distribution_source_context(fixture["root"]),
                 fixture["document"]["source"],
             )
+
+            # The actual Windows bundler may supply noncanonical lexical
+            # paths. Only the exact reviewed Cargo source/output layout can
+            # select MW_MAIN; neither Tauri's Source nor arbitrary caller
+            # capture/include paths are inputs to this stronger CLI mode.
+            pinned_source, pinned_capture, pinned_include = (
+                owned._pinned_internal_main_paths(fixture["root"], "x64")
+            )
+            pinned_source.parent.mkdir(parents=True)
+            pinned_source.write_bytes(fixture["payload_bytes"])
+            pinned_capture.parent.mkdir(parents=True)
+            # Match the real NSIS hook's entrypoint spelling, not a direct
+            # tooling path: Python preserves these four parent components.
+            hook = fixture["root"] / "apps" / "desktop" / "src-tauri" / "windows"
+            hook.mkdir(parents=True)
+            entry = hook / ".." / ".." / ".." / ".." / "tooling" / SCRIPT.name
+            command = [
+                sys.executable, "-B", str(entry),
+                "--prepare-distribution", "--from-pinned-build",
+                "--arch", "x64", "--symbol", "MW_MAIN",
+            ]
+            admitted = subprocess.run(
+                command, cwd=fixture["cwd"], env=fixture["environment"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(admitted.returncode, 0, admitted.stderr)
+            self.assertEqual(pinned_capture.read_bytes(), fixture["payload_bytes"])
+            pinned_text = pinned_include.read_text(encoding="utf-8-sig")
+            self.assertIn(f'!define MW_MAIN_SHA256 "{digest}"', pinned_text)
+            self.assertIn(str(pinned_capture).replace("$", "$$"), pinned_text)
+            self.assertNotIn(str(fixture["source"]), pinned_text)
+
+            # A provided path cannot override the root- and arch-bound
+            # selection; a lexical alias is rejected, not canonicalized.
+            before = pinned_include.read_bytes()
+            rejected = subprocess.run(
+                [*command, "--source", str(fixture["source"])],
+                cwd=fixture["cwd"], env=fixture["environment"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("pinned main capture cannot accept caller paths",
+                          rejected.stderr)
+            self.assertEqual(pinned_include.read_bytes(), before)
+            with self.assertRaises(owned.CaptureError):
+                owned._pinned_internal_main_paths(
+                    fixture["root"] / "target" / "..", "x64",
+                )
+
+        with self.temporary() as directory:
+            fixture = self.fixture(directory, status="permitted")
+            root = fixture["root"]
+            source, capture, include = owned._pinned_internal_main_paths(
+                root, "x64", layout="guarded-update-release",
+            )
+            source.parent.mkdir(parents=True)
+            source.write_bytes(fixture["payload_bytes"])
+            capture.parent.mkdir(parents=True)
+            hook = root / "apps" / "desktop" / "src-tauri" / "windows"
+            hook.mkdir(parents=True)
+            entry = hook / ".." / ".." / ".." / ".." / "tooling" / SCRIPT.name
+            command = [
+                sys.executable, "-B", str(entry), "--prepare-distribution",
+                "--from-pinned-build", "--arch", "x64", "--symbol", "MW_MAIN",
+            ]
+            def invoke(layout):
+                env = dict(fixture["environment"])
+                if layout is not None:
+                    env["MW_NSIS_PINNED_MAIN_LAYOUT"] = layout
+                else:
+                    env.pop("MW_NSIS_PINNED_MAIN_LAYOUT", None)
+                return subprocess.run(
+                    command, cwd=fixture["cwd"], env=env,
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+            missing_default = invoke(None)
+            self.assertEqual(missing_default.returncode, 2)
+            self.assertFalse(capture.exists())
+            self.assertFalse(include.exists())
+            unknown = invoke("target/release")
+            self.assertEqual(unknown.returncode, 2)
+            self.assertIn("distribution_admission_main_layout_unsupported", unknown.stderr)
+            self.assertFalse(capture.exists())
+            admitted = invoke("guarded-update-release")
+            self.assertEqual(admitted.returncode, 0, admitted.stderr)
+            self.assertEqual(capture.read_bytes(), fixture["payload_bytes"])
+            self.assertIn("!define MW_MAIN_SHA256", include.read_text(encoding="utf-8-sig"))
+            self.assertNotIn(str(fixture["source"]), include.read_text(encoding="utf-8-sig"))
 
     def test_real_cli_main_mode_and_pinned_context_are_required_without_fallback(self):
         for case in (
@@ -1241,8 +1436,11 @@ class DistributionOwnedFilesTests(unittest.TestCase):
         ]
         self.assertEqual(len(main_commands), 1)
         self.assertEqual(len(ordinary_commands), 1)
-        self.assertIn('--prepare-distribution --arch "${ARCH}"', main_commands[0])
-        self.assertIn('--source "${Source}"', main_commands[0])
+        self.assertIn('--prepare-distribution --from-pinned-build --arch "${ARCH}"',
+                      main_commands[0])
+        for caller_path in ("--source", "--capture", "--include"):
+            self.assertNotIn(caller_path, main_commands[0])
+        self.assertIn('--source "${Source}"', ordinary_commands[0])
         self.assertTrue(main_commands[0].endswith("= 0"))
         self.assertNotIn("--prepare-distribution", ordinary_commands[0])
         self.assertIn('!insertmacro MWINST_CAPTURE MW_MAIN "${MAINBINARYSRCPATH}"', template)

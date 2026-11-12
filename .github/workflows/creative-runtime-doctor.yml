@@ -147,7 +147,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
           python -B tooling/source_policy.py
-      - name: Compile actual Desktop and three Graph context ABI tests
+      - name: Compile actual Desktop and four Graph context ABI tests
         shell: bash
         env:
           CARGO_TERM_COLOR: never
@@ -159,7 +159,8 @@ jobs:
           npm --prefix apps/studio run build
           cargo check --locked -p motionwright-desktop --bin motionwright-desktop 2>&1 | tee ci-evidence/graph-context-abi-g1/desktop-check.original.log
           cargo test --locked -p motionwright-desktop --bin motionwright-desktop semantic_graph_context_failure::tests:: -- --nocapture 2>&1 | tee ci-evidence/graph-context-abi-g1/graph-context-tests.original.log
-          grep -Eq '^test result: ok[.] 3 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' ci-evidence/graph-context-abi-g1/graph-context-tests.original.log
+          grep -Eq '^test result: ok[.] 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' ci-evidence/graph-context-abi-g1/graph-context-tests.original.log
+          grep -Fxq 'test semantic_graph_context_failure::tests::context_success_cannot_hide_an_unconfirmed_transport ... ok' ci-evidence/graph-context-abi-g1/graph-context-tests.original.log
           sha256sum ci-evidence/graph-context-abi-g1/*.original.log > ci-evidence/graph-context-abi-g1/originals.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

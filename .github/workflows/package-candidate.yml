@@ -11,6 +11,8 @@ on:
         default: all
         options:
           - all
+          - linux_bundle
+          - macos_bundle
           - windows_contracts
           - windows_installed
           - nsis_source
@@ -37,13 +39,24 @@ on:
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
       - "tooling/tests/test_ci_windows_internal_candidate.py"
+      - "tooling/tests/test_ci_candidate_macos_scope.py"
+      - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
+      - "scripts/cargo_notice_supplements.py"
+      - "scripts/tauri_generated_permissions.py"
       - "scripts/candidate_frontend_authentication.py"
       - "scripts/npm_archive_authentication.py"
       - "scripts/test_cargo_license_sources.py"
+      - "scripts/test_cargo_notice_supplements.py"
+      - "scripts/test_cargo_notice_supplement_integration.py"
+      - "third_party/cargo-notices/**"
+      - ".gitattributes"
+      - "docs/reliability/cargo-notice-supplements.md"
+      - "scripts/test_tauri_generated_permissions.py"
+      - "scripts/test_tauri_generated_metadata.py"
       - "scripts/test_candidate_dependency_capture.py"
       - "scripts/test_candidate_frontend_authentication.py"
       - "tooling/source_lock_admission.py"
@@ -57,6 +70,12 @@ on:
       - "tooling/tests/test_nsis_owned_files.py"
       - "tooling/windows_installer_lifecycle.py"
       - "tooling/tests/test_windows_installer_lifecycle.py"
+      - "tooling/windows_uninstall_tamper.py"
+      - "tooling/tests/test_windows_uninstall_tamper.py"
+      - "tooling/windows_uninstall_tamper_producer.py"
+      - "tooling/windows_tamper_artifact.py"
+      - "tooling/tests/test_windows_tamper_artifact.py"
+      - "tooling/ci_windows_tamper_contracts.py"
       - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
@@ -125,13 +144,24 @@ on:
       - "tooling/distribution_build_record.py"
       - "tooling/tests/test_distribution_build_record.py"
       - "tooling/tests/test_ci_windows_internal_candidate.py"
+      - "tooling/tests/test_ci_candidate_macos_scope.py"
+      - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
+      - "scripts/cargo_notice_supplements.py"
+      - "scripts/tauri_generated_permissions.py"
       - "scripts/candidate_frontend_authentication.py"
       - "scripts/npm_archive_authentication.py"
       - "scripts/test_cargo_license_sources.py"
+      - "scripts/test_cargo_notice_supplements.py"
+      - "scripts/test_cargo_notice_supplement_integration.py"
+      - "third_party/cargo-notices/**"
+      - ".gitattributes"
+      - "docs/reliability/cargo-notice-supplements.md"
+      - "scripts/test_tauri_generated_permissions.py"
+      - "scripts/test_tauri_generated_metadata.py"
       - "scripts/test_candidate_dependency_capture.py"
       - "scripts/test_candidate_frontend_authentication.py"
       - "tooling/source_lock_admission.py"
@@ -145,6 +175,12 @@ on:
       - "tooling/tests/test_nsis_owned_files.py"
       - "tooling/windows_installer_lifecycle.py"
       - "tooling/tests/test_windows_installer_lifecycle.py"
+      - "tooling/windows_uninstall_tamper.py"
+      - "tooling/tests/test_windows_uninstall_tamper.py"
+      - "tooling/windows_uninstall_tamper_producer.py"
+      - "tooling/windows_tamper_artifact.py"
+      - "tooling/tests/test_windows_tamper_artifact.py"
+      - "tooling/ci_windows_tamper_contracts.py"
       - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
@@ -231,7 +267,7 @@ jobs:
           # observations, never historical or final F/G3 acceptance.
           # F and all other refs/scopes still run both complete policies.
           case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in
-            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1)
+            seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:macos_bundle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_bundle:1)
               python3 -B - <<'PY'
           import json
           import os
@@ -259,7 +295,9 @@ jobs:
           labels = {"nsis_lifecycle": "dev-nsis-source",
                     "windows_contracts": "dev-windows-contracts-source",
                     "windows_installed": "dev-windows-installed-source",
-                    "linux_first_use_source": "dev-linux-first-use-source"}
+                    "linux_first_use_source": "dev-linux-first-use-source",
+                    "macos_bundle": "dev-macos-bundle-source",
+                    "linux_bundle": "dev-linux-bundle-source"}
           if scope not in labels:
               raise SystemExit("Development verification scope is not admitted")
           print(labels[scope]
@@ -271,6 +309,8 @@ jobs:
               python3 tooling/creative_status_policy.py
               ;;
           esac
+      - name: Verify bounded platform bundle selections without acceptance
+        run: python3 -B -m unittest tooling.tests.test_ci_candidate_macos_scope tooling.tests.test_ci_candidate_linux_scope -v
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
@@ -391,6 +431,27 @@ jobs:
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
           PY
+      - name: Require tamper evidence contracts in both import modes
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          subprocess.run([
+              sys.executable, "-B", "-E", "-s", "tooling/ci_windows_tamper_contracts.py",
+              "--repo", os.environ["GITHUB_WORKSPACE"],
+              "--expected-source", os.environ["GITHUB_SHA"],
+              "--output", str(Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-tamper-contracts"),
+          ], check=True)
+      - name: Retain exact tamper evidence contract receipts
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-tamper-contracts-${{ runner.os }}
+          path: ${{ runner.temp }}/motionwright-nsis-tamper-contracts/*
+          if-no-files-found: warn
       - name: Retain exact lifecycle contract receipts
         if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -409,7 +470,7 @@ jobs:
           if-no-files-found: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'error' || 'warn' }}
 
   nsis-source-windows:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')
     needs: receipt-policy
     runs-on: windows-latest
     timeout-minutes: 10
@@ -538,6 +599,31 @@ jobs:
               "human_acceptance": "NOT_RUN", "release_published": False})
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
+      - name: Require tamper evidence contracts in both import modes
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          subprocess.run([
+              sys.executable, "-B", "-E", "-s", "tooling/ci_windows_tamper_contracts.py",
+              "--repo", os.environ["GITHUB_WORKSPACE"],
+              "--expected-source", os.environ["GITHUB_SHA"],
+              "--output", str(Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-tamper-contracts"),
+          ], check=True)
+      - name: Retain exact tamper evidence contract receipts
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-tamper-contracts-${{ runner.os }}
+          path: ${{ runner.temp }}/motionwright-nsis-tamper-contracts/*
+          if-no-files-found: warn
       - name: Retain exact lifecycle contract receipts
         if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -810,7 +896,7 @@ jobs:
           retention-days: 30
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -962,6 +1048,7 @@ jobs:
           name: motionwright-linux-smoke-diagnostics
           path: |
             ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run.log
+            ${{ runner.temp }}/motionwright-smoke/isolated-gui/x11-first-create.original.txt
             ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run-first.log
             ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run-second.log
           if-no-files-found: warn
@@ -978,7 +1065,7 @@ jobs:
           if-no-files-found: error
 
   windows-contracts:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -1002,6 +1089,10 @@ jobs:
           try {
             python -B -m unittest test_cargo_license_sources test_candidate_dependency_capture test_candidate_frontend_authentication.PublicCopySourceTests -v
             if ($LASTEXITCODE -ne 0) { throw 'Cargo source capture contracts failed' }
+            python -B -m unittest test_cargo_notice_supplements test_cargo_notice_supplement_integration -v
+            if ($LASTEXITCODE -ne 0) { throw 'Cargo supplemental notice contracts failed' }
+            python -B -m unittest test_tauri_generated_permissions test_tauri_generated_metadata -v
+            if ($LASTEXITCODE -ne 0) { throw 'Tauri generated-permission contracts failed' }
           } finally {
             Pop-Location
           }
@@ -1118,10 +1209,10 @@ jobs:
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods[class_name]) != 48 or source_methods[cohort_class] != exact_six
-                  or len(methods) != 52 or len(all_methods) != 52
-                  or len(set(all_methods)) != 52 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires 48 plus four exact Storage 6 controls")
+          if (len(source_methods[class_name]) != 52 or source_methods[cohort_class] != exact_six
+                  or len(methods) != 56 or len(all_methods) != 56
+                  or len(set(all_methods)) != 56 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires 52 plus four exact Storage 6 controls")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("schema") != "motionwright.unittest-execution/1"
                   or receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
@@ -1143,11 +1234,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 52
-                      or type(counts.get("passed")) is not int or counts["passed"] != 52
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 56
+                      or type(counts.get("passed")) is not int or counts["passed"] != 56
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 52 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 56 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -1157,8 +1248,8 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{method}" for method in methods}
-              if len(observed) != 52 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 52 source controls exactly once")
+              if len(observed) != 56 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 56 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -1170,14 +1261,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 52, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 56, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=52 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=56 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
@@ -1212,7 +1303,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs['receipt-policy'].result == 'success' &&
           needs['windows-contracts'].result == 'success' && needs['nsis-source-windows'].result == 'success' &&
-          (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')) }}
+          (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')) }}
     needs: [receipt-policy, windows-contracts, nsis-source-windows, linux]
     runs-on: windows-latest
     env:
@@ -1265,7 +1356,7 @@ jobs:
               --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" `
               --cargo-home "$cargoHome" --manifest apps/desktop/src-tauri/Cargo.toml `
               --root-package motionwright-desktop --target x86_64-pc-windows-msvc `
-              --features tauri/custom-protocol --tauri-generated-schemas `
+              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions `
               --state-directory ci-evidence/internal-windows-cargo/state `
               --resources-directory ci-evidence/internal-windows-cargo/resources `
               -- cargo build --locked --release --bins --package motionwright-desktop `
@@ -1430,10 +1521,15 @@ jobs:
             --artifact "$installer" --installed-binary "$($binaries[0].FullName)" `
             --output ci-evidence/windows-nsis-smoke.json
           if ($LASTEXITCODE -ne 0) { throw 'Installed Windows candidate inspection failed' }
-          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
-            python -B tooling/ci_windows_dependency_capture.py verify --installed-root "$dest" --expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"
-            if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }
-          }
+      - name: Verify isolated installed Windows application inventory
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        shell: pwsh
+        timeout-minutes: 30
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'
+          python -B tooling/ci_windows_dependency_capture.py verify --installed-root "$dest" --expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }
       - name: Cold launch and reopen the real NSIS-installed application
         shell: pwsh
         timeout-minutes: 5
@@ -1504,6 +1600,8 @@ jobs:
             ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/desktop-schema.json
             ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/windows-schema.json
             ci-evidence/internal-windows-cargo/state/generated-metadata/cargo-markers/*.bin
+            ci-evidence/internal-windows-cargo/state/generated-metadata/tauri-command-source/build.rs
+            ci-evidence/internal-windows-cargo/state/generated-metadata/tauri-command-permissions/*.toml
             ci-evidence/internal-windows-cargo/state/capture-complete.json
             ci-evidence/internal-windows-cargo/frontend/before-build.json
             ci-evidence/internal-windows-cargo/frontend/after-bundle.json
@@ -1542,6 +1640,9 @@ jobs:
     needs: [receipt-policy, nsis-source-windows]
     runs-on: windows-latest
     timeout-minutes: 60
+    outputs:
+      lifecycle-artifact-id: ${{ steps.lifecycle_originals.outputs.artifact-id }}
+      lifecycle-artifact-digest: ${{ steps.lifecycle_originals.outputs.artifact-digest }}
     permissions:
       contents: read
       actions: read
@@ -2201,6 +2302,8 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS gate failed' }
       - name: Compile the actual NSIS template with two resources and two distinct PE sidecars
+        env:
+          MW_NSIS_PINNED_MAIN_LAYOUT: guarded-update-release
         shell: pwsh
         timeout-minutes: 12
         run: |
@@ -3087,6 +3190,7 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
       - name: Retain original lifecycle observations even after ERROR or UNKNOWN
+        id: lifecycle_originals
         if: always() && inputs.verification_scope == 'nsis_lifecycle'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -3104,8 +3208,60 @@ jobs:
             ci-evidence/nsis-windows-junction-test.json
           if-no-files-found: warn
 
+  windows-uninstall-tamper:
+    name: NSIS same-size refusal (${{ matrix.role }})
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'nsis_lifecycle'
+    needs: windows-update
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      # A failed case must not interrupt another runner's physical operation.
+      fail-fast: false
+      matrix:
+        role: [main, resource, external_binary]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.16'
+      - name: Admit the original producer and observe one refused uninstall
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MW_NSIS_LIFECYCLE_SCOPE: ${{ inputs.verification_scope }}
+          MW_TAMPER_ROLE: ${{ matrix.role }}
+          MW_PRODUCER_ARTIFACT_ID: ${{ needs.windows-update.outputs.lifecycle-artifact-id }}
+          MW_PRODUCER_ARTIFACT_SHA256: ${{ needs.windows-update.outputs.lifecycle-artifact-digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:GITHUB_WORKSPACE "ci-evidence/windows-uninstall-tamper-$($env:MW_TAMPER_ROLE)"
+          python -B tooling/windows_uninstall_tamper_producer.py --role "$env:MW_TAMPER_ROLE" --artifact-id "$env:MW_PRODUCER_ARTIFACT_ID" --artifact-sha256 "$env:MW_PRODUCER_ARTIFACT_SHA256" --output-root "$output"
+          if ($LASTEXITCODE -ne 0) { throw 'The original same-size refusal or custody was incomplete; no replay is authorized' }
+      - name: Retain original case observations even after ERROR or UNKNOWN
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-uninstall-tamper-${{ matrix.role }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/case/**
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/binding.json
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.json
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.txt
+            ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.log
+          if-no-files-found: warn
+
   macos:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'all' || inputs.verification_scope == 'macos_bundle'
     needs: receipt-policy
     runs-on: macos-latest
     steps:

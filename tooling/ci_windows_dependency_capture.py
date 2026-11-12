@@ -237,8 +237,14 @@ def resource_mapping(repo, raw):
         {row["sha256"] for component in index["components"] for row in component["notices"]}))]
     mapped = dict(resources)
     for name in names:
-        source_path = os.path.relpath(root / "cargo" / name,
-                                      repo / "apps/desktop/src-tauri").replace("\\", "/")
+        # These are already authenticated Cargo-notice bytes under this
+        # checkout. Do not hand Tauri a lexical ../../../ci-evidence source:
+        # the NSIS owner deliberately refuses parent components. Tauri's
+        # resource map accepts absolute source paths with explicit targets.
+        source = root / "cargo" / name
+        require(source.is_absolute() and ".." not in source.parts,
+                "windows_cargo_resource_source_not_checkout_absolute")
+        source_path = source.as_posix()
         mapped[source_path] = "licenses/cargo/" + name
     return mapped
 

@@ -348,6 +348,21 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         }
         for name in ("tooling/source_policy.py", "tooling/public_surface_policy.py"):
             fixtures[name] = (SOURCE_ROOT / name).read_text(encoding="utf-8")
+        # These are synthetic, isolated consumer fixtures, NOT patched glib or
+        # Tauri verification. The full production source policy independently
+        # verifies real vendor bytes on the canonical checkout. Keep the test
+        # modules traceable to the exact temporary checkout so the production
+        # import-origin guard remains active rather than being bypassed.
+        fixtures["tooling/v01_glib_backport_integrity.py"] = (
+            "SOURCE_POLICY_UNIT_FIXTURE_ONLY = True\n"
+        )
+        fixtures["tooling/v01_glib_product_admission.py"] = (
+            "import v01_glib_backport_integrity\n"
+            "def admit_patched_glib(root):\n    return None\n"
+        )
+        fixtures["tooling/v01_tauri_ipc_product_admission.py"] = (
+            "def admit_patched_tauri(root):\n    return None\n"
+        )
         helper = SOURCE_ROOT / "tooling/source_lock_admission.py"
         if helper.is_file():
             fixtures["tooling/source_lock_admission.py"] = helper.read_text(encoding="utf-8")
@@ -361,15 +376,9 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         # own independent suites. Source-lock admission, source traversal,
         # public-surface validation and credential checks are real.
         bootstrap = (
-            "import pathlib, runpy, sys, types\n"
+            "import pathlib, runpy, sys\n"
             "root = pathlib.Path(sys.argv[1])\n"
             "sys.path.insert(0, str(root / 'tooling'))\n"
-            "dependency = types.ModuleType('v01_glib_product_admission')\n"
-            "dependency.admit_patched_glib = lambda root: None\n"
-            "sys.modules['v01_glib_product_admission'] = dependency\n"
-            "dependency = types.ModuleType('v01_tauri_ipc_product_admission')\n"
-            "dependency.admit_patched_tauri = lambda root: None\n"
-            "sys.modules['v01_tauri_ipc_product_admission'] = dependency\n"
             "runpy.run_path(str(root / 'tooling/source_policy.py'), run_name='__main__')\n"
         )
         return subprocess.run(

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { GraphCaseFactoryCore } from '../../tests/support/graph-owner/factory.mjs';
+import { hasNoSemanticGraphs } from '../../tests/support/graph-owner/contracts.mjs';
 import { ScopedChangeService } from '../../tests/support/scopedChangeService.ts';
 
 test('Native RPC retains a response within its existing 45-second transport window without retry', async t => {
@@ -53,4 +54,31 @@ test('Native RPC retains a response within its existing 45-second transport wind
   assert.match(failure.error?.message ?? '', /timed out/);
   assert.deepEqual(native.lifecycleTaints.map(row => row.kind), ['request_timeout']);
   assert.equal(writes, 2, 'one write per original request, including the timed-out request');
+});
+
+test('Graph initializer accepts the domain omitted-empty serialization without changing the original project', () => {
+  const omitted = Object.freeze({ production_design: Object.freeze({}) });
+  const explicit = Object.freeze({
+    production_design: Object.freeze({ semantic_graphs: Object.freeze([]) }),
+  });
+  for (const project of [omitted, explicit]) {
+    const original = JSON.stringify(project);
+    const design = project.production_design;
+    assert.equal(hasNoSemanticGraphs(project), true);
+    assert.equal(project.production_design, design);
+    assert.equal(JSON.stringify(project), original);
+  }
+  assert.equal(Object.hasOwn(omitted.production_design, 'semantic_graphs'), false);
+});
+
+test('Graph initializer rejects missing design and present malformed or nonempty semantic graphs', () => {
+  for (const project of [undefined, null, {}, { production_design: undefined },
+    { production_design: null }, { production_design: [] },
+    { production_design: '' }, { production_design: 0 }, { production_design: false }]) {
+    assert.equal(hasNoSemanticGraphs(project), false);
+  }
+  // Present undefined is not the domain's omitted JSON property.
+  for (const semantic_graphs of [undefined, null, {}, '', 0, false, [{}]]) {
+    assert.equal(hasNoSemanticGraphs({ production_design: { semantic_graphs } }), false);
+  }
 });

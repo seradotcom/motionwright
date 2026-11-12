@@ -1,0 +1,13 @@
+tree 8aa884df020bce21fc4d6a33196c4d7db5a1c88b
+parent 7f9978ba0ecd2e4232a7dd698c5c6ff67bc526c5
+author Dmitry Dygalo <dmitry@dygalo.dev> 1791298139 +0200
+committer Dmitry Dygalo <dmitry@dygalo.dev> 1791298139 +0200
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ iHUEABYKAB0WIQSZMABAqzPHK/+jYGG6h7Mk4JYZ6AUCasUKWwAKCRC6h7Mk4JYZ
+ 6OxbAP9tlC2sUykeOCxMNVEoU30wP+OR0XDvVmlaR4AJ1qaGrAEAgmPSlz1LKV/l
+ 2Qj19cphB1EveXFW+jcksUyiTKnbwgQ=
+ =b1LV
+ -----END PGP SIGNATURE-----
+
+chore(rust): Release 0.58.6

@@ -21,6 +21,13 @@ export const GRAPH_RUNTIME_STAGES = new Set([
   'BOOTSTRAP_CLOSE', 'RESTRICTED_SOCKET', 'OWNER_RECEIPT',
 ]);
 export function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+// ProductionDesign omits an empty semantic_graphs Vec during serialization.
+// Inspect that original representation without normalizing or changing it.
+export function hasNoSemanticGraphs(project) {
+  const design = project?.production_design;
+  return object(design) && (!Object.hasOwn(design, 'semantic_graphs')
+    || (Array.isArray(design.semantic_graphs) && design.semantic_graphs.length === 0));
+}
 export function exact(value, fields, reason) {
   need(object(value) && Object.keys(value).sort().join('\0') === [...fields].sort().join('\0'), reason);
 }

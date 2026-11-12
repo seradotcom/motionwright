@@ -20,8 +20,8 @@ class DefinitionAndSelectionTests(unittest.TestCase):
         for mode in ("discovery", "dotted"):
             linux = gate.selection_contract("test_nsis_owned_files", mode, "linux")
             windows = gate.selection_contract("test_nsis_owned_files", mode, "win32")
-            self.assertEqual((linux["required_total"], linux["required_selected"]), (33, 31))
-            self.assertEqual((windows["required_total"], windows["required_selected"]), (33, 33))
+            self.assertEqual((linux["required_total"], linux["required_selected"]), (37, 35))
+            self.assertEqual((windows["required_total"], windows["required_selected"]), (37, 37))
             prefix = ("" if mode == "discovery" else "tooling.tests.") + "test_nsis_owned_files."
             self.assertEqual({item["id"] for item in linux["not_applicable"]}, {
                 prefix + "PublicationIntegrityTests.test_windows_guards_block_writes_and_capture_deletion_through_publication",
@@ -145,7 +145,7 @@ class OriginalReceiptTests(unittest.TestCase):
             self.admit()
 
     def test_exact_originals_admitted_for_both_platforms_without_inventing_linux_credit(self):
-        for platform, invocations, unique in (("linux", 152, 76), ("win32", 156, 78)):
+        for platform, invocations, unique in (("linux", 160, 80), ("win32", 164, 82)):
             self.make(platform)
             value = self.admit()
             self.assertEqual((value["status"], value["invocations"], value["unique_applicable_controls"]), ("PASS", invocations, unique))
@@ -237,7 +237,7 @@ class OriginalReceiptTests(unittest.TestCase):
         raw = self.read_log(0, "stderr")
         self.log(0, "stderr", raw.split(b"\nRan ", 1)[0])
         self.refused()
-        self.log(0, "stderr", raw + b"\nRan 31 tests in 0.01s\n\nOK\n")
+        self.log(0, "stderr", raw + b"\nRan 32 tests in 0.01s\n\nOK\n")
         self.refused()
 
     def test_admission_does_not_rewrite_original_receipts_or_logs(self):
@@ -260,7 +260,7 @@ class OriginalReceiptTests(unittest.TestCase):
                 self.assertEqual(raw.count(original), 1)
                 self.log(index, "stderr", raw.replace(original, retained, 1))
             admitted = self.admit()
-            self.assertEqual(admitted["invocations"], 152 if platform == "linux" else 156)
+            self.assertEqual(admitted["invocations"], 160 if platform == "linux" else 164)
 
     def test_interleaved_diagnostic_cannot_supply_a_missing_foreign_or_failed_result(self):
         suffix = "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"
@@ -645,7 +645,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
                 for index, match in enumerate(matches)}
         self.assertEqual(set(jobs), {"receipt-policy", "nsis-source-windows", "linux", "windows-contracts",
                                      "windows", "windows-update", "macos", "attest-candidates",
-                                     "linux-first-use-source", "linux-first-use-installed"})
+                                     "linux-first-use-source", "linux-first-use-installed", "windows-uninstall-tamper"})
         def enabled(body, event, scope, ref="refs/heads/main"):
             found = re.search(r"(?m)^    if: (.+)$", body)
             if found is None:
@@ -678,7 +678,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
                 raise AssertionError("Workflow conditional has unreviewed syntax") from error
         two = {"receipt-policy", "nsis-source-windows"}
         for scope, extra in (("distribution_source", set()), ("nsis_source", set()),
-                             ("nsis_compile", {"windows-update"}), ("nsis_lifecycle", {"windows-update"}),
+                             ("nsis_compile", {"windows-update"}), ("nsis_lifecycle", {"windows-update", "windows-uninstall-tamper"}),
                              ("windows_contracts", {"windows-contracts"}),
                              ("windows_installed", {"windows-contracts", "windows"}),
                              ("all", {"linux", "windows-contracts", "windows", "macos", "attest-candidates"})):
@@ -689,9 +689,20 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
             self.assertEqual({name for name, body in jobs.items() if enabled(body, "workflow_dispatch", scope)}, first_use | extra, scope)
         manual_first_use = {"linux-first-use-source", "linux-first-use-installed"}
         self.assertEqual({name for name, body in jobs.items() if enabled(body, "push", "")},
-                         set(jobs) - {"windows-update"} - manual_first_use)
+                         set(jobs) - {"windows-update", "windows-uninstall-tamper"} - manual_first_use)
         self.assertEqual({name for name, body in jobs.items() if enabled(body, "pull_request", "")},
-                         set(jobs) - {"windows-update", "attest-candidates"} - manual_first_use)
+                         set(jobs) - {"windows-update", "attest-candidates", "windows-uninstall-tamper"} - manual_first_use)
+        # A third physical job is intentionally reachable ONLY by explicit
+        # nsis_lifecycle dispatch; source-only and every other scope exclude it.
+        tamper = jobs["windows-uninstall-tamper"]
+        self.assertIn("    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'nsis_lifecycle'", tamper)
+        self.assertIn("    needs: windows-update", tamper)
+        self.assertIn("      fail-fast: false", tamper)
+        self.assertIn("role: [main, resource, external_binary]", tamper)
+        self.assertIn("MW_PRODUCER_ARTIFACT_ID: " + chr(36) + "{{ needs.windows-update.outputs.lifecycle-artifact-id }}", tamper)
+        self.assertIn("MW_PRODUCER_ARTIFACT_SHA256: " + chr(36) + "{{ needs.windows-update.outputs.lifecycle-artifact-digest }}", tamper)
+        self.assertIn("          python -B tooling/windows_uninstall_tamper_producer.py", tamper)
+        self.assertIn("          if ($LASTEXITCODE -ne 0)", tamper)
         self.assertIn("          - distribution_source\n", text)
         for scope in ("linux_first_use_source", "linux_first_use"):
             self.assertIn("          - " + scope + "\n", text)
@@ -713,7 +724,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", scoped)
         self.assertIn("python3 tooling/source_policy.py", scoped)
         self.assertIn("python3 tooling/public_surface_policy.py", scoped)
-        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1)", scoped)
+        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:macos_bundle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_bundle:1)", scoped)
         self.assertIn('case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in', scoped)
         self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', scoped)
         self.assertIn('F-G0=NOT_RUN G3=STOP', scoped)
@@ -767,13 +778,17 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIsNotNone(match)
         patterns = match.group(1).split("|")
         self.assertEqual(patterns, [start + "nsis_lifecycle:1", start + "windows_contracts:1",
-                                    start + "windows_installed:1", start + "linux_first_use_source:1"])
+                                    start + "windows_installed:1", start + "linux_first_use_source:1",
+                                    start + "macos_bundle:1", start + "linux_bundle:1"])
         for scope, attempt, expected in (
             ("windows_contracts", "1", True), ("nsis_lifecycle", "1", True),
             ("windows_installed", "1", True), ("linux_first_use_source", "1", True),
+            ("macos_bundle", "1", True), ("linux_bundle", "1", True),
             ("all", "1", False), ("linux_first_use", "1", False),
             ("linux_first_use_source", "2", False), ("linux_first_use_source", "0", False),
             ("linux_first_use", "2", False), ("linux_first_use", "0", False),
+            ("macos_bundle", "2", False), ("macos_bundle", "0", False),
+            ("linux_bundle", "2", False), ("linux_bundle", "0", False),
             ("windows_contracts", "2", False), ("windows_contracts", "0", False),
             ("windows_installed", "2", False), ("windows_installed", "0", False)):
             self.assertEqual(any(fnmatch.fnmatchcase(start + scope + ":" + attempt, pat) for pat in patterns),
@@ -1037,7 +1052,7 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
         self.windows = compile(textwrap.dedent('          if sys.platform != "win32":\n' + windows),
                                "<workflow-windows-readback>", "exec")
         self.definitions = {}
-        for name, expected in (("test_windows_installer_lifecycle.py", 67), ("test_windows_cold_start.py", 52)):
+        for name, expected in (("test_windows_installer_lifecycle.py", 67), ("test_windows_cold_start.py", 56)):
             raw = (gate.ROOT / "tooling/tests" / name).read_bytes()
             tree = ast.parse(raw)
             methods = [cls.name + "." + method.name for cls in tree.body if isinstance(cls, ast.ClassDef)
@@ -1157,9 +1172,9 @@ class PackageSchemaFiveReceiptReadbackTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.run_reader(fixture, "lifecycle", code)
 
-    def test_windows_reader_requires_all_fifty_two_named_controls_in_both_modes(self):
+    def test_windows_reader_requires_all_fifty_six_named_controls_in_both_modes(self):
         result = self.run_reader(self.fixture("windows"), "windows")
-        self.assertEqual((result["unique_source_controls"], result["entrypoints"], result["skipped"]), (52, 2, 0))
+        self.assertEqual((result["unique_source_controls"], result["entrypoints"], result["skipped"]), (56, 2, 0))
         self.assertIs(result["installed_application_execution"], False)
 
     def test_windows_reader_rejects_legacy_counts_omissions_boolean_exit_and_foreign_source(self):

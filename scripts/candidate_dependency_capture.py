@@ -678,10 +678,165 @@ def retain_generated_originals(repo, cargo_home, state, profile):
     return originals
 
 
+COMMAND_PERMISSION_SOURCE = "apps/desktop/src-tauri/build.rs"
+
+
+def authenticate_windows_command_source(repo, expected_source):
+    """Authenticate the literal source and both exact locked generators."""
+    if not isinstance(expected_source, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_source):
+        raise CaptureError("expected_full_source_sha_required")
+    sources = _load_sibling("cargo_license_sources")
+    permissions = _load_sibling("tauri_generated_permissions")
+    try:
+        root = sources._Root.admit(Path(repo), "workspace")
+        checkout = sources._GitRepo(root, ())
+        budget = sources._Budget()
+        if checkout.head != expected_source:
+            raise CaptureError("tauri_command_source_head_mismatch")
+        source_parts = tuple(COMMAND_PERMISSION_SOURCE.split("/"))
+        raw = checkout.read_tracked(source_parts, permissions.MAX_BUILD_RS_BYTES, budget)
+        source_descriptor = {
+            "path": COMMAND_PERMISSION_SOURCE,
+            "git_blob": checkout.byte_proofs[source_parts]["git_blob"],
+            "bytes": len(raw), "sha256": sha(raw),
+        }
+        lock_parts = ("Cargo.lock",)
+        lock_raw = checkout.read_tracked(lock_parts, sources.MAX_LOCK_BYTES, budget)
+        lock = sources._toml(lock_raw, "cargo_lock_malformed")
+        packages = lock.get("package")
+        if (not isinstance(packages, list) or len(packages) > sources.MAX_COMPONENTS
+                or any(not isinstance(row, dict) for row in packages)):
+            raise CaptureError("tauri_command_generator_lock_invalid")
+        for name, version, checksum in permissions.GENERATOR_PACKAGES:
+            rows = [row for row in packages if row.get("name") == name]
+            if (len(rows) != 1 or rows[0].get("version") != version
+                    or rows[0].get("checksum") != checksum
+                    or rows[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index"):
+                raise CaptureError("tauri_command_generator_lock_mismatch:" + name)
+        # Generated permissions cannot replace source or pre-staged content.
+        generated_parts = tuple(permissions.GENERATED_ROOT.split("/"))
+        if checkout.entries(generated_parts):
+            raise CaptureError("tauri_command_permission_tracked")
+        checkout.check_index(generated_parts, {})
+        checkout.finish()
+        try:
+            expected_files = permissions.derive_command_permissions(raw)
+        except ValueError as error:
+            raise CaptureError(str(error)) from error
+        return {
+            "command_source": source_descriptor,
+            "expected_files": expected_files,
+            "lock_identity": {
+                "path": "Cargo.lock", "git_blob": checkout.byte_proofs[lock_parts]["git_blob"],
+                "bytes": len(lock_raw), "sha256": sha(lock_raw),
+            },
+        }
+    except sources._Problem as error:
+        raise CaptureError(error.code) from error
+
+
+def prepare_windows_command_permissions(repo, expected_source):
+    """Read-only preflight; no generated namespace may already exist."""
+    expectation = authenticate_windows_command_source(repo, expected_source)
+    permissions = _load_sibling("tauri_generated_permissions")
+    root = Path(repo).resolve(strict=True)
+    parts = Path(permissions.GENERATED_ROOT).parts
+    for depth in range(1, len(parts)):
+        parent = Path(*parts[:depth])
+        if not os.path.lexists(root / parent):
+            break
+        admitted(root, parent, directory=True)
+    if os.path.lexists(root / permissions.GENERATED_ROOT):
+        raise CaptureError("tauri_command_permission_root_preexisting")
+    return expectation
+
+
+def _command_permission_namespace(repo, expected_files):
+    permissions = _load_sibling("tauri_generated_permissions")
+    root = Path(repo).resolve(strict=True)
+    directory = admitted(root, permissions.GENERATED_ROOT, directory=True)
+    names = {Path(name).name for name in expected_files}
+    observed = set()
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name not in names or entry.name in observed:
+                raise CaptureError("tauri_command_permission_roster_invalid")
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & REPARSE:
+                raise CaptureError("tauri_command_permission_redirected")
+            if not stat.S_ISREG(info.st_mode):
+                raise CaptureError("tauri_command_permission_nonregular")
+            observed.add(entry.name)
+            if len(observed) > len(names):
+                raise CaptureError("tauri_command_permission_roster_invalid")
+    if observed != names:
+        raise CaptureError("tauri_command_permission_roster_invalid")
+
+
+def observe_windows_command_permissions(repo, expected_source, expectation):
+    """Observe exact generated bytes; never label generated files as Git source."""
+    permissions = _load_sibling("tauri_generated_permissions")
+    current = authenticate_windows_command_source(repo, expected_source)
+    if current != expectation:
+        raise CaptureError("tauri_command_permission_source_identity_changed")
+    expected_files = current["expected_files"]
+    _command_permission_namespace(repo, expected_files)
+    files = {}
+    for name, expected in sorted(expected_files.items()):
+        raw = stable_read(Path(repo), name, permissions.MAX_PERMISSION_BYTES)
+        if raw != expected:
+            raise CaptureError("tauri_command_permission_bytes_mismatch")
+        files[name] = {"bytes": len(raw), "sha256": sha(raw)}
+    _command_permission_namespace(repo, expected_files)
+    if authenticate_windows_command_source(repo, expected_source) != expectation:
+        raise CaptureError("tauri_command_permission_source_identity_changed")
+    return {"command_source": dict(current["command_source"]), "files": files}
+
+
+def retain_command_permission_originals(repo, state, expectation, observed, *, expected_source):
+    """Retain actual source/output bytes once, before notice collection can fail."""
+    permissions = _load_sibling("tauri_generated_permissions")
+    if observe_windows_command_permissions(repo, expected_source, expectation) != observed:
+        raise CaptureError("tauri_command_permission_observation_changed")
+    source = observed["command_source"]
+    source_raw = stable_read(Path(repo), source["path"], permissions.MAX_BUILD_RS_BYTES)
+    if {"bytes": len(source_raw), "sha256": sha(source_raw)} != {
+            "bytes": source["bytes"], "sha256": source["sha256"]}:
+        raise CaptureError("tauri_command_permission_source_identity_changed")
+    state = Path(state).resolve(strict=True)
+    source_directory = new_directory(state, "generated-metadata/tauri-command-source")
+    output_directory = new_directory(state, "generated-metadata/tauri-command-permissions")
+    originals = {}
+
+    def retain(name, destination, raw, descriptor):
+        observed_bytes = {"bytes": len(raw), "sha256": sha(raw)}
+        if observed_bytes != {"bytes": descriptor["bytes"], "sha256": descriptor["sha256"]}:
+            raise CaptureError("tauri_command_permission_changed_before_retention")
+        write_new(destination, raw)
+        relative = destination.relative_to(state)
+        if stable_hash(state, relative, permissions.MAX_BUILD_RS_BYTES) != observed_bytes:
+            raise CaptureError("tauri_command_permission_retained_bytes_mismatch")
+        originals["workspace:" + name] = {"path": relative.as_posix(), **observed_bytes}
+
+    retain(source["path"], source_directory / "build.rs", source_raw, source)
+    for name, descriptor in sorted(observed["files"].items()):
+        raw = stable_read(Path(repo), name, permissions.MAX_PERMISSION_BYTES)
+        if raw != expectation["expected_files"][name]:
+            raise CaptureError("tauri_command_permission_bytes_mismatch")
+        retain(name, output_directory / Path(name).name, raw, descriptor)
+    if observe_windows_command_permissions(repo, expected_source, expectation) != observed:
+        raise CaptureError("tauri_command_permission_observation_changed")
+    return originals
+
+
 def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                   root_package_name, manifest_path, state_directory, resources_directory,
                   build_command, metadata_features=(), no_default_features=False, env=None, build_cwd=None,
-                  tauri_generated_schemas=False):
+                  tauri_generated_schemas=False, tauri_generated_command_permissions=False):
+    if type(tauri_generated_command_permissions) is not bool:
+        raise CaptureError("tauri_command_permissions_flag_invalid")
+    if tauri_generated_command_permissions and tauri_generated_schemas is not True:
+        raise CaptureError("tauri_command_permissions_requires_generated_schemas")
     derive_components = _load_sibling("cargo_build_inventory").derive_components
     collect_cargo_licenses = _load_sibling("cargo_license_sources").collect_cargo_licenses
     repo = Path(repo).resolve(strict=True)
@@ -702,6 +857,14 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
         prepare_windows_generated_metadata(
             repo, cargo_home, manifest, target_triple, root_package_name,
             effective_env.get("CARGO_TARGET_DIR", ""), state_directory, resources_directory)
+    command_expectation = None
+    if tauri_generated_command_permissions:
+        command_expectation = prepare_windows_command_permissions(repo, expected_source)
+        source_files = {row["path"]: row for row in before["files"]}
+        for descriptor in (command_expectation["command_source"], command_expectation["lock_identity"]):
+            row = source_files.get(descriptor["path"])
+            if row is None or {key: row.get(key) for key in descriptor} != descriptor:
+                raise CaptureError("tauri_command_permission_source_snapshot_mismatch")
     state = new_directory(repo, state_directory)
     resources = new_directory(repo, resources_directory)
     write_new(state / "source-before.json", encoded(before))
@@ -724,6 +887,9 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     if tauri_generated_schemas:
         marker_before = observe_cargo_git_markers(metadata, cargo_home)
         require_generated_root_absent(repo)
+    if command_expectation is not None:
+        if prepare_windows_command_permissions(repo, expected_source) != command_expectation:
+            raise CaptureError("tauri_command_permission_changed_before_build")
     build_receipt = run_captured(build_command, cwd, state, "build", env=effective_env)
     revalidate_build_driver(driver, cargo)
     after = source_snapshot(repo, expected_source)
@@ -742,11 +908,15 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     if tauri_generated_schemas:
         revalidate_windows_generated_metadata(repo, metadata, cargo_home, marker_before)
         generated = {
-            "schema": "motionwright.windows-cargo-generated-metadata/1",
+            "schema": ("motionwright.windows-cargo-generated-metadata/2" if command_expectation is not None
+                       else "motionwright.windows-cargo-generated-metadata/1"),
             "source": expected_source, "target": target_triple,
             "cargo_git_markers": marker_before,
             "tauri_schemas": observe_windows_tauri_schemas(repo),
         }
+        if command_expectation is not None:
+            generated["tauri_command_permissions"] = observe_windows_command_permissions(
+                repo, expected_source, command_expectation)
         generated_custody = {
             "profile": generated,
             "observation": "fresh Cargo home; markers stable after metadata; schemas absent before build",
@@ -756,15 +926,28 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                 "metadata.request.json", "metadata.completion.json",
                 "build.request.json", "build.completion.json")},
         }
+        if command_expectation is not None:
+            generated_custody["originals"].update(retain_command_permission_originals(
+                repo, state, command_expectation, generated["tauri_command_permissions"],
+                expected_source=expected_source))
+            generated_custody["observation"] += (
+                "; command permission namespace absent before metadata/build; exact pinned-generator bytes")
         write_new(state / "tauri-generated-schemas.json", encoded(generated_custody))
     notices = collect_cargo_licenses(inventory["components"], workspace_root=repo,
                                     cargo_home=Path(cargo_home), lock_bytes=lock,
                                     **({"generated_metadata": generated} if generated is not None else {}))
     write_new(state / "cargo-license-sources.json", encoded(
         {key: value for key, value in notices.items() if key != "texts"}))
+    if command_expectation is not None:
+        revalidate_windows_generated_metadata(
+            repo, metadata, cargo_home, marker_before, generated["tauri_schemas"])
+        if observe_windows_command_permissions(repo, expected_source, command_expectation) != generated["tauri_command_permissions"]:
+            raise CaptureError("tauri_command_permission_changed_after_notices")
+        if source_snapshot(repo, expected_source) != before:
+            raise CaptureError("source_changed_during_notice_collection")
     if notices.get("issues") or any(c.get("issues") for c in notices["components"]):
         raise CaptureError("cargo_notice_coverage_incomplete")
-    if source_snapshot(repo, expected_source) != before:
+    if command_expectation is None and source_snapshot(repo, expected_source) != before:
         raise CaptureError("source_changed_during_notice_collection")
     by_id = {c["id"]: c for c in inventory["components"]}
     if set(by_id) != {c["id"] for c in notices["components"]} or len(by_id) != len(notices["components"]):
@@ -798,6 +981,11 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     if generated is not None:
         revalidate_windows_generated_metadata(
             repo, metadata, cargo_home, marker_before, generated["tauri_schemas"])
+        if command_expectation is not None:
+            if observe_windows_command_permissions(repo, expected_source, command_expectation) != generated["tauri_command_permissions"]:
+                raise CaptureError("tauri_command_permission_changed_before_complete")
+            if source_snapshot(repo, expected_source) != before:
+                raise CaptureError("source_changed_before_capture_complete")
         index["capture"]["generated_metadata_sha256"] = sha(encoded(generated_custody))
     write_new(resources / "cargo" / "index.json", encoded(index))
     write_new(state / "capture-complete.json", encoded(
@@ -819,6 +1007,7 @@ def main(argv=None):
     parser.add_argument("--features", action="append", default=[])
     parser.add_argument("--no-default-features", action="store_true")
     parser.add_argument("--tauri-generated-schemas", action="store_true")
+    parser.add_argument("--tauri-generated-command-permissions", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -829,7 +1018,8 @@ def main(argv=None):
                       state_directory=args.state_directory, resources_directory=args.resources_directory,
                       build_command=command, metadata_features=args.features,
                       no_default_features=args.no_default_features, build_cwd=args.build_cwd,
-                      tauri_generated_schemas=args.tauri_generated_schemas)
+                      tauri_generated_schemas=args.tauri_generated_schemas,
+                      tauri_generated_command_permissions=args.tauri_generated_command_permissions)
     except (CaptureError, OSError, ValueError, KeyError) as error:
         print("dependency-capture-failed:" + str(error), file=sys.stderr)
         return 2

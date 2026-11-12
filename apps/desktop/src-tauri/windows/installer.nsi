@@ -107,7 +107,7 @@ ManifestDPIAwareness PerMonitorV2
   !if "${Symbol}" == "MW_MAIN"
   ; Source consistency alone is not distribution admission.
   ; A missing or inapplicable caller-pinned disposition stops before capture.
-  !execute `"python.exe" "${MWOWN_BUILD_HELPER}" --prepare-distribution --arch "${ARCH}" --source "${Source}" --capture "${__FILEDIR__}\mw-owned-${Symbol}.bin" --include "${__FILEDIR__}\mw-owned-${Symbol}.nsh" --symbol "${Symbol}"` = 0
+  !execute `"python.exe" "${MWOWN_BUILD_HELPER}" --prepare-distribution --from-pinned-build --arch "${ARCH}" --symbol "${Symbol}"` = 0
   !else
   !execute `"python.exe" "${MWOWN_BUILD_HELPER}" --source "${Source}" --capture "${__FILEDIR__}\mw-owned-${Symbol}.bin" --include "${__FILEDIR__}\mw-owned-${Symbol}.nsh" --symbol "${Symbol}"` = 0
   !endif

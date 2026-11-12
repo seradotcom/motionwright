@@ -1,0 +1,20 @@
+tree 7b4e024ecf53a7f189585479c7407e05dd521688
+parent c56b677d11dda8326e34450bc3af4e32820b9344
+author Nugine <nugine@foxmail.com> 1672196040 +0800
+committer Nugine <nugine@foxmail.com> 1672196040 +0800
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ iQGzBAABCgAdFiEEJfaKL4IXe7K3pbPP+Dgw0J6WnM4FAmOrr8gACgkQ+Dgw0J6W
+ nM7ZnQv/RmI4rROVdbFbENev+qFX6gZnS7SD37Mv9PbvPGflLvlGu7wxLWJdNjYP
+ d1mXm7NKThn+tYA9rqTcAEpxU8ZW3qMQs5bUaBSdjf3OKoIqEaEJ/BfKAsvGMhBh
+ yGZVBDN7MOdZ+P95pmLNlmkQSWukLLBxOGfIgcqS7FdRVDNfQZm/u9cb4jq/ip+Q
+ Hjq2vLraeV3Ezl8pvlr+LbhdBsK3fp3MN4kiVnlFbNCL7g67KgGgxkf/li/CuwRz
+ +NZH8lQF4lMkiDiTkyaRbs0EiQi5qfF1fLq4SCCrwQV4iXTyHG9oDK2uU1pN+Nlb
+ SPR7I9QCKQN7onA8l4dnllkGeVf7v6LtD3S3uMEADz2x/J/S9KGGOHcQy4AT9MTv
+ i8FDqcDvUlqyASzM/6pR6+hg52r4AN3+WxXxwyKtK8+XUThv8l1PvTvlXdZTofkW
+ P7nA/IwwlO0668Zj0T26nhdiCKVpwkVaYUrsIwEXJXddvyByFg9OYoA/NOeL71ln
+ GOHbDTfe
+ =HzC0
+ -----END PGP SIGNATURE-----
+
+release v0.8.0
