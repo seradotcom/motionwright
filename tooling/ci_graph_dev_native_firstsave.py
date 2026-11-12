@@ -77,6 +77,23 @@ def private_json(path, payload):
                           allow_nan=False) + "\n").encode("utf-8"))
 
 
+def retain_terminal_original(path, payload, *, had_first_error: bool):
+    """Do not overwrite the first Native failure with terminal disk failure.
+
+    A lost terminal receipt cannot establish successful closure either.
+    Preserve the original failure if one exists; otherwise publish only a
+    finite UNKNOWN, never a raw private path or invented terminal record.
+    """
+    try:
+        return private_json(path, payload)
+    except (OSError, ValueError, FirstSaveFailure):
+        if had_first_error:
+            return None
+        raise FirstSaveFailure(
+            "GN1_FIRST_SAVE_TERMINAL_ORIGINAL_UNAVAILABLE",
+            unknown=True) from None
+
+
 def closed_opened_sqlite_witness(response):
     """Accept only a real correlated JSONL result already retained privately.
 
@@ -736,8 +753,9 @@ class NativeSession:
         stderr_digest = (digest(stderr_path.read_bytes())
                          if stderr_capture["reader_finished"]
                          and size <= MAX_ORIGINAL else None)
-        private_json(self.private / (self.label + ".terminal.original.json"),
-                     {"exit_code": code, "stderr_bytes": size,
+        retain_terminal_original(
+            self.private / (self.label + ".terminal.original.json"),
+            {"exit_code": code, "stderr_bytes": size,
                       "stderr_sha256": stderr_digest
                           if stderr_capture["complete"] else None,
                       "stderr_retained_prefix_sha256": stderr_digest,
@@ -770,7 +788,8 @@ class NativeSession:
                       "trailing_stdout_deadline_exceeded":
                           terminal_stdout["deadline_exceeded"],
                       "stdout_eof_observed": trailing_eof,
-                      "automatic_retry": False})
+                      "automatic_retry": False},
+            had_first_error=exc_type is not None)
         # A terminal failure is a secondary observation when a callback
         # already reported a first cause; never mask that original error.
         if exc_type is None:

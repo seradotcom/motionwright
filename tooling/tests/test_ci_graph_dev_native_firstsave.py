@@ -750,6 +750,45 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertFalse(terminal["original_reply_complete"])
         self.assertFalse((self.private / "graph-native-session.pending-stdout.original").exists())
 
+    def test_failed_terminal_original_retention_preserves_first_native_error(self):
+        session, _ = self.inert_terminal_session()
+        original = save.FirstSaveFailure("ORIGINAL_GRAPH_SAVE_UNKNOWN", unknown=True)
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        old_json = save.private_json
+        def blocked_terminal(path, payload):
+            if path.name.endswith(".terminal.original.json"):
+                raise OSError("private terminal journal disk failed")
+            return old_json(path, payload)
+        with patch.object(save, "private_json", side_effect=blocked_terminal), \
+                patch.object(save, "read_terminal_stdout", return_value=complete):
+            self.assertFalse(session.__exit__(type(original), original, None))
+        self.assertEqual(original.code, "ORIGINAL_GRAPH_SAVE_UNKNOWN")
+        self.assertTrue(original.unknown)
+        self.assertFalse(
+            (self.private / "graph-native-session.terminal.original.json").exists())
+
+    def test_missing_terminal_original_denies_apparent_clean_exit_as_unknown(self):
+        session, _ = self.inert_terminal_session()
+        complete = {"raw": b"", "eof": True, "over_cap": False,
+                    "reader_finished": True, "deadline_exceeded": False,
+                    "read_error": False}
+        old_json = save.private_json
+        def blocked_terminal(path, payload):
+            if path.name.endswith(".terminal.original.json"):
+                raise OSError("private terminal journal disk failed")
+            return old_json(path, payload)
+        with patch.object(save, "private_json", side_effect=blocked_terminal), \
+                patch.object(save, "read_terminal_stdout", return_value=complete):
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_TERMINAL_ORIGINAL_UNAVAILABLE") as denied:
+                session.__exit__(None, None, None)
+        self.assertTrue(denied.exception.unknown)
+        self.assertFalse(
+            (self.private / "graph-native-session.terminal.original.json").exists())
+
     def test_native_terminal_requires_actual_stdout_eof_even_after_last_reply(self):
         session, output = self.inert_terminal_session(read_only=True)
         complete = {"raw": b"", "eof": True, "over_cap": False,
