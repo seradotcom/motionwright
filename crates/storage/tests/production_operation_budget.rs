@@ -1663,7 +1663,8 @@ fn columns(conn: &Connection) -> Value {
         let statement = conn
             .prepare(&format!("SELECT * FROM {table} LIMIT 0"))
             .unwrap();
-        result.insert(table.into(), json!(statement.column_names()));
+        let column_names: Vec<String> = statement.column_names().map(str::to_owned).collect();
+        result.insert(table.into(), json!(column_names));
     }
     assert_eq!(
         result["cas_store_identity"],
@@ -2529,7 +2530,8 @@ fn main() {
             let statement = conn
                 .prepare(&format!("SELECT * FROM {table} LIMIT 0"))
                 .unwrap();
-            result.insert(table.into(), json!(statement.column_names()));
+            let column_names: Vec<String> = statement.column_names().map(str::to_owned).collect();
+            result.insert(table.into(), json!(column_names));
         }
         assert_eq!(
             result["cas_store_identity"],

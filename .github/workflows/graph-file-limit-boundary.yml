@@ -23,6 +23,7 @@ on:
       - 'crates/service/src/semantic_graph.rs'
       - 'crates/service/src/semantic_graph_admission.rs'
       - 'crates/service/tests/semantic_graph_admission.rs'
+      - 'crates/storage/tests/production_operation_budget.rs'
       - 'crates/service/src/read_only.rs'
       - 'crates/storage/src/read_only.rs'
       - 'crates/storage/src/integrity.rs'
