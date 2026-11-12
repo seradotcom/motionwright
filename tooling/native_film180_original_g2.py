@@ -58,6 +58,20 @@ def require(ok: object, reason: str) -> None:
         raise Film180G2Rejected(reason)
 
 
+def rejection_guard_line(error: BaseException) -> int | None:
+    """Identify our failed guard without exposing its private message or locals."""
+    if type(error) is not Film180G2Rejected:
+        return None
+    current = error.__traceback__
+    while current is not None and current.tb_next is not None:
+        following = current.tb_next
+        if (current.tb_frame.f_globals is globals()
+                and following.tb_frame.f_code is require.__code__):
+            return current.tb_lineno
+        current = following
+    return None
+
+
 def digest(path: Path) -> str:
     hash_ = hashlib.sha256()
     with path.open("rb") as source:
@@ -2209,6 +2223,7 @@ if __name__ == "__main__":
         print(json.dumps({
             "g2": "FAILED_NO_RETRY",
             "failure_class": type(error).__name__,
+            "failure_guard_line": rejection_guard_line(error),
             "human_acceptance": False,
         }, sort_keys=True), file=sys.stderr)
         raise SystemExit(1) from None

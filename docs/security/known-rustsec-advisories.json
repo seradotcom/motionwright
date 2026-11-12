@@ -84,7 +84,7 @@
       "status": "OPEN_UPSTREAM_UNMAINTAINED",
       "direct_dependency": true,
       "registry_checksum": "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31",
-      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=0b2406bee57fc15280abbdf25f1b89527bd8987c#0b2406bee57fc15280abbdf25f1b89527bd8987c",
+      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=723cb4c9956af28a605571e3fb5935bcc00a0231#723cb4c9956af28a605571e3fb5935bcc00a0231",
       "required_lock_context": {
         "ttf-parser": "0.25.1",
         "motionwright-manim-profile": "0.1.0",

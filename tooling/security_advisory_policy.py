@@ -128,7 +128,7 @@ def verify_ttf_parser_review(lock: dict[str, Any], advisory: dict[str, Any]) -> 
             or driver[0].get("version") != "1.0.0"
             or driver[0].get("source") != advisory.get("reviewed_motion_canvas_lock_source")
             or advisory.get("reviewed_motion_canvas_lock_source") !=
-            "git+https://github.com/seradotcom/semwright?rev=0b2406bee57fc15280abbdf25f1b89527bd8987c#0b2406bee57fc15280abbdf25f1b89527bd8987c"):
+            "git+https://github.com/seradotcom/semwright?rev=723cb4c9956af28a605571e3fb5935bcc00a0231#723cb4c9956af28a605571e3fb5935bcc00a0231"):
         fail("ttf-parser reviewed Semwright driver source changed; review required")
     try:
         reverse = lock_reverse_edges(lock)
