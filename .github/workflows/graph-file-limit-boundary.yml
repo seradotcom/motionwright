@@ -22,6 +22,7 @@ on:
       - 'crates/native/src/production/graph_authoring_tests.rs'
       - 'crates/service/src/semantic_graph.rs'
       - 'crates/service/src/semantic_graph_admission.rs'
+      - 'crates/service/tests/semantic_graph_admission.rs'
       - 'crates/service/src/read_only.rs'
       - 'crates/storage/src/read_only.rs'
       - 'crates/storage/src/integrity.rs'
@@ -77,6 +78,30 @@ jobs:
         run: |
           cargo check --locked -p motionwright-service --example studio_review_session
           cargo check --locked -p motionwright-native --example native-graph-review-session
+      - name: Run all 23 actual Graph Service admission and SQLite lease tests
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/graph-semantic-admission.original.log"
+          cargo test --locked --jobs 2 -p motionwright-service --test semantic_graph_admission -- --test-threads=1 2>&1 | tee "$log"
+          python3 -B - "$log" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          raw = Path(sys.argv[1]).read_text(encoding="utf-8")
+          tests = re.findall(r"(?m)^test ([a-z0-9_]+) \.\.\. ok$", raw)
+          assert len(tests) == len(set(tests)) == 23, "Graph admission test roster incomplete"
+          assert re.search(
+              r"(?m)^test result: ok\. 23 passed; 0 failed; 0 ignored; "
+              r"0 measured; 0 filtered out;",
+              raw,
+          ), "Graph admission did not execute all 23 cases"
+          print("GRAPH_SERVICE_SQLITE_LEASE_23_TESTS=PASS; formal G2 NOT_GRANTED")
+          PY
+      - name: Compile and lint every Graph Store and Native Rust source target
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
       - name: Check the Native journal and callback lifecycle
         run: |
           set -euo pipefail

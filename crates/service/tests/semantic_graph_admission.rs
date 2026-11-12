@@ -158,18 +158,24 @@ impl Drop for TestLease<'_> {
         )
         .unwrap();
         let id = self.owner.project_id.to_string();
+        // SQLite stores signed integers; rusqlite cannot read u64/usize directly.
+        // Reject corrupt negative/out-of-range values instead of narrowing with as casts.
         let revision: u64 = connection
             .query_row("SELECT revision FROM projects WHERE id=?1", [&id], |row| {
-                row.get(0)
+                row.get::<_, i64>(0)
             })
-            .unwrap();
+            .unwrap()
+            .try_into()
+            .expect("SQLite project revision must be a nonnegative u64");
         let events: usize = connection
             .query_row(
                 "SELECT COUNT(*) FROM events WHERE project_id=?1",
                 [&id],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
-            .unwrap();
+            .unwrap()
+            .try_into()
+            .expect("SQLite event count must fit usize");
         self.owner.dropped.lock().unwrap().push(DroppedLease {
             request_id: self.scope.request_id().to_owned(),
             revision,
