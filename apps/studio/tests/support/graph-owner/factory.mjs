@@ -832,7 +832,7 @@ export class GraphCaseFactoryCore {
       for (const key of ['terminal','stdout','stderr']) {
         need(row?.[key]?.path, 'PROVIDER_RELEASE_COMMAND_ORIGINALS_MISSING');
         inside(this.spec.paths.private_root, row[key].path);
-        matchRef(row[key].path, row[key], 4 * MiB);
+        fileRef(row[key].path, row[key], 4 * MiB);
       }
     }
     const result = Object.freeze({
