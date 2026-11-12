@@ -20,8 +20,8 @@ class DefinitionAndSelectionTests(unittest.TestCase):
         for mode in ("discovery", "dotted"):
             linux = gate.selection_contract("test_nsis_owned_files", mode, "linux")
             windows = gate.selection_contract("test_nsis_owned_files", mode, "win32")
-            self.assertEqual((linux["required_total"], linux["required_selected"]), (34, 32))
-            self.assertEqual((windows["required_total"], windows["required_selected"]), (34, 34))
+            self.assertEqual((linux["required_total"], linux["required_selected"]), (37, 35))
+            self.assertEqual((windows["required_total"], windows["required_selected"]), (37, 37))
             prefix = ("" if mode == "discovery" else "tooling.tests.") + "test_nsis_owned_files."
             self.assertEqual({item["id"] for item in linux["not_applicable"]}, {
                 prefix + "PublicationIntegrityTests.test_windows_guards_block_writes_and_capture_deletion_through_publication",
@@ -145,7 +145,7 @@ class OriginalReceiptTests(unittest.TestCase):
             self.admit()
 
     def test_exact_originals_admitted_for_both_platforms_without_inventing_linux_credit(self):
-        for platform, invocations, unique in (("linux", 154, 77), ("win32", 158, 79)):
+        for platform, invocations, unique in (("linux", 160, 80), ("win32", 164, 82)):
             self.make(platform)
             value = self.admit()
             self.assertEqual((value["status"], value["invocations"], value["unique_applicable_controls"]), ("PASS", invocations, unique))
@@ -260,7 +260,7 @@ class OriginalReceiptTests(unittest.TestCase):
                 self.assertEqual(raw.count(original), 1)
                 self.log(index, "stderr", raw.replace(original, retained, 1))
             admitted = self.admit()
-            self.assertEqual(admitted["invocations"], 154 if platform == "linux" else 158)
+            self.assertEqual(admitted["invocations"], 160 if platform == "linux" else 164)
 
     def test_interleaved_diagnostic_cannot_supply_a_missing_foreign_or_failed_result(self):
         suffix = "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"

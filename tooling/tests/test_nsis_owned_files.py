@@ -1048,6 +1048,64 @@ class DistributionOwnedFilesTests(unittest.TestCase):
                 self.assertEqual(distribution_source_context(root), context)
                 self.assertEqual(fixture["source"].read_bytes(), fixture["payload_bytes"])
 
+    def test_helper_entry_rejects_missing_parent_hidden_by_parent_component(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            helper = root / "tooling" / "helper.py"
+            helper.write_bytes(b"original helper")
+            entry = root / "missing" / ".." / "tooling" / helper.name
+            with self.assertRaises(OSError):
+                owned._source_helper_path(entry)
+            self.assertEqual(helper.read_bytes(), b"original helper")
+
+    def test_helper_entry_rejects_reparse_parent_hidden_by_parent_component(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            (root / "tooling").mkdir()
+            helper = root / "tooling" / "helper.py"
+            helper.write_bytes(b"original helper")
+            actual = root / "actual"
+            actual.mkdir()
+            link = root / "link"
+            try:
+                link.symlink_to(actual, target_is_directory=True)
+            except OSError:
+                self.skipTest("this host cannot create the real symlink/reparse fixture")
+            entry = link / ".." / "tooling" / helper.name
+            with self.assertRaisesRegex(owned.CaptureError, "path parents must be ordinary"):
+                owned._source_helper_path(entry)
+            self.assertEqual(helper.read_bytes(), b"original helper")
+
+    def test_helper_entry_rejects_same_size_replacement_during_normalization(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            helper = root / "helper.py"
+            original = b"original helper"
+            replacement = b"replaced helper"
+            self.assertEqual(len(original), len(replacement))
+            helper.write_bytes(original)
+            before = helper.stat()
+            displaced = root / "displaced.py"
+            validate = owned._validated_path
+
+            def replace_at_normalization(value):
+                normalized = validate(value)
+                # Replace a real file at a deterministic race boundary; the
+                # old inode remains live, so equal size/mtime cannot hide it.
+                helper.rename(displaced)
+                helper.write_bytes(replacement)
+                os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
+                return normalized
+
+            with mock.patch.object(owned, "_validated_path", side_effect=replace_at_normalization):
+                with self.assertRaisesRegex(owned.CaptureError, "helper changed during capture"):
+                    owned._source_helper_path(helper)
+            self.assertEqual(displaced.read_bytes(), original)
+            self.assertEqual(helper.read_bytes(), replacement)
+            self.assertNotEqual(owned._object_identity(helper.stat()),
+                                owned._object_identity(before))
+
     def test_pinned_main_root_uses_plain_checkout_without_windows_resolve_alias(self):
         # Windows may spell one ordinary checkout differently after resolve.
         # The actual CLI already derives this root from its verified helper.
@@ -1101,8 +1159,13 @@ class DistributionOwnedFilesTests(unittest.TestCase):
             pinned_source.parent.mkdir(parents=True)
             pinned_source.write_bytes(fixture["payload_bytes"])
             pinned_capture.parent.mkdir(parents=True)
+            # Match the real NSIS hook's entrypoint spelling, not a direct
+            # tooling path: Python preserves these four parent components.
+            hook = fixture["root"] / "apps" / "desktop" / "src-tauri" / "windows"
+            hook.mkdir(parents=True)
+            entry = hook / ".." / ".." / ".." / ".." / "tooling" / SCRIPT.name
             command = [
-                sys.executable, "-B", str(fixture["script"]),
+                sys.executable, "-B", str(entry),
                 "--prepare-distribution", "--from-pinned-build",
                 "--arch", "x64", "--symbol", "MW_MAIN",
             ]

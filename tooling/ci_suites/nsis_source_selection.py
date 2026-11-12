@@ -47,6 +47,9 @@ NSIS_IDS = tuple([
     "PublicationIntegrityTests.test_changed_predecessor_capture_is_rejected_before_publication",
     "PublicationIntegrityTests.test_capture_replacement_or_size_change_never_publishes",
     "DistributionOwnedFilesTests.test_real_cli_negative_refuses_before_outputs_and_independent_custody_continues",
+    "DistributionOwnedFilesTests.test_helper_entry_rejects_missing_parent_hidden_by_parent_component",
+    "DistributionOwnedFilesTests.test_helper_entry_rejects_reparse_parent_hidden_by_parent_component",
+    "DistributionOwnedFilesTests.test_helper_entry_rejects_same_size_replacement_during_normalization",
     "DistributionOwnedFilesTests.test_pinned_main_root_uses_plain_checkout_without_windows_resolve_alias",
     "DistributionOwnedFilesTests.test_real_cli_synthetic_permitted_control_binds_bytes_not_actual_rights",
     "DistributionOwnedFilesTests.test_real_cli_main_mode_and_pinned_context_are_required_without_fallback",
@@ -104,7 +107,7 @@ SOURCE_LOCK_IDS = tuple([
     "DistributionAdmissionTests.test_negative_record_cannot_carry_positive_payload_or_build_authority"
 ])
 ROSTERS = {
-    "test_nsis_owned_files": (34, NSIS_IDS, "nsis_source_suite"),
+    "test_nsis_owned_files": (37, NSIS_IDS, "nsis_source_suite"),
     "test_source_lock_admission": (45, SOURCE_LOCK_IDS, "source_lock_suite"),
 }
 WINDOWS_ONLY = frozenset({

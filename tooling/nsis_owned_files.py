@@ -455,6 +455,23 @@ def _publish_include(
 
 
 
+def _source_helper_path(value: str | os.PathLike[str]) -> Path:
+    """Normalize this entrypoint only after inspecting its original spelling."""
+    original = Path(value).absolute()
+    _require_plain_parents(original)
+    initial = original.lstat()
+    _require_regular(initial, "helper")
+    # The reviewed NSIS hook reaches this source through four parent hops.
+    # Inspect those parents before abspath can hide a reparse point. Caller
+    # source/capture/include paths still use the unchanged strict validator.
+    helper = _validated_path(os.path.abspath(original))
+    _require_plain_parents(helper)
+    _require_unchanged(helper.lstat(), initial, "helper")
+    _require_plain_parents(original)
+    _require_unchanged(original.lstat(), initial, "helper")
+    return helper
+
+
 def _pinned_internal_main_paths(root: Path, arch: str) -> tuple[Path, Path, Path]:
     """Use the exact reviewed internal build layout, never a Tauri path alias.
 
@@ -828,9 +845,7 @@ def main(argv: list[str] | None = None) -> int:
                 # This helper's original sibling is the only policy source.
                 # An embedded Python may otherwise import a different worktree
                 # through ambient sys.path and mis-admit the pinned build.
-                helper = Path(__file__).absolute()
-                _require_plain_parents(helper)
-                _require_regular(helper.lstat(), "helper")
+                helper = _source_helper_path(__file__)
                 sibling = helper.with_name("source_lock_admission.py")
                 _require_plain_parents(sibling)
                 _require_regular(sibling.lstat(), "source admission")
