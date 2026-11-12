@@ -327,6 +327,32 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("\n  pull_request:", native)
         self.assertIn("inputs.one_original_owner == 'allow-one-original'", native)
 
+    def test_studio_gn1_save_is_a_separate_explicit_manual_consent(self):
+        repo = Path(__file__).resolve().parents[2]
+        studio = (repo / ".github/workflows/studio-service-verification.yml").read_text()
+        native = (repo / ".github/workflows/graph-native-startup-dev.yml").read_text()
+        # Explicit manual Studio dispatch can select the original GN1 owner
+        # WITHOUT silently granting the distinct real project-edit Save.
+        choice = studio.split("      gn1_one_original_save:\n", 1)
+        self.assertEqual(len(choice), 2,
+                         "Registered Studio workflow lacks separate GN1 Save consent")
+        declaration = choice[1].split("\n      graph_review_spki_der_base64:", 1)[0]
+        self.assertIn("type: choice", declaration)
+        self.assertIn("options: [deny, allow-one-original-save]", declaration)
+        self.assertIn("default: deny", declaration)
+        call = studio.split("\n  phase1-native-gn1:\n", 1)
+        self.assertEqual(len(call), 2)
+        self.assertIn("uses: ./.github/workflows/graph-native-startup-dev.yml", call[1])
+        self.assertIn("one_original_owner: allow-one-original", call[1])
+        self.assertIn("one_original_save: ${{ inputs.gn1_one_original_save }}", call[1])
+        self.assertNotIn("one_original_save: allow-one-original-save", call[1])
+        # The branch-local effect workflow still requires exact separate
+        # consent and has NO automatic push/PR Native execution.
+        self.assertIn("if: inputs.one_original_save == 'allow-one-original-save'", native)
+        self.assertIn("default: deny", native)
+        self.assertNotIn("\n  push:", native)
+        self.assertNotIn("\n  pull_request:", native)
+
     def test_workflow_is_one_manual_nonretry_effect_and_ciphertext_only(self):
         text = (Path(__file__).resolve().parents[2] /
                 ".github/workflows/graph-native-startup-dev.yml").read_text()
