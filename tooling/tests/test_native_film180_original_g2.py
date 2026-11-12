@@ -63,11 +63,30 @@ class Film180G2SourceTests(unittest.TestCase):
                              os.stat(path).st_mode & 0o777)
 
     def test_private_json_rejects_non_parent_or_relative_path(self):
+        source_lines = Path(runner.__file__).read_text(encoding="utf-8").splitlines()
         with tempfile.TemporaryDirectory() as temp:
-            with self.assertRaisesRegex(runner.Film180G2Rejected, "path_not_fresh"):
-                runner.write_private_json(Path("relative.json"), {"value": 1})
-            with self.assertRaisesRegex(runner.Film180G2Rejected, "path_not_fresh"):
-                runner.write_private_json(Path(temp) / "absent" / "receipt.json", {"v": 2})
+            for path in (Path("relative.json"), Path(temp) / "absent" / "receipt.json"):
+                try:
+                    runner.write_private_json(path, {"private": "must-not-be-reported"})
+                except runner.Film180G2Rejected as error:
+                    self.assertRegex(str(error), "path_not_fresh")
+                    line = runner.rejection_guard_line(error)
+                    self.assertIs(type(line), int)
+                    self.assertTrue(source_lines[line - 1].lstrip().startswith("require("))
+                    public = json.dumps({"failure_class": type(error).__name__,
+                                         "failure_guard_line": line})
+                    self.assertNotIn(str(path), public)
+                    self.assertNotIn("must-not-be-reported", public)
+                else:
+                    self.fail("An unsafe evidence path was admitted")
+        self.assertIsNone(runner.rejection_guard_line(ValueError("private-message")))
+        self.assertIsNone(runner.rejection_guard_line(
+            runner.Film180G2Rejected("private-message-without-internal-guard")))
+        try:
+            runner.require(False, "private-caller-message")
+        except runner.Film180G2Rejected as error:
+            # A caller outside this source module cannot provide a trusted line.
+            self.assertIsNone(runner.rejection_guard_line(error))
 
     def test_original_source_subprocess_failure_is_not_retried(self):
         with mock.patch.object(runner, "run_sanitized_json", side_effect=ValueError("failed")) as call:
