@@ -14,7 +14,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tooling import native_blender_original_evidence as evidence
+# The original source module uses sibling imports. Mirror its script context
+# for both hermetic unittest discovery and dotted entrypoints (-E -s).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import native_blender_original_evidence as evidence
 
 
 def retain_test_journal(path: Path, value: object) -> dict:

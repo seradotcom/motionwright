@@ -946,10 +946,10 @@ jobs:
         expected = {
             "discovery:test_blender_original_scene_contract.py": 35,
             "discovery:test_native_blender_original_evidence.py": 63,
-            "discovery:test_native_blender_bounded_command.py": 7,
+            "discovery:test_native_blender_bounded_command.py": 9,
             "dotted:tooling.tests.test_blender_original_scene_contract": 35,
             "dotted:tooling.tests.test_native_blender_original_evidence": 63,
-            "dotted:tooling.tests.test_native_blender_bounded_command": 7,
+            "dotted:tooling.tests.test_native_blender_bounded_command": 9,
         }
         compact = {
             "test_default_runtime_path_is_unchanged",
@@ -975,7 +975,7 @@ jobs:
                     or counts.get("tests_run") != count or counts.get("passed") != count
                     or any(counts.get(k) != 0 for k in
                            ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                raise SystemExit("Incomplete Blender 35+63+7 source roster")
+                raise SystemExit("Incomplete Blender 35+63+9 source roster")
             if "test_native_blender_original_evidence" in step["entry_point"]:
                 original = report.with_name(step["stderr"]["file"]).read_bytes()
                 if hashlib.sha256(original).hexdigest() != step["stderr"]["sha256"]:
@@ -988,7 +988,7 @@ jobs:
                 product_observed = re.findall(r"^(test_\w+) \([^\n]*\.ProductProfileTests\.\1\) \.\.\. ok$", view, re.M)
                 if len(product_observed) != 4 or set(product_observed) != set(product_expected):
                     raise SystemExit("Every product custody profile case must actually pass")
-        print(json.dumps({"distinct_Blender_source_cases":105, "case_executions":210,
+        print(json.dumps({"distinct_Blender_source_cases":107, "case_executions":214,
                           "compact_runtime_cases":9, "skipped":0,
                           "native_effects":False}, sort_keys=True))
         PY
