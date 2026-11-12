@@ -52,6 +52,15 @@ test('Graph mounted provider lease must be released before writer WAL-to-DELETE 
   assert.match(handoff, /native_provider_release: nativeQuiescence\.ref/);
   assert.match(handoff, /REOPEN_HANDOFF_PROVIDER_RELEASE_NOT_AUTHENTIC/);
   assert.match(factory, /PROVIDER_RELEASED/);
+  // Quiescence must authenticate every retained command-original ref with the
+  // real source-owned stable reader. An unbound `matchRef` used to throw only
+  // after Studio's original Save and ACK, before independent Store reopen.
+  assert.match(factory, /function fileRef\(file, expected, maximum\)/);
+  assert.match(factory, /same\(result\.ref, expected, 'ORIGINAL_REFERENCE_MISMATCH'\)/);
+  const release = factory.slice(factory.indexOf('async quiesceNativeOwner()'),
+    factory.indexOf('\n  expectedServices()', factory.indexOf('async quiesceNativeOwner()')));
+  assert.match(release, /fileRef\(row\[key\]\.path, row\[key\], 4 \* MiB\)/);
+  assert.doesNotMatch(release, /\bmatchRef\(/);
   assert.match(factory, /released\.lease_shutdown_completed === true/);
   assert.match(owner, /def graph_quiesce_v6\(self, \*, request_id\):/);
   assert.match(owner, /"providers\.release_bound"/);
