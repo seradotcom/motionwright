@@ -43,8 +43,44 @@ def save(root, name, value):
 
 
 def bounded(path, maximum):
-    raw, _ = engine.regular(path, maximum)
-    return raw
+    if os.name != "nt":
+        raw, _ = engine.regular(path, maximum)
+        return raw
+    # Win32 path ctime can be CreationTime while descriptor ctime names
+    # ChangeTime. Reuse the source-owned held-handle and timestamp-domain
+    # checks; never erase a timestamp or accept a path-only identity.
+    import nsis_owned_files as owned
+    require(type(maximum) is int and maximum >= 0, "resume_host_original_byte_bound")
+    path = owned._validated_path(path)
+    owned._require_plain_parents(path)
+    namespace = path.lstat()
+    owned._require_regular(namespace, "Manim retained original")
+    require(namespace.st_size <= maximum, "resume_host_original_byte_bound")
+    # FILE_SHARE_READ excludes concurrent writers/deleters. A conflicting
+    # writer fails admission; there is no weaker sharing fallback or retry.
+    fd = owned._open_publication_reader(path, "Manim retained original")
+    try:
+        stream = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        opened = os.fstat(stream.fileno())
+        owned._require_path_descriptor_match(opened, namespace, "Manim retained original")
+        change_time = owned._source_change_time(stream.fileno())
+        require(opened.st_size <= maximum, "resume_host_original_byte_bound")
+        raw = stream.read(opened.st_size + 1)
+        require(len(raw) == opened.st_size, "resume_host_original_read_size")
+        owned._require_plain_parents(path)
+        current_namespace = path.lstat()
+        current_opened = os.fstat(stream.fileno())
+        owned._require_unchanged(current_namespace, namespace, "Manim retained original path")
+        owned._require_unchanged(current_opened, opened, "Manim retained original handle")
+        owned._require_path_descriptor_match(current_opened, current_namespace,
+                                             "Manim retained original")
+        require(owned._source_change_time(stream.fileno()) == change_time,
+                "resume_host_original_change_time")
+        return raw
 
 
 def gh(root, label, executable, args, *, limit=512 * 1024, seconds=45):
