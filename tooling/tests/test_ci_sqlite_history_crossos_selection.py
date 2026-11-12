@@ -39,10 +39,16 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
         expected = {
             "crates/storage/src/lib.rs": "23f85144b11965b38f7cdee9d76ad8d87475041ca4d4b7ebeb588edb939282b9",
             "crates/storage/src/portability.rs": "886c0b016b91faf1badeff2ac9ab07a8786d904da29bf3860e00a2b7e5cc1d52",
+            "Cargo.lock": "ad71f5dd5916f5a469e0e68a45ad0b448e72bac1e13e4cd33bc32ea7719c3286",
+            "SOURCE_LOCK.json": "9eceac7d79bb96b3417768bcc8e351211a5c85eeedcf727ac0bbed502b76d795",
         }
         maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
         self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
         self.assertEqual(source.count('foundation_reviewed_source="6e5ca13310aa3e8fe819816d39072075df40bd7c"'), 2)
+        self.assertEqual(source.count('source_lock_reviewed_source="5d8ef4ccda8a18f8a323c0774cd4ad8a973e7f72"'), 2)
+        self.assertEqual(source.count('desktop_workflow_lock_reviewed_source="244963b33352314170915403578735147e96e96f"'), 2)
+        self.assertIn('source_lock_reviewed_source if rel=="SOURCE_LOCK.json"', source)
+        self.assertIn('desktop_workflow_lock_reviewed_source if rel=="Cargo.lock"', source)
         origin = 'foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs")'
         self.assertEqual(source.count(origin), 2, "Both Storage inputs must name the composed source")
         for raw in maps:
