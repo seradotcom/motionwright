@@ -176,6 +176,11 @@ class NativePango:
             stack.callback(self.config_free, config)
             for path in font_paths:
                 require(self.add_font(config, os.fsencode(path)) != 0, "native_sfnt_open_failed")
+            # Finish this PRIVATE Fontconfig font database before Pango's
+            # first font match. Older runtime builds can accept a file yet
+            # produce no resolved font until the database is materialized.
+            # Never modify the global fontconfig configuration or fall back.
+            require(self.config_build(config) != 0, "native_font_database_unavailable")
             # CAIRO_FONT_TYPE_FT=1 explicitly selects the Fontconfig/FreeType map.
             font_map = self.map_new(1)
             require(bool(font_map), "native_freetype_map_unavailable")

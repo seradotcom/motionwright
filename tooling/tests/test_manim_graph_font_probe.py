@@ -151,12 +151,25 @@ class ClosedRuntimeBoundaryTests(unittest.TestCase):
             native.observe(["/mock-font"], "Instrument Sans", b"A", 20, True)
         self.assertEqual(calls, [("free_config", 101)])
 
+    def test_failed_private_font_database_does_not_create_a_map(self):
+        native = object.__new__(probe.NativePango)
+        calls = []
+        native.config_new = lambda: 101
+        native.config_free = lambda ptr: calls.append(("free_config", ptr))
+        native.add_font = lambda _config, _path: calls.append("font_added") or 1
+        native.config_build = lambda _config: calls.append("database_failed") or 0
+        native.map_new = lambda _kind: calls.append("unexpected_map") or 202
+        with self.assertRaisesRegex(probe.Rejected, "native_font_database_unavailable"):
+            native.observe(["/mock-font"], "Instrument Sans", b"A", 20, True)
+        self.assertEqual(calls, ["font_added", "database_failed", ("free_config", 101)])
+
     def test_mock_failed_context_releases_map_before_config(self):
         native = object.__new__(probe.NativePango)
         calls = []
         native.config_new = lambda: 101
         native.config_free = lambda pointer: calls.append(("free_config", pointer))
         native.add_font = lambda _config, _path: 1
+        native.config_build = lambda _config: 1
         native.map_new = lambda _kind: 202
         native.unref = lambda pointer: calls.append(("unref", pointer))
         native.map_config = lambda _map, _config: None
