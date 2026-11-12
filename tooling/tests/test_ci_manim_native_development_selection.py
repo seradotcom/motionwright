@@ -151,11 +151,20 @@ class DevelopmentNativeSelectionTests(unittest.TestCase):
         self.assertIn("formal-G2=NOT_GRANTED G3=STOP release=false", result.stdout)
         self.assertNotIn("dev-manim-source=PASS", result.stdout)
 
-    def test_exact_a4_donor_requires_explicit_native_mode_and_keeps_attempt_boundary(self):
+    def test_exact_admitted_a4_donors_require_explicit_native_mode_and_keep_attempt_boundary(self):
         for branch in ("fix/native-production-a1-211feef-20261101-a4",
-                       "fix/native-production-causal-20261106-a4"):
+                       "fix/a4-manim-recovery-minimal-20261107"):
             with self.subTest(branch=branch):
                 self._assert_donor_boundary(branch)
+
+    def test_retired_causal_donor_remains_denied_for_development_native(self):
+        result, calls = self.execute(environment={
+            "GITHUB_REF": "refs/heads/fix/native-production-causal-20261106-a4",
+            "MW_MANIM_DEVELOPMENT_NATIVE": "true",
+        })
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(calls, ["source_policy", "public_surface_policy"])
+        self.assertIn("requires one explicit admitted", result.stderr)
 
     def _assert_donor_boundary(self, branch):
         donor = {"GITHUB_REF": "refs/heads/" + branch}
