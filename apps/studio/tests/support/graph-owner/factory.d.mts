@@ -101,6 +101,11 @@ export interface AuthenticatedGraphCaseFactory
     privateRoot: string;
   }>;
   readonly ownerStart: Promise<unknown> | null;
+  /** Exact IDs read back after the ordinary initializer's scoped Store writes.
+   * This source selection is not a Native grant or an authoring Ready DTO. */
+  readonly developmentSourceSelection?: Readonly<{
+    projectId: string; sceneId: string; profileId: string;
+  }>;
   /** Quota for the sole source-built reader reserved before any Native Save. */
   reserveDevelopmentReadOnlyOriginals(): boolean;
   /** Actual original writer close, original Host seal, live independent reader. */

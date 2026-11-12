@@ -4,7 +4,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { GraphCaseFactoryCore } from '../../tests/support/graph-owner/factory.mjs';
-import { hasNoSemanticGraphs } from '../../tests/support/graph-owner/contracts.mjs';
+import { hasNoSemanticGraphs, developmentGraphSourceSelection } from '../../tests/support/graph-owner/contracts.mjs';
 import { ScopedChangeService } from '../../tests/support/scopedChangeService.ts';
 
 test('Native RPC retains a response within its existing 45-second transport window without retry', async t => {
@@ -80,5 +80,57 @@ test('Graph initializer rejects missing design and present malformed or nonempty
   // Present undefined is not the domain's omitted JSON property.
   for (const semantic_graphs of [undefined, null, {}, '', 0, false, [{}]]) {
     assert.equal(hasNoSemanticGraphs({ production_design: { semantic_graphs } }), false);
+  }
+});
+
+
+function developmentSourceSnapshots() {
+  // Pure source-contract inputs, never a Store, Host or physical result.
+  const id = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  const before = {
+    id:id(1), generation:id(2), active_branch:id(3), revision:5,
+    scenes:[{ id:id(4), renderer:'motion-canvas', nodes:[{ id:id(5) }] }],
+    deliverables:[{ id:id(6), included_scene_ids:[] }],
+    production_design:{ heroes:[{ id:id(7), scene_id:id(4) }] },
+  };
+  const after = structuredClone(before);
+  after.revision += 2;
+  after.scenes.push({
+    id:id(8), renderer:'manim-community', nodes:[], beats:[],
+    camera:{ center_x:960, center_y:540, zoom:1, rotation_deg:0, safe_margin:0.05 },
+    duration:{ num:'5', den:'1' },
+  });
+  return { before, after };
+}
+test('development source selection preserves authored Canvas and selects the new empty Manim scene', () => {
+  const { before, after } = developmentSourceSnapshots();
+  const retained = JSON.stringify({ before, after });
+  const selection = developmentGraphSourceSelection(before, after);
+  assert.deepEqual(selection, { projectId:before.id,
+    sceneId:after.scenes[1].id, profileId:before.deliverables[0].id });
+  assert.equal(Object.isFrozen(selection), true);
+  assert.equal(JSON.stringify({ before, after }), retained);
+  assert.equal(Object.hasOwn(after.production_design, 'semantic_graphs'), false);
+});
+test('development source selection rejects retagged authored scenes and changed original identities', () => {
+  const mutations = [
+    after => { after.scenes.pop(); after.scenes[0].renderer = 'manim-community'; },
+    after => { after.scenes[0].nodes = []; },
+    after => { after.production_design.heroes = []; },
+    after => { after.scenes[1].nodes.push({ id:'unexpected' }); },
+    after => { after.scenes[1].camera.zoom = 2; },
+    after => { after.scenes[1].renderer = 'motion-canvas'; },
+    after => { after.deliverables[0].id = after.id; },
+    after => { after.id = after.generation; },
+    after => { after.active_branch = after.generation; },
+    after => { after.revision--; },
+    after => { after.scenes[1].id = after.scenes[0].id; },
+    after => { after.production_design.semantic_graphs = [{}]; },
+  ];
+  for (const mutate of mutations) {
+    const { before, after } = developmentSourceSnapshots();
+    mutate(after);
+    assert.throws(() => developmentGraphSourceSelection(before, after),
+      /GRAPH_DEV_INITIALIZER_NATIVE_MANIM_SOURCE_NOT_READY/);
   }
 });
