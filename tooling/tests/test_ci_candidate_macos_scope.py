@@ -37,7 +37,7 @@ class IsolatedMacOSBundleScopeTests(unittest.TestCase):
         policy = job_source(self.workflow, "receipt-policy")
         admission = (
             "seradotcom/motionwright:workflow_dispatch:"
-            + INTEGRATION_REF + ":" + SCOPE + ":1)"
+            + INTEGRATION_REF + ":" + SCOPE + ":1|"
         )
         self.assertEqual(policy.count(admission), 1)
         self.assertIn('"macos_bundle": "dev-macos-bundle-source"', policy)
@@ -80,7 +80,8 @@ class IsolatedMacOSBundleScopeTests(unittest.TestCase):
         policy = job_source(self.workflow, "receipt-policy")
         self.assertEqual(
             policy.count(
-                "python3 -B -m unittest tooling.tests.test_ci_candidate_macos_scope -v"
+                "python3 -B -m unittest tooling.tests.test_ci_candidate_macos_scope "
+                "tooling.tests.test_ci_candidate_linux_scope -v"
             ), 1,
         )
 

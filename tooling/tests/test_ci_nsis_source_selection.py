@@ -724,7 +724,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", scoped)
         self.assertIn("python3 tooling/source_policy.py", scoped)
         self.assertIn("python3 tooling/public_surface_policy.py", scoped)
-        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:macos_bundle:1)", scoped)
+        self.assertIn("seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:nsis_lifecycle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_contracts:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:windows_installed:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_first_use_source:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:macos_bundle:1|seradotcom/motionwright:workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:linux_bundle:1)", scoped)
         self.assertIn('case "${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_REF}:${MW_SELECTED_SCOPE}:${GITHUB_RUN_ATTEMPT}" in', scoped)
         self.assertIn('row["status"] != "NOT_RUN" or row["independent"] is not False', scoped)
         self.assertIn('F-G0=NOT_RUN G3=STOP', scoped)
@@ -779,15 +779,16 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         patterns = match.group(1).split("|")
         self.assertEqual(patterns, [start + "nsis_lifecycle:1", start + "windows_contracts:1",
                                     start + "windows_installed:1", start + "linux_first_use_source:1",
-                                    start + "macos_bundle:1"])
+                                    start + "macos_bundle:1", start + "linux_bundle:1"])
         for scope, attempt, expected in (
             ("windows_contracts", "1", True), ("nsis_lifecycle", "1", True),
             ("windows_installed", "1", True), ("linux_first_use_source", "1", True),
-            ("macos_bundle", "1", True),
+            ("macos_bundle", "1", True), ("linux_bundle", "1", True),
             ("all", "1", False), ("linux_first_use", "1", False),
             ("linux_first_use_source", "2", False), ("linux_first_use_source", "0", False),
             ("linux_first_use", "2", False), ("linux_first_use", "0", False),
             ("macos_bundle", "2", False), ("macos_bundle", "0", False),
+            ("linux_bundle", "2", False), ("linux_bundle", "0", False),
             ("windows_contracts", "2", False), ("windows_contracts", "0", False),
             ("windows_installed", "2", False), ("windows_installed", "0", False)):
             self.assertEqual(any(fnmatch.fnmatchcase(start + scope + ":" + attempt, pat) for pat in patterns),
