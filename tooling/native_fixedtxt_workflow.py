@@ -42,11 +42,11 @@ HISTORICAL_PAIR = {
     "GREEN": "a400b38608e169a20e7ade099aa8632c11629152951b9e62a0fb66858b530f36",
 }
 PAIR = {
-    "RED": "2d8ab6983d0845fe0290d6f25bef277759cb530ed85e6f3bd5e94f263a5f2bb3",
-    "GREEN": "0aa5b9bd414f3c7d88e9b871ee96e3523729c02caddd8d420d63d9f14c2c794d",
+    "RED": "9a54b51d25e0fa8521718fd03f9f29145e7bfc0395ff8fe40bd6d3fbccb23a96",
+    "GREEN": "63ffb19cf10e042d988608fca632780dc2cdc9e7766c3d1cc1e90d4f981e43c6",
 }
 FIXTURE_HELPER = "crates/driver-motion-canvas/examples/support/fixed_text_fixtures_v4.rs"
-FIXTURE_HELPER_SHA256 = "3e1da867921c1f0a82342ac0c9c4cc85f7081ad5ad8c5dab0ade449f63a1c907"
+FIXTURE_HELPER_SHA256 = "372b1aab1412fa61b7003b897729f9ac2e6152f3cc5334890256ba025a1984f6"
 CALIBRATION_KEYS = ("fixed-multirun-control", "fixed-multirun", "fixed-camera-scene")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 RUN = re.compile(r"[1-9][0-9]*\Z")

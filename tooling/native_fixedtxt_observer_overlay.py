@@ -388,6 +388,15 @@ INK_EDITS = (
 EDITS += INK_EDITS
 
 
+# Type narrowing for the same read-only observer in both historical arms.
+TYPING_EDITS = (
+    ('native_observer_config_narrowing', ' const config=globalThis.__SEMWRIGHT_NATIVE_CONFIG__,samples=config?.text_pixel_observation_frames;\n if(!samples?.length)return undefined;', ' const config=globalThis.__SEMWRIGHT_NATIVE_CONFIG__;\n if(!config)return undefined;\n const samples=config.text_pixel_observation_frames;\n if(!samples?.length)return undefined;'),
+    ('native_observer_background_narrowing', " requireValue(config.text_pixel_background===null||textPixelRgb(config.text_pixel_background)!==null,'native text pixel background observation');", " requireValue(config.text_pixel_background===null||(typeof config.text_pixel_background==='string'&&textPixelRgb(config.text_pixel_background)!==null),'native text pixel background observation');"),
+    ('native_observer_parent_type', '   const parent=current.parent(),opacity=current.opacity();', '   const parent:Node|null=current.parent();\n   const opacity=current.opacity();'),
+)
+EDITS += TYPING_EDITS
+
+
 class OverlayRejected(ValueError):
     pass
 
@@ -432,11 +441,11 @@ def reverse(raw: bytes) -> bytes:
 
 
 OBSERVED = {
-    "RED": "2d8ab6983d0845fe0290d6f25bef277759cb530ed85e6f3bd5e94f263a5f2bb3",
-    "GREEN": "0aa5b9bd414f3c7d88e9b871ee96e3523729c02caddd8d420d63d9f14c2c794d",
+    "RED": "9a54b51d25e0fa8521718fd03f9f29145e7bfc0395ff8fe40bd6d3fbccb23a96",
+    "GREEN": "63ffb19cf10e042d988608fca632780dc2cdc9e7766c3d1cc1e90d4f981e43c6",
 }
 HISTORICAL_BYTES = {"RED": 33809, "GREEN": 34259}
-OBSERVED_BYTES = {'RED': 64323, 'GREEN': 64773}
+OBSERVED_BYTES = {'RED': 64430, 'GREEN': 64880}
 MANIFEST_PATH = "observer-derivation.original.json"
 MANIFEST_MAXIMUM = 16384
 BUNDLE_PATHS = {
