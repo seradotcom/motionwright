@@ -782,7 +782,7 @@ fn cas_v4_upgrade_preserves_project_receipts_and_sequence_values() {
     assert_eq!(
         after
             .query_row("SELECT count(*) FROM cas_import_commits", [], |row| row
-                .get::<_, u64>(0))
+                .get::<_, i64>(0))
             .unwrap(),
         0
     );
@@ -813,7 +813,7 @@ fn import_marker_removed_by_late_trigger_rolls_back_project_and_events() {
         let sql = format!("SELECT count(*) FROM {table}");
         assert_eq!(
             external
-                .query_row(&sql, [], |row| row.get::<_, u64>(0))
+                .query_row(&sql, [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             0
         );
