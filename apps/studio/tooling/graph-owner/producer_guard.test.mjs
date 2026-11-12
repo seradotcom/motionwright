@@ -299,18 +299,18 @@ function fixture(name) {
       soabi: 'cpython-312-x86_64-linux-gnu', prefix: '/usr', base_prefix: '/usr',
       stdlib: '/usr/lib/python3.12', wheel_python_tag: 'cp312', wheel_abi_tag: 'cp312' } };
   const runtimeFiles = [], intakeRows = [];
-  for (let i = 0; i < 15; i++) {
-    const sourceName = i < 9 ? 'crates/manim-profile/testdata/graph-fonts/fixture' + i + '.woff2' : 'tooling/fixture_helper' + i + '.py';
-    const relativePath = 'graph-profile-v1/' + (i < 9 ? 'fonts/' : 'helpers/') + path.basename(sourceName);
+  for (let i = 0; i < 22; i++) {
+    const sourceName = i < 16 ? 'crates/manim-profile/testdata/graph-fonts/fixture' + i + (i < 9 ? '.woff2' : '.ttf') : 'tooling/fixture_helper' + i + '.py';
+    const relativePath = 'graph-profile-v1/' + (i < 16 ? 'fonts/' : 'helpers/') + path.basename(sourceName);
     const src = sourceFile(sourceName), ref = put(path.join(runtime, relativePath), fs.readFileSync(src.path));
     runtimeFiles.push({ relative_path: relativePath, ref });
     intakeRows.push({ source_relative_path: sourceName, runtime_relative_path: relativePath, sha256: ref.sha256, size_bytes: ref.size_bytes,
-      pin_origin: 'crates/manim-profile/src/semantic_graph_source.rs::' + (i < 9 ? 'BUILTIN_ASSETS' : 'helper_sources/include_bytes!') });
+      pin_origin: 'crates/manim-profile/src/semantic_graph_source.rs::' + (i < 9 ? 'BUILTIN_ASSETS' : i < 16 ? 'NATIVE_FONT_ASSETS' : 'helper_sources/include_bytes!') });
   }
   const intake = { schema: 'motionwright.manim.graph-runtime-source-intake/1', status: 'SOURCE_INTAKE_ONLY', profile_id: 'mw-manim-semantic-graph-v1',
     source_root: repo, runtime_root: runtime, profile_admitted: false, native_render_performed: false,
     compiled_runner_pin_agreement_verified: false, native_font_open_observed: false, pango_layout_observed: false,
-    files: intakeRows, files_count: 15,
+    files: intakeRows, files_count: 22,
     compiler_source: { relative_path: 'crates/manim-profile/src/semantic_graph_source.rs', sha256: sourceFiles['crates/manim-profile/src/semantic_graph_source.rs'].sha256, size_bytes: sourceFiles['crates/manim-profile/src/semantic_graph_source.rs'].bytes },
     source_lock: { relative_path: 'SOURCE_LOCK.json', sha256: sourceFiles['SOURCE_LOCK.json'].sha256, size_bytes: sourceFiles['SOURCE_LOCK.json'].bytes } };
   const intakeRef = json('originals/intake.json', intake);
@@ -451,6 +451,46 @@ test('all independently reviewed fields are in the raw private index, not a muta
   }
   assert.throws(() => assertOriginalProducerAdmission(baseline), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
 });
+test('J1 runtime closure requires all source assets and native fonts with compiled provenance', () => {
+  const good = fixture('sfnt-runtime-closure');
+  const observed = inspectProducerOriginalsCore(good.indexPath, good.reviewed, 'graph-source-review');
+  assert.equal(observed.production_admission, false);
+  assert.throws(() => assertOriginalProducerAdmission(observed), /J1_UNBRANDED_OR_DIAGNOSTIC_ADMISSION/);
+  for (const [mutation, error] of [
+    ['legacy-roster', /J1_GRAPH_RUNTIME_TWENTY_TWO_ORIGINALS/],
+    ['legacy-count', /J1_RUNTIME_INTAKE_FILE_COUNT/],
+    ['uncompiled-native-origin', /J1_RUNTIME_PIN_ORIGIN/],
+    ['native-output-substitution', /J1_RUNTIME_INTAKE_OUTPUT_MISMATCH/],
+    ['native-source-substitution', /J1_RUNTIME_INTAKE_SOURCE_NOT_BOUND/],
+  ]) {
+    // Inert metadata only. Matching fixture review cannot excuse an incomplete
+    // runtime or replace the physical source/hash joins in the actual reader.
+    const f = fixture('sfnt-' + mutation);
+    if (mutation === 'legacy-roster') {
+      f.index.runtime_originals.profile_files.splice(9, 7);
+      f.reviewed.runtime.profile_files = structuredClone(f.index.runtime_originals.profile_files);
+      f.index.contract.runtime.profile_files = structuredClone(f.index.runtime_originals.profile_files);
+    } else {
+      const intake = f.load(f.index.runtime_originals.intake);
+      const native = intake.files.find(row => row.pin_origin.endsWith('::NATIVE_FONT_ASSETS'));
+      assert.ok(native);
+      if (mutation === 'legacy-count') intake.files_count = 15;
+      else if (mutation === 'uncompiled-native-origin') native.pin_origin += '_UNREVIEWED';
+      else if (mutation === 'native-output-substitution') native.sha256 = 'f'.repeat(64);
+      else native.source_relative_path = 'SOURCE_LOCK.json';
+      f.replace(f.index.runtime_originals.intake, intake);
+      f.index.runtime.intake_receipt_sha256 = f.index.runtime_originals.intake.sha256;
+      f.put(path.join(f.index.runtime.root, 'graph-profile-v1/source-closure.json'),
+        fs.readFileSync(f.index.runtime_originals.intake.path));
+      f.reviewed.runtime.intake = structuredClone(intake);
+      f.index.contract.runtime.intake = structuredClone(intake);
+    }
+    f.seal();
+    assert.throws(() => inspectProducerOriginalsCore(f.indexPath, f.reviewed, 'graph-source-review'),
+      error, mutation);
+  }
+});
+
 test('J1 source-only runtime ABI verifier rejects foreign Python and PyAV identities', () => {
   assert.equal(typeof guardSource.verifyRuntimePythonAbi, 'function');
   const binary = { path: '/fixture/python3.12', sha256: 'a'.repeat(64), size_bytes: 4096 };
