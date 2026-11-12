@@ -27,6 +27,15 @@ on:
       - 'apps/studio/tooling/graph_dev_first_save.spec.ts'
       - 'apps/studio/tooling/graph_dev_first_save.config.ts'
       - 'tooling/ci_canvas_service.py'
+      - 'tooling/manim_graph_font_probe.py'
+      - 'tooling/manim_bundled_font_intake.py'
+      - 'tooling/manim_graph_runtime.py'
+      - 'tooling/native_manim_graph_runtime_intake.py'
+      - 'tooling/derive_manim_native_fonts.py'
+      - 'tooling/tests/test_manim_graph_font_probe.py'
+      - 'tooling/tests/test_native_manim_graph_manifest.py'
+      - 'tooling/tests/test_ci_graph_sfnt_pango_source.py'
+      - 'crates/manim-profile/**'
       - 'tooling/tests/test_ci_canvas_service.py'
       - 'tooling/tests/test_ci_graph_r74_singlecase.py'
       - 'tooling/graph_r74_external_reviewer.py'
@@ -159,6 +168,7 @@ jobs:
             -r tooling/requirements/mlt-g2-custody.txt
           "$RUNNER_TEMP/graph-fast-custody-venv/bin/python" -B -m unittest \
             tooling.tests.test_ci_graph_dev_fast \
+            tooling.tests.test_ci_graph_sfnt_pango_source \
             tooling.tests.test_ci_graph_studio_selected \
             tooling.tests.test_ci_graph_dev_native_startup \
             tooling.tests.test_ci_graph_dev_native_budget \
@@ -214,6 +224,59 @@ jobs:
               raise SystemExit("G0_REVIEWER_RUNNER_DENIAL_ABSENT")
           print("PASS: R74 reviewer source syntax and GitHub-runner refusal only; independent review NOT_RUN")
           PY
+      - name: Verify original Linux Pango SFNT and source-bound Graph runtime fixtures
+        shell: bash
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          test "$(uname -m)" = x86_64
+          test "$GITHUB_SHA" = "$EXPECTED_GRAPH_SOURCE"
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import unittest
+
+          selection = (
+              "tooling.tests.test_manim_graph_font_probe.NativeFontProvenanceTests.test_real_native_files_bind_distinct_hashes_to_all_retained_sources",
+              "tooling.tests.test_manim_graph_font_probe.NativeSfntFaceTests.test_real_bundled_sfnt_faces_have_exact_ascii_coverage_without_fallback",
+              "tooling.tests.test_native_manim_graph_manifest",
+          )
+          loader = unittest.TestLoader()
+          suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in selection)
+          result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
+          if (result.testsRun != 24 or result.errors or result.failures
+                  or result.skipped or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit("Graph original Linux SFNT/Pango and owner manifest source tests failed")
+          font_dir = Path("crates/manim-profile/testdata/graph-fonts")
+          paths = sorted(font_dir.rglob("*.ttf"))
+          if len(paths) != 7 or any(path.is_symlink() or not path.is_file() for path in paths):
+              raise SystemExit("Graph seven source-bound SFNT files were not found")
+          faces = [{"path": path.relative_to(font_dir).as_posix(),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "bytes": path.stat().st_size} for path in paths]
+          receipt = {
+              "schema": "motionwright.graph.sfnt-pango-g0/1",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "status": "PASS",
+              "executed": result.testsRun,
+              "skipped": 0,
+              "native_font_files": faces,
+              "pango_scope": "REAL_LINUX_PRIVATE_FONTCONFIG_SOURCE_ONLY",
+              "Native_Host": "NOT_RUN",
+              "Graph_Save": "NOT_RUN",
+              "G2": "NOT_GRANTED",
+              "G3": "STOP",
+          }
+          dest = Path("knowledge/runtime/graph-fast-pango-sfnt-source.json")
+          with dest.open("x", encoding="utf-8", newline="\n") as out:
+              json.dump(receipt, out, indent=2, sort_keys=True)
+              out.write("\n")
+          print("Graph REAL private Linux Pango SFNT source PASS; no Native Host or Graph Save")
+          PY
       - name: Verify original J1 reader, closed context and inspection source on Linux
         shell: bash
         run: |
@@ -236,6 +299,7 @@ jobs:
             knowledge/runtime/graph-fast-source-result.json
             knowledge/runtime/graph-fast-gn1-unittest.original.log
             knowledge/runtime/graph-fast-sem-pin-audit.original.json
+            knowledge/runtime/graph-fast-pango-sfnt-source.json
           if-no-files-found: warn
           retention-days: 7
 
