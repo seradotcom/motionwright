@@ -1048,6 +1048,7 @@ jobs:
           name: motionwright-linux-smoke-diagnostics
           path: |
             ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run.log
+            ${{ runner.temp }}/motionwright-smoke/isolated-gui/x11-first-create.original.txt
             ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run-first.log
             ${{ runner.temp }}/motionwright-smoke/isolated-gui/app-run-second.log
           if-no-files-found: warn

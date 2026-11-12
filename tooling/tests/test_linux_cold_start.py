@@ -255,6 +255,47 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
                 )
             launcher.assert_not_called()
 
+        # Native Create must never follow a broad title substring or an
+        # ambiguous X11 tree. Only exact single-title readback may lead to
+        # the one original keyboard action; retries here are reads alone.
+        transient = [
+            probe.subprocess.CompletedProcess(
+                ["xwininfo"], 0, stdout=b' 0x10 "Motionwright loading":\n'),
+            probe.subprocess.CompletedProcess(
+                ["xwininfo"], 0, stdout=b' 0x12 "Motionwright": ("app" "app")\n'),
+        ]
+        with patch.object(probe.subprocess, "run", side_effect=transient) as observe, \
+             patch.object(probe.time, "sleep") as nap:
+            self.assertEqual(probe._unique_original_x11_window(self.scratch), 0x12)
+            self.assertEqual(observe.call_count, 2)
+            nap.assert_called_once_with(0.3)
+        self.assertFalse((self.scratch / "x11-first-create.original.txt").exists())
+
+        ambiguous = self.work / "ambiguous"
+        ambiguous.mkdir()
+        original = b' 0x10 "Motionwright":\n 0x11 "Motionwright":\n'
+        with patch.object(probe.subprocess, "run", return_value=
+                          probe.subprocess.CompletedProcess(
+                              ["xwininfo"], 0, stdout=original)) as observe:
+            with self.assertRaisesRegex(probe.ColdStartError, "Ambiguous original"):
+                probe._unique_original_x11_window(ambiguous)
+            observe.assert_called_once()
+        self.assertEqual((ambiguous / "x11-first-create.original.txt").read_bytes(),
+                         original)
+
+        missing = self.work / "missing"
+        missing.mkdir()
+        final = b' 0x30 "Motionwright loading":\n'
+        with patch.object(probe.subprocess, "run", return_value=
+                          probe.subprocess.CompletedProcess(
+                              ["xwininfo"], 0, stdout=final)) as observe, \
+             patch.object(probe.time, "sleep"):
+            with self.assertRaisesRegex(probe.ColdStartError, "exactly one"):
+                probe._unique_original_x11_window(missing)
+            self.assertEqual(observe.call_count, 3)
+        self.assertEqual((missing / "x11-first-create.original.txt").read_bytes(),
+                         final)
+
     def test_project_document_source_digest_is_bound_to_actual_sqlite_bytes(self):
         seeded_store(self.scratch)
         snapshot = probe.read_snapshot(self.scratch / "data")
