@@ -32,6 +32,11 @@ MAX_JSON = 8 * 1024 * 1024
 MAX_SOURCE = 16 * 1024 * 1024
 MAX_SOURCE_FILES = 64
 MAX_TOTAL_SOURCE = 64 * 1024 * 1024
+# A source-built Semwright mc1 render-job capability is 192 characters in the
+# retained original, not the older 128-character local/fixture assumption.
+# Keep a tighter-than-SDK upper bound and require the real typed reference.
+MAX_NATIVE_JOB_REF = 256
+NATIVE_JOB_REF = re.compile(r"mc1:[^\x00-\x20\x7f]+:render_job:render-[0-9a-f]{32}\Z")
 
 
 class RoundtripRefused(ValueError):
@@ -41,6 +46,14 @@ class RoundtripRefused(ValueError):
 def require(test: bool, reason: str) -> None:
     if not test:
         raise RoundtripRefused(reason)
+
+
+def validated_native_job_ref(value: object) -> str:
+    """Check the real bounded Semwright mc1 render-job reference, not an alias."""
+    require(type(value) is str and 1 <= len(value) <= MAX_NATIVE_JOB_REF
+            and NATIVE_JOB_REF.fullmatch(value) is not None,
+            "invalid_source_native_job_ref")
+    return value
 
 
 def exact(value: object, keys: set[str], reason: str) -> dict:
@@ -370,7 +383,7 @@ def one_stage(root: Path, stage: object, expected_count: int,
                           "managed_inspection", "frames_dir", "native_job_ref"},
                   "invalid_stage_fields")
     require(type(stage["session"]) is str and 1 <= len(stage["session"]) <= 128
-            and type(stage["native_job_ref"]) is str and 1 <= len(stage["native_job_ref"]) <= 128,
+            and type(stage["native_job_ref"]) is str and 1 <= len(stage["native_job_ref"]) <= MAX_NATIVE_JOB_REF,
             "missing_stage_identity")
     project = checked_json(bounded_file(root, stage["project"]))
     film = checked_json(bounded_file(root, stage["film"]))
@@ -446,6 +459,11 @@ def inspect(root: Path, witness: dict, *, _unit_fixture: bool = False, binding_v
                   "native_node_id", "native_property", "from", "to"},
                  "invalid_edit_contract")
     stages = exact(witness["stages"], set(STAGES), "incomplete_roundtrip_stages")
+    if not _unit_fixture:
+        # A 192-byte SDK source reference is valid; a synthetic or unbounded
+        # job string cannot acquire identity by matching only its length.
+        for stage in STAGES:
+            validated_native_job_ref(stages[stage].get("native_job_ref"))
     seen = {key: one_stage(root, stages[key], count, width, height,
                            binding_verifier=binding_verifier) for key in STAGES}
     sessions = [seen[key]["session"] for key in STAGES]
