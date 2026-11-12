@@ -35,6 +35,7 @@ REQUIRED_PR_PATHS = (
     "tooling/native_manim_frozen_runtime_host.py",
     "tooling/tests/test_native_manim_resume.py",
     "tooling/tests/test_native_manim_resume_host_files.py",
+    "tooling/requirements/manim-windows-held-originals.txt",
     ".github/workflows/native-manim-e2e.yml",
     "crates/driver-manim-community/src/lib.rs",
     "SOURCE_LOCK.json",
@@ -116,6 +117,8 @@ class NativeManimPullRequestWatchTests(unittest.TestCase):
                       "&& inputs.scenario == 'source-contracts')", job)
         self.assertIn("persist-credentials: false", job)
         self.assertIn("python-version: '3.13'", job)
+        self.assertIn("--require-hashes -r tooling/requirements/manim-windows-held-originals.txt", job)
+        self.assertIn("cryptography.__version__", job)
         self.assertIn("python -B -m unittest tooling.tests.test_native_manim_resume_host_files -v", job)
         self.assertIn("Ran 4 tests in", job)
         self.assertIn("skipped|failed|error|unexpected success", job)

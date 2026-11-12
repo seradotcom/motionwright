@@ -71,6 +71,7 @@ on:
       - 'tooling/tests/test_native_manim_runtime_restore.py'
       - 'tooling/tests/test_native_manim_resume.py'
       - 'tooling/tests/test_native_manim_resume_host_files.py'
+      - 'tooling/requirements/manim-windows-held-originals.txt'
       - 'tooling/native_manim_editable_cycle.py'
       - 'tooling/native_manim_editable_outer.py'
       - 'tooling/native_manim_editable_pixels.py'
@@ -1038,6 +1039,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
+      - name: Install hashed Windows-only original custody dependencies
+        shell: pwsh
+        run: |
+          python -B -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r tooling/requirements/manim-windows-held-originals.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Hashed Windows original dependency closure failed' }
+          python -B -c "import cryptography,cffi,pycparser;assert cryptography.__version__=='50.0.2' and cffi.__version__=='2.1.1' and pycparser.__version__=='2.23'"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows original dependency versions differ' }
       - name: Require four real Windows held-file original source contracts
         shell: pwsh
         run: |
