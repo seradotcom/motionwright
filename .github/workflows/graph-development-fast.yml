@@ -221,8 +221,9 @@ jobs:
           # Inert source fixtures only: no R74 statuses, Native Host, Store or G2.
           node --test apps/studio/tooling/graph-owner/producer_guard.test.mjs
           # Keep the existing Linux-only J1 source contract unchanged;
-          # select the closed-context, Save and full original CAS continuity checks.
+          # select initializer serialization, closed-context, Save and original CAS continuity.
           node --test \
+            apps/studio/tooling/graph-owner/native_rpc_window.test.mjs \
             apps/studio/tooling/graph-owner/context_failure_decode.test.mjs \
             apps/studio/tooling/graph-owner/graph_inspection_lifecycle.test.mjs \
             apps/studio/tests/support/graph-owner/dev_live_reader_continuity.test.mjs

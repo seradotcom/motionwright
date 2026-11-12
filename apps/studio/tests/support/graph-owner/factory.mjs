@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusive,
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
-  ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines } from './contracts.mjs';
+  ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines, hasNoSemanticGraphs } from './contracts.mjs';
 import { admitOriginalProducers, admitOriginalDevelopmentProducers, assertOriginalProducerAdmission,
   assertGraphProducerAdmission, ownerReadOnlyMetadataCredential,
   originalGraphCaseLayout, GRAPH_BUDGET } from './producer_guard.mjs';
@@ -453,8 +453,7 @@ export class GraphCaseFactoryCore {
         // A3 never manufactures scenes, grants or project edits.
         const scene = originalProject?.scenes?.[0];
         need(scene?.id && originalProject?.deliverables?.[0]?.id
-          && Array.isArray(originalProject.production_design?.semantic_graphs)
-          && originalProject.production_design.semantic_graphs.length === 0,
+          && hasNoSemanticGraphs(originalProject),
           'GRAPH_DEV_INITIALIZER_REAL_SCENE_OR_SOURCE_UNAVAILABLE');
         const before = originalProject;
         if (scene.renderer !== 'manim-community') {
@@ -471,8 +470,7 @@ export class GraphCaseFactoryCore {
           && originalProject.scenes?.[0]?.id === scene.id
           && originalProject.scenes[0].renderer === 'manim-community'
           && originalProject.deliverables?.[0]?.id === before.deliverables[0].id
-          && Array.isArray(originalProject.production_design?.semantic_graphs)
-          && originalProject.production_design.semantic_graphs.length === 0
+          && hasNoSemanticGraphs(originalProject)
           && Number.isSafeInteger(originalProject.revision)
           && originalProject.revision === before.revision
             + Number(scene.renderer !== 'manim-community'),
