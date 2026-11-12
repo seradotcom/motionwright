@@ -159,7 +159,7 @@ jobs:
           assert report['executed_source_sha'] == runtime['executed_source_sha'] == os.environ['GITHUB_SHA']
           for key in ('GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'):
               assert report['github'][key] == runtime['github'][key] == os.environ[key]
-          expected = {'test_native_motion_canvas_roundtrip.py': 26,
+          expected = {'test_native_motion_canvas_roundtrip.py': 33,
                       'test_native_mlt_ci_pcm_envelope.py': 9,
                       'test_native_mlt_ci_audio.py': 11}
           steps = {step['entry_point']: step for step in report['steps']}
@@ -176,12 +176,28 @@ jobs:
               r'(?m)^test_[^\r\n]*\(test_native_motion_canvas_roundtrip\.RealSourceAndFrameInspection\.[^)]+\) \.\.\. ok$',
               log.decode('utf-8', errors='replace'))
           assert len(ffmpeg_cases) >= 20
+          # The actual four-phase original had 192-byte mc1 job refs.
+          # Both the positive source-built parser and forged-reference
+          # pre-frame denial must execute, not be counted through a skip.
+          observed_text = log.decode('utf-8', errors='replace')
+          required_mc1 = (
+              'test_source_bound_192_byte_native_job_reference_and_closed_negatives',
+              'test_production_reader_rejects_forged_job_reference_before_frame_decode',
+          )
+          for method in required_mc1:
+              result = re.findall(
+                  r'(?m)^' + re.escape(method)
+                  + r' \(test_native_motion_canvas_roundtrip\.PureRoundtripContractTests\.'
+                  + re.escape(method) + r'\) \.\.\. ok$', observed_text)
+              assert len(result) == 1, 'Missing original mc1 test: ' + method
+          assert mc['counts']['tests_run'] == 33 and mc['counts']['passed'] == 33
           value = {
               'schema': 'motionwright.native-reader-coverage/1',
               'executed_source_sha': os.environ['GITHUB_SHA'],
               'result_sha256': hashlib.sha256(report_bytes).hexdigest(),
               'runtime_sha256': hashlib.sha256(runtime_bytes).hexdigest(),
               'motion_canvas_ffmpeg_enabled_cases_passed': len(ffmpeg_cases),
+              'motion_canvas_mc1_source_cases_passed': list(required_mc1),
               'suite_counts': {name: step['counts'] for name, step in steps.items()},
               'scope': 'Synthetic reader controls, including pre-decode negatives; not native four-phase proof',
           }

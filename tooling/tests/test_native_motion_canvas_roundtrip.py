@@ -160,6 +160,48 @@ class PureRoundtripContractTests(unittest.TestCase):
                 mc.checked_json(data)
         self.assertEqual(mc.checked_json(b'{"ok":true}'), {"ok": True})
 
+    def test_source_bound_192_byte_native_job_reference_and_closed_negatives(self):
+        # Source-built Semwright mc1 references have this bounded typed shape.
+        # Never shorten them into unverified local job aliases.
+        real = ("mc1:" + "a" * 37 + ":" + "b" * 32 + ":1:" + "c" * 64
+                + ":render_job:render-" + "d" * 32)
+        self.assertEqual(len(real), 192)
+        self.assertEqual(mc.validated_native_job_ref(real), real)
+        with tempfile.TemporaryDirectory() as directory:
+            staged = {**fixture(Path(directory))["stages"]["original"], "native_job_ref": real}
+            with mock.patch.object(mc, "bounded_file", side_effect=RuntimeError("identity_admitted")):
+                with self.assertRaisesRegex(RuntimeError, "identity_admitted"):
+                    mc.one_stage(Path(directory), staged, 3, 2, 2)
+        invalid = (
+            "", "separate-native-job-0", real + "x" * 65,
+            real.replace("render_job", "file_write"),
+            real.replace("render-", "result-"),
+            real[:-1] + "G",
+            real[:13] + " " + real[14:],
+            None, 192, b"mc1:raw",
+        )
+        for value in invalid:
+            with self.subTest(value_type=type(value).__name__, length=len(value) if hasattr(value,"__len__") else None):
+                with self.assertRaisesRegex(mc.RoundtripRefused, "invalid_source_native_job_ref"):
+                    mc.validated_native_job_ref(value)
+
+    def test_production_reader_rejects_forged_job_reference_before_frame_decode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = fixture(Path(directory))
+            source["profile"] = {"width": 1920, "height": 1080, "fps": "30/1", "frames": 60}
+            authentic = ("mc1:" + "a" * 37 + ":" + "b" * 32 + ":1:" + "c" * 64
+                         + ":render_job:render-" + "d" * 32)
+            for stage in mc.STAGES:
+                source["stages"][stage]["native_job_ref"] = authentic[:-1] + hex(mc.STAGES.index(stage))[2:]
+            with mock.patch.object(mc, "one_stage", side_effect=RuntimeError("reader_reached")):
+                with self.assertRaisesRegex(RuntimeError, "reader_reached"):
+                    mc.inspect(Path(directory), source)
+            source["stages"]["edited"]["native_job_ref"] = "forged"
+            with mock.patch.object(mc, "one_stage", side_effect=RuntimeError("must_not_run")) as reader:
+                with self.assertRaisesRegex(mc.RoundtripRefused, "invalid_source_native_job_ref"):
+                    mc.inspect(Path(directory), source)
+                reader.assert_not_called()
+
     def test_production_profile_cannot_accept_three_frame_unit_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
