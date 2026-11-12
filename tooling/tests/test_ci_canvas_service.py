@@ -4028,8 +4028,33 @@ class Studio68SourceContracts(unittest.TestCase):
         self.assertIn("--execute-readback", args)
         self.assertEqual(args.count("--physical-original-store"), 1)
         self.assertEqual([item for item in args if item.endswith("-reviewed")], ["--provenance-reviewed"])
-        for name, expected in gate.STUDIO68_READER_PINS.items():
-            self.assertEqual(gate.digest(PATH.parents[1] / name)["sha256"], expected)
+        # The original Studio68 production cohort is immutable. The current
+        # reader is newer and MUST NOT inherit that old source admission.
+        historical = {
+            "tooling/service_readback/service_archive_readback_r3.py":
+                "765cd032aa96bbc8822d65de0fa07e4df570412f1e45a7776737615d6aa91bca",
+            "tooling/service_readback/test_readback_r3.py":
+                "a54e5441fa50ea697c1088a97d0829fca1bd1b76369bbb48b841c0ba5d384b27",
+        }
+        current_source_only = {
+            "tooling/service_readback/service_archive_readback_r3.py":
+                "ba77faf58bc7249c8a50c2f10d37e0aad4c86b76a393c00e13092021561ac491",
+            "tooling/service_readback/test_readback_r3.py":
+                "d5ab09ea8b72af0e945372dab2609f55f3b447182df4b70bf6c4d28e78b15ab6",
+        }
+        self.assertEqual(gate.STUDIO68_READER_PINS, historical)
+        for name, expected in historical.items():
+            observed = gate.digest(PATH.parents[1] / name)["sha256"]
+            self.assertEqual(observed, current_source_only[name])
+            self.assertNotEqual(observed, expected,
+                                "Unreviewed current R3 source must not inherit historical Studio68")
+        import inspect
+        runtime_guard = inspect.getsource(gate.studio68_main)
+        self.assertIn('gate_before["files"].get(path, {}).get("sha256") == expected',
+                      runtime_guard)
+        self.assertIn("Studio68 independent reader pin differs", runtime_guard)
+        # This source-only check does not run or authorize the historical
+        # 68-case Playwright/SQLite cohort, nor replace independent A5 review.
 
     def test_R3_original_journal_binds_each_terminal_and_preserves_sequence(self):
         report, _, _ = self.readback_fixture()
