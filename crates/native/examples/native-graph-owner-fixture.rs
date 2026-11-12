@@ -313,7 +313,6 @@ fn read_storage_inventory(database: &Path, output: &Path) -> FixtureResult<()> {
         let mut statement = transaction.prepare(sql)?;
         let columns: Vec<String> = statement
             .column_names()
-            .iter()
             .map(|name| (*name).to_owned())
             .collect();
         let mut cursor = statement.query([])?;
