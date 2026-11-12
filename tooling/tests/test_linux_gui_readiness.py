@@ -131,6 +131,17 @@ class NativeWindowAndBootstrapTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_existing_window_only_smoke_retains_its_original_contract(self):
+        self.assertTrue(gui.check_window_output(
+            '0x00400004 "Motionwright": ("motionwright")'))
+        for original in (
+            '0x00400004 "Motionwright loading": ("motionwright")',
+            '0x00400004 "Other": ("Motionwright")',
+            'logger said Motionwright but this is not an X11 client',
+            '0x00400004 "Motionwright":\n0x00400005 "Motionwright":\n',
+            '0x00400004 "motionwright": ("motionwright")',
+        ):
+            with self.subTest(original=original):
+                self.assertFalse(gui.check_window_output(original))
         contexts = self.mock_launch(clock=[0.0, 0.1, 0.2],
                                     stdout='0x00400004 "Motionwright": ("motionwright")')
         env, popen, xwin, clock, sleep, kill, proc = contexts

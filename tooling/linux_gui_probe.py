@@ -19,9 +19,17 @@ from typing import Callable
 
 
 def check_window_output(output: str) -> bool:
-    # xwininfo root tree reports the actual X11 client window title.
-    # Case- and quote-sensitive to avoid treating log text as window evidence.
-    return bool(re.search(r'\bMotionwright\b', output))
+    """One exact original X11 client title; never a log or partial title.
+
+    The first-use caller may perform one real GUI action after this predicate.
+    It must agree with the strict single-window guard in linux_cold_start.
+    """
+    if not isinstance(output, str) or len(output) > 262144:
+        return False
+    matches = re.findall(
+        r'^\s*(0x[0-9a-fA-F]+)\s+"Motionwright":', output, re.MULTILINE,
+    )
+    return len(matches) == 1
 
 
 def run_probe(
