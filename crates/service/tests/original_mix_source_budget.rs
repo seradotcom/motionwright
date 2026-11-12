@@ -137,7 +137,6 @@ fn sql_inventory(database: &Path) -> SqlInventory {
             .unwrap();
         let columns = statement
             .column_names()
-            .iter()
             .map(|value| (*value).to_owned())
             .collect();
         let count = statement.column_count();
