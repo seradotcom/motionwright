@@ -70,6 +70,7 @@ on:
       - 'tooling/tests/test_native_manim_frozen_runtime.py'
       - 'tooling/tests/test_native_manim_runtime_restore.py'
       - 'tooling/tests/test_native_manim_resume.py'
+      - 'tooling/tests/test_native_manim_resume_host_files.py'
       - 'tooling/native_manim_editable_cycle.py'
       - 'tooling/native_manim_editable_outer.py'
       - 'tooling/native_manim_editable_pixels.py'
@@ -1018,6 +1019,66 @@ jobs:
             ${{ runner.temp }}/manim-source284-admission/
             ${{ runner.temp }}/manim-zip-original-source/
             ${{ runner.temp }}/manim-rust-source-contracts/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-held-originals-source:
+    name: Windows original Manim file custody (source only)
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.scenario == 'source-contracts')
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Require four real Windows held-file original source contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(python -B -m unittest tooling.tests.test_native_manim_resume_host_files -v 2>&1)
+          $runExitCode = $LASTEXITCODE
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($runExitCode -ne 0) { throw 'Windows original file source contracts failed' }
+          $expected = @(
+            'test_directory_is_never_admitted_as_an_original',
+            'test_empty_original_and_oversize_rejection_preserve_bytes',
+            'test_existing_writer_obeys_platform_sharing_without_mutation',
+            'test_modified_binary_original_is_read_exactly'
+          )
+          foreach ($method in $expected) {
+            $count = @($lines | Where-Object { $_ -match ('^' + [regex]::Escape($method) + ' \(') -and $_ -match '\.\.\. ok$' }).Count
+            if ($count -ne 1) { throw "Original Windows test not independently observed: $method" }
+          }
+          if (@($lines | Where-Object { $_ -match '^Ran 4 tests in ' }).Count -ne 1 -or
+              @($lines | Where-Object { $_ -eq 'OK' }).Count -ne 1 -or
+              @($lines | Where-Object { $_ -match '(?i)skipped|failed|error|unexpected success' }).Count -ne 0) {
+            throw 'Windows held-file source four-test roster is incomplete'
+          }
+          $receipt = @{
+            schema = 'motionwright.manim.windows-held-original-source/1'
+            source = $env:GITHUB_SHA
+            host_sha256 = (Get-FileHash -Algorithm SHA256 'tooling/native_manim_resume_host.py').Hash.ToLowerInvariant()
+            tests = $expected
+            passed = 4
+            skipped = 0
+            native_effects = 'NOT_RUN'
+            G2 = 'NOT_GRANTED'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'manim-windows-held-original-source.json'
+          if (Test-Path $destination) { throw 'Original Windows source report destination is not fresh' }
+          $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $destination -Encoding utf8
+          Write-Output "manim-windows-held-original-source=PASS source=$env:GITHUB_SHA tests=4 native=NOT_RUN"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-windows-held-original-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manim-windows-held-original-source.json
           if-no-files-found: error
           retention-days: 14
 

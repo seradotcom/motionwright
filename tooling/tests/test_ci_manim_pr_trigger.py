@@ -34,6 +34,7 @@ REQUIRED_PR_PATHS = (
     "tooling/native_manim_resume_host.py",
     "tooling/native_manim_frozen_runtime_host.py",
     "tooling/tests/test_native_manim_resume.py",
+    "tooling/tests/test_native_manim_resume_host_files.py",
     ".github/workflows/native-manim-e2e.yml",
     "crates/driver-manim-community/src/lib.rs",
     "SOURCE_LOCK.json",
@@ -102,6 +103,28 @@ class NativeManimPullRequestWatchTests(unittest.TestCase):
         self.assertNotIn("cargo ", source_step)
         self.assertNotIn("python3 -I -B tooling/ci_affected_rust_diagnostics.py", source_step)
         self.assertNotIn("workflow_dispatch", source_step)
+
+    def test_windows_held_original_custody_has_one_bounded_source_job(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        marker = "  windows-held-originals-source:\n"
+        self.assertEqual(workflow.count(marker), 1)
+        job = workflow.split(marker, 1)[1].split("\n  source-recovery-tool:", 1)[0]
+        self.assertIn("runs-on: windows-latest", job)
+        self.assertIn("timeout-minutes: 10", job)
+        self.assertIn("if: github.event_name == 'pull_request' || "
+                      "(github.event_name == 'workflow_dispatch' "
+                      "&& inputs.scenario == 'source-contracts')", job)
+        self.assertIn("persist-credentials: false", job)
+        self.assertIn("python-version: '3.13'", job)
+        self.assertIn("python -B -m unittest tooling.tests.test_native_manim_resume_host_files -v", job)
+        self.assertIn("Ran 4 tests in", job)
+        self.assertIn("skipped|failed|error|unexpected success", job)
+        self.assertIn("manim-windows-held-original-source.json", job)
+        self.assertIn("native_effects = 'NOT_RUN'", job)
+        self.assertIn("G2 = 'NOT_GRANTED'", job)
+        self.assertNotIn("cargo build", job)
+        self.assertNotIn("native_manim_e2e.py", job)
+        self.assertNotIn("continue-on-error", job)
 
     def test_manim_selection_does_not_watch_unrelated_documents(self):
         patterns = pr_paths()
