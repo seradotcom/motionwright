@@ -6702,7 +6702,125 @@ A6_DEV_G0_NEW_STEP_SHA256 = '2dd991fa7a2eaf5c1f2c4911a31f3432b3b25efec527f3e0b2b
 
 # GN1 followed the reviewed developer G0 delta. Reverse only its five exact
 # source changes before evaluating the unchanged G0 and older workflow pins.
-GN1_DEV_WORKFLOW_POST_SHA256 = 'b13658bd0837bd84dd0015abe2e8c4648d8680cc15024a1dd6c184cba0745592'
+# The integrated source added authenticated development selection, private
+# runtime custody and separately denied-by-default GN1 Save consent after the
+# initial GN1 workflow. Reverse those EXACT bytes first; the original five
+# GN1 deltas and every historical G0/Graph/Service47 digest below stay intact.
+# Source provenance: 77b96a903 (initial) -> 6e6dc4d8d (composed postimage).
+GN1_INITIAL_WORKFLOW_SHA256 = 'b13658bd0837bd84dd0015abe2e8c4648d8680cc15024a1dd6c184cba0745592'
+GN1_DEV_WORKFLOW_POST_SHA256 = '99e58bc0afcf3d7b4fb433a73bdc5bb22972cec91949032b709ba6b021da87fa'
+GN1_COMPOSED_WORKFLOW_REVERT = ((13,
+  25,
+  b'      graph_case_mode:\n        description: Formal R74 cohort, or one separately authorized '
+  b'development Studio Save\n        type: choice\n        required: true\n        default: all'
+  b'\n        options: [all, graph-flow, development-first-save]\n      gn1_one_original_save:\n   '
+  b'     description: Explicit permission for exactly one GN1 development Save on a disposable S'
+  b'tore, not G2\n        type: choice\n        required: true\n        default: deny\n        o'
+  b'ptions: [deny, allow-one-original-save]\n',
+  b''),
+ (68,
+  69,
+  b'          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( "$GITHUB_REF" != "refs/head'
+  b's/integrate/phase1-final-composition-20261027" && ( "$GITHUB_REF" != "refs/heads/fix/native-'
+  b'production-causal-20261106-a4" || ( "$REQUESTED_G0_SELECTION" != "phase1-native-gn1" && "$RE'
+  b'QUESTED_G0_SELECTION" != "phase1-native-graph" ) ) ) || ( "$REQUESTED_G0_SELECTION" != "phas'
+  b'e1-service47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECT'
+  b'ION" != "phase1-native-gn1" ) ]]; then\n',
+  b'          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/'
+  b'integrate/phase1-final-composition-20261027" || ( "$REQUESTED_G0_SELECTION" != "phase1-servi'
+  b'ce47" && "$REQUESTED_G0_SELECTION" != "phase1-native-graph" && "$REQUESTED_G0_SELECTION" != '
+  b'"phase1-native-gn1" ) ]]; then\n'),
+ (84,
+  86,
+  b'            workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-nat'
+  b'ive-graph|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-na'
+  b'tive-graph)\n              python -B -m unittest tooling.tests.test_ci_canvas_service.GraphR7'
+  b'4JoinTests tooling.tests.test_graph_development -q\n',
+  b'            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-'
+  b'native-graph)\n              python -B -m unittest tooling.tests.test_ci_canvas_service.Graph'
+  b'R74JoinTests -q\n'),
+ (87,
+  88,
+  b'            workflow_dispatch:refs/heads/fix/native-production-causal-20261106-a4:phase1-nat'
+  b'ive-gn1|workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-nati'
+  b've-gn1)\n',
+  b'            workflow_dispatch:refs/heads/integrate/phase1-final-composition-20261027:phase1-'
+  b'native-gn1)\n'),
+ (717,
+  719,
+  b'      - name: Produce source-bound Graph builds and private originals\n        id: graph-prod'
+  b'ucers\n',
+  b'      - name: Produce the original Graph builds and private R74 review carrier\n'),
+ (724,
+  726,
+  b'          MOTIONWRIGHT_GRAPH_RUNTIME_PYTHON: /usr/bin/python3\n          MOTIONWRIGHT_GRAPH_C'
+  b'ASE_MODE: ${{ inputs.graph_case_mode }}\n',
+  b''),
+ (733,
+  735,
+  b'      - name: Retain encrypted Graph producer originals\n        id: graph-producer-upload\n',
+  b'      - name: Publish encrypted Graph originals for independent R74 review\n'),
+ (739,
+  740,
+  b"          name: graph-${{ inputs.graph_case_mode == 'development-first-save' && 'development"
+  b"-source' || 'originals-review' }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_atte"
+  b'mpt }}\n',
+  b'          name: graph-originals-review-${{ github.sha }}-${{ github.run_id }}-${{ github.run'
+  b'_attempt }}\n'),
+ (744,
+  746,
+  b'      - name: Observe the independent Graph statuses before any formal case or owner\n       '
+  b" if: matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode != 'development-fir"
+  b"st-save'\n",
+  b'      - name: Observe the independent Graph statuses before any case or owner\n        if: ma'
+  b"trix.selection == 'phase1-native-graph'\n"),
+ (750,
+  752,
+  b'      - name: Execute the selected formal Graph cases and complete closure\n        if: matri'
+  b"x.selection == 'phase1-native-graph' && inputs.graph_case_mode != 'development-first-save'\n",
+  b'      - name: Execute the six original Graph cases and complete closure\n        if: matrix.s'
+  b"election == 'phase1-native-graph'\n"),
+ (756,
+  781,
+  b'      - name: Execute one original development Studio Graph Save and independent reopen\n    '
+  b"    if: matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode == 'development-"
+  b"first-save'\n        timeout-minutes: 10\n        env:\n          MOTIONWRIGHT_GRAPH_METADATA_T"
+  b'OKEN: ${{ github.token }}\n        run: python -I -B tooling/ci_canvas_service.py graph devel'
+  b'opment-run --repo .\n      - name: Seal original development outcome and private process cust'
+  b"ody\n        id: graph-development-seal\n        if: always() && matrix.selection == 'phase1-n"
+  b"ative-graph' && inputs.graph_case_mode == 'development-first-save' && contains(fromJSON("
+  b'\'["success","failure","cancelled"]\'), steps.graph-producers.outcome)\n        timeout-minutes'
+  b': 11\n        env:\n          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_DER_BASE64: ${{ inputs.graph_revi'
+  b'ew_spki_der_base64 }}\n          MOTIONWRIGHT_GRAPH_REVIEW_SPKI_SHA256: ${{ inputs.graph_revi'
+  b'ew_spki_sha256 }}\n          MOTIONWRIGHT_GRAPH_PRODUCER_OUTCOME: ${{ steps.graph-producers.o'
+  b'utcome }}\n          MOTIONWRIGHT_GRAPH_CARRIER_UPLOAD_OUTCOME: ${{ steps.graph-producer-uplo'
+  b'ad.outcome }}\n        run: python -I -B tooling/ci_canvas_service.py graph development-seal '
+  b'--repo .\n      - name: Retain encrypted development originals without formal acceptance cred'
+  b"it\n        if: always() && steps.graph-development-seal.outcome == 'success'\n        timeout"
+  b'-minutes: 5\n        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n '
+  b'       with:\n          name: graph-development-${{ github.sha }}-${{ github.run_id }}-attemp'
+  b't1\n          path: v/graph-development\n          if-no-files-found: error\n          retentio'
+  b'n-days: 14\n',
+  b''),
+ (792,
+  793,
+  b"        if: success() && (matrix.selection != 'phase1-native-graph' || inputs.graph_case_mod"
+  b"e != 'development-first-save')\n",
+  b'        if: success()\n'),
+ (861,
+  862,
+  b"        if: always() && matrix.selection == 'phase1-native-graph' && inputs.graph_case_mode "
+  b"!= 'development-first-save'\n",
+  b"        if: always() && matrix.selection == 'phase1-native-graph'\n"),
+ (1023,
+  1024,
+  b"    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'phase1-native-gn1' "
+  b"&& (github.ref == 'refs/heads/integrate/phase1-final-composition-20261027' || github.ref == "
+  b"'refs/heads/fix/native-production-causal-20261106-a4')\n",
+  b"    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'phase1-native-gn1' "
+  b"&& github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'\n"),
+ (1032, 1033, b'      one_original_save: ${{ inputs.gn1_one_original_save }}\n', b''))
+
 GN1_DEV_WORKFLOW_REVERT_PAIRS = ((b'        options: [studio-service-68, phase1-service47, phase1-native-graph, phase1-native-gn'
   b'1, criterion-partials, window-frontend, camera-with-v2, creative-production, creative-produc'
   b'tion-browser, project-authoring, project-authoring-core, production-design, creative-workben'
@@ -6750,9 +6868,24 @@ GN1_DEV_WORKFLOW_REVERT_PAIRS = ((b'        options: [studio-service-68, phase1-
   b''))
 
 
+def gn1_initial_workflow(raw):
+    """Reverse composed extensions to the original pinned GN1 postimage."""
+    if gate.hashlib.sha256(raw).hexdigest() == GN1_DEV_WORKFLOW_POST_SHA256:
+        lines = raw.splitlines(keepends=True)
+        for start, end, added, previous in reversed(GN1_COMPOSED_WORKFLOW_REVERT):
+            if b"".join(lines[start:end]) != added:
+                raise ValueError("GN1 composed workflow delta differs")
+            lines[start:end] = previous.splitlines(keepends=True)
+        raw = b"".join(lines)
+        if gate.hashlib.sha256(raw).hexdigest() != GN1_INITIAL_WORKFLOW_SHA256:
+            raise ValueError("GN1 composition changed an unreviewed historical byte")
+    return raw
+
+
 def gn1_previous_workflow(raw):
-    """Reverse the exact development GN1 addition, not a native admission."""
-    if gate.hashlib.sha256(raw).hexdigest() != GN1_DEV_WORKFLOW_POST_SHA256:
+    """Reverse exact integrated source deltas, never grant Native admission."""
+    raw = gn1_initial_workflow(raw)
+    if gate.hashlib.sha256(raw).hexdigest() != GN1_INITIAL_WORKFLOW_SHA256:
         if b"phase1-native-gn1" in raw:
             raise ValueError("GN1 developer source differs from reviewed postimage")
         return raw
@@ -6763,6 +6896,31 @@ def gn1_previous_workflow(raw):
     if gate.hashlib.sha256(raw).hexdigest() != A6_DEV_G0_POST_SHA256:
         raise ValueError("GN1 modified an unreviewed developer G0 workflow byte")
     return raw
+
+
+
+class GraphDevelopmentWorkflowSourceDeltaTests(unittest.TestCase):
+    def test_integrated_development_and_consent_delta_restores_exact_historical_workflow(self):
+        raw = (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes()
+        self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
+        restored = gn1_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(restored).hexdigest(), A6_DEV_G0_POST_SHA256)
+        self.assertNotIn(b"development-first-save", restored)
+        self.assertNotIn(b"gn1_one_original_save", restored)
+
+    def test_partial_composition_or_new_consent_drift_still_fails_closed(self):
+        raw = (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes()
+        for start, end, added, previous in GN1_COMPOSED_WORKFLOW_REVERT:
+            lines = raw.splitlines(keepends=True)
+            self.assertEqual(b"".join(lines[start:end]), added)
+            lines[start:end] = previous.splitlines(keepends=True)
+            with self.subTest(delta_start=start), self.assertRaises(ValueError):
+                gn1_previous_workflow(b"".join(lines))
+        for changed in (raw + b"\n", raw.replace(b"default: deny\n",
+                b"default: allow-one-original-save\n", 1)):
+            self.assertNotEqual(changed, raw)
+            with self.assertRaises(ValueError):
+                gn1_previous_workflow(changed)
 
 
 def dev_g0_previous_workflow(raw):
@@ -7825,12 +7983,14 @@ class Phase1Service47Tests(unittest.TestCase):
         self.assertEqual(gate.hashlib.sha256(developer).hexdigest(), A6_DEV_G0_POST_SHA256)
         self.assertEqual(gn1_previous_workflow(developer), developer)
         self.assertEqual(dev_g0_previous_workflow(raw), dev_g0_previous_workflow(developer))
-        # Removing only part of GN1 or duplicating any of its five changes must
-        # not normalize into an approved historical workflow.
+        # Check the original five changes at their own exact source stage.
+        # Composed extensions have separate partial-delta negatives above.
+        initial = gn1_initial_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(initial).hexdigest(), GN1_INITIAL_WORKFLOW_SHA256)
         for added, previous_bytes in GN1_DEV_WORKFLOW_REVERT_PAIRS:
-            for changed in (raw.replace(added, previous_bytes, 1),
-                            raw.replace(added, added + added, 1)):
-                self.assertNotEqual(raw, changed)
+            for changed in (initial.replace(added, previous_bytes, 1),
+                            initial.replace(added, added + added, 1)):
+                self.assertNotEqual(initial, changed)
                 with self.assertRaises(ValueError): gn1_previous_workflow(changed)
         for changed in (raw + b" ",
                         raw.replace(b"expected_source_sha: ${{ github.sha }}",
