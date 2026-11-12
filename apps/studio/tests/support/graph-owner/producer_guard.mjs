@@ -396,7 +396,7 @@ function runtimeOriginals(index, reviewed, originals) {
     && intake.compiled_runner_pin_agreement_verified === false && intake.native_font_open_observed === false
     && intake.pango_layout_observed === false, 'J1_RUNTIME_INTAKE_NOT_AUTHORITY');
   same(raw.profile_files, reviewed.runtime.profile_files, 'J1_GRAPH_RUNTIME_FILE_ROSTER');
-  need(Array.isArray(raw.profile_files) && raw.profile_files.length === 15, 'J1_GRAPH_RUNTIME_FIFTEEN_ORIGINALS');
+  need(Array.isArray(raw.profile_files) && raw.profile_files.length === 22, 'J1_GRAPH_RUNTIME_TWENTY_TWO_ORIGINALS');
   const names = new Set();
   for (const item of raw.profile_files) {
     exact(item, ['relative_path', 'ref'], 'J1_GRAPH_RUNTIME_FILE_FIELDS');
@@ -404,7 +404,7 @@ function runtimeOriginals(index, reviewed, originals) {
     need(item.ref.path === inside(runtime.root, path.join(runtime.root, ...item.relative_path.split('/'))), 'J1_GRAPH_RUNTIME_PATH');
     originals.read(item.ref, 8 * LIMIT);
   }
-  need(Array.isArray(intake.files) && intake.files.length === 15 && intake.files_count === 15,
+  need(Array.isArray(intake.files) && intake.files.length === 22 && intake.files_count === 22,
     'J1_RUNTIME_INTAKE_FILE_COUNT');
   const sourceNames = new Set(), runtimeNames = new Set();
   for (const row of intake.files) {
@@ -420,6 +420,7 @@ function runtimeOriginals(index, reviewed, originals) {
       'J1_RUNTIME_INTAKE_SOURCE_NOT_BOUND');
     need(row.runtime_relative_path.startsWith('graph-profile-v1/')
       && ['crates/manim-profile/src/semantic_graph_source.rs::BUILTIN_ASSETS',
+        'crates/manim-profile/src/semantic_graph_source.rs::NATIVE_FONT_ASSETS',
         'crates/manim-profile/src/semantic_graph_source.rs::helper_sources/include_bytes!'].includes(row.pin_origin),
       'J1_RUNTIME_PIN_ORIGIN');
   }
