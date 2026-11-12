@@ -260,11 +260,11 @@ fn recover_edit_with_roots(
     // retained anchor. These copies receive no original root/Native authority.
     let before_service = StudioService::from_store(Store::open_with_managed_blob_root(
         before_database,
-        &before_cas,
+        before_cas,
     )?);
     let current_service = StudioService::from_store(Store::open_with_managed_blob_root(
         current_database,
-        &current_cas,
+        current_cas,
     )?);
     let before = before_service.project(intent.project_id)?;
     let current = current_service.project(intent.project_id)?;
@@ -581,7 +581,7 @@ pub(crate) fn readback_recovered(
         &prior_receipts,
         &current_receipts,
         &native_link,
-        &serde_json::to_value(&package.plan.render_profile)?,
+        &serde_json::to_value(package.plan.render_profile)?,
         text(&original_native, "/runtime_observation/connection_identity")?,
     )?;
     if hash(&bytes) != text(&recovery, "/current_export_sha256")?

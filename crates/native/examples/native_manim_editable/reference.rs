@@ -553,7 +553,7 @@ pub(crate) fn readback_reference(
         &observed.prior_receipts,
         &observed.current_receipts,
         &native_link,
-        &serde_json::to_value(&package.plan.render_profile)?,
+        &serde_json::to_value(package.plan.render_profile)?,
         text(&original_native, "/runtime_observation/connection_identity")?,
     )?;
     if source != observed.source
