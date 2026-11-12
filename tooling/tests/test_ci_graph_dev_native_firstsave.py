@@ -663,6 +663,59 @@ class OneSaveLifecycleTests(unittest.TestCase):
         self.assertTrue(terminal["unknown_request_latched"])
         self.assertFalse(terminal["original_reply_complete"])
 
+    def test_original_child_duplicate_source_authority_is_not_admitted(self):
+        original = (
+            b'{"schema":"motionwright.graph-owner-fixture-output/1",'
+            b'"native_authority":true,"native_authority":false}'
+        )
+        child = [
+            sys.executable, "-I", "-c",
+            "import sys;sys.stdout.buffer.write(" + repr(original) + ")",
+        ]
+        with self.assertRaisesRegex(
+                save.FirstSaveFailure,
+                "GN1_FIRST_SAVE_CHILD_MALFORMED_ORIGINAL") as denied:
+            save.bounded_process(
+                child, env={}, private=self.private,
+                label="inert-duplicate-child", timeout=8)
+        self.assertTrue(denied.exception.unknown)
+        self.assertEqual(
+            (self.private / "inert-duplicate-child.stdout.original").read_bytes(),
+            original)
+
+    def test_seed_source_with_duplicate_authority_never_becomes_graph_fixture(self):
+        fixture = source()
+        raw = json.dumps(fixture, sort_keys=True).replace(
+            '"native_authority": false',
+            '"native_authority": true, "native_authority": false',
+        ).encode("utf-8")
+        self.assertIn(b'"native_authority": true, "native_authority": false', raw)
+        fresh_db = self.root / "inert-seed-store.sqlite"
+        source_file = self.private / "graph-source.original.json"
+
+        def inert_seed(args, **_kwargs):
+            self.assertEqual(args[-2:], [str(fresh_db), str(source_file)])
+            # No actual SQLite/Native process. Keep original bytes intact.
+            fresh_db.write_bytes(b"not-a-real-sqlite-store")
+            source_file.write_bytes(raw)
+            return {
+                "schema": "motionwright.graph-owner-fixture-output/1",
+                "native_authority": False,
+                "path": str(source_file), "bytes": len(raw),
+            }
+
+        with patch.object(save, "bounded_process", side_effect=inert_seed) as seed:
+            with self.assertRaisesRegex(
+                    save.FirstSaveFailure,
+                    "GN1_FIRST_SAVE_FIXTURE_SOURCE_MALFORMED"):
+                save.seed_original(
+                    self.root / "never-launched-native",
+                    fresh_db, self.private, {})
+        seed.assert_called_once()
+        self.assertEqual(source_file.read_bytes(), raw)
+        self.assertFalse(
+            (self.private / "graph-source-identity.original.json").exists())
+
     def test_strict_native_jsonl_preserves_normal_correlated_result(self):
         source = (b'{"id":"one-original","ok":true,'
                   b'"result":{"revision":3,"finite_weight":0.125}}')

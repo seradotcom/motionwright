@@ -79,11 +79,12 @@ def private_json(path, payload):
 
 
 def strict_original_native_jsonl(raw):
-    """Parse ONLY one original UTF-8 JSONL reply without ambiguous fields.
+    """Parse one original UTF-8 JSON value without ambiguous fields.
 
-    The literal original is already retained by the caller. A duplicated key
-    (including a nested one), NaN/Infinity, nonfinite exponent or invalid
-    encoding must never be interpreted as a confirmed Native ACK.
+    Valid for both an original JSONL Native reply and the source fixture's
+    single JSON document. The literal original is retained by the caller.
+    Duplicate keys (including nested objects), NaN/Infinity, nonfinite
+    exponents and invalid encoding cannot establish a trusted Native result.
     """
     def unique_keys(pairs):
         value = {}
@@ -320,8 +321,8 @@ def bounded_process(command, *, env, private, label, timeout=120):
     require(code == 0, "GN1_FIRST_SAVE_CHILD_ORIGINAL_ERROR",
             unknown=True)
     try:
-        return json.loads(bytes(streams["stdout"]["raw"]))
-    except (ValueError, UnicodeError):
+        return strict_original_native_jsonl(bytes(streams["stdout"]["raw"]))
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
         raise FirstSaveFailure("GN1_FIRST_SAVE_CHILD_MALFORMED_ORIGINAL",
                                unknown=True) from None
 
@@ -345,8 +346,8 @@ def seed_original(fixture, database, private, env):
             and observed.get("bytes") == len(raw),
             "GN1_FIRST_SAVE_FIXTURE_SOURCE_BYTES")
     try:
-        parsed = json.loads(raw)
-    except (ValueError, UnicodeError):
+        parsed = strict_original_native_jsonl(raw)
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
         raise FirstSaveFailure("GN1_FIRST_SAVE_FIXTURE_SOURCE_MALFORMED") from None
     source = checked_source_fixture(parsed)
     private_json(private / "graph-source-identity.original.json",
