@@ -396,10 +396,16 @@ def project_policy(raw,phase):
     return literal_policy([value])
 
 
+# The pinned renderer records Canvas capability separately from PNG opacity.
+CANVAS_COLOR=O(api=Literal("CanvasRenderingContext2D.getContextAttributes"),
+    color_space=Literal("srgb"),alpha=bool,width=Literal(1920),height=Literal(1080))
 FRAME_ROW=O(bytes=POS,file=String(32,pattern=r"frames/[0-9]{6}\.png"),index=Number(0,179,integer=True),
-    sha256=SHA,max_alpha=Nullable(Number(0,255,integer=True)),min_alpha=Nullable(Number(0,255,integer=True)),
+    sha256=SHA,canvas_color=CANVAS_COLOR,
+    max_alpha=Nullable(Number(0,255,integer=True)),min_alpha=Nullable(Number(0,255,integer=True)),
     pixel_sha256=Nullable(SHA))
 MANIFEST=O(renderer=Literal("motion-canvas-core-renderer-v3.17.2"),frames=Array(FRAME_ROW,180,180),
+    canvas_color_observation=O(path=Literal("canvas-color-observations.json"),
+        sha256=SHA,bytes=Number(1,16*1024*1024,integer=True)),
     native_observations=O(bytes=POS,font_resources_sha256=SHA,fps_den=Literal(1),fps_num=Literal(30),
         frames=Literal(180),render_input_digest=SHA,sha256=SHA,version=Literal(1)),
     pixel_validation=O(mode=String(values=("sampled","exhaustive")),sample_indices=Array(Number(0,179,integer=True),180,1)),

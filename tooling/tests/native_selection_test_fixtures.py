@@ -411,12 +411,18 @@ class World:
             identity=dict(project_resource="project:"+project["id"],generation=project["generation"],revision=project["revision"],deliverable_id=project["deliverables"][0]["id"])
             directory="render-"+("e" if phase=="edited" else "d")*32
             manifest=sample(film.MANIFEST)
+            # Literal SDK0b wire fields, independent of the collector policy.
+            # These inert fixtures are source contracts, never native evidence.
+            manifest["canvas_color_observation"]={
+                "path":"canvas-color-observations.json","sha256":"c"*64,"bytes":128}
             for i,row in enumerate(manifest["frames"]):
                 # A bounded synthetic PNG-shaped header. This intentionally
                 # does not prove native rendering or PNG decoding.
                 png=b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"+struct.pack(">IIBBBBB",1920,1080,8,6,0,0,0)+b"0000"+phase.encode()+str(i).encode()
                 self.put("owner",f"output/{directory}/frames/{i:06d}.png",png)
-                row.update(bytes=len(png),file=f"frames/{i:06d}.png",index=i,sha256=core.sha(png))
+                row.update(bytes=len(png),file=f"frames/{i:06d}.png",index=i,sha256=core.sha(png),
+                    canvas_color={"api":"CanvasRenderingContext2D.getContextAttributes",
+                        "color_space":"srgb","alpha":True,"width":1920,"height":1080})
             manifest_path="output/"+directory+"/artifact-manifest.json"
             manifest_sha=self.put("owner",manifest_path,manifest)
             motion=sample(film.FILM);motion.update(identity)

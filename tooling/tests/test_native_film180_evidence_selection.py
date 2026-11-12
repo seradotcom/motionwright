@@ -86,6 +86,11 @@ class FilmSelectionTests(unittest.TestCase):
 
     def test_synthetic_original_and_edited_graph_has_all360_png_and_no_acceptance(self):
         world=self.world()
+        for directory in ("render-"+"d"*32,"render-"+"e"*32):
+            value=core.strict(world.files[("owner","output/"+directory+"/artifact-manifest.json")])
+            self.assertEqual(value["canvas_color_observation"]["path"],"canvas-color-observations.json")
+            self.assertFalse(value["plan"]["alpha"])
+            self.assertTrue(all(frame["canvas_color"]["alpha"] for frame in value["frames"]))
         with world.patched():raw,manifest=world.capture();result=world.verify(raw)
         self.assertEqual(sum(r["role"]=="native-png" for r in manifest["members"]),360)
         self.assertTrue(result["saved_source_edit_preservation_verified"])
@@ -158,6 +163,31 @@ class FilmSelectionTests(unittest.TestCase):
         with world.patched():raw,manifest=world.capture()
         self.assertFalse(manifest["required_layers_complete"])
         self.assertTrue(any(r["relative_path"]==key[1] and r["state"]!="INCLUDED" for r in manifest["members"]))
+        value=core.strict(world.files[("owner","output/render-"+"e"*32+"/artifact-manifest.json")])
+        # Canvas alpha is a context capability, not the PNG opacity contract.
+        for alpha in (False,True):
+            valid=copy.deepcopy(value);valid["frames"][0]["canvas_color"]["alpha"]=alpha
+            self.assertEqual(core.project(valid,film.MANIFEST,exact=True),valid)
+        invalid=(
+            lambda v:v.pop("canvas_color_observation"),
+            lambda v:v["frames"][0].pop("canvas_color"),
+            lambda v:v["canvas_color_observation"].update(path="../private.json"),
+            lambda v:v["canvas_color_observation"].update(sha256="z"*64),
+            lambda v:v["canvas_color_observation"].update(bytes=0),
+            lambda v:v["canvas_color_observation"].update(bytes=16*1024*1024+1),
+            lambda v:v["canvas_color_observation"].update(private_extra="unselected"),
+            lambda v:v["frames"][0]["canvas_color"].update(api="unverified"),
+            lambda v:v["frames"][0]["canvas_color"].update(color_space="display-p3"),
+            lambda v:v["frames"][0]["canvas_color"].update(alpha=1),
+            lambda v:v["frames"][0]["canvas_color"].update(width=1921),
+            lambda v:v["frames"][0]["canvas_color"].update(height=1081),
+            lambda v:v["frames"][0]["canvas_color"].update(private_extra="unselected"),
+        )
+        for index,change in enumerate(invalid):
+            with self.subTest(invalid_manifest=index):
+                modified=copy.deepcopy(value);change(modified)
+                with self.assertRaises(core.SelectionError):
+                    core.project(modified,film.MANIFEST,exact=True)
 
     def test_all180_decode_manifest_cannot_drop_tail_or_lie_about_unique_hashes(self):
         for change in (lambda v:v["all_original_frame_sha256"].pop(),lambda v:v.update(unique_decoded_RGB_frames=1)):
