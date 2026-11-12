@@ -20,7 +20,7 @@ from manim import (
 )
 from manim.constants import CapStyleType, LineJointType
 
-from manim_bundled_font_intake import MAX_MEMBER, read_owned_file
+from manim_bundled_font_intake import MAX_MEMBER, native_font_descriptors, read_owned_file
 from manim_graph_font_probe import Rejected, require
 from manim_graph_svg_import import (
     create_label_directory, import_vector_label, require_pixel_camera,
@@ -99,9 +99,10 @@ def verify_fonts(runtime_root, lock, editorial_family):
     require(root.is_absolute() and root.is_dir() and not root.is_symlink(),
             "graph_runtime_root")
     require(lock["contract_sha256"] == CONTRACT_SHA256, "graph_font_contract_mismatch")
+    require(lock["schema"] == "motionwright.manim.graph-font-lock/2", "graph_font_lock_version")
     files, selected = [], {}
     for package in lock["packages"]:
-        for item in [package["license"], *package["font_files"]]:
+        for item in [package["license"], *package["source_font_files"]]:
             relative = Path(item["relative_path"])
             require(not relative.is_absolute() and ".." not in relative.parts,
                     "graph_font_relative_path")
@@ -112,7 +113,17 @@ def verify_fonts(runtime_root, lock, editorial_family):
                     "graph_font_or_license_bytes_changed")
             canonical = str(path.resolve(strict=True))
             files.append({"path": canonical, **item})
-            if package["editorial_family"] == editorial_family and item in package["font_files"]:
+    for package in lock["packages"]:
+        natives = native_font_descriptors({"package": package["package"], "font_files": package["source_font_files"]})
+        require(package["font_files"] == natives, "graph_native_font_inventory")
+        for item in natives:
+            path = root / "graph-profile-v1" / "fonts" / item["relative_path"]
+            raw = read_owned_file(root, path, MAX_MEMBER)
+            require(raw[:4] == b"\x00\x01\x00\x00" and len(raw) == item["size_bytes"]
+                    and hashlib.sha256(raw).hexdigest() == item["sha256"], "graph_native_sfnt_pin")
+            canonical = str(path.resolve(strict=True))
+            files.append({"path": canonical, **item})
+            if package["editorial_family"] == editorial_family:
                 require(canonical not in selected, "graph_font_duplicate")
                 selected[canonical] = item
     require(selected, "graph_font_family_missing")

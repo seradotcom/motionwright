@@ -1,5 +1,5 @@
 //! Fixed Graph runtime observations. No Graph, admission or mutation authority.
-use crate::semantic_graph_source::{graph_builtin_asset_pins, graph_font_lock, graph_helper_pins};
+use crate::semantic_graph_source::{graph_font_lock, graph_helper_pins, graph_runtime_asset_pins};
 use crate::semantic_graph_text::GRAPH_TEXT_GEOMETRY_CONTRACT_SHA256;
 use crate::{ManimProfileError, Result};
 use motionwright_domain::SEMANTIC_GRAPH_PROFILE;
@@ -69,7 +69,7 @@ pub struct ManimFixedGraphProfileObservationV1 {
     pub sample_font_size_px: u32,
     pub coverage_scope: String,
     pub helper_pins: [GraphObservedHelperV1; 6],
-    pub asset_pins: [GraphObservedAssetV1; 9],
+    pub asset_pins: [GraphObservedAssetV1; 16],
     pub families: [GraphObservedFontFamilyV1; 2],
     pub future_label_coverage_verified: bool,
     pub render_performed: bool,
@@ -126,7 +126,7 @@ pub fn parse_fixed_graph_profile_observation_v1(
         != Value::Array(graph_helper_pins())
         || serde_json::to_value(&value.asset_pins)
             .map_err(|_| reject("graph_profile_probe_asset_encoding"))?
-            != serde_json::to_value(graph_builtin_asset_pins())
+            != serde_json::to_value(graph_runtime_asset_pins())
                 .map_err(|_| reject("graph_profile_probe_pin_encoding"))?
     {
         return Err(reject("graph_profile_probe_fixed_closure"));
@@ -227,7 +227,7 @@ pub fn fixed_graph_profile_observation_schema_v1() -> Value {
             "sample_font_size_px":{"const":GRAPH_PROFILE_PROBE_FONT_SIZE},
             "coverage_scope":{"const":COVERAGE_SCOPE},
             "helper_pins":{"const":graph_helper_pins()},
-            "asset_pins":{"const":graph_builtin_asset_pins()},
+            "asset_pins":{"const":graph_runtime_asset_pins()},
             "families":{"type":"array","minItems":2,"maxItems":2,"items":family},
             "future_label_coverage_verified":{"const":false},
             "render_performed":{"const":false}, "scene_mutation_performed":{"const":false},
@@ -270,7 +270,7 @@ mod tests {
             "manim_version":"0.21.0", "sample_text":GRAPH_PROFILE_PROBE_SAMPLE,
             "sample_font_size_px":GRAPH_PROFILE_PROBE_FONT_SIZE,
             "coverage_scope":COVERAGE_SCOPE, "helper_pins":graph_helper_pins(),
-            "asset_pins":graph_builtin_asset_pins(), "families":families,
+            "asset_pins":graph_runtime_asset_pins(), "families":families,
             "future_label_coverage_verified":false, "render_performed":false,
             "scene_mutation_performed":false, "profile_admitted":false,
         })
@@ -286,7 +286,7 @@ mod tests {
         let parsed =
             parse_fixed_graph_profile_observation_v1(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(parsed.families.len(), 2);
-        assert_eq!(parsed.asset_pins.len(), 9);
+        assert_eq!(parsed.asset_pins.len(), 16);
         assert!(!parsed.profile_admitted && !parsed.future_label_coverage_verified);
     }
 

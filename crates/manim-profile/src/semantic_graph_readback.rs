@@ -6,7 +6,7 @@
 use crate::semantic_graph::{ManimSemanticGraphPlan, exact_frame};
 use crate::semantic_graph_source::{
     MAX_GRAPH_READBACK_BYTES, MAX_GRAPH_READBACK_FILES, compile_graph_program_source_only,
-    graph_builtin_asset_pins, graph_helper_pins, graph_native_readback_paths_v1,
+    graph_helper_pins, graph_native_readback_paths_v1, graph_runtime_asset_pins,
 };
 use crate::semantic_graph_text::{
     GRAPH_TEXT_GEOMETRY_CONTRACT_SHA256, GraphAppearanceFrames, GraphTextBlock, GraphTextOwner,
@@ -359,7 +359,7 @@ fn validate_header(
         helpers == serde_json::Value::Array(graph_helper_pins()),
         "graph_helper_pins_changed",
     )?;
-    let expected_fonts = graph_builtin_asset_pins()
+    let expected_fonts = graph_runtime_asset_pins()
         .iter()
         .map(|pin| Asset {
             relative_path: pin.relative_path.into(),
@@ -439,12 +439,12 @@ fn validate_runs(runs: &[FontRun], text: &str, family: &str) -> Result<()> {
             run.family == family && run.weight == 400 && run.style == 0 && run.face_index == 0,
             "graph_font_face_substituted",
         )?;
-        let pin = graph_builtin_asset_pins()
-            .iter()
+        let pin = graph_runtime_asset_pins()
+            .into_iter()
             .find(|pin| {
                 pin.relative_path == run.font_relative_path
                     && pin.relative_path.starts_with(prefix)
-                    && pin.relative_path.ends_with(".woff2")
+                    && pin.relative_path.ends_with(".ttf")
             })
             .ok_or_else(|| invalid("graph_font_file_substituted"))?;
         ensure(

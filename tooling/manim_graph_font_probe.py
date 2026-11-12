@@ -1,4 +1,4 @@
-"""Closed Linux Pango font-coverage probe over the two original bundled archives.
+"""Closed Linux Pango probe over SFNTs bound to the two original font archives.
 
 No font installation, conversion, global Fontconfig change, subprocess, rendering,
 profile admission or Graph write is performed. Run inside the existing admitted
@@ -19,7 +19,7 @@ import sys
 
 from manim_bundled_font_intake import (
     MAX_ARCHIVE, MAX_MEMBER, PACKAGES, Rejected, inspect_archives,
-    read_owned_file, require,
+    native_font_descriptors, read_owned_file, require,
 )
 
 MAX_TEXT_BYTES = 16 * 1024
@@ -81,6 +81,7 @@ class NativePango:
             self.config_new = _bind(self.fc, "FcConfigCreate", pointer)
             self.config_free = _bind(self.fc, "FcConfigDestroy", None, pointer)
             self.add_font = _bind(self.fc, "FcConfigAppFontAddFile", integer, pointer, string)
+            self.config_build = _bind(self.fc, "FcConfigBuildFonts", integer, pointer)
             self.pattern_string = _bind(self.fc, "FcPatternGetString", integer,
                                         pointer, string, integer, C.POINTER(string))
             self.pattern_integer = _bind(self.fc, "FcPatternGetInteger", integer,
@@ -174,7 +175,12 @@ class NativePango:
             require(bool(config), "native_font_config_failed")
             stack.callback(self.config_free, config)
             for path in font_paths:
-                require(self.add_font(config, os.fsencode(path)) != 0, "native_woff2_open_failed")
+                require(self.add_font(config, os.fsencode(path)) != 0, "native_sfnt_open_failed")
+            # Finish this PRIVATE Fontconfig font database before Pango's
+            # first font match. Older runtime builds can accept a file yet
+            # produce no resolved font until the database is materialized.
+            # Never modify the global fontconfig configuration or fall back.
+            require(self.config_build(config) != 0, "native_font_database_unavailable")
             # CAIRO_FONT_TYPE_FT=1 explicitly selects the Fontconfig/FreeType map.
             font_map = self.map_new(1)
             require(bool(font_map), "native_freetype_map_unavailable")
@@ -283,10 +289,11 @@ def probe(owner_root, font_root, intake, editorial_family, text, font_size):
             and package["archive"]["integrity"] == specification["integrity"]
             and package["expected_native_family"] == specification["expected_native_family"],
             "font_intake_binding")
-    files = package["font_files"]
+    originals = package["font_files"]
+    files = native_font_descriptors(package)
     require(0 < len(files) <= 32, "font_resource_budget")
-    allowed = {}
-    for descriptor in files:
+    allowed, retained = {}, {}
+    for descriptor in [*originals, *files]:
         relative = Path(descriptor["relative_path"])
         require(not relative.is_absolute() and ".." not in relative.parts, "font_relative_path")
         path = font_root / relative
@@ -294,8 +301,11 @@ def probe(owner_root, font_root, intake, editorial_family, text, font_size):
         require(len(raw) == descriptor["size_bytes"]
                 and hashlib.sha256(raw).hexdigest() == descriptor["sha256"], "font_bytes_changed")
         canonical = str(path.resolve(strict=True))
-        require(canonical not in allowed, "font_resource_duplicate")
-        allowed[canonical] = descriptor
+        require(canonical not in retained, "font_resource_duplicate")
+        retained[canonical] = descriptor
+        if descriptor in files:
+            require(raw[:4] == b"\x00\x01\x00\x00", "native_sfnt_header")
+            allowed[canonical] = descriptor
     # The CLI creates intake from the original archives just before this call.
     # No JSON flag or supplied path can manufacture a native observation.
     native = NativePango()
@@ -304,7 +314,7 @@ def probe(owner_root, font_root, intake, editorial_family, text, font_size):
         editorial_family == "Instrument Sans Variable",
     )
     runs = validate_observation(observation, allowed, specification["expected_native_family"], text_bytes)
-    for path, descriptor in allowed.items():
+    for path, descriptor in retained.items():
         raw = read_owned_file(owner_root, path, MAX_MEMBER)
         require(len(raw) == descriptor["size_bytes"]
                 and hashlib.sha256(raw).hexdigest() == descriptor["sha256"], "font_bytes_changed_after_layout")
@@ -318,6 +328,8 @@ def probe(owner_root, font_root, intake, editorial_family, text, font_size):
         "text_sha256": hashlib.sha256(text_bytes).hexdigest(), "text_bytes": len(text_bytes),
         "unknown_glyph_count": observation["unknown_glyph_count"],
         "fallback_allowed": False,
+        "original_woff2_sources": originals,
+        "native_derivation": "fontTools.ttLib.woff2.decompress/4.59.0;brotli/1.1.0",
         "fontconfig_app_font_add_observed": [{
             "relative_path": descriptor["relative_path"], "sha256": descriptor["sha256"],
             "size_bytes": descriptor["size_bytes"],

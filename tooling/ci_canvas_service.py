@@ -8421,10 +8421,10 @@ def graph_verify_producer_index(index_ref, case_id, *, development=False):
             and intake["profile_id"] == "mw-manim-semantic-graph-v1" and intake["source_root"] == source["repository_root"]
             and intake["runtime_root"] == runtime["root"] and all(intake[key] is False for key in (
                 "profile_admitted", "native_render_performed", "compiled_runner_pin_agreement_verified", "native_font_open_observed", "pango_layout_observed")), "Graph source intake is not acceptance")
-    require(originals["profile_files"] == contract["runtime"]["profile_files"] and len(originals["profile_files"]) == 15
-            and intake["files_count"] == len(intake["files"]) == 15, "Graph fifteen runtime originals")
+    require(originals["profile_files"] == contract["runtime"]["profile_files"] and len(originals["profile_files"]) == 22
+            and intake["files_count"] == len(intake["files"]) == 22, "Graph nine source assets, seven native SFNT and six helpers")
     by_name = {row["relative_path"]: row["ref"] for row in originals["profile_files"]}
-    require(len(by_name) == 15, "Graph runtime duplicate path")
+    require(len(by_name) == 22, "Graph runtime duplicate path")
     for row in intake["files"]:
         ref = by_name[row["runtime_relative_path"]]
         require(ref["path"] == str(Path(runtime["root"]) / row["runtime_relative_path"])

@@ -87,6 +87,55 @@ pub fn graph_builtin_asset_pins() -> &'static [GraphBuiltinAssetPin] {
     &BUILTIN_ASSETS
 }
 
+// Actual SFNT decoded from the retained WOFF2 originals with FontTools 4.59.0
+// and Brotli 1.1.0. These are distinct resources, never renamed WOFF2 bytes.
+// Their hashes attest bytes only; the real Host must still observe every face.
+const NATIVE_FONT_ASSETS: [GraphBuiltinAssetPin; 7] = [
+    GraphBuiltinAssetPin {
+        relative_path: "instrument-sans/files/instrument-sans-latin-ext-wght-normal.ttf",
+        sha256: "d10bfae57de8923533bf611e08ccde537e4b0bf4b4ba6a7a4e5eb3e3b6d05527",
+        size_bytes: 23988,
+    },
+    GraphBuiltinAssetPin {
+        relative_path: "instrument-sans/files/instrument-sans-latin-wght-normal.ttf",
+        sha256: "83de837ee7d7dc3ea0311376947b5709abdd1c648df41a057b3e95ea6da843d5",
+        size_bytes: 63220,
+    },
+    GraphBuiltinAssetPin {
+        relative_path: "ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-400-normal.ttf",
+        sha256: "77f6e07ec5e6f6dbeb0cdab1688681cc5173169977bedfa6c948a4a7a7a21f76",
+        size_bytes: 18356,
+    },
+    GraphBuiltinAssetPin {
+        relative_path: "ibm-plex-mono/files/ibm-plex-mono-cyrillic-400-normal.ttf",
+        sha256: "27a091e020dac653c9b382eee9fea3362968d01d5edf943ab512fdb845337598",
+        size_bytes: 22656,
+    },
+    GraphBuiltinAssetPin {
+        relative_path: "ibm-plex-mono/files/ibm-plex-mono-vietnamese-400-normal.ttf",
+        sha256: "019774bae13f411cd7fcb0952282fbfd76ba1c7abe112bb6a8a37f2e518994c7",
+        size_bytes: 17832,
+    },
+    GraphBuiltinAssetPin {
+        relative_path: "ibm-plex-mono/files/ibm-plex-mono-latin-ext-400-normal.ttf",
+        sha256: "b5da802bbac01efcf5ecaae42117b513efb62c47722ba944d61465ce8b7c66f5",
+        size_bytes: 37872,
+    },
+    GraphBuiltinAssetPin {
+        relative_path: "ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.ttf",
+        sha256: "3f7efa37307b8b54338fc6437acd67f8d936239ec8e0708551a9b746474f2176",
+        size_bytes: 40928,
+    },
+];
+
+pub fn graph_runtime_asset_pins() -> Vec<GraphBuiltinAssetPin> {
+    BUILTIN_ASSETS
+        .iter()
+        .chain(NATIVE_FONT_ASSETS.iter())
+        .copied()
+        .collect()
+}
+
 fn helper_sources() -> [(&'static str, &'static [u8]); 6] {
     [
         (
@@ -157,19 +206,42 @@ pub(crate) fn graph_font_lock() -> Value {
             .clone()
             .find(|item| item.relative_path.ends_with("/LICENSE"))
             .expect("fixed font table contains one license per package");
-        let fonts = rows
+        let source_fonts = rows
             .filter(|item| item.relative_path.ends_with(".woff2"))
+            .collect::<Vec<_>>();
+        let native_fonts = NATIVE_FONT_ASSETS
+            .iter()
+            .filter(|item| item.relative_path.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        let derivations = native_fonts
+            .iter()
+            .map(|native| {
+                let source_path = native
+                    .relative_path
+                    .strip_suffix(".ttf")
+                    .expect("fixed native font is SFNT")
+                    .to_owned()
+                    + ".woff2";
+                let original = source_fonts
+                    .iter()
+                    .find(|item| item.relative_path == source_path)
+                    .expect("every fixed SFNT has one retained original");
+                json!({"source": original, "native": native})
+            })
             .collect::<Vec<_>>();
         json!({
             "package": package, "version": "5.3.0", "editorial_family": editorial,
             "expected_native_family": native, "weight": 400, "style": "normal",
             "fallback": "forbidden", "archive_sha256": archive_sha,
-            "license": license, "font_files": fonts,
+            "license": license, "source_font_files": source_fonts, "font_files": native_fonts,
+            "native_derivation": {"schema": "motionwright.manim.woff2-sfnt/1",
+                "fonttools_version": "4.59.0", "brotli_version": "1.1.0",
+                "operation": "fontTools.ttLib.woff2.decompress", "files": derivations},
         })
     })
     .collect::<Vec<_>>();
     json!({
-        "schema": "motionwright.manim.graph-font-lock/1",
+        "schema": "motionwright.manim.graph-font-lock/2",
         "contract_sha256": GRAPH_TEXT_GEOMETRY_CONTRACT_SHA256,
         "profile_origin_sdk_pin": "54d3459a051adbce4cae9f60c0dea8f60c824be6",
         "observed_sdk_commit": "def9c35e38432704cbb45d9ba2c3683a8dd373ba",
