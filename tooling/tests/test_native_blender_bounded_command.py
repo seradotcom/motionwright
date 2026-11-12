@@ -116,13 +116,16 @@ class BlenderCommandInFlightBounds(unittest.TestCase):
         # The direct child reports exit zero, but a self-terminating Python
         # descendant holds its original pipes. No source status is allowed
         # until both stdout/stderr have actual EOF and complete custody.
+        # Force direct producer termination; interpreter teardown must not
+        # wait for the descendant and accidentally erase the inherited-pipe race.
         producer = (
             "import subprocess,sys;"
             "subprocess.Popen([sys.executable,'-I','-c',"
             "'import time;time.sleep(3)'],"
             "stdin=subprocess.DEVNULL,stdout=sys.stdout,stderr=sys.stderr);"
             "sys.stdout.buffer.write(b'{\\\"ok\\\":true}\\n');"
-            "sys.stdout.buffer.flush()"
+            "sys.stdout.buffer.flush();"
+            "import os;os._exit(0)"
         )
         with self.assertRaisesRegex(
                 evidence.OriginalSceneUnverified,
