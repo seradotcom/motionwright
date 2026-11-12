@@ -39,6 +39,110 @@ def source_wave() -> tuple[bytes, bytes]:
     return packed, pcm
 
 
+class CandidateProcCmdlineTests(unittest.TestCase):
+    """Inert discovery inputs; none is a Native process or module witness."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.pid, self.before = 42, (20, 12345)
+        self.proc = self.root / str(self.pid)
+        self.proc.mkdir()
+        self.cmdline = self.proc / "cmdline"
+        self.cmdline.write_bytes(b"")
+        patch = mock.patch.object(g2, "PROC_ROOT", self.root)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def disappeared_executable(self):
+        return FileNotFoundError(2, "inert process executable disappeared", str(self.proc / "exe"))
+
+    def test_empty_argv_with_same_task_and_missing_executable_is_unavailable(self):
+        absent = self.disappeared_executable()
+        with mock.patch.object(g2.os, "readlink", side_effect=absent), \
+                mock.patch.object(g2, "process_identity", return_value=self.before):
+            with self.assertRaises(FileNotFoundError) as caught:
+                g2.candidate_proc_cmdline(self.pid, self.before)
+        self.assertIs(caught.exception, absent)
+
+    def test_empty_argv_with_reaped_task_is_unavailable(self):
+        absent = self.disappeared_executable()
+        with mock.patch.object(g2.os, "readlink", side_effect=absent), \
+                mock.patch.object(g2, "process_identity", side_effect=FileNotFoundError()):
+            with self.assertRaises(FileNotFoundError) as caught:
+                g2.candidate_proc_cmdline(self.pid, self.before)
+        self.assertIs(caught.exception, absent)
+
+    def test_empty_argv_with_live_executable_is_still_fatal(self):
+        with mock.patch.object(g2.os, "readlink", return_value="/plugin/tools/melt"):
+            with self.assertRaisesRegex(g2.G2Unverified, "g2_proc_input_budget"):
+                g2.candidate_proc_cmdline(self.pid, self.before)
+
+    def test_permission_denial_does_not_prove_disappearance(self):
+        with mock.patch.object(g2.os, "readlink", side_effect=PermissionError()):
+            with self.assertRaisesRegex(g2.G2Unverified, "g2_proc_input_budget"):
+                g2.candidate_proc_cmdline(self.pid, self.before)
+
+    def test_reused_pid_or_changed_parent_remains_fatal(self):
+        for after in ((20, 12346), (21, 12345)):
+            with self.subTest(after=after), \
+                    mock.patch.object(g2.os, "readlink", side_effect=self.disappeared_executable()), \
+                    mock.patch.object(g2, "process_identity", return_value=after):
+                with self.assertRaisesRegex(g2.G2Unverified, "process_identity_changed_before_capture"):
+                    g2.candidate_proc_cmdline(self.pid, self.before)
+
+    def test_unreadable_or_malformed_identity_is_not_proof_of_exit(self):
+        for error in (PermissionError(), ValueError("inert malformed stat"),
+                      g2.loaded.LoadedModuleUnverified("inert invalid identity")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(g2.os, "readlink", side_effect=self.disappeared_executable()), \
+                    mock.patch.object(g2, "process_identity", side_effect=error):
+                with self.assertRaisesRegex(g2.G2Unverified, "process_identity_changed_before_capture"):
+                    g2.candidate_proc_cmdline(self.pid, self.before)
+
+    def test_oversize_is_not_excused_by_process_disappearance(self):
+        self.cmdline.write_bytes(b"x" * (g2.loaded.MAX_CMDLINE + 1))
+        with mock.patch.object(g2.os, "readlink", side_effect=self.disappeared_executable()) as link:
+            with self.assertRaisesRegex(g2.G2Unverified, "g2_proc_input_budget"):
+                g2.candidate_proc_cmdline(self.pid, self.before)
+            link.assert_not_called()
+
+    def test_nonempty_malformed_argv_still_reaches_strict_selector(self):
+        self.cmdline.write_bytes(b"missing-terminating-nul")
+        with mock.patch.object(g2.os, "readlink", side_effect=self.disappeared_executable()) as link:
+            raw = g2.candidate_proc_cmdline(self.pid, self.before)
+            with self.assertRaisesRegex(g2.G2Unverified, "g2_proc_argv_budget"):
+                g2.host_tool_consumer(raw, "/tmp/semwright-video-" + "a" * 32)
+            link.assert_not_called()
+
+    def test_generic_parent_and_fdinfo_reads_remain_strict(self):
+        for raw in (b"", b"123"):
+            with self.subTest(raw=raw):
+                self.cmdline.write_bytes(raw)
+                with self.assertRaisesRegex(g2.G2Unverified, "g2_proc_input_budget"):
+                    g2.bounded_proc_bytes(self.cmdline, 2)
+
+
+@unittest.skipUnless(sys.platform == "linux" and hasattr(os, "WNOWAIT"),
+                     "real /proc lifecycle requires Linux")
+class CandidateProcLinuxLifecycleTests(unittest.TestCase):
+    def test_exited_real_python_task_cannot_become_a_native_witness(self):
+        import subprocess
+        # A real kernel lifecycle, not a renderer, Broker, Host or attestation.
+        child = subprocess.Popen([sys.executable, "-I", "-c", "pass"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, env={})
+        try:
+            before = g2.process_identity(child.pid)
+            os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+            self.assertEqual(g2.process_identity(child.pid), before)
+            self.assertEqual((Path("/proc") / str(child.pid) / "cmdline").read_bytes(), b"")
+            with self.assertRaises(FileNotFoundError):
+                g2.candidate_proc_cmdline(child.pid, before)
+        finally:
+            self.assertEqual(child.wait(timeout=5), 0)
+
+
 class ObserverDouble:
     def __init__(self, *, start_error=None, stop_error=None):
         self.started = False

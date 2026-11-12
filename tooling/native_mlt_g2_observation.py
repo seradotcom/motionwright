@@ -320,6 +320,33 @@ def bounded_proc_bytes(path: Path, budget: int) -> bytes:
     return raw
 
 
+def candidate_proc_cmdline(pid: int, before: tuple[int, int]) -> bytes:
+    """Read discovery argv without turning an exited process into a witness."""
+    proc = PROC_ROOT / str(pid)
+    with (proc / "cmdline").open("rb") as stream:
+        raw = stream.read(loaded.MAX_CMDLINE + 1)
+    if not raw:
+        try:
+            os.readlink(proc / "exe")
+        except FileNotFoundError as unavailable:
+            # /proc can lose a task's address space before its stat entry
+            # disappears. This grants no candidate or receipt. A reused PID
+            # or changed parent still contradicts the observed identity.
+            try:
+                after = process_identity(pid)
+            except FileNotFoundError:
+                raise unavailable
+            except Exception as error:
+                raise G2Unverified("g2_host_process_identity_changed_before_capture") from error
+            require(after == before, "g2_host_process_identity_changed_before_capture")
+            raise unavailable
+        except OSError:
+            # A permission failure is not proof of process disappearance.
+            pass
+    require(0 < len(raw) <= loaded.MAX_CMDLINE, "g2_proc_input_budget")
+    return raw
+
+
 def argv_bytes(raw: bytes) -> list[str]:
     require(0 < len(raw) <= loaded.MAX_CMDLINE and raw.endswith(b"\0"), "g2_proc_argv_budget")
     return [value.decode("utf-8") for value in raw[:-1].split(b"\0")]
@@ -531,7 +558,7 @@ class NamespaceMaster:
         require(proc.stat().st_uid == os.getuid() and descendant_of(pid, ancestor),
                 "g2_host_native_ancestry_or_uid")
         cwd = os.readlink(proc / "cwd")
-        raw = bounded_proc_bytes(proc / "cmdline", loaded.MAX_CMDLINE)
+        raw = candidate_proc_cmdline(pid, (parent_pid, start))
         output = host_tool_consumer(raw, cwd)
         if output is None:
             return None

@@ -60,6 +60,11 @@ def read(path, limit=MAX_JSON):
     path = Path(path)
     require(path.is_absolute() and path.resolve(strict=True) == path
             and not any(p.is_symlink() for p in path.parents), "camera_noncanonical_file")
+    if os.name == "nt":
+        # Preserve Win32 CreationTime/ChangeTime domains and hold the original
+        # against writers/deletion through the existing custody reader.
+        from native_manim_resume_host import bounded
+        return bounded(path, limit)
     return capture_regular(path, limit)[0]
 
 

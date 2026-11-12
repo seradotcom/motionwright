@@ -8367,6 +8367,8 @@ class GraphR74DaemonPrivateStderrBuildTests(unittest.TestCase):
         self.assertNotIn("--all-features", argv)
         self.assertEqual(argv.count("--bin"), 3)
         self.assertIn("semwrightd", argv)
+        self.assertEqual([argv[i + 1] for i, item in enumerate(argv) if item == "--config"],
+                         ["profile.dev.debug=0", "profile.test.debug=0"])
 
     def test_original_product_cargo_build_does_not_inherit_sdk_feature(self):
         roles = tuple(role for role in gate.GRAPH_RUST_ROLES
@@ -8374,6 +8376,13 @@ class GraphR74DaemonPrivateStderrBuildTests(unittest.TestCase):
         argv = gate.graph_cargo_build_argv("cargo", False, roles)
         self.assertNotIn("--features", argv)
         self.assertNotIn("--all-features", argv)
+        self.assertNotIn("--release", argv)
+        import tomllib
+        configurations = [argv[i + 1] for i, item in enumerate(argv) if item == "--config"]
+        self.assertEqual(len(configurations), 3)
+        self.assertEqual(tomllib.loads("\n".join(configurations)),
+                         {"profile": {"dev": {"debug": 0, "strip": "symbols"},
+                                      "test": {"debug": 0}}})
         with self.assertRaises(ValueError):
             gate.graph_cargo_build_argv("cargo", True, ("semwright", "semwright_sandbox"))
 
