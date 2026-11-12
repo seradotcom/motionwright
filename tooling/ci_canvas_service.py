@@ -8845,6 +8845,11 @@ def graph_cargo_build_argv(cargo, sdk, roles):
     require(tuple(roles) == expected, "Graph fixed build role roster")
     arguments = [cargo, "build", "--locked", "--jobs", "1", "--message-format=json",
                  "--config", "profile.dev.debug=0", "--config", "profile.test.debug=0"]
+    if not sdk:
+        # Rust symbol/string tables can exceed the Native SDK executable cap
+        # even with debug=0. Make the first Cargo output the final artifact;
+        # capture, retention, and Native admission still consume identical bytes.
+        arguments += ["--config", 'profile.dev.strip="symbols"']
     packages = list(dict.fromkeys(GRAPH_TARGETS[role][0] for role in roles))
     for package in packages:
         arguments += ["-p", package]
