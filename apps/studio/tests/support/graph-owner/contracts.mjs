@@ -28,6 +28,37 @@ export function hasNoSemanticGraphs(project) {
   return object(design) && (!Object.hasOwn(design, 'semantic_graphs')
     || (Array.isArray(design.semantic_graphs) && design.semantic_graphs.length === 0));
 }
+/** Check the actual initializer readback. This is source selection only,
+ * never a Native admission. Existing authored scenes/components are retained;
+ * exactly one new empty Manim scene comes from the ordinary Store operations. */
+export function developmentGraphSourceSelection(before, project) {
+  const reason = 'GRAPH_DEV_INITIALIZER_NATIVE_MANIM_SOURCE_NOT_READY';
+  need(object(before) && object(project) && UUID.test(before.id)
+    && UUID.test(before.generation) && UUID.test(before.active_branch)
+    && project.id === before.id && project.generation === before.generation
+    && project.active_branch === before.active_branch
+    && integer(before.revision, 0) && project.revision === before.revision + 2
+    && Array.isArray(before.scenes) && Array.isArray(project.scenes)
+    && project.scenes.length === before.scenes.length + 1
+    && Array.isArray(before.deliverables) && UUID.test(before.deliverables[0]?.id)
+    && hasNoSemanticGraphs(before) && hasNoSemanticGraphs(project), reason);
+  same(project.scenes.slice(0, -1), before.scenes, reason);
+  same(project.deliverables, before.deliverables, reason);
+  same(project.production_design, before.production_design, reason);
+  const scene = project.scenes.at(-1);
+  need(object(scene) && UUID.test(scene.id)
+    && !before.scenes.some(item => item.id === scene.id)
+    && scene.renderer === 'manim-community'
+    && Array.isArray(scene.nodes) && scene.nodes.length === 0
+    && Array.isArray(scene.beats) && scene.beats.length === 0, reason);
+  same(scene.camera, { center_x:960, center_y:540, zoom:1,
+    rotation_deg:0, safe_margin:0.05 }, reason);
+  same(scene.duration, { num:'5', den:'1' }, reason);
+  const profile = project.deliverables[0];
+  need(Array.isArray(profile.included_scene_ids)
+    && (profile.included_scene_ids.length === 0 || profile.included_scene_ids.includes(scene.id)), reason);
+  return Object.freeze({ projectId:project.id, sceneId:scene.id, profileId:profile.id });
+}
 export function exact(value, fields, reason) {
   need(object(value) && Object.keys(value).sort().join('\0') === [...fields].sort().join('\0'), reason);
 }

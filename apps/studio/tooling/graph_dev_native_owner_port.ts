@@ -158,7 +158,7 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
     this.attempted = true;
     // Mutable cell: the initializer callback is invoked by the real
     // source-owned factory, not synchronously in this method body.
-    const selected: { project?: Project } = {};
+    const selected: { project?: Project; sceneId?: string; profileId?: string } = {};
     let started: ScopedChangeService | undefined;
     try {
       const factory = this.factory;
@@ -167,12 +167,16 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
         async (project: Project) => {
           // These IDs are read from the REAL ordinary initializer's SQLite;
           // this callback grants no ability to manufacture a second project.
-          if (!project?.id || !project.scenes?.[0]?.id
-            || !project.deliverables?.[0]?.id
+          const identity = factory.developmentSourceSelection;
+          if (!identity || project?.id !== identity.projectId
+            || !project.scenes?.some(scene => scene.id === identity.sceneId)
+            || !project.deliverables?.some(profile => profile.id === identity.profileId)
             || project.production_design?.semantic_graphs?.length) {
             throw new Error("GRAPH_DEV_REAL_INITIALIZER_SOURCE_UNAVAILABLE");
           }
           selected.project = structuredClone(project);
+          selected.sceneId = identity.sceneId;
+          selected.profileId = identity.profileId;
           const root = join(factory.root, "owner");
           return {
             schema: "motionwright.graph-browser-owner-spec/6",
@@ -203,7 +207,8 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
           };
         },
       );
-      if (!selected.project) throw new Error("GRAPH_DEV_ORIGINAL_PROJECT_NOT_ISSUED");
+      if (!selected.project || !selected.sceneId || !selected.profileId)
+        throw new Error("GRAPH_DEV_ORIGINAL_PROJECT_NOT_ISSUED");
       // Do not narrow a mutable outer variable through the asynchronous
       // initializer. The exact real Native service must have returned first.
       if (!started) throw new Error("GRAPH_DEV_ORIGINAL_NATIVE_WRITER_NOT_STARTED");
@@ -213,7 +218,7 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
       // URI equality nor a previously parsed fixture can replace this read.
       const current = await nativeWriter.project(source.id);
       if (!isDeepStrictEqual(current, source)
-        || current.scenes?.[0]?.renderer !== "manim-community"
+        || current.scenes.find(scene => scene.id === selected.sceneId)?.renderer !== "manim-community"
         || nativeWriter.binaryPath !== this.writerOptions.binaryPath
         || nativeWriter.databasePath !== this.writerOptions.databasePath
         || nativeWriter.processStreams.length !== 1
@@ -225,8 +230,8 @@ class SourceBoundGraphDevelopmentOwner implements OriginalGraphDevelopmentOwner 
       const originalWriter: OriginalGraphDevelopmentWriter = Object.freeze({
         service: nativeWriter,
         projectId: current.id,
-        sceneId: current.scenes[0].id,
-        profileId: current.deliverables[0].id,
+        sceneId: selected.sceneId,
+        profileId: selected.profileId,
       });
       this.original = originalWriter;
       return originalWriter;

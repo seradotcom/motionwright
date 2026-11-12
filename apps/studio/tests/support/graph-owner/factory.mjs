@@ -5,7 +5,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { SharedPool, OriginalWriter, bindRawPair, inventoryTree, copyTreeExclusive,
   stableRead, freshDirectory, existingDirectory, pinDirectory, safeParents, canonical, inside, need, integer, GLOBAL_BYTES, GLOBAL_FILES } from './custody.mjs';
 import { strictJSON, schema, SPEC_SCHEMA, FINAL_SCHEMA, exact, tuple, validateServiceClosure,
-  ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines, hasNoSemanticGraphs } from './contracts.mjs';
+  ERROR_CODES, GRAPH_RUNTIME_STAGES, same, BoundedJsonLines, hasNoSemanticGraphs,
+  developmentGraphSourceSelection } from './contracts.mjs';
 import { admitOriginalProducers, admitOriginalDevelopmentProducers, assertOriginalProducerAdmission,
   assertGraphProducerAdmission, ownerReadOnlyMetadataCredential,
   originalGraphCaseLayout, GRAPH_BUDGET } from './producer_guard.mjs';
@@ -446,41 +447,37 @@ export class GraphCaseFactoryCore {
       const fixture = await initializer.fixtureBootstrap();
       let originalProject = fixture.project;
       if (this.developmentReaderReservation) {
-        // Studio's real ordinary test initializer seeds genuine SQLite/CAS
-        // but its scene renderer is not Manim. Graph's domain write contract
-        // REQUIRES ManimCommunity; without this AUTHENTIC scoped source edit
-        // the first Host context would be Blocked even with a real client.
-        // A3 never manufactures scenes, grants or project edits.
-        const scene = originalProject?.scenes?.[0];
-        need(scene?.id && originalProject?.deliverables?.[0]?.id
+        // The ordinary fixture has authored Canvas/ProductHero content.
+        // Retagging that scene as Manim is invalid: Native must not discard it.
+        // Use the existing scoped Store operations to add one empty scene
+        // BEFORE mounting Native, preserving every pre-existing scene/profile.
+        need(Array.isArray(originalProject?.scenes)
+          && originalProject?.deliverables?.[0]?.id
           && hasNoSemanticGraphs(originalProject),
           'GRAPH_DEV_INITIALIZER_REAL_SCENE_OR_SOURCE_UNAVAILABLE');
-        const before = originalProject;
-        if (scene.renderer !== 'manim-community') {
-          // This is the existing scoped project_edit grant and real Store
-          // mutation through the source-built ordinary initializer. It does
-          // NOT create Native/Host authority or an R74 decision.
-          originalProject = await initializer.apply(before, {
-            type:'set_scene_renderer', scene_id:scene.id,
-            renderer:'manim-community',
-          });
-        }
-        need(originalProject.id === before.id
-          && originalProject.generation === before.generation
-          && originalProject.scenes?.[0]?.id === scene.id
-          && originalProject.scenes[0].renderer === 'manim-community'
-          && originalProject.deliverables?.[0]?.id === before.deliverables[0].id
-          && hasNoSemanticGraphs(originalProject)
-          && Number.isSafeInteger(originalProject.revision)
-          && originalProject.revision === before.revision
-            + Number(scene.renderer !== 'manim-community'),
-          'GRAPH_DEV_INITIALIZER_NATIVE_MANIM_SOURCE_NOT_READY');
+        const before = structuredClone(originalProject);
+        originalProject = await initializer.apply(originalProject, {
+          type:'add_scene', name:'Synthetic Native Graph development scene',
+          objective:'One authentic Graph Save and independent persistence verification',
+          duration_seconds:5,
+        });
+        const priorIds = new Set(before.scenes.map(scene => scene.id));
+        const added = originalProject.scenes.filter(scene => !priorIds.has(scene.id));
+        need(added.length === 1
+          && originalProject.scenes.length === before.scenes.length + 1,
+          'GRAPH_DEV_INITIALIZER_REAL_SCENE_OR_SOURCE_UNAVAILABLE');
+        originalProject = await initializer.apply(originalProject, {
+          type:'set_scene_renderer', scene_id:added[0].id,
+          renderer:'manim-community',
+        });
         same(await initializer.project(originalProject.id),originalProject,
           'GRAPH_DEV_INITIALIZER_AUTHENTIC_SQLITE_READBACK_CHANGED');
+        this.developmentSourceSelection = developmentGraphSourceSelection(before,originalProject);
         this.metadata.json(path.join(this.root,
           'graph-dev-manifest-scene-source.original.json'),{
           source:this.admission.source, project_id:originalProject.id,
-          scene_id:scene.id, profile_id:originalProject.deliverables[0].id,
+          scene_id:this.developmentSourceSelection.sceneId,
+          profile_id:this.developmentSourceSelection.profileId,
           prior_revision:before.revision,
           selected_revision:originalProject.revision,
           declared_renderer:'manim-community',
