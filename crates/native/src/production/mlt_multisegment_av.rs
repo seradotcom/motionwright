@@ -255,6 +255,164 @@ pub(super) fn verify_mux_artifact_file(
     Ok(())
 }
 
+/// Bind the same opened, bounded owner output file to its preflight digest.
+/// A later path lookup or caller-supplied sample counter cannot stand in for
+/// these media bytes. Keeping the original handle also avoids a second path
+/// lookup while checking decoded PCM content.
+fn open_verified_mux_wav(
+    path: &std::path::Path,
+    expected_sha256: &str,
+) -> NativeResult<semwright_audio_domain::wav::WaveReader<std::fs::File>> {
+    use std::io::{Read as _, Seek as _};
+
+    if !sha256_literal(expected_sha256) {
+        return Err(backend(
+            "Native AV source/decoded WAV SHA-256 is not bounded",
+        ));
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|_| backend("Native AV WAV could not be opened by its original path"))?;
+    let size = file
+        .metadata()
+        .map_err(|_| backend("Native AV WAV descriptor has no original size"))?
+        .len();
+    if !(44..=MLT_MASTER_MAX_BYTES).contains(&size) {
+        return Err(backend(
+            "Native AV source/decoded WAV exceeds the exact file budget",
+        ));
+    }
+    let mut count = 0_u64;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| backend("Native AV WAV descriptor read failed"))?;
+        if read == 0 {
+            break;
+        }
+        count = count
+            .checked_add(read as u64)
+            .filter(|value| *value <= size)
+            .ok_or_else(|| backend("Native AV WAV changed while hashing"))?;
+        hash.update(&buffer[..read]);
+    }
+    if count != size || hex::encode(hash.finalize()) != expected_sha256 {
+        return Err(backend(
+            "Native AV WAV bytes differ from the owned original digest",
+        ));
+    }
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|_| backend("Native AV WAV original descriptor could not rewind"))?;
+    semwright_audio_domain::wav::WaveReader::open(file, MLT_MASTER_MAX_BYTES)
+        .map_err(|_| backend("Native AV WAV is not a complete bounded PCM source"))
+}
+
+/// Supplemental Native-side source-to-output guard. The CI/G2 oracles still
+/// check *all* authored windows and AAC packet presentation independently.
+/// A lost terminal right (or left) channel must not count as a successful
+/// product Native mux merely because the file digest and sample count exist.
+fn require_native_mux_stereo_tail<
+    R1: std::io::Read + std::io::Seek,
+    R2: std::io::Read + std::io::Seek,
+>(
+    mut source: semwright_audio_domain::wav::WaveReader<R1>,
+    mut decoded: semwright_audio_domain::wav::WaveReader<R2>,
+    expected_frames: u64,
+) -> NativeResult<()> {
+    let source_info = source.info().clone();
+    let decoded_info = decoded.info().clone();
+    // The existing measured-voice admission supports PCM16/24/32 and
+    // IEEE-float32 sources. Its actual decoded AAC output is always PCM16.
+    // This supplemental content screen must not narrow that source policy.
+    let source_stereo = source_info.sample_rate.0 == 48_000
+        && source_info.channels == 2
+        && ((source_info.ieee_float
+            && source_info.container_bits == 32
+            && source_info.valid_bits == 32)
+            || (!source_info.ieee_float
+                && matches!(source_info.container_bits, 16 | 24 | 32)
+                && source_info.valid_bits == source_info.container_bits))
+        && source_info.channel_mask.is_none_or(|mask| mask == 3);
+    let decoded_stereo = decoded_info.sample_rate.0 == 48_000
+        && decoded_info.channels == 2
+        && decoded_info.container_bits == 16
+        && decoded_info.valid_bits == 16
+        && !decoded_info.ieee_float
+        && decoded_info.channel_mask.is_none_or(|mask| mask == 3);
+    if !source_stereo
+        || !decoded_stereo
+        || source_info.frames != expected_frames
+        || expected_frames == 0
+        || decoded_info.frames < expected_frames
+        || decoded_info.frames > expected_frames.saturating_add(1_024)
+    {
+        return Err(backend(
+            "Native mux source/decoded stereo PCM profile or clock differs",
+        ));
+    }
+    let start = expected_frames.saturating_sub(256);
+    let tail_frames = expected_frames - start;
+    let mut source_l1 = [0_f64; 2];
+    let mut decoded_l1 = [0_f64; 2];
+    let mut offset = 0_u64;
+    while offset < expected_frames {
+        let take = (expected_frames - offset).min(16_384) as usize;
+        let original = source
+            .read_frames(take)
+            .map_err(|_| backend("Native AV source WAV lost original sample frames"))?;
+        let output = decoded
+            .read_frames(take)
+            .map_err(|_| backend("Native AV decoded WAV lost original sample frames"))?;
+        if original.len() != take * 2 || output.len() != original.len() {
+            return Err(backend(
+                "Native AV stereo source and output PCM frames differ",
+            ));
+        }
+        for (index, (before, after)) in original
+            .chunks_exact(2)
+            .zip(output.chunks_exact(2))
+            .enumerate()
+        {
+            if offset + index as u64 >= start {
+                for channel in 0..2 {
+                    // WaveReader samples are normalized to [-1, 1].
+                    // Retain the same authored PCM16 amplitude units as the
+                    // 256-frame source-content oracle: 64 means 64 / 32768.
+                    source_l1[channel] += before[channel].abs() * 32768.0;
+                    decoded_l1[channel] += after[channel].abs() * 32768.0;
+                }
+            }
+        }
+        offset += take as u64;
+    }
+    if !source
+        .read_frames(1)
+        .map_err(|_| backend("Native AV original source terminal frame is unreadable"))?
+        .is_empty()
+    {
+        return Err(backend("Native AV source contains undeclared terminal PCM"));
+    }
+    let extra = (decoded_info.frames - expected_frames) as usize;
+    let padding = decoded
+        .read_frames(extra.saturating_add(1))
+        .map_err(|_| backend("Native AV AAC decoded padding frames are unreadable"))?;
+    if padding.len() != extra * 2 {
+        return Err(backend(
+            "Native AV decoded AAC padding differs from its original clock",
+        ));
+    }
+    for channel in 0..2 {
+        let mean = source_l1[channel] / tail_frames as f64;
+        if mean >= 64.0 && decoded_l1[channel] * 5.0 < source_l1[channel] {
+            return Err(backend(
+                "Native AV mux lost authored stereo channel content before source end",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl ProductionCoordinator {
     /// Finalize ONLY the existing verified no-audio MLT semantic cut against
     /// a project-selected measured voice WAV. This never assembles/shadows
@@ -430,7 +588,7 @@ impl ProductionCoordinator {
                 "Native staged 48k stereo audio does not match the exact selected voice or saved mix",
             ));
         }
-        verify_output_artifact(
+        let owned_source_wav = verify_output_artifact(
             output_root,
             &audio.relative_path,
             &audio.sha256,
@@ -528,11 +686,21 @@ impl ProductionCoordinator {
             "/decoded_audio/sha256",
             "Native AV decoded WAV SHA-256 is missing",
         )?;
-        verify_output_artifact(
+        let owned_decoded_wav = verify_output_artifact(
             output_root,
             &decoded_path,
             &decoded_sha256,
             MLT_MASTER_MAX_BYTES,
+        )?;
+        // The native owner provided these exact source and decoded WAV
+        // digests, but SHA and AAC frame counts alone cannot establish that
+        // either authored channel survives the last source window. Consume
+        // both already-verified files through their opened hashed handles
+        // before accepting the Native mux, without replaying any operation.
+        require_native_mux_stereo_tail(
+            open_verified_mux_wav(&owned_source_wav, &audio.sha256)?,
+            open_verified_mux_wav(&owned_decoded_wav, &decoded_sha256)?,
+            audio_readiness.audio_pcm_frames,
         )?;
         let latest = self.service.project(project_id).map_err(storage_error)?;
         if latest.generation != project.generation || latest.revision != project.revision {
@@ -661,5 +829,175 @@ mod tests {
         r["audio_sha256"] = json!("d".repeat(64));
         r["decoded_audio"]["root"] = json!("project");
         assert!(check(&r).is_err());
+    }
+
+    fn source_wav_fixture(stereo: &[[i16; 2]]) -> Vec<u8> {
+        let payload = u32::try_from(stereo.len() * 4).unwrap();
+        let mut wav = Vec::with_capacity(44 + payload as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36_u32 + payload).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&(48_000_u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&payload.to_le_bytes());
+        for &[left, right] in stereo {
+            wav.extend_from_slice(&left.to_le_bytes());
+            wav.extend_from_slice(&right.to_le_bytes());
+        }
+        wav
+    }
+
+    fn source_wav_24bit_fixture(stereo: &[[i16; 2]]) -> Vec<u8> {
+        let payload = u32::try_from(stereo.len() * 6).unwrap();
+        let mut wav = Vec::with_capacity(44 + payload as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36_u32 + payload).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&(48_000_u32 * 6).to_le_bytes());
+        wav.extend_from_slice(&6_u16.to_le_bytes());
+        wav.extend_from_slice(&24_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&payload.to_le_bytes());
+        for frame in stereo {
+            for &sample in frame {
+                let expanded = (i32::from(sample) << 8).to_le_bytes();
+                wav.extend_from_slice(&expanded[..3]);
+            }
+        }
+        wav
+    }
+
+    fn source_wav_float32_fixture(stereo: &[[i16; 2]]) -> Vec<u8> {
+        let payload = u32::try_from(stereo.len() * 8).unwrap();
+        let mut wav = Vec::with_capacity(44 + payload as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36_u32 + payload).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&3_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&(48_000_u32 * 8).to_le_bytes());
+        wav.extend_from_slice(&8_u16.to_le_bytes());
+        wav.extend_from_slice(&32_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&payload.to_le_bytes());
+        for frame in stereo {
+            for &sample in frame {
+                let normalized = f32::from(sample) / 32768.0;
+                wav.extend_from_slice(&normalized.to_le_bytes());
+            }
+        }
+        wav
+    }
+
+    fn source_tail_fixture() -> Vec<[i16; 2]> {
+        (0..512)
+            .map(|i| [((i % 64) as i16 - 32) * 280, ((i % 31) as i16 - 15) * 500])
+            .collect()
+    }
+
+    fn check_tail(source: &[u8], decoded: &[u8], count: u64) -> NativeResult<()> {
+        let source = semwright_audio_domain::wav::WaveReader::open(
+            std::io::Cursor::new(source),
+            MLT_MASTER_MAX_BYTES,
+        )
+        .expect("bounded test source WAV");
+        let decoded = semwright_audio_domain::wav::WaveReader::open(
+            std::io::Cursor::new(decoded),
+            MLT_MASTER_MAX_BYTES,
+        )
+        .expect("bounded test decoded WAV");
+        require_native_mux_stereo_tail(source, decoded, count)
+    }
+
+    #[test]
+    fn native_mux_checks_real_terminal_stereo_with_valid_aac_packet_padding() {
+        let stereo = source_tail_fixture();
+        let original = source_wav_fixture(&stereo);
+        assert!(check_tail(&original, &original, 512).is_ok());
+        let mut padded = stereo;
+        padded.extend(std::iter::repeat_n([0, 0], 448));
+        let decoded = source_wav_fixture(&padded);
+        assert!(check_tail(&original, &decoded, 512).is_ok());
+    }
+
+    #[test]
+    fn native_mux_retains_existing_24bit_and_float32_measured_voice_sources() {
+        let source = source_tail_fixture();
+        let decoded = source_wav_fixture(&source);
+        assert!(check_tail(&source_wav_24bit_fixture(&source), &decoded, 512).is_ok());
+        assert!(check_tail(&source_wav_float32_fixture(&source), &decoded, 512).is_ok());
+    }
+
+    #[test]
+    fn native_mux_rejects_lost_channel_from_24bit_or_float32_source() {
+        let source = source_tail_fixture();
+        let mut damaged = source.clone();
+        for frame in &mut damaged[256..] {
+            frame[1] = 0;
+        }
+        let decoded = source_wav_fixture(&damaged);
+        assert!(check_tail(&source_wav_24bit_fixture(&source), &decoded, 512).is_err());
+        assert!(check_tail(&source_wav_float32_fixture(&source), &decoded, 512).is_err());
+    }
+
+    #[test]
+    fn native_mux_rejects_lost_right_tail_even_with_other_channel_intact() {
+        let original = source_tail_fixture();
+        let source = source_wav_fixture(&original);
+        let mut damaged = original;
+        for frame in &mut damaged[256..] {
+            frame[1] = 0;
+        }
+        let output = source_wav_fixture(&damaged);
+        assert!(check_tail(&source, &output, 512).is_err());
+        // The first 256 source frames are identical, so this detects only the
+        // actual lost authored terminal channel, not a fake whole-file error.
+        assert_eq!(&source[44..44 + 256 * 4], &output[44..44 + 256 * 4]);
+    }
+
+    #[test]
+    fn native_mux_rejects_lost_left_tail_independently_of_right() {
+        let original = source_tail_fixture();
+        let source = source_wav_fixture(&original);
+        let mut damaged = original;
+        for frame in &mut damaged[256..] {
+            frame[0] = 0;
+        }
+        assert!(check_tail(&source, &source_wav_fixture(&damaged), 512).is_err());
+    }
+
+    #[test]
+    fn native_mux_rejects_truncated_decoded_audio_and_unclaimed_padding() {
+        let original = source_tail_fixture();
+        let source = source_wav_fixture(&original);
+        assert!(check_tail(&source, &source_wav_fixture(&original[..511]), 512).is_err());
+        let mut too_long = original;
+        too_long.extend(std::iter::repeat_n([0, 0], 1025));
+        assert!(check_tail(&source, &source_wav_fixture(&too_long), 512).is_err());
+    }
+
+    #[test]
+    fn native_mux_tail_guard_does_not_claim_full_duration_or_g2_acceptance() {
+        let original = source_tail_fixture();
+        let source = source_wav_fixture(&original);
+        let mut altered_nonterminal = original;
+        for frame in &mut altered_nonterminal[..256] {
+            frame[1] = 0;
+        }
+        // This supplemental producer guard does NOT replace the independent
+        // full-duration, zero-offset G2 source-content and AAC timing proofs.
+        assert!(check_tail(&source, &source_wav_fixture(&altered_nonterminal), 512).is_ok());
     }
 }
