@@ -68,6 +68,52 @@ class CaptureContracts(unittest.TestCase):
             capture.prepare_windows_generated_metadata(*changed)
         self.assertFalse((self.root / "state").exists())
 
+    def test_linux_generated_preflight_is_explicit_and_keeps_fresh_roots(self):
+        self.repo()
+        manifest = self.root / "apps/desktop/src-tauri/Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes(b"[package]\n")
+        home = self.root / "cargo"; home.mkdir()
+        target = self.root / "target"; target.mkdir()
+        arguments = (self.root, home, manifest, "x86_64-unknown-linux-gnu",
+                     "motionwright-desktop", target, "state", "resources")
+        capture.prepare_tauri_generated_metadata(*arguments)
+        with self.assertRaisesRegex(capture.CaptureError, "windows_generated_metadata_scope_invalid"):
+            capture.prepare_windows_generated_metadata(*arguments)
+        unsupported = list(arguments); unsupported[3] = "aarch64-unknown-linux-gnu"
+        with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_metadata_scope_invalid"):
+            capture.prepare_tauri_generated_metadata(*unsupported)
+        (home / "preexisting").write_bytes(b"preserve")
+        with self.assertRaisesRegex(capture.CaptureError, "linux_capture_cargo_home_not_empty"):
+            capture.prepare_tauri_generated_metadata(*arguments)
+        self.assertFalse((self.root / "state").exists())
+
+    def test_linux_observer_requires_exact_copy_roster_and_postread_bytes(self):
+        self.repo()
+        sources = capture._load_sibling("cargo_license_sources")
+        for name in sources.LINUX_TAURI_SCHEMAS:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"{}")
+        triple = "x86_64-unknown-linux-gnu"
+        observed = capture.observe_tauri_schemas(self.root, triple)
+        self.assertEqual(set(observed), set(sources.LINUX_TAURI_SCHEMAS))
+        with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_schema_roster_invalid"):
+            capture.observe_windows_tauri_schemas(self.root)
+        desktop = self.root / "apps/desktop/src-tauri/gen/schemas/desktop-schema.json"
+        linux = self.root / "apps/desktop/src-tauri/gen/schemas/linux-schema.json"
+        desktop.write_bytes(b'{"changed":true}')
+        with self.assertRaisesRegex(capture.CaptureError, "generated_tauri_schema_copy_mismatch"):
+            capture.observe_tauri_schemas(self.root, triple)
+        linux.write_bytes(desktop.read_bytes())
+        home = self.root / "cargo"; home.mkdir()
+        with self.assertRaisesRegex(capture.CaptureError, "generated_metadata_changed_after_notices"):
+            capture.revalidate_tauri_generated_metadata(
+                self.root, {"packages": []}, home, {}, observed, target=triple)
+        (desktop.parent / "unreviewed-directory").mkdir()
+        with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_schema_roster_invalid"):
+            capture.observe_tauri_schemas(self.root, triple)
+
     def test_generated_revalidation_uses_real_checkout_and_preserves_original_bytes(self):
         import test_cargo_license_sources as sources
         base = self.root / "fixture"; base.mkdir()

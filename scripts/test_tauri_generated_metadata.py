@@ -41,7 +41,7 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
                 "git_blob": self.fixture.git(self.fixture.workspace, "rev-parse",
                                             "HEAD:" + BUILD_PATH).decode().strip()}
 
-    def generated_fixture(self):
+    def generated_fixture(self, *, linux=False):
         desktop = self.fixture.workspace_member(
             "motionwright-desktop", relative=Path("apps/desktop/src-tauri"))
         for name, version, checksum in permissions.GENERATOR_PACKAGES:
@@ -50,7 +50,8 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
         (self.fixture.workspace / BUILD_PATH).write_bytes(BUILD)
         self.fixture.bind_lock()
         schemas = {}
-        for name in collector.WINDOWS_TAURI_SCHEMAS:
+        names = collector.LINUX_TAURI_SCHEMAS if linux else collector.WINDOWS_TAURI_SCHEMAS
+        for name in names:
             path = self.fixture.workspace / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"{}")
@@ -61,8 +62,10 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             generated[name] = {"bytes": len(raw), "sha256": sha(raw)}
-        profile = {"schema": "motionwright.windows-cargo-generated-metadata/2",
-                   "source": self.head(), "target": "x86_64-pc-windows-msvc",
+        profile = {"schema": ("motionwright.linux-cargo-generated-metadata/1" if linux
+                              else "motionwright.windows-cargo-generated-metadata/2"),
+                   "source": self.head(), "target": ("x86_64-unknown-linux-gnu" if linux
+                                                   else "x86_64-pc-windows-msvc"),
                    "cargo_git_markers": {}, "tauri_schemas": schemas,
                    "tauri_command_permissions": {
                        "command_source": self.source_descriptor(), "files": generated}}
@@ -76,6 +79,82 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
         self.assertIn(code, self.codes(result), result["issues"])
         self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
         return result
+
+    def test_linux_profile_preserves_notices_and_requires_source_bound_permissions(self):
+        component, profile = self.generated_fixture(linux=True)
+        result = self.collect(component, profile)
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["texts"], {sha(NOTICE): NOTICE})
+        self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
+        excluded = result["components"][0]["source_authentication"]["excluded_generated_metadata"]
+        self.assertEqual({row["path"] for row in excluded},
+                         set(collector.LINUX_TAURI_SCHEMAS) |
+                         set(profile["tauri_command_permissions"]["files"]))
+        missing = copy.deepcopy(profile)
+        del missing["tauri_command_permissions"]
+        self.assert_rejected(component, missing, "generated_metadata_profile_invalid")
+
+    def test_linux_profile_rejects_crossed_target_schema_and_rosters(self):
+        component, profile = self.generated_fixture(linux=True)
+        for label in ("windows_target", "windows_profile", "unsupported_target",
+                      "non_string_schema", "missing_schema", "windows_schema", "extra_field"):
+            with self.subTest(label):
+                changed = copy.deepcopy(profile)
+                if label == "windows_target":
+                    changed["target"] = "x86_64-pc-windows-msvc"
+                elif label == "windows_profile":
+                    changed["schema"] = "motionwright.windows-cargo-generated-metadata/2"
+                elif label == "unsupported_target":
+                    changed["target"] = "aarch64-unknown-linux-gnu"
+                elif label == "non_string_schema":
+                    changed["schema"] = {}
+                elif label == "missing_schema":
+                    changed["tauri_schemas"].pop(collector.LINUX_TAURI_SCHEMAS[0])
+                elif label == "windows_schema":
+                    row = changed["tauri_schemas"].pop(collector.LINUX_TAURI_SCHEMAS[-1])
+                    changed["tauri_schemas"][collector.WINDOWS_TAURI_SCHEMAS[-1]] = row
+                else:
+                    changed["unreviewed"] = True
+                self.assert_rejected(component, changed, "generated_metadata_profile_invalid")
+
+    def test_linux_desktop_schema_must_equal_target_even_with_updated_descriptor(self):
+        component, profile = self.generated_fixture(linux=True)
+        name = "apps/desktop/src-tauri/gen/schemas/desktop-schema.json"
+        raw = b'{"different":true}'
+        (self.fixture.workspace / name).write_bytes(raw)
+        profile["tauri_schemas"][name] = {"bytes": len(raw), "sha256": sha(raw)}
+        self.assert_rejected(component, profile, "generated_tauri_schema_copy_mismatch")
+
+    def test_linux_extra_ignored_file_never_becomes_generated_source(self):
+        component, profile = self.generated_fixture(linux=True)
+        ignored = "apps/desktop/src-tauri/unreviewed.bin"
+        ignore_file = "apps/desktop/src-tauri/.gitignore"
+        (self.fixture.workspace / ignore_file).write_bytes(b"unreviewed.bin\n")
+        self.commit_paths(ignore_file)
+        profile["source"] = self.head()
+        path = self.fixture.workspace / ignored
+        path.write_bytes(b"unreviewed source addition")
+        self.assertEqual(self.fixture.git(
+            self.fixture.workspace, "check-ignore", "--", ignored).decode().strip(), ignored)
+        self.assert_rejected(component, profile, "git_worktree_members_mismatch")
+        self.assertEqual(path.read_bytes(), b"unreviewed source addition")
+
+    def test_linux_permission_forgery_is_not_admitted_by_its_own_digest(self):
+        component, profile = self.generated_fixture(linux=True)
+        name = next(iter(profile["tauri_command_permissions"]["files"]))
+        raw = (self.fixture.workspace / name).read_bytes().replace(b"hello_world", b"other_world")
+        (self.fixture.workspace / name).write_bytes(raw)
+        profile["tauri_command_permissions"]["files"][name] = {"bytes": len(raw), "sha256": sha(raw)}
+        self.assert_rejected(component, profile, "generated_tauri_permission_bytes_invalid")
+
+    def test_linux_generator_lock_remains_exact(self):
+        component, profile = self.generated_fixture(linux=True)
+        self.fixture.lock_bytes = self.fixture.lock_bytes.replace(
+            permissions.GENERATOR_PACKAGES[0][2].encode(), b"0" * 64, 1)
+        (self.fixture.workspace / "Cargo.lock").write_bytes(self.fixture.lock_bytes)
+        self.commit_paths("Cargo.lock")
+        profile["source"] = self.head()
+        self.assert_rejected(component, profile, "generated_tauri_generator_lock_invalid")
 
     def test_v2_preserves_original_notices_and_excludes_exact_permission_bytes(self):
         component, profile = self.generated_fixture()

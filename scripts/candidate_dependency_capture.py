@@ -574,22 +574,36 @@ def require_generated_root_absent(repo):
 
 def prepare_windows_generated_metadata(repo, cargo_home, manifest, target, package,
                                        target_directory, state_directory, resources_directory):
+    # Preserve the existing Windows-only entry point for its callers.
     if (manifest != repo / "apps/desktop/src-tauri/Cargo.toml"
             or target != "x86_64-pc-windows-msvc" or package != "motionwright-desktop"):
         raise CaptureError("windows_generated_metadata_scope_invalid")
+    return prepare_tauri_generated_metadata(
+        repo, cargo_home, manifest, target, package,
+        target_directory, state_directory, resources_directory)
+
+
+def prepare_tauri_generated_metadata(repo, cargo_home, manifest, target, package,
+                                     target_directory, state_directory, resources_directory):
+    sources = _load_sibling("cargo_license_sources")
+    if (manifest != repo / "apps/desktop/src-tauri/Cargo.toml"
+            or not isinstance(target, str) or target not in sources.TAURI_SCHEMAS_BY_TARGET
+            or package != "motionwright-desktop"):
+        raise CaptureError("tauri_generated_metadata_scope_invalid")
+    platform = "windows" if target == "x86_64-pc-windows-msvc" else "linux"
     home = Path(cargo_home).resolve(strict=True)
     with os.scandir(home) as listing:
         if next(listing, None) is not None:
-            raise CaptureError("windows_capture_cargo_home_not_empty")
+            raise CaptureError(platform + "_capture_cargo_home_not_empty")
     target_root = admitted(repo, Path(target_directory), directory=True)
     with os.scandir(target_root) as listing:
         if next(listing, None) is not None:
-            raise CaptureError("windows_capture_target_not_empty")
+            raise CaptureError(platform + "_capture_target_not_empty")
     desktop = manifest.parent
     for supplied in (target_root, Path(state_directory), Path(resources_directory)):
         root, relative = within(repo, supplied)
         if (root / relative).is_relative_to(desktop):
-            raise CaptureError("windows_capture_output_inside_source_package")
+            raise CaptureError(platform + "_capture_output_inside_source_package")
     require_generated_root_absent(repo)
 
 
@@ -626,8 +640,14 @@ def observe_cargo_git_markers(metadata, cargo_home):
 
 
 def observe_windows_tauri_schemas(repo):
+    return observe_tauri_schemas(repo, "x86_64-pc-windows-msvc")
+
+
+def observe_tauri_schemas(repo, target):
     sources = _load_sibling("cargo_license_sources")
-    names = sources.WINDOWS_TAURI_SCHEMAS
+    names = sources.TAURI_SCHEMAS_BY_TARGET.get(target) if isinstance(target, str) else None
+    if names is None:
+        raise CaptureError("tauri_generated_metadata_scope_invalid")
     for relative, expected in (
             (Path("apps/desktop/src-tauri/gen"), {"schemas"}),
             (Path("apps/desktop/src-tauri/gen/schemas"), {Path(name).name for name in names})):
@@ -641,6 +661,7 @@ def observe_windows_tauri_schemas(repo):
         if observed != expected:
             raise CaptureError("tauri_generated_schema_roster_invalid")
     result = {}
+    linux_copy = {}
     for name in names:
         raw = stable_read(repo, name, sources.MAX_GENERATED_SCHEMA_BYTES)
         # The canonical collector rejects duplicate keys and non-JSON numbers.
@@ -651,13 +672,24 @@ def observe_windows_tauri_schemas(repo):
         if git(repo, "ls-files", "-z", "--", name):
             raise CaptureError("tauri_generated_schema_tracked")
         result[name] = {"bytes": len(raw), "sha256": sha(raw)}
+        if target == "x86_64-unknown-linux-gnu" and Path(name).name in {
+                "desktop-schema.json", "linux-schema.json"}:
+            linux_copy[Path(name).name] = raw
+    if target == "x86_64-unknown-linux-gnu" and (
+            linux_copy["desktop-schema.json"] != linux_copy["linux-schema.json"]):
+        raise CaptureError("generated_tauri_schema_copy_mismatch")
     return result
 
 
 def revalidate_windows_generated_metadata(repo, metadata, cargo_home, marker_before, schemas=None):
+    return revalidate_tauri_generated_metadata(
+        repo, metadata, cargo_home, marker_before, schemas, target="x86_64-pc-windows-msvc")
+
+
+def revalidate_tauri_generated_metadata(repo, metadata, cargo_home, marker_before, schemas=None, *, target):
     if observe_cargo_git_markers(metadata, cargo_home) != marker_before:
         raise CaptureError("cargo_generated_marker_changed")
-    if schemas is not None and observe_windows_tauri_schemas(repo) != schemas:
+    if schemas is not None and observe_tauri_schemas(repo, target) != schemas:
         raise CaptureError("generated_metadata_changed_after_notices")
 
 
@@ -854,7 +886,9 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     effective_env = dict(os.environ if env is None else env)
     effective_env["CARGO_HOME"] = str(Path(cargo_home).resolve(strict=True))
     if tauri_generated_schemas:
-        prepare_windows_generated_metadata(
+        if target_triple == "x86_64-unknown-linux-gnu" and not tauri_generated_command_permissions:
+            raise CaptureError("linux_generated_metadata_requires_command_permissions")
+        prepare_tauri_generated_metadata(
             repo, cargo_home, manifest, target_triple, root_package_name,
             effective_env.get("CARGO_TARGET_DIR", ""), state_directory, resources_directory)
     command_expectation = None
@@ -906,13 +940,18 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     generated = None
     generated_custody = None
     if tauri_generated_schemas:
-        revalidate_windows_generated_metadata(repo, metadata, cargo_home, marker_before)
+        revalidate_tauri_generated_metadata(
+            repo, metadata, cargo_home, marker_before, target=target_triple)
+        schema = ("motionwright.linux-cargo-generated-metadata/1"
+                  if target_triple == "x86_64-unknown-linux-gnu"
+                  else "motionwright.windows-cargo-generated-metadata/2"
+                  if command_expectation is not None
+                  else "motionwright.windows-cargo-generated-metadata/1")
         generated = {
-            "schema": ("motionwright.windows-cargo-generated-metadata/2" if command_expectation is not None
-                       else "motionwright.windows-cargo-generated-metadata/1"),
+            "schema": schema,
             "source": expected_source, "target": target_triple,
             "cargo_git_markers": marker_before,
-            "tauri_schemas": observe_windows_tauri_schemas(repo),
+            "tauri_schemas": observe_tauri_schemas(repo, target_triple),
         }
         if command_expectation is not None:
             generated["tauri_command_permissions"] = observe_windows_command_permissions(
@@ -939,8 +978,8 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     write_new(state / "cargo-license-sources.json", encoded(
         {key: value for key, value in notices.items() if key != "texts"}))
     if command_expectation is not None:
-        revalidate_windows_generated_metadata(
-            repo, metadata, cargo_home, marker_before, generated["tauri_schemas"])
+        revalidate_tauri_generated_metadata(
+            repo, metadata, cargo_home, marker_before, generated["tauri_schemas"], target=target_triple)
         if observe_windows_command_permissions(repo, expected_source, command_expectation) != generated["tauri_command_permissions"]:
             raise CaptureError("tauri_command_permission_changed_after_notices")
         if source_snapshot(repo, expected_source) != before:
@@ -979,8 +1018,8 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
              "redistribution_permission": "NOT_INFERRED",
              "execution_boundary": "isolated CI job; pre/post byte revalidation is not an adversarial filesystem snapshot"}
     if generated is not None:
-        revalidate_windows_generated_metadata(
-            repo, metadata, cargo_home, marker_before, generated["tauri_schemas"])
+        revalidate_tauri_generated_metadata(
+            repo, metadata, cargo_home, marker_before, generated["tauri_schemas"], target=target_triple)
         if command_expectation is not None:
             if observe_windows_command_permissions(repo, expected_source, command_expectation) != generated["tauri_command_permissions"]:
                 raise CaptureError("tauri_command_permission_changed_before_complete")

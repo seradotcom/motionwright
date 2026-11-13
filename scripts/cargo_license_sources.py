@@ -660,6 +660,24 @@ WINDOWS_TAURI_SCHEMAS = tuple(
         "acl-manifests.json", "capabilities.json", "desktop-schema.json", "windows-schema.json"
     )
 )
+LINUX_TAURI_SCHEMAS = tuple(
+    "apps/desktop/src-tauri/gen/schemas/" + name for name in (
+        "acl-manifests.json", "capabilities.json", "desktop-schema.json", "linux-schema.json"
+    )
+)
+TAURI_SCHEMAS_BY_TARGET = {
+    "x86_64-pc-windows-msvc": WINDOWS_TAURI_SCHEMAS,
+    "x86_64-unknown-linux-gnu": LINUX_TAURI_SCHEMAS,
+}
+TAURI_GENERATED_PROFILE_TARGETS = {
+    "motionwright.windows-cargo-generated-metadata/1": "x86_64-pc-windows-msvc",
+    "motionwright.windows-cargo-generated-metadata/2": "x86_64-pc-windows-msvc",
+    "motionwright.linux-cargo-generated-metadata/1": "x86_64-unknown-linux-gnu",
+}
+TAURI_COMMAND_PERMISSION_PROFILES = frozenset({
+    "motionwright.windows-cargo-generated-metadata/2",
+    "motionwright.linux-cargo-generated-metadata/1",
+})
 MAX_GENERATED_SCHEMA_BYTES = 4 * 1024 * 1024
 MAX_CARGO_MARKER_BYTES = 4096
 
@@ -777,18 +795,19 @@ def _generated_profile(profile, workspace: _Root, cargo: _Root,
         return None
     base_keys = {"schema", "source", "target", "cargo_git_markers", "tauri_schemas"}
     version = profile.get("schema") if isinstance(profile, dict) else None
-    expected_keys = base_keys | ({"tauri_command_permissions"} if
-                                version == "motionwright.windows-cargo-generated-metadata/2" else set())
+    target = TAURI_GENERATED_PROFILE_TARGETS.get(version) if isinstance(version, str) else None
+    schema_names = TAURI_SCHEMAS_BY_TARGET.get(target, ())
+    command_permissions = isinstance(version, str) and version in TAURI_COMMAND_PERMISSION_PROFILES
+    expected_keys = base_keys | ({"tauri_command_permissions"} if command_permissions else set())
     if (not isinstance(profile, dict) or set(profile) != expected_keys
-            or version not in {"motionwright.windows-cargo-generated-metadata/1",
-                               "motionwright.windows-cargo-generated-metadata/2"}
+            or target is None
             or profile["source"] != workspace_repo.head
-            or profile["target"] != "x86_64-pc-windows-msvc"
+            or profile["target"] != target
             or not isinstance(profile["cargo_git_markers"], dict)
             or len(profile["cargo_git_markers"]) > 64
             or not isinstance(profile["tauri_schemas"], dict)
-            or set(profile["tauri_schemas"]) != set(WINDOWS_TAURI_SCHEMAS)):
-        _fail("generated_metadata_profile_invalid", "The generated metadata profile is not the closed Windows scope.")
+            or set(profile["tauri_schemas"]) != set(schema_names)):
+        _fail("generated_metadata_profile_invalid", "The generated metadata profile is not a closed Tauri target scope.")
 
     def verify(root, name, descriptor, limit, *, marker=False):
         parts = _parts(name)
@@ -813,7 +832,7 @@ def _generated_profile(profile, workspace: _Root, cargo: _Root,
             _fail("generated_cargo_marker_source_invalid", "A Cargo marker must be untracked and bound to the exact checkout.")
     gen = ("apps", "desktop", "src-tauri", "gen")
     for parts, names in ((gen, {"schemas"}), (gen + ("schemas",),
-                         {Path(name).name for name in WINDOWS_TAURI_SCHEMAS})):
+                         {Path(name).name for name in schema_names})):
         directory, _ = workspace.checked(parts, directory=True)
         observed = set()
         with os.scandir(directory) as entries:
@@ -823,12 +842,21 @@ def _generated_profile(profile, workspace: _Root, cargo: _Root,
                     _fail("generated_tauri_schema_roster_invalid", "The generated schema namespace is not closed.")
         if observed != names:
             _fail("generated_tauri_schema_roster_invalid", "The generated schema namespace is not closed.")
+    linux_copy = {}
     for name, descriptor in profile["tauri_schemas"].items():
         parts, data = verify(workspace, name, descriptor, MAX_GENERATED_SCHEMA_BYTES)
         if workspace_repo.entries(parts):
             _fail("generated_tauri_schema_tracked", "Generated schema metadata cannot replace tracked source.")
         _generated_json(data)
-    if version == "motionwright.windows-cargo-generated-metadata/2":
+        if target == "x86_64-unknown-linux-gnu" and Path(name).name in {
+                "desktop-schema.json", "linux-schema.json"}:
+            linux_copy[Path(name).name] = data
+    # The locked tauri-utils generator copies the Linux schema to desktop.
+    # A new declared digest cannot admit two different physical schemas.
+    if target == "x86_64-unknown-linux-gnu" and (
+            linux_copy["desktop-schema.json"] != linux_copy["linux-schema.json"]):
+        _fail("generated_tauri_schema_copy_mismatch", "The desktop schema is not the exact Linux schema copy.")
+    if command_permissions:
         _generated_command_permissions(profile["tauri_command_permissions"],
                                        workspace, workspace_repo, budget, verify)
     return profile
