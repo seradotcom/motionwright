@@ -39,3 +39,8 @@ tooling/tests/fixtures/windows-predecessor-12101216495.original.zip -text
 
 # Preserve reviewed supplemental notice text and raw Git-object bytes.
 third_party/cargo-notices/** -text whitespace=-blank-at-eof,-blank-at-eol
+
+# Preserve pinned Manim historical originals; never normalize evidence at read time.
+tooling/requirements/manim-frozen-runtime-42361964881-receipt.json -text
+tooling/requirements/manim-frozen-runtime-42361964881-artifact.json -text
+tooling/tests/fixtures/manim-runtime-reuse-source-lock-0b2406.json -text

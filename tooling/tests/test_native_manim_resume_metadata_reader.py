@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -106,8 +107,12 @@ class ExplicitMetadataReaderTests(unittest.TestCase):
         def custodied(path, maximum):
             reads.append(path)
             return host.bounded(path, maximum)
-        relation = reuse.sdk_relation(current, reader=custodied)
-        self.assertEqual(reads, [reuse.SOURCE_LOCK_PATH])
+        # This positive relation is pinned to historical 0b2406 bytes, not
+        # whichever SDK the surrounding product checkout currently selects.
+        source_lock = ROOT / "tooling/tests/fixtures/manim-runtime-reuse-source-lock-0b2406.json"
+        with mock.patch.object(reuse, "SOURCE_LOCK_PATH", source_lock):
+            relation = reuse.sdk_relation(current, reader=custodied)
+        self.assertEqual(reads, [source_lock])
         self.assertEqual(relation["source_lock_sha256"], reuse.CURRENT_SOURCE_LOCK_SHA)
         self.assertFalse(relation["native_effects_attested"])
 

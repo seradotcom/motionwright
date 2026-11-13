@@ -16,6 +16,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_manim_frozen_runtime_restore as reuse
 
+# Exact historical source bytes from 8e9e8b8776abc1ed1869ecafd0ecfba5580b8a0d.
+# This inert fixture does not renew a current SDK or Native admission.
+REVIEWED_SOURCE_LOCK = Path(__file__).with_name("fixtures") / "manim-runtime-reuse-source-lock-0b2406.json"
+
 
 def identity(raw):
     return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
@@ -83,6 +87,7 @@ class RuntimeRestoreFocals(unittest.TestCase):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 reuse.context({**current, **update})
 
+    @mock.patch.object(reuse, "SOURCE_LOCK_PATH", REVIEWED_SOURCE_LOCK)
     def test_current_source_lock_allows_wheels_only_without_relabeling_origin(self):
         historical = {**reuse.ORIGIN, "source_sha": "a" * 40, "run_id": "1"}
         current = {**historical, "semwright_sha": reuse.CURRENT_SDK}
@@ -104,6 +109,7 @@ class RuntimeRestoreFocals(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "runtime_reuse_exact_hosted_context"):
                 reuse.context({**current, "source_sha": "b" * 40}, hosted=True)
 
+    @mock.patch.object(reuse, "SOURCE_LOCK_PATH", REVIEWED_SOURCE_LOCK)
     def test_current_sdk_relation_rejects_modified_lock_and_unknown_revision(self):
         current = {**reuse.ORIGIN, "source_sha": "a" * 40, "run_id": "1",
                    "semwright_sha": reuse.CURRENT_SDK}
