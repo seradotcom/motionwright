@@ -23,6 +23,9 @@ import ci_storage_apply_recovery as custody
 WORKFLOW = ".github/workflows/v05-original-native-mix.yml"
 GATE_FILES = (WORKFLOW, "tooling/ci_saved_original_mix.py",
               "tooling/tests/test_ci_saved_original_mix.py",
+              "tooling/native_original_mix_custody.py",
+              "tooling/native-original-mix/original_mix_e2e.py",
+              "tooling/tests/test_native_original_mix_custody.py",
               "tooling/ci_test_runner.py", "tooling/ci_storage_apply_recovery.py")
 TOOLCHAIN = "1.98.1"
 MAX_LOG = 16 * 1024 * 1024
@@ -49,12 +52,27 @@ CASE_NAMES = {
         "unknown_fields_cannot_forge_a_live_listening_or_publication_grant",
         "measured_ducking_intervals_reject_a_different_voice_source_sha256",
         "persisted_mix_recipe_rejects_an_unsaved_duck_or_source_override",
+        "unity_gain_original_pcm16_source_retains_exact_quantized_samples",
+        "emitted_pcm16_sample_peak_guard_rejects_rounding_above_authorized_limit",
+        "emitted_pcm16_peak_and_rms_receipts_follow_actual_quantized_samples",
+        "regional_language_allowlist_never_infers_voice_rights_or_unknown_locales",
+        "existing_delivery_profile_regional_locales_keep_source_voice_binding",
+        "bounded_duck_scan_matches_full_window_reference_with_overlapping_releases",
+        "mute_or_zero_attenuation_cannot_claim_or_apply_music_ducking",
     ),
     "saved_original_mix": (
         "saved_recipe_and_real_cas_sources_produce_one_exact_mix_without_a_new_revision",
         "reopened_sqlite_recipe_reproduces_the_bytes_and_a_real_edit_invalidates_the_old_mix",
         "changed_imported_wav_is_rejected_instead_of_becoming_a_new_mix_source",
         "requested_loudness_target_remains_unsupported_without_a_verified_meter",
+        "saved_bus_mute_and_sample_fades_reopen_exactly_and_keep_original_source_custody",
+        "semantic_cues_and_imported_sfx_base_are_both_audible_across_the_exact_cut",
+        "semantic_only_sfx_bus_creates_no_asset_or_voice_and_empty_bus_is_not_fabricated",
+        "semantic_bus_sample_fades_and_mute_keep_all_selected_source_checks",
+        "semantic_bus_reopens_from_sqlite_and_bundle_with_same_pcm_and_new_generation_authority",
+        "imported_only_plan_wire_remains_legacy_and_cannot_drop_authored_cues",
+        "full_cut_policy_prepares_sixteen_seconds_while_default_audition_stays_bounded",
+        "additive_semantic_bus_clipping_is_rejected_without_dropping_base_or_cues",
     ),
     "saved_mix_native_consumers": (
         "single_saved_mix_supplies_exact_cas_pcm_to_mux",
@@ -65,6 +83,17 @@ CASE_NAMES = {
         "multisegment_saved_mix_rejects_voice_substitution_before_provider",
         "single_saved_mix_rejects_clock_mismatch_before_provider",
         "multisegment_saved_mix_rejects_clock_mismatch_before_provider",
+        "single_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substitution",
+        "multisegment_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substitution",
+        "authored_semantic_sfx_without_a_saved_mix_rejects_before_both_providers",
+        "changed_semantic_cas_source_rejects_before_both_native_providers",
+        "measured_single_saved_semantic_mix_uses_actual_coordinator_two_phase_handoff",
+        "measured_multisegment_saved_semantic_mix_uses_actual_coordinator_two_phase_handoff",
+        "measured_voice_only_both_coordinators_preserve_original_wav_without_mix_assets",
+        "measured_consumers_reject_substituted_pcm_and_wrong_clock_before_any_provider",
+        "profile_targets_reject_both_unmeasured_producers_before_dispatch_and_preserve_journal",
+        "targeted_voice_only_and_semantic_mix_both_coordinators_use_final_qc_and_reopen_without_dispatch",
+        "final_qc_outside_or_unavailable_is_preserved_despite_passing_source_measurement",
     ),
     "av_master": (
         "canonical_master_request_identity_is_stable_and_content_bound",
@@ -84,6 +113,9 @@ CASE_NAMES = {
         "no_saved_recipe_preserves_only_supported_voice_path",
         "shared_master_preparation_rejects_real_stale_revision",
         "audition_request_must_equal_current_saved_recipe_before_mixing",
+        "master_full_cut_budget_does_not_widen_the_fifteen_second_audition",
+        "audition_keeps_the_closed_scalar_dto_with_required_nullable_sfx",
+        "saved_semantic_only_sfx_uses_the_same_nullable_audition_request",
     ),
 }
 BINARIES = {
@@ -111,7 +143,7 @@ def context(environment, expected_source, selection, platform=None):
     require(selection == "saved-mix" and environment.get("SAVED_MIX_SELECTION") == selection,
             "requires explicit saved-mix selection")
     require(platform == "linux" and environment.get("RUNNER_OS") == "Linux",
-            "the 41-case roster requires a real Linux runner")
+            "the 70-case roster requires a real Linux runner")
     require(environment.get("GITHUB_ACTIONS") == "true"
             and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
             "selected execution requires explicit GitHub dispatch")
@@ -429,7 +461,7 @@ def run(repo, expected_source, output, target, selection):
     receipt = {
         "schema": "motionwright.saved-original-mix-selected-execution/1",
         "status": "FAIL", "started_utc": custody.now(), "expected_source": expected_source,
-        "scope": "41 selected Rust/SQLite/CAS source contracts; provider consumers use protocol doubles",
+        "scope": "70 selected Rust/SQLite/CAS source contracts; provider consumers use protocol doubles",
         "not_evidence_of": ["physical MLT output", "audio mastering", "listening approval",
                             "installed Desktop UI", "release or contractual acceptance"],
         "expected_counts": {name: len(group["names"]) for name, group in GROUPS.items()},
@@ -491,8 +523,8 @@ def run(repo, expected_source, output, target, selection):
         receipt["selected_rosters"] = {
             group: admit_group(group, rosters[spec["binary"]]) for group, spec in GROUPS.items()
         }
-        require(sum(map(len, receipt["selected_rosters"].values())) == 41,
-                "selected roster does not contain exactly 41 cases")
+        require(sum(map(len, receipt["selected_rosters"].values())) == 70,
+                "selected roster does not contain exactly 70 cases")
         for index, case in enumerate(receipt["cases"]):
             binary = compiled[GROUPS[case["group"]]["binary"]]
             before = {"absolute_path": binary["absolute_path"],
@@ -515,7 +547,7 @@ def run(repo, expected_source, output, target, selection):
                     if case["command"].get("observation") == "NOT_STARTED_LAUNCH_ERROR":
                         case["status"] = "NOT_STARTED"
                 raise
-        receipt["status"] = "PASS_SELECTED_SAVED_MIX_41"
+        receipt["status"] = "PASS_SELECTED_SAVED_MIX_70"
     except (VerificationError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         receipt["error"] = type(error).__name__ + ": " + str(error)
         receipt["status"] = "UNKNOWN" if execution is not None and execution.unknown else "FAIL"
@@ -530,7 +562,7 @@ def run(repo, expected_source, output, target, selection):
                 receipt["source_after"] = source_after(repo, expected_source, source_before)
                 generated = generated_schemas(repo)
                 receipt["generated_schemas_after"] = generated
-                if receipt["status"] == "PASS_SELECTED_SAVED_MIX_41":
+                if receipt["status"] == "PASS_SELECTED_SAVED_MIX_70":
                     require(generated == receipt["generated_schema_observations"][-1]["files"],
                             "generated Desktop schemas changed during tests")
                 for index, (name, identity) in enumerate(generated.items()):
@@ -579,7 +611,7 @@ def run(repo, expected_source, output, target, selection):
         receipt["failed"] = sum(case["status"] == "FAIL" for case in receipt["cases"])
         receipt["unknown"] = sum(case["status"] == "UNKNOWN" for case in receipt["cases"])
         custody.write_new(output / "receipt.json", receipt)
-    return (0 if receipt["status"] == "PASS_SELECTED_SAVED_MIX_41" else 2), receipt
+    return (0 if receipt["status"] == "PASS_SELECTED_SAVED_MIX_70" else 2), receipt
 
 
 def main(argv=None):

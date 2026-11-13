@@ -49,6 +49,8 @@ on:
       - 'SOURCE_LOCK.json'
       - 'tooling/ci_saved_original_mix.py'
       - 'tooling/tests/test_ci_saved_original_mix.py'
+      - 'tooling/native_original_mix_custody.py'
+      - 'tooling/tests/test_native_original_mix_custody.py'
       - 'tooling/ci_test_runner.py'
       - 'tooling/ci_storage_apply_recovery.py'
   workflow_dispatch:
@@ -217,7 +219,7 @@ jobs:
       - name: Selected source gate admission controls
         run: |
           python3 -B -E -s tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
-            --mode both --pattern test_ci_saved_original_mix.py --require-complete \
+            --mode both --pattern test_ci_saved_original_mix.py --require-complete --pattern test_native_original_mix_custody.py \
             --expected-source "$GITHUB_SHA" --report "$RUNNER_TEMP/saved-mix-g0/receipt.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -250,7 +252,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
-      - name: Execute exactly 41 selected source contracts
+      - name: Execute exactly 70 selected source contracts
         run: |
           python3 -B -E -s tooling/ci_saved_original_mix.py --repo "$GITHUB_WORKSPACE" \
             --expected-source "$GITHUB_SHA" --selection saved-mix \

@@ -53,13 +53,13 @@ class SourceContracts(unittest.TestCase):
             "av_master": "apps/desktop/src-tauri/src/av_master.rs",
             "original_mix_native": "apps/desktop/src-tauri/src/original_mix_native.rs",
         }
-        self.assertEqual([len(gate.CASE_NAMES[k]) for k in paths], [14, 4, 8, 11, 4])
+        self.assertEqual([len(gate.CASE_NAMES[k]) for k in paths], [21, 12, 19, 11, 7])
         for group, path in paths.items():
             text = (ROOT / path).read_text(encoding="utf-8")
             names = re.findall(r"#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+(\w+)\s*\(", text)
             self.assertEqual(set(names), set(gate.CASE_NAMES[group]), group)
             self.assertEqual(len(names), len(gate.CASE_NAMES[group]), group)
-        self.assertEqual(sum(len(x["names"]) for x in gate.GROUPS.values()), 41)
+        self.assertEqual(sum(len(x["names"]) for x in gate.GROUPS.values()), 70)
 
     def test_unix_consumer_file_and_two_desktop_cases_are_not_windows_cases(self):
         consumer = (ROOT / "crates/native/tests/saved_mix_native_consumers.rs").read_text()
@@ -68,11 +68,11 @@ class SourceContracts(unittest.TestCase):
         unix = re.findall(r"#\[cfg\(unix\)\]\s*#\[test\]\s*fn\s+(\w+)", desktop)
         self.assertEqual(set(unix), {
             "rejects_symlink_substituted_prior_master_stage", "refuses_symlinked_measured_voice_source"})
-        self.assertEqual(41 - len(gate.CASE_NAMES["saved_mix_native_consumers"]) - len(unix), 31)
+        self.assertEqual(70 - len(gate.CASE_NAMES["saved_mix_native_consumers"]) - len(unix), 49)
 
     def test_original_source_meter_and_audition_job_bodies_are_preserved(self):
         source = (ROOT / gate.WORKFLOW).read_text()
-        condition = "    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}\n"
+        condition = "    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}\n"
         expected = {
             "native-source-and-independent-meter": "1948234b985e9b092cbfe4a44fa07247ef9a065a6a13bea48125f6ba9c4c48bb",
             "studio-audition": "f196ebaf1c925def5b25114085afa5d7d8efad8be2e8c1e098be9993a8b4953b",
@@ -104,6 +104,7 @@ class SourceContracts(unittest.TestCase):
         block = job_block(source, "saved-mix-g0")
         self.assertIn("tooling/ci_test_runner.py", block)
         self.assertIn("--mode both --pattern test_ci_saved_original_mix.py --require-complete", block)
+        self.assertIn("--pattern test_native_original_mix_custody.py", block)
         self.assertIn('--expected-source "$GITHUB_SHA"', block)
         for name in ("saved-mix-g0", "saved-mix"):
             selected = job_block(source, name)
@@ -230,7 +231,7 @@ class Admission(unittest.TestCase):
     def test_roster_accepts_exact_names_and_consistent_optional_footer(self):
         raw = "\n".join(name + ": test" for name in self.roster).encode() + b"\n"
         self.assertEqual(gate.listing(raw, 0), self.roster)
-        self.assertEqual(gate.listing(raw + b"\n4 tests, 0 benchmarks\n", 0), self.roster)
+        self.assertEqual(gate.listing(raw + b"\n12 tests, 0 benchmarks\n", 0), self.roster)
         self.assertEqual(set(gate.admit_group("saved_original_mix", self.roster)), set(self.roster))
 
     def test_roster_rejects_omission_duplicate_extra_benchmark_and_false_footer(self):
@@ -491,27 +492,27 @@ class SyntheticExecution(unittest.TestCase):
                 gate.custody, "execute", side_effect=self.execute):
             return gate.run(self.repo, SHA, self.output, self.target, "saved-mix")
 
-    def test_complete_synthetic_flow_keeps_41_rows_four_binaries_and_originals(self):
+    def test_complete_synthetic_flow_keeps_70_rows_four_binaries_and_originals(self):
         code, receipt = self.run_gate()
         self.assertEqual(code, 0)
-        self.assertEqual(receipt["status"], "PASS_SELECTED_SAVED_MIX_41")
-        self.assertEqual((receipt["passed"], receipt["not_run"]), (41, 0))
+        self.assertEqual(receipt["status"], "PASS_SELECTED_SAVED_MIX_70")
+        self.assertEqual((receipt["passed"], receipt["not_run"]), (70, 0))
         self.assertEqual(len(receipt["binaries"]), 4)
         self.assertEqual(len(receipt["retained_generated_schemas"]), 4)
         self.assertEqual(receipt["source_before"], receipt["source_after"])
         self.assertEqual(len(receipt["commands"]), len(receipt["command_originals"]))
-        self.assertEqual(len([x for x in self.calls if x[0].startswith("case-")]), 41)
+        self.assertEqual(len([x for x in self.calls if x[0].startswith("case-")]), 70)
         check = next(argv for label, argv in self.calls if label == "desktop-check")
         clippy = next(argv for label, argv in self.calls if label == "strict-clippy")
         self.assertIn("--locked", check); self.assertIn("--locked", clippy)
         self.assertEqual(clippy[-3:], ["--", "-D", "warnings"])
         self.assertIn("--all-targets", clippy)
-        self.assertEqual(json.loads((self.output / "receipt.json").read_text())["passed"], 41)
+        self.assertEqual(json.loads((self.output / "receipt.json").read_text())["passed"], 70)
 
     def test_case_failure_is_recorded_as_failed_and_remaining_cases_are_not_run(self):
         code, receipt = self.run_gate("case-failure")
         self.assertEqual(code, 2)
-        self.assertEqual((receipt["failed"], receipt["not_run"]), (1, 40))
+        self.assertEqual((receipt["failed"], receipt["not_run"]), (1, 69))
         self.assertEqual(receipt["cases"][0]["command"]["exit_code"], 1)
         self.assertEqual(len([x for x in self.calls if x[0].startswith("case-")]), 1)
 
@@ -521,38 +522,38 @@ class SyntheticExecution(unittest.TestCase):
         self.assertEqual(receipt["status"], "UNKNOWN")
         self.assertEqual(receipt["postcheck"], "NOT_RUN_UNKNOWN_PROCESS_OR_CUSTODY")
         self.assertNotIn("source_after", receipt)
-        self.assertEqual((receipt["unknown"], receipt["not_run"]), (1, 40))
+        self.assertEqual((receipt["unknown"], receipt["not_run"]), (1, 69))
         self.assertEqual(len([x for x in self.calls if x[0].startswith("case-")]), 1)
 
     def test_compile_failure_does_not_start_any_selected_case(self):
         code, receipt = self.run_gate("compile-failure")
         self.assertEqual(code, 2)
-        self.assertEqual(receipt["not_run"], 41)
+        self.assertEqual(receipt["not_run"], 70)
         self.assertEqual(len(self.calls), 1)
 
     def test_source_change_after_successful_synthetic_cases_blocks_overall_pass(self):
         code, receipt = self.run_gate("source-tamper")
-        self.assertEqual((code, receipt["passed"]), (2, 41))
+        self.assertEqual((code, receipt["passed"]), (2, 70))
         self.assertIn("source changed", receipt["postcheck_error"])
 
     def test_changed_original_stdout_blocks_overall_pass(self):
         code, receipt = self.run_gate("log-tamper")
-        self.assertEqual((code, receipt["passed"]), (2, 41))
+        self.assertEqual((code, receipt["passed"]), (2, 70))
         self.assertIn("original stream changed", receipt["postcheck_error"])
 
     def test_changed_original_command_metadata_blocks_overall_pass(self):
         code, receipt = self.run_gate("metadata-tamper")
-        self.assertEqual((code, receipt["passed"]), (2, 41))
+        self.assertEqual((code, receipt["passed"]), (2, 70))
         self.assertIn("original stream changed", receipt["postcheck_error"])
 
     def test_changed_already_executed_binary_blocks_overall_pass(self):
         code, receipt = self.run_gate("binary-tamper")
-        self.assertEqual((code, receipt["passed"]), (2, 41))
+        self.assertEqual((code, receipt["passed"]), (2, 70))
         self.assertIn("compiled test executable changed", receipt["postcheck_error"])
 
     def test_changed_generated_desktop_schema_blocks_overall_pass(self):
         code, receipt = self.run_gate("schema-tamper")
-        self.assertEqual((code, receipt["passed"]), (2, 41))
+        self.assertEqual((code, receipt["passed"]), (2, 70))
         self.assertIn("schemas changed during tests", receipt["postcheck_error"])
 
 
