@@ -933,6 +933,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
+          components: rustfmt, clippy, rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'linux_bundle'
         with:
@@ -3438,6 +3439,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
+          components: rustfmt, clippy, rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'macos_bundle'
         with:
