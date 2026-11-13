@@ -519,17 +519,32 @@ def main() -> None:
                 },
             )
 
+            audio_relative = "acceptance-audio.wav"
+            audio_path = paths["output"] / audio_relative
+            # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
+            # design. Use exact 2s baseline, 6s scene or 18s three-scene duration;
+            # independently decode and check actual samples for each closed profile.
+            write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
+            audio_path.chmod(0o600)
+            audio_sha256 = digest(audio_path)
+
+
             try:
-                result = run_json(
+                combined = run_json(
                     [
                         str(MW_BIN),
-                        "render",
+                        "render-master",
                         str(database),
                         str(connection_path),
                         str(EVIDENCE / "motionwright-render-evidence.json"),
+                        audio_relative,
+                        audio_sha256,
+                        str(EVIDENCE / "motionwright-av-master-evidence.json"),
                     ],
                     env=env,
-                    timeout=1500 if IS_COMPOSITION else 420,
+                    # One native process now owns both formerly separate stages.
+                    # Preserve their combined original subprocess time budget.
+                    timeout=3000 if IS_COMPOSITION else 840,
                 )
             except Exception as error:
                 if isinstance(error, NativeCommandFailure):
@@ -554,6 +569,12 @@ def main() -> None:
                                 if frame.resolve().is_relative_to(paths["output"].resolve()):
                                     shutil.copyfile(frame, EVIDENCE / f"UNVERIFIED-native-frame-{index:06d}.png")
                 raise
+            if not isinstance(combined, dict) or combined.get("native_render_master_e2e") != "PASS":
+                raise AssertionError("Original native render and AV master did not complete")
+            result = combined.get("render")
+            master_result = combined.get("master")
+            if not isinstance(result, dict) or not isinstance(master_result, dict):
+                raise AssertionError("Combined native owner did not return both original results")
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
 
@@ -603,29 +624,6 @@ def main() -> None:
                 from composition_native_evidence import inspect_composition_frames
                 inspect_composition_frames(frames, EVIDENCE, seeded, source_sha=GITHUB_SHA, provider_sha=PIN)
 
-            audio_relative = "acceptance-audio.wav"
-            audio_path = paths["output"] / audio_relative
-            # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
-            # design. Use exact 2s baseline, 6s scene or 18s three-scene duration;
-            # independently decode and check actual samples for each closed profile.
-            write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
-            audio_path.chmod(0o600)
-            audio_sha256 = digest(audio_path)
-
-            master_result = run_json(
-                [
-                    str(MW_BIN),
-                    "master",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "motionwright-render-evidence.json"),
-                    audio_relative,
-                    audio_sha256,
-                    str(EVIDENCE / "motionwright-av-master-evidence.json"),
-                ],
-                env=env,
-                timeout=1500 if IS_COMPOSITION else 420,
-            )
             if master_result.get("native_av_master_e2e") != "PASS":
                 raise AssertionError(f"Motionwright AV master did not pass: {master_result}")
             master_artifact = master_result.get("artifact")
