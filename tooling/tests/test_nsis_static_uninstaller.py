@@ -210,6 +210,47 @@ class StaticUninstallerCustodyTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), b"prior owner bytes")
         self.assertEqual({x.name for x in directory.iterdir()}, {"keep"})
 
+    def test_installed_bootstrap_directory_precedes_a_path_shim(self):
+        program_files = self.runner / "program-files"
+        installed = program_files / "7-Zip"
+        installed.mkdir(parents=True)
+        (installed / "7z.exe").write_bytes(b"inert complete tool executable")
+        (installed / "7z.dll").write_bytes(b"inert complete tool library")
+        shim = self.runner / "shims" / "7z.exe"
+        shim.parent.mkdir()
+        shim.write_bytes(b"inert forwarding shim without adjacent library")
+        selected = static.resolve_bootstrap(
+            gate.capture, program_files=str(program_files), path_executable=str(shim))
+        self.assertEqual(selected, installed / "7z.exe")
+        self.assertFalse((shim.parent / "7z.dll").exists())
+
+    def test_complete_path_tool_is_admitted_when_installed_directory_is_absent(self):
+        portable = self.runner / "portable"
+        portable.mkdir()
+        (portable / "7z.exe").write_bytes(b"inert portable tool executable")
+        (portable / "7z.dll").write_bytes(b"inert portable tool library")
+        selected = static.resolve_bootstrap(
+            gate.capture, program_files=str(self.runner / "absent"),
+            path_executable=str(portable / "7z.exe"))
+        self.assertEqual(selected, portable / "7z.exe")
+
+    def test_bootstrap_refuses_incomplete_tools_and_relative_paths(self):
+        shim = self.runner / "7z.exe"
+        original = b"inert shim; never execute this unit fixture"
+        shim.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, "nsis_static_bootstrap_not_found"):
+            static.resolve_bootstrap(
+                gate.capture, program_files=None, path_executable=str(shim))
+        with self.assertRaisesRegex(ValueError, "nsis_static_bootstrap_not_found"):
+            static.resolve_bootstrap(gate.capture, program_files=None, path_executable=None)
+        for programs, executable in (("relative", str(shim)), (None, "7z.exe")):
+            with self.subTest(programs=programs), self.assertRaisesRegex(
+                    ValueError, "nsis_static_bootstrap_path"):
+                static.resolve_bootstrap(
+                    gate.capture, program_files=programs, path_executable=executable)
+        self.assertEqual(shim.read_bytes(), original)
+        self.assertEqual(list(self.runner.iterdir()), [shim])
+
     def test_inventory_seal_precedes_static_reference_consumption(self):
         path = self.repo / gate.INVENTORY
         path.parent.mkdir(parents=True)

@@ -72,6 +72,10 @@ class IsolatedMacOSBundleScopeTests(unittest.TestCase):
     def test_capture_uses_the_same_real_arm64_toolchain_cargo(self) -> None:
         mac = job_source(self.workflow, "macos")
         self.assertIn('test "$(uname -m)" = \'arm64\'', mac)
+        self.assertIn("export RUSTUP_TOOLCHAIN='1.98.1'", mac)
+        self.assertIn('rustc_executable="$(rustup which rustc)"', mac)
+        self.assertIn('export RUSTC="$rustc_executable"', mac)
+        self.assertIn('test "$(dirname "$cargo_executable")" = "$(dirname "$rustc_executable")"', mac)
         self.assertIn('cargo_executable="$(rustup which cargo)"', mac)
         self.assertIn('--expected-source "$GITHUB_SHA" --cargo "$cargo_executable"', mac)
         self.assertIn('-- "$cargo_executable" build --locked --release --bins', mac)

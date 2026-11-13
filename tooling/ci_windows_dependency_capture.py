@@ -353,7 +353,9 @@ def provision_static_reader(repo, run_id):
     import nsis_static_uninstaller as static
 
     require(os.name == "nt", "windows_static_reader_platform")
-    executable = Path(shutil.which("7z.exe") or r"C:\Program Files\7-Zip\7z.exe")
+    executable = static.resolve_bootstrap(
+        capture, program_files=os.environ.get("ProgramFiles"),
+        path_executable=shutil.which("7z.exe"))
     return static.provision_reader(
         capture=capture, directory=static_reader_directory(repo, run_id), bootstrap=executable)
 

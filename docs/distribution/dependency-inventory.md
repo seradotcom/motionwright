@@ -534,8 +534,11 @@ Reader provisioning downloads the official
 checks its 1,663,506-byte size and SHA-256
 `fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0`,
 then statically extracts only the pinned `7z.exe`, `7z.dll` and license.
-The downloaded installer is never executed. The portable tools and downloaded
-archive remain private; the source module records their exact pins.
+The downloaded installer is never executed. Bootstrap resolution prefers the
+installed Program Files 7-Zip directory and requires its adjacent `7z.dll`;
+a PATH forwarding shim without that library is not a complete tool directory.
+The portable tools and downloaded archive remain private; the source module
+records their exact pins.
 
 The reconstruction follows
 [NSIS WriteUninstaller](https://github.com/nsis-dev/nsis/blob/7359413009afd4f0fff472d841fc2f2cc0e0a5f8/Source/exehead/exec.c)
@@ -611,7 +614,11 @@ The existing `macos_bundle` dispatch admits the canonical repository and branch,
 first attempt and actual ARM64 macOS runner. It uses fresh Cargo home and target
 directories and skips Rust cache restoration and saving. Both Unix capture
 routes resolve `rustup which cargo` and pass that same real toolchain executable
-to the metadata driver and build command. A rustup launcher alias cannot replace
+to the metadata driver and build command. They pin `RUSTUP_TOOLCHAIN=1.98.1` and
+set `RUSTC` to the real compiler beside that Cargo executable. This preserves
+the compiler selection across dependency working directories; rustup's
+[environment override precedes crate toolchain files](https://rust-lang.github.io/rustup/overrides.html).
+A rustup launcher alias cannot replace
 the executable whose original bytes the capture authenticates.
 
 `tooling/ci_macos_dependency_capture.py` authenticates the frontend, captures one

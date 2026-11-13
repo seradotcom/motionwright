@@ -76,6 +76,10 @@ class IsolatedLinuxBundleScopeTests(unittest.TestCase):
 
     def test_capture_uses_the_same_real_toolchain_cargo_for_metadata_and_build(self):
         linux = job_source(self.workflow, "linux")
+        self.assertIn("export RUSTUP_TOOLCHAIN='1.98.1'", linux)
+        self.assertIn('rustc_executable="$(rustup which rustc)"', linux)
+        self.assertIn('export RUSTC="$rustc_executable"', linux)
+        self.assertIn('test "$(dirname "$cargo_executable")" = "$(dirname "$rustc_executable")"', linux)
         self.assertIn('cargo_executable="$(rustup which cargo)"', linux)
         self.assertIn('--expected-source "$GITHUB_SHA" --cargo "$cargo_executable"', linux)
         self.assertIn('-- "$cargo_executable" build --locked --release --bins', linux)

@@ -284,6 +284,26 @@ def verify(*, capture, repo, setup, observations, private_root, private_payload,
     }
 
 
+def resolve_bootstrap(capture, *, program_files, path_executable):
+    """Prefer the installed tool directory; a PATH shim lacks its own library."""
+    candidates = []
+    for value in (program_files, path_executable):
+        require(value is None or (isinstance(value, str) and value
+                                  and Path(value).is_absolute()),
+                "nsis_static_bootstrap_path")
+    if program_files is not None:
+        candidates.append(Path(program_files) / "7-Zip" / "7z.exe")
+    if path_executable is not None:
+        candidates.append(Path(path_executable))
+    for candidate in candidates:
+        try:
+            identity = reader_identity(capture, candidate, pinned=False)
+        except FileNotFoundError:
+            continue
+        return Path(identity["executable"]["path"])
+    raise ValueError("nsis_static_bootstrap_not_found")
+
+
 def provision_reader(*, capture, directory, bootstrap):
     """Extract three hash-pinned portable tool files; never execute its installer."""
     import urllib.parse

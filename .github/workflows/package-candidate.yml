@@ -969,8 +969,14 @@ jobs:
             export MOTIONWRIGHT_CANDIDATE_SOURCE_SHA="$GITHUB_SHA"
             npm --prefix apps/studio run build
             python3 -B tooling/ci_linux_dependency_capture.py frontend
+            export RUSTUP_TOOLCHAIN='1.98.1'
             cargo_executable="$(rustup which cargo)"
+            rustc_executable="$(rustup which rustc)"
             test -f "$cargo_executable"
+            test -x "$rustc_executable"
+            test "$(dirname "$cargo_executable")" = "$(dirname "$rustc_executable")"
+            export RUSTC="$rustc_executable"
+            "$RUSTC" --version
             python3 -B scripts/candidate_dependency_capture.py \
               --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
               --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
@@ -3467,8 +3473,14 @@ jobs:
             export MOTIONWRIGHT_CANDIDATE_SOURCE_SHA="$GITHUB_SHA"
             npm --prefix apps/studio run build
             python3 -B tooling/ci_macos_dependency_capture.py frontend
+            export RUSTUP_TOOLCHAIN='1.98.1'
             cargo_executable="$(rustup which cargo)"
+            rustc_executable="$(rustup which rustc)"
             test -f "$cargo_executable"
+            test -x "$rustc_executable"
+            test "$(dirname "$cargo_executable")" = "$(dirname "$rustc_executable")"
+            export RUSTC="$rustc_executable"
+            "$RUSTC" --version
             python3 -B scripts/candidate_dependency_capture.py \
               --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
               --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
