@@ -60,4 +60,33 @@ mod tests {
             assert_eq!(reverse, refs.into_iter().rev().collect::<Vec<_>>());
         }
     }
+
+    #[test]
+    fn last_handles_partial_consumption_and_an_empty_string() {
+        let value = variant(&["front", "", "tail"]);
+        assert_eq!(value.array_iter_str().unwrap().last(), Some("tail"));
+
+        let mut iter = value.array_iter_str().unwrap();
+        assert_eq!(iter.next(), Some("front"));
+        assert_eq!(iter.next_back(), Some("tail"));
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.last(), Some(""));
+
+        let empty = variant(&[]);
+        assert_eq!(empty.array_iter_str().unwrap().last(), None);
+    }
+
+    #[test]
+    fn nth_back_skips_items_after_partial_forward_consumption() {
+        let value = variant(&["0", "1", "2", "3", "4", "5"]);
+        let mut iter = value.array_iter_str().unwrap();
+        assert_eq!(iter.next(), Some("0"));
+        assert_eq!(iter.nth_back(2), Some("3"));
+        assert_eq!(iter.len(), 2);
+        assert_eq!(iter.next_back(), Some("2"));
+        assert_eq!(iter.next(), Some("1"));
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.len(), 0);
+    }
 }

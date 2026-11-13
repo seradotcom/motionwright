@@ -1,72 +1,81 @@
-# Motionwright v0.1 — isolated glib 0.18.5 backport conformance lab
+# Motionwright v0.1 ? current product-source GLib FFI conformance
 
-**Experimental; NOT adopted by the application.** Security issue #89 remains
-OPEN. This lab tests a candidate source-level fix for RUSTSEC-2024-0429. It
-does not change Motionwright Cargo.lock, the Semwright Native SDK pin, Tauri,
-GTK3 or v0.5 creative functionality.
+The existing `v01-glib-backport-conformance.yml` exercises the exact
+GLib backport selected by the current product lock. Issue #89 and
+RUSTSEC-2024-0429 remain OPEN. This is isolated native FFI component
+conformance, not installed-product remediation or release approval.
 
-## Original crate and strictly bounded patch
+## Reuse and succession
 
-The locked crates.io glib 0.18.5 artifact has SHA-256:
+The historical definition generated a disposable backport and required the
+product to retain registry GLib. Product adoption subsequently checked in
+`vendor/glib-0.18.5` and selected it with a Cargo path override. Its old
+generator correctly refuses an existing directory, and its registry-only
+assertion rejects the current local-path lock before reaching the FFI tests.
 
-233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5
+The successor reuses the source export, isolated runner directories, command
+exit records, compiler-artifact observations and failure retention from
+`b6581232f4f768c3516c7ea545ec562f6e1b7811`. That source produced four
+real FFI passes in run `39162970242`, with a separate unoptimized
+fixture lock. Those observations retain their original scope.
 
-This is independently downloaded and checked at run time, not accepted from
-an untrusted cache. The CI-only source generator refuses an existing output
-directory, unsafe archive entry, incorrect digest, symlink, missing file,
-extra file or any deviation other than these two edits to the original
-src/variant_iter.rs in VariantStrIter::impl_get:
+The two additional iterator cases and explicit resolver 2 are reused from
+A2's frozen `c44c44796ec99c95cf459c1c7a7be09031639a6d` source.
+Its original lock is preserved as historical material; the successor seeds
+its isolated fixture from the current product lock. The old four-case result
+does not provide credit for the six optimized cases or the current graph.
 
-- let p: *mut libc::c_char becomes let mut p: *mut libc::c_char
-- the FFI out-parameter &p becomes &mut p
+## Exact source and dependency boundary
 
-The original crate has 121 files. The CI candidate contains those exact
-121 files, with only the expected two edits. The full third-party source is
-NOT checked into this repository and is generated only on a disposable CI
-runner from the verified archive, so no new code is silently adopted.
+`tooling/v01_glib_product_admission.py` compares all 121 vendor files
+with the retained original archive:
 
-The minimal correction follows the source-level rationale of Debian's
-rust-glib-0.18 version 0.18.5-7 security backport:
-https://sources.debian.org/patches/rust-glib-0.18/0.18.5-7/
+`233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5`
 
-That backport fixes a shared Rust reference passed to a C function which
-mutates the pointer through its out-parameter. Merely passing an iteration
-test does not prove complete memory safety or actual product remediation.
+Only the two reviewed mutability edits in `VariantStrIter::impl_get`
+are admitted. The original archive, MIT license and copyright are retained.
+The workflow exports exact regular Git blobs to fresh scratch outside the
+checkout and binds both copies before and after the native probe.
 
-## Reproducible CI experiment
+The fixture receives a byte-exact copy of product `Cargo.lock`.
+Cargo may prune that copy, but the resolution reader refuses selected
+names, versions, sources or checksums absent from the original product lock.
+Dependency edges must remain within that graph. The sole local dependency
+is GLib; Cargo's observed manifest path must identify the admitted vendor.
+The resolved graph is closed and reachable from the fixture's one GLib
+dependency. The resolved lock and original metadata remain byte-identical
+through `cargo test --release --locked`.
 
-The GitHub workflow v01-glib-backport-conformance.yml:
+## Six physical FFI oracles
 
-1. Downloads and checks the immutable original crate bytes and generates the
-   exact two-edit candidate in the disposable runner, rejecting all other
-   changes via tooling/v01_glib_backport_integrity.py.
-2. Runs adversarial Python source-integrity tests. Tests reject archive
-   traversal, unexpected modifications, already-patched source and forged
-   original archive hashes.
-3. Checks that original product Cargo.lock STILL resolves registry glib
-   0.18.5 and that no application Cargo patch was inserted.
-4. Compiles a separate Rust fixture against the candidate glib source with
-   native GLib headers and tests empty, Unicode, forward, reverse and mixed
-   VariantStrIter calls.
+The four original Rust tests cover empty and singleton variants, Unicode
+forward/reverse iteration, mixed front/back traversal and lengths zero
+through 64. The two retained A2 cases exercise `last` after partial
+consumption with an empty string, and `nth_back` after forward
+consumption. All six named tests must pass exactly once, without ignored or
+filtered cases.
 
-All Rust builds and GLib system packages stay in GitHub Actions, not on an
-owner workstation.
+The original compiler messages must identify the selected GLib and the
+fixture test executable. Both require observed optimization level 3 with
+debug assertions disabled. Their output hashes, actual Rust tools, native
+GLib version/link flags, source records, lock, metadata, command stdout,
+stderr and exit codes are retained. A failed or omitted command cannot
+produce a successful conformance verdict. Failure evidence is uploaded too.
 
-## Why the advisory is still OPEN
+All Rust compilation and native GLib headers remain on a disposable
+GitHub-hosted Linux runner. Product manifests, product lock, SDK pin and
+vendored GLib bytes are not changed by this verification.
 
-This probe does NOT link the candidate into Motionwright's Tauri GTK3/GLib
-application, prove a patched AppImage/DEB binary, run a real installed Linux
-GUI, or replace the full desktop dependency graph. It intentionally does
-not change root Cargo.toml, Cargo.lock or dependencies.
+## Limits
 
-An adoption PR must bind the corrected glib source to the COMPLETE stable
-desktop build, independently check its actual compiled/link identity, validate
-installed Linux GUI/relaunch and native-production paths, and run Windows and
-macOS packaging plus security review. Do not suppress RustSec or Dependabot
-only to produce green badges. #89 remains OPEN until there is genuine product
-evidence and a defensible resolution.
+The fixture uses current product dependency identities and an optimized
+profile. It does not reproduce the full desktop feature graph, linker
+outcome, installed GUI or native-provider lifecycle. Passing iterator tests
+does not prove absence of undefined behavior.
 
-Release issue #126 still has 0/208 independently VERIFIED requirements and
-0/60 private human acceptance cases. Issues #49 provider lifecycle and #91
-foreground Broker-consented MLT cleanup remain open independently. No stable
-release is authorized.
+The real Linux package and installed GUI observations keep their own source
+and binary identities. Windows/macOS packaging, native production,
+independent review, advisory disposition, signing and human acceptance
+remain separate obligations. This workflow does not close #89, waive any
+warning or authorize a release.
+\nA source-bound Linux metadata sample retains 48 resolved package nodes despite\n52 lock entries, due to unused platform alternatives. Each retained lock entry\nstill must match the product pin and checksum, including those not compiled.\nThe 30 source controls (19 pre-existing plus 11 focused) explicitly test this distinction and reject extra\nforeign dependencies. These checks do not prove Linux runtime safety.\n

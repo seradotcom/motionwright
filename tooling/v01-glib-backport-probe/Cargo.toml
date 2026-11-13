@@ -6,6 +6,7 @@ publish = false
 
 # Independent sandbox fixture, not a Motionwright product crate or runtime.
 [workspace]
+resolver = "2"
 
 [dependencies]
 glib = { path = "../../vendor/glib-0.18.5" }
