@@ -135,11 +135,7 @@ fn sql_inventory(database: &Path) -> SqlInventory {
         let mut statement = connection
             .prepare(&format!("SELECT * FROM \"{quoted}\""))
             .unwrap();
-        let columns = statement
-            .column_names()
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect();
+        let columns = statement.column_names().map(str::to_owned).collect();
         let count = statement.column_count();
         let mut rows = statement
             .query_map([], |row| {
