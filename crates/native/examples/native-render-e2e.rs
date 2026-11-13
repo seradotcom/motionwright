@@ -1063,7 +1063,7 @@ async fn render(
     connection_path: &Path,
     evidence_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    render_requested(database, connection_path, evidence_path, false).await
+    render_requested(database, connection_path, evidence_path, false, None).await
 }
 
 async fn render_requested(
@@ -1071,6 +1071,7 @@ async fn render_requested(
     connection_path: &Path,
     evidence_path: &Path,
     editable_cycle: bool,
+    combined_master: Option<(&str, &str, &Path)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
@@ -1229,56 +1230,63 @@ async fn render_requested(
     file.write_all(b"\n")?;
     file.sync_all()?;
 
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "native_render_e2e": "PASS",
-            "project_id": project.id,
-            "generation": project.generation,
-            "revision": project.revision,
-            "segment_id": segment.segment_id,
-            "frame_count": segment.frame_count,
-            "job_ref": segment.job_ref,
-            "artifact": segment.artifact,
-            "evidence": evidence_path
-        }))?
-    );
+    let render_response = json!({
+        "native_render_e2e": "PASS",
+        "project_id": project.id,
+        "generation": project.generation,
+        "revision": project.revision,
+        "segment_id": segment.segment_id,
+        "frame_count": segment.frame_count,
+        "job_ref": segment.job_ref,
+        "artifact": segment.artifact,
+        "evidence": evidence_path
+    });
+    if let Some((audio_relative, audio_sha256, master_evidence_path)) = combined_master {
+        if editable_cycle {
+            return Err("Editable cycle does not admit a combined AV master".into());
+        }
+        // The original Film/root, cumulative debits and producer permissions
+        // remain attached to this exact authenticated native coordinator.
+        let master_response = master_with_coordinator(
+            &coordinator,
+            &project,
+            &result,
+            audio_relative,
+            audio_sha256,
+            master_evidence_path,
+        )
+        .await?;
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "native_render_master_e2e": "PASS",
+                "render": render_response,
+                "master": master_response
+            }))?
+        );
+    } else {
+        println!("{}", serde_json::to_string(&render_response)?);
+    }
     Ok(())
 }
 
-async fn master(
-    database: &Path,
-    connection_path: &Path,
-    motion_evidence_path: &Path,
-    audio_relative: String,
-    audio_sha256: String,
+async fn master_with_coordinator(
+    coordinator: &ProductionCoordinator,
+    project: &motionwright_domain::Project,
+    motion: &MotionCanvasRenderEvidence,
+    audio_relative: &str,
+    audio_sha256: &str,
     evidence_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let service = StudioService::open(database)?;
-    let projects = service.projects(2)?;
-    if projects.len() != 1 {
-        return Err("native AV master expected exactly one seeded project".into());
-    }
-    let project = projects.into_iter().next().expect("length checked");
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let deliverable = project
         .deliverables
         .first()
         .ok_or("seeded project has no deliverable")?;
 
     let expected_frames = expected_fixture_frames(&project)?;
-    let motion_bytes = fs::read(motion_evidence_path)?;
-    if motion_bytes.len() > 8 * 1024 * 1024 {
-        return Err("Motion Canvas evidence exceeds the acceptance bound".into());
-    }
-    let motion: MotionCanvasRenderEvidence = serde_json::from_slice(&motion_bytes)?;
-    let connection = ProductionConnection::load(connection_path)?;
-    if connection.resource != project.resource_key() {
-        return Err("owner-provisioned connection is not bound to the seeded project".into());
-    }
-    let coordinator = ProductionCoordinator::new(service, connection)?;
     let audio = MltAudioArtifact {
-        relative_path: audio_relative,
-        sha256: audio_sha256,
+        relative_path: audio_relative.to_owned(),
+        sha256: audio_sha256.to_owned(),
         sample_rate: 48_000,
         channels: 2,
     };
@@ -1290,7 +1298,7 @@ async fn master(
             MltAvMasterRequest {
                 request_id: "native-av-master-real-driver-host",
                 deliverable_id: deliverable.id,
-                motion: &motion,
+                motion,
                 audio: &audio,
                 sync: None,
             },
@@ -1363,20 +1371,53 @@ async fn master(
     file.write_all(b"\n")?;
     file.sync_all()?;
 
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "native_av_master_e2e": "PASS",
-            "project_id": project.id,
-            "generation": project.generation,
-            "revision": project.revision,
-            "frame_count": result.frame_count,
-            "profile": result.master.get("profile"),
-            "artifact": result.master.get("artifact"),
-            "decoded_audio": result.decoded_audio,
-            "evidence": evidence_path
-        }))?
-    );
+    Ok(json!({
+        "native_av_master_e2e": "PASS",
+        "project_id": project.id,
+        "generation": project.generation,
+        "revision": project.revision,
+        "frame_count": result.frame_count,
+        "profile": result.master.get("profile"),
+        "artifact": result.master.get("artifact"),
+        "decoded_audio": result.decoded_audio,
+        "evidence": evidence_path
+    }))
+}
+
+async fn master(
+    database: &Path,
+    connection_path: &Path,
+    motion_evidence_path: &Path,
+    audio_relative: String,
+    audio_sha256: String,
+    evidence_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let service = StudioService::open(database)?;
+    let projects = service.projects(2)?;
+    if projects.len() != 1 {
+        return Err("native AV master expected exactly one seeded project".into());
+    }
+    let project = projects.into_iter().next().expect("length checked");
+    let motion_bytes = fs::read(motion_evidence_path)?;
+    if motion_bytes.len() > 8 * 1024 * 1024 {
+        return Err("Motion Canvas evidence exceeds the acceptance bound".into());
+    }
+    let motion: MotionCanvasRenderEvidence = serde_json::from_slice(&motion_bytes)?;
+    let connection = ProductionConnection::load(connection_path)?;
+    if connection.resource != project.resource_key() {
+        return Err("owner-provisioned connection is not bound to the seeded project".into());
+    }
+    let coordinator = ProductionCoordinator::new(service, connection)?;
+    let response = master_with_coordinator(
+        &coordinator,
+        &project,
+        &motion,
+        &audio_relative,
+        &audio_sha256,
+        evidence_path,
+    )
+    .await?;
+    println!("{}", serde_json::to_string(&response)?);
     Ok(())
 }
 
@@ -1424,7 +1465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if args.next().is_some() {
                 usage();
             }
-            render_requested(&database, &connection, &evidence, true).await
+            render_requested(&database, &connection, &evidence, true, None).await
         }
         "seed-composition" => {
             let database = path_arg(&mut args);
@@ -1500,6 +1541,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             render(&database, &connection, &evidence).await
+        }
+        "render-master" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let render_evidence = path_arg(&mut args);
+            let audio_relative = text_arg(&mut args);
+            let audio_sha256 = text_arg(&mut args);
+            let master_evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            render_requested(
+                &database,
+                &connection,
+                &render_evidence,
+                false,
+                Some((&audio_relative, &audio_sha256, &master_evidence)),
+            )
+            .await
         }
         "master" => {
             let database = path_arg(&mut args);
