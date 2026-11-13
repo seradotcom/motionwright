@@ -79,3 +79,19 @@ independent review, advisory disposition, signing and human acceptance
 remain separate obligations. This workflow does not close #89, waive any
 warning or authorize a release.
 \nA source-bound Linux metadata sample retains 48 resolved package nodes despite\n52 lock entries, due to unused platform alternatives. Each retained lock entry\nstill must match the product pin and checksum, including those not compiled.\nThe 30 source controls (19 pre-existing plus 11 focused) explicitly test this distinction and reject extra\nforeign dependencies. These checks do not prove Linux runtime safety.\n
+## Exact source-export succession
+
+The first current-source run, 43391646969 at
+`9e4e306221ab451161ea0aecad3481b516c30c67`, passed the exact vendor
+source admission and all eleven exported new FFI guard tests. Its closed
+thirty-test admission then failed because the original two Python guard
+modules were absent from the isolated Git archive. The source-bound failure
+artifact is retained with API SHA-256
+`561ede434ccbc74a5de86b63705fa470d555d33f965343c3b85e26ecde598afa`.
+No Cargo compilation or native FFI case ran in that attempt.
+
+The successor adds precisely those two original test modules to the existing
+closed export. They are required by the thirty-test source gate, not optional
+or simulated. The success receipt also reports thirty rather than the stale
+nine-test count. All six Rust oracles and the product lock remain unchanged;
+no historical PASS is transferred to the new candidate.

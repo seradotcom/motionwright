@@ -61,6 +61,8 @@ jobs:
               "tooling/upstream-crates/glib-0.18.5.crate",
               "tooling/v01_glib_backport_integrity.py", "tooling/v01_glib_product_admission.py",
               "tooling/v01_glib_ffi_conformance.py",
+              "tooling/tests/test_v01_glib_backport_integrity.py",
+              "tooling/tests/test_v01_glib_product_admission.py",
               "tooling/tests/test_v01_glib_ffi_conformance.py",
               ".github/workflows/v01-glib-backport-conformance.yml",
           }
@@ -274,7 +276,7 @@ jobs:
                   record["tools"][tool] = identity(path)
               assert record["prior_job_status"] == "success", "earlier_step_failed_or_cancelled"
               record.update(status="ADOPTED_SOURCE_AND_REAL_FFI_VERIFIED", source_tree=inputs["source_tree"],
-                            source_guards={"tests": 9, "skips": 0}, native_ffi={"tests": 6, "skips": 0},
+                            source_guards={"tests": 30, "skips": 0}, native_ffi={"tests": 6, "skips": 0},
                             standalone_probe_only=True, upstream_advisory_open=True)
           except Exception as error:
               record["failure"] = {"type": type(error).__name__, "reason": str(error)}
