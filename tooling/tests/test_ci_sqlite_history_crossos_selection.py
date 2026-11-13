@@ -39,8 +39,8 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
         expected = {
             "crates/storage/src/lib.rs": "23f85144b11965b38f7cdee9d76ad8d87475041ca4d4b7ebeb588edb939282b9",
             "crates/storage/src/portability.rs": "886c0b016b91faf1badeff2ac9ab07a8786d904da29bf3860e00a2b7e5cc1d52",
-            "Cargo.lock": "ad71f5dd5916f5a469e0e68a45ad0b448e72bac1e13e4cd33bc32ea7719c3286",
-            "SOURCE_LOCK.json": "9eceac7d79bb96b3417768bcc8e351211a5c85eeedcf727ac0bbed502b76d795",
+            "Cargo.lock": "5f56022164b02bc1c91acabbe36ae203148600747bee5226b8f3fc3401190c4b",
+            "SOURCE_LOCK.json": "5e580e96c640eeeb59bd656f3d08892a8c03cb8ac6b43023ba256a36f27f9db8",
         }
         maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
         self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
