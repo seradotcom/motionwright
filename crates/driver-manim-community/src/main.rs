@@ -491,6 +491,32 @@ fn retain_runtime_tool_failure(
     }
 }
 
+fn retain_runtime_output_validation_failure(
+    work_root: &Path,
+    job_ref: &str,
+    job: &mut RenderJob,
+    output: &ToolExecutionOutput,
+    error: Error,
+) {
+    let diagnostic = format!(
+        "Original Manim runtime exited with code {}; output verification failed ({:?})",
+        output.exit_code, error.code
+    );
+    // The Host has already delivered its terminal. An invalid/missing output
+    // must not leave Rendering behind or cause another query for that original.
+    job.retain_failure(error);
+    job.diagnostic = Some(diagnostic.clone());
+    if let Err(code) = runtime_output_custody::retain(
+        work_root,
+        job_ref,
+        &job.source_file,
+        &job.plan_sha256,
+        output,
+    ) {
+        job.diagnostic = Some(format!("{diagnostic}; custody_secondary={code}"));
+    }
+}
+
 fn map_profile_error(error: motionwright_manim_profile::ManimProfileError) -> Error {
     invalid(error.to_string())
 }
@@ -1283,6 +1309,16 @@ impl ManimCommunityDriver {
         }
 
         let status = context.runtime_tool_job_status(&snapshot.host_job).await?;
+        self.apply_runtime_status(job_ref, status)
+    }
+
+    fn apply_runtime_status(
+        &mut self,
+        job_ref: &str,
+        status: RuntimeToolJobStatus,
+    ) -> Result<Value> {
+        // Poll and cancel can both consume the Host's one terminal original.
+        // Preserve the same output validation when completion wins the race.
         let job = self
             .jobs
             .get_mut(job_ref)
@@ -1318,8 +1354,21 @@ impl ManimCommunityDriver {
                     } else {
                         None
                     };
-                    let (path, bytes) = safe_output_file(&self.output_root, &job.output_relative)?;
-                    let sha256 = sha256_file(&path)?;
+                    let verified = safe_output_file(&self.output_root, &job.output_relative)
+                        .and_then(|(path, bytes)| sha256_file(&path).map(|sha| (bytes, sha)));
+                    let (bytes, sha256) = match verified {
+                        Ok(observation) => observation,
+                        Err(error) => {
+                            retain_runtime_output_validation_failure(
+                                &self.work_root,
+                                job_ref,
+                                job,
+                                &output,
+                                error,
+                            );
+                            return Ok(job_view(job_ref, job));
+                        }
+                    };
                     let camera_source = if let Some(plan) = job.source_plan.camera() {
                         match verify_retained_camera_source(
                             &self.work_root,
@@ -1458,20 +1507,7 @@ impl ManimCommunityDriver {
             return Ok(job_view(job_ref, &snapshot));
         }
         let state = context.cancel_runtime_tool_job(&snapshot.host_job).await?;
-        let job = self
-            .jobs
-            .get_mut(job_ref)
-            .ok_or_else(|| Error::new(ErrorCode::StaleReference, "Manim job disappeared"))?;
-        match state {
-            RuntimeToolJobStatus::Running => job.phase = JobPhase::Rendering,
-            RuntimeToolJobStatus::Cancelling => job.phase = JobPhase::Cancelling,
-            RuntimeToolJobStatus::Cancelled => job.phase = JobPhase::Cancelled,
-            RuntimeToolJobStatus::Succeeded { .. } => job.phase = JobPhase::Rendering,
-            RuntimeToolJobStatus::Failed { error } => {
-                job.retain_failure(error);
-            }
-        }
-        Ok(job_view(job_ref, job))
+        self.apply_runtime_status(job_ref, state)
     }
 
     async fn result(&mut self, job_ref: &str, context: &DriverExecutionContext) -> Result<Value> {
@@ -2055,6 +2091,168 @@ mod tests {
             fs::read(occupied.join("keep.bin")).unwrap(),
             b"original custody"
         );
+    }
+
+    fn driver_with_retained_job(
+        work: &Path,
+        output: &Path,
+        mut job: RenderJob,
+    ) -> ManimCommunityDriver {
+        let work_root = fs::canonicalize(work).unwrap();
+        let output_root = fs::canonicalize(output).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&work_root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        job.source_file = "mw_0123456789abcdef0123456789abcdef.py".into();
+        ManimCommunityDriver {
+            work_root,
+            output_root,
+            jobs: BTreeMap::from([("manim-0123456789abcdef0123456789abcdef".into(), job)]),
+            capabilities: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cancellation_racing_completion_keeps_original_output_instead_of_rendering() {
+        // Inert retained-state test, without a Host, renderer or native receipt.
+        let work = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let bytes = b"opaque output for retained-state validation only";
+        fs::write(output.path().join("original.mp4"), bytes).unwrap();
+        let mut driver =
+            driver_with_retained_job(work.path(), output.path(), original_failure_job());
+        let reference = "manim-0123456789abcdef0123456789abcdef";
+        let view = driver
+            .apply_runtime_status(
+                reference,
+                RuntimeToolJobStatus::Succeeded {
+                    output: ToolExecutionOutput {
+                        exit_code: 0,
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(view["state"], "succeeded");
+        assert_eq!(view["artifact"]["bytes"], bytes.len() as u64);
+        assert_eq!(
+            view["artifact"]["sha256"],
+            hex::encode(Sha256::digest(bytes))
+        );
+        // The state test does not manufacture an independent video decode.
+        assert!(view["artifact"]["decoded_video"].is_null());
+        assert_eq!(
+            view["artifact"]["decoded_video_error"],
+            "original_native_video_observation_unavailable"
+        );
+        assert_eq!(driver.jobs[reference].host_job.id, "original-host-job");
+        assert!(driver.jobs[reference].phase.terminal());
+    }
+
+    #[test]
+    fn cancellation_racing_nonzero_completion_keeps_original_failure() {
+        let work = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let mut driver =
+            driver_with_retained_job(work.path(), output.path(), original_failure_job());
+        let reference = "manim-0123456789abcdef0123456789abcdef";
+        let view = driver
+            .apply_runtime_status(
+                reference,
+                RuntimeToolJobStatus::Succeeded {
+                    output: ToolExecutionOutput {
+                        exit_code: 47,
+                        stdout: b"inert private output".to_vec(),
+                        stderr: b"inert private error".to_vec(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(view["state"], "failed");
+        let original = driver.jobs[reference].original_error.as_ref().unwrap();
+        assert_eq!(original.code, ErrorCode::BackendFailed);
+        assert!(original.outcome_known);
+        assert!(original.message.contains("exited with code 47"));
+        assert!(view["artifact"].is_null());
+        let public = serde_json::to_string(&view).unwrap();
+        assert!(!public.contains("inert private output"));
+        assert!(!public.contains("inert private error"));
+        assert_eq!(driver.jobs[reference].host_job.id, "original-host-job");
+    }
+
+    #[test]
+    fn completed_runtime_with_missing_output_retains_terminal_and_original_streams() {
+        let work = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let mut driver =
+            driver_with_retained_job(work.path(), output.path(), original_failure_job());
+        let reference = "manim-0123456789abcdef0123456789abcdef";
+        let view = driver
+            .apply_runtime_status(
+                reference,
+                RuntimeToolJobStatus::Succeeded {
+                    output: ToolExecutionOutput {
+                        exit_code: 0,
+                        stdout: b"inert retained output".to_vec(),
+                        stderr: b"inert retained diagnostic".to_vec(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(view["state"], "failed");
+        assert!(driver.jobs[reference].phase.terminal());
+        assert!(driver.jobs[reference].original_error.is_some());
+        assert!(view["artifact"].is_null());
+        assert!(
+            view["diagnostic"]
+                .as_str()
+                .unwrap()
+                .contains("runtime exited with code 0")
+        );
+        let public = serde_json::to_string(&view).unwrap();
+        assert!(!public.contains("inert retained output"));
+        assert!(!public.contains("inert retained diagnostic"));
+        #[cfg(target_os = "linux")]
+        {
+            let custody = driver
+                .work_root
+                .join("mw_0123456789abcdef0123456789abcdef.runtime-custody");
+            let receipt: Value =
+                serde_json::from_slice(&fs::read(custody.join("receipt.json")).unwrap()).unwrap();
+            assert_eq!(receipt["process_exit_code"], 0);
+            assert_eq!(
+                fs::read(custody.join("stdout.bin")).unwrap(),
+                b"inert retained output"
+            );
+            assert_eq!(
+                fs::read(custody.join("stderr.bin")).unwrap(),
+                b"inert retained diagnostic"
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_status_keeps_transitional_and_terminal_states_distinct() {
+        let work = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let mut driver =
+            driver_with_retained_job(work.path(), output.path(), original_failure_job());
+        let reference = "manim-0123456789abcdef0123456789abcdef";
+        let pending = driver
+            .apply_runtime_status(reference, RuntimeToolJobStatus::Cancelling)
+            .unwrap();
+        assert_eq!(pending["state"], "cancelling");
+        assert!(!driver.jobs[reference].phase.terminal());
+        let cancelled = driver
+            .apply_runtime_status(reference, RuntimeToolJobStatus::Cancelled)
+            .unwrap();
+        assert_eq!(cancelled["state"], "cancelled");
+        assert!(driver.jobs[reference].phase.terminal());
+        assert!(cancelled["artifact"].is_null());
+        // Process closure still requires the separate physical observation.
     }
 
     #[test]
