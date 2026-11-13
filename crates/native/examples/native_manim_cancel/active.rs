@@ -125,7 +125,17 @@ impl OriginalJob {
         let data = value
             .pointer("/result/data")
             .ok_or("original observation has no data")?;
-        if data["job_ref"] != self.reference
+        if value["replayed"] != false
+            || value["result"]["provenance_checked"] != true
+            || value["result"]["execution"]["backend"] != "driver:manim-community"
+            || value["result"]["execution"]["dry_run"] != false
+            || value["result"]["execution"]["policy_decision"] != "allow"
+            || value["result"]["execution"]["fallbacks_attempted"] != json!([])
+            || value["result"]["execution"]["provenance"]["provider"] != "driver:manim-community"
+            || value["result"]["execution"]["provenance"]["execution_provider"]
+                != "driver:manim-community"
+            || value["result"]["execution"]["provenance"]["source"] != "driver"
+            || data["job_ref"] != self.reference
             || data["source_file"] != self.source_file
             || data["plan_sha256"] != self.plan
             || data["profile"] != self.profile
@@ -329,9 +339,13 @@ async fn attempt(selected: Selected<'_>, record: &mut Value) -> Result<(), Failu
         )
         .await;
     record["post_cancel_result"] = result_value(&result);
-    match result {
-        Err(error) if error.code == ErrorCode::Cancelled && error.outcome_known => {}
-        _ => return Err("cancelled original result was publishable or uncertain".into()),
+    let result_response = result?;
+    let data = job.observation(&result_response)?;
+    if data["state"] != "cancelled"
+        || data.get("artifact") != Some(&Value::Null)
+        || data.get("original_error") != Some(&Value::Null)
+    {
+        return Err("cancelled original result was publishable or inconsistent".into());
     }
     record["cancellation_exercised"] = json!(true);
     // No process terminal or descendant closure is inferred from these states.
@@ -402,7 +416,7 @@ pub async fn run(
         return Err("cancel original runtime was not observed compatible".into());
     }
     let mut record = json!({
-        "schema": "motionwright.manim.active-cancel-original/1",
+        "schema": "motionwright.manim.active-cancel-original/2",
         "project_before": project, "scene_id": scene, "deliverable_id": deliverable,
         "request_id": request_id, "plan_sha256": prepared.closure.plan_sha256,
         "runtime_observation": observed, "cancellation_exercised": false,

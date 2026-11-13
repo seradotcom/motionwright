@@ -1510,24 +1510,37 @@ impl ManimCommunityDriver {
         self.apply_runtime_status(job_ref, state)
     }
 
-    async fn result(&mut self, job_ref: &str, context: &DriverExecutionContext) -> Result<Value> {
-        let view = self.refresh(job_ref, context).await?;
+    fn result_snapshot(&self, job_ref: &str) -> Result<Value> {
         let job = self
             .jobs
             .get(job_ref)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Manim job is absent"))?;
         match job.phase {
-            JobPhase::Succeeded => Ok(view),
+            JobPhase::Succeeded => Ok(job_view(job_ref, job)),
             JobPhase::Failed | JobPhase::Unknown => Err(job.failure_error()),
-            JobPhase::Cancelled => Err(Error::new(
-                ErrorCode::Cancelled,
-                "Manim render was cancelled",
-            )),
+            JobPhase::Cancelled => {
+                if job.artifact.is_some() || job.original_error.is_some() {
+                    return Err(Error::new(
+                        ErrorCode::BackendFailed,
+                        "Cancelled Manim job has conflicting terminal data",
+                    )
+                    .uncertain());
+                }
+                // The existing output schema carries this terminal state.
+                // Driver Failure is intentionally untrusted/uncertain at the
+                // Host boundary; it cannot convey this known job observation.
+                Ok(job_view(job_ref, job))
+            }
             JobPhase::Rendering | JobPhase::Cancelling => Err(Error::new(
                 ErrorCode::Conflict,
                 "Manim render is not terminal",
             )),
         }
+    }
+
+    async fn result(&mut self, job_ref: &str, context: &DriverExecutionContext) -> Result<Value> {
+        self.refresh(job_ref, context).await?;
+        self.result_snapshot(job_ref)
     }
 
     async fn execute_with_runtime(
@@ -2150,6 +2163,12 @@ mod tests {
         );
         assert_eq!(driver.jobs[reference].host_job.id, "original-host-job");
         assert!(driver.jobs[reference].phase.terminal());
+        assert_eq!(driver.result_snapshot(reference).unwrap(), view);
+        // A contradictory retained artifact must never be exposed as cancelled.
+        driver.jobs.get_mut(reference).unwrap().phase = JobPhase::Cancelled;
+        let inconsistent = driver.result_snapshot(reference).unwrap_err();
+        assert_eq!(inconsistent.code, ErrorCode::BackendFailed);
+        assert!(!inconsistent.outcome_known);
     }
 
     #[test]
@@ -2176,6 +2195,10 @@ mod tests {
         assert_eq!(original.code, ErrorCode::BackendFailed);
         assert!(original.outcome_known);
         assert!(original.message.contains("exited with code 47"));
+        assert_eq!(
+            serde_json::to_value(driver.result_snapshot(reference).unwrap_err()).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
         assert!(view["artifact"].is_null());
         let public = serde_json::to_string(&view).unwrap();
         assert!(!public.contains("inert private output"));
@@ -2246,12 +2269,27 @@ mod tests {
             .unwrap();
         assert_eq!(pending["state"], "cancelling");
         assert!(!driver.jobs[reference].phase.terminal());
+        let pending_result = driver.result_snapshot(reference).unwrap_err();
+        assert_eq!(pending_result.code, ErrorCode::Conflict);
+        assert!(pending_result.outcome_known);
         let cancelled = driver
             .apply_runtime_status(reference, RuntimeToolJobStatus::Cancelled)
             .unwrap();
         assert_eq!(cancelled["state"], "cancelled");
         assert!(driver.jobs[reference].phase.terminal());
         assert!(cancelled["artifact"].is_null());
+        assert!(cancelled["original_error"].is_null());
+        assert_eq!(driver.result_snapshot(reference).unwrap(), cancelled);
+        assert_eq!(cancelled["job_ref"], reference);
+        assert_eq!(cancelled["plan_sha256"], "ab".repeat(32));
+        let job = driver.jobs.get_mut(reference).unwrap();
+        job.original_error =
+            Some(Error::new(ErrorCode::Unavailable, "original unknown").uncertain());
+        assert!(!driver.result_snapshot(reference).unwrap_err().outcome_known);
+        let job = driver.jobs.get_mut(reference).unwrap();
+        job.phase = JobPhase::Unknown;
+        job.original_error = None;
+        assert!(!driver.result_snapshot(reference).unwrap_err().outcome_known);
         // Process closure still requires the separate physical observation.
     }
 
