@@ -338,7 +338,58 @@ def application_expectation(repo, source, run_id, install_root):
     }
 
 
-def prepare_application_inventory(repo, source, run_id, install_root):
+def static_reader_directory(repo, run_id):
+    require(re.fullmatch(r"[1-9][0-9]*", run_id) is not None,
+            "windows_static_reader_run_invalid")
+    runner = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    require(not runner.is_relative_to(repo.resolve(strict=True))
+            and not repo.resolve(strict=True).is_relative_to(runner),
+            "windows_static_reader_private_root")
+    return runner / ("motionwright-nsis-reader-" + run_id + "-1")
+
+
+def provision_static_reader(repo, run_id):
+    import shutil
+    import nsis_static_uninstaller as static
+
+    require(os.name == "nt", "windows_static_reader_platform")
+    executable = Path(shutil.which("7z.exe") or r"C:\Program Files\7-Zip\7z.exe")
+    return static.provision_reader(
+        capture=capture, directory=static_reader_directory(repo, run_id), bootstrap=executable)
+
+
+def static_uninstaller_reference(repo, expected, *, prepare=False, expected_reference_sha256=None):
+    import nsis_static_uninstaller as static
+
+    run_id = expected["workflow_run_id"]
+    reader_directory = static_reader_directory(repo, run_id)
+    runner = reader_directory.parent
+    observations = repo / BASE / "uninstaller"
+    private_payload = runner / ("motionwright-uninstaller-" + run_id + "-1")
+    context = {
+        "source": expected["source"], "source_tree": expected["source_tree"],
+        "run_id": run_id, "run_attempt": expected["workflow_run_attempt"],
+        "base_inventory_sha256": capture.sha(capture.encoded(expected)),
+        "setup": expected["setup"],
+    }
+    setup = repo / BINARY.parent / "bundle/nsis" / expected["setup"]["filename"]
+    args = dict(capture=capture, repo=repo, setup=setup, observations=observations,
+                private_root=runner, private_payload=private_payload, context=context)
+    if prepare:
+        intake = capture.stable_read(reader_directory, "intake.json", 1024 * 1024)
+        capture.write_new(repo / BASE / "uninstaller-reader-intake.json", intake)
+        return static.observe(reader=reader_directory / "7z.exe", **args)
+    return static.verify(expected_reference_sha256=expected_reference_sha256, **args)
+
+
+def with_static_uninstaller(expected, reference):
+    return {
+        **expected, "schema": "motionwright.windows-application-expectation/2",
+        "pending_generated_members": {}, "generated_members": {"uninstall.exe": reference},
+    }
+
+
+def prepare_application_inventory(repo, source, run_id, install_root, *, static_uninstaller=False):
     require(install_root.is_absolute() and install_root.name == INSTALL_DIRECTORY,
             "windows_inventory_destination_invalid")
     try:
@@ -348,12 +399,16 @@ def prepare_application_inventory(repo, source, run_id, install_root):
     else:
         raise ValueError("windows_inventory_destination_preexisting")
     expected = application_expectation(repo, source, run_id, install_root)
+    if static_uninstaller:
+        reference = static_uninstaller_reference(repo, expected, prepare=True)
+        expected = with_static_uninstaller(expected, reference)
     raw = capture.encoded(expected)
     capture.write_new(repo / INVENTORY, raw)
     return capture.sha(raw)
 
 
-def verify_application_inventory(repo, source, run_id, install_root, expected_sha256):
+def verify_application_inventory(repo, source, run_id, install_root, expected_sha256,
+                                 *, static_uninstaller=False):
     from candidate_smoke import verify_windows_application_files
 
     require(isinstance(expected_sha256, str)
@@ -364,17 +419,25 @@ def verify_application_inventory(repo, source, run_id, install_root, expected_sh
     raw = capture.stable_read(repo, INVENTORY, 2 * 1024 * 1024)
     require(capture.sha(raw) == expected_sha256, "windows_inventory_original_changed")
     expected = capture.parse_json(raw)
-    require(expected == application_expectation(repo, source, run_id, install_root),
-            "windows_inventory_expectation_mismatch")
+    rebuilt = application_expectation(repo, source, run_id, install_root)
+    reference = None
+    if static_uninstaller:
+        sealed = expected.get("generated_members", {}).get("uninstall.exe", {})
+        reference = static_uninstaller_reference(
+            repo, rebuilt, expected_reference_sha256=sealed.get("reference_sha256"))
+        rebuilt = with_static_uninstaller(rebuilt, reference)
+    require(expected == rebuilt, "windows_inventory_expectation_mismatch")
     result = verify_windows_application_files(
-        capture=capture, install_root=install_root, expected_files=expected["application_files"])
+        capture=capture, install_root=install_root, expected_files=expected["application_files"],
+        expected_uninstaller=reference)
     require(capture.stable_read(repo, INVENTORY, 2 * 1024 * 1024) == raw,
             "windows_inventory_original_changed")
     result["preinstall_expectation_sha256"] = expected_sha256
     return result
 
 
-def verify_installed(repo, source, *, run_id, install_root, expected_inventory_sha256):
+def verify_installed(repo, source, *, run_id, install_root, expected_inventory_sha256,
+                     static_uninstaller=False):
     _, complete, _, observed = cargo_binding(repo, source)
     smoke = read_json(repo, "ci-evidence/windows-nsis-smoke.json")
     require(smoke.get("candidate", {}).get("source_revision") == source,
@@ -398,7 +461,8 @@ def verify_installed(repo, source, *, run_id, install_root, expected_inventory_s
             and frontend_report.get("source_binding") == "EXACT_HEAD_TREE_INDEX_AND_TRACKED_BYTES_REVALIDATED",
             "windows_frontend_authentication_required")
     application = verify_application_inventory(
-        repo, source, run_id, install_root, expected_inventory_sha256)
+        repo, source, run_id, install_root, expected_inventory_sha256,
+        static_uninstaller=static_uninstaller)
     inventory = read_json(repo, INVENTORY, 2 * 1024 * 1024)
     candidate = read_json(repo, "ci-evidence/windows-candidate.json", 1024 * 1024)
     require(smoke.get("candidate_archive") == inventory["setup"]
@@ -423,18 +487,21 @@ def verify_installed(repo, source, *, run_id, install_root, expected_inventory_s
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("frontend", "frontend-recheck", "stage", "inventory", "verify"))
+    parser.add_argument("phase", choices=("reader", "frontend", "frontend-recheck", "stage", "inventory", "verify"))
     parser.add_argument("--installed-root", type=Path)
     parser.add_argument("--expected-inventory-sha256")
+    parser.add_argument("--require-static-uninstaller", action="store_true")
     args = parser.parse_args(argv)
     try:
         source = internal_source(os.environ)
         require(Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True) == ROOT,
                 "windows_dependency_checkout_mismatch")
-        if args.phase in ("frontend", "frontend-recheck", "stage"):
-            require(args.installed_root is None and args.expected_inventory_sha256 is None,
-                    "windows_inventory_unexpected_inputs")
-        if args.phase.startswith("frontend"):
+        if args.phase in ("reader", "frontend", "frontend-recheck", "stage"):
+            require(args.installed_root is None and args.expected_inventory_sha256 is None
+                    and not args.require_static_uninstaller, "windows_inventory_unexpected_inputs")
+        if args.phase == "reader":
+            provision_static_reader(ROOT, os.environ["GITHUB_RUN_ID"])
+        elif args.phase.startswith("frontend"):
             authenticate_frontend(ROOT, source, recheck=args.phase == "frontend-recheck")
         elif args.phase == "stage":
             stage_resources(ROOT, source)
@@ -444,7 +511,9 @@ def main(argv=None):
             if args.phase == "inventory":
                 require(args.installed_root is None and args.expected_inventory_sha256 is None,
                         "windows_inventory_unexpected_inputs")
-                prepare_application_inventory(ROOT, source, os.environ["GITHUB_RUN_ID"], destination)
+                prepare_application_inventory(
+                    ROOT, source, os.environ["GITHUB_RUN_ID"], destination,
+                    static_uninstaller=args.require_static_uninstaller)
             else:
                 require(args.installed_root is not None and args.installed_root.is_absolute()
                         and args.installed_root.name == INSTALL_DIRECTORY
@@ -452,7 +521,8 @@ def main(argv=None):
                         "windows_inventory_original_destination_required")
                 verify_installed(
                     ROOT, source, run_id=os.environ["GITHUB_RUN_ID"], install_root=destination,
-                    expected_inventory_sha256=args.expected_inventory_sha256)
+                    expected_inventory_sha256=args.expected_inventory_sha256,
+                    static_uninstaller=args.require_static_uninstaller)
         print("windows-dependency-" + args.phase + "=verified public_distribution=NOT_AUTHORIZED")
     except (capture.CaptureError, OSError, ValueError, KeyError, TypeError) as error:
         detail = str(error)

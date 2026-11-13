@@ -326,11 +326,13 @@ def _closed_cargo_directory(*, capture, anchor: Path,
 
 
 def verify_windows_application_files(*, capture, install_root: Path,
-                                     expected_files: dict) -> dict:
+                                     expected_files: dict,
+                                     expected_uninstaller: dict | None = None) -> dict:
     """Compare authenticated expectations at the original install destination.
 
-    The sole declared generated member has no retained pre-publication reference.
-    Its installed digest is an observation, never its own expected identity.
+    A supplied generated-member reference must have been independently sealed
+    from original setup bytes before installation. Without it, the legacy
+    installed digest remains an observation, never its own expected identity.
     This bounded inspection does not claim a filesystem-wide atomic snapshot.
     """
     from nsis_owned_files import _relative
@@ -340,6 +342,21 @@ def verify_windows_application_files(*, capture, install_root: Path,
             and "motionwright-desktop.exe" in expected_files
             and "uninstall.exe" not in expected_files,
             "candidate_application_expectations_invalid")
+    if expected_uninstaller is not None:
+        reference = expected_uninstaller
+        require(isinstance(reference, dict) and set(reference) == {
+            "expected_role", "reference_status", "expected_identity",
+            "setup_sha256", "reference_sha256"}
+            and reference["expected_role"] == "INSTALLER_GENERATED_SELF"
+            and reference["reference_status"] == "ORIGINAL_SETUP_STATIC_RECONSTRUCTION"
+            and all(isinstance(reference[key], str) and SHA64.fullmatch(reference[key])
+                    for key in ("setup_sha256", "reference_sha256")),
+            "candidate_generated_reference_invalid")
+        identity = reference["expected_identity"]
+        require(isinstance(identity, dict) and set(identity) == {"bytes", "sha256"}
+                and type(identity["bytes"]) is int and 0 < identity["bytes"] <= 16 * 1024 * 1024
+                and isinstance(identity["sha256"], str) and SHA64.fullmatch(identity["sha256"]),
+                "candidate_generated_reference_identity_invalid")
     tree, folded, folded_nodes, total_expected = {}, set(), {}, 0
     names = [*expected_files, "uninstall.exe"]
     for name in names:
@@ -401,16 +418,24 @@ def verify_windows_application_files(*, capture, install_root: Path,
     generated = capture.stable_hash(
         anchor, root_relative / "uninstall.exe", limit=MAX_CARGO_NOTICE_TOTAL_BYTES - total)
     require(generated["bytes"] > 0, "candidate_generated_member_empty")
+    if expected_uninstaller is not None:
+        require(generated == expected_uninstaller["expected_identity"],
+                "candidate_generated_member_bytes_mismatch")
     inspect_names()
+    generated_member = {
+        "expected_role": "INSTALLER_GENERATED_SELF", "observed_identity": generated,
+        "reference_status": "NOT_OBSERVED_BEFORE_PUBLICATION",
+    }
+    if expected_uninstaller is not None:
+        generated_member = {**expected_uninstaller, "observed_identity": generated}
     return {
         "status": "EXPECTED_APPLICATION_FILES_BYTE_EXACT",
         "scope": "APPLICATION_FILES_AND_ORIGINAL_DESTINATION_MEMBER_SET",
         "namespace_closed": True, "application_files": len(expected_files),
         "application_bytes": total,
-        "generated_members": {"uninstall.exe": {
-            "expected_role": "INSTALLER_GENERATED_SELF", "observed_identity": generated,
-            "reference_status": "NOT_OBSERVED_BEFORE_PUBLICATION"}},
-        "all_member_bytes_authenticated": False, "full_package_inventory": "NOT_VERIFIED",
+        "generated_members": {"uninstall.exe": generated_member},
+        "all_member_bytes_authenticated": expected_uninstaller is not None,
+        "full_package_inventory": "NOT_VERIFIED",
     }
 
 

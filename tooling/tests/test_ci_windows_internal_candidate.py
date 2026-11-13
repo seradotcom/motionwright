@@ -149,12 +149,22 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                      "scripts/test_tauri_generated_metadata.py"):
             self.assertEqual(text.count('- "' + path + '"'), 2)
         self.assertIn("--require-cargo-binding", windows)
-        inventory_command = "python -B tooling/ci_windows_dependency_capture.py inventory"
+        reader_step = windows.split(
+            "      - name: Provision pinned static NSIS reader without executing its installer\n", 1)[1].split(
+            "      - name: Install locked Studio and Tauri CLI dependencies\n", 1)[0]
+        self.assertIn("inputs.verification_scope == 'windows_installed'", reader_step)
+        self.assertIn("timeout-minutes: 5", reader_step)
+        self.assertIn("python -B tooling/ci_windows_dependency_capture.py reader", reader_step)
+        self.assertIn("if ($LASTEXITCODE -ne 0)", reader_step)
+        self.assertLess(windows.index(reader_step), windows.index("      - name: Build unsigned Windows candidate"))
+        inventory_command = ("python -B tooling/ci_windows_dependency_capture.py inventory "
+                             "--require-static-uninstaller")
         self.assertLess(windows.index(inventory_command),
                         windows.index("Start-Process -FilePath $installer"))
         self.assertIn("MW_WINDOWS_APPLICATION_INVENTORY_SHA256=$inventoryHash", windows)
         self.assertIn('ci_windows_dependency_capture.py verify --installed-root "$dest" '
-                      '--expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"', windows)
+                      '--expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256" '
+                      '--require-static-uninstaller', windows)
         allowed = {
             "ci-evidence/windows-candidate.json",
             "ci-evidence/windows-nsis-smoke.json",
@@ -182,7 +192,10 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                                        "pre-archive-index.original.json", "pre-archive-emitted-set.json",
                                        "pre-recheck-index.original.json", "pre-recheck-emitted-set.json")})
         originals.update({"ci-evidence/internal-windows-cargo/" + name
-                          for name in ("application-inventory.json", "tauri-resources.json")})
+                          for name in ("application-inventory.json", "tauri-resources.json",
+                                       "uninstaller-reader-intake.json", "uninstaller/*.json",
+                                       "uninstaller/*.stderr", "uninstaller/reader.stdout",
+                                       "uninstaller/listing.stdout")})
         uploads = [part for part in re.split(r"(?m)^      - ", windows)
                    if "uses: actions/upload-artifact@" in part]
         self.assertEqual(len(uploads), 4)
@@ -196,6 +209,9 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                 self.assertIn("always() && github.event_name == 'workflow_dispatch'", step)
                 self.assertIn("inputs.verification_scope == 'windows_installed'", step)
                 self.assertNotIn("**", step)
+                self.assertNotIn("extract.stdout", step)
+                self.assertNotIn("runner.temp", step)
+                self.assertNotIn("7z2605", step)
             else:
                 self.assertTrue(paths)
                 self.assertLessEqual(set(paths), allowed)

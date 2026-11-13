@@ -504,19 +504,63 @@ members are refused. The inspection retains the existing 512 MiB aggregate bound
 a 4,096-entry bound and a 16-component path bound. It is a bounded observation of
 the quiescent installed tree, not a filesystem-wide atomic snapshot.
 
-Exactly one generated member, `uninstall.exe`, is declared separately. Its installed
-size and digest are observed, but its reference remains
-`NOT_OBSERVED_BEFORE_PUBLICATION`. That digest never becomes its own expected
-identity. The result can establish exact application files and a closed inspected
-member set; `all_member_bytes_authenticated` remains false and
-`full_package_inventory` remains `NOT_VERIFIED`. The uninstaller's original runtime
-observation, installer internals and static/native library identities remain
-separate required evidence.
+Exactly one generated member, `uninstall.exe`, is declared separately. Historical
+application expectations with schema `/1` retain
+`NOT_OBSERVED_BEFORE_PUBLICATION`: their installed digest is an observation,
+`all_member_bytes_authenticated` remains false, and no new evidence is inferred.
+
+The `windows_installed` route now requires schema `/2` and a static reference
+derived before installation by `tooling/nsis_static_uninstaller.py`. It reads the
+original setup with pinned portable 7-Zip 26.05, selects exactly one
+`mw-owned-new-uninstaller.exe` member, and reconstructs that executable without
+running setup. The reference binds the setup, exact source/tree/run, base
+application expectation, reader identity and original command streams. The
+workflow seals the complete application expectation before the installation.
+Readback checks that seal first, then the sealed static reference and its
+originals, before comparing the installed uninstaller against the independent
+expected size and SHA-256. A changed installed file cannot define its own
+expectation.
+
+The static reader rejects ambiguous or missing members, path traversal,
+diagnostics including `BadCmd` even with exit code zero, changed setup/tool
+bytes, failed or incomplete processes and invalid PE headers. A solid NSIS
+member may omit its listed size; actual decompression still has a 16 MiB output
+bound and a 90-second limit. The executable remains under the separate,
+run-specific private runner directory. Exported observations exclude its
+`extract.stdout` bytes.
+
+Reader provisioning downloads the official
+[7-Zip 26.05 x64 asset](https://github.com/ip7z/7zip/releases/tag/26.05),
+checks its 1,663,506-byte size and SHA-256
+`fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0`,
+then statically extracts only the pinned `7z.exe`, `7z.dll` and license.
+The downloaded installer is never executed. The portable tools and downloaded
+archive remain private; the source module records their exact pins.
+
+The reconstruction follows
+[NSIS WriteUninstaller](https://github.com/nsis-dev/nsis/blob/7359413009afd4f0fff472d841fc2f2cc0e0a5f8/Source/exehead/exec.c)
+and the pinned
+[7-Zip NSIS reader](https://github.com/ip7z/7zip/blob/d3296e39e1f1f92c7b41c0c3848e65640428d42d/CPP/7zip/Archive/Nsis/NsisHandler.cpp).
+An independent static probe of historical setup artifact `12101032310`
+(run `39032220978`, source `679cc48baf7c6f9bb4a0b803508c9b2a9891d944`)
+reconstructed a 79,338-byte uninstaller with SHA-256
+`dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224`,
+byte-exact to the original retained in
+`tooling/tests/fixtures/windows-predecessor-12101216495.original.zip`.
+7-Zip 25.00 reported `BadCmd=13` for that same setup; 26.05 passed.
+This establishes compatibility with that historical setup. The current
+candidate's static-reference and installed-byte comparison must run separately.
+
+Only a successful comparison with the sealed static reference sets
+`all_member_bytes_authenticated=true` for the closed inspected destination.
+`full_package_inventory` remains `NOT_VERIFIED`: installer internals,
+static/native libraries and wider installation effects remain separate evidence.
 
 The source-original artifact enumerates only build observations, original
-streams, generated metadata bytes, the preinstall application expectation and its
-resource overlay. Payloads, installers, distribution admission records and target
-caches remain inside the internal runner.
+streams, generated metadata bytes, the preinstall application expectation, static
+reader intake/reference observations and resource overlay. Payloads, installers,
+reconstructed executables, portable reader files, distribution admission records
+and target caches remain inside the internal runner.
 Complete package/native-library inventory, legal distribution clearance, and
 human/renderer acceptance remain separate obligations.
 

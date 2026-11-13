@@ -42,11 +42,13 @@ on:
       - "tooling/tests/test_ci_candidate_macos_scope.py"
       - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
+      - "tooling/nsis_static_uninstaller.py"
       - "tooling/ci_linux_dependency_capture.py"
       - "tooling/ci_macos_dependency_capture.py"
       - "tooling/tests/test_ci_macos_dependency_capture.py"
       - "tooling/tests/test_ci_linux_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
+      - "tooling/tests/test_nsis_static_uninstaller.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
       - "scripts/cargo_notice_supplements.py"
@@ -151,11 +153,13 @@ on:
       - "tooling/tests/test_ci_candidate_macos_scope.py"
       - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
+      - "tooling/nsis_static_uninstaller.py"
       - "tooling/ci_linux_dependency_capture.py"
       - "tooling/ci_macos_dependency_capture.py"
       - "tooling/tests/test_ci_macos_dependency_capture.py"
       - "tooling/tests/test_ci_linux_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
+      - "tooling/tests/test_nsis_static_uninstaller.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
       - "scripts/cargo_notice_supplements.py"
@@ -323,6 +327,8 @@ jobs:
         run: python3 -B -m unittest tooling.tests.test_ci_linux_dependency_capture -v
       - name: macOS captured dependency composition contracts
         run: python3 -B -m unittest tooling.tests.test_ci_macos_dependency_capture -v
+      - name: Static NSIS reference and installed-byte comparison contracts
+        run: python3 -B -m unittest tooling.tests.test_nsis_static_uninstaller -v
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
@@ -1469,6 +1475,14 @@ jobs:
         with:
           cache-on-failure: false
           save-if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed' }}
+      - name: Provision pinned static NSIS reader without executing its installer
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B tooling/ci_windows_dependency_capture.py reader
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned static NSIS reader intake failed' }
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Windows candidate
@@ -1626,7 +1640,7 @@ jobs:
           python tooling/package_receipt.py --git-sha "$env:GITHUB_SHA" --platform windows --arch x86_64 --artifact "$($artifacts[0].FullName)" @cargoArgs --output ci-evidence/windows-candidate.json
           if ($LASTEXITCODE -ne 0) { throw 'Exact Windows candidate receipt failed' }
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:MW_WINDOWS_CANDIDATE_SCOPE -eq 'windows_installed') {
-            python -B tooling/ci_windows_dependency_capture.py inventory
+            python -B tooling/ci_windows_dependency_capture.py inventory --require-static-uninstaller
             if ($LASTEXITCODE -ne 0) { throw 'Preinstall application inventory failed' }
             $inventoryHash = (Get-FileHash -Algorithm SHA256 'ci-evidence/internal-windows-cargo/application-inventory.json').Hash.ToLowerInvariant()
             "MW_WINDOWS_APPLICATION_INVENTORY_SHA256=$inventoryHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -1667,7 +1681,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'
-          python -B tooling/ci_windows_dependency_capture.py verify --installed-root "$dest" --expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256"
+          python -B tooling/ci_windows_dependency_capture.py verify --installed-root "$dest" --expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256" --require-static-uninstaller
           if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }
       - name: Cold launch and reopen the real NSIS-installed application
         shell: pwsh
@@ -1719,6 +1733,11 @@ jobs:
           name: motionwright-windows-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ci-evidence/internal-windows-cargo/application-inventory.json
+            ci-evidence/internal-windows-cargo/uninstaller-reader-intake.json
+            ci-evidence/internal-windows-cargo/uninstaller/*.json
+            ci-evidence/internal-windows-cargo/uninstaller/*.stderr
+            ci-evidence/internal-windows-cargo/uninstaller/reader.stdout
+            ci-evidence/internal-windows-cargo/uninstaller/listing.stdout
             ci-evidence/internal-windows-cargo/tauri-resources.json
             ci-evidence/internal-windows-cargo/state/source-before.json
             ci-evidence/internal-windows-cargo/state/source-after.json
