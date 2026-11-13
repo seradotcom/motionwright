@@ -31,6 +31,11 @@ on:
         type: boolean
         required: false
         default: false
+      affected_rust_scope:
+        description: Fixed source-test roster for the optional affected Rust diagnostics
+        type: choice
+        options: [phase1-affected, manim-cancel-terminal]
+        default: phase1-affected
       affected_rust_source_binding:
         description: Closed JSON containing authorized source_sha, tree_sha, sdk_revision and four exact lock digests
         type: string
@@ -3258,6 +3263,7 @@ jobs:
       AFFECTED_DIAGNOSTICS_REQUESTED: ${{ inputs.affected_rust_diagnostics }}
       MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
       AFFECTED_SOURCE_BINDING_JSON: ${{ inputs.affected_rust_source_binding }}
+      AFFECTED_DIAGNOSTIC_SCOPE: ${{ inputs.affected_rust_scope || 'phase1-affected' }}
     steps:
       - name: Bound setup and diagnostics before the hard job timeout
         run: |
