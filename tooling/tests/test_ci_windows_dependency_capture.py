@@ -66,6 +66,67 @@ class WindowsDependencyCaptureTests(unittest.TestCase):
 
     save_cargo_index = fixtures.CandidateCargoProducerTests.save_cargo_index
 
+    def sqlite_native_fixture(self):
+        from test_cargo_sqlite_native_output import SQLiteFixture
+
+        snapshot = gate.capture.source_snapshot(self.root, self.sha)
+        fixture = SQLiteFixture(self.root, state=self.root / gate.BASE / "state",
+                                source=self.sha, tree=snapshot["tree"])
+        self.cargo_index_data["artifact_identities"] += fixture.artifacts
+        fixture.artifacts = self.cargo_index_data["artifact_identities"]
+        fixture.save()
+        roster_digest = gate.capture.sha(gate.capture.encoded(fixture.artifacts))
+        self.cargo_index_data["artifact_identities_sha256"] = roster_digest
+        self.complete["artifact_identities_sha256"] = roster_digest
+        record = fixture.observe()
+        raw = gate.capture.encoded(record)
+        gate.capture.write_new(fixture.state / "cargo-native-outputs.json", raw)
+        custody_path = fixture.state / "tauri-generated-schemas.json"
+        custody = gate.capture.parse_json(custody_path.read_bytes())
+        custody["sqlite_native_output_required"] = True
+        custody_path.write_bytes(gate.capture.encoded(custody))
+        custody_sha = gate.capture.sha(custody_path.read_bytes())
+        selected = self.cargo_index_data["capture"]
+        selected.update(
+            generated_metadata_sha256=custody_sha,
+            sqlite_native_output_sha256=gate.capture.sha(raw),
+            metadata_sha256=record["original_inputs"]["metadata.stdout"]["sha256"],
+            build_stdout_sha256=record["original_inputs"]["build.stdout"]["sha256"])
+        self.complete.update(generated_metadata_sha256=custody_sha,
+                             sqlite_native_output_sha256=gate.capture.sha(raw))
+        self.save_native_capture()
+        return fixture
+
+    def save_native_capture(self):
+        self.save_cargo_index()
+        self.complete["cargo_index_sha256"] = gate.capture.sha(self.cargo_index.read_bytes())
+        (self.root / gate.BASE / "state/capture-complete.json").write_bytes(
+            gate.capture.encoded(self.complete))
+
+    def test_sqlite_native_output_is_rechecked_before_resource_staging(self):
+        fixture = self.sqlite_native_fixture()
+        _, complete, _, binding = gate.cargo_binding(self.root, self.sha)
+        self.assertEqual(binding["status"], "CAPTURED_ROOT_BINARY_BYTE_EXACT")
+        self.assertIn("sqlite_native_output_sha256", complete)
+        fixture.archive.write_bytes(b"!<arch>\nCHANGED INERT SQLITE OUTPUT")
+        with self.assertRaisesRegex(ValueError, "sqlite_native_observation_changed"):
+            gate.stage_resources(self.root, self.sha)
+        self.assertFalse((self.root / gate.BASE / "tauri-resources.json").exists())
+
+    def test_sqlite_native_output_requires_both_custody_seals(self):
+        self.sqlite_native_fixture()
+        self.complete["sqlite_native_output_sha256"] = "0" * 64
+        self.save_native_capture()
+        with self.assertRaisesRegex(ValueError, "sqlite_native_custody_mismatch"):
+            gate.cargo_binding(self.root, self.sha)
+
+    def test_sqlite_native_output_joins_exact_cargo_invocation_and_roster(self):
+        self.sqlite_native_fixture()
+        self.cargo_index_data["capture"]["metadata_sha256"] = "0" * 64
+        self.save_native_capture()
+        with self.assertRaisesRegex(ValueError, "sqlite_native_capture_join_mismatch"):
+            gate.cargo_binding(self.root, self.sha)
+
     def application_fixture(self):
         from candidate_smoke import NOTICE_FILES
         from package_receipt import make_receipt

@@ -739,3 +739,39 @@ applicable, the production Vite-loader integration, the complete candidate
 package/extraction join, native-library identities, and required installed
 behavior. This document describes a source capability and its checks; it
 does not claim those external gates, signing, legal approval, or a stable release.
+
+
+### Captured bundled SQLite output
+
+The three isolated desktop capture routes explicitly request
+`--sqlite-native-output`. This closed profile consumes the original Cargo
+messages, component/feature classification, artifact roster and authenticated
+crate records for `libsqlite3-sys 0.39.1` and `cc 1.6.0`. The native source
+references include the exact bundled SQLite C/header and both build generators;
+a Rust wrapper license does not supply native clearance.
+
+After the build, `cargo-native-outputs.json` records the bounded physical archive
+inside the observed target `OUT_DIR` and the byte identity of its confirmed
+target/runtime `.rlib`. The only admitted output paths are
+`<target>/release/build/libsqlite3-sys-<hash>/out/libsqlite3.a` and, for MSVC,
+the additional `sqlite3.lib`. The pinned `cc` implementation creates the MSVC
+name by hard link or copy; both must exist and match byte for byte. Thin archives,
+redirected paths, foreign/system search paths, ambiguous units, SQLCipher,
+loadable-extension and Gecko variants are outside this profile.
+
+The record binds source/tree, target and the exact original metadata, build
+stdout, completion, source, component, artifact and license-source records.
+Its digest is sealed in the Cargo index and `capture-complete.json`; the
+generated-metadata custody envelope makes the observation mandatory for that
+capture without changing the closed Tauri source profile. Capture completion and
+the existing pre/post bundle bindings re-read the same live archive and `.rlib`
+and compare against the sealed expectation. Only the observation JSON is added
+to the diagnostic artifact allowlist; native archive binaries remain in the
+captured target directory.
+
+`OBSERVED_BUILD_OUTPUT_BYTES` establishes this physical build-output observation.
+It does not establish final linker incorporation, native license review, package
+inventory closure, redistribution permission or formal acceptance. These states
+remain `NOT_VERIFIED` / `NOT_INFERRED`. Historical captures without the explicit
+profile remain historical evidence and receive no retroactive native-output
+credit. Unit fixtures exercise refusal logic and are never physical build proof.

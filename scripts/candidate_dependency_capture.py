@@ -865,7 +865,17 @@ def retain_command_permission_originals(repo, state, expectation, observed, *, e
 def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                   root_package_name, manifest_path, state_directory, resources_directory,
                   build_command, metadata_features=(), no_default_features=False, env=None, build_cwd=None,
-                  tauri_generated_schemas=False, tauri_generated_command_permissions=False):
+                  tauri_generated_schemas=False, tauri_generated_command_permissions=False,
+                  sqlite_native_output=False):
+    if type(sqlite_native_output) is not bool:
+        raise CaptureError("sqlite_native_output_flag_invalid")
+    native_observer = None
+    if sqlite_native_output:
+        native_observer = _load_sibling("cargo_sqlite_native_output")
+        if (tauri_generated_schemas is not True or tauri_generated_command_permissions is not True
+                or root_package_name != "motionwright-desktop"
+                or target_triple not in native_observer.TARGETS):
+            raise CaptureError("sqlite_native_output_scope_invalid")
     if type(tauri_generated_command_permissions) is not bool:
         raise CaptureError("tauri_command_permissions_flag_invalid")
     if tauri_generated_command_permissions and tauri_generated_schemas is not True:
@@ -975,6 +985,8 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
                 expected_source=expected_source))
             generated_custody["observation"] += (
                 "; command permission namespace absent before metadata/build; exact pinned-generator bytes")
+        if sqlite_native_output:
+            generated_custody["sqlite_native_output_required"] = True
         write_new(state / "tauri-generated-schemas.json", encoded(generated_custody))
     notices = collect_cargo_licenses(inventory["components"], workspace_root=repo,
                                     cargo_home=Path(cargo_home), lock_bytes=lock,
@@ -990,6 +1002,14 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
             raise CaptureError("source_changed_during_notice_collection")
     if notices.get("issues") or any(c.get("issues") for c in notices["components"]):
         raise CaptureError("cargo_notice_coverage_incomplete")
+    native_raw = None
+    if native_observer is not None:
+        native_output = native_observer.observe(
+            _load_sibling("candidate_dependency_capture"), repo=repo, state=state,
+            expected_source=expected_source, expected_tree=before["tree"],
+            expected_target=target_triple)
+        native_raw = encoded(native_output)
+        write_new(state / "cargo-native-outputs.json", native_raw)
     if command_expectation is None and source_snapshot(repo, expected_source) != before:
         raise CaptureError("source_changed_during_notice_collection")
     by_id = {c["id"]: c for c in inventory["components"]}
@@ -1030,11 +1050,19 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
             if source_snapshot(repo, expected_source) != before:
                 raise CaptureError("source_changed_before_capture_complete")
         index["capture"]["generated_metadata_sha256"] = sha(encoded(generated_custody))
+    if native_raw is not None:
+        native_observer.verify(
+            _load_sibling("candidate_dependency_capture"), native_raw,
+            expected_sha256=sha(native_raw), repo=repo, state=state,
+            expected_source=expected_source, expected_tree=before["tree"],
+            expected_target=target_triple)
+        index["capture"]["sqlite_native_output_sha256"] = sha(native_raw)
     write_new(resources / "cargo" / "index.json", encoded(index))
     write_new(state / "capture-complete.json", encoded(
         {"source": expected_source, "cargo_index_sha256": sha(encoded(index)),
          "artifact_identities_sha256": binding["artifact_identities_sha256"],
          "resources": str(resources), "full_package_inventory": "NOT_VERIFIED",
+         **({"sqlite_native_output_sha256": sha(native_raw)} if native_raw is not None else {}),
          **({"generated_metadata_sha256": sha(encoded(generated_custody))}
             if generated_custody is not None else {})}))
     return index
@@ -1051,6 +1079,7 @@ def main(argv=None):
     parser.add_argument("--no-default-features", action="store_true")
     parser.add_argument("--tauri-generated-schemas", action="store_true")
     parser.add_argument("--tauri-generated-command-permissions", action="store_true")
+    parser.add_argument("--sqlite-native-output", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -1062,7 +1091,8 @@ def main(argv=None):
                       build_command=command, metadata_features=args.features,
                       no_default_features=args.no_default_features, build_cwd=args.build_cwd,
                       tauri_generated_schemas=args.tauri_generated_schemas,
-                      tauri_generated_command_permissions=args.tauri_generated_command_permissions)
+                      tauri_generated_command_permissions=args.tauri_generated_command_permissions,
+                      sqlite_native_output=args.sqlite_native_output)
     except (CaptureError, OSError, ValueError, KeyError) as error:
         print("dependency-capture-failed:" + str(error), file=sys.stderr)
         return 2

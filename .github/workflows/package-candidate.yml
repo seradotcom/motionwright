@@ -108,6 +108,8 @@ on:
       - "tooling/native_av_failure_guard.py"
       - "tooling/native_provider_lifecycle.py"
       - "scripts/candidate_dependency_capture.py"
+      - "scripts/cargo_sqlite_native_output.py"
+      - "scripts/test_cargo_sqlite_native_output.py"
       - "tooling/ci_private_evidence.py"
       - "tooling/mlt_official_runtime_intake.py"
       - "tooling/requirements/mlt-g2-custody.txt"
@@ -219,6 +221,8 @@ on:
       - "tooling/native_av_failure_guard.py"
       - "tooling/native_provider_lifecycle.py"
       - "scripts/candidate_dependency_capture.py"
+      - "scripts/cargo_sqlite_native_output.py"
+      - "scripts/test_cargo_sqlite_native_output.py"
       - "tooling/ci_private_evidence.py"
       - "tooling/mlt_official_runtime_intake.py"
       - "tooling/requirements/mlt-g2-custody.txt"
@@ -327,6 +331,8 @@ jobs:
         run: python3 -B -m unittest tooling.tests.test_ci_linux_dependency_capture -v
       - name: macOS captured dependency composition contracts
         run: python3 -B -m unittest tooling.tests.test_ci_macos_dependency_capture -v
+      - name: Captured SQLite native output contracts
+        run: python3 -B -m unittest discover -s scripts -p test_cargo_sqlite_native_output.py -v
       - name: Static NSIS reference and installed-byte comparison contracts
         run: python3 -B -m unittest tooling.tests.test_nsis_static_uninstaller -v
       - name: Candidate receipt and installed-package smoke policy tests
@@ -981,7 +987,7 @@ jobs:
               --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
               --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
               --root-package motionwright-desktop --target x86_64-unknown-linux-gnu \
-              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions \
+              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions --sqlite-native-output \
               --state-directory ci-evidence/linux-cargo/state \
               --resources-directory ci-evidence/linux-cargo/resources \
               -- "$cargo_executable" build --locked --release --bins --package motionwright-desktop \
@@ -1177,6 +1183,7 @@ jobs:
             ci-evidence/linux-cargo/state/cargo-components.json
             ci-evidence/linux-cargo/state/cargo-artifacts.json
             ci-evidence/linux-cargo/state/cargo-license-sources.json
+            ci-evidence/linux-cargo/state/cargo-native-outputs.json
             ci-evidence/linux-cargo/state/tauri-generated-schemas.json
             ci-evidence/linux-cargo/state/capture-complete.json
             ci-evidence/linux-cargo/state/generated-metadata/tauri/acl-manifests.json
@@ -1516,7 +1523,7 @@ jobs:
               --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" `
               --cargo-home "$cargoHome" --manifest apps/desktop/src-tauri/Cargo.toml `
               --root-package motionwright-desktop --target x86_64-pc-windows-msvc `
-              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions `
+              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions --sqlite-native-output `
               --state-directory ci-evidence/internal-windows-cargo/state `
               --resources-directory ci-evidence/internal-windows-cargo/resources `
               -- cargo build --locked --release --bins --package motionwright-desktop `
@@ -1759,6 +1766,7 @@ jobs:
             ci-evidence/internal-windows-cargo/state/cargo-components.json
             ci-evidence/internal-windows-cargo/state/cargo-artifacts.json
             ci-evidence/internal-windows-cargo/state/cargo-license-sources.json
+            ci-evidence/internal-windows-cargo/state/cargo-native-outputs.json
             ci-evidence/internal-windows-cargo/state/tauri-generated-schemas.json
             ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/acl-manifests.json
             ci-evidence/internal-windows-cargo/state/generated-metadata/tauri/capabilities.json
@@ -3485,7 +3493,7 @@ jobs:
               --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
               --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
               --root-package motionwright-desktop --target aarch64-apple-darwin \
-              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions \
+              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions --sqlite-native-output \
               --state-directory ci-evidence/macos-cargo/state \
               --resources-directory ci-evidence/macos-cargo/resources \
               -- "$cargo_executable" build --locked --release --bins --package motionwright-desktop \
@@ -3584,6 +3592,7 @@ jobs:
             ci-evidence/macos-cargo/state/cargo-components.json
             ci-evidence/macos-cargo/state/cargo-artifacts.json
             ci-evidence/macos-cargo/state/cargo-license-sources.json
+            ci-evidence/macos-cargo/state/cargo-native-outputs.json
             ci-evidence/macos-cargo/state/tauri-generated-schemas.json
             ci-evidence/macos-cargo/state/capture-complete.json
             ci-evidence/macos-cargo/state/generated-metadata/tauri/acl-manifests.json

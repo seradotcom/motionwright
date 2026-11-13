@@ -211,11 +211,28 @@ def cargo_binding(repo, source, *, base=None, target=None, binary=None, profile_
     require(complete.get("generated_metadata_sha256") == digest
             and capture.parse_json(raw).get("capture", {}).get("generated_metadata_sha256") == digest,
             "windows_generated_custody_mismatch")
-    profile = capture.parse_json(custody_raw).get("profile", {})
+    custody = capture.parse_json(custody_raw)
+    profile = custody.get("profile", {})
     require(profile.get("source") == source and profile.get("target") == target,
             "windows_generated_custody_source_mismatch")
     if profile_schema is not None:
         require(profile.get("schema") == profile_schema, "cargo_generated_custody_profile_mismatch")
+    native_key = "sqlite_native_output_sha256"
+    native_capture = capture.parse_json(raw).get("capture", {})
+    if custody.get("sqlite_native_output_required") or native_key in complete or native_key in native_capture:
+        require(custody.get("sqlite_native_output_required") is True
+                and complete.get(native_key) == native_capture.get(native_key),
+                "sqlite_native_custody_mismatch")
+        native_raw = capture.stable_read(repo, base / "state/cargo-native-outputs.json", 1024 * 1024)
+        native_output = capture._load_sibling("cargo_sqlite_native_output").verify(
+            capture, native_raw, expected_sha256=complete.get(native_key),
+            repo=repo, state=repo / base / "state", expected_source=source,
+            expected_tree=snapshot["tree"], expected_target=target)
+        original_inputs = native_output["original_inputs"]
+        require(original_inputs["metadata.stdout"]["sha256"] == native_capture.get("metadata_sha256")
+                and original_inputs["build.stdout"]["sha256"] == native_capture.get("build_stdout_sha256")
+                and original_inputs["cargo-artifacts.json"]["sha256"] == complete["artifact_identities_sha256"],
+                "sqlite_native_capture_join_mismatch")
     return snapshot, complete, raw, result
 
 
