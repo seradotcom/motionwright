@@ -18,6 +18,8 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_manim_cancel/active.rs"]
+mod cancel_cycle;
 #[path = "native_manim_editable/source_cycle.rs"]
 mod editable_cycle;
 #[path = "native_manim_graph/source_cycle.rs"]
@@ -25,7 +27,7 @@ mod graph_cycle;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-manim-e2e <seed-graph-cycle DATABASE REPORT_JSON | graph-cycle-edit-prepare DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT_JSON REQUEST_ID | graph-cycle-save-readback DATABASE PENDING_JSON OWNER_TERMINAL_JSON REPORT_JSON | realize-graph DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON REQUEST_ID | realize-graph-bundle DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | source-cycle-recover-edit BEFORE_DATABASE CURRENT_DATABASE ORIGINAL_BUNDLE EDITED_BUNDLE ORIGINAL_INTENT REPORT | source-cycle-recover-edit-default-cas BEFORE_DATABASE CURRENT_DATABASE ORIGINAL_BUNDLE EDITED_BUNDLE ORIGINAL_INTENT REPORT | source-cycle-readback-recovered BEFORE_DATABASE CURRENT_DATABASE RECOVERY_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | source-cycle-rehydrate-reference BASELINE_DATABASE REFERENCE_DATABASE ORIGINAL_BUNDLE REPORT | source-cycle-readback-reference BASELINE_DATABASE REFERENCE_DATABASE ORIGINAL_BUNDLE CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
+        "usage: native-manim-e2e <cancel-active DATABASE CONNECTION EVIDENCE_JSON REQUEST_ID | seed-graph-cycle DATABASE REPORT_JSON | graph-cycle-edit-prepare DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT_JSON REQUEST_ID | graph-cycle-save-readback DATABASE PENDING_JSON OWNER_TERMINAL_JSON REPORT_JSON | realize-graph DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON REQUEST_ID | realize-graph-bundle DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | source-cycle-recover-edit BEFORE_DATABASE CURRENT_DATABASE ORIGINAL_BUNDLE EDITED_BUNDLE ORIGINAL_INTENT REPORT | source-cycle-recover-edit-default-cas BEFORE_DATABASE CURRENT_DATABASE ORIGINAL_BUNDLE EDITED_BUNDLE ORIGINAL_INTENT REPORT | source-cycle-readback-recovered BEFORE_DATABASE CURRENT_DATABASE RECOVERY_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | source-cycle-rehydrate-reference BASELINE_DATABASE REFERENCE_DATABASE ORIGINAL_BUNDLE REPORT | source-cycle-readback-reference BASELINE_DATABASE REFERENCE_DATABASE ORIGINAL_BUNDLE CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
     );
     std::process::exit(2);
 }
@@ -1429,6 +1431,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "cancel-active" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            let request = text_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            cancel_cycle::run(&database, &connection, &evidence, &request).await
+        }
         "seed" => {
             let database = path_arg(&mut args);
             if args.next().is_some() {
