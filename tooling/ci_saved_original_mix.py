@@ -231,11 +231,14 @@ def source_after(repo, expected_source, before):
     require(set(source_paths(repo, expected_source)) == set(before["files"]),
             "tracked source inventory changed")
     after = {key: value for key, value in before.items() if key != "files"}
-    after["files"] = {
-        name: {**custody.fingerprint(repo / name, repo, 16 * 1024 * 1024),
-               "git_blob_oid": identity["git_blob_oid"]}
-        for name, identity in before["files"].items()
-    }
+    after["files"] = {}
+    source_bytes = 0
+    for name, identity in before["files"].items():
+        observed = custody.fingerprint(repo / name, repo, MAX_SOURCE_TOTAL - source_bytes,
+                                       git_blob_oid=identity["git_blob_oid"])
+        source_bytes += observed["bytes"]
+        require(source_bytes <= MAX_SOURCE_TOTAL, "aggregate source byte budget exceeded")
+        after["files"][name] = {**observed, "git_blob_oid": identity["git_blob_oid"]}
     require(after == before, "physical tracked inputs changed during execution")
     return after
 

@@ -125,8 +125,14 @@ class StreamedWholeSource(unittest.TestCase):
         self.assertGreater(len(self.raw), 16 * 1024 * 1024)
         self.path = self.repo / self.name
         self.path.write_bytes(self.raw)
+        required = set(gate.GATE_FILES) | {
+            "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "vendor/glib-0.18.5/Cargo.toml"}
+        for name in required:
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"Git snapshot fixture; never compiled or executed.\n")
         gate.custody.git(self.repo, "init", "--quiet")
-        gate.custody.git(self.repo, "add", "--", self.name)
+        gate.custody.git(self.repo, "add", "--", self.name, *sorted(required))
         gate.custody.git(self.repo, "-c", "user.name=Source custody test",
                          "-c", "user.email=source-custody-test@localhost",
                          "-c", "commit.gpgsign=false", "commit", "--quiet", "-m",
@@ -136,8 +142,8 @@ class StreamedWholeSource(unittest.TestCase):
     def test_large_blob_uses_existing_aggregate_budget_and_keeps_legacy_query_bound(self):
         with self.assertRaisesRegex(ValueError, "Git source query failed or exceeded its bound"):
             gate.custody.source_snapshot(self.repo, self.source, [self.name])
-        value = gate.custody.source_snapshot(
-            self.repo, self.source, [self.name], total_source_limit=gate.MAX_SOURCE_TOTAL)
+        value = gate.snapshot(self.repo, self.source)
+        self.assertEqual(gate.source_after(self.repo, self.source, value), value)
         observed = value["files"][self.name]
         self.assertEqual(observed["bytes"], len(self.raw))
         self.assertEqual(observed["sha256"], hashlib.sha256(self.raw).hexdigest())
@@ -145,13 +151,15 @@ class StreamedWholeSource(unittest.TestCase):
         self.assertEqual(observed["git_blob_oid"], expected)
 
     def test_same_length_source_tamper_is_refused_even_when_git_status_is_clean(self):
+        before = gate.snapshot(self.repo, self.source)
         gate.custody.git(self.repo, "update-index", "--assume-unchanged", self.name)
         with self.path.open("r+b") as stream:
             stream.write(b"X")
         self.assertEqual(gate.custody.git(self.repo, "status", "--porcelain=v1"), b"")
         with self.assertRaisesRegex(ValueError, "committed Git blob"):
-            gate.custody.source_snapshot(
-                self.repo, self.source, [self.name], total_source_limit=gate.MAX_SOURCE_TOTAL)
+            gate.snapshot(self.repo, self.source)
+        with self.assertRaisesRegex(ValueError, "committed Git blob"):
+            gate.source_after(self.repo, self.source, before)
 
     def test_aggregate_source_budget_is_enforced_without_reading_past_it(self):
         with self.assertRaisesRegex(ValueError, "unbounded or nonregular artifact"):
