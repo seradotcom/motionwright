@@ -24,6 +24,15 @@ class OriginalProcessSelectionTests(unittest.TestCase):
             self.assertEqual(original["pid"], os.getpid())
             self.assertEqual(original["start_ticks"], self.own_identity()["start_ticks"])
             self.assertTrue(owner.alive(original["pidfd"]))
+            status = owner.parse_kernel_status(
+                (Path("/proc") / str(os.getpid()) / "status").read_bytes(), os.getpid())
+            self.assertEqual(status["nspid"][0], os.getpid())
+            self.assertEqual(status["parent"], self.own_identity()["parent"])
+            # A real process in the observer's namespace is never an admitted init.
+            before = len(list(Path("/proc/self/fd").iterdir()))
+            with self.assertRaisesRegex(ValueError, "cancel_namespace_init_not_isolated"):
+                owner.pin_namespace_init(original, os.getpid())
+            self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), before)
         finally:
             os.close(original["pidfd"])
 
@@ -52,6 +61,13 @@ class OriginalProcessSelectionTests(unittest.TestCase):
             child.stdin.close()
             self.assertEqual(child.wait(timeout=5), 0)
             self.assertFalse(owner.alive(original["pidfd"]))
+            terminal = owner.pidfd_observation(original["pidfd"])
+            self.assertEqual(terminal["state"], "REAPED")
+            self.assertTrue(terminal["mask"] & owner.select.POLLHUP)
+            invalid = os.dup(original["pidfd"])
+            os.close(invalid)
+            with self.assertRaisesRegex(ValueError, "cancel_pidfd_poll_invalid"):
+                owner.pidfd_observation(invalid)
         finally:
             if child.stdin is not None and not child.stdin.closed:
                 child.stdin.close()
