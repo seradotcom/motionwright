@@ -42,6 +42,8 @@ on:
       - "tooling/tests/test_ci_candidate_macos_scope.py"
       - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
+      - "tooling/ci_linux_dependency_capture.py"
+      - "tooling/tests/test_ci_linux_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
@@ -147,6 +149,8 @@ on:
       - "tooling/tests/test_ci_candidate_macos_scope.py"
       - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
+      - "tooling/ci_linux_dependency_capture.py"
+      - "tooling/tests/test_ci_linux_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
       - "scripts/cargo_license_sources.py"
@@ -311,6 +315,8 @@ jobs:
           esac
       - name: Verify bounded platform bundle selections without acceptance
         run: python3 -B -m unittest tooling.tests.test_ci_candidate_macos_scope tooling.tests.test_ci_candidate_linux_scope -v
+      - name: Linux captured dependency composition contracts
+        run: python3 -B -m unittest tooling.tests.test_ci_linux_dependency_capture -v
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
@@ -899,6 +905,9 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')
     needs: receipt-policy
     runs-on: ubuntu-24.04
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_LINUX_CANDIDATE_SCOPE: ${{ inputs.verification_scope }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -913,8 +922,10 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'linux_bundle'
         with:
           cache-on-failure: false
+          save-if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'linux_bundle' }}
       - name: Install Linux desktop bundling prerequisites
         run: |
           sudo apt-get update
@@ -922,9 +933,46 @@ jobs:
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Linux candidate bundles
+        id: linux_candidate_build
+        shell: bash
         run: |
-          cd apps/desktop
-          npm --prefix ../studio exec -- tauri build --bundles deb,appimage
+          set -euo pipefail
+          bundle_root='target/release'
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_LINUX_CANDIDATE_SCOPE" == 'linux_bundle' ]]; then
+            cargo_home="$RUNNER_TEMP/motionwright-linux-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            target_dir="$GITHUB_WORKSPACE/target/linux-captured"
+            test ! -e "$cargo_home"
+            test ! -e "$target_dir"
+            test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}"
+            mkdir -p "$cargo_home" "$target_dir"
+            export CARGO_HOME="$cargo_home"
+            export CARGO_TARGET_DIR="$target_dir"
+            export RUSTFLAGS='-C link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN/../lib'
+            export PATCHELF='/usr/bin/patchelf'
+            export NO_STRIP='1'
+            printf '%s\n' "CARGO_HOME=$cargo_home" "CARGO_TARGET_DIR=$target_dir" \
+              "RUSTFLAGS=$RUSTFLAGS" "PATCHELF=$PATCHELF" "NO_STRIP=$NO_STRIP" >> "$GITHUB_ENV"
+            export MOTIONWRIGHT_CANDIDATE_BUILD=1
+            export MOTIONWRIGHT_CANDIDATE_SOURCE_SHA="$GITHUB_SHA"
+            npm --prefix apps/studio run build
+            python3 -B tooling/ci_linux_dependency_capture.py frontend
+            python3 -B scripts/candidate_dependency_capture.py \
+              --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
+              --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
+              --root-package motionwright-desktop --target x86_64-unknown-linux-gnu \
+              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions \
+              --state-directory ci-evidence/linux-cargo/state \
+              --resources-directory ci-evidence/linux-cargo/resources \
+              -- cargo build --locked --release --bins --package motionwright-desktop \
+              --manifest-path apps/desktop/src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu \
+              --features tauri/custom-protocol --message-format=json-render-diagnostics
+            python3 -B tooling/ci_linux_dependency_capture.py stage
+            python3 -B tooling/ci_linux_dependency_capture.py bundle
+            bundle_root='target/linux-captured/x86_64-unknown-linux-gnu/release'
+          else
+            (cd apps/desktop && npm --prefix ../studio exec -- tauri build --bundles deb,appimage)
+          fi
+          printf 'MW_LINUX_BUNDLE_ROOT=%s\n' "$bundle_root" >> "$GITHUB_ENV"
       - name: Verify actual Linux candidate compiled the reviewed local glib source
         run: |
           set -euo pipefail
@@ -932,31 +980,41 @@ jobs:
           python3 tooling/v01_glib_product_admission.py --output ci-evidence/glib-patched-source.json
           cargo tree --locked -p motionwright-desktop --target x86_64-unknown-linux-gnu -i glib > ci-evidence/glib-compiled-owner-tree.txt
           grep -F 'vendor/glib-0.18.5' ci-evidence/glib-compiled-owner-tree.txt >/dev/null
-          count="$(find target/release/deps -maxdepth 1 -type f -name 'libglib-*.rlib' | wc -l)"
+          count="$(find "$MW_LINUX_BUNDLE_ROOT/deps" -maxdepth 1 -type f -name 'libglib-*.rlib' | wc -l)"
           test "$count" -ge 1
           echo 'v01-glib-product-candidate=LOCAL_BACKPORT_COMPILED linux_installed_gui=NOT_YET_VERIFIED'
       - name: Record exact Linux candidate artifacts
+        shell: bash
         run: |
-          appimage_count="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | wc -l)"
-          deb_count="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | wc -l)"
+          set -euo pipefail
+          cargo_args=()
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_LINUX_CANDIDATE_SCOPE" == 'linux_bundle' ]]; then
+            python3 -B tooling/ci_linux_dependency_capture.py frontend-recheck
+            cargo_args=(--cargo-index ci-evidence/linux-cargo/resources/cargo/index.json
+              --cargo-binary target/linux-captured/x86_64-unknown-linux-gnu/release/motionwright-desktop
+              --require-cargo-binding)
+          fi
+          appimage_count="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' | wc -l)"
+          deb_count="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' | wc -l)"
           test "$appimage_count" -eq 1
           test "$deb_count" -eq 1
-          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print)"
-          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print)"
+          appimage="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print)"
+          deb="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' -print)"
           python3 tooling/package_receipt.py \
             --git-sha "$GITHUB_SHA" \
             --platform linux \
             --arch x86_64 \
             --artifact "$appimage" \
             --artifact "$deb" \
+            "${cargo_args[@]}" \
             --output ci-evidence/linux-candidate.json
       - name: Inspect extracted Linux packages and launch a rootless AppImage window
         shell: bash
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
-          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          deb="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          appimage="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           work="$RUNNER_TEMP/motionwright-smoke"
           mkdir -p "$work/deb" "$work/appimage"
           dpkg-deb --extract "$deb" "$work/deb"
@@ -996,7 +1054,14 @@ jobs:
             find "$extracted" -maxdepth 1 -name '*.desktop' -printf '%f\n'
             exit 1
           fi
-          echo "AppImage source payload extracted; testing fresh bootstrap, SQLite persistence and a second real X11 window"
+          python3 tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/linux-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind appimage --method appimage_extract \
+            --artifact "$appimage" --installed-binary "${image_bins[0]}" \
+            --linux-desktop-entry "${image_desktop[0]}" \
+            --output ci-evidence/linux-appimage-prelaunch.json
+          echo "AppImage payload verified; testing fresh bootstrap, SQLite persistence and a second real X11 window"
           xvfb-run -a -s "-screen 0 1440x940x24" \
             dbus-run-session -- python3 tooling/linux_cold_start.py \
               --app-run "$extracted/AppRun" \
@@ -1041,6 +1106,9 @@ jobs:
             --linux-desktop-entry "${image_desktop[0]}" \
             --linux-gui-probe ci-evidence/linux-appimage-window.json \
             --output ci-evidence/linux-appimage-smoke.json
+      - name: Verify both extracted Linux packages against the original Cargo capture
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+        run: python3 -B tooling/ci_linux_dependency_capture.py verify
       - name: Retain isolated GUI launch diagnostics if smoke fails
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1056,13 +1124,76 @@ jobs:
         with:
           name: motionwright-linux-candidate
           path: |
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/deb/*.deb
+            ${{ env.MW_LINUX_BUNDLE_ROOT }}/bundle/appimage/*.AppImage
+            ${{ env.MW_LINUX_BUNDLE_ROOT }}/bundle/deb/*.deb
             ci-evidence/linux-candidate.json
             ci-evidence/linux-deb-smoke.json
             ci-evidence/linux-appimage-smoke.json
             ci-evidence/linux-appimage-window.json
           if-no-files-found: error
+
+      - name: Preserve original isolated Linux dependency records
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_candidate_build.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-linux-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/linux-cargo/tauri-resources.json
+            ci-evidence/linux-cargo/bundle.request.json
+            ci-evidence/linux-cargo/bundle.completion.json
+            ci-evidence/linux-cargo/bundle.stdout
+            ci-evidence/linux-cargo/bundle.stderr
+            ci-evidence/linux-cargo/state/source-before.json
+            ci-evidence/linux-cargo/state/source-after.json
+            ci-evidence/linux-cargo/state/metadata.stdout
+            ci-evidence/linux-cargo/state/metadata.stderr
+            ci-evidence/linux-cargo/state/metadata.request.json
+            ci-evidence/linux-cargo/state/metadata.completion.json
+            ci-evidence/linux-cargo/state/build.stdout
+            ci-evidence/linux-cargo/state/build.stderr
+            ci-evidence/linux-cargo/state/build.request.json
+            ci-evidence/linux-cargo/state/build.completion.json
+            ci-evidence/linux-cargo/state/cargo-components.json
+            ci-evidence/linux-cargo/state/cargo-artifacts.json
+            ci-evidence/linux-cargo/state/cargo-license-sources.json
+            ci-evidence/linux-cargo/state/tauri-generated-schemas.json
+            ci-evidence/linux-cargo/state/capture-complete.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/acl-manifests.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/capabilities.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/desktop-schema.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/linux-schema.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri-command-source/build.rs
+            ci-evidence/linux-cargo/state/generated-metadata/tauri-command-permissions/*.toml
+            ci-evidence/linux-cargo/state/generated-metadata/cargo-markers/*.bin
+            ci-evidence/linux-cargo/resources/cargo/index.json
+            ci-evidence/linux-cargo/resources/cargo/texts/*.txt
+            ci-evidence/linux-cargo/frontend/archive-map.json
+            ci-evidence/linux-cargo/frontend/pre-archive-index.original.json
+            ci-evidence/linux-cargo/frontend/pre-archive-emitted-set.json
+            ci-evidence/linux-cargo/frontend/pre-recheck-index.original.json
+            ci-evidence/linux-cargo/frontend/pre-recheck-emitted-set.json
+            ci-evidence/linux-cargo/frontend/before-build.json
+            ci-evidence/linux-cargo/frontend/after-bundle.json
+            ci-evidence/linux-cargo/link-layout/result.json
+            ci-evidence/linux-cargo/link-layout/version.request.json
+            ci-evidence/linux-cargo/link-layout/version.completion.json
+            ci-evidence/linux-cargo/link-layout/version.stdout
+            ci-evidence/linux-cargo/link-layout/version.stderr
+            ci-evidence/linux-cargo/link-layout/runpath.request.json
+            ci-evidence/linux-cargo/link-layout/runpath.completion.json
+            ci-evidence/linux-cargo/link-layout/runpath.stdout
+            ci-evidence/linux-cargo/link-layout/runpath.stderr
+            ci-evidence/linux-cargo/link-layout/same-runpath.request.json
+            ci-evidence/linux-cargo/link-layout/same-runpath.completion.json
+            ci-evidence/linux-cargo/link-layout/same-runpath.stdout
+            ci-evidence/linux-cargo/link-layout/same-runpath.stderr
+            ci-evidence/linux-candidate.json
+            ci-evidence/linux-deb-smoke.json
+            ci-evidence/linux-appimage-prelaunch.json
+            ci-evidence/linux-appimage-smoke.json
+            ci-evidence/linux-cargo-binding.json
+          if-no-files-found: warn
+          retention-days: 30
 
   windows-contracts:
     if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')

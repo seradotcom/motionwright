@@ -47,7 +47,8 @@ class IsolatedLinuxBundleScopeTests(unittest.TestCase):
         macos = job_source(self.workflow, "macos")
         self.assertNotIn("inputs.verification_scope == 'linux_bundle'", macos)
         linux = job_source(self.workflow, "linux")
-        self.assertNotIn("inputs.verification_scope != 'linux_bundle'", linux)
+        header = linux.split("    steps:\n", 1)[0]
+        self.assertNotIn("inputs.verification_scope != 'linux_bundle'", header)
         self.assertIn("    needs: receipt-policy\n", linux)
         self.assertIn("Build unsigned Linux candidate bundles", linux)
         self.assertIn("Verify actual Linux candidate compiled the reviewed local glib source", linux)
@@ -55,6 +56,23 @@ class IsolatedLinuxBundleScopeTests(unittest.TestCase):
         self.assertIn("Inspect extracted Linux packages and launch a rootless AppImage window", linux)
         installed = job_source(self.workflow, "linux-first-use-installed")
         self.assertIn("inputs.verification_scope == 'linux_first_use'", installed)
+
+    def test_common_upload_preserves_the_attestation_evidence_allowlist(self):
+        import sys
+        sys.path.insert(0, str(ROOT / "tooling"))
+        import candidate_attestation_input as attestation
+        self.assertEqual(Path(attestation.__file__).resolve(),
+                         (ROOT / "tooling/candidate_attestation_input.py").resolve())
+        linux = job_source(self.workflow, "linux")
+        upload = linux.split("          name: motionwright-linux-candidate\n", 1)[1]
+        upload = upload.split("          if-no-files-found:", 1)[0]
+        evidence = {Path(line.strip()).name for line in upload.splitlines()
+                    if line.strip().startswith("ci-evidence/")}
+        self.assertEqual(evidence, attestation.KNOWN_EVIDENCE_FILES["linux"])
+        originals = linux.split("      - name: Preserve original isolated Linux dependency records\n", 1)[1]
+        for name in ("linux-appimage-prelaunch.json", "linux-cargo-binding.json"):
+            self.assertIn("            ci-evidence/" + name + "\n", originals)
+        self.assertIn("inputs.verification_scope == 'linux_bundle'", originals)
 
     def test_attestation_remains_full_trusted_scope_only(self):
         attestation = job_source(self.workflow, "attest-candidates")

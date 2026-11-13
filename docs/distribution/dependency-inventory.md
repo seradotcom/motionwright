@@ -517,6 +517,47 @@ caches remain inside the internal runner.
 Complete package/native-library inventory, legal distribution clearance, and
 human/renderer acceptance remain separate obligations.
 
+## Isolated captured Linux packages
+
+The existing `linux_bundle` dispatch on the canonical integration branch uses a
+fresh Cargo home and target directory, without restoring or saving a Rust cache.
+`tooling/ci_linux_dependency_capture.py` admits only that exact repository,
+branch, event and first run attempt. It reuses the source, frontend, Cargo binary
+and notice validators with explicit Linux paths; the Windows scope remains
+unchanged.
+
+The workflow authenticates the original frontend, captures one actual Cargo
+build and the closed Linux generated-metadata profile, then bundles that exact
+build with `tauri bundle --no-binary-patching --no-sign`. Both package rows bind
+the same external Cargo index. DEB and AppImage extraction must each prove
+`CAPTURED_ROOT_BINARY_BYTE_EXACT` and the closed, byte-exact Cargo notice subtree.
+AppImage inspection precedes any GUI launch; the original capture comparison is
+not relaxed to accept an ELF modified by the packager.
+
+The pinned Tauri bundler invokes linuxdeploy, which sets the executable RUNPATH
+to `$ORIGIN/../lib`. This capture builds that relative RUNPATH directly with
+`--enable-new-dtags`, sets `NO_STRIP=1`, and selects `/usr/bin/patchelf`. Before
+bundling, the helper retains the real patchelf version and command streams and
+applies the same RUNPATH to a disposable copy. It requires both that copy and
+the original Cargo output to remain byte-exact. Actual extracted package bytes
+remain the final check; the probe alone grants no package credit.
+
+This choice follows the pinned upstream implementations:
+[Tauri CLI 2.12.1 AppImage bundler](https://github.com/tauri-apps/tauri/blob/30da1fd6e17de6107ecc850c95dfb16b5729f2dd/crates/tauri-bundler/src/bundle/linux/appimage/linuxdeploy.rs),
+[linuxdeploy 07333c6 ELF operations](https://github.com/linuxdeploy/linuxdeploy/blob/07333c6e942c7d71782b66be924c5d867f9dfdfc/src/core/appdir.cpp),
+and [patchelf 0.18.0 RUNPATH comparison](https://github.com/NixOS/patchelf/blob/99c24238981b7b1084313aca8f5c493bb46f302c/src/patchelf.cc).
+The runner's actual executable hash, version and no-change observation are
+retained separately; the cited source is not substituted for those observations.
+
+The source-original upload enumerates bounded metadata, original streams,
+generated schemas and permissions, Cargo notice resources, frontend indices and
+the link-layout probe. It excludes Cargo home, NPM archives, the disposable
+binary copy and target caches. Failed captures retain their originals without a
+successful package claim. Native libraries, AppImage tools and the complete
+package member inventory still need separate closure:
+`full_package_inventory=NOT_VERIFIED`, redistribution permission is not inferred,
+and Graph6/R74, human installation, signing and stable publication are unchanged.
+
 ## Regression suites
 
 Run Python suites from `scripts/`, with temporary/cache paths confined to the

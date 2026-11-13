@@ -123,9 +123,10 @@ def retain_frontend_inputs(repo, source_state, directory, phase):
         raise
 
 
-def authenticate_frontend(repo, source, *, recheck=False):
+def authenticate_frontend(repo, source, *, recheck=False, base=None):
+    base = BASE if base is None else base
     source_state = capture.source_snapshot(repo, source)
-    directory = repo / BASE / "frontend"
+    directory = repo / base / "frontend"
     if not recheck:
         capture.new_directory(repo, directory)
     else:
@@ -186,34 +187,40 @@ def authenticate_frontend(repo, source, *, recheck=False):
     return report
 
 
-def cargo_binding(repo, source):
+def cargo_binding(repo, source, *, base=None, target=None, binary=None, profile_schema=None):
+    base = BASE if base is None else base
+    target = TARGET if target is None else target
+    binary = BINARY if binary is None else binary
     snapshot = capture.source_snapshot(repo, source)
-    complete = read_json(repo, BASE / "state/capture-complete.json")
-    raw = capture.stable_read(repo, BASE / "resources/cargo/index.json", 16 * 1024 * 1024)
+    complete = read_json(repo, base / "state/capture-complete.json")
+    raw = capture.stable_read(repo, base / "resources/cargo/index.json", 16 * 1024 * 1024)
     require(complete.get("source") == source
             and complete.get("cargo_index_sha256") == capture.sha(raw)
             and complete.get("full_package_inventory") == "NOT_VERIFIED",
             "windows_cargo_completion_mismatch")
     result = capture.verify_binary_binding(
         raw, expected_index_sha256=complete["cargo_index_sha256"],
-        expected_source=source, expected_source_tree=snapshot["tree"], expected_target=TARGET,
+        expected_source=source, expected_source_tree=snapshot["tree"], expected_target=target,
         expected_package="motionwright-desktop", expected_binary="motionwright-desktop",
-        binary_root=repo, binary_path=repo / BINARY,
+        binary_root=repo, binary_path=repo / binary,
     )
     require(result["artifact_identities_sha256"] == complete.get("artifact_identities_sha256"),
             "windows_cargo_roster_mismatch")
-    custody_raw = capture.stable_read(repo, BASE / "state/tauri-generated-schemas.json", 1024 * 1024)
+    custody_raw = capture.stable_read(repo, base / "state/tauri-generated-schemas.json", 1024 * 1024)
     digest = capture.sha(custody_raw)
     require(complete.get("generated_metadata_sha256") == digest
             and capture.parse_json(raw).get("capture", {}).get("generated_metadata_sha256") == digest,
             "windows_generated_custody_mismatch")
     profile = capture.parse_json(custody_raw).get("profile", {})
-    require(profile.get("source") == source and profile.get("target") == TARGET,
+    require(profile.get("source") == source and profile.get("target") == target,
             "windows_generated_custody_source_mismatch")
+    if profile_schema is not None:
+        require(profile.get("schema") == profile_schema, "cargo_generated_custody_profile_mismatch")
     return snapshot, complete, raw, result
 
 
-def resource_mapping(repo, raw):
+def resource_mapping(repo, raw, *, base=None):
+    base = BASE if base is None else base
     from candidate_smoke import _verify_cargo_notice_subtree
 
     config = read_json(repo, "apps/desktop/src-tauri/tauri.conf.json")
@@ -229,7 +236,7 @@ def resource_mapping(repo, raw):
             and not config.get("build", {}).get("features")
             and not config.get("bundle", {}).get("externalBin"),
             "windows_captured_bundle_configuration_changed")
-    root = repo / BASE / "resources"
+    root = repo / base / "resources"
     _verify_cargo_notice_subtree(capture=capture, index_raw=raw,
                                 anchor=root, relative=Path("cargo"))
     index = capture.parse_json(raw)
@@ -249,12 +256,14 @@ def resource_mapping(repo, raw):
     return mapped
 
 
-def stage_resources(repo, source):
-    snapshot, _, raw, binding = cargo_binding(repo, source)
-    mapped = resource_mapping(repo, raw)
+def stage_resources(repo, source, *, base=None, target=None, binary=None, profile_schema=None):
+    base = BASE if base is None else base
+    snapshot, _, raw, binding = cargo_binding(
+        repo, source, base=base, target=target, binary=binary, profile_schema=profile_schema)
+    mapped = resource_mapping(repo, raw, base=base)
     require(capture.source_snapshot(repo, source) == snapshot,
             "windows_source_changed_during_resource_staging")
-    capture.write_new(repo / BASE / "tauri-resources.json",
+    capture.write_new(repo / base / "tauri-resources.json",
                       capture.encoded({"bundle": {"resources": mapped}}))
     return binding
 
