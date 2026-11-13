@@ -1769,6 +1769,45 @@ mod fixed_text_v4 {
     fn native_error(reason: impl Into<String>) -> NativeError {
         NativeError::new(ErrorCode::BackendFailed, reason)
     }
+    fn terminal_native_failure(data: &Value) -> NativeError {
+        let original_state = data["state"].as_str().unwrap_or("failed");
+        // A terminal state alone does not establish the Host's original certainty.
+        // Legacy, malformed and contradictory diagnostics stay unknown.
+        let outcome_known = original_state == "failed"
+            && data.get("artifact").is_some_and(Value::is_null)
+            && data.get("failure_class").is_none_or(Value::is_null)
+            && data
+                .get("host_failure")
+                .and_then(Value::as_object)
+                .is_some_and(|failure| {
+                    failure.len() == 2
+                        && matches!(
+                            failure.get("kind").and_then(Value::as_str),
+                            Some(
+                                "timeout"
+                                    | "resource_exhausted"
+                                    | "access_denied"
+                                    | "unavailable"
+                                    | "protocol_failure"
+                                    | "other"
+                            )
+                        )
+                        && failure.get("outcome_known").and_then(Value::as_bool) == Some(true)
+                });
+        let error = NativeError::new(
+            if original_state == "cancelled" {
+                ErrorCode::Cancelled
+            } else {
+                ErrorCode::BackendFailed
+            },
+            format!("Original native render returned {original_state}; original receipt retained"),
+        );
+        if outcome_known {
+            error
+        } else {
+            error.uncertain()
+        }
+    }
     fn native_data(value: &Value) -> NativeResult<&Value> {
         if value["replayed"] != false || value["result"]["provenance_checked"] != true {
             return Err(native_error(
@@ -2352,7 +2391,6 @@ mod fixed_text_v4 {
                         break;
                     }
                     Some("failed" | "cancelled") => {
-                        let original_state = data["state"].as_str().unwrap_or("failed");
                         let retention = stdin_readback::new_json(
                             &retained.join("render-terminal.original-value.json"),
                             &status,
@@ -2363,16 +2401,7 @@ mod fixed_text_v4 {
                                 "Secondary native terminal retention failure: {secondary}; no retry"
                             );
                         }
-                        return Err(NativeError::new(
-                            if original_state == "cancelled" {
-                                ErrorCode::Cancelled
-                            } else {
-                                ErrorCode::BackendFailed
-                            },
-                            format!(
-                                "Original native render returned {original_state}; original receipt retained"
-                            ),
-                        ));
+                        return Err(terminal_native_failure(data));
                     }
                     Some("queued" | "starting" | "rendering") => {}
                     _ => return Err(native_error("Native job state is unrecognized").uncertain()),
@@ -2800,6 +2829,66 @@ mod fixed_text_v4 {
     #[cfg(test)]
     mod tests {
         use super::*;
+        fn host_terminal_preserves_only_explicit_original_certainty() {
+            for kind in [
+                "timeout",
+                "resource_exhausted",
+                "access_denied",
+                "unavailable",
+                "protocol_failure",
+                "other",
+            ] {
+                for known in [false, true] {
+                    let data = json!({
+                        "state":"failed", "artifact":null,
+                        "host_failure":{"kind":kind, "outcome_known":known}
+                    });
+                    let error = terminal_native_failure(&data);
+                    assert_eq!(error.code, ErrorCode::BackendFailed);
+                    assert_eq!(error.outcome_known, known);
+                }
+            }
+        }
+        fn absent_or_malformed_host_certainty_cannot_be_promoted() {
+            for failure in [
+                Value::Null,
+                json!({}),
+                json!({"kind":"timeout"}),
+                json!({"kind":"timeout","outcome_known":"true"}),
+                json!({"kind":"invented","outcome_known":true}),
+                json!({"kind":"timeout","outcome_known":true,"message":"untrusted"}),
+                json!([{"kind":"timeout","outcome_known":true}]),
+                json!(true),
+            ] {
+                let data = json!({
+                    "state":"failed", "artifact":null, "failure_class":null,
+                    "host_failure":failure
+                });
+                assert!(!terminal_native_failure(&data).outcome_known);
+            }
+            let legacy = json!({"state":"failed","artifact":null,"failure_class":null});
+            assert!(!terminal_native_failure(&legacy).outcome_known);
+            let host = json!({"kind":"timeout","outcome_known":true});
+            assert!(
+                terminal_native_failure(&json!({
+                    "state":"failed","artifact":null,"failure_class":null,"host_failure":host
+                }))
+                .outcome_known
+            );
+            let cancelled = json!({
+                "state":"cancelled","artifact":null,"failure_class":null,"host_failure":host
+            });
+            let error = terminal_native_failure(&cancelled);
+            assert_eq!(error.code, ErrorCode::Cancelled);
+            assert!(!error.outcome_known);
+            for data in [
+                json!({"state":"failed","artifact":{"frame_count":180},"failure_class":null,"host_failure":host}),
+                json!({"state":"failed","artifact":null,"failure_class":"schema_error","host_failure":host}),
+                json!({"state":"failed","failure_class":null,"host_failure":host}),
+            ] {
+                assert!(!terminal_native_failure(&data).outcome_known);
+            }
+        }
         #[test]
         fn samples_cover_all_twelve_cases_and_caption_boundaries() {
             assert_eq!(
@@ -2939,6 +3028,8 @@ mod fixed_text_v4 {
         }
         #[test]
         fn native_return_requires_fresh_checked_provenance() {
+            host_terminal_preserves_only_explicit_original_certainty();
+            absent_or_malformed_host_certainty_cannot_be_promoted();
             let original = json!({"replayed":false,"result":{"provenance_checked":true,"data":{"fixture":"synthetic-only"}}});
             assert_eq!(native_data(&original).unwrap()["fixture"], "synthetic-only");
             let mut replayed = original.clone();
