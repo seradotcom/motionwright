@@ -1666,6 +1666,41 @@ fn retryable_motion_status_error(error: &Error) -> bool {
     error.code == ErrorCode::Timeout
 }
 
+/// Preserve uncertainty from an acknowledged Motion Canvas terminal response.
+/// Call only after checking fresh provenance and the original job identity.
+/// Missing or malformed Host metadata cannot establish a known render outcome;
+/// an already uncertain error is never upgraded.
+pub fn preserve_motion_terminal_outcome(error: Error, data: &Value) -> Error {
+    // A terminal state alone does not establish the Host's original certainty.
+    // Legacy, malformed and contradictory diagnostics stay unknown.
+    let outcome_known = data.get("state").and_then(Value::as_str) == Some("failed")
+        && data.get("artifact").is_some_and(Value::is_null)
+        && data.get("failure_class").is_none_or(Value::is_null)
+        && data
+            .get("host_failure")
+            .and_then(Value::as_object)
+            .is_some_and(|failure| {
+                failure.len() == 2
+                    && matches!(
+                        failure.get("kind").and_then(Value::as_str),
+                        Some(
+                            "timeout"
+                                | "resource_exhausted"
+                                | "access_denied"
+                                | "unavailable"
+                                | "protocol_failure"
+                                | "other"
+                        )
+                    )
+                    && failure.get("outcome_known").and_then(Value::as_bool) == Some(true)
+            });
+    if outcome_known {
+        error
+    } else {
+        error.uncertain()
+    }
+}
+
 /// The pinned Semwright Motion Canvas driver exposes a *closed* typed
 /// RenderFailureClass in render.status. The adjacent error text is deliberately
 /// not propagated: renderer diagnostics may contain private local paths,
@@ -3338,16 +3373,19 @@ impl ProductionCoordinator {
                     // A bounded category and the segment number identify
                     // the failed native lane without leaking provider error
                     // messages or raw receipts to UI/CI.
-                    return Err(backend(format!(
-                        "Motion Canvas segment {} render failed (category: {})",
-                        index + 1,
-                        motion_failure_class(&data),
-                    )));
+                    return Err(preserve_motion_terminal_outcome(
+                        backend(format!(
+                            "Motion Canvas segment {} render failed (category: {})",
+                            index + 1,
+                            motion_failure_class(&data),
+                        )),
+                        &data,
+                    ));
                 }
                 Some("cancelled") => {
-                    return Err(Error::new(
-                        ErrorCode::Cancelled,
-                        "Motion Canvas render was cancelled",
+                    return Err(preserve_motion_terminal_outcome(
+                        Error::new(ErrorCode::Cancelled, "Motion Canvas render was cancelled"),
+                        &data,
                     ));
                 }
                 Some("queued") | Some("starting") | Some("rendering") => {}
