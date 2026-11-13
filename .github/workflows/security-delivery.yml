@@ -78,6 +78,7 @@ on:
           - foundation-coherent-current
           - storage-api-regressions
           - storage-service-current
+          - service-legacy-fixtures
 
 permissions:
   contents: read
@@ -88,7 +89,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1018,7 +1019,7 @@ jobs:
 
   storage-service-current:
     name: Current Storage and Service regressions
-    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'storage-service-current'
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'storage-service-current' || inputs.verification_scope == 'service-legacy-fixtures')
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -1048,9 +1049,16 @@ jobs:
             crates/storage/Cargo.toml crates/service/Cargo.toml \
             crates/storage/src/apply_receipt_binding.rs \
             crates/storage/tests/apply_receipt_binding.rs \
+            crates/storage/tests/production_operation_budget.rs \
+            crates/storage/tests/fixtures/schema_v5.sql \
+            crates/service/tests/mlt_inventory.rs \
+            crates/service/tests/production_receipt_commit_order.rs \
+            crates/service/tests/project_projection.rs \
+            crates/service/tests/support/legacy_v5_fixture.rs \
             > "$work/source-digests.original.txt"
           python3 -B tooling/source_policy.py
       - name: Run current Store and Service contracts
+        if: inputs.verification_scope == 'storage-service-current'
         shell: bash
         run: |
           set -euo pipefail
@@ -1076,6 +1084,52 @@ jobs:
               "ignored": sum(int(ignored) for _, ignored in results),
               "rust_test_targets": len(results),
               "corrupt_utf8_rejection": "PASS",
+              "historical_v5_producer": "NOT_REBUILT",
+              "formal_acceptance": "NOT_GRANTED",
+          }
+          (root / "tests-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt))
+          PY
+          git diff --exit-code
+      - name: Run legacy Service fixture regressions
+        if: inputs.verification_scope == 'service-legacy-fixtures'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 --no-fail-fast -p motionwright-service \
+            --test mlt_inventory --test production_receipt_commit_order --test project_projection \
+            -- --test-threads=1 2>&1 | tee "$MW_STORAGE_SERVICE_EVIDENCE/tests.original.log"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          root = pathlib.Path(os.environ["MW_STORAGE_SERVICE_EVIDENCE"])
+          raw = (root / "tests.original.log").read_text()
+          raw = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+          results = re.findall(r"(?m)^test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;", raw)
+          passed = sum(int(count) for count, _ in results)
+          ignored = sum(int(count) for _, count in results)
+          assert len(results) == 3 and passed == 16 and ignored == 0, results
+          regressions = [
+              "legacy_cross_revision_request_history_retains_uncertainty_after_current_rejection",
+              "service_job_read_failure_cannot_be_overwritten_by_an_earlier_future_clock_status",
+              "service_jobs_are_ranked_by_last_committed_observation_not_display_date",
+              "service_full_receipt_pages_keep_commit_order_and_reject_stale_snapshots",
+              "response_budget_includes_restored_defaults_and_wire_envelope",
+          ]
+          for name in regressions:
+              assert re.search(r"(?m)^test " + re.escape(name) + r" \.\.\. ok$", raw), name
+          receipt = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "verification_scope": "service-legacy-fixtures",
+              "passed": passed,
+              "ignored": ignored,
+              "rust_test_targets": len(results),
+              "legacy_setup_regressions": {name: "PASS" for name in regressions},
+              "corrupt_utf8_rejection": "NOT_SELECTED",
               "historical_v5_producer": "NOT_REBUILT",
               "formal_acceptance": "NOT_GRANTED",
           }

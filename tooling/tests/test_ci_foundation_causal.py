@@ -511,11 +511,11 @@ class FoundationCausalTests(unittest.TestCase):
         original = text.split("\n  foundation-causal-g0:\n", 1)[0]
         # Remove the opt-in diagnostic scopes; normal jobs, source-admission
         # scopes and triggers must recover the exact integrated workflow bytes.
-        for scope in (*gate.SELECTIONS, "storage-api-regressions", "storage-service-current"):
+        for scope in (*gate.SELECTIONS, "storage-api-regressions", "storage-service-current", "service-legacy-fixtures"):
             choice = "          - " + scope + "\n"
             self.assertEqual(original.count(choice), 1)
             original = original.replace(choice, "", 1)
-        guard = "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current')\n"
+        guard = "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures')\n"
         self.assertEqual(original.count(guard), 1)
         original = original.replace(guard, "    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'source-admission-contracts'\n", 1)
         self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),

@@ -1,10 +1,13 @@
 use motionwright_domain::Project;
 use motionwright_service::{ProductionJobState, ProductionObservationState, StudioService};
 use motionwright_storage::{ProductionReceipt, ProductionReceiptInput, StorageError};
-use rusqlite::{Connection, params};
+use rusqlite::params;
 use serde_json::{Value, json};
 use std::path::Path;
 use uuid::Uuid;
+
+#[path = "support/legacy_v5_fixture.rs"]
+mod legacy_v5_fixture;
 
 fn append(
     service: &StudioService,
@@ -41,48 +44,54 @@ fn observed_job(reference: &str, state: &str) -> Value {
     })
 }
 
-fn retain_advanced_clock(path: &Path, receipt: &mut ProductionReceipt) {
-    let db = Connection::open(path).unwrap();
-    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    let ordinal: i64 = db
-        .query_row(
-            "SELECT sequence FROM production_receipt_order WHERE receipt_id=?1",
-            [receipt.id.to_string()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let original_id = receipt.id;
-    receipt.id = Uuid::from_u128(original_id.as_u128() + (86_400_000_u128 << 80));
-    receipt.created_at = "2100-01-01T00:00:00Z".into();
-    assert_eq!(
-        db.execute(
-            "UPDATE production_receipts SET receipt_id=?1,created_at=?2 WHERE receipt_id=?3",
-            params![
-                receipt.id.to_string(),
-                &receipt.created_at,
-                original_id.to_string()
-            ],
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT sequence FROM production_receipt_order WHERE receipt_id=?1",
-            [receipt.id.to_string()],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap(),
-        ordinal,
-        "fixture clock change cannot assign a new ordinal"
-    );
+fn retain_advanced_clock(seed: &Path, path: &Path, receipt: &mut ProductionReceipt) {
+    legacy_v5_fixture::from_closed_seed(seed, path, |db| {
+        let ordinal: i64 = db
+            .query_row(
+                "SELECT sequence FROM production_receipt_order WHERE receipt_id=?1",
+                [receipt.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let original_id = receipt.id;
+        receipt.id = Uuid::from_u128(original_id.as_u128() + (86_400_000_u128 << 80));
+        receipt.created_at = "2100-01-01T00:00:00Z".into();
+        assert_eq!(
+            db.execute(
+                "UPDATE production_receipts SET receipt_id=?1,created_at=?2 WHERE receipt_id=?3",
+                params![
+                    receipt.id.to_string(),
+                    &receipt.created_at,
+                    original_id.to_string()
+                ],
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT sequence FROM production_receipt_order WHERE receipt_id=?1",
+                [receipt.id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            ordinal,
+            "fixture clock change cannot assign a new ordinal"
+        );
+    });
 }
 
 #[test]
 fn service_job_read_failure_cannot_be_overwritten_by_an_earlier_future_clock_status() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("job-observation-order.sqlite3");
-    let service = StudioService::open(&path).unwrap();
+    let path = temp
+        .path()
+        .join("legacy")
+        .join("job-observation-order.sqlite3");
+    let seed_path = temp
+        .path()
+        .join("job-observation-order-current-seed.sqlite3");
+    let service = StudioService::open(&seed_path).unwrap();
     let project = service.create_project("Committed observations").unwrap();
     append(
         &service,
@@ -101,7 +110,7 @@ fn service_job_read_failure_cannot_be_overwritten_by_an_earlier_future_clock_sta
         observed_job("fixture-job", "running"),
     );
     drop(service);
-    retain_advanced_clock(&path, &mut running);
+    retain_advanced_clock(&seed_path, &path, &mut running);
 
     let service = StudioService::open(&path).unwrap();
     let failed = append(
@@ -142,8 +151,9 @@ fn service_job_read_failure_cannot_be_overwritten_by_an_earlier_future_clock_sta
 #[test]
 fn service_jobs_are_ranked_by_last_committed_observation_not_display_date() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("job-ranking.sqlite3");
-    let service = StudioService::open(&path).unwrap();
+    let path = temp.path().join("legacy").join("job-ranking.sqlite3");
+    let seed_path = temp.path().join("job-ranking-current-seed.sqlite3");
+    let service = StudioService::open(&seed_path).unwrap();
     let project = service.create_project("Recent committed jobs").unwrap();
     let mut older = append(
         &service,
@@ -154,7 +164,7 @@ fn service_jobs_are_ranked_by_last_committed_observation_not_display_date() {
         observed_job("older-job", "running"),
     );
     drop(service);
-    retain_advanced_clock(&path, &mut older);
+    retain_advanced_clock(&seed_path, &path, &mut older);
     let service = StudioService::open(&path).unwrap();
     let newer = append(
         &service,
@@ -182,8 +192,9 @@ fn service_jobs_are_ranked_by_last_committed_observation_not_display_date() {
 #[test]
 fn service_full_receipt_pages_keep_commit_order_and_reject_stale_snapshots() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("full-clock-pages.sqlite3");
-    let service = StudioService::open(&path).unwrap();
+    let path = temp.path().join("legacy").join("full-clock-pages.sqlite3");
+    let seed_path = temp.path().join("full-clock-pages-current-seed.sqlite3");
+    let service = StudioService::open(&seed_path).unwrap();
     let project = service.create_project("Complete receipt pages").unwrap();
     let mut committed = Vec::new();
     for index in 0..270 {
@@ -207,7 +218,7 @@ fn service_full_receipt_pages_keep_commit_order_and_reject_stale_snapshots() {
     );
     let empty = service.create_project("Empty history").unwrap();
     drop(service);
-    retain_advanced_clock(&path, &mut committed[268]);
+    retain_advanced_clock(&seed_path, &path, &mut committed[268]);
     let reopened = StudioService::open(&path).unwrap();
     let head = reopened.production_receipt_watermark(project.id).unwrap();
     assert_eq!(head.count, 270);

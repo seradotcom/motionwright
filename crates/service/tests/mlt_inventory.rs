@@ -1,5 +1,8 @@
 use motionwright_service::StudioService;
 
+#[path = "support/legacy_v5_fixture.rs"]
+mod legacy_v5_fixture;
+
 #[test]
 fn persisted_inventory_is_empty_until_native_project_receipts_exist() {
     let temp = tempfile::tempdir().unwrap();
@@ -91,8 +94,12 @@ fn legacy_cross_revision_request_history_retains_uncertainty_after_current_rejec
     use serde_json::json;
 
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("mlt-revision-scoped-receipts.sqlite3");
-    let service = StudioService::open(&path).unwrap();
+    let path = temp
+        .path()
+        .join("legacy")
+        .join("mlt-revision-scoped-receipts.sqlite3");
+    let seed_path = temp.path().join("mlt-current-seed.sqlite3");
+    let service = StudioService::open(&seed_path).unwrap();
     let original = service.create_project("Revision-scoped MLT").unwrap();
 
     service
@@ -158,30 +165,30 @@ fn legacy_cross_revision_request_history_retains_uncertainty_after_current_rejec
     assert_eq!(admitted.unconfirmed_or_invalid_creation_requests, 0);
 
     drop(service);
-    // Offline legacy fixture only: the current API cannot create these rows.
-    // Copy the original binding and change only its historical observation.
-    let legacy = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(
-        legacy
-            .execute(
-                "INSERT INTO production_receipts(
-                   receipt_id,project_id,generation,revision,request_id,
-                   request_sha256,command,stage,payload_json,created_at)
-                 SELECT ?1,project_id,generation,?2,request_id,
-                        request_sha256,command,'outcome_unknown',?3,created_at
-                 FROM production_receipts WHERE project_id=?4 AND request_id=?5",
-                rusqlite::params![
-                    uuid::Uuid::now_v7().to_string(),
-                    i64::try_from(new_project.revision).unwrap(),
-                    json!({"error":{"code":"Timeout","outcome_known":false}}).to_string(),
-                    new_project.id.to_string(),
-                    "reused-across-creative-revisions",
-                ],
-            )
-            .unwrap(),
-        1
-    );
-    drop(legacy);
+    // The current seed remains fenced. Only the fresh v5 fixture admits
+    // this historical observation before the real Store upgrades it.
+    legacy_v5_fixture::from_closed_seed(&seed_path, &path, |legacy| {
+        assert_eq!(
+            legacy
+                .execute(
+                    "INSERT INTO production_receipts(
+                       receipt_id,project_id,generation,revision,request_id,
+                       request_sha256,command,stage,payload_json,created_at)
+                     SELECT ?1,project_id,generation,?2,request_id,
+                            request_sha256,command,'outcome_unknown',?3,created_at
+                     FROM production_receipts WHERE project_id=?4 AND request_id=?5",
+                    rusqlite::params![
+                        uuid::Uuid::now_v7().to_string(),
+                        i64::try_from(new_project.revision).unwrap(),
+                        json!({"error":{"code":"Timeout","outcome_known":false}}).to_string(),
+                        new_project.id.to_string(),
+                        "reused-across-creative-revisions",
+                    ],
+                )
+                .unwrap(),
+            1
+        );
+    });
     let service = StudioService::open(&path).unwrap();
 
     let observed = service

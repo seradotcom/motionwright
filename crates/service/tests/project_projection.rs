@@ -8,6 +8,9 @@ use std::collections::BTreeSet;
 use tempfile::tempdir;
 use uuid::Uuid;
 
+#[path = "support/legacy_v5_fixture.rs"]
+mod legacy_v5_fixture;
+
 fn fixture(scene_count: usize, nodes_per_scene: usize) -> Project {
     let mut project = Project::new("Persisted projection fixture").unwrap();
     for index in 0..scene_count {
@@ -436,7 +439,8 @@ fn oversized_pages_fail_without_truncating_valid_unicode_nodes() {
 fn response_budget_includes_restored_defaults_and_wire_envelope() {
     use motionwright_service::{MAX_PROJECTION_RESPONSE_BYTES, ProjectionError, SceneRef};
     let directory = tempdir().unwrap();
-    let path = directory.path().join("project.sqlite");
+    let path = directory.path().join("legacy").join("project.sqlite");
+    let seed_path = directory.path().join("project-current-seed.sqlite");
     let mut project = fixture(1, 128);
     for node in &mut project.scenes[0].nodes {
         node.text = Some(String::new());
@@ -476,20 +480,20 @@ fn response_budget_includes_restored_defaults_and_wire_envelope() {
             > MAX_PROJECTION_RESPONSE_BYTES
     );
     {
-        let mut store = Store::open(&path).unwrap();
+        let mut store = Store::open(&seed_path).unwrap();
         store.create_project(&expected).unwrap();
     }
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute(
-            "UPDATE projects SET document_json=?2 WHERE id=?1",
-            rusqlite::params![
-                project.id.to_string(),
-                serde_json::to_string(&document).unwrap()
-            ],
-        )
-        .unwrap();
-    drop(connection);
+    legacy_v5_fixture::from_closed_seed(&seed_path, &path, |connection| {
+        connection
+            .execute(
+                "UPDATE projects SET document_json=?2 WHERE id=?1",
+                rusqlite::params![
+                    project.id.to_string(),
+                    serde_json::to_string(&document).unwrap()
+                ],
+            )
+            .unwrap();
+    });
     let service = StudioService::open(&path).unwrap();
     assert_eq!(service.project(project.id).unwrap(), expected);
     let head = service.project_projection_head(project.id).unwrap();
