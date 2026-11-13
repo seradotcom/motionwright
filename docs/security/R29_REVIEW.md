@@ -25,10 +25,18 @@ penetration testing, or universal renderer sandboxing.
 
 ## RustSec policy
 
-Two transitive warnings remain explicitly open in the reviewed Linux desktop dependency graph.
-They are recorded in `known-rustsec-advisories.json`. CI requires zero vulnerabilities and the
-exact reviewed warning IDs/classes at the exact locked dependency context. Any new or removed
-warning, class change, affected first-party API use, or dependency drift requires another review.
+The current inventory in `known-rustsec-advisories.json` records three open advisories:
+`glib 0.18.5` (unsound), `ttf-parser 0.25.1` (unmaintained) and
+`proc-macro-error 1.0.4` (unmaintained). The font parser has both a direct Manim route and a
+Semwright Motion Canvas route; the other two advisories belong to the Linux Tauri/GTK graph.
+
+CI requires zero reported vulnerabilities and the recorded warning IDs/classes at the exact
+locked dependency context. The local-path glib backport can be absent from cargo-audit's registry
+warning output only when the full source comparison against the authenticated upstream archive,
+exact patch, Cargo override and owner checks pass. This coverage exception does not resolve the
+open upstream advisory. Any other missing warning, a new warning, class change, affected
+first-party API use, or dependency drift requires another review. See the
+[dependency advisory policy](../security.md#dependency-advisory-policy) for the current boundary.
 
 This policy is not a waiver and does not relabel an upstream warning as fixed.
 

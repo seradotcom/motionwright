@@ -74,22 +74,31 @@ zero exit code from `cargo audit` as proof that the dependency graph is clean.
 `docs/security/known-rustsec-advisories.json` records the exact package versions, advisory classes,
 dependency context and re-review triggers for warnings that remain open.
 
-The current Linux desktop graph has two open transitive RustSec warnings:
+The current locked dependency graph records three open RustSec advisories:
 
-- `RUSTSEC-2024-0429`: `glib 0.18.5`, classified by RustSec/cargo-audit as unsound. The affected
-  `VariantStrIter` API is not used directly by Motionwright first-party source. The warning remains
-  open because the reviewed stable Tauri/GTK dependency graph currently resolves the GTK 0.18/glib
-  0.18 line; absence of direct use is a mitigation, not a fix.
+- `RUSTSEC-2024-0429`: `glib 0.18.5`, classified as unsound and reached through the Linux
+  Tauri/GTK stack. The selected local source contains the reviewed two-line upstream backport.
+  Its verifier compares the complete vendored source against the authenticated registry archive
+  and exact patch, and checks the Cargo override and dependency owner graph. The affected
+  `VariantStrIter` API is not used directly by Motionwright first-party source. The upstream
+  advisory remains `OPEN_UPSTREAM_BLOCKED`; source verification does not grant product acceptance.
+- `RUSTSEC-2026-0192`: `ttf-parser 0.25.1`, classified as unmaintained. The locked graph
+  contains a direct Manim profile dependency and a Semwright Motion Canvas dependency through the
+  service. The policy binds the registry checksum, SDK source and owner graph; deployed runtime
+  reachability remains unverified. This maintenance warning remains `OPEN_UPSTREAM_UNMAINTAINED`.
 - `RUSTSEC-2024-0370`: `proc-macro-error 1.0.4`, classified as unmaintained and reached
-  transitively through the GTK 0.18 macro stack.
+  transitively through the GTK 0.18 macro stack. It remains `OPEN_UPSTREAM_TRANSITIVE`.
 
-`tooling/security_advisory_policy.py` binds that review to the exact lockfile versions, rejects
-first-party use of any explicitly affected API token, requires zero reported vulnerabilities and
-requires the live `cargo audit --json` warning set to match the reviewed IDs and classes exactly.
-A new warning, a removed warning, a changed class or a dependency-version drift fails the gate and
-requires a fresh review. The Security and Delivery workflow stores the raw audit JSON and policy
-result per SHA. Heavy Verification runs the same policy; neither workflow relabels an open warning
-as resolved.
+`tooling/security_advisory_policy.py` binds that inventory to the exact lockfile versions, rejects
+first-party use of any explicitly affected API token and requires zero reported vulnerabilities.
+The live `cargo audit --json` warnings must match the recorded IDs and classes, with one explicit
+coverage exception: cargo-audit can omit the local-path `glib` package from its registry warning
+output. That absence is permitted only after the complete backport source and owner checks pass;
+it is not evidence that the upstream advisory is resolved. Any other missing warning, a new
+warning, a changed class or dependency drift fails the gate and requires a fresh review.
+
+The Security and Delivery workflow stores the raw audit JSON and policy result per SHA. Heavy
+Verification runs the same policy. All three advisories remain open.
 
 Source policy additionally rejects new first-party raw process or direct-network primitives unless
 they are in the small reviewed execution boundary. Today raw process execution is limited to the
