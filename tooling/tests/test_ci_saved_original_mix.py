@@ -409,9 +409,11 @@ class Admission(unittest.TestCase):
 
     def test_physical_source_tampering_fails_even_when_status_reports_clean(self):
         path = self.repo / "Cargo.toml"
-        path.write_bytes(b"original")
+        original = b"original"
+        path.write_bytes(original)
+        blob_oid = hashlib.sha1(b"blob " + str(len(original)).encode() + b"\0" + original).hexdigest()
         before = {"sha": SHA, "tree": "b" * 40, "files": {
-            "Cargo.toml": {**gate.custody.fingerprint(path, self.repo), "git_blob_oid": "c" * 40}}}
+            "Cargo.toml": {**gate.custody.fingerprint(path, self.repo), "git_blob_oid": blob_oid}}}
         def git(_repo, *args):
             return SHA.encode() if args[0] == "rev-parse" else b""
         with mock.patch.object(gate.custody, "git", side_effect=git), mock.patch.object(
