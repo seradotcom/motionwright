@@ -6,7 +6,7 @@ use motionwright_native::production::{
     ManimRuntimeVersionState, ProductionConnection, ProductionCoordinator,
 };
 use motionwright_service::StudioService;
-use semwright_types::ErrorCode;
+use semwright_native_sdk::ErrorCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -52,7 +52,7 @@ fn retain(path: &Path, value: &Value) -> Result<(), Failure> {
     Ok(())
 }
 
-fn result_value<T: serde::Serialize>(result: &Result<T, semwright_types::Error>) -> Value {
+fn result_value<T: serde::Serialize>(result: &Result<T, semwright_native_sdk::Error>) -> Value {
     match result {
         Ok(value) => json!({"result": value, "error": null}),
         Err(error) => json!({"result": null, "error": error}),
@@ -61,7 +61,7 @@ fn result_value<T: serde::Serialize>(result: &Result<T, semwright_types::Error>)
 
 fn retained_result<T: serde::Serialize>(
     path: &Path,
-    original: Result<T, semwright_types::Error>,
+    original: Result<T, semwright_native_sdk::Error>,
 ) -> Result<T, Failure> {
     let retained = retain(path, &result_value(&original));
     match original {
