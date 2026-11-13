@@ -1,0 +1,6 @@
+tree bb64726fff227b0f21a7df7cb1c4169e322f77d9
+parent 262424eb7c3f906c2dcb190890cbfef0bb7d0add
+author Mads Marquart <mads@marquart.dk> 1755126902 +0200
+committer Mads Marquart <mads@marquart.dk> 1755126902 +0200
+
+Allow unpredictable_function_pointer_comparisons

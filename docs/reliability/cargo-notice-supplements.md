@@ -143,3 +143,101 @@ observed packaging identities. The original ten Windows records and their
 byte proofs remain unchanged. Missing or altered material still prevents
 capture completion. Historical builds remain failed originals; package
 installation, native-content review and redistribution clearance remain separate.
+
+
+## Exact objc2 macOS publication profiles
+
+The original macOS capture 43376141904 at
+`3b7e95b53d4cc9efa7f734f0696ce739696b699b` compiled successfully, then refused
+notice coverage for nine crates. Their exact official archives and the following
+upstream source identities are now represented separately from that failed run.
+
+| Component | Version | Main commit | Package path |
+| --- | --- | --- | --- |
+| block2 | 0.6.2 | b4167b582b2f75f9a1be75495c41b765344fd03c | crates/block2 |
+| dispatch2 | 0.3.1 | 8852b424193ca41602281b3d7540d7c8ed51e49a | crates/dispatch2 |
+| objc2 | 0.6.5 | d7d2fa23ceaa5e6096c923b081040e5d81b3b9df | crates/objc2 |
+| objc2-app-kit | 0.3.2 | 7b1abfd750a2cacaea71d6a56ecfb83cb7de560b | framework-crates/objc2-app-kit |
+| objc2-core-foundation | 0.3.2 | 7b1abfd750a2cacaea71d6a56ecfb83cb7de560b | framework-crates/objc2-core-foundation |
+| objc2-encode | 4.1.0 | 8d214f5477365ffcbcbb7de058c86ed9a518efb7 | crates/objc2-encode |
+| objc2-exception-helper | 0.1.1 | 8d214f5477365ffcbcbb7de058c86ed9a518efb7 | crates/objc2-exception-helper |
+| objc2-quartz-core | 0.3.2 | 7b1abfd750a2cacaea71d6a56ecfb83cb7de560b | framework-crates/objc2-quartz-core |
+| objc2-web-kit | 0.3.2 | 7b1abfd750a2cacaea71d6a56ecfb83cb7de560b | framework-crates/objc2-web-kit |
+
+The main repository is https://github.com/madsmtm/objc2. Each profile fixes the
+component, version, registry, license expression, crate checksum, repository,
+commit and package path together. The 829 members have a complete classification:
+205 direct Git source members, nine original package manifests, nine normalized
+manifests, nine VCS metadata files, nine packaged lockfiles, 586 submodule copies
+and two copies within the main repository. No line-ending transform is needed.
+
+### Materialized source copies
+
+Cargo dereferences `src/generated` while publishing Dispatch and the four
+framework packages. Their Git trees preserve a symlink to `generated/<Framework>`.
+The `git_pinned_submodule_copy` profile proves the exact link mode, blob and
+target text; the original `.gitmodules`; the `generated` gitlink; the secondary
+commit/root tree; and the final regular blob. The secondary repository is
+https://github.com/madsmtm/objc2-generated, as named by the authenticated
+`.gitmodules` URL ending in `.git`.
+
+Dispatch uses commit `872de032903eec3d718cfd3b35056b010c02e4cb`, root tree
+`bb64726fff227b0f21a7df7cb1c4169e322f77d9`, with prefix `Dispatch/`.
+The four framework profiles use commit
+`4c2d6fb86d17ed4b4b7e68e80994788b60521987`, root tree
+`c2239b813eec2ba56884fbc068fd0367c9e1a5a0`, with their exact AppKit,
+CoreFoundation, QuartzCore or WebKit prefix.
+
+Dispatch and CoreFoundation also copy `src/retained/forwarding_impls.rs` from
+`crates/objc2/src/rc/retained_forwarding_impls.rs` in the same main commit.
+The `git_pinned_inrepo_copy` class pins the link and destination independently;
+its final blob is `d4c61a21974f4952d77cb63c9600c7d8a18cc0fe`, 10145 bytes,
+SHA-256 `70c6c9e0e3089c5b5ffbb0535dfb63f355dab2932a20f87b8442cf4ff5f62518`.
+
+All resolution happens over retained Git objects. No filesystem symlink is
+followed. The general Git path reader still rejects symlink and gitlink
+traversal. Per-profile member sets and counts are required; an ordinary
+`git_exact` label cannot conceal a materialization.
+
+### Original notice and current official reference texts
+
+Every profile retains the original root `LICENSE.md`, blob
+`540ae4c81adb5f64a9f61e222b688880da24300e`, 1339 bytes, SHA-256
+`7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54`.
+This notice identifies MIT-only and triple-license packages and preserves the
+upstream qualification about Apple SDK-derived code. That qualification is not
+removed or resolved by this capture.
+
+The notice references the primary documents below. Acquisition records and
+derived text have a separate provenance class; they are not historical Git
+blobs or cryptographic server attestations.
+
+| Reference | Primary URL | Retained license text SHA-256 |
+| --- | --- | --- |
+| MIT | https://opensource.org/license/MIT | 21785883212d06d2c262b7e9f73f92ae7a03a7f2fe86809d7c7ad9bd6961d265 |
+| Zlib | https://zlib.net/zlib_license.html | ef6c0da271fdc74603264907c463e4c979db7a93256ee5e1ba54ad5bc46b7e2a |
+| Apache-2.0 | https://www.apache.org/licenses/LICENSE-2.0 | cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 |
+
+MIT retains the byte-exact 1309-byte license fragment at offset 156111 of the
+observed 196580-byte response. The full response remains in the private intake,
+with SHA-256 `46ca51ae629ef638fef495e2b060b44ad980b451fa1b1ccfa83c9aeeae90c0e7`.
+The public material contains only the fragment, its reviewed acquisition record
+and the 1068-byte text deterministically derived from four original paragraphs.
+HTML character references are decoded; paragraph separators are fixed. Copyright
+placeholders remain unfilled.
+
+Zlib retains the complete original 2895-byte HTML response and the exact
+1107-byte `PRE` fragment. Its generic reference includes the zlib version and
+authors; those names are not attributed to objc2. Apache retains the complete
+11358-byte original plain-text response without transformation.
+
+All profiles require the original upstream notice plus every reference named
+by their recorded license expression. No license alternative is selected.
+The material closure includes exactly the referenced document, text and receipt.
+The largest compact record is 56793 bytes; the existing 64-KiB record, 512-object
+and 16-MiB proof limits remain unchanged.
+
+These records establish bounded source/text provenance. They preserve
+`redistribution_permission=NOT_INFERRED` and `full_package_inventory=NOT_VERIFIED`.
+Apple SDK rights, native-content review, installed-package inspection and formal
+R74/G2/G3 acceptance remain separate.

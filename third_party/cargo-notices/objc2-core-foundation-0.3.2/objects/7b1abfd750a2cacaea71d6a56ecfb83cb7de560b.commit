@@ -1,0 +1,26 @@
+tree 710642442d33002a98d95957801b30551b4edf82
+parent c1044362f4b80be3e3ee1cdc930d098826312bd5
+parent 72a506a124b3a1d360b3b158e78b5969619577cd
+author Mads Marquart <mads@marquart.dk> 1759591942 +0200
+committer GitHub <noreply@github.com> 1759591942 +0200
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJo4T4GCRC1aQ7uu5UhlAAAbrEQAFa/U9L3E/wjm7O8//pfqwfA
+ Vl9TSD79NCTOn/ahmXytt95kOnXvvOxPwFpRnBq6bbcPpX2y1MlcvJrQCl8Ualm+
+ 6ba2FPp6Gqkq+fx37S4EodLHlpRDy0rrNxpvSwX4Nwyl+apRG5cuErREkNzH76aU
+ 8tEZzLZpE8WKg7ZtYCqnzrCSaJPDKaXrkBc1c0VyD1dhj3hNO7GL5G5EKHsxkG2A
+ eogga+jPu6js3DDr0l9LwF8iyywxopMCvpZenWlvIqFz7RmHTRjyx4/TzlhGSIlP
+ XYAQl1mMKLLQBm7oSZ0wVCrL4nb0TDiTEdCXjZbA6uBY5T1HnWYOhuFuWGQPjG7g
+ H/NRBZalgbeoEf/DfSf51zgD/iTHrb5lwzQfpD7ROZlUS3j/u2nEXGDsce4JQes4
+ MxvifjB8u5dXxGifPmVXK/8sIj5avLhWOeZ7nGtiy2/IcwoN5Aek+DE4sg+A8f7a
+ r9Bmi1mwR1jGzHHBsUWo2JhTWgcDe/3/fnGjYskSgplC/77TFhQppnZjd6o8AKJk
+ e+LdasU21vqq2i1jjpmDuZrd0qqhsOzMD0cg94KtcgQibMtBRC9K4XiLpw/xbZsg
+ aGz0f9Esio+E2+cjeSP9o++Y/qxRjPmhKbEK7pwSXHntd3wHfI0IC+vuQjYefB3C
+ 7CiclgsWpSR2ULJm8BSY
+ =aqQl
+ -----END PGP SIGNATURE-----
+ 
+
+Merge pull request #794 from madsmtm/release
+
+Release framework crates v0.3.2

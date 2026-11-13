@@ -1,0 +1,14 @@
+{
+  "content_type": "text/html; charset=UTF-8",
+  "final_url": "https://opensource.org/license/MIT",
+  "http_status": 200,
+  "name": "MIT",
+  "requested_url": "https://opensource.org/license/MIT",
+  "response_bytes": 196580,
+  "response_sha256": "46ca51ae629ef638fef495e2b060b44ad980b451fa1b1ccfa83c9aeeae90c0e7",
+  "retained_bytes": 1309,
+  "retained_offset": 156111,
+  "retained_scope": "HTTP_RESPONSE_FRAGMENT",
+  "retained_sha256": "85559a9a92a63a532f5c28e54567ca5f27648dbef2d7f54be3d4ce2820165231",
+  "schema": "motionwright.objc-license-acquisition/1"
+}

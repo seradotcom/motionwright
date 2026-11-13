@@ -475,5 +475,152 @@ class DlopenPackagingProfileTests(unittest.TestCase):
                     supplement._transform(record, member, git.blob_id(path), raw, altered)
 
 
+class ObjcNoticeSourceTests(unittest.TestCase):
+    """Real retained object chains and documents; no filesystem symlink or Native execution."""
+
+    def setUp(self):
+        import shutil
+        temporary = tempfile.TemporaryDirectory(prefix="mw-objc-notice-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "material"
+        original = Path(__file__).resolve().parents[1] / "third_party/cargo-notices/dispatch2-0.3.1"
+        shutil.copytree(original, self.root)
+        self.record = json.loads((self.root / "record.json").read_bytes())
+        self.reader = supplement._Reader(self.root)
+        self.git = supplement._Git(self.reader, self.record["objects"], self.record["commit"])
+
+    def generated_member(self):
+        return next(row for row in self.record["members"] if row["kind"] == "git_pinned_submodule_copy")
+
+    def test_exact_record_scope_and_all_official_documents_preserve_limits_and_notice(self):
+        supplement._objc_record_scope(self.record, self.git)
+        notices = [row for row in self.record["notices"] if row["kind"] == "objc2_official_license"]
+        self.assertEqual({row["license_id"] for row in notices}, {"MIT", "Zlib", "Apache-2.0"})
+        for notice in notices:
+            text, proof = supplement._objc_official_license(self.record, notice, self.git, self.reader)
+            self.assertEqual(digest(text), notice["text"]["sha256"])
+            self.assertFalse(proof["historical_upstream_git_blob"])
+            self.assertEqual(proof["official_document_admission"], "REVIEWED_RECORD_CONSISTENCY")
+            self.assertEqual(proof["copyright_attribution"], "REFERENCE_TEXT_ONLY_NO_HOLDERS_SUBSTITUTED")
+        raw = self.git.blob("LICENSE.md")
+        self.assertEqual(digest(raw), supplement.OBJC_UPSTREAM_NOTICE["sha256"])
+        self.assertIn(b"Apple SDKs", raw)
+
+    def test_generic_git_reader_still_refuses_symlink_and_gitlink_traversal(self):
+        for path in (self.record["package_path"] + "/src/generated/anything.rs",
+                     "generated/Dispatch/anything.rs"):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                    supplement.SupplementError, "git_path_redirect"):
+                self.git.blob_id(path)
+
+    def test_materialization_requires_exact_component_commit_and_archive(self):
+        member = self.generated_member()
+        variants = []
+        for field, value in (("version", "0.0.0"), ("crate_sha256", "0" * 64)):
+            record = copy.deepcopy(self.record); record["component"][field] = value
+            variants.append(record)
+        record = copy.deepcopy(self.record); record["commit"] = "0" * 40
+        variants.append(record)
+        for record in variants:
+            with self.subTest(component=record["component"]), self.assertRaisesRegex(
+                    supplement.SupplementError, "objc_profile_unapproved"):
+                supplement._objc_materialized_member(record, member, b"INERT", self.git, {})
+
+    def test_materialization_cannot_select_foreign_prefix_or_copy_kind(self):
+        member = self.generated_member()
+        for changed in ({**member, "path": "other/generated/file.rs"},
+                        {**member, "kind": "git_pinned_inrepo_copy"},
+                        {**member, "kind": "unknown"}):
+            with self.subTest(member=changed), self.assertRaises(supplement.SupplementError):
+                supplement._objc_materialized_member(self.record, changed, b"INERT", self.git, {})
+
+    def test_original_gitmodules_and_secondary_commit_are_required(self):
+        profile = supplement.OBJC_PACKAGING_PROFILES[self.record["component"]["id"]]["submodule_copy"]
+        for missing in (profile["gitmodules"]["git_blob_oid"], profile["generated_commit"]):
+            record = copy.deepcopy(self.record)
+            record["objects"] = [row for row in record["objects"] if row["oid"] != missing]
+            git = supplement._Git(supplement._Reader(self.root), record["objects"], record["commit"])
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                    supplement.SupplementError, "object_missing_or_wrong_type"):
+                supplement._objc_materialized_member(record, self.generated_member(), b"INERT", git, {})
+
+    def test_changed_materialized_bytes_do_not_match_the_final_git_blob(self):
+        with self.assertRaisesRegex(supplement.SupplementError, "objc_materialized_bytes_mismatch"):
+            supplement._objc_materialized_member(
+                self.record, self.generated_member(), b"INERT CHANGED SOURCE BYTES", self.git, {})
+
+    def test_forwarded_inrepo_source_requires_exact_destination_bytes(self):
+        member = next(row for row in self.record["members"] if row["kind"] == "git_pinned_inrepo_copy")
+        with self.assertRaisesRegex(supplement.SupplementError, "objc_inrepo_destination_mismatch"):
+            supplement._objc_materialized_member(self.record, member, b"INERT CHANGED", self.git, {})
+
+    def test_copied_member_cannot_be_reclassified_or_omitted(self):
+        record = copy.deepcopy(self.record)
+        next(row for row in record["members"] if row["kind"] == "git_pinned_submodule_copy")["kind"] = "git_exact"
+        with self.assertRaisesRegex(supplement.SupplementError, "objc_submodule_member_set_mismatch"):
+            supplement._objc_record_scope(record, self.git)
+        record = copy.deepcopy(self.record)
+        record["members"] = [row for row in record["members"] if row["kind"] != "git_pinned_inrepo_copy"]
+        with self.assertRaisesRegex(supplement.SupplementError, "objc_inrepo_member_set_mismatch"):
+            supplement._objc_record_scope(record, self.git)
+
+    def test_missing_official_alternative_or_upstream_warning_is_not_complete(self):
+        for kind, license_id in (("objc2_official_license", "Zlib"), ("upstream_git", None)):
+            record = copy.deepcopy(self.record)
+            record["notices"] = [row for row in record["notices"]
+                                 if not (row["kind"] == kind and row.get("license_id") == license_id)]
+            with self.subTest(kind=kind), self.assertRaisesRegex(
+                    supplement.SupplementError, "objc_notice_set_incomplete"):
+                supplement._objc_record_scope(record, self.git)
+
+    def test_changed_receipt_cannot_self_authenticate_with_a_new_digest(self):
+        original = next(row for row in self.record["notices"]
+                        if row.get("license_id") == "MIT")
+        path = self.root / original["receipt"]["path"]
+        receipt = json.loads(path.read_bytes())
+        receipt["final_url"] = "https://foreign.invalid/license"
+        raw = (json.dumps(receipt) + "\n").encode()
+        path.write_bytes(raw)
+        notice = copy.deepcopy(original)
+        notice["receipt"].update(bytes=len(raw), sha256=digest(raw))
+        with self.assertRaisesRegex(supplement.SupplementError, "objc_acquisition_mismatch"):
+            supplement._objc_official_license(self.record, notice, self.git, supplement._Reader(self.root))
+
+    def test_changed_license_or_document_identity_is_not_a_reviewed_reference(self):
+        original = next(row for row in self.record["notices"] if row.get("license_id") == "MIT")
+        for key in ("text", "document"):
+            notice = copy.deepcopy(original); notice[key]["sha256"] = "0" * 64
+            with self.subTest(key=key), self.assertRaisesRegex(
+                    supplement.SupplementError, "objc_document_reference_mismatch"):
+                supplement._objc_official_license(self.record, notice, self.git, self.reader)
+        notice = copy.deepcopy(original); notice["license_id"] = "Unreviewed"
+        with self.assertRaisesRegex(supplement.SupplementError, "objc_license_scope_invalid"):
+            supplement._objc_official_license(self.record, notice, self.git, self.reader)
+
+    def test_git_namespace_resolution_cannot_escape_root_or_become_an_os_path(self):
+        for target in ("../../../../../outside", "C:\\private", "/etc/foreign", "..//outside"):
+            with self.subTest(target=target), self.assertRaises(supplement.SupplementError):
+                supplement._git_relative_target("crates/dispatch2/src/generated", target)
+
+    def test_all_nine_records_fit_original_budgets_and_never_publish_full_mit_page(self):
+        root = Path(__file__).resolve().parents[1] / "third_party/cargo-notices"
+        self.assertEqual(supplement.MAX_RECORD, 64 * 1024)
+        self.assertEqual(supplement.MAX_OBJECTS, 512)
+        self.assertEqual(supplement.MAX_PROOF, 16 * 1024 * 1024)
+        for profile in supplement.OBJC_PACKAGING_PROFILES.values():
+            identity = profile["identity"]
+            material = root / (identity["name"] + "-" + identity["version"])
+            raw = (material / "record.json").read_bytes()
+            record = json.loads(raw)
+            self.assertLessEqual(len(raw), supplement.MAX_RECORD)
+            self.assertLessEqual(len(record["objects"]), supplement.MAX_OBJECTS)
+            mit = next(row for row in record["notices"] if row.get("license_id") == "MIT")
+            self.assertEqual(mit["document"]["bytes"], 1309)
+            self.assertEqual(mit["document"]["sha256"],
+                             "85559a9a92a63a532f5c28e54567ca5f27648dbef2d7f54be3d4ce2820165231")
+            self.assertFalse((material / "official/MIT.original").exists())
+
+
+
 if __name__ == "__main__":
     unittest.main()

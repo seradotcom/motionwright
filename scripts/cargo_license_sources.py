@@ -1374,6 +1374,9 @@ def _supplement_notices(component, capture, workspace, repo, lock, expression, b
     for notice in record_document["notices"]:
         if notice["kind"] == "mozilla_mpl_2_0":
             material_paths.update(scope + _parts(notice[key]["path"]) for key in ("text", "receipt"))
+        elif notice["kind"] == "objc2_official_license":
+            material_paths.update(scope + _parts(notice[key]["path"])
+                                  for key in ("document", "text", "receipt"))
     if set(materials.files) != material_paths:
         _fail("cargo_notice_supplement_record_invalid", "Supplement material includes unreferenced tracked files.")
     # The helper has an independent physical reader; join its read interval back

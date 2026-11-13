@@ -1,0 +1,14 @@
+{
+  "content_type": "text/plain",
+  "final_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "http_status": 200,
+  "name": "Apache-2.0",
+  "requested_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "response_bytes": 11358,
+  "response_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+  "retained_bytes": 11358,
+  "retained_offset": 0,
+  "retained_scope": "COMPLETE_HTTP_RESPONSE",
+  "retained_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+  "schema": "motionwright.objc-license-acquisition/1"
+}

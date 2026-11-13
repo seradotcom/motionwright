@@ -1,0 +1,26 @@
+tree 83c3be1498e17f9ac4ec91f786dd1c1615a9acfe
+parent 19ec1c498a44d2252f5ed900241dc6743a075881
+parent 5e6f1af2c7094fb692cfc9721831c77905fb718a
+author Mads Marquart <mads@marquart.dk> 1737588851 +0100
+committer GitHub <noreply@github.com> 1737588851 +0100
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJnkYBzCRC1aQ7uu5UhlAAAEgQQAIDetjChX3Wsf10qtQCQn2qY
+ BjUPFfCwhN0AYBneYJLRV5Lh0AUIIOo2vvGqOJu24JRsTPXCw2UhFQnPr/0VKCpN
+ gKTfiNx7+5JSahzF7Gm8xxGlZfMeoNUb+xyfIr+Cwa9FjX3f069NezCJu/nhzIZF
+ 5IJTf4tMGYqjEafa/lNM1AZ6/lI89FyU4JOFMplKxaGXkvT4Z0Jf3sFYXg+vYJkk
+ HEeFGrfZY1i09EsF1300j4fUEeByrc4GxGfmXXzWFEpAf60kkhpeMBJLXOHGDTit
+ zODx7JZXsr04ccWBiMlydF2axvGha2N4/+aQfcW/KiI5hvZdlDxEoAO8TsyynXvj
+ qSuSCJf0beSstzhmSQTHMbSIqI3BrJEVgXi7rKGdpZexptsl9CbZEwnr/Vj7A0Pd
+ PrZ+WvDQeOXQjaiz5K7gYFR2MnEGXp7ElN2an6lgzOvMEqqS7Sj/+weFOM7OotPw
+ MKHjdHJPV5iabt/FQKqEcyeGv9vZEm61Q6GyFzaYeaU2jtFVg47s8JsJmHSnMaKB
+ +ltohP/wLpniZCNXMwwbrKC2KGLTu70TBlVJ66cSKzKWQLKTrGnGVTdJwhpBzInh
+ JDmMmHvpLoNFX1gwpeke4Ubj4HlNh0qcYM4kSae8K6tyRSPcmgxK8nRFN/i0IHfy
+ +mWgKiyKz0brv9cnem4r
+ =IKhr
+ -----END PGP SIGNATURE-----
+ 
+
+Merge pull request #700 from madsmtm/ci-full
+
+New versions `objc2 v0.6.0`, `block2 v0.6.0`, `dispatch2 v0.2.0` and framework crates `v0.3.0`.

@@ -12,6 +12,28 @@
       "version": "0.3.0"
     },
     {
+      "crate_sha256": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
+      "name": "block2",
+      "record": {
+        "bytes": 5138,
+        "path": "third_party/cargo-notices/block2-0.6.2/record.json",
+        "sha256": "a7645e6ceb4d518b4e1acb81860384d00196c8ab748679401f8721a759c49cf6"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.6.2"
+    },
+    {
+      "crate_sha256": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
+      "name": "dispatch2",
+      "record": {
+        "bytes": 9546,
+        "path": "third_party/cargo-notices/dispatch2-0.3.1/record.json",
+        "sha256": "5d1ae57bef0a485192cd4001c56060c65f521ab62f6fcf8c7d3bc613ef6df8c8"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.1"
+    },
+    {
       "crate_sha256": "5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4",
       "name": "dlopen2",
       "record": {
@@ -54,6 +76,83 @@
       },
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.58.6"
+    },
+    {
+      "crate_sha256": "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8",
+      "name": "objc2",
+      "record": {
+        "bytes": 22681,
+        "path": "third_party/cargo-notices/objc2-0.6.5/record.json",
+        "sha256": "cbe53c69b26c4fe9ebab22d8d76d3d560398331e596a411341f87f56130ef453"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.6.5"
+    },
+    {
+      "crate_sha256": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
+      "name": "objc2-app-kit",
+      "record": {
+        "bytes": 56793,
+        "path": "third_party/cargo-notices/objc2-app-kit-0.3.2/record.json",
+        "sha256": "9c9d9c7bcae7fce5964001f6b80db374c2930a1a732d91e26bc5d77a86e8e42b"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.2"
+    },
+    {
+      "crate_sha256": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+      "name": "objc2-core-foundation",
+      "record": {
+        "bytes": 17957,
+        "path": "third_party/cargo-notices/objc2-core-foundation-0.3.2/record.json",
+        "sha256": "17023202e476adc56bdb5c020bdaf84a5c7a954ccc803140b70f289774b9b7d6"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.2"
+    },
+    {
+      "crate_sha256": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+      "name": "objc2-encode",
+      "record": {
+        "bytes": 4500,
+        "path": "third_party/cargo-notices/objc2-encode-4.1.0/record.json",
+        "sha256": "c219b77dc6265e997cd8cb53e9c74b674f3359bdd5802ca8b0c0fe17e7aa2f9e"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "4.1.0"
+    },
+    {
+      "crate_sha256": "c7a1c5fbb72d7735b076bb47b578523aedc40f3c439bea6dfd595c089d79d98a",
+      "name": "objc2-exception-helper",
+      "record": {
+        "bytes": 5096,
+        "path": "third_party/cargo-notices/objc2-exception-helper-0.1.1/record.json",
+        "sha256": "e9fef606783c63b0a36a69488991168f6cf29fd9551d55ccf3d38c165345d7dc"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.1.1"
+    },
+    {
+      "crate_sha256": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
+      "name": "objc2-quartz-core",
+      "record": {
+        "bytes": 11068,
+        "path": "third_party/cargo-notices/objc2-quartz-core-0.3.2/record.json",
+        "sha256": "670cc7fb32ab076dfd9810be3e553502d596d3fe544565af631f2a4be3d601fc"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.2"
+    },
+    {
+      "crate_sha256": "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f",
+      "name": "objc2-web-kit",
+      "record": {
+        "bytes": 42360,
+        "path": "third_party/cargo-notices/objc2-web-kit-0.3.2/record.json",
+        "sha256": "8a9b56f07e48dd4e8c55f3109d8650675a6b4ec2692b6a29df604d3152f5c634"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.2"
     },
     {
       "crate_sha256": "8adfa1c298912827b8a28b223b3b874357397ae706e6190acd9bf28cee99114d",

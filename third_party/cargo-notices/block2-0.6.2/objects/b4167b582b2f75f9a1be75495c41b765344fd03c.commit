@@ -1,0 +1,6 @@
+tree d0c0ec68bb362989649471ee9952db5a7fe43edc
+parent f5df468edf7df6a7a240a8b6cbe1d6bdf2386ef6
+author Mads Marquart <mads@marquart.dk> 1759593448 +0200
+committer Mads Marquart <mads@marquart.dk> 1759593571 +0200
+
+Fix documentation on docs.rs

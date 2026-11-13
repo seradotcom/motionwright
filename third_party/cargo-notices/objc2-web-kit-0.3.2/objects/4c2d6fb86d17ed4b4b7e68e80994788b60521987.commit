@@ -1,0 +1,6 @@
+tree c2239b813eec2ba56884fbc068fd0367c9e1a5a0
+parent 7c48e5519979ea8b5559152931fec45725e78a0c
+author Mads Marquart <mads@marquart.dk> 1759531321 +0200
+committer Mads Marquart <mads@marquart.dk> 1759531321 +0200
+
+Mark MetalKit as automatically safe

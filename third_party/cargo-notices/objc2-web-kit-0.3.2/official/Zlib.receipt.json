@@ -1,0 +1,14 @@
+{
+  "content_type": "text/html",
+  "final_url": "https://zlib.net/zlib_license.html",
+  "http_status": 200,
+  "name": "Zlib",
+  "requested_url": "https://zlib.net/zlib_license.html",
+  "response_bytes": 2895,
+  "response_sha256": "cf933153e9a60533c56fd1dcd555b15bff9a81c3468b5df1dc99aa7866c8b5fd",
+  "retained_bytes": 2895,
+  "retained_offset": 0,
+  "retained_scope": "COMPLETE_HTTP_RESPONSE",
+  "retained_sha256": "cf933153e9a60533c56fd1dcd555b15bff9a81c3468b5df1dc99aa7866c8b5fd",
+  "schema": "motionwright.objc-license-acquisition/1"
+}
