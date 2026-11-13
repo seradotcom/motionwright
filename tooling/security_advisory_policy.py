@@ -14,9 +14,21 @@ import pathlib
 import sys
 import tomllib
 from typing import Any
-from glib_owner_chain import OwnerChainError, verify_glib_owner_chain, lock_reverse_edges
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+TOOLING = ROOT / "tooling"
+# Isolated Python runtimes may still point to an older worktree. Load all
+# security owner-chain policies from the exact source being attested.
+sys.path.insert(0, str(TOOLING))
+from glib_owner_chain import OwnerChainError, verify_glib_owner_chain, lock_reverse_edges
+for _name in ("glib_owner_chain", "v01_glib_product_admission",
+              "v01_tauri_ipc_product_admission"):
+    _module = sys.modules.get(_name)
+    _origin = getattr(_module, "__file__", None)
+    if not isinstance(_origin, str) or pathlib.Path(_origin).resolve(strict=True).parent != TOOLING:
+        print("ERROR: security advisory guard imported from a different checkout", file=sys.stderr)
+        raise SystemExit(1)
+
 POLICY_PATH = ROOT / "docs/security/known-rustsec-advisories.json"
 LOCK_PATH = ROOT / "Cargo.lock"
 
@@ -145,7 +157,7 @@ def verify_ttf_parser_review(lock: dict[str, Any], advisory: dict[str, Any]) -> 
             or driver[0].get("version") != "1.0.0"
             or driver[0].get("source") != advisory.get("reviewed_motion_canvas_lock_source")
             or advisory.get("reviewed_motion_canvas_lock_source") !=
-            "git+https://github.com/seradotcom/semwright?rev=723cb4c9956af28a605571e3fb5935bcc00a0231#723cb4c9956af28a605571e3fb5935bcc00a0231"):
+            "git+https://github.com/seradotcom/semwright?rev=d2d76aabfb2432990a82ddbb630fc5b4a8c5fe9f#d2d76aabfb2432990a82ddbb630fc5b4a8c5fe9f"):
         fail("ttf-parser reviewed Semwright driver source changed; review required")
     try:
         reverse = lock_reverse_edges(lock)
