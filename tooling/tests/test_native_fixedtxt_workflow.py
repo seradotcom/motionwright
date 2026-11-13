@@ -502,10 +502,17 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             case.mkdir(mode=0o700)
             log = case / 'semwrightd.original.private.log'
             log.write_bytes(b'original daemon launch diagnostic')
+            terminal_directory = case / 'native-result.host-stdin'
+            terminal_directory.mkdir(mode=0o700)
+            terminal = terminal_directory / 'render-terminal.original-value.json'
+            terminal_raw = b'original render terminal failure'
+            terminal.write_bytes(terminal_raw)
+            terminal_name = request['fixture'] + '/native-result.host-stdin/' + terminal.name
             unrelated = case / 'unselected-private-file'; unrelated.write_bytes(b'not admitted by this selection')
             extra, extra_failures = route.collect_workflow_originals(current, request, partial=True)
             self.assertEqual(extra[('owner_diagnostics', request['fixture'] + '/' + log.name)],
                              b'original daemon launch diagnostic')
+            self.assertEqual(extra[('owner_diagnostics', terminal_name)], terminal_raw)
             self.assertNotIn(('owner_diagnostics', 'original-attempt-error.json'), extra)
             self.assertFalse(any(name.endswith(unrelated.name) for _, name in extra))
             # Exchange the real parent after its leaf stat, before its open.
@@ -584,6 +591,12 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             extra, _ = route.collect_workflow_originals(current, request, partial=True)
             self.assertEqual(extra[('owner_diagnostics', request['fixture'] + '/' + original_error.name)],
                              original_error.read_bytes())
+            terminal.write_bytes(b'x' * (8 * 1024 * 1024 + 1))
+            extra, omitted_terminal = route.collect_workflow_originals(current, request, partial=True)
+            self.assertNotIn(('owner_diagnostics', terminal_name), extra)
+            self.assertIn({'root': 'owner_diagnostics', 'relative_path': terminal_name,
+                           'reason': 'ORIGINAL_RESOURCE_BOUND'}, omitted_terminal)
+            terminal.write_bytes(terminal_raw)
             log.write_bytes(b'x' * (1024 * 1024 + 1))
             extra, omitted_log = route.collect_workflow_originals(current, request, partial=True)
             self.assertNotIn(('owner_diagnostics', request['fixture'] + '/' + log.name), extra)
