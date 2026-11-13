@@ -590,7 +590,9 @@ def prepare_tauri_generated_metadata(repo, cargo_home, manifest, target, package
             or not isinstance(target, str) or target not in sources.TAURI_SCHEMAS_BY_TARGET
             or package != "motionwright-desktop"):
         raise CaptureError("tauri_generated_metadata_scope_invalid")
-    platform = "windows" if target == "x86_64-pc-windows-msvc" else "linux"
+    platform = {"x86_64-pc-windows-msvc": "windows",
+                "x86_64-unknown-linux-gnu": "linux",
+                "aarch64-apple-darwin": "macos"}[target]
     home = Path(cargo_home).resolve(strict=True)
     with os.scandir(home) as listing:
         if next(listing, None) is not None:
@@ -661,7 +663,8 @@ def observe_tauri_schemas(repo, target):
         if observed != expected:
             raise CaptureError("tauri_generated_schema_roster_invalid")
     result = {}
-    linux_copy = {}
+    schema_copy = {}
+    copied_name = sources.TAURI_DESKTOP_SCHEMA_COPY.get(target)
     for name in names:
         raw = stable_read(repo, name, sources.MAX_GENERATED_SCHEMA_BYTES)
         # The canonical collector rejects duplicate keys and non-JSON numbers.
@@ -672,11 +675,9 @@ def observe_tauri_schemas(repo, target):
         if git(repo, "ls-files", "-z", "--", name):
             raise CaptureError("tauri_generated_schema_tracked")
         result[name] = {"bytes": len(raw), "sha256": sha(raw)}
-        if target == "x86_64-unknown-linux-gnu" and Path(name).name in {
-                "desktop-schema.json", "linux-schema.json"}:
-            linux_copy[Path(name).name] = raw
-    if target == "x86_64-unknown-linux-gnu" and (
-            linux_copy["desktop-schema.json"] != linux_copy["linux-schema.json"]):
+        if copied_name is not None and Path(name).name in {"desktop-schema.json", copied_name}:
+            schema_copy[Path(name).name] = raw
+    if copied_name is not None and schema_copy["desktop-schema.json"] != schema_copy[copied_name]:
         raise CaptureError("generated_tauri_schema_copy_mismatch")
     return result
 
@@ -886,8 +887,9 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     effective_env = dict(os.environ if env is None else env)
     effective_env["CARGO_HOME"] = str(Path(cargo_home).resolve(strict=True))
     if tauri_generated_schemas:
-        if target_triple == "x86_64-unknown-linux-gnu" and not tauri_generated_command_permissions:
-            raise CaptureError("linux_generated_metadata_requires_command_permissions")
+        if target_triple in {"x86_64-unknown-linux-gnu", "aarch64-apple-darwin"} and not tauri_generated_command_permissions:
+            platform = "linux" if target_triple == "x86_64-unknown-linux-gnu" else "macos"
+            raise CaptureError(platform + "_generated_metadata_requires_command_permissions")
         prepare_tauri_generated_metadata(
             repo, cargo_home, manifest, target_triple, root_package_name,
             effective_env.get("CARGO_TARGET_DIR", ""), state_directory, resources_directory)
@@ -942,11 +944,13 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
     if tauri_generated_schemas:
         revalidate_tauri_generated_metadata(
             repo, metadata, cargo_home, marker_before, target=target_triple)
-        schema = ("motionwright.linux-cargo-generated-metadata/1"
-                  if target_triple == "x86_64-unknown-linux-gnu"
-                  else "motionwright.windows-cargo-generated-metadata/2"
-                  if command_expectation is not None
-                  else "motionwright.windows-cargo-generated-metadata/1")
+        schema = {
+            "x86_64-pc-windows-msvc": ("motionwright.windows-cargo-generated-metadata/2"
+                                      if command_expectation is not None
+                                      else "motionwright.windows-cargo-generated-metadata/1"),
+            "x86_64-unknown-linux-gnu": "motionwright.linux-cargo-generated-metadata/1",
+            "aarch64-apple-darwin": "motionwright.macos-cargo-generated-metadata/1",
+        }[target_triple]
         generated = {
             "schema": schema,
             "source": expected_source, "target": target_triple,

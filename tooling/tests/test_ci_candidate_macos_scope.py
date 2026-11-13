@@ -69,6 +69,33 @@ class IsolatedMacOSBundleScopeTests(unittest.TestCase):
         self.assertIn("Read-only DMG mount, copy application and inspect macOS Mach-O", mac)
         self.assertIn("No unsigned application is force-launched", mac)
 
+    def test_capture_uses_the_same_real_arm64_toolchain_cargo(self) -> None:
+        mac = job_source(self.workflow, "macos")
+        self.assertIn('test "$(uname -m)" = \'arm64\'', mac)
+        self.assertIn('cargo_executable="$(rustup which cargo)"', mac)
+        self.assertIn('--expected-source "$GITHUB_SHA" --cargo "$cargo_executable"', mac)
+        self.assertIn('-- "$cargo_executable" build --locked --release --bins', mac)
+        self.assertIn("--target aarch64-apple-darwin", mac)
+        self.assertNotIn("-- cargo build --locked", mac)
+
+    def test_common_upload_keeps_diagnostics_outside_attestation_subject_inputs(self) -> None:
+        import sys
+        sys.path.insert(0, str(ROOT / "tooling"))
+        import candidate_attestation_input as attestation
+        self.assertEqual(Path(attestation.__file__).resolve(),
+                         (ROOT / "tooling/candidate_attestation_input.py").resolve())
+        mac = job_source(self.workflow, "macos")
+        upload = mac.split("          name: motionwright-macos-candidate\n", 1)[1]
+        upload = upload.split("          if-no-files-found:", 1)[0]
+        evidence = {Path(line.strip()).name for line in upload.splitlines()
+                    if line.strip().startswith("ci-evidence/")}
+        self.assertEqual(evidence, attestation.KNOWN_EVIDENCE_FILES["macos"])
+        originals = mac.split("      - name: Preserve original isolated macOS dependency records\n", 1)[1]
+        self.assertIn("inputs.verification_scope == 'macos_bundle'", originals)
+        self.assertIn("            ci-evidence/macos-cargo-binding.json\n", originals)
+        self.assertNotIn("            target/", originals)
+        self.assertNotIn("frontend/archives", originals)
+
     def test_only_full_candidate_can_trigger_provenance_job(self) -> None:
         attestation = job_source(self.workflow, "attest-candidates")
         self.assertNotIn(SCOPE, attestation)

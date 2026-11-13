@@ -74,6 +74,13 @@ class IsolatedLinuxBundleScopeTests(unittest.TestCase):
             self.assertIn("            ci-evidence/" + name + "\n", originals)
         self.assertIn("inputs.verification_scope == 'linux_bundle'", originals)
 
+    def test_capture_uses_the_same_real_toolchain_cargo_for_metadata_and_build(self):
+        linux = job_source(self.workflow, "linux")
+        self.assertIn('cargo_executable="$(rustup which cargo)"', linux)
+        self.assertIn('--expected-source "$GITHUB_SHA" --cargo "$cargo_executable"', linux)
+        self.assertIn('-- "$cargo_executable" build --locked --release --bins', linux)
+        self.assertNotIn("-- cargo build --locked", linux)
+
     def test_attestation_remains_full_trusted_scope_only(self):
         attestation = job_source(self.workflow, "attest-candidates")
         self.assertNotIn(SOURCE_SCOPE, attestation)

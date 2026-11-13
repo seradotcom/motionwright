@@ -41,7 +41,8 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
                 "git_blob": self.fixture.git(self.fixture.workspace, "rev-parse",
                                             "HEAD:" + BUILD_PATH).decode().strip()}
 
-    def generated_fixture(self, *, linux=False):
+    def generated_fixture(self, *, linux=False, macos=False):
+        self.assertFalse(linux and macos)
         desktop = self.fixture.workspace_member(
             "motionwright-desktop", relative=Path("apps/desktop/src-tauri"))
         for name, version, checksum in permissions.GENERATOR_PACKAGES:
@@ -50,7 +51,8 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
         (self.fixture.workspace / BUILD_PATH).write_bytes(BUILD)
         self.fixture.bind_lock()
         schemas = {}
-        names = collector.LINUX_TAURI_SCHEMAS if linux else collector.WINDOWS_TAURI_SCHEMAS
+        names = (collector.MACOS_TAURI_SCHEMAS if macos else collector.LINUX_TAURI_SCHEMAS
+                 if linux else collector.WINDOWS_TAURI_SCHEMAS)
         for name in names:
             path = self.fixture.workspace / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,9 +64,11 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             generated[name] = {"bytes": len(raw), "sha256": sha(raw)}
-        profile = {"schema": ("motionwright.linux-cargo-generated-metadata/1" if linux
+        profile = {"schema": ("motionwright.macos-cargo-generated-metadata/1" if macos
+                              else "motionwright.linux-cargo-generated-metadata/1" if linux
                               else "motionwright.windows-cargo-generated-metadata/2"),
-                   "source": self.head(), "target": ("x86_64-unknown-linux-gnu" if linux
+                   "source": self.head(), "target": ("aarch64-apple-darwin" if macos
+                                                   else "x86_64-unknown-linux-gnu" if linux
                                                    else "x86_64-pc-windows-msvc"),
                    "cargo_git_markers": {}, "tauri_schemas": schemas,
                    "tauri_command_permissions": {
@@ -79,6 +83,78 @@ class TauriGeneratedMetadataTests(unittest.TestCase):
         self.assertIn(code, self.codes(result), result["issues"])
         self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
         return result
+
+    def test_macos_profile_preserves_notices_and_requires_exact_permissions(self):
+        component, profile = self.generated_fixture(macos=True)
+        result = self.collect(component, profile)
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["texts"], {sha(NOTICE): NOTICE})
+        self.assertEqual(result["full_package_inventory"], "NOT_VERIFIED")
+        excluded = result["components"][0]["source_authentication"]["excluded_generated_metadata"]
+        self.assertEqual({row["path"] for row in excluded},
+                         set(collector.MACOS_TAURI_SCHEMAS) |
+                         set(profile["tauri_command_permissions"]["files"]))
+        missing = copy.deepcopy(profile)
+        del missing["tauri_command_permissions"]
+        self.assert_rejected(component, missing, "generated_metadata_profile_invalid")
+
+    def test_macos_profile_rejects_crossed_targets_and_lowercase_schema(self):
+        component, profile = self.generated_fixture(macos=True)
+        for label in ("intel", "universal", "linux_profile", "windows_profile",
+                      "lowercase_name", "extra_field"):
+            changed = copy.deepcopy(profile)
+            if label == "intel":
+                changed["target"] = "x86_64-apple-darwin"
+            elif label == "universal":
+                changed["target"] = "universal-apple-darwin"
+            elif label == "linux_profile":
+                changed["schema"] = "motionwright.linux-cargo-generated-metadata/1"
+            elif label == "windows_profile":
+                changed["schema"] = "motionwright.windows-cargo-generated-metadata/2"
+            elif label == "lowercase_name":
+                old = collector.MACOS_TAURI_SCHEMAS[-1]
+                changed["tauri_schemas"][old.replace("macOS", "macos")] = changed["tauri_schemas"].pop(old)
+            else:
+                changed["unreviewed"] = True
+            with self.subTest(label=label):
+                self.assert_rejected(component, changed, "generated_metadata_profile_invalid")
+        path = self.fixture.workspace / collector.MACOS_TAURI_SCHEMAS[-1]
+        raw = path.read_bytes()
+        path.unlink()
+        path.with_name("macos-schema.json").write_bytes(raw)
+        self.assert_rejected(component, profile, "generated_tauri_schema_roster_invalid")
+
+    def test_macos_copy_and_physical_namespace_remain_closed(self):
+        component, profile = self.generated_fixture(macos=True)
+        name = "apps/desktop/src-tauri/gen/schemas/desktop-schema.json"
+        original = copy.deepcopy(profile)
+        raw = b'{"different":true}'
+        path = self.fixture.workspace / name
+        path.write_bytes(raw)
+        profile["tauri_schemas"][name] = {"bytes": len(raw), "sha256": sha(raw)}
+        self.assert_rejected(component, profile, "generated_tauri_schema_copy_mismatch")
+        path.write_bytes(b"{}")
+        (path.parent / "extra-directory").mkdir()
+        self.assert_rejected(component, original, "generated_tauri_schema_roster_invalid")
+
+    def test_macos_permission_forgery_and_generator_replacement_are_rejected(self):
+        component, profile = self.generated_fixture(macos=True)
+        name = next(iter(profile["tauri_command_permissions"]["files"]))
+        path = self.fixture.workspace / name
+        original = path.read_bytes()
+        forged = original.replace(b"hello_world", b"other_world")
+        self.assertNotEqual(original, forged)
+        path.write_bytes(forged)
+        changed = copy.deepcopy(profile)
+        changed["tauri_command_permissions"]["files"][name] = {"bytes": len(forged), "sha256": sha(forged)}
+        self.assert_rejected(component, changed, "generated_tauri_permission_bytes_invalid")
+        path.write_bytes(original)
+        self.fixture.lock_bytes = self.fixture.lock_bytes.replace(
+            permissions.GENERATOR_PACKAGES[0][2].encode(), b"0" * 64, 1)
+        (self.fixture.workspace / "Cargo.lock").write_bytes(self.fixture.lock_bytes)
+        self.commit_paths("Cargo.lock")
+        profile["source"] = self.head()
+        self.assert_rejected(component, profile, "generated_tauri_generator_lock_invalid")
 
     def test_linux_profile_preserves_notices_and_requires_source_bound_permissions(self):
         component, profile = self.generated_fixture(linux=True)

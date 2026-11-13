@@ -43,6 +43,8 @@ on:
       - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
       - "tooling/ci_linux_dependency_capture.py"
+      - "tooling/ci_macos_dependency_capture.py"
+      - "tooling/tests/test_ci_macos_dependency_capture.py"
       - "tooling/tests/test_ci_linux_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
@@ -150,6 +152,8 @@ on:
       - "tooling/tests/test_ci_candidate_linux_scope.py"
       - "tooling/ci_windows_dependency_capture.py"
       - "tooling/ci_linux_dependency_capture.py"
+      - "tooling/ci_macos_dependency_capture.py"
+      - "tooling/tests/test_ci_macos_dependency_capture.py"
       - "tooling/tests/test_ci_linux_dependency_capture.py"
       - "tooling/tests/test_ci_windows_dependency_capture.py"
       - "scripts/cargo_build_inventory.py"
@@ -317,6 +321,8 @@ jobs:
         run: python3 -B -m unittest tooling.tests.test_ci_candidate_macos_scope tooling.tests.test_ci_candidate_linux_scope -v
       - name: Linux captured dependency composition contracts
         run: python3 -B -m unittest tooling.tests.test_ci_linux_dependency_capture -v
+      - name: macOS captured dependency composition contracts
+        run: python3 -B -m unittest tooling.tests.test_ci_macos_dependency_capture -v
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
@@ -956,14 +962,16 @@ jobs:
             export MOTIONWRIGHT_CANDIDATE_SOURCE_SHA="$GITHUB_SHA"
             npm --prefix apps/studio run build
             python3 -B tooling/ci_linux_dependency_capture.py frontend
+            cargo_executable="$(rustup which cargo)"
+            test -f "$cargo_executable"
             python3 -B scripts/candidate_dependency_capture.py \
-              --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
+              --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
               --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
               --root-package motionwright-desktop --target x86_64-unknown-linux-gnu \
               --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions \
               --state-directory ci-evidence/linux-cargo/state \
               --resources-directory ci-evidence/linux-cargo/resources \
-              -- cargo build --locked --release --bins --package motionwright-desktop \
+              -- "$cargo_executable" build --locked --release --bins --package motionwright-desktop \
               --manifest-path apps/desktop/src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu \
               --features tauri/custom-protocol --message-format=json-render-diagnostics
             python3 -B tooling/ci_linux_dependency_capture.py stage
@@ -3395,6 +3403,9 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'all' || inputs.verification_scope == 'macos_bundle'
     needs: receipt-policy
     runs-on: macos-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_MACOS_CANDIDATE_SCOPE: ${{ inputs.verification_scope }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -3409,32 +3420,79 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'macos_bundle'
         with:
           cache-on-failure: false
+          save-if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'macos_bundle' }}
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned macOS DMG candidate
+        id: macos_candidate_build
+        shell: bash
         run: |
-          cd apps/desktop
-          npm --prefix ../studio exec -- tauri build --bundles dmg
+          set -euo pipefail
+          bundle_root='target/release'
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_MACOS_CANDIDATE_SCOPE" == 'macos_bundle' ]]; then
+            test "$(uname -m)" = 'arm64'
+            cargo_home="$RUNNER_TEMP/motionwright-macos-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            target_dir="$GITHUB_WORKSPACE/target/macos-captured"
+            test ! -e "$cargo_home"
+            test ! -e "$target_dir"
+            mkdir -p "$cargo_home" "$target_dir"
+            export CARGO_HOME="$cargo_home"
+            export CARGO_TARGET_DIR="$target_dir"
+            printf '%s\n' "CARGO_HOME=$cargo_home" "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
+            export MOTIONWRIGHT_CANDIDATE_BUILD=1
+            export MOTIONWRIGHT_CANDIDATE_SOURCE_SHA="$GITHUB_SHA"
+            npm --prefix apps/studio run build
+            python3 -B tooling/ci_macos_dependency_capture.py frontend
+            cargo_executable="$(rustup which cargo)"
+            test -f "$cargo_executable"
+            python3 -B scripts/candidate_dependency_capture.py \
+              --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
+              --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
+              --root-package motionwright-desktop --target aarch64-apple-darwin \
+              --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions \
+              --state-directory ci-evidence/macos-cargo/state \
+              --resources-directory ci-evidence/macos-cargo/resources \
+              -- "$cargo_executable" build --locked --release --bins --package motionwright-desktop \
+              --manifest-path apps/desktop/src-tauri/Cargo.toml --target aarch64-apple-darwin \
+              --features tauri/custom-protocol --message-format=json-render-diagnostics
+            python3 -B tooling/ci_macos_dependency_capture.py stage
+            python3 -B tooling/ci_macos_dependency_capture.py bundle
+            bundle_root='target/macos-captured/aarch64-apple-darwin/release'
+          else
+            (cd apps/desktop && npm --prefix ../studio exec -- tauri build --bundles dmg)
+          fi
+          printf 'MW_MACOS_BUNDLE_ROOT=%s\n' "$bundle_root" >> "$GITHUB_ENV"
       - name: Record exact macOS candidate artifact
+        shell: bash
         run: |
-          dmg_count="$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' | wc -l)"
+          set -euo pipefail
+          cargo_args=()
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_MACOS_CANDIDATE_SCOPE" == 'macos_bundle' ]]; then
+            python3 -B tooling/ci_macos_dependency_capture.py frontend-recheck
+            cargo_args=(--cargo-index ci-evidence/macos-cargo/resources/cargo/index.json
+              --cargo-binary target/macos-captured/aarch64-apple-darwin/release/motionwright-desktop
+              --require-cargo-binding)
+          fi
+          dmg_count="$(find "$MW_MACOS_BUNDLE_ROOT/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' | wc -l)"
           test "$dmg_count" -eq 1
-          dmg="$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print)"
+          dmg="$(find "$MW_MACOS_BUNDLE_ROOT/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print)"
           arch="$(uname -m)"
           python3 tooling/package_receipt.py \
             --git-sha "$GITHUB_SHA" \
             --platform macos \
             --arch "$arch" \
             --artifact "$dmg" \
+            "${cargo_args[@]}" \
             --output ci-evidence/macos-candidate.json
       - name: Read-only DMG mount, copy application and inspect macOS Mach-O
         shell: bash
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          dmg="$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          dmg="$(find "$MW_MACOS_BUNDLE_ROOT/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
           work="$RUNNER_TEMP/motionwright-macos-smoke"
           mkdir -p "$work/mount" "$work/installed"
           hdiutil attach -readonly -nobrowse -mountpoint "$work/mount" "$dmg" >/dev/null
@@ -3457,14 +3515,65 @@ jobs:
             --output ci-evidence/macos-dmg-smoke.json
           # No unsigned application is force-launched and no Gatekeeper,
           # signing, notarization or user-level protection is disabled.
+      - name: Verify the copied DMG executable against the original Cargo capture
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'macos_bundle'
+        run: python3 -B tooling/ci_macos_dependency_capture.py verify
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-macos-candidate
           path: |
-            target/release/bundle/dmg/*.dmg
+            ${{ env.MW_MACOS_BUNDLE_ROOT }}/bundle/dmg/*.dmg
             ci-evidence/macos-candidate.json
             ci-evidence/macos-dmg-smoke.json
           if-no-files-found: error
+
+      - name: Preserve original isolated macOS dependency records
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'macos_bundle' && steps.macos_candidate_build.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-macos-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/macos-cargo/tauri-resources.json
+            ci-evidence/macos-cargo/bundle.request.json
+            ci-evidence/macos-cargo/bundle.completion.json
+            ci-evidence/macos-cargo/bundle.stdout
+            ci-evidence/macos-cargo/bundle.stderr
+            ci-evidence/macos-cargo/state/source-before.json
+            ci-evidence/macos-cargo/state/source-after.json
+            ci-evidence/macos-cargo/state/metadata.stdout
+            ci-evidence/macos-cargo/state/metadata.stderr
+            ci-evidence/macos-cargo/state/metadata.request.json
+            ci-evidence/macos-cargo/state/metadata.completion.json
+            ci-evidence/macos-cargo/state/build.stdout
+            ci-evidence/macos-cargo/state/build.stderr
+            ci-evidence/macos-cargo/state/build.request.json
+            ci-evidence/macos-cargo/state/build.completion.json
+            ci-evidence/macos-cargo/state/cargo-components.json
+            ci-evidence/macos-cargo/state/cargo-artifacts.json
+            ci-evidence/macos-cargo/state/cargo-license-sources.json
+            ci-evidence/macos-cargo/state/tauri-generated-schemas.json
+            ci-evidence/macos-cargo/state/capture-complete.json
+            ci-evidence/macos-cargo/state/generated-metadata/tauri/acl-manifests.json
+            ci-evidence/macos-cargo/state/generated-metadata/tauri/capabilities.json
+            ci-evidence/macos-cargo/state/generated-metadata/tauri/desktop-schema.json
+            ci-evidence/macos-cargo/state/generated-metadata/tauri/macOS-schema.json
+            ci-evidence/macos-cargo/state/generated-metadata/tauri-command-source/build.rs
+            ci-evidence/macos-cargo/state/generated-metadata/tauri-command-permissions/*.toml
+            ci-evidence/macos-cargo/state/generated-metadata/cargo-markers/*.bin
+            ci-evidence/macos-cargo/resources/cargo/index.json
+            ci-evidence/macos-cargo/resources/cargo/texts/*.txt
+            ci-evidence/macos-cargo/frontend/archive-map.json
+            ci-evidence/macos-cargo/frontend/pre-archive-index.original.json
+            ci-evidence/macos-cargo/frontend/pre-archive-emitted-set.json
+            ci-evidence/macos-cargo/frontend/pre-recheck-index.original.json
+            ci-evidence/macos-cargo/frontend/pre-recheck-emitted-set.json
+            ci-evidence/macos-cargo/frontend/before-build.json
+            ci-evidence/macos-cargo/frontend/after-bundle.json
+            ci-evidence/macos-candidate.json
+            ci-evidence/macos-dmg-smoke.json
+            ci-evidence/macos-cargo-binding.json
+          if-no-files-found: warn
+          retention-days: 30
 
   # Keep OIDC/Sigstore/attestation write permissions in this dedicated job.
   # The three package-build jobs continue to have contents:read only.

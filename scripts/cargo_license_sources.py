@@ -665,18 +665,30 @@ LINUX_TAURI_SCHEMAS = tuple(
         "acl-manifests.json", "capabilities.json", "desktop-schema.json", "linux-schema.json"
     )
 )
+MACOS_TAURI_SCHEMAS = tuple(
+    "apps/desktop/src-tauri/gen/schemas/" + name for name in (
+        "acl-manifests.json", "capabilities.json", "desktop-schema.json", "macOS-schema.json"
+    )
+)
+TAURI_DESKTOP_SCHEMA_COPY = {
+    "x86_64-unknown-linux-gnu": "linux-schema.json",
+    "aarch64-apple-darwin": "macOS-schema.json",
+}
 TAURI_SCHEMAS_BY_TARGET = {
     "x86_64-pc-windows-msvc": WINDOWS_TAURI_SCHEMAS,
     "x86_64-unknown-linux-gnu": LINUX_TAURI_SCHEMAS,
+    "aarch64-apple-darwin": MACOS_TAURI_SCHEMAS,
 }
 TAURI_GENERATED_PROFILE_TARGETS = {
     "motionwright.windows-cargo-generated-metadata/1": "x86_64-pc-windows-msvc",
     "motionwright.windows-cargo-generated-metadata/2": "x86_64-pc-windows-msvc",
     "motionwright.linux-cargo-generated-metadata/1": "x86_64-unknown-linux-gnu",
+    "motionwright.macos-cargo-generated-metadata/1": "aarch64-apple-darwin",
 }
 TAURI_COMMAND_PERMISSION_PROFILES = frozenset({
     "motionwright.windows-cargo-generated-metadata/2",
     "motionwright.linux-cargo-generated-metadata/1",
+    "motionwright.macos-cargo-generated-metadata/1",
 })
 MAX_GENERATED_SCHEMA_BYTES = 4 * 1024 * 1024
 MAX_CARGO_MARKER_BYTES = 4096
@@ -842,20 +854,19 @@ def _generated_profile(profile, workspace: _Root, cargo: _Root,
                     _fail("generated_tauri_schema_roster_invalid", "The generated schema namespace is not closed.")
         if observed != names:
             _fail("generated_tauri_schema_roster_invalid", "The generated schema namespace is not closed.")
-    linux_copy = {}
+    schema_copy = {}
+    copied_name = TAURI_DESKTOP_SCHEMA_COPY.get(target)
     for name, descriptor in profile["tauri_schemas"].items():
         parts, data = verify(workspace, name, descriptor, MAX_GENERATED_SCHEMA_BYTES)
         if workspace_repo.entries(parts):
             _fail("generated_tauri_schema_tracked", "Generated schema metadata cannot replace tracked source.")
         _generated_json(data)
-        if target == "x86_64-unknown-linux-gnu" and Path(name).name in {
-                "desktop-schema.json", "linux-schema.json"}:
-            linux_copy[Path(name).name] = data
-    # The locked tauri-utils generator copies the Linux schema to desktop.
+        if copied_name is not None and Path(name).name in {"desktop-schema.json", copied_name}:
+            schema_copy[Path(name).name] = data
+    # The pinned generator copies each admitted target schema to desktop.
     # A new declared digest cannot admit two different physical schemas.
-    if target == "x86_64-unknown-linux-gnu" and (
-            linux_copy["desktop-schema.json"] != linux_copy["linux-schema.json"]):
-        _fail("generated_tauri_schema_copy_mismatch", "The desktop schema is not the exact Linux schema copy.")
+    if copied_name is not None and schema_copy["desktop-schema.json"] != schema_copy[copied_name]:
+        _fail("generated_tauri_schema_copy_mismatch", "The desktop schema is not the exact target schema copy.")
     if command_permissions:
         _generated_command_permissions(profile["tauri_command_permissions"],
                                        workspace, workspace_repo, budget, verify)

@@ -114,6 +114,81 @@ class CaptureContracts(unittest.TestCase):
         with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_schema_roster_invalid"):
             capture.observe_tauri_schemas(self.root, triple)
 
+    def test_macos_preflight_admits_only_fresh_arm64_roots(self):
+        self.repo()
+        manifest = self.root / "apps/desktop/src-tauri/Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes(b"[package]\n")
+        home = self.root / "cargo"; home.mkdir()
+        target = self.root / "target"; target.mkdir()
+        arguments = (self.root, home, manifest, "aarch64-apple-darwin",
+                     "motionwright-desktop", target, "state", "resources")
+        capture.prepare_tauri_generated_metadata(*arguments)
+        with self.assertRaisesRegex(capture.CaptureError, "windows_generated_metadata_scope_invalid"):
+            capture.prepare_windows_generated_metadata(*arguments)
+        for triple in ("x86_64-apple-darwin", "universal-apple-darwin"):
+            changed = list(arguments); changed[3] = triple
+            with self.subTest(target=triple), self.assertRaisesRegex(
+                    capture.CaptureError, "tauri_generated_metadata_scope_invalid"):
+                capture.prepare_tauri_generated_metadata(*changed)
+        (home / "preexisting").write_bytes(b"preserve")
+        with self.assertRaisesRegex(capture.CaptureError, "macos_capture_cargo_home_not_empty"):
+            capture.prepare_tauri_generated_metadata(*arguments)
+        (home / "preexisting").unlink()
+        (target / "preexisting").write_bytes(b"preserve")
+        with self.assertRaisesRegex(capture.CaptureError, "macos_capture_target_not_empty"):
+            capture.prepare_tauri_generated_metadata(*arguments)
+        self.assertFalse((self.root / "state").exists())
+
+    def test_macos_observer_requires_case_exact_copy_and_postread_identity(self):
+        self.repo()
+        sources = capture._load_sibling("cargo_license_sources")
+        for name in sources.MACOS_TAURI_SCHEMAS:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"{}")
+        triple = "aarch64-apple-darwin"
+        observed = capture.observe_tauri_schemas(self.root, triple)
+        self.assertEqual(set(observed), set(sources.MACOS_TAURI_SCHEMAS))
+        desktop = self.root / "apps/desktop/src-tauri/gen/schemas/desktop-schema.json"
+        macos = desktop.with_name("macOS-schema.json")
+        macos.unlink()
+        wrong = macos.with_name("macos-schema.json"); wrong.write_bytes(b"{}")
+        with self.assertRaisesRegex(capture.CaptureError, "tauri_generated_schema_roster_invalid"):
+            capture.observe_tauri_schemas(self.root, triple)
+        wrong.unlink(); macos.write_bytes(b"{}")
+        desktop.write_bytes(b'{"changed":true}')
+        with self.assertRaisesRegex(capture.CaptureError, "generated_tauri_schema_copy_mismatch"):
+            capture.observe_tauri_schemas(self.root, triple)
+        macos.write_bytes(desktop.read_bytes())
+        home = self.root / "cargo"; home.mkdir()
+        with self.assertRaisesRegex(capture.CaptureError, "generated_metadata_changed_after_notices"):
+            capture.revalidate_tauri_generated_metadata(
+                self.root, {"packages": []}, home, {}, observed, target=triple)
+
+    def test_macos_missing_command_permissions_refuses_before_any_cargo_process(self):
+        self.repo()
+        manifest = self.root / "apps/desktop/src-tauri/Cargo.toml"
+        manifest.parent.mkdir(parents=True); manifest.write_bytes(b"[package]\n")
+        self.git("add", "apps/desktop/src-tauri/Cargo.toml")
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "commit", "-qm", "manifest fixture")
+        head = self.git("rev-parse", "HEAD").decode().strip()
+        home = self.root / "cargo"; home.mkdir()
+        target = self.root / "target"; target.mkdir()
+        with mock.patch.object(capture, "validate_cargo_build", return_value={}), \
+             mock.patch.object(capture, "run_captured") as process:
+            with self.assertRaisesRegex(capture.CaptureError,
+                                        "macos_generated_metadata_requires_command_permissions"):
+                capture.capture_build(
+                    repo=self.root, expected_source=head, cargo="cargo", cargo_home=home,
+                    target_triple="aarch64-apple-darwin", root_package_name="motionwright-desktop",
+                    manifest_path=manifest, state_directory="state", resources_directory="resources",
+                    build_command=["cargo", "build"], env={"CARGO_TARGET_DIR": str(target)},
+                    tauri_generated_schemas=True, tauri_generated_command_permissions=False)
+            process.assert_not_called()
+        self.assertFalse((self.root / "state").exists())
+
     def test_generated_revalidation_uses_real_checkout_and_preserves_original_bytes(self):
         import test_cargo_license_sources as sources
         base = self.root / "fixture"; base.mkdir()
