@@ -1283,7 +1283,7 @@ async fn master_with_coordinator(
         .first()
         .ok_or("seeded project has no deliverable")?;
 
-    let expected_frames = expected_fixture_frames(&project)?;
+    let expected_frames = expected_fixture_frames(project)?;
     let audio = MltAudioArtifact {
         relative_path: audio_relative.to_owned(),
         sha256: audio_sha256.to_owned(),
