@@ -712,6 +712,7 @@ class OuterDeadlineTests(unittest.TestCase):
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           (inputs.scenario == 'static-scene' ||
+           inputs.scenario == 'cancel-active' ||
            inputs.scenario == 'camera120' ||
            inputs.scenario == 'camera120-source-cycle' ||
            inputs.scenario == 'editable-source-cycle') }}
