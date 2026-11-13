@@ -75,6 +75,8 @@ jobs:
         run: cargo test --locked -p motionwright-native --lib exact_cubic_out_ -- --nocapture
       - name: Native SDK operation and input safety
         run: cargo test --locked -p motionwright-native --lib exact_out_cubic_native_sdk_operation_is_typed_and_fails_closed -- --nocapture
+      - name: Source-exact Native MLT mux stereo tail unit regressions (validation branch only)
+        run: cargo test --locked -p motionwright-native --lib native_mux_ -- --nocapture
       - name: No Rust warnings in affected authoritative crates
         run: cargo clippy --locked -p motionwright-domain -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
