@@ -29,6 +29,10 @@ REQUIRED_PR_PATHS = (
     "tooling/ci_affected_rust_diagnostics.py",
     # Retain the original native entrypoints and current Rust/SDK source.
     "tooling/native_manim_e2e.py",
+    "tooling/native_manim_cancel.py",
+    "tooling/native_manim_cancel_publication.py",
+    "tooling/tests/test_native_manim_cancel_process.py",
+    "crates/native/examples/native_manim_cancel/active.rs",
     "tooling/native_manim_artifact_original.py",
     "tooling/tests/test_native_manim_artifact_zip_original.py",
     "tooling/native_manim_resume_host.py",

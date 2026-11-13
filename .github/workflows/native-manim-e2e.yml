@@ -6,7 +6,7 @@ on:
       scenario:
         description: Source contracts, a build-only recovery tool, or an original Native scene/cycle
         type: choice
-        options: [source-contracts, source-recovery-tool-only, static-scene, camera120, camera120-source-cycle, editable-source-cycle, editable-source-resume, recovery-runtime-cycle]
+        options: [source-contracts, source-recovery-tool-only, static-scene, cancel-active, camera120, camera120-source-cycle, editable-source-cycle, editable-source-resume, recovery-runtime-cycle]
         default: source-contracts
       recovery_continuation:
         description: Reuse the authenticated first reference and execute only the three unstarted phases
@@ -62,6 +62,10 @@ on:
       - 'crates/hyperframes-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_manim_cancel.py'
+      - 'tooling/native_manim_cancel_publication.py'
+      - 'tooling/tests/test_native_manim_cancel_process.py'
+      - 'crates/native/examples/native_manim_cancel/**'
       - 'tooling/native_manim_artifact_original.py'
       - 'tooling/tests/test_native_manim_artifact_zip_original.py'
       - 'tooling/native_manim_resume*.py'
@@ -122,7 +126,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle' || inputs.scenario == 'editable-source-cycle' || inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  group: ${{ (inputs.scenario == 'cancel-active' || inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle' || inputs.scenario == 'editable-source-cycle' || inputs.scenario == 'editable-source-resume' || inputs.scenario == 'recovery-runtime-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
   cancel-in-progress: false
 
 defaults:
@@ -162,10 +166,26 @@ jobs:
           if os.environ["MW_MANIM_RECOVERY_CONTINUATION"] != "none":
               raise SystemExit("A retained reference requires recovery-runtime-cycle")
           if event == "workflow_dispatch":
-              if scenario not in {"source-contracts", "static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle"}:
+              if scenario not in {"source-contracts", "static-scene", "cancel-active", "camera120", "camera120-source-cycle", "editable-source-cycle"}:
                   raise SystemExit("Unsupported Manim workflow scenario")
           elif event != "pull_request":
               raise SystemExit("Unsupported Manim workflow event")
+          PY
+
+      - name: Verify four actual Linux process controls for active cancellation
+        run: |
+          python3 -B - <<'PY'
+          import ast
+          from pathlib import Path
+          import unittest
+          for relative in ("tooling/native_manim_cancel.py", "tooling/native_manim_cancel_publication.py"):
+              ast.parse(Path(relative).read_text(encoding="utf-8"), filename=relative)
+          suite = unittest.defaultTestLoader.loadTestsFromName("tooling.tests.test_native_manim_cancel_process")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != 4 or not result.wasSuccessful() or result.skipped
+                  or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit("Four original Linux process controls must execute without skips")
+          print("MANIM_CANCEL_PROCESS_CONTROLS=4 Native_render=NOT_RUN")
           PY
 
       - name: Verify optional affected Rust diagnostics script has valid syntax, without executing it
@@ -1894,6 +1914,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           (inputs.scenario == 'static-scene' ||
+           inputs.scenario == 'cancel-active' ||
            inputs.scenario == 'camera120' ||
            inputs.scenario == 'camera120-source-cycle' ||
            inputs.scenario == 'editable-source-cycle') }}
@@ -1967,6 +1988,22 @@ jobs:
           public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
                       "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
           PY
+
+      - name: Validate one active cancellation dispatch and public recovery key
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'cancel-active'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import public_key
+          public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+                      "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          PY
+          mkdir -m 700 "$RUNNER_TEMP/manim-cancel-private" "$RUNNER_TEMP/manim-cancel-sealed"
 
       - name: Validate one static dispatch and public recovery key
         if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'static-scene'
@@ -2508,6 +2545,12 @@ jobs:
               --evidence-root "$RUNNER_TEMP/manim-camera-private/$GITHUB_SHA" \
               --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
               | tee "$RUNNER_TEMP/manim-camera-wrapper.log"
+          elif [ "$MANIM_NATIVE_SCENARIO" = "cancel-active" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
+              --scenario cancel-active \
+              --evidence-root "$RUNNER_TEMP/manim-cancel-private/$GITHUB_SHA" \
+              --sealed-originals "$RUNNER_TEMP/manim-cancel-sealed/originals.mwci" \
+              | tee "$RUNNER_TEMP/manim-cancel-wrapper.log"
           elif [ "$MANIM_NATIVE_SCENARIO" = "static-scene" ]; then
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
               --scenario static-scene \
@@ -3156,6 +3199,8 @@ jobs:
               --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
               --output-root "verification/native-manim-public" \
               --job-status "$NATIVE_CI_JOB_STATUS"
+          elif [ "$MANIM_NATIVE_SCENARIO" = "cancel-active" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_cancel_publication.py
           elif [ "$MANIM_NATIVE_SCENARIO" = "static-scene" ]; then
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_scene_public_artifact.py \
               --scene manim --profile static \
@@ -3196,6 +3241,15 @@ jobs:
         with:
           name: motionwright-manim-camera-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/manim-camera-sealed/originals.mwci
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain encrypted cancellation originals on every terminal outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.scenario == 'cancel-active'
+        with:
+          name: motionwright-manim-cancel-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manim-cancel-sealed/originals.mwci
           if-no-files-found: error
           retention-days: 14
 

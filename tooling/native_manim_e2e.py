@@ -919,6 +919,7 @@ def stage_phase_binaries(binary_root, reuse, *, driver_source=None, runner_sourc
 def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None, resume_cycle=None,
                 recovery_cycle=None):
     camera = args.scenario == "camera120"
+    cancellation = args.scenario == "cancel-active"
     recovery = args.scenario == "recovery-runtime-cycle"
     if recovery != (recovery_cycle is not None) or (recovery and any(
             value is not None for value in (editable_cycle, resume_cycle, source_cycle, graph_cycle))):
@@ -952,6 +953,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
     cycle_observation = None
     editable_result = None
     static_result = None
+    cancel_result = None
     if source_cycle is not None and not camera:
         raise ValueError("camera source cycle requires the camera producer")
     from native_manim_camera_evidence import (
@@ -979,6 +981,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
         contextlib.nullcontext(tempfile.mkdtemp(
             prefix=("mw-manim-" if lifecycle else
                     "motionwright-native-manim-camera-" if camera else
+                    "motionwright-native-manim-cancel-" if cancellation else
                     "motionwright-native-manim-static-"),
             dir=os.environ["RUNNER_TEMP"],
         ))
@@ -988,7 +991,8 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
         root.chmod(0o700)
         with CameraCustody(
             root, evidence, args.sealed_originals, recipient, current,
-            profile="graph" if graph else "editable" if editable else "camera",
+            profile=("graph" if graph else "editable" if editable else
+                     "cancellation" if cancellation else "camera"),
         ) as camera_custody:
             runtime_inventory_sha256 = retain_runtime_inventory(evidence)
             if graph:
@@ -1277,7 +1281,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
             daemon_log = evidence / "semwrightd.log"
             log_stream = daemon_log.open("wb")
             broker_child = (OriginalPhaseChild("broker", evidence, camera_custody)
-                            if _EDITABLE_OUTER_DEADLINE is not None else None)
+                            if _EDITABLE_OUTER_DEADLINE is not None or cancellation else None)
             daemon = None
             try:
                 launch_broker = broker_child.launch if broker_child is not None else subprocess.Popen
@@ -1331,6 +1335,8 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                     "runtime_inventory_sha256": runtime_inventory_sha256,
                     "fresh_process_launched_by_this_wrapper": True,
                 }
+                if cancellation:
+                    launch["python_sha256"] = digest(PYTHON)
                 if graph:
                     launch["native_provider_sha256"] = digest(MW_GRAPH_PROVIDER)
                     launch["graph_manifest_sha256"] = digest(graph_manifest)
@@ -1443,6 +1449,17 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                         capture=captured_json, source_binary=MW_EXAMPLE, python=PYTHON,
                         runtime=MANIM_RUNTIME, tooling=ROOT / "tooling", launch=launch,
                     )
+                elif cancellation:
+                    from native_manim_cancel import run_original
+                    request_id = (f"cancel-{current['run_id']}-{current['run_attempt']}-"
+                                  f"{GITHUB_SHA[:12]}")
+                    cancel_result = camera_custody.once(lambda: run_original(
+                        source_binary=MW_EXAMPLE, database=database,
+                        connection=connection_path, evidence=evidence, env=env,
+                        custody=camera_custody, broker=daemon, launch=launch,
+                        runner=runner, python=PYTHON, source_root=ROOT, request_id=request_id,
+                        child_class=OriginalPhaseChild, bounded_timeout=bounded_timeout,
+                    ))
                 else:
                     result = camera_custody.once(lambda: captured_json(
                         [
@@ -1558,7 +1575,13 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
                             raise broker_cleanup_primary
                         raise_deferred_cancellation()
 
-        if not camera and not lifecycle:
+        if cancellation:
+            cancel_result["motionwright_sha"] = GITHUB_SHA
+            cancel_result["semwright_sha"] = PIN
+            cancel_result["sealed_originals_sha256"] = digest(args.sealed_originals)
+            cancel_result["sealed_originals_bytes"] = args.sealed_originals.stat().st_size
+            private_json(evidence / "result.json", cancel_result)
+        elif not camera and not lifecycle:
             # __exit__ has sealed the actual selected originals and failed closed
             # on partial capture or cleanup errors. This is an exclusive new file.
             static_result["sealed_originals_sha256"] = digest(args.sealed_originals)
@@ -1595,7 +1618,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=Non
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--scenario", choices=("static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle", "graph-source-cycle"),
+        "--scenario", choices=("static-scene", "cancel-active", "camera120", "camera120-source-cycle", "editable-source-cycle", "graph-source-cycle"),
         default="static-scene",
     )
     parser.add_argument("--evidence-root", type=Path)
@@ -1615,7 +1638,7 @@ def main(argv=None) -> None:
     _EDITABLE_STAGE = "exact-inputs-before-phase-custody"
     exact_inputs()
     _EDITABLE_STAGE = "selected-source-cycle"
-    camera = args.scenario != "static-scene"
+    camera = args.scenario not in ("static-scene", "cancel-active")
     if args.scenario == "graph-source-cycle":
         from native_manim_graph_cycle import run_source_cycle
         run_source_cycle(args, run_phase=_run_single, validate_phase=graph_options)
@@ -1639,7 +1662,8 @@ def main(argv=None) -> None:
                 or args.sealed_cycle_root is not None):
             raise ValueError("cycle custody paths require their selected source cycle")
         _run_single(args)
-        status_key = "native_manim_camera_e2e" if camera else "native_manim_e2e"
+        status_key = ("native_manim_cancel_e2e" if args.scenario == "cancel-active" else
+                      "native_manim_camera_e2e" if camera else "native_manim_e2e")
     print(json.dumps({
         status_key: "PASS", "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
         "evidence": "private sealed originals",
