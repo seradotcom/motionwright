@@ -502,12 +502,12 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             case.mkdir(mode=0o700)
             log = case / 'semwrightd.original.private.log'
             log.write_bytes(b'original daemon launch diagnostic')
-            terminal_directory = case / 'native-result.host-stdin'
+            terminal_directory = case / 'native-result.fixed-text'
             terminal_directory.mkdir(mode=0o700)
             terminal = terminal_directory / 'render-terminal.original-value.json'
             terminal_raw = b'original render terminal failure'
             terminal.write_bytes(terminal_raw)
-            terminal_name = request['fixture'] + '/native-result.host-stdin/' + terminal.name
+            terminal_name = request['fixture'] + '/native-result.fixed-text/' + terminal.name
             unrelated = case / 'unselected-private-file'; unrelated.write_bytes(b'not admitted by this selection')
             extra, extra_failures = route.collect_workflow_originals(current, request, partial=True)
             self.assertEqual(extra[('owner_diagnostics', request['fixture'] + '/' + log.name)],
@@ -854,6 +854,54 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
         block = rust.split('const OBSERVED_NATIVE_SOURCES:', 1)[1].split('];', 1)[0]
         pins = dict(re.findall(r'\(\s*"(RED|GREEN)",\s*"([0-9a-f]{64})",?\s*\)', block))
         self.assertEqual(pins, overlay.OBSERVED)
+
+        # Cross-language producer/selector contract. Derive the filename from
+        # the actual Python argv, Rust command route, retained directory and
+        # terminal write, so matching fixture/selector mistakes cannot pass.
+        import ast
+        caller = ast.parse((root / 'tooling/native_film180_original_g2.py').read_text())
+        one_case = next(node for node in caller.body
+                        if isinstance(node, ast.FunctionDef) and node.name == 'fixed_one_case')
+        assignments = [node.value for node in ast.walk(one_case)
+                       if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == 'evidence'
+                               for target in node.targets)]
+        self.assertEqual(len(assignments), 1)
+        evidence = assignments[0]
+        self.assertIsInstance(evidence, ast.BinOp)
+        self.assertIsInstance(evidence.op, ast.Div)
+        self.assertEqual(ast.unparse(evidence.left), 'attempt.evidence_dir')
+        evidence_name = ast.literal_eval(evidence.right)
+        commands = [node for node in ast.walk(one_case)
+                    if isinstance(node, ast.Call) and ast.unparse(node.func) == 'attempt.command'
+                    and len(node.args) > 1 and isinstance(node.args[1], ast.List)
+                    and node.args[1].elts
+                    and isinstance(node.args[1].elts[0], ast.Constant)
+                    and node.args[1].elts[0].value == 'render-fixed-text-v4']
+        self.assertEqual(len(commands), 1)
+        self.assertEqual([ast.unparse(arg) for arg in commands[0].args[1].elts[1:]],
+                         ['str(database)', 'str(connection)', 'str(custody_dir)',
+                          'str(case_path)', 'str(evidence)'])
+        command_arm = rust.split('"render-fixed-text-v4" => {', 1)[1].split('"stage-audio" =>', 1)[0]
+        self.assertEqual(re.findall(r'let (\w+) = path_arg\(&mut args\);', command_arm),
+                         ['database', 'connection', 'custody', 'case', 'evidence'])
+        self.assertIn('fixed_text_v4::run(&database, &connection, &custody, &case, &evidence).await?;',
+                      command_arm)
+        module = rust.split('mod fixed_text_v4 {', 1)[1].split('\n}\n', 1)[0]
+        run = module.split('pub(super) async fn run(', 1)[1]
+        directory = re.search(r'let retained = evidence\.with_extension\("([^"]+)"\);', run)
+        self.assertIsNotNone(directory)
+        self.assertIn('.dispatch(&coordinator, &original, &request, &retained)', run)
+        dispatch = module.split('async fn dispatch(', 1)[1].split('pub(super) async fn run(', 1)[0]
+        self.assertIn('retained: &Path,', dispatch.split(') ->', 1)[0])
+        terminal = re.search(r'stdin_readback::new_json\(\s*&retained\.join\("([^"]+)"\),'
+                             r'\s*&status,\s*8 \* 1024 \* 1024,', dispatch)
+        self.assertIsNotNone(terminal)
+        relative = (Path(evidence_name).with_suffix('.' + directory.group(1))
+                    / terminal.group(1)).as_posix()
+        fixture = 'fixed-multirun-control'
+        self.assertEqual(route._owner_diagnostic_limits(fixture)[fixture + '/' + relative],
+                         8 * 1024 * 1024)
 
         # The actual first-attempt source kit emits its direct Cargo root at
         # target/debug, and its six exact externs never gain arbitrary paths.

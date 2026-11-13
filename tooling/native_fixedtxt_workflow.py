@@ -1373,7 +1373,7 @@ def _owner_diagnostic_limits(fixture):
     fixedtxt_frames(fixture)
     names = {
         "original-attempt-error.json": 1024 * 1024,
-        fixture + "/native-result.host-stdin/render-terminal.original-value.json": 8 * 1024 * 1024,
+        fixture + "/native-result.fixed-text/render-terminal.original-value.json": 8 * 1024 * 1024,
     }
     for name, maximum in (
         ("semwrightd.original.private.log", 1024 * 1024),
