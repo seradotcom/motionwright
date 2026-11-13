@@ -1371,7 +1371,10 @@ def verify_workflow_zip_members(archive_path, artifact, expected, maximum, *, de
 def _owner_diagnostic_limits(fixture):
     from native_film180_evidence_selection import fixedtxt_frames
     fixedtxt_frames(fixture)
-    names = {"original-attempt-error.json": 1024 * 1024}
+    names = {
+        "original-attempt-error.json": 1024 * 1024,
+        fixture + "/native-result.host-stdin/render-terminal.original-value.json": 8 * 1024 * 1024,
+    }
     for name, maximum in (
         ("semwrightd.original.private.log", 1024 * 1024),
         ("original-attempt-error.json", 1024 * 1024),
@@ -1384,7 +1387,7 @@ def _owner_diagnostic_limits(fixture):
 
 
 def _read_owner_diagnostic(handles, name, maximum, *, fixture):
-    """Read only six literal diagnostics through held no-follow parent handles.
+    """Read only seven literal diagnostics through held no-follow parent handles.
 
     Absence before selection is conditional. Disappearance or mutation after
     the first leaf stat is a failed original, never a successful omission.
@@ -1546,7 +1549,7 @@ def seal_workflow_originals():
         "files": [{"path": root + "/" + name, **original_descriptor(raw)}
                   for (root, name), raw in sorted(known.items())], "failures": failures,
         "scope": ["FixedTxt control", "FixedTxt inputs", "existing runtime custody", "original owner-resource tail",
-                  "six conditional literal owner diagnostics; no owner-tree completeness claim"],
+                  "seven conditional literal owner diagnostics; no owner-tree completeness claim"],
         "resource_custody_manifest": original_descriptor(resource_manifest_raw),
         "native_result_inferred": False, "automatic_retry": False})
     need(len(metadata) <= 512 * 1024, "fixedtxt-workflow-original-manifest-bound")
