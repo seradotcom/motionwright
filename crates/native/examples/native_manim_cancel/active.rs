@@ -115,18 +115,27 @@ impl OriginalJob {
             plan: plan.into(),
             profile: profile.clone(),
         };
-        if job.observation(value)?["state"] != "rendering" {
+        // The caller selected this exact completed SQLite start receipt after
+        // checking that its request did not exist before the original start.
+        // Receipt payloads preserve the SDK result and have no replay wrapper.
+        if job.checked_observation(value)?["state"] != "rendering" {
             return Err("original start did not acknowledge rendering".into());
         }
         Ok(job)
     }
 
     fn observation<'a>(&self, value: &'a Value) -> Result<&'a Value, Failure> {
+        if value["replayed"] != false {
+            return Err("live observation is replayed or lacks its freshness wrapper".into());
+        }
+        self.checked_observation(value)
+    }
+
+    fn checked_observation<'a>(&self, value: &'a Value) -> Result<&'a Value, Failure> {
         let data = value
             .pointer("/result/data")
             .ok_or("original observation has no data")?;
-        if value["replayed"] != false
-            || value["result"]["provenance_checked"] != true
+        if value["result"]["provenance_checked"] != true
             || value["result"]["execution"]["backend"] != "driver:manim-community"
             || value["result"]["execution"]["dry_run"] != false
             || value["result"]["execution"]["policy_decision"] != "allow"
