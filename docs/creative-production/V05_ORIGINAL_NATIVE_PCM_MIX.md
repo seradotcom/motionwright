@@ -81,6 +81,14 @@ actual mixer, SQLite/CAS reopen, native consumer and Desktop preparation
 groups. Its provider protocol doubles remain source evidence, separate from
 the physical synthetic WAV producer.
 
+The gate retains both original Git inventories before checking generated outputs.
+It admits the four bounded Desktop JSON schemas and only the permission TOML
+files derived from the source-bound command roster and the exact locked Tauri
+generators. Permission bytes must match the reviewed generator template; extra
+paths, changed bytes, redirected parents and hardlinks fail closed. The current
+source derives 63 permission files (27,834 bytes), each limited to 1 KiB and
+64 KiB in aggregate. These are build catalogs, not additional runtime grants.
+
 A separate Chromium suite covers the browser demo's **no native WAV**
 behavior, a synthetic desktop transport requiring explicit rights
 attestation, no canonical project revision, and an in-memory player

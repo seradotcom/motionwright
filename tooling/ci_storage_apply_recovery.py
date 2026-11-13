@@ -102,13 +102,22 @@ def write_new(path, value):
         stream.write("\n")
 
 
-def git(repo, *args):
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+def isolated_git_environment(environment):
+    env = {k: v for k, v in environment.items() if not k.upper().startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                GIT_CONFIG_SYSTEM=os.devnull, GIT_GRAFT_FILE=os.devnull,
                GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
-    result = subprocess.run(["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
-                             "-C", str(repo), *args], env=env, capture_output=True, timeout=45)
+    return env
+
+
+def git_argv(repo, *args, executable="git"):
+    return [executable, "--no-replace-objects", "-c", "core.fsmonitor=false",
+            "-C", str(repo), *args]
+
+
+def git(repo, *args):
+    result = subprocess.run(git_argv(repo, *args), env=isolated_git_environment(os.environ),
+                            capture_output=True, timeout=45)
     require(result.returncode == 0 and len(result.stdout) <= 16 * 1024 * 1024,
             "Git source query failed or exceeded its bound")
     return result.stdout

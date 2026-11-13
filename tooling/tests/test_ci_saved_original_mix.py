@@ -381,10 +381,16 @@ class Admission(unittest.TestCase):
             return b"" if "--ignored" not in args else b"\0".join(x.encode() for x in names) + b"\0"
         return read
 
+    def observe_schemas(self):
+        inventories = [gate.custody.git(self.repo, "ls-files", "-z", *options)
+                       for options in (("--others", "--exclude-standard"),
+                                       ("--others", "--ignored", "--exclude-standard"))]
+        return gate.generated_schemas(self.repo, {}, inventories)
+
     def test_only_four_bounded_generated_schema_objects_are_retained(self):
         names = self.generated_fixture()
         with mock.patch.object(gate.custody, "git", side_effect=self.generated_git(names)):
-            value = gate.generated_schemas(self.repo)
+            value = self.observe_schemas()
         self.assertEqual(set(value), gate.GENERATED_FILES)
 
     def test_unknown_untracked_paths_and_duplicate_generated_inventory_are_rejected(self):
@@ -392,7 +398,7 @@ class Admission(unittest.TestCase):
         for bad in (names + ["apps/desktop/src-tauri/gen/unreviewed.rs"], names + [names[0]], ["../foreign"]):
             with self.subTest(bad=bad), mock.patch.object(
                     gate.custody, "git", side_effect=self.generated_git(bad)), self.assertRaises(gate.VerificationError):
-                gate.generated_schemas(self.repo)
+                self.observe_schemas()
 
     def test_malformed_or_unbounded_generated_json_is_rejected(self):
         names = self.generated_fixture()
@@ -401,11 +407,11 @@ class Admission(unittest.TestCase):
             path.write_text(raw, encoding="utf-8")
             with self.subTest(raw=raw), mock.patch.object(
                     gate.custody, "git", side_effect=self.generated_git(names)), self.assertRaises(ValueError):
-                gate.generated_schemas(self.repo)
+                self.observe_schemas()
         path.write_text('{"valid":true}', encoding="utf-8")
         with mock.patch.object(gate, "MAX_GENERATED", 1), mock.patch.object(
                 gate.custody, "git", side_effect=self.generated_git(names)), self.assertRaises(gate.VerificationError):
-            gate.generated_schemas(self.repo)
+            self.observe_schemas()
 
     def test_physical_source_tampering_fails_even_when_status_reports_clean(self):
         path = self.repo / "Cargo.toml"
@@ -483,7 +489,7 @@ class SyntheticExecution(unittest.TestCase):
         self.rosters["desktop"] = (gate.GROUPS["av_master"]["names"]
                                     + gate.GROUPS["original_mix_native"]["names"] + ("other::case",))
 
-    def schemas(self, _repo):
+    def schemas(self, _repo, *_args):
         return {relative: gate.custody.fingerprint(self.repo / relative, self.repo, gate.MAX_GENERATED)
                 for relative in sorted(gate.GENERATED_FILES) if (self.repo / relative).exists()}
 
@@ -536,6 +542,12 @@ class SyntheticExecution(unittest.TestCase):
         gate.custody.write_new(output / (label + ".command.json"), row)
         return row
 
+    def inventory(self, execution, phase):
+        if self.mode == "inventory-unknown" and phase == "postcheck":
+            execution.unknown = True
+            raise gate.VerificationError("synthetic inventory UNKNOWN")
+        return []
+
     def run_gate(self, mode="pass"):
         self.mode = mode
         original_context = gate.context
@@ -547,6 +559,8 @@ class SyntheticExecution(unittest.TestCase):
                                                   if mode == "source-tamper" else None),
                 return_value=self.before), mock.patch.object(
                 gate, "capture_tools", return_value=self.tools), mock.patch.object(
+                gate, "generated_permissions", return_value={}), mock.patch.object(
+                gate, "generated_inventory", side_effect=self.inventory), mock.patch.object(
                 gate, "generated_schemas", side_effect=self.schemas), mock.patch.object(
                 gate.custody, "execute", side_effect=self.execute):
             return gate.run(self.repo, SHA, self.output, self.target, "saved-mix")
@@ -590,6 +604,13 @@ class SyntheticExecution(unittest.TestCase):
         self.assertEqual(receipt["not_run"], 70)
         self.assertEqual(len(self.calls), 1)
 
+    def test_unknown_final_inventory_stops_postcheck_and_never_claims_pass(self):
+        code, receipt = self.run_gate("inventory-unknown")
+        self.assertEqual((code, receipt["passed"]), (2, 70))
+        self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertEqual(receipt["postcheck"], "STOPPED_UNKNOWN_PROCESS_OR_CUSTODY")
+        self.assertNotIn("artifacts_before_receipt", receipt)
+
     def test_source_change_after_successful_synthetic_cases_blocks_overall_pass(self):
         code, receipt = self.run_gate("source-tamper")
         self.assertEqual((code, receipt["passed"]), (2, 70))
@@ -615,6 +636,174 @@ class SyntheticExecution(unittest.TestCase):
         self.assertEqual((code, receipt["passed"]), (2, 70))
         self.assertIn("schemas changed during tests", receipt["postcheck_error"])
 
+
+
+
+class GeneratedPermissionContracts(unittest.TestCase):
+    """Actual Git inventory custody; fixture permissions are not Native results."""
+    BOOTSTRAP = b"""# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-bootstrap"
+description = "Enables the bootstrap command without any pre-configured scope."
+commands.allow = ["bootstrap"]
+
+[[permission]]
+identifier = "deny-bootstrap"
+description = "Denies the bootstrap command without any pre-configured scope."
+commands.deny = ["bootstrap"]
+"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="saved-mix-generated-output-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "source"; self.repo.mkdir()
+        self.output = self.root / "originals"; self.output.mkdir()
+        for name in ("Cargo.lock", "apps/desktop/src-tauri/build.rs"):
+            path = self.repo / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT / name).read_bytes())
+        (self.repo / ".gitignore").write_text(
+            "apps/desktop/src-tauri/gen/\napps/desktop/src-tauri/permissions/autogenerated/\nignored-extra.bin\n",
+            encoding="utf-8")
+        gate.custody.git(self.repo, "init", "--quiet")
+        gate.custody.git(self.repo, "add", "--", ".gitignore", "Cargo.lock",
+                         "apps/desktop/src-tauri/build.rs")
+        self.policy = gate.generated_permissions(self.repo)
+        self.path = self.repo / (gate.GENERATED_PERMISSION_ROOT + "bootstrap.toml")
+        self.path.parent.mkdir(parents=True)
+        self.path.write_bytes(self.BOOTSTRAP)
+        self.execution = gate.Execution(self.repo, self.output, dict(os.environ),
+                                         {"test": "original Git inventory; no Native effects"})
+
+    def test_source_roster_and_independent_provider_byte_expectations(self):
+        self.assertEqual(len(self.policy), 63)
+        self.assertEqual(sum(map(len, self.policy.values())), 27834)
+        self.assertEqual(self.policy[gate.GENERATED_PERMISSION_ROOT + "bootstrap.toml"], self.BOOTSTRAP)
+        self.assertEqual(hashlib.sha256(self.BOOTSTRAP).hexdigest(),
+                         "e249330f5e035d21dbf7ed00caa59fd1795c8f9500d4e5c5da7d8f989eb21c3e")
+        self.assertEqual(hashlib.sha256(
+            self.policy[gate.GENERATED_PERMISSION_ROOT + "apply_change.toml"]).hexdigest(),
+            "d86b13e4fd459ab458d94026ae2e881905db91d087bd6c098af36c1c458f8edb")
+
+    def test_real_git_inventory_retains_both_streams_before_permission_admission(self):
+        raw = gate.generated_inventory(self.execution, "focused")
+        value = gate.generated_schemas(self.repo, self.policy, raw)
+        self.assertEqual(set(value), {self.path.relative_to(self.repo).as_posix()})
+        self.assertEqual(len(self.execution.commands), 2)
+        for index, command in enumerate(self.execution.commands):
+            self.assertEqual(command["exit_code"], 0)
+            self.assertEqual(command["observation"], "DIRECT_PROCESS_EXIT_OBSERVED")
+            self.assertEqual(gate.original_stream(command, "stdout", self.output), raw[index])
+            self.assertEqual(gate.original_stream(command, "stderr", self.output), b"")
+        self.assertIn(self.path.relative_to(self.repo).as_posix().encode() + b"\0", raw[1])
+
+    def test_inherited_git_overrides_cannot_hide_inputs_or_change_cargo_environment(self):
+        foreign = self.root / "foreign"; foreign.mkdir()
+        gate.custody.git(foreign, "init", "--quiet")
+        excludes = self.root / "exclude-everything"; excludes.write_text("*\n")
+        overrides = {
+            "GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign),
+            "GIT_INDEX_FILE": str(foreign / ".git/index"),
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.excludesFile",
+            "GIT_CONFIG_VALUE_0": str(excludes), "GIT_NO_REPLACE_OBJECTS": "0",
+        }
+        (self.repo / "injected.rs").write_bytes(b"inert rejected input")
+        self.execution.env.update(overrides)
+        before = dict(self.execution.env)
+        raw = gate.generated_inventory(self.execution, "isolated")
+        self.assertEqual(self.execution.env, before)
+        self.assertIn(b"injected.rs\0", raw[0])
+        with self.assertRaisesRegex(gate.VerificationError, "unexpected untracked"):
+            gate.generated_schemas(self.repo, self.policy, raw)
+        for command in self.execution.commands:
+            self.assertEqual(command["argv"][1:4],
+                             ["--no-replace-objects", "-c", "core.fsmonitor=false"])
+        with mock.patch.dict(os.environ, overrides):
+            self.assertEqual(gate.custody.git(
+                self.repo, "ls-files", "-z", "--others", "--exclude-standard"), raw[0])
+
+    def test_unexpected_untracked_and_ignored_paths_preserve_original_rejected_roster(self):
+        (self.repo / "injected.rs").write_bytes(b"inert rejected source")
+        (self.repo / "ignored-extra.bin").write_bytes(b"inert rejected input")
+        raw = gate.generated_inventory(self.execution, "rejected")
+        with self.assertRaisesRegex(gate.VerificationError, "unexpected untracked or ignored"):
+            gate.generated_schemas(self.repo, self.policy, raw)
+        self.assertIn(b"injected.rs\0", gate.original_stream(
+            self.execution.commands[0], "stdout", self.output))
+        self.assertIn(b"ignored-extra.bin\0", gate.original_stream(
+            self.execution.commands[1], "stdout", self.output))
+        self.assertEqual(len(self.execution.originals), 2)
+
+    def test_duplicate_inventory_is_distinct_from_an_unreviewed_path(self):
+        name = self.path.relative_to(self.repo).as_posix().encode() + b"\0"
+        with self.assertRaisesRegex(gate.VerificationError, "duplicated untracked"):
+            gate.generated_schemas(self.repo, self.policy, [name, name])
+
+    def test_valid_toml_with_added_scope_is_rejected_byte_for_byte(self):
+        self.path.write_bytes(self.BOOTSTRAP + b'\n[scope]\nallow = ["foreign"]\n')
+        raw = gate.generated_inventory(self.execution, "changed")
+        with self.assertRaisesRegex(gate.VerificationError, "exact source contract"):
+            gate.generated_schemas(self.repo, self.policy, raw)
+
+    def test_empty_preexisting_permission_directory_blocks_preflight(self):
+        self.path.unlink()
+        with self.assertRaisesRegex(gate.VerificationError, "absent before compilation"):
+            gate.snapshot(self.repo, SHA)
+
+    def test_redirected_permission_parent_blocks_preflight_before_git(self):
+        self.path.unlink()
+        self.path.parent.rmdir()
+        parent = self.path.parent.parent
+        original_lstat = Path.lstat
+        def observed(path, *args, **kwargs):
+            if path == parent:
+                return mock.Mock(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+            return original_lstat(path, *args, **kwargs)
+        with mock.patch.object(Path, "lstat", observed), mock.patch.object(
+                gate.custody, "git") as git:
+            with self.assertRaisesRegex(gate.VerificationError, "parent redirected"):
+                gate.snapshot(self.repo, SHA)
+        git.assert_not_called()
+
+    def test_hardlinked_permission_cannot_be_admitted(self):
+        outside = self.root / "outside.toml"
+        outside.write_bytes(self.BOOTSTRAP)
+        self.path.unlink()
+        os.link(outside, self.path)
+        raw = gate.generated_inventory(self.execution, "linked")
+        with self.assertRaises(ValueError):
+            gate.generated_schemas(self.repo, self.policy, raw)
+
+    def test_changed_provider_or_nonliteral_command_policy_is_rejected(self):
+        path = self.repo / "Cargo.lock"
+        original = path.read_text()
+        checksum = gate.GENERATED_PROVIDERS["tauri-build"][1]
+        path.write_text(original.replace(checksum, "0" * 64), encoding="utf-8")
+        with self.assertRaisesRegex(gate.VerificationError, "provider differs"):
+            gate.generated_permissions(self.repo)
+        path.write_text(original, encoding="utf-8")
+        build = self.repo / "apps/desktop/src-tauri/build.rs"
+        raw = build.read_text()
+        for value in (raw.replace('"bootstrap",', 'unreviewed_expression,'),
+                      raw.replace('"list_projects",', '"bootstrap",')):
+            build.write_text(value, encoding="utf-8")
+            with self.assertRaises(gate.VerificationError):
+                gate.generated_permissions(self.repo)
+        build.write_text(raw, encoding="utf-8")
+        with mock.patch.object(gate, "MAX_PERMISSION_TOTAL", 1):
+            with self.assertRaisesRegex(gate.VerificationError, "aggregate generated permissions"):
+                gate.generated_permissions(self.repo)
+
+    def test_generator_source_must_match_the_original_source_snapshot(self):
+        names = ("Cargo.lock", "apps/desktop/src-tauri/build.rs")
+        before = {"files": {name: gate.custody.fingerprint(self.repo / name, self.repo)
+                            for name in names}}
+        self.assertEqual(gate.generated_permissions(self.repo, before), self.policy)
+        with (self.repo / names[1]).open("ab") as stream:
+            stream.write(b"\n")
+        with self.assertRaisesRegex(gate.VerificationError, "differs from snapshot"):
+            gate.generated_permissions(self.repo, before)
 
 
 class SharedObservationStopContracts(unittest.TestCase):
