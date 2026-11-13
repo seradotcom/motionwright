@@ -76,6 +76,7 @@ on:
           - foundation-projection-diagnostic
           - foundation-composed-current
           - foundation-coherent-current
+          - storage-api-regressions
 
 permissions:
   contents: read
@@ -86,7 +87,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -881,3 +882,135 @@ jobs:
           path: ${{ (inputs.verification_scope == 'foundation-composed-current' || inputs.verification_scope == 'foundation-coherent-current') && 'verification' || 'verification/foundation-causal' }}
           include-hidden-files: true
           if-no-files-found: error
+
+  storage-api-regressions:
+    name: SQLite budget and schema API regressions
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'storage-api-regressions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: motionwright-storage-api-1.98.1
+          cache-on-failure: true
+      - name: Preserve tested source and dependency identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/storage-api
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git rev-parse HEAD > ci-evidence/storage-api/source-sha.original.txt
+          rustc -Vv > ci-evidence/storage-api/rustc.original.txt
+          sha256sum Cargo.toml Cargo.lock SOURCE_LOCK.json \
+            crates/storage/Cargo.toml crates/storage/src/lib.rs \
+            crates/storage/tests/production_operation_budget.rs \
+            crates/storage/tests/schema_migration_atomicity.rs \
+            > ci-evidence/storage-api/source-digests.original.txt
+      - name: Execute actual SQLite budget and migration regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 --no-fail-fast -p motionwright-storage \
+            --test production_operation_budget --test schema_migration_atomicity \
+            -- --test-threads=1 2>&1 | tee ci-evidence/storage-api/tests.original.log
+          python3 - <<'PY'
+          import pathlib
+          import re
+          raw = pathlib.Path("ci-evidence/storage-api/tests.original.log").read_text()
+          results = re.findall(
+              r"(?m)^test result: ok\. (\d+) passed; 0 failed; (\d+) ignored; "
+              r"0 measured; 0 filtered out;", raw)
+          assert sorted((int(passed), int(ignored)) for passed, ignored in results) == [
+              (14, 0), (33, 1)
+          ], "SQLite API regression roster incomplete"
+          print("47 SQLite regressions passed; the original v5 producer case is selected separately.")
+          PY
+      - name: Build and run the original schema-five producer
+        shell: bash
+        run: |
+          set -euo pipefail
+          legacy="$RUNNER_TEMP/storage-v5-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          fixture="$RUNNER_TEMP/storage-v5-fixture-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$legacy"
+          test ! -e "$fixture"
+          git fetch --no-tags --depth=1 origin 246873f2d908d0f801c990963a2f570934f29b83
+          git worktree add --detach "$legacy" 246873f2d908d0f801c990963a2f570934f29b83
+          test "$(git -C "$legacy" rev-parse HEAD^{tree})" = 6f93eb6f774da4aa5dbb35ada99888f00ab3a373
+          test -z "$(git -C "$legacy" status --porcelain)"
+          export MW_STORAGE_V5_SOURCE="$legacy"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path("crates/storage/tests/production_operation_budget.rs").read_bytes()
+          marker = b'const LEGACY_PRODUCER_RS: &str = r####"'
+          assert source.count(marker) == 1
+          body, ending, _ = source.split(marker, 1)[1].partition(b'"####;')
+          assert ending and body.startswith(b"// Test-only overlay for source 246873f2")
+          legacy = Path(os.environ["MW_STORAGE_V5_SOURCE"])
+          overlay = legacy / "crates/storage/examples/a2_v5_budget_fixture.rs"
+          overlay.parent.mkdir(exist_ok=True)
+          with overlay.open("xb") as stream:
+              stream.write(body)
+          receipt = {
+              "source_sha": "246873f2d908d0f801c990963a2f570934f29b83",
+              "source_tree": "6f93eb6f774da4aa5dbb35ada99888f00ab3a373",
+              "consumer_sha": os.environ["GITHUB_SHA"],
+              "overlay_sha256": hashlib.sha256(body).hexdigest(),
+              "cargo_lock_sha256": hashlib.sha256((legacy / "Cargo.lock").read_bytes()).hexdigest(),
+          }
+          Path("ci-evidence/storage-api/v5-source.original.json").write_text(
+              json.dumps(receipt, indent=2) + "\n")
+          PY
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          cargo build --locked --jobs 2 --manifest-path "$legacy/Cargo.toml" \
+            -p motionwright-storage --example a2_v5_budget_fixture \
+            2>&1 | tee ci-evidence/storage-api/v5-build.original.log
+          git -C "$legacy" diff --exit-code
+          producer="$CARGO_TARGET_DIR/debug/examples/a2_v5_budget_fixture"
+          test -x "$producer"
+          sha256sum "$producer" > ci-evidence/storage-api/v5-binary.original.sha256
+          "$producer" "$fixture" 2>&1 | tee ci-evidence/storage-api/v5-producer.original.log
+          cp "$fixture/fixture.json" ci-evidence/storage-api/v5-fixture.original.json
+          stat -c '%d:%i' "$fixture/destination/state.sqlite3" \
+            > ci-evidence/storage-api/sqlite-identity-before.original.txt
+          echo "MOTIONWRIGHT_BUDGET_V5_FIXTURE=$fixture" >> "$GITHUB_ENV"
+          echo "MOTIONWRIGHT_BUDGET_V5_FIXTURE_MANIFEST_SHA256=$(sha256sum "$fixture/fixture.json" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Migrate the genuine v5 fixture through the current Store
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 -p motionwright-storage \
+            --test production_operation_budget \
+            original_v5_causal_controls::genuine_v5_public_import_preserves_cas_marker_blob_and_receipts_through_v6 \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee ci-evidence/storage-api/v5-to-v6.original.log
+          python3 - <<'PY'
+          import pathlib
+          import re
+          raw = pathlib.Path("ci-evidence/storage-api/v5-to-v6.original.log").read_text()
+          assert re.search(r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored; "
+                           r"0 measured; 33 filtered out;", raw), "Original v5 migration did not execute"
+          PY
+          stat -c '%d:%i' "$MOTIONWRIGHT_BUDGET_V5_FIXTURE/destination/state.sqlite3" \
+            > ci-evidence/storage-api/sqlite-identity-after.original.txt
+          cmp ci-evidence/storage-api/sqlite-identity-before.original.txt \
+            ci-evidence/storage-api/sqlite-identity-after.original.txt
+          tar -cf ci-evidence/storage-api/migrated-fixture.tar \
+            -C "$MOTIONWRIGHT_BUDGET_V5_FIXTURE" .
+      - name: Retain original SQLite regression output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: storage-api-regressions-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/storage-api/
+          if-no-files-found: error
+          retention-days: 7

@@ -509,13 +509,13 @@ class FoundationCausalTests(unittest.TestCase):
     def test_existing_automatic_workflow_and_default_jobs_are_preserved(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
         original = text.split("\n  foundation-causal-g0:\n", 1)[0]
-        # Reverse only this gate's additions; all current jobs, source-admission
+        # Remove the opt-in diagnostic scopes; normal jobs, source-admission
         # scopes and triggers must recover the exact integrated workflow bytes.
-        for scope in gate.SELECTIONS:
+        for scope in (*gate.SELECTIONS, "storage-api-regressions"):
             choice = "          - " + scope + "\n"
             self.assertEqual(original.count(choice), 1)
             original = original.replace(choice, "", 1)
-        guard = "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current')\n"
+        guard = "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions')\n"
         self.assertEqual(original.count(guard), 1)
         original = original.replace(guard, "    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'source-admission-contracts'\n", 1)
         self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),
