@@ -336,6 +336,13 @@ inspection gate above. The resulting attestation subject report is unchanged
 for the same four packages. Allowing an optional binding does not claim global
 Cargo coverage across platforms or add platform signing or install acceptance.
 
+The owner-side provenance CLI accepts the same two closed receipt forms and uses
+the same Cargo binding validator. It checks the source tree, platform target,
+package/binary names and shared Linux binding before calling GitHub signature
+verification. Its output keeps the existing provenance-only claims; it does not
+inspect the extracted Cargo index, confer distribution admission or prove an
+installed build.
+
 Native-content review entries emitted by capture use the same public component
 identity mapping as the component roster. Local Cargo package identifiers are
 converted to repository-relative identities, and unresolved review references

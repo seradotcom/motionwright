@@ -73,6 +73,22 @@ def need(ok: bool, code: str) -> None:
         raise AttestationInputError(code)
 
 
+def _validate_cargo_build(
+    binding: object, *, source_tree: str, platform: str, arch: str,
+) -> None:
+    """Validate the closed receipt binding; extraction remains a separate gate."""
+    target = CARGO_TARGETS.get((platform, arch))
+    need(isinstance(binding, dict)
+         and set(binding) == CARGO_BUILD_FIELDS
+         and isinstance(binding["index_sha256"], str)
+         and SHA64.fullmatch(binding["index_sha256"]) is not None
+         and binding["source_tree"] == source_tree
+         and target is not None and binding["target"] == target
+         and binding["root_package"] == "motionwright-desktop"
+         and binding["binary_target"] == "motionwright-desktop",
+         "attest_cargo_build_invalid")
+
+
 def _bounded_receipt(path: Path, source_root: Path) -> dict:
     try:
         _, size, digest = verified_artifact(source_root, path)
@@ -189,16 +205,10 @@ def verify_candidates(root: Path, exact_sha: str,
                  "attest_bundle_metadata_invalid")
             if cargo_bound:
                 binding = row["cargo_build"]
-                target = CARGO_TARGETS.get((platform, candidate["arch"]))
-                need(isinstance(binding, dict)
-                     and set(binding) == CARGO_BUILD_FIELDS
-                     and isinstance(binding["index_sha256"], str)
-                     and SHA64.fullmatch(binding["index_sha256"]) is not None
-                     and binding["source_tree"] == source_tree
-                     and target is not None and binding["target"] == target
-                     and binding["root_package"] == "motionwright-desktop"
-                     and binding["binary_target"] == "motionwright-desktop",
-                     "attest_cargo_build_invalid")
+                _validate_cargo_build(
+                    binding, source_tree=source_tree,
+                    platform=platform, arch=candidate["arch"],
+                )
                 if receipt_binding is None:
                     receipt_binding = binding
                 need(binding == receipt_binding,

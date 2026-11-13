@@ -109,6 +109,103 @@ class OwnerCandidateProvenanceTests(unittest.TestCase):
         self.assertFalse(receipt["claims"]["v01_release_authorized"])
         self.assertNotIn(str(self.dir), json.dumps(receipt))
 
+    def cargo_receipt(self, manifest=None):
+        # Synthetic receipt metadata only: the owner verifier does not inspect
+        # an extracted Cargo index or prove a physical build in this suite.
+        if manifest is None:
+            manifest = json.loads(self.receipt.read_text(encoding="utf-8"))
+        manifest["claims"]["package_contents_verification"] = (
+            "SEPARATE_EXTRACTION_GATE"
+        )
+        target = package_receipt.CARGO_TARGETS[
+            (manifest["candidate"]["platform"], manifest["candidate"]["arch"])
+        ]
+        for row in manifest["artifacts"]:
+            row["cargo_build"] = {
+                "index_sha256": "c" * 64,
+                "source_tree": git(self.root, "rev-parse", self.sha + "^{tree}"),
+                "target": target,
+                "root_package": "motionwright-desktop",
+                "binary_target": "motionwright-desktop",
+            }
+        return manifest
+
+    def test_cargo_bound_receipt_keeps_provenance_and_acceptance_separate(self):
+        legacy = self.verify()
+        manifest = self.cargo_receipt()
+        self.receipt.write_text(json.dumps(manifest), encoding="utf-8")
+        self.calls.clear()
+        bound = self.verify()
+        self.assertEqual(bound, legacy)
+        self.assertEqual(self.calls, [(self.artifact, self.sha)])
+        self.assertNotIn("cargo_build", bound)
+        self.assertEqual(bound["claims"]["owner_installed_binary"], "NOT_TESTED")
+        self.assertFalse(bound["claims"]["v01_release_authorized"])
+
+    def test_cargo_bound_receipt_rejects_wrong_or_incomplete_binding(self):
+        original = self.cargo_receipt()
+        changes = [
+            ("index_digest", lambda b: b.update(index_sha256="not-a-digest")),
+            ("foreign_tree", lambda b: b.update(source_tree="f" * 40)),
+            ("wrong_target", lambda b: b.update(target="aarch64-apple-darwin")),
+            ("wrong_package", lambda b: b.update(root_package="foreign-package")),
+            ("wrong_binary", lambda b: b.update(binary_target="foreign-binary")),
+            ("missing_field", lambda b: b.pop("target")),
+            ("extra_field", lambda b: b.update(approved=True)),
+        ]
+        for label, change in changes:
+            with self.subTest(label):
+                manifest = json.loads(json.dumps(original))
+                change(manifest["artifacts"][0]["cargo_build"])
+                self.receipt.write_text(json.dumps(manifest), encoding="utf-8")
+                self.calls.clear()
+                with self.assertRaisesRegex(
+                    owner.OwnerCandidateError, "owner_receipt_cargo_build_invalid"
+                ):
+                    self.verify()
+                self.assertEqual(self.calls, [])
+
+    def test_cargo_bound_receipt_requires_one_complete_closed_shape(self):
+        original = self.cargo_receipt()
+        changes = [
+            ("missing_binding", lambda m: m["artifacts"][0].pop("cargo_build")),
+            ("legacy_claims", lambda m: m["claims"].pop("package_contents_verification")),
+            ("upgraded_claim", lambda m: m["claims"].update(
+                package_contents_verification="VERIFIED")),
+            ("non_boolean_publication", lambda m: m["claims"].update(published=0)),
+        ]
+        for label, change in changes:
+            with self.subTest(label):
+                manifest = json.loads(json.dumps(original))
+                change(manifest)
+                self.receipt.write_text(json.dumps(manifest), encoding="utf-8")
+                self.calls.clear()
+                with self.assertRaises(owner.OwnerCandidateError):
+                    self.verify()
+                self.assertEqual(self.calls, [])
+
+    def test_linux_cargo_formats_must_share_the_same_build_binding(self):
+        appimage = self.dir / "Motionwright_0.1.0_amd64.AppImage"
+        deb = self.dir / "Motionwright_0.1.0_amd64.deb"
+        appimage.write_bytes(b"synthetic AppImage fixture, never executed")
+        deb.write_bytes(b"synthetic DEB fixture, never installed")
+        manifest = package_receipt.make_receipt(
+            self.root, self.sha, "linux", "x86_64", [appimage, deb]
+        )
+        manifest = self.cargo_receipt(manifest)
+        self.receipt.write_text(json.dumps(manifest), encoding="utf-8")
+        result = self.verify(kind="appimage", artifact=appimage)
+        self.assertEqual(result["candidate"]["filename"], appimage.name)
+        self.assertEqual(self.calls, [(appimage, self.sha)])
+        manifest["artifacts"][1]["cargo_build"]["index_sha256"] = "d" * 64
+        self.receipt.write_text(json.dumps(manifest), encoding="utf-8")
+        self.calls.clear()
+        with self.assertRaisesRegex(
+            owner.OwnerCandidateError, "owner_receipt_cargo_build_mismatch"
+        ):
+            self.verify(kind="appimage", artifact=appimage)
+        self.assertEqual(self.calls, [])
+
     def test_forged_source_sha_refused_before_signature_call(self):
         with self.assertRaises(owner.OwnerCandidateError):
             self.verify(source_sha="a" * 40)

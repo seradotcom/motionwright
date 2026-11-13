@@ -20,7 +20,8 @@ import tomllib
 from typing import Callable
 
 from candidate_attestation_input import (
-    AttestationInputError, _bounded_receipt, BASENAME, EXPECTED_KINDS,
+    AttestationInputError, _bounded_receipt, _validate_cargo_build,
+    BASENAME, CARGO_UNSIGNED_CLAIMS, EXPECTED_KINDS,
     MAX_RECEIPT_BYTES, SHA40, SHA64, UNSIGNED_CLAIMS,
 )
 from package_receipt import CandidateError, classify, verified_artifact
@@ -28,6 +29,8 @@ from release_manifest import (
     ManifestError, _checkout, _discard_new_output_on_source_change,
     _stable_read, _strict_object, write_new_manifest,
 )
+
+from v01_release_readiness import _git_read
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "seradotcom/motionwright"
@@ -86,6 +89,12 @@ def validate_owner_candidate(
 
     try:
         _checkout(root, source_sha)
+        source_tree = _git_read(
+            root, "owner_source_tree_unverified", "rev-parse", "--verify",
+            source_sha + "^{tree}",
+        )
+        need(SHA40.fullmatch(source_tree) is not None,
+             "owner_source_tree_invalid")
         lock = json.loads(
             _stable_read(root, "SOURCE_LOCK.json"),
             object_pairs_hook=_strict_object,
@@ -132,8 +141,15 @@ def validate_owner_candidate(
          and isinstance(meta["arch"], str)
          and ARCH.fullmatch(meta["arch"]) is not None,
          "owner_receipt_source_mismatch")
-    need(receipt["claims"] == UNSIGNED_CLAIMS,
+    claims = receipt["claims"]
+    cargo_bound = claims == CARGO_UNSIGNED_CLAIMS
+    need(isinstance(claims, dict) and claims.get("published") is False
+         and (claims == UNSIGNED_CLAIMS or cargo_bound),
          "owner_receipt_release_claims_invalid")
+    artifact_fields = {"filename", "bundle_kind", "bytes", "sha256"}
+    if cargo_bound:
+        artifact_fields.add("cargo_build")
+    receipt_binding = None
 
     listed = receipt["artifacts"]
     need(isinstance(listed, list)
@@ -143,9 +159,23 @@ def validate_owner_candidate(
     seen_kinds: set[str] = set()
     matched = None
     for row in listed:
-        need(isinstance(row, dict)
-             and set(row) == {"filename", "bundle_kind", "bytes", "sha256"},
+        need(isinstance(row, dict) and set(row) == artifact_fields,
              "owner_receipt_artifact_row_invalid")
+        if cargo_bound:
+            binding = row["cargo_build"]
+            try:
+                _validate_cargo_build(
+                    binding, source_tree=source_tree,
+                    platform=platform, arch=meta["arch"],
+                )
+            except AttestationInputError as exc:
+                raise OwnerCandidateError(
+                    "owner_receipt_cargo_build_invalid"
+                ) from exc
+            if receipt_binding is None:
+                receipt_binding = binding
+            need(binding == receipt_binding,
+                 "owner_receipt_cargo_build_mismatch")
         name = row["filename"]
         need(isinstance(name, str) and BASENAME.fullmatch(name) is not None
              and name not in (".", "..")
