@@ -81,11 +81,15 @@ on:
   workflow_dispatch:
     inputs:
       native_scenario:
-        description: Run the existing contracts or one original HyperFrames scenario
+        description: Existing contracts, focused Native mux source checks, or one original HyperFrames scenario
         type: choice
-        options: [contracts, hyperframes]
+        options: [contracts, hyperframes, mux-source]
         default: contracts
         required: true
+      expected_source_sha:
+        description: Exact canonical source SHA required only by mux-source
+        type: string
+        required: false
       evidence_recipient_spki:
         description: Approved RSA-3072 public SPKI DER in base64 for selected originals
         type: string
@@ -100,6 +104,7 @@ permissions:
 
 jobs:
   production-contracts:
+    if: github.event_name != 'workflow_dispatch' || inputs.native_scenario != 'mux-source'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -895,5 +900,130 @@ jobs:
             ${{ env.HF_ROOT }}/public/selected-originals.sealed
             ${{ env.HF_ROOT }}/public/actions-result.json
             ${{ env.HF_ROOT }}/public/gates.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-mux-source:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_scenario == 'mux-source'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: native-mux-source-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: never
+      MW_MUX_EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Bind the exact source-only mux selection before compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$MW_MUX_EXPECTED_SOURCE"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          evidence="$RUNNER_TEMP/native-mux-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$evidence"
+          echo "MW_MUX_SOURCE_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          python -B tooling/source_policy.py
+          python -B tooling/public_surface_policy.py
+          python -B - "$evidence" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          source = os.environ["GITHUB_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{40}", source)
+          record = {
+              "source": source,
+              "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "sdk": json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"],
+              "run": os.environ["GITHUB_RUN_ID"], "attempt": 1, "scope": "mux-source",
+              "source_sha256": {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in (
+                  "crates/native/src/production/mlt_multisegment_av.rs",
+                  ".github/workflows/native-production.yml", "Cargo.lock", "SOURCE_LOCK.json")},
+              "native_render": "NOT_RUN", "formal_acceptance": False,
+          }
+          with (Path(sys.argv[1]) / "source.original.json").open("x") as stream:
+              json.dump(record, stream, indent=2); stream.write("\n")
+          PY
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-mux-source-1.98.1
+          cache-on-failure: true
+      - name: Compile, execute the eight mux controls, and check Native source
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$MW_MUX_SOURCE_EVIDENCE"
+          rustc --version --verbose > "$evidence/rustc.original.txt"
+          cargo --version --verbose > "$evidence/cargo.original.txt"
+          cargo fmt --all -- --check 2>&1 | tee "$evidence/fmt.original.log"
+          cargo test --locked -p motionwright-native --lib native_mux_ -- --list \
+            2>&1 | tee "$evidence/list.original.log"
+          cargo test --locked -p motionwright-native --lib native_mux_ -- --nocapture \
+            2>&1 | tee "$evidence/tests.original.log"
+          cargo clippy --locked -p motionwright-native --all-targets -- -D warnings \
+            2>&1 | tee "$evidence/clippy.original.log"
+          python -B - "$evidence" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          out = Path(sys.argv[1])
+          source = json.loads((out / "source.original.json").read_bytes())
+          assert source["source"] == os.environ["GITHUB_SHA"]
+          assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == source["source"]
+          subprocess.run(["git", "diff", "--exit-code", "HEAD", "--"], check=True)
+          for name, digest in source["source_sha256"].items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest
+          prefix = "production::mlt_multisegment_av::tests::"
+          expected = {prefix + name for name in (
+              "native_mux_checks_real_terminal_stereo_with_valid_aac_packet_padding",
+              "native_mux_retains_existing_24bit_and_float32_measured_voice_sources",
+              "native_mux_rejects_lost_channel_from_24bit_or_float32_source",
+              "native_mux_rejects_nonfinite_float32_source_samples",
+              "native_mux_rejects_lost_right_tail_even_with_other_channel_intact",
+              "native_mux_rejects_lost_left_tail_independently_of_right",
+              "native_mux_rejects_truncated_decoded_audio_and_unclaimed_padding",
+              "native_mux_tail_guard_does_not_claim_full_duration_or_g2_acceptance")}
+          listing = (out / "list.original.log").read_text()
+          actual = re.findall(r"(?m)^([\w:]+): test$", listing)
+          assert len(actual) == 8 and set(actual) == expected, actual
+          text = (out / "tests.original.log").read_text()
+          rows = re.findall(r"(?m)^test ([\w:]+) \.\.\. (ok|FAILED|ignored)$", text)
+          assert len(rows) == 8 and {name for name, state in rows} == expected
+          assert all(state == "ok" for _, state in rows)
+          summary = re.findall(
+              r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; \d+ filtered out;", text)
+          assert summary == [("ok", "8", "0", "0", "0")], summary
+          record = {**source, "tests_passed": 8, "tests_failed": 0, "tests_ignored": 0,
+                    "fmt": "PASS", "native_all_targets_clippy": "PASS",
+                    "original_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                        for p in sorted(out.iterdir()) if p.is_file()}}
+          with (out / "result.json").open("x") as stream:
+              json.dump(record, stream, indent=2); stream.write("\n")
+          print("native-mux-source=PASS actual_tests=8 formal_acceptance=NOT_GRANTED")
+          PY
+      - name: Retain original mux source diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-mux-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-mux-source-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: warn
           retention-days: 14
