@@ -1368,6 +1368,71 @@ def verify_workflow_zip_members(archive_path, artifact, expected, maximum, *, de
          and after.st_size == artifact["size_in_bytes"], "fixedtxt-resource-publication-original-ZIP-mutated")
 
 
+def _owner_diagnostic_limits(fixture):
+    from native_film180_evidence_selection import fixedtxt_frames
+    fixedtxt_frames(fixture)
+    names = {"original-attempt-error.json": 1024 * 1024}
+    for name, maximum in (
+        ("semwrightd.original.private.log", 1024 * 1024),
+        ("original-attempt-error.json", 1024 * 1024),
+        ("broker-start.intent.json", 65536),
+        ("broker-original-identity.json", 65536),
+        ("broker-end-observation.json", 65536),
+    ):
+        names[fixture + "/" + name] = maximum
+    return names
+
+
+def _read_owner_diagnostic(handles, name, maximum, *, fixture):
+    """Read only six literal diagnostics through held no-follow parent handles.
+
+    Absence before selection is conditional. Disappearance or mutation after
+    the first leaf stat is a failed original, never a successful omission.
+    Core's ordinary raw-stream exclusion remains unchanged.
+    """
+    import native_evidence_projection as core
+    admitted = _owner_diagnostic_limits(fixture).get(name)
+    need(admitted is not None and type(maximum) is int and 0 <= maximum <= admitted,
+         "fixedtxt-owner-diagnostic-closed-roster")
+    parts = core.member_path(name)
+    try:
+        parents = handles.parent("observation", parts)
+    except FileNotFoundError:
+        return None
+    fd = -1
+    try:
+        try:
+            before_name = os.stat(parts[-1], dir_fd=parents[-1][0], follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        need(stat.S_ISREG(before_name.st_mode) and before_name.st_nlink == 1,
+             "fixedtxt-owner-diagnostic-regular-single-link")
+        need(0 <= before_name.st_size <= maximum, "ORIGINAL_RESOURCE_BOUND")
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=parents[-1][0])
+        before = os.fstat(fd)
+        need(core.identity(before_name) == core.identity(before),
+             "fixedtxt-owner-diagnostic-changed-before-open")
+        raw = bytearray()
+        while True:
+            block = os.read(fd, min(65536, maximum + 1 - len(raw)))
+            if not block:
+                break
+            raw.extend(block)
+            need(len(raw) <= maximum, "ORIGINAL_RESOURCE_BOUND")
+        after = os.fstat(fd)
+        after_name = os.stat(parts[-1], dir_fd=parents[-1][0], follow_symlinks=False)
+        need(core.identity(before) == core.identity(after) == core.identity(after_name)
+             and len(raw) == before.st_size
+             and all(core.identity(os.fstat(parent)) == mark for parent, mark in parents),
+             "fixedtxt-owner-diagnostic-changed-during-read")
+        return bytes(raw)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        handles.close_parents(parents)
+
+
 def collect_workflow_originals(current, request, *, partial=False):
     """Retain this route's private originals; never walk an owner or a checkout."""
     from ci_private_evidence import regular
@@ -1386,41 +1451,6 @@ def collect_workflow_originals(current, request, *, partial=False):
             need(not path.is_symlink(), "fixedtxt-workflow-original-symlink")
             if path.is_file():
                 paths.append((label, path.relative_to(directory).as_posix(), path))
-    # These conditional diagnostics are outside P's required Native originals.
-    # Select six literal files only; never walk the owner tree or synthesize a
-    # missing error on a successful attempt. Each retained byte remains private.
-    diagnostic_limits = {}
-    observation = layout["observation_root"]
-    if observation.exists() or observation.is_symlink():
-        try:
-            need(observation.is_dir() and not observation.is_symlink()
-                 and observation.resolve(strict=True) == observation,
-                 "fixedtxt-owner-diagnostic-root")
-            from native_film180_evidence_selection import fixedtxt_frames
-            fixedtxt_frames(request["fixture"])
-            names = {"original-attempt-error.json": 1024 * 1024}
-            for name, maximum in (
-                ("semwrightd.original.private.log", 1024 * 1024),
-                ("original-attempt-error.json", 1024 * 1024),
-                ("broker-start.intent.json", 65536),
-                ("broker-original-identity.json", 65536),
-                ("broker-end-observation.json", 65536),
-            ):
-                names[request["fixture"] + "/" + name] = maximum
-            for name, maximum in names.items():
-                path = observation / name
-                # canonical parents are checked before looking at a child name.
-                if not path.parent.exists():
-                    continue
-                need(path.parent.resolve(strict=True) == path.parent
-                     and not path.parent.is_symlink(), "fixedtxt-owner-diagnostic-parent")
-                if path.exists() or path.is_symlink():
-                    paths.append(("owner_diagnostics", name, path))
-                    diagnostic_limits[("owner_diagnostics", name)] = maximum
-        except Exception as error:
-            failures.append({"root": "owner_diagnostics", "reason": type(error).__name__})
-            if not partial:
-                raise
     # P/R/Q and the starting clock take precedence in a failed preparation's
     # partial envelope. Omitted bytes are named explicitly, never a PASS.
     primary = {"fixedtxt-plan.original.json", "source-input.original.json", "cycle.original.json",
@@ -1429,7 +1459,7 @@ def collect_workflow_originals(current, request, *, partial=False):
     known, total = {}, 0
     bound = max(0, request["review_capsule_bytes"] - 1024 * 1024)
     for label, name, path in paths:
-        available = min(bound - total, diagnostic_limits.get((label, name), bound - total))
+        available = bound - total
         if len(known) >= request["limits"]["files"] or path.lstat().st_size > available:
             failures.append({"root": label, "relative_path": name, "reason": "ORIGINAL_RESOURCE_BOUND"})
             if not partial:
@@ -1443,6 +1473,42 @@ def collect_workflow_originals(current, request, *, partial=False):
             failures.append({"root": label, "relative_path": name, "reason": type(error).__name__})
             if not partial:
                 raise
+    # Conditional, private diagnostics are outside P's required Native roster.
+    # The root and every parent are held open. Never resolve or walk owner paths
+    # and then open them again by their pathname.
+    import native_evidence_projection as core
+    handles = None
+    try:
+        try:
+            handles = core.RootHandles({"observation": str(layout["observation_root"])})
+        except FileNotFoundError:
+            pass  # No owner observation existed at this selection boundary.
+        if handles is not None:
+            for name, maximum in _owner_diagnostic_limits(request["fixture"]).items():
+                try:
+                    available = min(maximum, max(0, bound - total))
+                    if len(known) >= request["limits"]["files"]:
+                        available = 0
+                    raw = _read_owner_diagnostic(handles, name, available, fixture=request["fixture"])
+                    if raw is None:
+                        continue
+                    need(len(known) < request["limits"]["files"], "ORIGINAL_RESOURCE_BOUND")
+                    known[("owner_diagnostics", name)] = raw
+                    total += len(raw)
+                except Exception as error:
+                    reason = ("ORIGINAL_RESOURCE_BOUND" if isinstance(error, WorkflowRejected)
+                              and str(error) == "ORIGINAL_RESOURCE_BOUND" else type(error).__name__)
+                    failures.append({"root": "owner_diagnostics", "relative_path": name, "reason": reason})
+                    if not partial:
+                        raise
+    except Exception as error:
+        if not any(row["root"] == "owner_diagnostics" for row in failures):
+            failures.append({"root": "owner_diagnostics", "reason": type(error).__name__})
+        if not partial:
+            raise
+    finally:
+        if handles is not None:
+            handles.close()
     need(partial or not failures, "fixedtxt-preparation-originals-incomplete")
     return known, failures
 
