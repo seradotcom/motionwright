@@ -1294,7 +1294,7 @@ async fn master_with_coordinator(
     let result = match coordinator
         .assemble_mlt_av_master(
             project.id,
-            &RevisionStamp::from(&project),
+            &RevisionStamp::from(project),
             MltAvMasterRequest {
                 request_id: "native-av-master-real-driver-host",
                 deliverable_id: deliverable.id,
