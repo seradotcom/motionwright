@@ -497,7 +497,9 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             self.assertEqual(known[('control','preparation/prepare-00.stderr')],b'original failure stderr')
             self.assertIn({'root':'runtime_custody','reason':'ORIGINAL_ROOT_ABSENT'},failures)
             observation = layout['observation_root']
-            case = observation / request['fixture']; case.mkdir(parents=True, mode=0o700)
+            observation.mkdir(mode=0o700)
+            case = observation / request['fixture']
+            case.mkdir(mode=0o700)
             log = case / 'semwrightd.original.private.log'
             log.write_bytes(b'original daemon launch diagnostic')
             unrelated = case / 'unselected-private-file'; unrelated.write_bytes(b'not admitted by this selection')
@@ -506,6 +508,77 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
                              b'original daemon launch diagnostic')
             self.assertNotIn(('owner_diagnostics', 'original-attempt-error.json'), extra)
             self.assertFalse(any(name.endswith(unrelated.name) for _, name in extra))
+            # Exchange the real parent after its leaf stat, before its open.
+            # Observe the actual opened fd as well as the eventual rejection.
+            diagnostic_name = request['fixture'] + '/' + log.name
+            original_log_info = log.stat()
+            original_log_identity = (
+                original_log_info.st_dev, original_log_info.st_ino)
+            outside = Path(directory) / 'outside-observation'
+            outside.mkdir(mode=0o700)
+            foreign_log = outside / log.name
+            foreign_log.write_bytes(b'X' * original_log_info.st_size)
+            foreign_log_info = foreign_log.stat()
+            foreign_log_identity = (
+                foreign_log_info.st_dev, foreign_log_info.st_ino)
+            self.assertNotEqual(
+                original_log_identity, foreign_log_identity)
+            held_case = observation / (request['fixture'] + '-held')
+            watched_code = route._read_owner_diagnostic.__code__
+            race = {'renamed': False, 'swaps': 0, 'opened': []}
+
+            def exchange_diagnostic_parent(frame, event, _argument):
+                if frame.f_code is not watched_code:
+                    return None
+                if event == 'line':
+                    local = frame.f_locals
+                    if local.get('name') == diagnostic_name:
+                        if (not race['renamed']
+                                and 'before_name' in local
+                                and 'parents' in local
+                                and local.get('fd') == -1):
+                            case.rename(held_case)
+                            race['renamed'] = True
+                            case.symlink_to(
+                                outside, target_is_directory=True)
+                            race['swaps'] += 1
+                        elif (race['renamed'] and not race['opened']
+                                and type(local.get('fd')) is int
+                                and local['fd'] >= 0):
+                            opened_info = os.fstat(local['fd'])
+                            race['opened'].append((
+                                opened_info.st_dev, opened_info.st_ino))
+                return exchange_diagnostic_parent
+
+            previous_trace = sys.gettrace()
+            try:
+                sys.settrace(exchange_diagnostic_parent)
+                raced, raced_failures = route.collect_workflow_originals(
+                    current, request, partial=True)
+            finally:
+                sys.settrace(previous_trace)
+                if race['renamed']:
+                    if case.is_symlink():
+                        case.unlink()
+                    held_case.rename(case)
+            self.assertEqual(race['swaps'], 1)
+            self.assertEqual(
+                race['opened'], [original_log_identity])
+            self.assertNotIn(
+                foreign_log_identity, race['opened'])
+            self.assertNotIn(
+                ('owner_diagnostics', diagnostic_name), raced)
+            self.assertIn({
+                'root': 'owner_diagnostics',
+                'relative_path': diagnostic_name,
+                'reason': 'WorkflowRejected',
+            }, raced_failures)
+            self.assertEqual(
+                raced[('control', 'preparation/prepare-00.stderr')],
+                b'original failure stderr')
+            self.assertEqual(
+                (log.stat().st_dev, log.stat().st_ino),
+                original_log_identity)
             original_error = case / 'original-attempt-error.json'
             original_error.write_bytes(b'{"error":"original failure"}')
             extra, _ = route.collect_workflow_originals(current, request, partial=True)
