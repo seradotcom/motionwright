@@ -587,6 +587,7 @@ class SyntheticExecution(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual((receipt["failed"], receipt["not_run"]), (1, 69))
         self.assertEqual(receipt["cases"][0]["command"]["exit_code"], 1)
+        self.assertEqual(len(receipt["commands"]), len(receipt["command_originals"]))
         self.assertEqual(len([x for x in self.calls if x[0].startswith("case-")]), 1)
 
     def test_timeout_stays_unknown_without_retry_or_further_selected_invocations(self):
@@ -602,6 +603,7 @@ class SyntheticExecution(unittest.TestCase):
         code, receipt = self.run_gate("compile-failure")
         self.assertEqual(code, 2)
         self.assertEqual(receipt["not_run"], 70)
+        self.assertEqual((len(receipt["commands"]), len(receipt["command_originals"])), (1, 1))
         self.assertEqual(len(self.calls), 1)
 
     def test_unknown_final_inventory_stops_postcheck_and_never_claims_pass(self):
@@ -812,6 +814,25 @@ class SharedObservationStopContracts(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.execution = gate.Execution(self.root, self.root, {}, {})
+
+    def test_real_nonzero_exit_retains_complete_command_and_stream_inventory(self):
+        self.execution.env = dict(os.environ)
+        argv = [sys.executable, "-I", "-c",
+                "import sys; sys.stdout.buffer.write(b'known output\\n'); "
+                "sys.stderr.buffer.write(b'known failure\\n'); sys.exit(7)"]
+        with self.assertRaisesRegex(gate.VerificationError, "command failed or became UNKNOWN: known-failure"):
+            self.execution.run(argv, "known-failure", 30)
+        self.assertFalse(self.execution.unknown)
+        self.assertEqual(len(self.execution.commands), 1)
+        self.assertEqual(len(self.execution.originals), 1)
+        command = self.execution.commands[0]
+        self.assertEqual(command["exit_code"], 7)
+        self.assertEqual(command["observation"], "DIRECT_PROCESS_EXIT_OBSERVED")
+        raw = (self.root / "known-failure.command.json").read_bytes()
+        self.assertEqual(json.loads(raw), command)
+        self.assertEqual(self.execution.originals[0]["sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(gate.original_stream(command, "stdout", self.root), b"known output\n")
+        self.assertEqual(gate.original_stream(command, "stderr", self.root), b"known failure\n")
 
     def test_live_group_unknown_is_sticky_and_forbids_second_command(self):
         row = {"observation": "UNKNOWN_PROCESS_NO_RETRY", "exit_code": 0, "pid": 123}

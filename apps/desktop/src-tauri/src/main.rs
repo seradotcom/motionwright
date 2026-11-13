@@ -1812,10 +1812,10 @@ async fn render_motion_canvas(
             // known render result and retains its existing custody.
             // A closed desktop cannot start the later retirement phase.
             // Keep the completed native result and its retained font custody.
-            if owner.begin_phase().is_ok() {
-                if let Some(font_owner) = font_owner {
-                    font_owner.retire_after_success(&coordinator);
-                }
+            if owner.begin_phase().is_ok()
+                && let Some(font_owner) = font_owner
+            {
+                font_owner.retire_after_success(&coordinator);
             }
             preview
         }

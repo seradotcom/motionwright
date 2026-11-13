@@ -76,7 +76,7 @@ struct Binding {
 
 enum Lifetime {
     Unbound,
-    Installing(TrustedDocument),
+    Installing(Box<TrustedDocument>),
     Active(Arc<Binding>),
     Closed,
 }
@@ -116,7 +116,7 @@ impl DesktopOwner {
         if !matches!(state.lifetime, Lifetime::Unbound) {
             return Err(OWNER_UNAVAILABLE.to_owned());
         }
-        state.lifetime = Lifetime::Installing(document);
+        state.lifetime = Lifetime::Installing(Box::new(document));
         Ok(())
     }
 
@@ -129,7 +129,7 @@ impl DesktopOwner {
         let Lifetime::Installing(document) = &state.lifetime else {
             return Err(OWNER_UNAVAILABLE.to_owned());
         };
-        let document = document.clone();
+        let document = document.as_ref().clone();
         state.lifetime = Lifetime::Active(Arc::new(Binding {
             marker,
             resource_id,
@@ -219,7 +219,8 @@ impl DesktopOwner {
         })
     }
 
-    pub(crate) fn with_phase<T>(&self, work: impl FnOnce() -> T) -> Result<T, String> {
+    #[cfg(test)]
+    fn with_phase<T>(&self, work: impl FnOnce() -> T) -> Result<T, String> {
         let _phase = self.phase()?;
         Ok(work())
     }
@@ -262,10 +263,6 @@ pub(crate) struct OwnerInvocation {
 }
 
 impl OwnerInvocation {
-    pub(crate) fn owner(&self) -> &DesktopOwner {
-        &self.owner
-    }
-
     /// End this phase before queueing a different worker or beginning an await
     /// whose completion must precede a separately admitted Store/effect phase.
     pub(crate) fn finish_phase(&mut self) {
@@ -370,10 +367,8 @@ pub(crate) fn lifecycle_plugin() -> tauri::plugin::TauriPlugin<Wry> {
             // Window listener registration is queued by Wry. This global
             // fallback can only retire admission during that startup gap;
             // a native label never grants or rebinds an owner instance.
-            if retiring {
-                if let Some(owner) = app.try_state::<DesktopOwner>() {
-                    owner.close();
-                }
+            if retiring && let Some(owner) = app.try_state::<DesktopOwner>() {
+                owner.close();
             }
         })
         .build()

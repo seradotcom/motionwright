@@ -343,7 +343,8 @@ mod tests {
     use tempfile::TempDir;
 
     struct Fixture {
-        temp: TempDir,
+        // Retain the directory on every target; Windows tests also inspect it.
+        _temp: TempDir,
         registry: RuntimeConnectionRegistry,
         project: Uuid,
         generation: Uuid,
@@ -404,7 +405,7 @@ mod tests {
                 .remember_verified(project, generation, &connection_file)
                 .unwrap();
             Self {
-                temp,
+                _temp: temp,
                 registry,
                 project,
                 generation,
@@ -475,7 +476,7 @@ mod tests {
     fn reopening_registry_rebinds_saved_policy_without_persisting_live_grants() {
         let fixture = Fixture::new();
         fixture.declare();
-        let reopened = RuntimeConnectionRegistry::new(fixture.temp.path()).unwrap();
+        let reopened = RuntimeConnectionRegistry::new(fixture._temp.path()).unwrap();
         let context = reopened
             .resolve_font_staging(fixture.project, fixture.generation, &fixture.connection)
             .unwrap()
@@ -508,7 +509,7 @@ mod tests {
     fn reopened_policy_rejects_a_replaced_directory_before_any_local_write() {
         let fixture = Fixture::new();
         fixture.declare();
-        let app_data = fixture.temp.path().to_path_buf();
+        let app_data = fixture._temp.path().to_path_buf();
         drop(fixture.registry);
         fs::remove_dir(&fixture.media).unwrap();
         fs::create_dir(&fixture.media).unwrap();

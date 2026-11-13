@@ -523,8 +523,6 @@ class Execution:
         if custody.execution_unknown(command):
             self.unknown = True
             raise VerificationError("uncertain command; no further commands: " + label)
-        require(command.get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED"
-                and command.get("exit_code") == 0, "command failed or became UNKNOWN: " + label)
         try:
             original = custody.fingerprint(self.output / (label + ".command.json"), self.output, MAX_LOG)
             require(strict_json(original_stream(
@@ -541,6 +539,10 @@ class Execution:
                 "diagnostic_custody": "UNSEALED_COMMAND_OR_STREAM_READBACK",
                 "secondary_observation_errors": [type(error).__name__ + ": " + str(error)]}
             raise VerificationError("command custody readback failed; no further commands: " + label) from error
+        # A known failure is still an authentic observed command. Retain and
+        # read back its metadata and streams before rejecting its exit status.
+        require(command.get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED"
+                and command.get("exit_code") == 0, "command failed or became UNKNOWN: " + label)
         return command, stdout
 
 
