@@ -302,9 +302,9 @@ pub(super) fn read_receipt(
 // busy, I/O and statement errors remain operational failures, never absence.
 fn check_sql_error(error: rusqlite::Error) -> ReceiptCheckError {
     match error {
-        rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..) => {
-            integrity()
-        }
+        rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::Utf8Error(..) => integrity(),
         other => ReceiptCheckError::Storage(StorageError::Sql(other)),
     }
 }

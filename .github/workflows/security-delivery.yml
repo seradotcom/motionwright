@@ -77,6 +77,7 @@ on:
           - foundation-composed-current
           - foundation-coherent-current
           - storage-api-regressions
+          - storage-service-current
 
 permissions:
   contents: read
@@ -87,7 +88,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1014,3 +1015,86 @@ jobs:
           path: ci-evidence/storage-api/
           if-no-files-found: error
           retention-days: 7
+
+  storage-service-current:
+    name: Current Storage and Service regressions
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'storage-service-current'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: motionwright-storage-api-1.98.1
+          cache-on-failure: true
+      - name: Bind current source and dependency identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/mw-storage-service-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$work"
+          echo "MW_STORAGE_SERVICE_EVIDENCE=$work" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git rev-parse HEAD > "$work/source-sha.original.txt"
+          git rev-parse 'HEAD^{tree}' > "$work/source-tree.original.txt"
+          rustc -Vv > "$work/rustc.original.txt"
+          sha256sum Cargo.toml Cargo.lock SOURCE_LOCK.json \
+            crates/storage/Cargo.toml crates/service/Cargo.toml \
+            crates/storage/src/apply_receipt_binding.rs \
+            crates/storage/tests/apply_receipt_binding.rs \
+            > "$work/source-digests.original.txt"
+          python3 -B tooling/source_policy.py
+      - name: Run current Store and Service contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 --no-fail-fast \
+            -p motionwright-storage -p motionwright-service --all-targets \
+            -- --test-threads=1 2>&1 | tee "$MW_STORAGE_SERVICE_EVIDENCE/tests.original.log"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          root = pathlib.Path(os.environ["MW_STORAGE_SERVICE_EVIDENCE"])
+          raw = (root / "tests.original.log").read_text()
+          raw = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+          results = re.findall(r"(?m)^test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;", raw)
+          assert results and sum(int(passed) for passed, _ in results) > 0
+          assert re.search(r"(?m)^test invalid_sqlite_receipt_types_and_utf8_are_content_failures \.\.\. ok$", raw)
+          receipt = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "passed": sum(int(passed) for passed, _ in results),
+              "ignored": sum(int(ignored) for _, ignored in results),
+              "rust_test_targets": len(results),
+              "corrupt_utf8_rejection": "PASS",
+              "historical_v5_producer": "NOT_REBUILT",
+              "formal_acceptance": "NOT_GRANTED",
+          }
+          (root / "tests-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt))
+          PY
+          git diff --exit-code
+      - name: Check current Store and Service warnings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 \
+            -p motionwright-storage -p motionwright-service --all-targets -- -D warnings \
+            2>&1 | tee "$MW_STORAGE_SERVICE_EVIDENCE/clippy.original.log"
+          git diff --exit-code
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: storage-service-current-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_STORAGE_SERVICE_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 14
