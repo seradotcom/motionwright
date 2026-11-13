@@ -578,11 +578,11 @@ class InertOriginals:
 
 
 class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
-    def check(self, mode="valid"):
-        fixture = InertOriginals(mode)
+    def check(self, mode="valid", *, fixture=None):
+        fixture = InertOriginals(mode) if fixture is None else fixture
         with mock.patch.object(gate, "graph_ref",
                                side_effect=lambda path, maximum=gate.GRAPH_BYTES * 512: fixture.refs[str(path)]):
-            return gate.graph_verify_readonly_reopen_originals(
+            return gate.graph_verify_reopen_archive_originals(
                 fixture.reopen, fixture.index, fixture.final,
                 fixture.reopen_path, fixture.retained)
 
@@ -609,6 +609,27 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
 
     def test_original_handoff_and_distinct_read_only_reader_source_fixture(self):
         self.assertIs(self.check(), True)
+
+    def test_preseal_response_is_a_range_in_the_complete_original_writer_stream(self):
+        fixture = InertOriginals("writer_raw_legitimate_project_reads")
+        segment = fixture.reopen["original_preseal_response_raw"]
+        self.assertEqual(set(segment), {"stream", "offset", "size_bytes", "sha256"})
+        self.assertGreater(segment["offset"], 0)
+        self.assertIs(self.check(fixture=fixture), True)
+
+    def test_preseal_response_range_cannot_change_stream_bounds_or_hash(self):
+        for mutation in ("stream", "offset", "length", "empty", "hash", "boolean-offset"):
+            with self.subTest(mutation=mutation):
+                fixture = InertOriginals("writer_raw_legitimate_project_reads")
+                segment = fixture.reopen["original_preseal_response_raw"]
+                if mutation == "stream": segment["stream"] = fixture.reopen["original_service_closure"]
+                elif mutation == "offset": segment["offset"] += 1
+                elif mutation == "length": segment["size_bytes"] -= 1
+                elif mutation == "empty": segment["size_bytes"] = 0
+                elif mutation == "hash": segment["sha256"] = "0" * 64
+                elif mutation == "boolean-offset": segment["offset"] = True
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(fixture=fixture)
 
     def test_missing_or_false_required_originals_are_rejected(self):
         for mode in ("missing_original_writer_read_only_handoff",

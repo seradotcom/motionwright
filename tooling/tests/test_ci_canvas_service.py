@@ -9305,6 +9305,7 @@ class GraphR74JoinTests(unittest.TestCase):
             rows.append({"id": identifier, "kind": kind, "bytes": size, "files": count, "sequence": len(rows)})
         for row in (("aggregate-unavailable", "aggregate-holdback", 252*mib, 1096),
             ("directory-members", "archive-directory-capacity", 1, 256), ("original-sqlite-files", "kernel-bounded-original-store", 16*mib, 4),
+            ("original-managed-cas-files", "store-cas", 4*mib, 16),
             ("parent-metadata", "metadata", 4*mib, 128), ("parent-close-and-errors", "close", 4*mib, 64),
             ("service-evidence-metadata", "evidence", 16*mib, 128), ("python-owner", "external-owner", 48*mib, 768),
             ("python-owner-raw", "owner-raw", 2*mib, 2), ("case-consumption", "immutable-case-consumption", 8192, 1),
@@ -9312,16 +9313,32 @@ class GraphR74JoinTests(unittest.TestCase):
             add(*row)
         for n in range(3): add("journal/"+str(n), "native-journal", 32*mib, 384)
         for n in range(4): add("raw/"+str(n), "service-raw", 2*mib, 2)
-        add("copy/0", "archive-copy", 16*mib, 4)
+        add("copy/0", "archive-copy", 20*mib, 20)
         add("independent-same-store-reopen", "post-seal-originals", 20*mib+768*1024, 268)
         observed = gate.graph_validate_allocation_union(rows + rows, [5, 2, 0])
         self.assertLessEqual(observed["bytes"], 260*mib); self.assertLessEqual(observed["members"], 3000)
-        for mutation in ("reset", "missing", "overflow", "refund"):
+        self.assertEqual(observed["members"], 2995)
+        for mutation in ("reset", "missing", "overflow", "refund", "cas-missing",
+                         "cas-kind", "cas-bytes", "cas-files", "copy-bytes", "copy-files", "extra-cas"):
             changed = copy.deepcopy(rows)
             if mutation == "reset": changed[-1]["sequence"] = 0
             elif mutation == "missing": changed.pop(2)
             elif mutation == "overflow": changed[-1]["bytes"] = 512*mib
             elif mutation == "refund": changed[0]["bytes"] -= 1
+            elif mutation == "cas-missing":
+                changed = [row for row in changed if row["id"] != "original-managed-cas-files"]
+                for sequence, row in enumerate(changed): row["sequence"] = sequence
+            elif mutation.startswith("cas-"):
+                cas = next(row for row in changed if row["id"] == "original-managed-cas-files")
+                if mutation == "cas-kind": cas["kind"] = "metadata"
+                elif mutation == "cas-bytes": cas["bytes"] -= 1
+                elif mutation == "cas-files": cas["files"] -= 1
+            elif mutation.startswith("copy-"):
+                copied = next(row for row in changed if row["kind"] == "archive-copy")
+                copied["bytes" if mutation == "copy-bytes" else "files"] += 1
+            elif mutation == "extra-cas":
+                changed.append({"id": "second-cas", "kind": "store-cas", "bytes": 1,
+                                "files": 1, "sequence": len(changed)})
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 gate.graph_validate_allocation_union(changed, [5, 2, 0])
 

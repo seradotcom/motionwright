@@ -7930,6 +7930,9 @@ GRAPH_BUDGET = {
     "journal_bytes": 32 * GRAPH_BYTES, "journal_files": 384,
     "store_file_bytes": 4 * GRAPH_BYTES, "store_files": 4,
 }
+# Same separately prepaid CAS slice as GraphCaseFactoryCore. This does not
+# change the admitted case, owner, journal, SQLite or global pool budgets.
+GRAPH_CAS_ALLOWANCE = {"bytes": 4 * GRAPH_BYTES, "files": 16}
 GRAPH_PHASES = {
     "prepare": 1200, "runtime": 1200, "sdk-build": 1800, "product-build": 1800,
     "producer-index": 600, "review-upload": 300, "approval-wait": 1200,
@@ -9451,6 +9454,79 @@ def graph_report(document, *, listing, expected=None, selected_case=None):
     return {**verified, "identities": identities, "original_discovery_matched": True}
 
 
+def graph_verify_managed_store_entries(entries, anchor, original_store):
+    """Classify the complete copied SQLite/CAS tree under its original quotas."""
+    original_store = Path(original_store)
+    require(original_store.is_absolute() and type(anchor) is dict
+            and set(anchor) == {"format_version", "root_id", "control", "canonical_root",
+                                "directory_id", "control_id", "lock_id"}
+            and type(anchor["format_version"]) is int and anchor["format_version"] == 1
+            and type(anchor["root_id"]) is str
+            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", anchor["root_id"]),
+            "Graph managed CAS anchor fields or root identity")
+    control = ".motionwright-cas-" + anchor["root_id"]
+    require(anchor["canonical_root"] == str(original_store / "blobs")
+            and anchor["control"] == str(original_store / control)
+            and all(type(anchor[key]) is str and 0 < len(anchor[key]) <= 256
+                    for key in ("directory_id", "control_id", "lock_id")),
+            "Graph managed CAS anchor original paths or identities")
+    maximum_files = GRAPH_BUDGET["store_files"] + GRAPH_CAS_ALLOWANCE["files"]
+    require(type(entries) is list and len(entries) <= 2 * maximum_files + 1,
+            "Graph managed Store complete tree bound")
+    sqlite_names = {"motionwright.sqlite3" + suffix for suffix in ("", "-wal", "-shm", "-journal")}
+    required = {"", "motionwright.sqlite3", "blobs", "blobs/.motionwright-cas-root-v1.json",
+                control, control + "/locks", control + "/root.lock", control + "/catalog.json"}
+    seen = set()
+    sqlite_files = sqlite_bytes = cas_files = cas_bytes = 0
+    for row in entries:
+        require(type(row) is dict and type(row.get("path")) is str
+                and row.get("kind") in ("file", "directory"), "Graph managed Store entry shape")
+        name = row["path"]
+        require(name not in seen and "\\" not in name and "\0" not in name
+                and not name.startswith("/") and (name == "" or
+                    all(part not in ("", ".", "..") for part in name.split("/"))),
+                "Graph managed Store duplicate or traversing path")
+        seen.add(name)
+        require(set(row) == ({"path", "kind"} if row["kind"] == "directory" else
+                            {"path", "kind", "sizeBytes", "sha256"}),
+                "Graph managed Store entry fields")
+        if row["kind"] == "file":
+            require(type(row["sizeBytes"]) is int and row["sizeBytes"] >= 0
+                    and type(row["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]),
+                    "Graph managed Store file size or hash")
+        if name == "":
+            require(row["kind"] == "directory", "Graph managed Store root kind")
+            continue
+        if name in sqlite_names:
+            require(row["kind"] == "file" and row["sizeBytes"] <= GRAPH_BUDGET["store_file_bytes"],
+                    "Graph managed SQLite file kind or bound")
+            sqlite_files += 1
+            sqlite_bytes += row["sizeBytes"]
+            continue
+        directory = (name in {"blobs", control, control + "/locks", "blobs/sha256", "blobs/.staging"}
+                     or re.fullmatch(r"blobs/sha256/[0-9a-f]{2}", name) is not None)
+        blob = re.fullmatch(r"blobs/sha256/([0-9a-f]{2})/([0-9a-f]{64})", name)
+        file = (name in {"blobs/.motionwright-cas-root-v1.json", control + "/root.lock",
+                         control + "/catalog.json"}
+                or name.startswith(control + "/locks/") and re.fullmatch(
+                    r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.lock",
+                    name[len(control + "/locks/"):]) is not None
+                or blob is not None and blob.group(2).startswith(blob.group(1)))
+        require(directory or file, "Graph managed CAS undeclared path")
+        if directory:
+            require(row["kind"] == "directory", "Graph managed CAS directory kind")
+        else:
+            require(row["kind"] == "file", "Graph managed CAS file kind")
+            cas_files += 1
+            cas_bytes += row["sizeBytes"]
+            require(cas_files <= GRAPH_CAS_ALLOWANCE["files"]
+                    and cas_bytes <= GRAPH_CAS_ALLOWANCE["bytes"], "Graph managed CAS footprint bound")
+    require(required <= seen and sqlite_files <= GRAPH_BUDGET["store_files"],
+            "Graph managed Store required SQLite/CAS roster")
+    return {"sqlite_files": sqlite_files, "sqlite_bytes": sqlite_bytes,
+            "cas_files": cas_files, "cas_bytes": cas_bytes}
+
+
 def graph_validate_allocation_union(observations, caps):
     """Check the one existing pool from its original immutable reservations."""
     by_sequence, by_id = {}, {}
@@ -9470,6 +9546,7 @@ def graph_validate_allocation_union(observations, caps):
         "aggregate-unavailable": ("aggregate-holdback", 252 * GRAPH_BYTES, 1096),
         "directory-members": ("archive-directory-capacity", 1, 256),
         "original-sqlite-files": ("kernel-bounded-original-store", 16 * GRAPH_BYTES, 4),
+        "original-managed-cas-files": ("store-cas", GRAPH_CAS_ALLOWANCE["bytes"], GRAPH_CAS_ALLOWANCE["files"]),
         "parent-metadata": ("metadata", 4 * GRAPH_BYTES, 128),
         "parent-close-and-errors": ("close", 4 * GRAPH_BYTES, 64),
         "service-evidence-metadata": ("evidence", 16 * GRAPH_BYTES, 128),
@@ -9490,7 +9567,9 @@ def graph_validate_allocation_union(observations, caps):
             and row["files"] == GRAPH_BUDGET["journal_files"] for row in journals), "Graph journal precharge roster")
     require(len(raws) == len(caps) + 1 and all(row["bytes"] == 2 * GRAPH_BYTES and row["files"] == 2 for row in raws),
             "Graph Service raw precharge roster")
-    require(len(copies) == 1 and copies[0]["bytes"] <= 16 * GRAPH_BYTES and copies[0]["files"] <= 4,
+    require(len(copies) == 1 and copies[0]["bytes"] <= (
+                GRAPH_BUDGET["store_file_bytes"] * GRAPH_BUDGET["store_files"] + GRAPH_CAS_ALLOWANCE["bytes"])
+            and copies[0]["files"] <= GRAPH_BUDGET["store_files"] + GRAPH_CAS_ALLOWANCE["files"],
             "Graph original Store copy reservation")
     require(len(reopens) == 1 and reopens[0]["id"] == "independent-same-store-reopen"
             and reopens[0]["bytes"] <= 20 * GRAPH_BYTES + 768 * 1024 and reopens[0]["files"] <= 268,
@@ -10182,6 +10261,22 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
     return True
 
 
+def graph_verify_reopen_archive_originals(reopen, index, final, reopen_path, retained):
+    """Retain complete originals and bind the preseal reply inside writer stdout."""
+    # original_preseal_response_raw is a byte-range descriptor, not a file ref.
+    # The verifier below retains its complete writer stream and checks offset,
+    # length, newline, original reply and SHA-256; none of those joins is skipped.
+    for name in ("expected_oracle", "observed_oracle", "original_preseal_held_pager_witness", "original_service_closure"):
+        ref = reopen[name]
+        retained({key: ref[key] for key in ("path", "sha256", "size_bytes")}, 16 * GRAPH_BYTES)
+    for ref in reopen["opened_descriptor_observations"]:
+        retained(ref, GRAPH_BYTES)
+    for raw in reopen["raw"].values():
+        require(raw["eof"] is True, "Graph independent reopen EOF missing")
+        retained({key: raw[key] for key in ("path", "sha256", "size_bytes")}, GRAPH_BYTES)
+    return graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, retained)
+
+
 def graph_archive_bindings(root, inventory, source):
     """Existing whole-evidence collector's Graph branch, after all reporters."""
     receipt = archive_json(root, inventory, "e/receipt.json")
@@ -10293,15 +10388,7 @@ def graph_archive_bindings(root, inventory, source):
                     "actual_child_opened_descriptor_observed", "same_spawn_process_incarnation_observed", "held_store_digest_matches_initializer_physical_identity",
                     "original_preseal_held_pager_witness_bound")) and reopen.get("formal_acceptance") is False and reopen.get("gate_credit") is False,
                 "Graph original reopen witness/EOF/identity join incomplete")
-        for name in ("expected_oracle", "observed_oracle", "original_preseal_held_pager_witness", "original_preseal_response_raw", "original_service_closure"):
-            ref = reopen[name]
-            retained({key: ref[key] for key in ("path", "sha256", "size_bytes")}, 16 * GRAPH_BYTES)
-        for ref in reopen["opened_descriptor_observations"]:
-            retained(ref, GRAPH_BYTES)
-        for raw in reopen["raw"].values():
-            require(raw["eof"] is True, "Graph independent reopen EOF missing")
-            retained({key: raw[key] for key in ("path", "sha256", "size_bytes")}, GRAPH_BYTES)
-        require(graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, retained),
+        require(graph_verify_reopen_archive_originals(reopen, index, final, reopen_path, retained),
                 "Graph independent read-only writer handoff and original child never verified")
         manifests = list((case_root / "artifacts").rglob("manifest.json"))
         captures = []
@@ -10314,8 +10401,10 @@ def graph_archive_bindings(root, inventory, source):
             require(manifest["sourceBeforeSha256"] == manifest["sourceAfterSha256"] == manifest["snapshotSha256"] == aggregate
                     and manifest["databaseRelativePath"] == "motionwright.sqlite3"
                     and Path(manifest["snapshotDirectory"]) == manifest_path.parent / "store", "Graph original Store copy manifest")
-            require(graph_tree_allocation(Path(manifest["snapshotDirectory"]), 16 * GRAPH_BYTES, 5)["bytes"] <= 16 * GRAPH_BYTES,
-                    "Graph original Store copy allocation")
+            copy_bytes = (GRAPH_BUDGET["store_file_bytes"] * GRAPH_BUDGET["store_files"]
+                          + GRAPH_CAS_ALLOWANCE["bytes"])
+            copy_files = GRAPH_BUDGET["store_files"] + GRAPH_CAS_ALLOWANCE["files"]
+            graph_tree_allocation(Path(manifest["snapshotDirectory"]), copy_bytes, 2 * copy_files + 1)
             actual = []
             snapshot = Path(manifest["snapshotDirectory"])
             for file in [snapshot, *sorted(snapshot.rglob("*"))]:
@@ -10326,6 +10415,9 @@ def graph_archive_bindings(root, inventory, source):
                     row.update(sizeBytes=ref["size_bytes"], sha256=ref["sha256"])
                 actual.append(row)
             require(sorted(actual, key=lambda row: row["path"]) == sorted(entries, key=lambda row: row["path"]), "Graph complete Store copy entries differ")
+            anchor_ref = graph_ref(snapshot / "blobs/.motionwright-cas-root-v1.json", 65536)
+            anchor = graph_json(retained(anchor_ref, 65536))
+            graph_verify_managed_store_entries(actual, anchor, case_root / "store")
             captures.append(graph_ref(manifest_path))
         require(len(captures) == 1, "Graph exactly one retained closed original Store")
         pool_rows = []
