@@ -131,6 +131,30 @@ class LinuxDependencyCaptureTests(unittest.TestCase):
         self.assertEqual(len(mapped["bundle"]["resources"]), 6)
         self.assertIn("licenses/cargo/index.json", mapped["bundle"]["resources"].values())
 
+
+    def test_real_capture_sized_index_keeps_staging_digest_binding(self):
+        # Size of the original Linux index from failed run 43380010798.
+        raw = self.cargo_index.read_bytes()
+        raw += b" " * (17305904 - len(raw))
+        self.cargo_index.write_bytes(raw)
+        self.complete["cargo_index_sha256"] = gate.capture.sha(raw)
+        self.complete_path.write_bytes(gate.capture.encoded(self.complete))
+        binding = gate.stage_resources(self.root, self.sha)
+        self.assertEqual(binding["cargo_index_sha256"], gate.capture.sha(raw))
+        self.assertEqual(binding["status"], "CAPTURED_ROOT_BINARY_BYTE_EXACT")
+        self.cargo_index.write_bytes(raw[:-1] + b"\n")
+        with self.assertRaisesRegex(ValueError, "windows_cargo_completion_mismatch"):
+            gate.cargo_binding(self.root, self.sha)
+
+    def test_oversized_cargo_index_cannot_publish_resource_overlay(self):
+        raw = b"{}" + b" " * (gate.capture.MAX_CARGO_INDEX_BYTES - 1)
+        self.cargo_index.write_bytes(raw)
+        self.complete["cargo_index_sha256"] = gate.capture.sha(raw)
+        self.complete_path.write_bytes(gate.capture.encoded(self.complete))
+        with self.assertRaisesRegex(gate.capture.CaptureError, "file_budget_exceeded"):
+            gate.stage_resources(self.root, self.sha)
+        self.assertFalse((self.root / gate.BASE / "tauri-resources.json").exists())
+
     def test_both_package_observations_bind_exact_bytes_without_full_inventory_credit(self):
         self.package_fixture()
         result = gate.verify_packages(self.root, self.sha)

@@ -475,7 +475,7 @@ def _verify_cargo_notice_subtree(*, capture, index_raw: bytes,
         require(observed["sha256"] == digest, "candidate_cargo_notice_digest_mismatch")
         total += observed["bytes"]
     inspect_names()
-    require(capture.stable_read(anchor, relative / "index.json", 16 * 1024 * 1024)
+    require(capture.stable_read(anchor, relative / "index.json", capture.MAX_CARGO_INDEX_BYTES)
             == index_raw, "candidate_cargo_index_changed_during_inspection")
     return {"status": "DECLARED_CARGO_TEXTS_PRESENT_BYTE_EXACT",
             "scope": "CARGO_NOTICE_SUBTREE_ONLY", "subtree_closed": True,
@@ -524,7 +524,7 @@ def verify_cargo_build_binding(*, candidate: dict, record: dict,
     try:
         anchor = package_root.resolve(strict=True)
         raw = capture.stable_read(
-            anchor, resource_relative / "licenses/cargo/index.json", 16 * 1024 * 1024,
+            anchor, resource_relative / "licenses/cargo/index.json", capture.MAX_CARGO_INDEX_BYTES,
         )
         result = capture.verify_binary_binding(
             raw, expected_index_sha256=binding["index_sha256"],

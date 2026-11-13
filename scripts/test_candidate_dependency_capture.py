@@ -693,6 +693,24 @@ class CaptureContracts(unittest.TestCase):
             capture.verify_binary_binding(raw, **{**arguments, "expected_index_sha256": "0"*64})
 
 
+    def test_cargo_index_boundary_retains_digest_and_binary_checks(self):
+        _, _, _, index, executable = self.bound_index()
+        raw, arguments = self.binding_arguments(index, executable)
+        bounded = raw + b" " * (capture.MAX_CARGO_INDEX_BYTES - len(raw))
+        expected = {**arguments, "expected_index_sha256": capture.sha(bounded)}
+        result = capture.verify_binary_binding(bounded, **expected)
+        self.assertEqual(result["status"], "CAPTURED_ROOT_BINARY_BYTE_EXACT")
+        self.assertEqual(result["cargo_index_sha256"], capture.sha(bounded))
+        with self.assertRaisesRegex(capture.CaptureError, "cargo_index_digest_mismatch"):
+            capture.verify_binary_binding(bounded, **arguments)
+        oversized = bounded + b" "
+        with self.assertRaisesRegex(capture.CaptureError, "cargo_index_budget_exceeded"):
+            capture.verify_binary_binding(
+                oversized, **{**expected, "expected_index_sha256": capture.sha(oversized)})
+        executable.write_bytes(b"Changed inert binary")
+        with self.assertRaisesRegex(capture.CaptureError, "installed_binary_differs_from_cargo_capture"):
+            capture.verify_binary_binding(bounded, **expected)
+
 
 class TauriPermissionCaptureContracts(unittest.TestCase):
     """Real filesystem/Git contracts only; no Cargo or build process is run."""

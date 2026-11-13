@@ -241,3 +241,29 @@ These records establish bounded source/text provenance. They preserve
 `redistribution_permission=NOT_INFERRED` and `full_package_inventory=NOT_VERIFIED`.
 Apple SDK rights, native-content review, installed-package inspection and formal
 R74/G2/G3 acceptance remain separate.
+
+## Cargo index envelope shared by producer and readers
+
+Linux capture 43380010798 at `a6b46c493a7b64ad1f67d91feb577015283ce5e3`
+completed the actual Cargo build, collected 381 components without notice
+issues, and sealed the physical SQLite-output observation. Staging then
+refused its 17305904-byte Cargo index because the packaging reader admitted
+only 16 MiB. The failed run remains a failure; no bundle was produced.
+
+`MAX_CARGO_INDEX_BYTES` is now a shared, bounded 32-MiB envelope. Capture
+checks it before writing either the index or the completion seal. The binary
+binding verifier, Windows/Linux/macOS staging, candidate receipt producer and
+installed-package reader use the same limit. Oversized physical files still
+fail before parsing or publishing a resource overlay.
+
+This change retains the complete provenance record. It does not increase
+frontend-index, generic JSON, source-stream, archive, notice-text, proof-record
+or proof-object budgets. The trusted index digest, exact source/tree/target,
+artifact roster, physical executable bytes, generated-metadata custody and
+SQLite-output checks remain required at their existing boundaries.
+
+Focused controls use inert Git/filesystem fixtures at the observed Linux size
+and the 32-MiB boundary. They retain digest/substitution refusals and verify
+that a 32-MiB-plus-one-byte index cannot publish an overlay. Reading the
+retained original index is source-data verification only; the subsequent
+hosted package build must demonstrate the new end-to-end packaging result.

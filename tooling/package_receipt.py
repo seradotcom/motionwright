@@ -176,7 +176,7 @@ def _candidate_cargo_binding(root: Path, git_sha: str, platform: str, arch: str,
     try:
         anchor = root.resolve(strict=True)
         snapshot = capture.source_snapshot(anchor, git_sha)
-        raw = capture.stable_read(anchor, cargo_index, 16 * 1024 * 1024)
+        raw = capture.stable_read(anchor, cargo_index, capture.MAX_CARGO_INDEX_BYTES)
         digest = hashlib.sha256(raw).hexdigest()
         observed = capture.verify_binary_binding(
             raw, expected_index_sha256=digest, expected_source=git_sha,

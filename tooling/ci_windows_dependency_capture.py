@@ -193,7 +193,8 @@ def cargo_binding(repo, source, *, base=None, target=None, binary=None, profile_
     binary = BINARY if binary is None else binary
     snapshot = capture.source_snapshot(repo, source)
     complete = read_json(repo, base / "state/capture-complete.json")
-    raw = capture.stable_read(repo, base / "resources/cargo/index.json", 16 * 1024 * 1024)
+    raw = capture.stable_read(repo, base / "resources/cargo/index.json",
+                              capture.MAX_CARGO_INDEX_BYTES)
     require(complete.get("source") == source
             and complete.get("cargo_index_sha256") == capture.sha(raw)
             and complete.get("full_package_inventory") == "NOT_VERIFIED",

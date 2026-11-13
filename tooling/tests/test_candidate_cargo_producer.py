@@ -233,7 +233,7 @@ class CandidateCargoProducerTests(unittest.TestCase):
 
 
 
-    def prepare_producer_consumer_fixture(self):
+    def prepare_producer_consumer_fixture(self, *, index_size=None):
         import importlib.util
         import struct
         import tomllib
@@ -283,7 +283,10 @@ class CandidateCargoProducerTests(unittest.TestCase):
         source_text = self.cargo_index.parent / "texts" / (cargo_notice_sha + ".txt")
         source_text.parent.mkdir(parents=True, exist_ok=True)
         source_text.write_bytes(cargo_notice)
-        self.save_cargo_index()
+        raw = self.save_cargo_index()
+        if index_size is not None:
+            self.assertGreaterEqual(index_size, len(raw))
+            self.cargo_index.write_bytes(raw + b" " * (index_size - len(raw)))
         self.extracted_binary = self.root / "inert-extraction/Motionwright.exe"
         self.extracted_binary.parent.mkdir()
         self.extracted_binary.write_bytes(self.cargo_original)
@@ -322,6 +325,20 @@ class CandidateCargoProducerTests(unittest.TestCase):
         self.assertEqual(receipt["claims"]["human_install_acceptance"], "NOT_RUN")
         self.assertEqual(receipt["claims"]["signing"], "NOT_CLAIMED")
         self.assertFalse(receipt["claims"]["release_published"])
+
+
+    def test_large_index_crosses_receipt_and_extraction_with_original_digest(self):
+        self.prepare_producer_consumer_fixture(index_size=17305904)
+        raw = self.cargo_index.read_bytes()
+        receipt = self.inspect_producer_consumer_fixture()
+        binding = receipt["automated_inspection"]["cargo_build_binding"]
+        self.assertEqual(binding["status"], "CAPTURED_ROOT_BINARY_BYTE_EXACT")
+        self.assertEqual(binding["cargo_index_sha256"], sha256(raw).hexdigest())
+        self.assertEqual(binding["notice_resources"]["full_package_inventory"], "NOT_VERIFIED")
+        extracted = self.extracted_binary.parent / "licenses/cargo/index.json"
+        extracted.write_bytes(raw[:-1] + b"\n")
+        with self.assertRaisesRegex(self.consumer.CandidateError, "cargo_index_digest_mismatch"):
+            self.inspect_producer_consumer_fixture()
 
     def test_produced_binding_rejects_same_size_extracted_body_substitution(self):
         self.prepare_producer_consumer_fixture()

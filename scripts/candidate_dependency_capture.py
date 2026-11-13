@@ -9,6 +9,8 @@ from pathlib import Path
 
 MAX_STREAM = 128 * 1024 * 1024
 MAX_SOURCE = 512 * 1024 * 1024
+# One bounded Cargo index envelope for capture, packaging and installed readers.
+MAX_CARGO_INDEX_BYTES = 32 * 1024 * 1024
 REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 class CaptureError(RuntimeError):
@@ -395,7 +397,7 @@ def verify_binary_binding(index_raw, *, expected_index_sha256, expected_source,
     provenance of the expected index digest. This is not a signature, a complete
     package inventory, or proof of an unobserved strip/sign transformation.
     """
-    _binding_require(isinstance(index_raw, bytes) and 0 < len(index_raw) <= 16 * 1024 * 1024,
+    _binding_require(isinstance(index_raw, bytes) and 0 < len(index_raw) <= MAX_CARGO_INDEX_BYTES,
                      "cargo_index_budget_exceeded")
     _binding_require(isinstance(expected_index_sha256, str)
                      and re.fullmatch(r"[0-9a-f]{64}", expected_index_sha256)
@@ -1057,9 +1059,12 @@ def capture_build(*, repo, expected_source, cargo, cargo_home, target_triple,
             expected_source=expected_source, expected_tree=before["tree"],
             expected_target=target_triple)
         index["capture"]["sqlite_native_output_sha256"] = sha(native_raw)
-    write_new(resources / "cargo" / "index.json", encoded(index))
+    index_raw = encoded(index)
+    _binding_require(0 < len(index_raw) <= MAX_CARGO_INDEX_BYTES,
+                     "cargo_index_budget_exceeded")
+    write_new(resources / "cargo" / "index.json", index_raw)
     write_new(state / "capture-complete.json", encoded(
-        {"source": expected_source, "cargo_index_sha256": sha(encoded(index)),
+        {"source": expected_source, "cargo_index_sha256": sha(index_raw),
          "artifact_identities_sha256": binding["artifact_identities_sha256"],
          "resources": str(resources), "full_package_inventory": "NOT_VERIFIED",
          **({"sqlite_native_output_sha256": sha(native_raw)} if native_raw is not None else {}),
