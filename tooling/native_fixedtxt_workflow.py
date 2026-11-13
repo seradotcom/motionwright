@@ -788,7 +788,8 @@ def preparation_commands(request, current):
         ["npm", "ci", "--ignore-scripts"],
         ["npx", "--no-install", "playwright", "install", "--with-deps", "firefox"],
         ["cargo", "build", "--manifest-path", str(sdk / "Cargo.toml"), "--locked", "-p", "semwright-daemon",
-         "-p", "semwright-cli", "--bins"],
+         "-p", "semwright-cli", "--bins",
+         "--features", "semwright-daemon/private-host-stdin-custody"],
         ["cargo", "build", "--manifest-path", str(sdk / "Cargo.toml"), "--locked",
          "-p", "semwright-plugin-host", "--bin", "semwright-sandbox",
          "-p", "semwright-driver-motion-canvas", "--bin", "semwright-motion-canvas-driver",
@@ -1385,6 +1386,41 @@ def collect_workflow_originals(current, request, *, partial=False):
             need(not path.is_symlink(), "fixedtxt-workflow-original-symlink")
             if path.is_file():
                 paths.append((label, path.relative_to(directory).as_posix(), path))
+    # These conditional diagnostics are outside P's required Native originals.
+    # Select six literal files only; never walk the owner tree or synthesize a
+    # missing error on a successful attempt. Each retained byte remains private.
+    diagnostic_limits = {}
+    observation = layout["observation_root"]
+    if observation.exists() or observation.is_symlink():
+        try:
+            need(observation.is_dir() and not observation.is_symlink()
+                 and observation.resolve(strict=True) == observation,
+                 "fixedtxt-owner-diagnostic-root")
+            from native_film180_evidence_selection import fixedtxt_frames
+            fixedtxt_frames(request["fixture"])
+            names = {"original-attempt-error.json": 1024 * 1024}
+            for name, maximum in (
+                ("semwrightd.original.private.log", 1024 * 1024),
+                ("original-attempt-error.json", 1024 * 1024),
+                ("broker-start.intent.json", 65536),
+                ("broker-original-identity.json", 65536),
+                ("broker-end-observation.json", 65536),
+            ):
+                names[request["fixture"] + "/" + name] = maximum
+            for name, maximum in names.items():
+                path = observation / name
+                # canonical parents are checked before looking at a child name.
+                if not path.parent.exists():
+                    continue
+                need(path.parent.resolve(strict=True) == path.parent
+                     and not path.parent.is_symlink(), "fixedtxt-owner-diagnostic-parent")
+                if path.exists() or path.is_symlink():
+                    paths.append(("owner_diagnostics", name, path))
+                    diagnostic_limits[("owner_diagnostics", name)] = maximum
+        except Exception as error:
+            failures.append({"root": "owner_diagnostics", "reason": type(error).__name__})
+            if not partial:
+                raise
     # P/R/Q and the starting clock take precedence in a failed preparation's
     # partial envelope. Omitted bytes are named explicitly, never a PASS.
     primary = {"fixedtxt-plan.original.json", "source-input.original.json", "cycle.original.json",
@@ -1393,13 +1429,14 @@ def collect_workflow_originals(current, request, *, partial=False):
     known, total = {}, 0
     bound = max(0, request["review_capsule_bytes"] - 1024 * 1024)
     for label, name, path in paths:
-        if len(known) >= request["limits"]["files"] or path.stat().st_size > bound - total:
+        available = min(bound - total, diagnostic_limits.get((label, name), bound - total))
+        if len(known) >= request["limits"]["files"] or path.lstat().st_size > available:
             failures.append({"root": label, "relative_path": name, "reason": "ORIGINAL_RESOURCE_BOUND"})
             if not partial:
                 raise WorkflowRejected("fixedtxt-preparation-original-inventory-budget")
             continue
         try:
-            raw = regular(path, max(1, bound-total))[0]
+            raw = regular(path, max(1, available))[0]
             known[(label, name)] = raw
             total += len(raw)
         except Exception as error:
@@ -1442,7 +1479,8 @@ def seal_workflow_originals():
     metadata = canonical({"schema": "motionwright.native.fixedtxt-workflow-snapshot/1", "context": current,
         "files": [{"path": root + "/" + name, **original_descriptor(raw)}
                   for (root, name), raw in sorted(known.items())], "failures": failures,
-        "scope": ["FixedTxt control", "FixedTxt inputs", "existing runtime custody", "original owner-resource tail"],
+        "scope": ["FixedTxt control", "FixedTxt inputs", "existing runtime custody", "original owner-resource tail",
+                  "six conditional literal owner diagnostics; no owner-tree completeness claim"],
         "resource_custody_manifest": original_descriptor(resource_manifest_raw),
         "native_result_inferred": False, "automatic_retry": False})
     need(len(metadata) <= 512 * 1024, "fixedtxt-workflow-original-manifest-bound")

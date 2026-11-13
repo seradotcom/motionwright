@@ -496,6 +496,30 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
             known,failures=route.collect_workflow_originals(current,request,partial=True)
             self.assertEqual(known[('control','preparation/prepare-00.stderr')],b'original failure stderr')
             self.assertIn({'root':'runtime_custody','reason':'ORIGINAL_ROOT_ABSENT'},failures)
+            observation = layout['observation_root']
+            case = observation / request['fixture']; case.mkdir(parents=True, mode=0o700)
+            log = case / 'semwrightd.original.private.log'
+            log.write_bytes(b'original daemon launch diagnostic')
+            unrelated = case / 'unselected-private-file'; unrelated.write_bytes(b'not admitted by this selection')
+            extra, extra_failures = route.collect_workflow_originals(current, request, partial=True)
+            self.assertEqual(extra[('owner_diagnostics', request['fixture'] + '/' + log.name)],
+                             b'original daemon launch diagnostic')
+            self.assertNotIn(('owner_diagnostics', 'original-attempt-error.json'), extra)
+            self.assertFalse(any(name.endswith(unrelated.name) for _, name in extra))
+            original_error = case / 'original-attempt-error.json'
+            original_error.write_bytes(b'{"error":"original failure"}')
+            extra, _ = route.collect_workflow_originals(current, request, partial=True)
+            self.assertEqual(extra[('owner_diagnostics', request['fixture'] + '/' + original_error.name)],
+                             original_error.read_bytes())
+            log.write_bytes(b'x' * (1024 * 1024 + 1))
+            extra, omitted_log = route.collect_workflow_originals(current, request, partial=True)
+            self.assertNotIn(('owner_diagnostics', request['fixture'] + '/' + log.name), extra)
+            self.assertIn({'root':'owner_diagnostics', 'relative_path':request['fixture'] + '/' + log.name,
+                           'reason':'ORIGINAL_RESOURCE_BOUND'}, omitted_log)
+            log.unlink(); log.symlink_to(original)
+            extra, refused_link = route.collect_workflow_originals(current, request, partial=True)
+            self.assertNotIn(('owner_diagnostics', request['fixture'] + '/' + log.name), extra)
+            self.assertTrue(any(row['root'] == 'owner_diagnostics' for row in refused_link))
             limited={**request,'review_capsule_bytes':1024*1024+4}
             kept,omitted=route.collect_workflow_originals(current,limited,partial=True)
             self.assertEqual(kept,{('control','clock.original.json'):b'123'})
@@ -540,6 +564,16 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         base = {key:value for key,value in full.items() if key!='fixedtxt'}
         base['schema']=custody.FILM_DISPATCH_SCHEMA
         self.assertEqual(custody.runtime_preparation_dispatch(route.canonical(base),self.current,scenario=route.SCOPE),base)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {
+                'RUNNER_TEMP':directory, 'GITHUB_WORKSPACE':directory, 'SEMWRIGHT_CHECKOUT':directory}):
+            control = route.owned_layout(self.current)['control_root']; control.mkdir(mode=0o700)
+            (control / 'runtime-bootstrap.original.json').write_bytes(route.canonical(base))
+            commands = route.preparation_commands(source_request(self.current, fixed.strict(self.p,512*1024)), self.current)
+            daemon = [command for command in commands if 'semwright-daemon' in command]
+            self.assertEqual(len(daemon), 1)
+            self.assertIn('--locked', daemon[0])
+            self.assertEqual(daemon[0][daemon[0].index('--features') + 1],
+                             'semwright-daemon/private-host-stdin-custody')
         with self.assertRaises(Exception):
             custody.validate_dispatch(route.canonical(base),self.current,scenario=route.SCOPE)
         with self.assertRaises(Exception):
