@@ -17,7 +17,10 @@ from unittest.mock import patch
 import wave
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from native_mlt_sequence_e2e import inspect_decoded_ci_stereo, retain_native_master_source
+from native_mlt_sequence_e2e import (
+    inspect_current_master_full_source_stereo, inspect_decoded_ci_stereo,
+    inspect_native_master_decoded_content, retain_native_master_source,
+)
 from native_mlt_sequence_e2e import digest as native_file_digest
 import native_mlt_public_artifact as pub
 
@@ -106,6 +109,51 @@ def native_source_receipt(mode: str = "final-mp4") -> dict:
             "caption_cue_count": 2 if mode == "captioned-mp4" else None,
         },
     }
+
+
+class NativeAvFullDurationSourceTests(unittest.TestCase):
+    def test_actual_source_wave_is_verified_from_start_through_both_channel_tails(self):
+        source = synthetic_voice_wav()
+        decoded = original_pcm()
+        proof = inspect_current_master_full_source_stereo(source, decoded)
+        self.assertEqual(proof["source_stereo_frames"], 52_800)
+        self.assertEqual(proof["decoded_stereo_frames"], 52_800)
+        self.assertEqual(
+            proof["terminal_source_window_informative_by_channel"], [True, True],
+        )
+
+    def test_legacy_midstream_passes_but_mute_of_last_right_samples_is_rejected(self):
+        source = synthetic_voice_wav()
+        damaged = bytearray(original_pcm())
+        for frame in range(52_288, 52_800):
+            struct.pack_into("<h", damaged, frame * 4 + 2, 0)
+        # A real source-loss bug escaped the old 4,800..48,000 frame oracle.
+        self.assertEqual(
+            inspect_decoded_ci_stereo(bytes(damaged))["decoded_stereo_content"],
+            "distinct_source_400hz_left_600hz_right",
+        )
+        with self.assertRaisesRegex(
+            ValueError, "source_audio_content_(missing_or_scaled|temporally_changed)",
+        ):
+            inspect_current_master_full_source_stereo(source, bytes(damaged))
+
+    def test_aac_codec_padding_is_not_treated_as_authorized_missing_source(self):
+        source = synthetic_voice_wav()
+        padded = original_pcm() + bytes(448 * 4)
+        proof = inspect_current_master_full_source_stereo(source, padded)
+        self.assertEqual(proof["source_stereo_frames"], 52_800)
+        self.assertEqual(proof["decoded_stereo_frames"], 53_248)
+
+    def test_normal_owner_refuses_decode_without_original_wav_before_ffmpeg(self):
+        with patch("native_mlt_sequence_e2e.subprocess.run") as launched:
+            with self.assertRaisesRegex(
+                AssertionError, "native_full_source_audio_original_wav_required",
+            ):
+                inspect_native_master_decoded_content(
+                    pathlib.Path("not-opened.mp4"), pathlib.Path("ffmpeg-not-started"),
+                    {}, mode="final-mp4", g2=None,
+                )
+            launched.assert_not_called()
 
 
 class NativeSourceWavCustodyTests(unittest.TestCase):

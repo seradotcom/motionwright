@@ -103,8 +103,33 @@ def inspect_decoded_ci_stereo(pcm: bytes, *, mode: str = "final-mp4") -> dict:
     }
 
 
+def inspect_current_master_full_source_stereo(original_wav: bytes, decoded_pcm: bytes) -> dict:
+    """Source-owned full-duration stereo check; NEVER skip authored tail windows.
+
+    The existing 400/600 Hz midstream screen is a useful smoke test, but an
+    AAC file can retain those fundamentals while losing the last right-channel
+    source samples. Reuse the hardened 256-frame all-window source comparator.
+    This is technical evidence only, not a grant of G2 or playback consent.
+    """
+    from native_pcm_source_fidelity import inspect_source_pcm16_stereo_content
+
+    if type(original_wav) is not bytes or type(decoded_pcm) is not bytes:
+        raise AssertionError("native_full_source_audio_bytes_required")
+    result = inspect_source_pcm16_stereo_content(
+        original_wav, decoded_pcm,
+        original_wav_sha256=hashlib.sha256(original_wav).hexdigest(),
+        decoded_pcm_sha256=hashlib.sha256(decoded_pcm).hexdigest(),
+    )
+    if result["source_stereo_frames"] != 52_800 or (
+        result["terminal_source_window_informative_by_channel"] != [True, True]
+    ):
+        raise AssertionError("native_full_source_audio_terminal_channels_not_verified")
+    return result
+
+
 def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
-                                          *, mode: str = "final-mp4", g2=None) -> dict:
+                                          *, mode: str = "final-mp4", g2=None,
+                                          original_wav: bytes | None = None) -> dict:
     """Decode the real signed-off owner MP4 using fixed CI ffmpeg arguments;
     no application runtime, local backend or user-controlled filters.
     Temp disk output ensures even a hostile decoder cannot grow Python RAM.
@@ -113,6 +138,8 @@ def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
         return _inspect_hybrid_original_audio(master,ffmpeg,env,mode=mode,g2=g2)
     if mode not in {"final-mp4", "captioned-mp4"}:
         raise AssertionError("Legacy stereo decoder admits only its measured-voice fixture")
+    if g2 is None and type(original_wav) is not bytes:
+        raise AssertionError("native_full_source_audio_original_wav_required")
     contract = mode_contract(mode)
     with tempfile.TemporaryFile() as output:
         decoded = subprocess.run(
@@ -134,6 +161,11 @@ def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
             raise AssertionError("Decoded AV speaker bytes changed during bounded read")
         if g2 is not None:
             g2.inspect_pcm(pcm)
+        else:
+            # The normal Native test must reject any lost source channel,
+            # including terminal AAC packets which the old middle-only
+            # fundamental screen intentionally did not observe.
+            inspect_current_master_full_source_stereo(original_wav, pcm)
         return inspect_decoded_ci_stereo(pcm, mode=mode)
 
 def _inspect_hybrid_original_audio(master: Path, ffmpeg: Path, env: dict,
@@ -1197,11 +1229,26 @@ def main(g2=None):
                 wav_path = paths["output"] / decoded["path"]
                 if not wav_path.is_file() or digest(wav_path) != decoded["sha256"]:
                     raise AssertionError("MLT native decoded PCM audit is missing or changed")
-                # The actual MP4, not the receipt or source WAV, must retain
-                # the authored, distinct 400/600 Hz left/right test signals.
+                # Bind all authored stereo WAV bytes to the Native receipt
+                # BEFORE decoding. The legacy middle-only 400/600 Hz check
+                # passed even when AAC silently erased the terminal right
+                # channel. The normal G1 owner must check every source window.
+                # Formal G2 retains its separate original source authority.
+                source_path = source_token = original_wav = None
+                if g2 is None:
+                    relative = verify_staged_source_receipt(av_receipt, MODE)
+                    source_path = paths["output"] / relative
+                    original_wav, _, source_token = read_synthetic_source_wav(
+                        source_path, MODE,
+                    )
                 try:
-                    decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE, g2=g2)
+                    decoded_content = inspect_native_master_decoded_content(
+                        master, ffmpeg, env, mode=MODE, g2=g2,
+                        original_wav=original_wav,
+                    )
                 finally:
+                    if source_path is not None:
+                        verify_source_unchanged(source_path, source_token)
                     if g2 is not None:
                         try:
                             from native_aac_clock_custody import retain_clock_diagnostic
