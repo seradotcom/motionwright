@@ -531,15 +531,39 @@ class InertOriginals:
         reader_stderr = self.put("g1/independent-reopen/service.stderr.original", b"")
         desc_refs = []
         for i in range(2):
+            # opened_store_descriptor.mjs emits an original canonical path
+            # separately from the two-field stat identity. The real producer
+            # never places a path key inside source_physical.
+            source_path = (str(self.root / "other.sqlite3")
+                           if self.mode == "descriptor_other_store" else self.physical["path"])
+            source_stamp = {k: self.physical[k] for k in ("device", "inode")}
+            descriptor = {"fd": 7, "target": self.physical["path"],
+                          "device": self.physical["device"], "inode": self.physical["inode"],
+                          "flags": "0100000"}
+            process = {"pid": 202, "start_ticks": "10293", "state": "S", "uid": "1000"}
+            if self.mode == "descriptor_bad_source_inode":
+                source_stamp["inode"] = "123"
+            if self.mode == "descriptor_fd_target_mismatch":
+                descriptor["target"] = str(self.root / "other.sqlite3")
+            if self.mode == "descriptor_fd_inode_mismatch":
+                descriptor["inode"] = "123"
+            if self.mode == "descriptor_fd_invalid_flags":
+                descriptor["flags"] = "not-octal"
+            if self.mode == "descriptor_process_replaced":
+                process["pid"] = 999
+            if self.mode == "descriptor_process_incarnation_changed" and i == 1:
+                process["start_ticks"] = "9999"
             obs = {"source": self.source, "binary": self.ordinary, "held_store_digest": self.held,
                    "phase": ("reversed" if self.mode == "descriptor_wrong_phase" else
                              ["after-first-project-and-complete-journal", "after-second-project-before-eof"][i]),
                    "synthetic_adapter_only": False, "gate_credit": False,
-                   "observation": {"process": {"pid": 202},
-                       "source_physical": {"path": str(self.root / "other.sqlite3"),
-                                           **{k: self.physical[k] for k in ("device", "inode")}}
-                                          if self.mode == "descriptor_other_store" else self.physical,
-                       "descriptor_observed_live": True}}
+                   "observation": {"schema": "motionwright.graph.opened-service-sqlite-fd/1",
+                       "process": process, "source_path": source_path,
+                       "source_physical": source_stamp, "opened_descriptors":
+                           ([] if self.mode == "descriptor_empty_fd_set" else [descriptor]),
+                       "descriptor_observed_live": True,
+                       "scope": "actual Linux child opened SQLite main-file descriptor only",
+                       "native_recovery_verified": False, "host_closed": False, "gate_credit": False}}
             desc_refs.append(self.put(f"reader/descriptor-{i}.original.json", obs))
         oracle_ref = self.put("reader/oracle.original.json", {"project": project, "journal": journal})
         observed_ref = self.put("reader/observed.original.json", {
@@ -790,6 +814,43 @@ class GraphR74ReadOnlyArchiveTests(unittest.TestCase):
         for mode in ("reader_stderr_missing", "reader_stderr_no_eof",
                      "reader_stderr_bad_digest", "reader_stderr_foreign_path",
                      "reader_stdout_no_eof", "reader_raw_unknown_stream"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
+                    self.check(mode)
+
+    def test_original_linux_fd_probe_source_matches_archive_fixture_schema(self):
+        # Bind our inert payload to the immutable producer's actual field
+        # splitting, so a source drift fails this guard before the R74 run.
+        base = Path(__file__).resolve().parents[2]
+        module = (base / "apps/studio/tests/support/graph-owner/opened_store_descriptor.mjs").read_text(
+            encoding="utf-8")
+        join = (base / "apps/studio/tests/support/graph-owner/opened_store_identity_join.mjs").read_text(
+            encoding="utf-8")
+        self.assertIn("return {device:String(s.dev),inode:String(s.ino)};", module)
+        self.assertIn("process:processAfter,source_path:pathname,source_physical:before,", module)
+        self.assertIn("opened_descriptors:observed,descriptor_observed_live:true,", module)
+        self.assertIn("sameFile(opened,before);", module)
+        self.assertIn("sameProcess(processBefore,processAfter);", module)
+        self.assertIn("isDeepStrictEqual(first.source_physical, second.source_physical)", join)
+        self.assertIn("isDeepStrictEqual(descriptors(first.opened_descriptors), descriptors(second.opened_descriptors))",
+                      join)
+
+    def test_source_descriptor_original_path_is_separate_from_stat_identity(self):
+        fixture = InertOriginals()
+        ref = fixture.reopen["opened_descriptor_observations"][0]
+        raw = json.loads(fixture.retained(ref))["observation"]
+        self.assertEqual(raw["source_path"], fixture.physical["path"])
+        self.assertEqual(raw["source_physical"],
+                         {k: fixture.physical[k] for k in ("device", "inode")})
+        self.assertNotIn("path", raw["source_physical"])
+        self.assertIs(self.check(fixture=fixture), True)
+
+    def test_reader_fd_originals_reject_path_process_and_stat_drift(self):
+        modes = ("descriptor_bad_source_inode", "descriptor_fd_target_mismatch",
+                 "descriptor_fd_inode_mismatch", "descriptor_fd_invalid_flags",
+                 "descriptor_process_replaced", "descriptor_process_incarnation_changed",
+                 "descriptor_empty_fd_set")
+        for mode in modes:
             with self.subTest(mode=mode):
                 with self.assertRaises((ValueError, KeyError, TypeError, AssertionError)):
                     self.check(mode)

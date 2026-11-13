@@ -10245,19 +10245,66 @@ def graph_verify_readonly_reopen_originals(reopen, index, final, reopen_path, re
             and history_pages >= 1 and last_page == [],
             "Graph second read-only complete journal or pager witness missing")
     descriptor_phases = []
+    opened_incarnations, opened_rosters = [], []
     for ref in reopen["opened_descriptor_observations"]:
         item = original(ref, GRAPH_BYTES)
         descriptor_phases.append(item["phase"])
         actual = item["observation"]
+        # opened_store_descriptor.mjs returns the canonical path separately
+        # from fileStamp(): {device, inode}. The old archive fixture had a
+        # nonexistent path member inside source_physical and rejected real R74
+        # evidence after all six cases completed.
+        require(type(actual) is dict and set(actual) == {
+                    "schema", "process", "source_path", "source_physical",
+                    "opened_descriptors", "descriptor_observed_live", "scope",
+                    "native_recovery_verified", "host_closed", "gate_credit"}
+                and actual["schema"] == "motionwright.graph.opened-service-sqlite-fd/1"
+                and actual["source_path"] == physical["path"]
+                and actual["source_physical"] == {
+                    "device": physical["device"], "inode": physical["inode"]}
+                and actual["descriptor_observed_live"] is True
+                and actual["scope"] == "actual Linux child opened SQLite main-file descriptor only"
+                and actual["native_recovery_verified"] is False
+                and actual["host_closed"] is False and actual["gate_credit"] is False,
+                "Graph reader original SQLite FD schema/path/stat identity changed")
+        process = actual["process"]
+        require(type(process) is dict
+                and set(process) == {"pid", "start_ticks", "state", "uid"}
+                and type(process["pid"]) is int and process["pid"] == child_pid
+                and type(process["start_ticks"]) is str
+                and re.fullmatch(r"[1-9][0-9]*", process["start_ticks"])
+                and type(process["uid"]) is str
+                and re.fullmatch(r"(0|[1-9][0-9]*)", process["uid"])
+                and type(process["state"]) is str and len(process["state"]) == 1
+                and process["state"] not in ("Z", "X", "x"),
+                "Graph reader original SQLite FD process incarnation changed")
+        descriptors = actual["opened_descriptors"]
+        require(type(descriptors) is list and 1 <= len(descriptors) <= 1024
+                and all(type(row) is dict
+                        and set(row) == {"fd", "target", "device", "inode", "flags"}
+                        and type(row["fd"]) is int and 0 <= row["fd"] < 2**31
+                        and row["target"] == physical["path"]
+                        and row["device"] == physical["device"]
+                        and row["inode"] == physical["inode"]
+                        and type(row["flags"]) is str
+                        and re.fullmatch(r"[0-7]+", row["flags"])
+                        for row in descriptors)
+                and len({row["fd"] for row in descriptors}) == len(descriptors),
+                "Graph reader original opened SQLite FD roster changed")
+        opened_incarnations.append((process["pid"], process["start_ticks"], process["uid"]))
+        opened_rosters.append(sorted((row["fd"], row["target"], row["device"],
+                                     row["inode"], row["flags"]) for row in descriptors))
         require(item["source"] == source and item["binary"] == expected_binary
-                and item["held_store_digest"] == held and item["synthetic_adapter_only"] is False
-                and item["gate_credit"] is False and actual["process"]["pid"] == child_pid
-                and actual["source_physical"] == physical
-                and actual["descriptor_observed_live"] is True,
+                and item["held_store_digest"] == held
+                and item["synthetic_adapter_only"] is False
+                and item["gate_credit"] is False,
                 "Graph reader opened SQLite descriptor/provenance changed")
     require(descriptor_phases == ["after-first-project-and-complete-journal",
-                                  "after-second-project-before-eof"],
-            "Graph independent reader descriptor observations incomplete")
+                                 "after-second-project-before-eof"]
+            and len(opened_incarnations) == 2
+            and opened_incarnations[0] == opened_incarnations[1]
+            and opened_rosters[0] == opened_rosters[1],
+            "Graph independent reader descriptor observations incomplete or changed")
     return True
 
 
