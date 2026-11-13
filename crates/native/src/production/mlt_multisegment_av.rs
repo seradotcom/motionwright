@@ -370,8 +370,10 @@ fn require_native_mux_stereo_tail<
             ));
         }
         for (index, (before, after)) in original
-            .chunks_exact(2)
-            .zip(output.chunks_exact(2))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(output.as_chunks::<2>().0.iter())
             .enumerate()
         {
             for channel in 0..2 {
@@ -911,7 +913,12 @@ mod tests {
         // Same valid 32-bit interleaved RIFF layout; replace the numeric
         // sample representation with signed PCM32, preserving amplitude.
         wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
-        for (chunk, sample) in wav[44..].chunks_exact_mut(4).zip(stereo.iter().flatten()) {
+        for (chunk, sample) in wav[44..]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(stereo.iter().flatten())
+        {
             chunk.copy_from_slice(&(i32::from(*sample) << 16).to_le_bytes());
         }
         wav
