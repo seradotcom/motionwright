@@ -201,6 +201,23 @@ def source_file_token(metadata: os.stat_result) -> tuple:
             getattr(metadata, "st_file_attributes", 0))
 
 
+def source_open_identity_matches(before: os.stat_result, opened: os.stat_result) -> bool:
+    # Windows CPython can expose birth time through lstat().st_ctime_ns
+    # and change time through fstat().st_ctime_ns (CPython issue 157671).
+    # Use unambiguous birth times only to bind path and open descriptor;
+    # raw tokens still detect changes within each API before/after reading.
+    path_token = source_file_token(before)
+    descriptor_token = source_file_token(opened)
+    if os.name == "nt" and all(
+        type(getattr(metadata, "st_birthtime_ns", None)) is int
+        for metadata in (before, opened)
+    ):
+        path_token = path_token[:5] + (before.st_birthtime_ns,) + path_token[6:]
+        descriptor_token = (descriptor_token[:5] + (opened.st_birthtime_ns,)
+                            + descriptor_token[6:])
+    return path_token == descriptor_token
+
+
 def verify_source_unchanged(path: Path, token: tuple) -> None:
     try:
         current = source_file_token(path.lstat())
@@ -223,10 +240,12 @@ def read_synthetic_source_wav(path: Path, mode: str) -> tuple[bytes, dict, tuple
         flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
                  | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(os.open(path, flags), "rb") as stream:
-            require(source_file_token(os.fstat(stream.fileno())) == token,
+            opened = os.fstat(stream.fileno())
+            descriptor_token = source_file_token(opened)
+            require(source_open_identity_matches(before, opened),
                     "native_mlt_source_wav_changed")
             data = stream.read(contract.wav_bytes + 1)
-            require(source_file_token(os.fstat(stream.fileno())) == token,
+            require(source_file_token(os.fstat(stream.fileno())) == descriptor_token,
                     "native_mlt_source_wav_changed")
         verify_source_unchanged(path, token)
     except OSError:
