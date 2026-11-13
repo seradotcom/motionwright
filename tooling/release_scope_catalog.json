@@ -18413,8 +18413,8 @@
     },
     {
       "path": ".github/workflows/v05-original-native-mix.yml",
-      "sha256": "57def3dc7dccc66d8373d5d315e4d4bf0f75629b809ce07b44877e087092d81e",
-      "preamble_sha256": "6da5b8d15e1e089c613976575ffcb66ce976f1028a64ddd20629cee450d0f88d",
+      "sha256": "39e5f29a83ef80baac6a3009e595c8a1a87ba0961be0bfd827aa9a2323738c97",
+      "preamble_sha256": "2a7528af7376741f4ee0c6a0a658d4fe720e3bf21bda2d98d1a66ca758e94ce7",
       "evidence_class": "physical_audio_browser",
       "purpose": "Separate original three-locale WAV/ducking and browser audition from the saved-mix selected source contracts; preserve both evidence scopes.",
       "inputs": {
@@ -18447,11 +18447,11 @@
       "jobs": {
         "native-source-and-independent-meter": {
           "source_name": "native-source-and-independent-meter",
-          "guard": "${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}",
+          "guard": "${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}",
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "f9294aef4b96a417fc13c2535ac6d257718ea7f186fb7cf0a17ce44824702bd4",
+          "source_sha256": "eaf98d37b3a1e172ba61a5cd6e7f8bcd7087096f86bb251bb8f219f1c625f5a1",
           "instance_sets": {
             "original": [
               {}
@@ -18502,11 +18502,11 @@
         },
         "studio-audition": {
           "source_name": "studio-audition",
-          "guard": "${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}",
+          "guard": "${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}",
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "9a90b8129d01aa514fff963346d75c56a16d8a2c5f3a384746d84a9739259bf2",
+          "source_sha256": "ca26f2ec4a87d77a29a167c9db758922eae66f04bc2386db4a9b278cd3dc31de",
           "instance_sets": {
             "original": [
               {}
@@ -18557,11 +18557,11 @@
         },
         "saved-mix-g0": {
           "source_name": "saved-mix-g0",
-          "guard": null,
+          "guard": "${{ github.event_name != 'push' }}",
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "09d3f381d2e3aebe0a11bc6ec4a8026c9ecb5c441561a85d9ba3c336f520f3a2",
+          "source_sha256": "18207383ef017ffebd6f77ca35000cf53620cf28acf118b23935ae8e33e4425c",
           "instance_sets": {
             "original": [
               {}
@@ -18576,7 +18576,7 @@
               "name": "Selected source gate admission controls",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "f3bd211ee4535eb1288e861417078d2be68d72cfa589fd6e201c583c66041ecd",
+              "source_block_sha256": "9fdbbf1e684e32ae23b4e5ba53785f063a36bddb114053e83afb961dddce6a03",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -18595,7 +18595,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "saved-mix-g0",
           "strategy": null,
-          "source_sha256": "5bde630a1322c6955cc65b484261d969142236db4273aa506a58c35b1922d0f1",
+          "source_sha256": "6b4ced2a1e968caab44eb9fe63285253245c8084525f50ee1e3b523f5df1e9ae",
           "instance_sets": {
             "saved-mix": [
               {}
@@ -18612,10 +18612,10 @@
             },
             {
               "ordinal": 4,
-              "name": "Execute exactly 41 selected source contracts",
+              "name": "Execute exactly 70 selected source contracts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2806749e07a864fde18df5315fac6248a9e9d83ceeedbb7ec9a179ae9bd8f4f7",
+              "source_block_sha256": "fd68594580c57a6398605f048a224ca94b5ec71c14d56395d6b617f7f58d4214",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -18625,6 +18625,33 @@
               "kind": "ARTIFACT_RETENTION",
               "source_block_sha256": "1877f3743ba5d647b77c729cbbd0f9a878013e0bb3ff1142977b1635b28c67bd",
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            }
+          ]
+        },
+        "original-mix-rust-source-impact": {
+          "source_name": "original-mix-rust-source-impact",
+          "guard": "${{ github.event_name == 'push' }}",
+          "runs_on": "ubuntu-24.04",
+          "needs": null,
+          "strategy": null,
+          "source_sha256": "56d9858956d2685d3558aaabff17f3a8e7b9d459fb23d0e7451a3834d78769a5",
+          "instance_sets": {},
+          "steps": [
+            {
+              "ordinal": 4,
+              "name": "Verify bounded source route and compile the changed original mix",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "784b9ab69559b9259089631cf851c38453e0d71286fb52478bae562919f7ce8a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
+              "name": "Retain original bounded Rust source unit roster",
+              "guard": "always()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "7bef38341e6acff178312156b2ec2f1328f9145dca3ce14754bd0544fd94660d",
+              "api_binding": "EXPLICIT_NAME"
             }
           ]
         }
@@ -18707,12 +18734,19 @@
               ]
             }
           ],
-          "coverage_basis": "This literal manual alternative selects the saved-mix G0 and the exact 41 selected source contracts with retained originals. The original WAV and browser jobs are excluded by their guards. This profile does not render or admit an installed native mix.",
+          "coverage_basis": "This literal manual alternative selects the saved-mix G0 and the exact 70 selected source contracts with retained originals. The original WAV and browser jobs are excluded by their guards. This profile does not render or admit an installed native mix.",
           "original_attempt": null,
           "blocking_reason": null
         }
       ],
-      "job_dispositions": [],
+      "job_dispositions": [
+        {
+          "job_id": "original-mix-rust-source-impact",
+          "guard": "${{ github.event_name == 'push' }}",
+          "kind": "ORIGINAL_PR_CHANGE_REVIEW",
+          "reason": "Existing push-only source-impact route for the canonical integration branch and affected source/lock paths. Its literal push guard excludes both manual original and saved-mix cases. This entry reviews the source definition only; applicability and any original push-run evidence require separate source-bound review. No execution, PR approval, physical audio acceptance or release authority is admitted here."
+        }
+      ],
       "limitations": [
         "Source-specific original evidence must be read back; this definition review admits no execution.",
         "Source, synthetic, browser, physical and installed observations retain their distinct evidence classes.",

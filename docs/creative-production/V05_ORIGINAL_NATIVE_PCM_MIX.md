@@ -66,6 +66,21 @@ and Python verifies music ducking against the original source PCM.
 These quantitative measurements concern only this synthetic fixture,
 not commercial speech or music and not the final MLT/AAC master.
 
+The current producer preserves all nine exact PCM inputs alongside the three
+WAVs. Those retained files are the inputs actually read by the fixture. Each
+Native fixture, ffprobe, FFmpeg decode and FFmpeg meter invocation retains raw
+stdout/stderr and its original process observation before values are parsed.
+The final inventory rechecks the first observed identities, including empty
+streams; an output collision, unknown process outcome or custody failure
+prevents a passing result and forbids another command in that execution.
+These controls apply to newly produced artifacts; they do not reconstruct
+inputs or analyzer streams missing from older artifacts.
+
+The selected SavedMix source gate enumerates 70 Linux contracts across the
+actual mixer, SQLite/CAS reopen, native consumer and Desktop preparation
+groups. Its provider protocol doubles remain source evidence, separate from
+the physical synthetic WAV producer.
+
 A separate Chromium suite covers the browser demo's **no native WAV**
 behavior, a synthetic desktop transport requiring explicit rights
 attestation, no canonical project revision, and an in-memory player
