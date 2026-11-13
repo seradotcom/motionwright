@@ -834,6 +834,14 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
         self.assertIsNotNone(template)
         self.assertEqual(template.group(1).decode(), kit.TEMPLATE_SHA)
 
+        # Producer transport and independent reader select the same exact
+        # observer derivations. These identities do not grant any execution.
+        import native_fixedtxt_observer_overlay as overlay
+        rust = (root / 'crates/native/examples/native-film180-e2e.rs').read_text()
+        block = rust.split('const OBSERVED_NATIVE_SOURCES:', 1)[1].split('];', 1)[0]
+        pins = dict(re.findall(r'\(\s*"(RED|GREEN)",\s*"([0-9a-f]{64})",?\s*\)', block))
+        self.assertEqual(pins, overlay.OBSERVED)
+
         # The actual first-attempt source kit emits its direct Cargo root at
         # target/debug, and its six exact externs never gain arbitrary paths.
         package_id = "root-canvas"

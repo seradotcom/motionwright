@@ -1687,6 +1687,53 @@ mod fixed_text_v4 {
             _ => vec![0, 45, 120, 179],
         }
     }
+    // Exact observer derivations from native_fixedtxt_observer_overlay.py.
+    // This selects measurement transport; it does not grant Native admission.
+    const OBSERVED_NATIVE_SOURCES: [(&str, &str); 2] = [
+        (
+            "RED",
+            "9a54b51d25e0fa8521718fd03f9f29145e7bfc0395ff8fe40bd6d3fbccb23a96",
+        ),
+        (
+            "GREEN",
+            "63ffb19cf10e042d988608fca632780dc2cdc9e7766c3d1cc1e90d4f981e43c6",
+        ),
+    ];
+    fn observes_text_pixels(arm: &str, source: &str) -> bool {
+        OBSERVED_NATIVE_SOURCES.contains(&(arm, source))
+    }
+    fn render_profile(arm: &str, key: &str, source: &str) -> Value {
+        let mut profile = json!({
+            "first_frame":0,"end_frame_exclusive":180,"scale":"full",
+            "transparent":false,"timeout_ms":300000
+        });
+        if observes_text_pixels(arm, source) {
+            profile["text_pixel_observation_frames"] = json!(frames(key));
+        }
+        profile
+    }
+    fn verify_text_pixel_samples(
+        arm: &str,
+        key: &str,
+        source: &str,
+        config: &Value,
+        manifest: &Value,
+    ) -> FixtureResult<()> {
+        let requested = config.get("textPixelObservationFrames");
+        let recorded = manifest["plan"].get("text_pixel_observation_frames");
+        if observes_text_pixels(arm, source) {
+            let expected = json!(frames(key));
+            require(
+                requested == Some(&expected) && recorded == Some(&expected),
+                "Original text pixel samples differ from the admitted fixture",
+            )
+        } else {
+            require(
+                requested.is_none() && recorded.is_none(),
+                "A source without the admitted observer requested text pixel samples",
+            )
+        }
+    }
     fn relative(value: &str) -> FixtureResult<()> {
         require(
             !value.is_empty()
@@ -2265,8 +2312,9 @@ mod fixed_text_v4 {
                 "driver.motion-canvas.render.start",
                 json!({
                     "expected_fingerprint":&fingerprint,
-                    "profile":{"first_frame":0,"end_frame_exclusive":180,"scale":"full",
-                               "transparent":false,"timeout_ms":300000}
+                    "profile":render_profile(
+                        &self.case.arm, &self.case.key,
+                        &self.case.runtime.native_source_sha256[&self.case.arm])
                 }),
                 true,
             )
@@ -2450,29 +2498,31 @@ mod fixed_text_v4 {
                 "Original Host helper differs from its frozen bytes",
             )?;
             let config: Value = decode(raw.as_bytes())?;
-            exact_keys(
-                &config,
-                &[
-                    "authoring",
-                    "renderInputDigest",
-                    "dependencyLockDigest",
-                    "fontResourcesDigest",
-                    "fontResourcePins",
-                    "managedFonts",
-                    "name",
-                    "width",
-                    "height",
-                    "fps",
-                    "fpsNum",
-                    "fpsDen",
-                    "firstFrame",
-                    "endFrameExclusive",
-                    "colorSpace",
-                    "background",
-                    "alpha",
-                    "timeoutMs",
-                ],
-            )?;
+            let source = &self.case.runtime.native_source_sha256[&self.case.arm];
+            let mut config_keys = vec![
+                "authoring",
+                "renderInputDigest",
+                "dependencyLockDigest",
+                "fontResourcesDigest",
+                "fontResourcePins",
+                "managedFonts",
+                "name",
+                "width",
+                "height",
+                "fps",
+                "fpsNum",
+                "fpsDen",
+                "firstFrame",
+                "endFrameExclusive",
+                "colorSpace",
+                "background",
+                "alpha",
+                "timeoutMs",
+            ];
+            if observes_text_pixels(&self.case.arm, source) {
+                config_keys.push("textPixelObservationFrames");
+            }
+            exact_keys(&config, &config_keys)?;
             require(
                 config["authoring"] == true
                     && config["name"] == "frames"
@@ -2593,6 +2643,7 @@ mod fixed_text_v4 {
                 "Original artifact manifest differs from its render result",
             )?;
             let manifest: Value = decode(&manifest_bytes)?;
+            verify_text_pixel_samples(&self.case.arm, &self.case.key, source, &config, &manifest)?;
             require(
                 manifest["native_observations"]["render_input_digest"]
                     == config["renderInputDigest"]
@@ -2763,6 +2814,85 @@ mod fixed_text_v4 {
                 "fixed-transform-clip",
             ] {
                 assert_eq!(frames(key), vec![45, 120, 179]);
+            }
+            // Both admitted observers carry each fixture's existing roster.
+            for (arm, source) in OBSERVED_NATIVE_SOURCES {
+                for key in KEYS {
+                    let expected = json!(frames(key));
+                    let profile = render_profile(arm, key, source);
+                    assert_eq!(profile["text_pixel_observation_frames"], expected);
+                    assert_eq!(profile["first_frame"], 0);
+                    assert_eq!(profile["end_frame_exclusive"], 180);
+                    let config = json!({"textPixelObservationFrames":expected});
+                    let manifest = json!({"plan":{"text_pixel_observation_frames":expected}});
+                    verify_text_pixel_samples(arm, key, source, &config, &manifest).unwrap();
+                    for invalid in [
+                        Value::Null,
+                        json!([]),
+                        json!([179, 120, 45, 0]),
+                        json!([0, 45, 120, 179, 180]),
+                        json!([false, 45, 120, 179]),
+                    ] {
+                        assert!(
+                            verify_text_pixel_samples(
+                                arm,
+                                key,
+                                source,
+                                &json!({"textPixelObservationFrames":invalid}),
+                                &manifest,
+                            )
+                            .is_err()
+                        );
+                        assert!(
+                            verify_text_pixel_samples(
+                                arm,
+                                key,
+                                source,
+                                &config,
+                                &json!({"plan":{"text_pixel_observation_frames":invalid}}),
+                            )
+                            .is_err()
+                        );
+                    }
+                    assert!(
+                        verify_text_pixel_samples(arm, key, source, &json!({}), &manifest).is_err()
+                    );
+                    assert!(
+                        verify_text_pixel_samples(arm, key, source, &config, &json!({"plan":{}}))
+                            .is_err()
+                    );
+                }
+            }
+            // Historical and crossed-arm sources cannot inherit an observer.
+            for (arm, source) in [
+                (
+                    "RED",
+                    "dfe6c0fc226d7e9017eb718c7e745d942c4067a54f968d4483b80bbdd51b4fa8",
+                ),
+                (
+                    "GREEN",
+                    "a400b38608e169a20e7ade099aa8632c11629152951b9e62a0fb66858b530f36",
+                ),
+                ("GREEN", OBSERVED_NATIVE_SOURCES[0].1),
+                ("RED", OBSERVED_NATIVE_SOURCES[1].1),
+            ] {
+                let key = "fixed-multirun-control";
+                assert!(
+                    render_profile(arm, key, source)
+                        .get("text_pixel_observation_frames")
+                        .is_none()
+                );
+                verify_text_pixel_samples(arm, key, source, &json!({}), &json!({"plan":{}}))
+                    .unwrap();
+                let config = json!({"textPixelObservationFrames":frames(key)});
+                let manifest = json!({"plan":{"text_pixel_observation_frames":frames(key)}});
+                assert!(
+                    verify_text_pixel_samples(arm, key, source, &config, &json!({"plan":{}}))
+                        .is_err()
+                );
+                assert!(
+                    verify_text_pixel_samples(arm, key, source, &json!({}), &manifest).is_err()
+                );
             }
         }
         #[test]
