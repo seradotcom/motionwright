@@ -1769,31 +1769,34 @@ mod fixed_text_v4 {
     fn native_error(reason: impl Into<String>) -> NativeError {
         NativeError::new(ErrorCode::BackendFailed, reason)
     }
+    fn write_native_failure(
+        writer: &mut impl std::io::Write,
+        error: &NativeError,
+    ) -> std::io::Result<()> {
+        let wire = json!({"error":{
+            "code":error.code,
+            "outcome_known":error.outcome_known,
+            "message":"Original FixedTxt Native operation failed; retained originals require review"
+        }});
+        let mut bytes = serde_json::to_vec(&wire).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+        writer.write_all(&bytes)?;
+        writer.flush()
+    }
+    fn report_native_failure(
+        error: &NativeError,
+        stdout: &mut impl std::io::Write,
+        stderr: &mut impl std::io::Write,
+    ) {
+        if let Err(secondary) = write_native_failure(stdout, error) {
+            let _ = writeln!(
+                stderr,
+                "Secondary native error transport failure: {secondary}; original Native error retained; no retry"
+            );
+        }
+    }
     fn terminal_native_failure(data: &Value) -> NativeError {
         let original_state = data["state"].as_str().unwrap_or("failed");
-        // A terminal state alone does not establish the Host's original certainty.
-        // Legacy, malformed and contradictory diagnostics stay unknown.
-        let outcome_known = original_state == "failed"
-            && data.get("artifact").is_some_and(Value::is_null)
-            && data.get("failure_class").is_none_or(Value::is_null)
-            && data
-                .get("host_failure")
-                .and_then(Value::as_object)
-                .is_some_and(|failure| {
-                    failure.len() == 2
-                        && matches!(
-                            failure.get("kind").and_then(Value::as_str),
-                            Some(
-                                "timeout"
-                                    | "resource_exhausted"
-                                    | "access_denied"
-                                    | "unavailable"
-                                    | "protocol_failure"
-                                    | "other"
-                            )
-                        )
-                        && failure.get("outcome_known").and_then(Value::as_bool) == Some(true)
-                });
         let error = NativeError::new(
             if original_state == "cancelled" {
                 ErrorCode::Cancelled
@@ -1802,11 +1805,7 @@ mod fixed_text_v4 {
             },
             format!("Original native render returned {original_state}; original receipt retained"),
         );
-        if outcome_known {
-            error
-        } else {
-            error.uncertain()
-        }
+        motionwright_native::production::preserve_motion_terminal_outcome(error, data)
     }
     fn native_data(value: &Value) -> NativeResult<&Value> {
         if value["replayed"] != false || value["result"]["provenance_checked"] != true {
@@ -2775,10 +2774,16 @@ mod fixed_text_v4 {
             Ok(value) => value,
             Err(error) => {
                 if let Err(secondary) = &custody {
-                    eprintln!(
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
                         "Secondary stdin custody failure: {secondary}; original native Error retained; no retry"
                     );
                 }
+                report_native_failure(
+                    &error,
+                    &mut std::io::stdout().lock(),
+                    &mut std::io::stderr().lock(),
+                );
                 return Err(error.into());
             }
         };
@@ -2829,6 +2834,48 @@ mod fixed_text_v4 {
     #[cfg(test)]
     mod tests {
         use super::*;
+        fn typed_failure_transport_keeps_primary_error_and_private_details() {
+            struct BrokenWriter;
+            impl std::io::Write for BrokenWriter {
+                fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "unit write failure",
+                    ))
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "unit flush failure",
+                    ))
+                }
+            }
+            for known in [false, true] {
+                let mut original = NativeError::new(ErrorCode::Timeout, "/owner/private/input");
+                original.outcome_known = known;
+                let before = serde_json::to_value(&original).unwrap();
+                let mut bytes = Vec::new();
+                write_native_failure(&mut bytes, &original).unwrap();
+                assert!(bytes.len() < 1024);
+                let wire: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(wire["error"]["code"], "Timeout");
+                assert_eq!(wire["error"]["outcome_known"], known);
+                assert_eq!(wire.as_object().unwrap().len(), 1);
+                assert_eq!(wire["error"].as_object().unwrap().len(), 3);
+                assert!(!String::from_utf8(bytes).unwrap().contains("/owner/private"));
+                assert!(write_native_failure(&mut BrokenWriter, &original).is_err());
+                report_native_failure(&original, &mut BrokenWriter, &mut BrokenWriter);
+                assert_eq!(serde_json::to_value(&original).unwrap(), before);
+                let data = json!({
+                    "state":"failed","artifact":null,
+                    "host_failure":{"kind":"timeout","outcome_known":true}
+                });
+                let kept = motionwright_native::production::preserve_motion_terminal_outcome(
+                    original, &data,
+                );
+                assert_eq!(kept.outcome_known, known);
+            }
+        }
         fn host_terminal_preserves_only_explicit_original_certainty() {
             for kind in [
                 "timeout",
@@ -2885,6 +2932,9 @@ mod fixed_text_v4 {
                 json!({"state":"failed","artifact":{"frame_count":180},"failure_class":null,"host_failure":host}),
                 json!({"state":"failed","artifact":null,"failure_class":"schema_error","host_failure":host}),
                 json!({"state":"failed","failure_class":null,"host_failure":host}),
+                json!({"artifact":null,"host_failure":host}),
+                json!({"state":null,"artifact":null,"host_failure":host}),
+                json!({"state":"rendering","artifact":null,"host_failure":host}),
             ] {
                 assert!(!terminal_native_failure(&data).outcome_known);
             }
@@ -3028,6 +3078,7 @@ mod fixed_text_v4 {
         }
         #[test]
         fn native_return_requires_fresh_checked_provenance() {
+            typed_failure_transport_keeps_primary_error_and_private_details();
             host_terminal_preserves_only_explicit_original_certainty();
             absent_or_malformed_host_certainty_cannot_be_promoted();
             let original = json!({"replayed":false,"result":{"provenance_checked":true,"data":{"fixture":"synthetic-only"}}});
