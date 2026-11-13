@@ -62,7 +62,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def fingerprint(path, root, limit=256 * 1024 * 1024):
+def fingerprint(path, root, limit=256 * 1024 * 1024, *, git_blob_oid=None):
     """Bounded descriptor read, confined to an owned root, including empty logs."""
     path, root = Path(path).absolute(), Path(root).absolute()
     require(path.is_relative_to(root) and path != root and ".." not in path.parts,
@@ -76,14 +76,22 @@ def fingerprint(path, root, limit=256 * 1024 * 1024):
     stamp = lambda x: (x.st_dev, x.st_ino, x.st_size, x.st_mtime_ns, x.st_nlink)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     digest, size = hashlib.sha256(), 0
+    require(git_blob_oid is None or SHA.fullmatch(git_blob_oid) is not None,
+            "invalid expected Git blob identity")
+    git_digest = None if git_blob_oid is None else hashlib.sha1(
+        b"blob " + str(first.st_size).encode("ascii") + b"\0")
     with os.fdopen(os.open(path, flags), "rb") as stream:
         require(stamp(os.fstat(stream.fileno())) == stamp(first), "artifact replaced before read")
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             size += len(chunk)
             require(size <= limit, "artifact exceeds bound")
             digest.update(chunk)
+            if git_digest is not None:
+                git_digest.update(chunk)
         require(stamp(os.fstat(stream.fileno())) == stamp(first), "artifact changed during read")
     require(stamp(path.lstat()) == stamp(first) and size == first.st_size, "artifact replaced after read")
+    require(git_digest is None or git_digest.hexdigest() == git_blob_oid,
+            "worktree bytes differ from the committed Git blob: " + str(path))
     return {"path": path.relative_to(root).as_posix(), "bytes": size,
             "sha256": digest.hexdigest(), "identity": list(stamp(first))}
 
@@ -130,7 +138,14 @@ def execution_context(env, source_sha, runtime_platform=None):
             **{key: env.get(key, "") for key in keys}}
 
 
-def source_snapshot(repo, expected_sha, paths, expected_tree=None):
+def source_snapshot(repo, expected_sha, paths, expected_tree=None, *, total_source_limit=None):
+    # Whole-tree callers keep their existing aggregate source budget. Git blob
+    # identity can be checked while streaming the actual file, without turning
+    # a large tracked source into an oversized buffered Git-query response.
+    require(total_source_limit is None or (
+        type(total_source_limit) is int and 0 < total_source_limit <= 256 * 1024 * 1024),
+        "invalid aggregate source byte budget")
+    source_bytes = 0
     require(SHA.fullmatch(expected_sha), "full source SHA required")
     require(git(repo, "rev-parse", "HEAD").decode().strip() == expected_sha, "checkout SHA differs")
     raw = git(repo, "cat-file", "commit", expected_sha)
@@ -149,13 +164,19 @@ def source_snapshot(repo, expected_sha, paths, expected_tree=None):
         mode, kind, oid = meta.split()
         require(mode in (b"100644", b"100755") and kind == b"blob" and name.decode() == path,
                 "input is not a regular Git blob")
-        blob = git(repo, "cat-file", "blob", oid.decode())
-        require(hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\0" + blob).hexdigest() == oid.decode(),
-                "Git blob identity differs")
-        observed = fingerprint(repo / path, repo, 16 * 1024 * 1024)
-        require(observed["bytes"] == len(blob) and observed["sha256"] == hashlib.sha256(blob).hexdigest(),
-                "worktree bytes differ from Git: " + path + "; local=" + observed["sha256"] +
-                "; Git=" + hashlib.sha256(blob).hexdigest())
+        if total_source_limit is None:
+            blob = git(repo, "cat-file", "blob", oid.decode())
+            require(hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\0" + blob).hexdigest() == oid.decode(),
+                    "Git blob identity differs")
+            observed = fingerprint(repo / path, repo, 16 * 1024 * 1024)
+            require(observed["bytes"] == len(blob) and observed["sha256"] == hashlib.sha256(blob).hexdigest(),
+                    "worktree bytes differ from Git: " + path + "; local=" + observed["sha256"] +
+                    "; Git=" + hashlib.sha256(blob).hexdigest())
+        else:
+            observed = fingerprint(repo / path, repo, total_source_limit - source_bytes,
+                                   git_blob_oid=oid.decode())
+            source_bytes += observed["bytes"]
+            require(source_bytes <= total_source_limit, "aggregate source byte budget exceeded")
         if expected_sha == SOURCE_SHA and path in REVIEWED:
             require(observed["sha256"] == REVIEWED[path], "reviewed product bytes differ")
         files[path] = {**observed, "git_blob_oid": oid.decode()}

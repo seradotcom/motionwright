@@ -197,7 +197,8 @@ def snapshot(repo, expected_source):
     require(not (repo / "apps/desktop/src-tauri/gen").exists()
             and not (repo / "apps/desktop/src-tauri/gen").is_symlink(),
             "generated Desktop state must be absent before compilation")
-    return custody.source_snapshot(repo, expected_source, source_paths(repo, expected_source))
+    return custody.source_snapshot(repo, expected_source, source_paths(repo, expected_source),
+                                   total_source_limit=MAX_SOURCE_TOTAL)
 
 
 def generated_schemas(repo):

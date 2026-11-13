@@ -115,6 +115,55 @@ class SourceContracts(unittest.TestCase):
                 self.assertRegex(action, r"@[0-9a-f]{40}$")
 
 
+class StreamedWholeSource(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="saved-mix-real-git-source-")
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name).resolve()
+        self.name = "tracked-source.bin"
+        self.raw = b"actual bounded source bytes\n" * 645278
+        self.assertGreater(len(self.raw), 16 * 1024 * 1024)
+        self.path = self.repo / self.name
+        self.path.write_bytes(self.raw)
+        gate.custody.git(self.repo, "init", "--quiet")
+        gate.custody.git(self.repo, "add", "--", self.name)
+        gate.custody.git(self.repo, "-c", "user.name=Source custody test",
+                         "-c", "user.email=source-custody-test@localhost",
+                         "-c", "commit.gpgsign=false", "commit", "--quiet", "-m",
+                         "Bind the actual large source fixture")
+        self.source = gate.custody.git(self.repo, "rev-parse", "HEAD").decode().strip()
+
+    def test_large_blob_uses_existing_aggregate_budget_and_keeps_legacy_query_bound(self):
+        with self.assertRaisesRegex(ValueError, "Git source query failed or exceeded its bound"):
+            gate.custody.source_snapshot(self.repo, self.source, [self.name])
+        value = gate.custody.source_snapshot(
+            self.repo, self.source, [self.name], total_source_limit=gate.MAX_SOURCE_TOTAL)
+        observed = value["files"][self.name]
+        self.assertEqual(observed["bytes"], len(self.raw))
+        self.assertEqual(observed["sha256"], hashlib.sha256(self.raw).hexdigest())
+        expected = hashlib.sha1(b"blob " + str(len(self.raw)).encode() + b"\0" + self.raw).hexdigest()
+        self.assertEqual(observed["git_blob_oid"], expected)
+
+    def test_same_length_source_tamper_is_refused_even_when_git_status_is_clean(self):
+        gate.custody.git(self.repo, "update-index", "--assume-unchanged", self.name)
+        with self.path.open("r+b") as stream:
+            stream.write(b"X")
+        self.assertEqual(gate.custody.git(self.repo, "status", "--porcelain=v1"), b"")
+        with self.assertRaisesRegex(ValueError, "committed Git blob"):
+            gate.custody.source_snapshot(
+                self.repo, self.source, [self.name], total_source_limit=gate.MAX_SOURCE_TOTAL)
+
+    def test_aggregate_source_budget_is_enforced_without_reading_past_it(self):
+        with self.assertRaisesRegex(ValueError, "unbounded or nonregular artifact"):
+            gate.custody.source_snapshot(
+                self.repo, self.source, [self.name], total_source_limit=len(self.raw)-1)
+        for invalid in (0, True, gate.MAX_SOURCE_TOTAL + 1):
+            with self.subTest(invalid_budget=invalid):
+                with self.assertRaisesRegex(ValueError, "aggregate source byte budget"):
+                    gate.custody.source_snapshot(
+                        self.repo, self.source, [self.name], total_source_limit=invalid)
+
+
 class Admission(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="saved-mix-g0-")
