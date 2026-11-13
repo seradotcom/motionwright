@@ -21,6 +21,31 @@ def original(root, name):
     return raw, value
 
 
+def verify_job_observation(response, start, states):
+    need(type(response) is dict and set(response) == {"error", "result"}
+         and response["error"] is None and type(response["result"]) is dict,
+         "cancel_public_observation_failed")
+    wrapper = response["result"]
+    envelope = wrapper.get("result", {})
+    execution = envelope.get("execution", {})
+    provenance = execution.get("provenance", {})
+    data = envelope.get("data", {})
+    need(wrapper.get("replayed") is False
+         and envelope.get("provenance_checked") is True
+         and execution.get("backend") == "driver:manim-community"
+         and execution.get("dry_run") is False
+         and execution.get("policy_decision") == "allow"
+         and execution.get("fallbacks_attempted") == []
+         and provenance.get("provider") == provenance.get("execution_provider") == "driver:manim-community"
+         and provenance.get("source") == "driver"
+         and provenance.get("provider_generation") == start["provider_generation"],
+         "cancel_public_fresh_checked_observation")
+    need(data.get("state") in states and "artifact" in data and data["artifact"] is None
+         and "original_error" in data and data["original_error"] is None
+         and all(data.get(field) == start[field] for field in ("job_ref", "source_file", "plan_sha256", "profile")),
+         "cancel_public_observation_identity")
+
+
 def verify(root, ciphertext, context, recipient_sha):
     raw_result, result = original(root, "result.json")
     _, preseal = original(root, "cancel-verification.original.json")
@@ -62,6 +87,7 @@ def verify(root, ciphertext, context, recipient_sha):
     need(result["protocol_original_sha256"] == sha(protocol_raw)
          and result["process_witness_sha256"] == sha(witness_raw)
          and result["process_closure_sha256"] == sha(closure_raw)
+         and protocol.get("schema") == "motionwright.manim.active-cancel-original/2"
          and protocol.get("cancellation_exercised") is True
          and protocol.get("project_unchanged") is True
          and protocol.get("physical_process_closure_claimed") is False
@@ -86,21 +112,14 @@ def verify(root, ciphertext, context, recipient_sha):
          and result["job_ref"] == start["job_ref"]
          and protocol["request_id"] == start["request_id"] == result["request_id"],
          "cancel_public_original_job_identity")
-    for name in ("render_terminal", "post_cancel_result"):
-        response = protocol[name]
-        error = response.get("error", {})
-        need(response.get("result") is None and error.get("code") == "Cancelled"
-             and error.get("outcome_known") is True, "cancel_public_known_cancelled_terminal")
+    response = protocol["render_terminal"]
+    error = response.get("error", {})
+    need(response.get("result") is None and error.get("code") == "Cancelled"
+         and error.get("outcome_known") is True, "cancel_public_known_cancelled_terminal")
     for name, states in (("cancel_response", ("cancelled", "cancelling")),
-                         ("post_cancel_status", ("cancelled",))):
-        response = protocol[name]
-        need(response.get("error") is None, "cancel_public_observation_failed")
-        envelope = response["result"]["result"]
-        data = envelope["data"]
-        need(data["state"] in states and data.get("artifact") is None
-             and all(data.get(field) == start[field] for field in ("job_ref", "source_file", "plan_sha256", "profile"))
-             and envelope["execution"]["provenance"]["provider_generation"] == start["provider_generation"],
-             "cancel_public_observation_identity")
+                         ("post_cancel_status", ("cancelled",)),
+                         ("post_cancel_result", ("cancelled",))):
+        verify_job_observation(protocol[name], start, states)
     need(closure.get("schema") == "motionwright.manim.namespace-closure/2"
          and closure.get("proof_kind") == result.get("namespace_closure_proof")
              == "original_namespace_init_pidfd_reaped"
@@ -234,7 +253,7 @@ def verify(root, ciphertext, context, recipient_sha):
         raw = base64.b64decode(header[key], validate=True)
         need(len(raw) == size and base64.b64encode(raw).decode() == header[key],
              "cancel_public_seal_header_encoding")
-    return {"schema": "motionwright.manim.active-cancel-public/2",
+    return {"schema": "motionwright.manim.active-cancel-public/3",
             "status": "VERIFIED_SCOPED_ACTIVE_CANCELLATION", "context": context,
             "native_render_starts": 1, "cancel_requests": 1,
             "original_processes_observed": 2, "original_namespace_closed_before_broker_cleanup": True,
@@ -253,7 +272,7 @@ def main():
     context = {"source_sha": os.environ["GITHUB_SHA"],
                "semwright_sha": json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"],
                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
-    summary = {"schema": "motionwright.manim.active-cancel-public/2", "status": "NOT_PUBLISHED",
+    summary = {"schema": "motionwright.manim.active-cancel-public/3", "status": "NOT_PUBLISHED",
                "context": context, "publisher_native_effects": 0, "automatic_retry": False,
                "human_acceptance": False, "formal_acceptance": False, "release_approved": False}
     if os.environ.get("NATIVE_CI_JOB_STATUS") == "success":

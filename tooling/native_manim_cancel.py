@@ -422,7 +422,8 @@ def run_original(*, source_binary, database, connection, evidence, env, custody,
                 need(output.stat().st_size <= STREAM_LIMIT and error.stat().st_size <= STREAM_LIMIT,
                      "cancel_original_stream_budget")
                 protocol = json.loads(bounded(report_path, STREAM_LIMIT))
-                need(protocol["cancellation_exercised"] is True and protocol["project_unchanged"] is True
+                need(protocol["schema"] == "motionwright.manim.active-cancel-original/2"
+                     and protocol["cancellation_exercised"] is True and protocol["project_unchanged"] is True
                      and protocol["physical_process_closure_claimed"] is False
                      and protocol["physical_witness_sha256"] == sha(witness_raw)
                      and protocol["control_original_sha256"] == sha(control_raw)
