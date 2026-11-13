@@ -92,6 +92,23 @@ async function prepare(page: Page, kind: "causal_diagram" | "system_flow") {
   await expect(save, "A resolved original Native/Studio context must admit this Graph source.").toBeEnabled();
 }
 
+// The original Native callback already has a 50-second RPC window. Observe
+// Studio's ACK within that window plus its UI update margin; the existing
+// 120-second case/owner deadline remains binding. This never retries Save.
+const nativeCallbackObservationMs = 55_000;
+async function observeOriginalGraphAck(page: Page, revision: number) {
+  try {
+    await expect(page.getByRole("status").filter({
+      hasText: "Saved Graph at r" + revision + ".",
+    })).toBeVisible({ timeout: nativeCallbackObservationMs });
+    await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toHaveCount(0);
+  } catch (error) {
+    // The complete original assertion remains private. The public collector
+    // may emit this source-owned label, never infer an ACK from Store readback.
+    throw new AggregateError([error], "GRAPH_STUDIO_ORIGINAL_ACK_UNCONFIRMED");
+  }
+}
+
 test("Graph creates, edits, reopens SQLite, persists an actual review and rechecks it after editing", async ({ page }, info) => {
   const service = await createGraphServiceCase(info, "graph-source-review", { databasePath: info.outputPath("store", "semantic-graph.sqlite3"), desktopInvokeFixture: true }); let latest: Project | undefined;
   let bodyFailed = false, primaryFailure: unknown;
@@ -100,7 +117,8 @@ test("Graph creates, edits, reopens SQLite, persists an actual review and rechec
     await prepare(page, "causal_diagram"); await field(page, "Vertex 1 label").fill("Declared intervention"); await field(page, "Vertex 1 box x").fill("1e");
     await expect(button(page, "Save semantic Graph")).toBeDisabled(); await page.reload(); await open(page, setup.sceneId); await expect(field(page, "Vertex 1 box x")).toHaveValue("1e");
     expect(graphRequests(service)).toHaveLength(0); await field(page, "Vertex 1 box x").fill("120"); await inspectCurrentGraphSource(page);
-    await button(page, "Save semantic Graph").click(); await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 1));
+    await button(page, "Save semantic Graph").click(); await observeOriginalGraphAck(page, initial.revision + 1);
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 1));
     latest = await service.project(initial.id); const first = (latest as GraphProject).production_design!.semantic_graphs!.find(graph => graph.scene_id === setup.sceneId)!;
     expect(first).toBeTruthy(); expect(first.content.kind).toBe("causal_diagram"); expect(first.content.vertices[0].label).toBe("Declared intervention"); expect(first.content.vertices[0].box.x).toBe(120);
     expect(first.style.font_family).toBe("Instrument Sans Variable"); expect(first.time_range.duration).toEqual({ num: "5", den: "1" }); expect(first.authorship.source_snapshot.revision).toBe(initial.revision);
@@ -112,7 +130,8 @@ test("Graph creates, edits, reopens SQLite, persists an actual review and rechec
     const resolution = field(page, "Resolution for review " + review.id); await resolution.fill("Technical source inspection only; native fidelity and human acceptance remain separate.");
     await resolution.locator("..").getByRole("button", { name: "Resolve", exact: true }).click(); await expect.poll(async () => (await service.project(initial.id)).reviews.find(item => item.id === review.id)?.status).toBe("resolved");
     await open(page, setup.sceneId); await field(page, "Vertex 1 label").fill("Revised declared intervention"); await inspectCurrentGraphSource(page);
-    await button(page, "Save Graph changes").click(); await expect.poll(async () => (await service.project(initial.id) as GraphProject).production_design!.semantic_graphs!.find(graph => graph.id === first.id)?.content.vertices[0].label).toBe("Revised declared intervention");
+    await button(page, "Save Graph changes").click(); await observeOriginalGraphAck(page, initial.revision + 4);
+    await expect.poll(async () => (await service.project(initial.id) as GraphProject).production_design!.semantic_graphs!.find(graph => graph.id === first.id)?.content.vertices[0].label).toBe("Revised declared intervention");
     latest = await service.project(initial.id); const final = (latest as GraphProject).production_design!.semantic_graphs!.find(graph => graph.id === first.id)!;
     expect(final.content.vertices.map(v => v.id)).toEqual(first.content.vertices.map(v => v.id)); expect(final.content.edges.map(e => e.id)).toEqual(first.content.edges.map(e => e.id));
     expect(latest.reviews.find(item => item.id === review.id)?.status).toBe("needs_recheck"); expect(graphRequests(service)).toHaveLength(2);
@@ -139,7 +158,8 @@ test("Synthetic flow stores exact event times and rejects a real stale CAS witho
   try {
     const setup = await arrange(service), initial = setup.project; await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId); await prepare(page, "system_flow");
     await field(page, "Graph motion").selectOption("off"); await button(page, "Add synthetic event").click(); await page.locator("[data-graph-event] summary").first().click(); await field(page, "Event 1 label").fill("Illustrated message transfer");
-    await button(page, "Save semantic Graph").click(); await expect.poll(async () => (await service.project(initial.id)).revision).toBe(initial.revision + 1); latest = await service.project(initial.id);
+    await button(page, "Save semantic Graph").click(); await observeOriginalGraphAck(page, initial.revision + 1);
+    await expect.poll(async () => (await service.project(initial.id)).revision).toBe(initial.revision + 1); latest = await service.project(initial.id);
     const graph = (latest as GraphProject).production_design!.semantic_graphs!.find(item => item.scene_id === setup.sceneId)!; expect(graph.motion).toBe("off");
     if (graph.content.kind !== "system_flow") throw new Error("Actual saved source is not a typed system flow.");
     expect(graph.content.source.kind).toBe("synthetic"); expect(graph.content.events[0]).toMatchObject({ label: "Illustrated message transfer", edge_id: graph.content.edges[0].id, at: { num: "1", den: "15" }, duration: { num: "1", den: "30" } });
@@ -172,7 +192,9 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
       const result = await original<T>(command, args), change = (args.request as { change?: { type?: string } } | undefined)?.change;
       if (!lost && command === "apply_change" && change?.type === "upsert_semantic_graph") { lost = true; throw new Error("Transport lost the original reply after actual SQLite Graph commit."); } return result;
     };
-    await field(page, "Vertex 1 label").fill("Committed once"); await button(page, "Save semantic Graph").click(); await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
+    await field(page, "Vertex 1 label").fill("Committed once"); await button(page, "Save semantic Graph").click();
+    await expect.poll(() => lost, { timeout: nativeCallbackObservationMs }).toBe(true);
+    await expect(page.getByRole("region", { name: "Unconfirmed Graph submission" })).toBeVisible();
     latest = await service.project(initial.id); expect(latest.revision).toBe(initial.revision + 1); expect(graphRequests(service)).toHaveLength(1);
     const sentPayload = graphRequests(service)[0].payload;
     if (!("command" in sentPayload)) throw new Error("The retained Graph request was not an actual RPC command");
@@ -194,6 +216,7 @@ test("A lost Graph reply cannot replay a committed SQLite mutation after reload"
     expect(recoveredPayload.args?.request).toEqual({ request_id: sent.request_id, change: sent.change });
     await button(page, "Continue Graph as a new reviewed intention").click(); expect(graphRequests(service)).toHaveLength(1);
     await inspectCurrentGraphSource(page); await button(page, "Save Graph changes").click();
+    await observeOriginalGraphAck(page, initial.revision + 2);
     await expect.poll(async () => (await service.project(initial.id)).revision).toBe(initial.revision + 2); latest = await service.project(initial.id);
     expect((latest as GraphProject).production_design!.semantic_graphs!.find(graph => graph.scene_id === setup.sceneId)!.content.vertices[0].label).toBe("New human intention after lost reply");
     const journal = await service.history(initial.id, initial.revision); expect(journal.map(event => event.change.type)).toEqual(["upsert_semantic_graph", "upsert_semantic_graph"]); expect(graphRequests(service)).toHaveLength(2);
@@ -220,6 +243,7 @@ test("Graph removal rejects a prior-session grant and stale base, then removes o
     await service.attachFixturePage(page, initial.id); await page.goto("/"); await open(page, setup.sceneId);
     await prepare(page, "causal_diagram"); await field(page, "Vertex 1 label").fill("Remove me");
     await button(page, "Save semantic Graph").click();
+    await observeOriginalGraphAck(page, initial.revision + 1);
     await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 1));
     const saved = await service.project(initial.id); latest = saved;
     const graph = (saved as GraphProject).production_design?.semantic_graphs?.find(item => item.scene_id === setup.sceneId);
@@ -266,7 +290,7 @@ test("Graph removal rejects a prior-session grant and stale base, then removes o
     await expect(field(page, "Vertex 1 label")).toHaveValue("Remove me");
     await inspectCurrentGraphSource(page);
     await expect(button(page, "Remove saved Graph")).toBeEnabled(); await button(page, "Remove saved Graph").click();
-    await expect.poll(() => successfulRemovals.length).toBe(1);
+    await expect.poll(() => successfulRemovals.length, { timeout: nativeCallbackObservationMs }).toBe(1);
     await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (beforeRemove.revision + 1));
     latest = await service.project(initial.id);
     const actual = successfulRemovals[0], expectedChange = remove(beforeRemove);
@@ -422,6 +446,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
       await field(page, "Edge 1 label offset X").fill("24");
       await inspectCurrentGraphSource(page);
       await expect(button(page, "Save semantic Graph")).toBeEnabled(); await button(page, "Save semantic Graph").click();
+      await observeOriginalGraphAck(page, initial.revision + 1);
       await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 1));
       latest = await service.project(initial.id); const saved = latest;
       const first = (saved as GraphProject).production_design!.semantic_graphs!.find(graph => graph.scene_id === setup.sceneId)!;
@@ -531,6 +556,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
       expect(await service.project(initial.id)).toEqual(saved);
       await inspectCurrentGraphSource(page);
       await expect(button(page, "Save Graph changes")).toBeEnabled(); await button(page, "Save Graph changes").click();
+      await observeOriginalGraphAck(page, initial.revision + 2);
       await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 2));
       latest = await service.project(initial.id); const moved = latest;
       const movedGraph = (moved as GraphProject).production_design!.semantic_graphs!.find(graph => graph.id === first.id)!;
@@ -568,6 +594,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
       expect(await service.project(initial.id)).toEqual(moved);
       await inspectCurrentGraphSource(page);
       await expect(button(page, "Save Graph changes")).toBeEnabled(); await button(page, "Save Graph changes").click();
+      await observeOriginalGraphAck(page, initial.revision + 3);
       await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (initial.revision + 3));
       latest = await service.project(initial.id); const manual = latest;
       const manualGraph = (manual as GraphProject).production_design!.semantic_graphs!.find(graph => graph.id === first.id)!;

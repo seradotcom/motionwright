@@ -8501,6 +8501,22 @@ class GraphR74JoinTests(unittest.TestCase):
         reference.assert_called_once_with(Path("original.json"), gate.GRAPH_BUDGET["store_file_bytes"])
         read.assert_called_once_with({"path": "private-original"}, gate.GRAPH_BUDGET["store_file_bytes"])
 
+    def test_graph_unconfirmed_original_ack_publishes_only_closed_code(self):
+        repo, value = self.graph_diagnostic_fixture_report()
+        result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]
+        result["error"] = {
+            "message": "AggregateError: GRAPH_STUDIO_ORIGINAL_ACK_UNCONFIRMED",
+            "errors": [{"message": "Error: CANARY_PRIVATE_ASSERTION /private/token-path",
+                        "stack": "Error: CANARY_PRIVATE_STACK"}],
+        }
+        with mock.patch.object(gate, "graph_ref", return_value={}), \
+             mock.patch.object(gate, "graph_read", return_value=gate.json.dumps(value).encode()):
+            observed = gate.graph_observed_playwright_failure(repo, Path("original.json"), self.graph_failed_case_command())
+        self.assertEqual(observed["report"], "OBSERVED_FAILURE_DIAGNOSTIC_ONLY")
+        self.assertEqual(observed["error_codes"], ["GRAPH_STUDIO_ORIGINAL_ACK_UNCONFIRMED"])
+        self.assertNotIn("CANARY_PRIVATE", gate.json.dumps(observed))
+        self.assertNotIn("/private/token-path", gate.json.dumps(observed))
+
     def test_graph_primary_source_admission_and_cleanup_codes_survive_nested_aggregate(self):
         repo, value = self.graph_diagnostic_fixture_report()
         result = value["suites"][0]["suites"][0]["specs"][0]["tests"][0]["results"][0]

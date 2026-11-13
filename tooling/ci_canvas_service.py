@@ -10359,6 +10359,7 @@ GRAPH_CASE_DIAGNOSTIC_CODES = (
     "CASE_STORE_KERNEL_FILE_BOUND", "CASE_DEADLINE", "SYNTHETIC_ADMISSION_FORBIDDEN",
     "PRESEAL_NOT_ORIGINAL_PHYSICAL_STORE", "REOPEN_NOT_ORIGINAL_PHYSICAL_STORE",
     "REOPEN_FULL_PROJECT_MISMATCH",
+    "GRAPH_STUDIO_ORIGINAL_ACK_UNCONFIRMED",
     # Exact literal phases from the original owner ERROR protocol. These
     # classify an already-observed failed Playwright process; they never reveal
     # its private_receipt, original_error, child streams or any credential.
