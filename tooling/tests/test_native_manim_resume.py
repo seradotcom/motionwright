@@ -48,7 +48,8 @@ class TransferTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.public = transfer.recipient_record(self.recipient, CURRENT, "42",
-            "2026-11-07T12:00:00+00:00", "2026-11-07T12:10:00+00:00", "b" * 64)
+            "2026-11-07T12:00:00+00:00", "2026-11-07T12:10:00+00:00", "b" * 64,
+            ref=CANONICAL)
 
     def release(self, assets=None):
         return {"id": 11, "draft": True, "prerelease": True, "published_at": None,
