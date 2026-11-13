@@ -374,8 +374,13 @@ fn require_native_mux_stereo_tail<
             .zip(output.chunks_exact(2))
             .enumerate()
         {
-            if offset + index as u64 >= start {
-                for channel in 0..2 {
+            for channel in 0..2 {
+                if !before[channel].is_finite() || !after[channel].is_finite() {
+                    return Err(backend(
+                        "Native AV contains nonfinite authored or decoded PCM",
+                    ));
+                }
+                if offset + index as u64 >= start {
                     // WaveReader samples are normalized to [-1, 1].
                     // Retain the same authored PCM16 amplitude units as the
                     // 256-frame source-content oracle: 64 means 64 / 32768.
@@ -901,6 +906,17 @@ mod tests {
         wav
     }
 
+    fn source_wav_32bit_pcm_fixture(stereo: &[[i16; 2]]) -> Vec<u8> {
+        let mut wav = source_wav_float32_fixture(stereo);
+        // Same valid 32-bit interleaved RIFF layout; replace the numeric
+        // sample representation with signed PCM32, preserving amplitude.
+        wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
+        for (chunk, sample) in wav[44..].chunks_exact_mut(4).zip(stereo.iter().flatten()) {
+            chunk.copy_from_slice(&(i32::from(*sample) << 16).to_le_bytes());
+        }
+        wav
+    }
+
     fn source_tail_fixture() -> Vec<[i16; 2]> {
         (0..512)
             .map(|i| [((i % 64) as i16 - 32) * 280, ((i % 31) as i16 - 15) * 500])
@@ -937,6 +953,7 @@ mod tests {
         let source = source_tail_fixture();
         let decoded = source_wav_fixture(&source);
         assert!(check_tail(&source_wav_24bit_fixture(&source), &decoded, 512).is_ok());
+        assert!(check_tail(&source_wav_32bit_pcm_fixture(&source), &decoded, 512).is_ok());
         assert!(check_tail(&source_wav_float32_fixture(&source), &decoded, 512).is_ok());
     }
 
@@ -949,7 +966,17 @@ mod tests {
         }
         let decoded = source_wav_fixture(&damaged);
         assert!(check_tail(&source_wav_24bit_fixture(&source), &decoded, 512).is_err());
+        assert!(check_tail(&source_wav_32bit_pcm_fixture(&source), &decoded, 512).is_err());
         assert!(check_tail(&source_wav_float32_fixture(&source), &decoded, 512).is_err());
+    }
+
+    #[test]
+    fn native_mux_rejects_nonfinite_float32_source_samples() {
+        let source = source_tail_fixture();
+        let mut invalid = source_wav_float32_fixture(&source);
+        invalid[44..48].copy_from_slice(&f32::NAN.to_le_bytes());
+        let decoded = source_wav_fixture(&source);
+        assert!(check_tail(&invalid, &decoded, 512).is_err());
     }
 
     #[test]
