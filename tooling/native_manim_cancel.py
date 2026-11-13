@@ -91,10 +91,21 @@ def descended(rows, pid, ancestor):
     return False
 
 
-def alive(fd):
+def pidfd_observation(fd):
     poll = select.poll()
     poll.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
-    return not poll.poll(0)
+    events = poll.poll(0)
+    if not events:
+        return {"state": "LIVE", "mask": 0}
+    need(len(events) == 1 and events[0][0] == fd, "cancel_pidfd_poll_identity")
+    mask = events[0][1]
+    need(not mask & (select.POLLERR | select.POLLNVAL), "cancel_pidfd_poll_invalid")
+    need(mask & (select.POLLIN | select.POLLHUP), "cancel_pidfd_poll_unexpected")
+    return {"state": "REAPED" if mask & select.POLLHUP else "EXITED", "mask": mask}
+
+
+def alive(fd):
+    return pidfd_observation(fd)["state"] == "LIVE"
 
 
 class ExecutableNotSelected(Exception):
@@ -204,43 +215,116 @@ def wait_original_processes(start, broker, runner_sha, python_sha, writer_raw, *
         raise
 
 
-def wait_namespace_closed(originals, broker, broker_identity, *, deadline, guard):
+def parse_kernel_status(raw, pid):
+    need(type(raw) is bytes and 0 < len(raw) <= 65536, "cancel_kernel_status_budget")
+    wanted = {b"Pid", b"Tgid", b"PPid", b"Uid", b"NSpid", b"NStgid"}
+    fields = {}
+    for line in raw.splitlines():
+        key, separator, value = line.partition(b":")
+        if separator and key in wanted:
+            need(key not in fields, "cancel_kernel_status_duplicate")
+            parts = value.split()
+            need(parts and all(part.isdigit() for part in parts), "cancel_kernel_status_numeric")
+            fields[key] = [int(part) for part in parts]
+    need(set(fields) == wanted and fields[b"Pid"] == fields[b"Tgid"] == [pid]
+         and len(fields[b"PPid"]) == 1 and len(fields[b"Uid"]) == 4,
+         "cancel_kernel_status_identity")
+    ids = fields[b"NSpid"]
+    need(1 <= len(ids) <= 32 and ids[0] == pid and all(value > 0 for value in ids)
+         and fields[b"NStgid"] == ids, "cancel_kernel_namespace_process_identity")
+    return {"pid": pid, "parent": fields[b"PPid"][0], "uids": fields[b"Uid"], "nspid": ids}
+
+
+def pin_namespace_init(runner, broker_pid):
+    # Only the original runner or its direct parent can be selected. No scan of
+    # unrelated namespaces, no permission fallback, and no namespace entry.
+    ns = runner["namespace"]
+    need(ns != namespace(os.getpid()) and ns != namespace(broker_pid),
+         "cancel_namespace_init_not_isolated")
+    runner_status_raw = bounded(Path("/proc") / str(runner["pid"]) / "status", 65536)
+    runner_status = parse_kernel_status(runner_status_raw, runner["pid"])
+    need(runner_status["parent"] == runner["parent"] and runner_status["uids"] == [os.geteuid()] * 4,
+         "cancel_runner_parent_changed")
+    pid = runner["pid"] if runner_status["nspid"][-1] == 1 else runner["parent"]
+    need(pid > 1 and pid != broker_pid, "cancel_namespace_init_not_original")
+    before = process_stat(pid)
+    fd = os.pidfd_open(pid, 0)
+    try:
+        status_raw = bounded(Path("/proc") / str(pid) / "status", 65536)
+        status = parse_kernel_status(status_raw, pid)
+        need(status["nspid"][-1] == 1 and len(status["nspid"]) == len(runner_status["nspid"])
+             and status["uids"] == [os.geteuid()] * 4
+             and status["parent"] == before["parent"] and namespace(pid) == ns,
+             "cancel_original_namespace_init_not_bound")
+        after = process_stat(pid)
+        runner_after = process_stat(runner["pid"])
+        status_after = parse_kernel_status(bounded(Path("/proc") / str(pid) / "status", 65536), pid)
+        runner_status_after = parse_kernel_status(
+            bounded(Path("/proc") / str(runner["pid"]) / "status", 65536), runner["pid"])
+        need(status_after == status and runner_status_after == runner_status
+             and after["start_ticks"] == before["start_ticks"] and after["parent"] == before["parent"]
+             and after["state"] != "Z" and alive(fd)
+             and runner_after["start_ticks"] == runner["start_ticks"]
+             and runner_after["parent"] == runner["parent"] and runner_after["state"] != "Z"
+             and alive(runner["pidfd"]), "cancel_namespace_init_changed_during_pin")
+        return {"pid": pid, "parent": before["parent"], "start_ticks": before["start_ticks"],
+                "namespace": ns, "nspid": status["nspid"], "observed_uid": os.geteuid(),
+                "same_process_as_runner": pid == runner["pid"],
+                "stat_raw": before["raw"], "status_raw": status_raw,
+                "runner_status_raw": runner_status_raw, "pidfd": fd,
+                "stat_sha256": sha(before["raw"]), "status_sha256": sha(status_raw),
+                "runner_status_sha256": sha(runner_status_raw)}
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def wait_namespace_closed(originals, namespace_init, broker, broker_identity, *, deadline, guard):
+    # Linux guarantees that all processes in a PID namespace are gone before
+    # its init is reaped. pidfd HUP means REAPED; IN alone only means EXITED.
+    # https://man7.org/linux/man-pages/man2/pidfd_open.2.html
+    # https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
+    # kernel/pid_namespace.c: zap_pid_ns_processes() waits for every other PID.
     ns = originals[0]["namespace"]
-    first_empty = None
-    empty_observations = 0
+    need(namespace_init["namespace"] == ns and namespace_init["nspid"][-1] == 1,
+         "cancel_closure_requires_original_namespace_init")
+    first_shutdown = None
+    shutdown_observations = 0
     polls = 0
-    last = []
     while time.monotonic() < deadline:
         guard()
         need(broker.poll() is None, "cancel_broker_cleanup_cannot_prove_job_closure")
         current_broker = process_stat(broker.pid)
         need(current_broker["start_ticks"] == broker_identity["start_ticks"],
              "cancel_original_broker_identity_changed")
-        last = []
-        for pid, row in census().items():
-            if row["uid"] != os.geteuid():
-                continue
-            try:
-                if namespace(pid) == ns:
-                    last.append({"pid": pid, "start_ticks": row["start_ticks"], "state": row["state"]})
-            except (FileNotFoundError, ProcessLookupError):
-                continue
+        rendered = [{"pid": item["pid"], "start_ticks": item["start_ticks"],
+                     **pidfd_observation(item["pidfd"])} for item in originals]
+        init = {"pid": namespace_init["pid"], "start_ticks": namespace_init["start_ticks"],
+                **pidfd_observation(namespace_init["pidfd"])}
         polls += 1
-        exited = all(not alive(original["pidfd"]) for original in originals)
-        if exited and not last:
-            empty_observations += 1
-            if first_empty is not None and time.monotonic() - first_empty >= 0.05:
-                return {"namespace_device": ns[0], "namespace_inode": ns[1],
-                        "original_pidfds_exited": True, "remaining_owned_namespace_processes": [],
-                        "empty_namespace_observations": empty_observations, "polls": polls,
+        if init["state"] == "REAPED" and all(item["state"] == "REAPED" for item in rendered):
+            sample = {"observed_monotonic_ns": time.monotonic_ns(),
+                      "render_pidfds": rendered, "namespace_init_pidfd": init,
+                      "broker_pid": broker.pid, "broker_start_ticks": broker_identity["start_ticks"],
+                      "broker_alive": True}
+            shutdown_observations += 1
+            if first_shutdown is not None and (
+                    sample["observed_monotonic_ns"] - first_shutdown["observed_monotonic_ns"] >= 50000000):
+                return {"schema": "motionwright.manim.namespace-closure/2",
+                        "proof_kind": "original_namespace_init_pidfd_reaped",
+                        "namespace_device": ns[0], "namespace_inode": ns[1],
+                        "original_pidfds_exited": True, "original_pidfds_reaped": True,
+                        "namespace_init_reaped": True, "global_process_census_used": False,
+                        "shutdown_observations": shutdown_observations, "polls": polls,
+                        "samples": [first_shutdown, sample],
                         "broker_alive_before_cleanup": True, "broker_pid": broker.pid,
                         "broker_start_ticks": broker_identity["start_ticks"],
                         "observed_uid": os.geteuid(), "signals_sent_by_observer": 0}
-            if first_empty is None:
-                first_empty = time.monotonic()
+            if first_shutdown is None:
+                first_shutdown = sample
         else:
-            first_empty = None
-            empty_observations = 0
+            first_shutdown = None
+            shutdown_observations = 0
         time.sleep(0.025)
     raise ValueError("cancel_original_namespace_closure_not_observed")
 
@@ -255,7 +339,7 @@ def run_original(*, source_binary, database, connection, evidence, env, custody,
     report_path = evidence / EVIDENCE_NAME
     output, error = evidence / "native-cancel.stdout.original", evidence / "native-cancel.stderr.original"
     child = child_class("native-cancel", evidence, custody, record_native=True)
-    process, originals, primary, completed = None, [], None, False
+    process, originals, namespace_init, primary, completed = None, [], None, None, False
     streams = {"stdout": output, "stderr": error}
     result = None
     try:
@@ -296,22 +380,29 @@ def run_original(*, source_binary, database, connection, evidence, env, custody,
                          "cancel_original_stream_budget")
                 originals = list(wait_original_processes(start, broker, runner_hash, python_hash,
                     writer_raw, deadline=time.monotonic() + bounded_timeout(20), guard=guard))
+                namespace_init = pin_namespace_init(originals[0], broker.pid)
+                new_bytes(evidence / "cancel-namespace-init.stat.original", namespace_init["stat_raw"])
+                new_bytes(evidence / "cancel-namespace-init.status.original", namespace_init["status_raw"])
+                new_bytes(evidence / "cancel-runner.status.original", namespace_init["runner_status_raw"])
+                public_init = {key: value for key, value in namespace_init.items()
+                               if key != "pidfd" and not key.endswith("_raw")}
                 public_originals = []
                 for label, original in zip(("runner", "python"), originals):
                     new_bytes(evidence / ("cancel-" + label + ".stat.original"), original["stat_raw"])
                     new_bytes(evidence / ("cancel-" + label + ".cmdline.original"), original["cmdline_raw"])
                     public_originals.append({key: value for key, value in original.items()
                                              if key not in ("pidfd", "stat_raw", "cmdline_raw")})
-                witness = {"schema": "motionwright.manim.active-process-witness/1",
+                witness = {"schema": "motionwright.manim.active-process-witness/2",
                     "job_ref": start["job_ref"], "source_file": start["source_file"],
                     "plan_sha256": start["plan_sha256"], "start_original_sha256": sha(raw),
                     "broker_pid": broker.pid, "broker_start_ticks": broker_identity["start_ticks"],
                     "manifest_sha256": launch["manifest_sha256"], "session_sha256": launch["session_sha256"],
                     "fixed_writer_sha256": sha(writer_raw), "originals": public_originals,
+                    "namespace_init": public_init,
                     "observed_monotonic_ns": time.monotonic_ns(), "signals_sent": 0}
                 witness_raw = new_json(evidence / "cancel-process-witness.original.json", witness)
                 need(all(alive(original["pidfd"]) for original in originals)
-                     and broker.poll() is None, "cancel_original_process_ended_before_control")
+                     and alive(namespace_init["pidfd"]) and broker.poll() is None, "cancel_original_process_ended_before_control")
                 control = {"schema": "motionwright.manim.active-cancel-control/1", "action": "cancel",
                     "job_ref": start["job_ref"], "source_file": start["source_file"],
                     "plan_sha256": start["plan_sha256"], "witness_sha256": sha(witness_raw)}
@@ -320,7 +411,7 @@ def run_original(*, source_binary, database, connection, evidence, env, custody,
                 process.stdin.write(control_raw)
                 process.stdin.flush()
                 process.stdin.close()
-                closure = wait_namespace_closed(originals, broker, broker_identity,
+                closure = wait_namespace_closed(originals, namespace_init, broker, broker_identity,
                     deadline=time.monotonic() + bounded_timeout(65), guard=guard)
                 new_json(evidence / "cancel-process-closure.original.json", closure)
                 code = child.observe_wait(bounded_timeout(20))
@@ -344,6 +435,7 @@ def run_original(*, source_binary, database, connection, evidence, env, custody,
                     "process_witness_sha256": sha(witness_raw),
                     "process_closure_sha256": sha(bounded(evidence / "cancel-process-closure.original.json", STREAM_LIMIT)),
                     "native_render_starts": 1, "cancel_requests": 1, "automatic_retry": False,
+                    "namespace_closure_proof": "original_namespace_init_pidfd_reaped",
                     "broker_cleanup_used_as_job_closure": False, "human_acceptance": False,
                     "formal_acceptance": False}
                 new_json(evidence / "cancel-verification.original.json", result)
@@ -380,7 +472,7 @@ def run_original(*, source_binary, database, connection, evidence, env, custody,
                     primary = caught
                 else:
                     custody.secondary("cancel-child-finalization", caught)
-        for original in originals:
+        for original in originals + ([] if namespace_init is None else [namespace_init]):
             try:
                 os.close(original["pidfd"])
             except BaseException as caught:

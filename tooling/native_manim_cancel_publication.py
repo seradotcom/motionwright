@@ -6,11 +6,12 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 
 from ci_private_evidence import (
     HEX, MAGIC, MAX_FILES, MAX_TOTAL, SEAL_SCHEMA, json_bytes, regular, strict,
 )
-from native_manim_cancel import EVIDENCE_NAME, STREAM_LIMIT, need, new_json, sha
+from native_manim_cancel import EVIDENCE_NAME, STREAM_LIMIT, need, new_json, parse_kernel_status, sha
 
 
 def original(root, name):
@@ -73,7 +74,7 @@ def verify(root, ciphertext, context, recipient_sha):
     need(start.get("schema") == "motionwright.manim.active-cancel-start/1"
          and control.get("schema") == "motionwright.manim.active-cancel-control/1"
          and control.get("action") == "cancel"
-         and witness.get("schema") == "motionwright.manim.active-process-witness/1"
+         and witness.get("schema") == "motionwright.manim.active-process-witness/2"
          and control.get("witness_sha256") == sha(witness_raw)
          and witness.get("start_original_sha256") == sha(start_raw),
          "cancel_public_witness_control")
@@ -100,11 +101,18 @@ def verify(root, ciphertext, context, recipient_sha):
              and all(data.get(field) == start[field] for field in ("job_ref", "source_file", "plan_sha256", "profile"))
              and envelope["execution"]["provenance"]["provider_generation"] == start["provider_generation"],
              "cancel_public_observation_identity")
-    need(closure.get("original_pidfds_exited") is True
-         and closure.get("remaining_owned_namespace_processes") == []
+    need(closure.get("schema") == "motionwright.manim.namespace-closure/2"
+         and closure.get("proof_kind") == result.get("namespace_closure_proof")
+             == "original_namespace_init_pidfd_reaped"
+         and closure.get("original_pidfds_exited") is True
+         and closure.get("original_pidfds_reaped") is True
+         and closure.get("namespace_init_reaped") is True
+         and closure.get("global_process_census_used") is False
+         and "remaining_owned_namespace_processes" not in closure
+         and "empty_namespace_observations" not in closure
          and closure.get("broker_alive_before_cleanup") is True
-         and type(closure.get("empty_namespace_observations")) is int
-         and closure["empty_namespace_observations"] >= 2
+         and type(closure.get("shutdown_observations")) is int
+         and closure["shutdown_observations"] >= 2
          and closure.get("signals_sent_by_observer") == 0
          and witness.get("signals_sent") == 0
          and closure["broker_pid"] == witness["broker_pid"] == launch["broker_pid"]
@@ -126,7 +134,8 @@ def verify(root, ciphertext, context, recipient_sha):
         close = stat_raw.rfind(b")")
         fields = stat_raw[close + 2:].split()
         need(int(stat_raw[:stat_raw.index(b" ")]) == process["pid"]
-             and int(fields[19]) == process["start_ticks"] and fields[0] != b"Z",
+             and int(fields[19]) == process["start_ticks"]
+             and int(fields[1]) == process["parent"] and fields[0] != b"Z",
              "cancel_public_retained_kernel_stat")
         argv_raw, _ = regular(root / ("cancel-" + label + ".cmdline.original"), 256 * 1024)
         need(argv_raw.endswith(b"\0"), "cancel_public_original_argv")
@@ -140,6 +149,56 @@ def verify(root, ciphertext, context, recipient_sha):
                  and sha(argv[2]) == witness["fixed_writer_sha256"]
                  and Path(os.fsdecode(argv[3])).name == start["source_file"],
                  "cancel_public_python_source")
+    init = witness.get("namespace_init")
+    need(type(init) is dict and type(init.get("pid")) is int and init["pid"] > 1
+         and type(init.get("start_ticks")) is int and init["start_ticks"] > 0
+         and type(init.get("observed_uid")) is int and init["observed_uid"] > 0
+         and init["observed_uid"] == closure["observed_uid"]
+         and init["namespace"] == processes[0]["namespace"]
+         and init["pid"] in (processes[0]["pid"], processes[0]["parent"])
+         and init.get("same_process_as_runner") is (init["pid"] == processes[0]["pid"]),
+         "cancel_public_original_namespace_init_binding")
+    init_stat_raw, _ = regular(root / "cancel-namespace-init.stat.original", 8192)
+    init_status_raw, _ = regular(root / "cancel-namespace-init.status.original", 65536)
+    runner_status_raw, _ = regular(root / "cancel-runner.status.original", 65536)
+    need(sha(init_stat_raw) == init["stat_sha256"]
+         and sha(init_status_raw) == init["status_sha256"]
+         and sha(runner_status_raw) == init["runner_status_sha256"],
+         "cancel_public_original_namespace_init_hashes")
+    fields = init_stat_raw[init_stat_raw.rfind(b")") + 2:].split()
+    need(int(init_stat_raw[:init_stat_raw.index(b" ")]) == init["pid"]
+         and int(fields[19]) == init["start_ticks"] and int(fields[1]) == init["parent"]
+         and fields[0] != b"Z", "cancel_public_original_namespace_init_stat")
+    init_status = parse_kernel_status(init_status_raw, init["pid"])
+    runner_status = parse_kernel_status(runner_status_raw, processes[0]["pid"])
+    need(init_status["nspid"] == init["nspid"] and init_status["nspid"][-1] == 1
+         and len(init_status["nspid"]) == len(runner_status["nspid"])
+         and init_status["uids"] == runner_status["uids"] == [init["observed_uid"]] * 4
+         and init_status["parent"] == init["parent"]
+         and runner_status["parent"] == processes[0]["parent"],
+         "cancel_public_kernel_namespace_init_role")
+    samples = closure.get("samples")
+    need(type(samples) is list and len(samples) == 2
+         and all(type(sample.get("observed_monotonic_ns")) is int for sample in samples)
+         and samples[0]["observed_monotonic_ns"] >= witness["observed_monotonic_ns"]
+         and samples[1]["observed_monotonic_ns"] - samples[0]["observed_monotonic_ns"] >= 50000000,
+         "cancel_public_distinct_shutdown_samples")
+    expected_render = [(item["pid"], item["start_ticks"]) for item in processes]
+    for sample in samples:
+        need(sample.get("broker_alive") is True
+             and sample["broker_pid"] == witness["broker_pid"]
+             and sample["broker_start_ticks"] == witness["broker_start_ticks"],
+             "cancel_public_sample_original_broker")
+        rendered = sample["render_pidfds"]
+        reaper = sample["namespace_init_pidfd"]
+        need(type(rendered) is list and len(rendered) == 2
+             and [(item["pid"], item["start_ticks"]) for item in rendered] == expected_render
+             and (reaper["pid"], reaper["start_ticks"]) == (init["pid"], init["start_ticks"]),
+             "cancel_public_sample_original_pidfds")
+        for observation in rendered + [reaper]:
+            need(observation.get("state") == "REAPED" and type(observation.get("mask")) is int
+                 and observation["mask"] in (select.POLLHUP, select.POLLIN | select.POLLHUP),
+                 "cancel_public_reaped_requires_original_hup")
     need(inventory.get("schema") == "motionwright.manim.runtime-inventory/2"
          and inventory.get("context") == context
          and sha(regular(root / "runtime-inventory.json", STREAM_LIMIT)[0])
@@ -175,10 +234,12 @@ def verify(root, ciphertext, context, recipient_sha):
         raw = base64.b64decode(header[key], validate=True)
         need(len(raw) == size and base64.b64encode(raw).decode() == header[key],
              "cancel_public_seal_header_encoding")
-    return {"schema": "motionwright.manim.active-cancel-public/1",
+    return {"schema": "motionwright.manim.active-cancel-public/2",
             "status": "VERIFIED_SCOPED_ACTIVE_CANCELLATION", "context": context,
             "native_render_starts": 1, "cancel_requests": 1,
             "original_processes_observed": 2, "original_namespace_closed_before_broker_cleanup": True,
+            "namespace_init_observed": True,
+            "namespace_closure_proof": "original_namespace_init_pidfd_reaped",
             "result_unpublishable": True, "saved_project_unchanged": True,
             "sealed_originals_sha256": custody["ciphertext_sha256"],
             "sealed_originals_bytes": custody["ciphertext_bytes"],
@@ -192,7 +253,7 @@ def main():
     context = {"source_sha": os.environ["GITHUB_SHA"],
                "semwright_sha": json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"],
                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
-    summary = {"schema": "motionwright.manim.active-cancel-public/1", "status": "NOT_PUBLISHED",
+    summary = {"schema": "motionwright.manim.active-cancel-public/2", "status": "NOT_PUBLISHED",
                "context": context, "publisher_native_effects": 0, "automatic_retry": False,
                "human_acceptance": False, "formal_acceptance": False, "release_approved": False}
     if os.environ.get("NATIVE_CI_JOB_STATUS") == "success":
